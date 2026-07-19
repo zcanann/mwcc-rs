@@ -268,6 +268,15 @@ pub enum TrigDispatcherStyle {
     LegacyReloading,
 }
 
+/// Placement of the dispatcher zero constant used by its small-argument arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrigZeroConstantPlacement {
+    /// Load the constant after the range check, only on the small arm.
+    SmallArm,
+    /// Load the constant in the prologue before spilling the input argument.
+    Prologue,
+}
+
 /// Encoding used for generation-specific integer value materializations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaterializationCopyStyle {
@@ -768,6 +777,20 @@ pub trait CodegenProfile: core::fmt::Debug {
         TrigDispatcherStyle::LiveParameter
     }
 
+    fn trig_zero_constant_placement(&self) -> TrigZeroConstantPlacement {
+        TrigZeroConstantPlacement::SmallArm
+    }
+
+    /// Hidden labels added to every trigonometric dispatcher's pool counter.
+    fn trig_dispatcher_hidden_label_bump(&self) -> u8 {
+        0
+    }
+
+    /// Additional hidden labels retained when whole-file IPA is enabled.
+    fn trig_dispatcher_ipa_label_bump(&self) -> u8 {
+        0
+    }
+
     fn materialization_copy_style(&self) -> MaterializationCopyStyle {
         MaterializationCopyStyle::LogicalOr
     }
@@ -880,13 +903,37 @@ impl CodegenProfile for Mainline {}
 /// without changing the older mainline builds.
 #[derive(Debug)]
 pub struct Gc41Build51213;
-impl CodegenProfile for Gc41Build51213 {}
+impl CodegenProfile for Gc41Build51213 {
+    fn trig_zero_constant_placement(&self) -> TrigZeroConstantPlacement {
+        TrigZeroConstantPlacement::Prologue
+    }
+
+    fn trig_dispatcher_hidden_label_bump(&self) -> u8 {
+        3
+    }
+
+    fn trig_dispatcher_ipa_label_bump(&self) -> u8 {
+        4
+    }
+}
 
 /// Wii/1.0 — mwcceppc 4.3 build 145. Kept separate from the 4.1 GameCube
 /// profile so measured optimizer transitions remain scoped to this generation.
 #[derive(Debug)]
 pub struct Wii43Build145;
-impl CodegenProfile for Wii43Build145 {}
+impl CodegenProfile for Wii43Build145 {
+    fn trig_zero_constant_placement(&self) -> TrigZeroConstantPlacement {
+        TrigZeroConstantPlacement::Prologue
+    }
+
+    fn trig_dispatcher_hidden_label_bump(&self) -> u8 {
+        3
+    }
+
+    fn trig_dispatcher_ipa_label_bump(&self) -> u8 {
+        4
+    }
+}
 
 /// GC/1.3 — mwcceppc 2.4.2 build 53. The early 2.4.2 build that defaulted plain
 /// `char` to unsigned, before build 81 restored signed.

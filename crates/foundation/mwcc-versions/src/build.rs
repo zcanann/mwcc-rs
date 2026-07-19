@@ -260,7 +260,7 @@ pub const GC_3_0A3: CompilerBuild = CompilerBuild {
     emb_sda21_offset: 0,
     code_alignment: 4,
     sdata2_writable: true,
-    function_symbol_before_references: false,
+    function_symbol_before_references: true,
     initial_anonymous_counter: 5,
     post_leaf_function_anonymous_bump: 4,
     post_framed_function_anonymous_bump: 4,
@@ -289,7 +289,7 @@ pub const WII_1_0: CompilerBuild = CompilerBuild {
     emb_sda21_offset: 0,
     code_alignment: 16,
     sdata2_writable: false,
-    function_symbol_before_references: false,
+    function_symbol_before_references: true,
     initial_anonymous_counter: 5,
     post_leaf_function_anonymous_bump: 4,
     post_framed_function_anonymous_bump: 4,
@@ -373,6 +373,12 @@ mod tests {
         assert!(SUPPORTED
             .iter()
             .all(|build| build.post_framed_function_anonymous_bump == 4));
+    }
+
+    #[test]
+    fn later_builds_register_functions_before_body_references() {
+        assert!(GC_3_0A3P1.function_symbol_before_references);
+        assert!(WII_1_0.function_symbol_before_references);
     }
 
     #[test]

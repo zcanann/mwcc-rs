@@ -2,7 +2,7 @@
 
 #[allow(unused_imports)]
 use super::*;
-use mwcc_versions::TrigDispatcherStyle;
+use mwcc_versions::{TrigDispatcherStyle, TrigZeroConstantPlacement};
 
 impl Generator {
     /// The FPCLASSIFY SWITCH (fire 411, fminmaxdim's __fpclassifyd): a
@@ -558,6 +558,8 @@ impl Generator {
         self.frame_size = 32;
         let legacy_reloading = self.behavior.trig_dispatcher_style
             == mwcc_versions::TrigDispatcherStyle::LegacyReloading;
+        let eager_zero_constant = self.behavior.trig_zero_constant_placement
+            == TrigZeroConstantPlacement::Prologue;
         if legacy_reloading {
             self.output
                 .instructions
@@ -611,6 +613,9 @@ impl Generator {
                     3,
                     ((k1 + 0x8000) >> 16) as i16,
                 ));
+            if eager_zero_constant {
+                self.load_double_constant(2, 0.0f64.to_bits());
+            }
             self.output
                 .instructions
                 .push(Instruction::StoreFloatDouble {
@@ -648,14 +653,14 @@ impl Generator {
         let huge_at = self.fresh_label();
         self.emit_branch_conditional_to(12, 1, huge_at); // bgt
                                                          // The small arm: kernel(x, z, 0).
-        if !legacy_reloading {
-            self.load_double_constant(2, 0.0f64.to_bits());
-        } else {
+        if legacy_reloading {
             self.output.instructions.push(Instruction::LoadFloatDouble {
                 d: 1,
                 a: 1,
                 offset: 8,
             });
+        } else if !eager_zero_constant {
+            self.load_double_constant(2, 0.0f64.to_bits());
         }
         if let Some(int_argument) = small_int {
             self.output
@@ -769,13 +774,20 @@ impl Generator {
             // 163 and eight in the live-parameter family. Every measured
             // deferred build retains two additional internal labels without
             // changing the emitted instructions.
-            let parity_label_bump = if legacy_reloading { 7 } else { 8 };
+            let parity_label_bump = if legacy_reloading { 7_u32 } else { 8_u32 }
+                + u32::from(self.behavior.trig_dispatcher_hidden_label_bump);
             let deferred_label_bump = if self.behavior.deferred_inlining {
-                2
+                2_u32
             } else {
-                0
+                0_u32
             };
-            self.output.anonymous_label_bump += parity_label_bump + deferred_label_bump;
+            let ipa_label_bump = if self.behavior.tail_call_optimization {
+                u32::from(self.behavior.trig_dispatcher_ipa_label_bump)
+            } else {
+                0_u32
+            };
+            self.output.anonymous_label_bump +=
+                parity_label_bump + deferred_label_bump + ipa_label_bump;
             return Ok(true);
         }
         self.output.instructions.push(Instruction::RotateAndMask {
@@ -885,19 +897,27 @@ impl Generator {
         // boundary. Isolated probes place its first pool entry at @25 (build
         // 163), @29 (build 53), and @24 (build 81+) from bases @2/@5.
         let expanded_dispatcher_labels = self.behavior.deferred_inlining;
-        self.output.anonymous_label_bump += match (
+        let base_label_bump = match (
             self.behavior.trig_dispatcher_style,
             expanded_dispatcher_labels,
         ) {
-            (TrigDispatcherStyle::EarlyLiveParameter, true) => 24,
-            (TrigDispatcherStyle::LiveParameter, true) => 19,
-            (TrigDispatcherStyle::LegacyReloading, true) => 23,
+            (TrigDispatcherStyle::EarlyLiveParameter, true) => 24_u32,
+            (TrigDispatcherStyle::LiveParameter, true) => 19_u32,
+            (TrigDispatcherStyle::LegacyReloading, true) => 23_u32,
             (
                 TrigDispatcherStyle::EarlyLiveParameter | TrigDispatcherStyle::LiveParameter,
                 false,
-            ) => 13,
-            (TrigDispatcherStyle::LegacyReloading, false) => 12,
+            ) => 13_u32,
+            (TrigDispatcherStyle::LegacyReloading, false) => 12_u32,
         };
+        let hidden_label_bump = u32::from(self.behavior.trig_dispatcher_hidden_label_bump);
+        let ipa_label_bump = if self.behavior.tail_call_optimization {
+            u32::from(self.behavior.trig_dispatcher_ipa_label_bump)
+        } else {
+            0_u32
+        };
+        self.output.anonymous_label_bump +=
+            base_label_bump + hidden_label_bump + ipa_label_bump;
         Ok(true)
     }
 

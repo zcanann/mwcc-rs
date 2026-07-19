@@ -28,8 +28,8 @@ use crate::profile::{
     PunnedFloatFrameConvention, PunnedShiftWritebackStyle, QueueServiceInliningStyle,
     RaiseFamilyStyle, ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle, SharedFloatDagStyle,
     SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, StoredGlobalReadStyle,
-    SymbolTraversalStyle, TrigDispatcherStyle, VaArgScheduleStyle, ValueTrackedMutationStyle,
-    WideConstantAddSchedule,
+    SymbolTraversalStyle, TrigDispatcherStyle, TrigZeroConstantPlacement, VaArgScheduleStyle,
+    ValueTrackedMutationStyle, WideConstantAddSchedule,
 };
 
 /// Why a codegen decision diverges from the GameCube 2.4.x mainline.
@@ -138,6 +138,8 @@ pub enum Quirk {
     LegacyReloadingPunnedShiftWriteback,
     EarlyExpandedTrigDispatcherLabels,
     LegacyReloadingTrigDispatcher,
+    EagerTrigZeroConstant,
+    LaterTrigDispatcherLabels,
     LegacyAddImmediateMaterializationCopy,
     LegacySerialWideConstantAdd,
     LegacySymbolCreationOrder,
@@ -208,6 +210,8 @@ impl Quirk {
             Quirk::LegacyReloadingPunnedShiftWriteback => QuirkKind::Intentional,
             Quirk::EarlyExpandedTrigDispatcherLabels => QuirkKind::Intentional,
             Quirk::LegacyReloadingTrigDispatcher => QuirkKind::Intentional,
+            Quirk::EagerTrigZeroConstant => QuirkKind::Intentional,
+            Quirk::LaterTrigDispatcherLabels => QuirkKind::Intentional,
             Quirk::LegacyAddImmediateMaterializationCopy => QuirkKind::Intentional,
             Quirk::LegacySerialWideConstantAdd => QuirkKind::Intentional,
             Quirk::LegacySymbolCreationOrder => QuirkKind::Intentional,
@@ -329,6 +333,12 @@ impl Quirk {
             }
             Quirk::LegacyReloadingTrigDispatcher => {
                 "trigonometric dispatchers use build 163's linkage-first reload schedule"
+            }
+            Quirk::EagerTrigZeroConstant => {
+                "later trigonometric dispatchers preload zero in the prologue"
+            }
+            Quirk::LaterTrigDispatcherLabels => {
+                "later trigonometric dispatchers retain expanded hidden label blocks"
             }
             Quirk::LegacyAddImmediateMaterializationCopy => {
                 "integer value materializations use build 163's add-immediate-zero copy encoding"
@@ -559,6 +569,12 @@ pub struct Behavior {
     pub punned_shift_writeback_style: PunnedShiftWritebackStyle,
     /// Linkage and floating-spill schedule for trigonometric dispatchers.
     pub trig_dispatcher_style: TrigDispatcherStyle,
+    /// Placement of the zero constant consumed by a dispatcher's small arm.
+    pub trig_zero_constant_placement: TrigZeroConstantPlacement,
+    /// Later-generation hidden labels retained by every trig dispatcher.
+    pub trig_dispatcher_hidden_label_bump: u8,
+    /// Additional hidden trig-dispatcher labels retained under whole-file IPA.
+    pub trig_dispatcher_ipa_label_bump: u8,
     /// Encoding of generation-specific integer value materializations.
     pub materialization_copy_style: MaterializationCopyStyle,
     /// Scheduling of unequal constant words in a 64-bit add/subtract.
@@ -756,6 +772,18 @@ impl Behavior {
                 .punned_conditional_writeback_style(),
             punned_shift_writeback_style: config.build.profile.punned_shift_writeback_style(),
             trig_dispatcher_style: config.build.profile.trig_dispatcher_style(),
+            trig_zero_constant_placement: config
+                .build
+                .profile
+                .trig_zero_constant_placement(),
+            trig_dispatcher_hidden_label_bump: config
+                .build
+                .profile
+                .trig_dispatcher_hidden_label_bump(),
+            trig_dispatcher_ipa_label_bump: config
+                .build
+                .profile
+                .trig_dispatcher_ipa_label_bump(),
             materialization_copy_style: config.build.profile.materialization_copy_style(),
             wide_constant_add_schedule: config.build.profile.wide_constant_add_schedule(),
             symbol_traversal_style: config.build.profile.symbol_traversal_style(),
@@ -944,6 +972,14 @@ impl Behavior {
         }
         if self.trig_dispatcher_style == TrigDispatcherStyle::LegacyReloading {
             quirks.push(ActiveQuirk::of(Quirk::LegacyReloadingTrigDispatcher));
+        }
+        if self.trig_zero_constant_placement == TrigZeroConstantPlacement::Prologue {
+            quirks.push(ActiveQuirk::of(Quirk::EagerTrigZeroConstant));
+        }
+        if self.trig_dispatcher_hidden_label_bump != 0
+            || self.trig_dispatcher_ipa_label_bump != 0
+        {
+            quirks.push(ActiveQuirk::of(Quirk::LaterTrigDispatcherLabels));
         }
         if self.materialization_copy_style == MaterializationCopyStyle::AddImmediateZero {
             quirks.push(ActiveQuirk::of(
@@ -1401,5 +1437,28 @@ mod tests {
         let mut config = CompilerConfig::new(build::GC_1_3);
         config.flags.use_lmw_stmw = true;
         assert!(Behavior::resolve(&config).use_lmw_stmw);
+    }
+
+    #[test]
+    fn later_trig_dispatchers_resolve_eager_zero_and_ipa_labels() {
+        for compiler_build in [build::GC_3_0A3P1, build::WII_1_0] {
+            let mut config = CompilerConfig::new(compiler_build);
+            let plain = Behavior::resolve(&config);
+            assert_eq!(
+                plain.trig_zero_constant_placement,
+                TrigZeroConstantPlacement::Prologue
+            );
+            assert_eq!(plain.trig_dispatcher_hidden_label_bump, 3);
+            assert_eq!(plain.trig_dispatcher_ipa_label_bump, 4);
+            assert!(plain
+                .active_quirks()
+                .iter()
+                .any(|active| active.quirk == Quirk::EagerTrigZeroConstant));
+
+            config.flags.ipa_file = true;
+            let ipa = Behavior::resolve(&config);
+            assert!(ipa.tail_call_optimization);
+            assert_eq!(ipa.trig_dispatcher_ipa_label_bump, 4);
+        }
     }
 }
