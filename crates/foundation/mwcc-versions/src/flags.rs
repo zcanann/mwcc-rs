@@ -71,6 +71,9 @@ pub struct Flags {
     /// Whether compiler pooling is enabled. The verified object-level effect is
     /// byte 16 of the `.comment` header; pooling passes consume this same mode.
     pub pooling_enabled: bool,
+    /// `-use_lmw_stmw on` asks mwcc to save and restore contiguous GPR ranges
+    /// with inline `stmw`/`lmw` instructions instead of EABI helper calls.
+    pub use_lmw_stmw: bool,
 }
 
 impl Default for Flags {
@@ -87,6 +90,7 @@ impl Default for Flags {
             emit_mwcats: true,
             string_literals_read_only: false,
             pooling_enabled: true,
+            use_lmw_stmw: false,
         }
     }
 }

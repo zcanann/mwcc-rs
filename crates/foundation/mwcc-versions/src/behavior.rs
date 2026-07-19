@@ -597,6 +597,9 @@ pub struct Behavior {
     /// to TU/object orchestration; captures consult this only for measured
     /// codegen metadata differences.
     pub deferred_inlining: bool,
+    /// Whether contiguous GPR saves/restores use inline `stmw`/`lmw` rather
+    /// than `_savegpr_N`/`_restgpr_N` helper calls.
+    pub use_lmw_stmw: bool,
 }
 
 /// A quirk that is active for a configuration, paired with its kind and summary
@@ -770,6 +773,7 @@ impl Behavior {
             global_addressing: config.flags.global_addressing,
             read_only_global_addressing: config.flags.read_only_global_addressing,
             deferred_inlining: config.flags.inline_deferred,
+            use_lmw_stmw: config.flags.use_lmw_stmw,
         }
     }
 
@@ -1337,5 +1341,15 @@ mod tests {
             BitFieldLoadPlacement::ResultRegister
         );
         assert!(Behavior::resolve(&CompilerConfig::new(build::GC_1_3_2)).emit_leaf_frame_unwind);
+    }
+
+    #[test]
+    fn lmw_stmw_flag_resolves_to_codegen_behavior() {
+        let plain = Behavior::resolve(&CompilerConfig::new(build::GC_1_3));
+        assert!(!plain.use_lmw_stmw);
+
+        let mut config = CompilerConfig::new(build::GC_1_3);
+        config.flags.use_lmw_stmw = true;
+        assert!(Behavior::resolve(&config).use_lmw_stmw);
     }
 }

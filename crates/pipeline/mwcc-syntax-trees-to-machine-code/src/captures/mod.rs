@@ -246,6 +246,7 @@ mod mbs_wcrtomb_stub;
 mod mbs_wcsrtombs_stub;
 mod mbs_wcstombs_ac;
 mod mbs_wcstombs_bfbb;
+mod mbs_wcstombs_direct;
 mod mbs_wcstombs_mp4;
 mod mbs_wcstombs_pik;
 mod mbs_wcstombs_str;
@@ -1226,6 +1227,7 @@ impl Generator {
             || self.try_mbs_mblen_stub(function)?
             || self.try_mbs_mbtowc_pik(function)?
             || self.try_mbs_mbstowcs_stub(function)?
+            || self.try_mbs_wcstombs_direct(function)?
             || self.try_mbs_wcstombs_str(function)?
             || self.try_mbs_mbtowc_str(function)?
             || self.try_mbs_mbstowcs_str(function)?

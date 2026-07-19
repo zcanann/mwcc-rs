@@ -101,6 +101,16 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                     _ => invocation.flags.pooling_enabled,
                 };
             }
+            // `-use_lmw_stmw on` selects inline multiple-register saves and
+            // restores. Accept `off` too so the last occurrence wins.
+            "-use_lmw_stmw" => {
+                index += 1;
+                invocation.flags.use_lmw_stmw = match arguments.get(index).map(String::as_str) {
+                    Some("on") => true,
+                    Some("off") => false,
+                    _ => invocation.flags.use_lmw_stmw,
+                };
+            }
             // `-sdata N`: zero disables writable SDA (r13); a later non-zero
             // threshold turns it back on. Keep it independent from `-sdata2`.
             "-sdata" => {
@@ -1378,6 +1388,20 @@ mod tests {
         let last_wins =
             parse_invocation(&["-pool".into(), "off".into(), "-pool".into(), "on".into()]);
         assert!(last_wins.flags.pooling_enabled);
+    }
+
+    #[test]
+    fn command_line_lmw_stmw_mode_is_last_wins() {
+        let on = parse_invocation(&["-use_lmw_stmw".into(), "on".into()]);
+        assert!(on.flags.use_lmw_stmw);
+
+        let last_wins = parse_invocation(&[
+            "-use_lmw_stmw".into(),
+            "on".into(),
+            "-use_lmw_stmw".into(),
+            "off".into(),
+        ]);
+        assert!(!last_wins.flags.use_lmw_stmw);
     }
 
     #[test]
