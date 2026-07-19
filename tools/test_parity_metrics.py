@@ -149,6 +149,8 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(report["estimate"]["identification_interval_low"], 0.25)
         self.assertEqual(report["estimate"]["identification_interval_high"], 0.75)
         self.assertEqual(report["estimate"]["resolved_proportion"], 0.5)
+        self.assertEqual(report["estimate"]["supported_runnable_outcomes"], 2)
+        self.assertEqual(report["estimate"]["supported_runnable_proportion"], 0.5)
 
     def test_invalid_configuration_is_measurement_unknown_not_compiler_failure(self):
         rows = [row(source=f"src/{index}.c") for index in range(3)]
@@ -163,6 +165,24 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(report["estimate"]["known_nonparity"], 1)
         self.assertEqual(report["estimate"]["measurement_unknown"], 1)
         self.assertEqual(report["estimate"]["resolved_outcomes"], 2)
+
+    def test_supported_runnable_and_emitted_safety_have_explicit_denominators(self):
+        rows = [row(source=f"src/{index}.c") for index in range(5)]
+        statuses = ("BYTE", "DIFF", "DEFER", "UNSUPPORTED_BUILD", "MISSING_DEPENDENCY")
+        observations = {
+            item["configuration_id"]: {"status": statuses[index]}
+            for index, item in enumerate(rows)
+        }
+        report = representative_audit(
+            rows, observations, {item["configuration_id"] for item in rows}
+        )
+        estimate = report["estimate"]
+        self.assertEqual(estimate["supported_runnable_outcomes"], 3)
+        self.assertEqual(estimate["supported_runnable_proportion"], 1 / 3)
+        self.assertEqual(estimate["emitted_objects"], 2)
+        self.assertEqual(estimate["emitted_exact"], 1)
+        self.assertEqual(estimate["emitted_wrong"], 1)
+        self.assertEqual(estimate["emitted_wrong_proportion"], 0.5)
 
     def test_audit_suppresses_estimate_after_inventory_drift(self):
         rows = [row(source="src/a.c"), row(source="src/b.c")]

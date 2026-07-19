@@ -340,6 +340,10 @@ def representative_audit(
         )
         resolved = len(selected) - unknown
         resolved_low, resolved_high = wilson_interval(successes, resolved)
+        supported_runnable = successes + counts["DIFF"] + counts["DEFER"]
+        supported_low, supported_high = wilson_interval(successes, supported_runnable)
+        emitted = successes + counts["DIFF"]
+        emitted_exact_low, emitted_exact_high = wilson_interval(successes, emitted)
         result["estimate"] = {
             "measure": "configured_byte_exact",
             "successes": successes,
@@ -357,6 +361,26 @@ def representative_audit(
             "resolved_confidence": 0.95,
             "resolved_interval_low": resolved_low,
             "resolved_interval_high": resolved_high,
+            # Conditional compiler-quality view: excludes unsupported builds and
+            # rows the harness could not run. This complements (never replaces)
+            # the configured-goal estimate above.
+            "supported_runnable_outcomes": supported_runnable,
+            "supported_runnable_proportion": (
+                successes / supported_runnable if supported_runnable else None
+            ),
+            "supported_runnable_confidence": 0.95,
+            "supported_runnable_interval_low": supported_low,
+            "supported_runnable_interval_high": supported_high,
+            # Safety view for byte-exact-or-defer: among objects actually emitted,
+            # how many were exact versus silently wrong.
+            "emitted_objects": emitted,
+            "emitted_exact": successes,
+            "emitted_wrong": counts["DIFF"],
+            "emitted_exact_proportion": successes / emitted if emitted else None,
+            "emitted_wrong_proportion": counts["DIFF"] / emitted if emitted else None,
+            "emitted_exact_confidence": 0.95,
+            "emitted_exact_interval_low": emitted_exact_low,
+            "emitted_exact_interval_high": emitted_exact_high,
         }
     return result
 
@@ -470,6 +494,24 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
                     f"{estimate['resolved_proportion']:.1%}; conditional 95% CI "
                     f"{estimate['resolved_interval_low']:.1%}.."
                     f"{estimate['resolved_interval_high']:.1%}"
+                )
+            if estimate["supported_runnable_outcomes"]:
+                print(
+                    f"supported+runnable parity: "
+                    f"{estimate['successes']}/{estimate['supported_runnable_outcomes']} = "
+                    f"{estimate['supported_runnable_proportion']:.1%}; conditional 95% CI "
+                    f"{estimate['supported_runnable_interval_low']:.1%}.."
+                    f"{estimate['supported_runnable_interval_high']:.1%}"
+                )
+            if estimate["emitted_objects"]:
+                print(
+                    f"emitted-object safety: exact {estimate['emitted_exact']}/"
+                    f"{estimate['emitted_objects']} = "
+                    f"{estimate['emitted_exact_proportion']:.1%}; "
+                    f"wrong {estimate['emitted_wrong']}/{estimate['emitted_objects']} = "
+                    f"{estimate['emitted_wrong_proportion']:.1%}; exact-share 95% CI "
+                    f"{estimate['emitted_exact_interval_low']:.1%}.."
+                    f"{estimate['emitted_exact_interval_high']:.1%}"
                 )
         counts = " / ".join(
             f"{status} {audit['statuses'][status]}"
