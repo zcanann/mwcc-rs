@@ -216,7 +216,13 @@ impl Generator {
     /// reuse it correctly: the value must not have been touched since the store (no
     /// instruction emitted), and a scratch (`r0`) value can only feed a consumer
     /// that does not use it as an `addi` base (where `r0` reads as literal zero).
+    /// Build 163 deliberately declines this optimization and reloads memory.
     pub(crate) fn live_global_register(&self, name: &str, prefer_destination: bool) -> Option<u8> {
+        if self.behavior.stored_global_read_style
+            == mwcc_versions::StoredGlobalReadStyle::ReloadAfterStore
+        {
+            return None;
+        }
         let &(register, at) = self.stored_globals.get(name)?;
         if at != self.output.instructions.len() {
             return None;

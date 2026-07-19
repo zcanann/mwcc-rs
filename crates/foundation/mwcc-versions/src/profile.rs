@@ -112,6 +112,19 @@ pub enum IndexedRmwAssignmentStyle {
     PreserveExplicitAddress,
 }
 
+/// Treatment of an immediate read following a store to the same file-scope
+/// scalar. The stored register is semantically equivalent to reloading memory,
+/// but the two compiler generations schedule different instruction streams.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoredGlobalReadStyle {
+    /// 2.4.x keeps the stored value live and feeds the following consumer from
+    /// that register.
+    ReuseStoredRegister,
+    /// Build 163 reloads the global even when its just-stored value is still
+    /// available in a register.
+    ReloadAfterStore,
+}
+
 /// Frame and merge policy for type-punned floating parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PunnedFloatFrameConvention {
@@ -504,6 +517,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         IndexedRmwAssignmentStyle::UniformIndexed
     }
 
+    fn stored_global_read_style(&self) -> StoredGlobalReadStyle {
+        StoredGlobalReadStyle::ReuseStoredRegister
+    }
+
     /// Whether `value == 0` negates the value into r0 before `cntlzw`.
     /// This preserves build 163's older equality idiom for both register
     /// leaves and computed values.
@@ -698,6 +715,9 @@ impl CodegenProfile for Gc233Build163 {
     }
     fn indexed_rmw_assignment_style(&self) -> IndexedRmwAssignmentStyle {
         IndexedRmwAssignmentStyle::PreserveExplicitAddress
+    }
+    fn stored_global_read_style(&self) -> StoredGlobalReadStyle {
+        StoredGlobalReadStyle::ReloadAfterStore
     }
     fn negate_before_zero_equality(&self) -> bool {
         true

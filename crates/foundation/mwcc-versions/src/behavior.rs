@@ -19,12 +19,11 @@ use crate::profile::{
     ConstantStoreScheduleStyle, FieldMergeStyle, FixedAddressRmwStyle, FrameConvention,
     GlobalArrayIndexStyle, IndexedRmwAssignmentStyle, IntCallResultConversionStyle,
     IntegerComparisonValueStyle, IntegerSelectStyle, JumpTableBaseStyle, LocalDataSymbolOrder,
-    LogicalOrValueStyle,
-    MaterializationCopyStyle, NarrowCompoundShiftStyle, NarrowComputedReturnStyle,
-    NarrowGuardScheduleStyle, NarrowStoreConversionStyle, NegativePowerOfTwoMultiplyStyle,
-    PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle,
-    SignedPowerOfTwoDivisionStyle,
-    SmallZeroDataLayoutStyle, SymbolTraversalStyle, VaArgScheduleStyle, ValueTrackedMutationStyle,
+    LogicalOrValueStyle, MaterializationCopyStyle, NarrowCompoundShiftStyle,
+    NarrowComputedReturnStyle, NarrowGuardScheduleStyle, NarrowStoreConversionStyle,
+    NegativePowerOfTwoMultiplyStyle, PunnedFloatFrameConvention, ReadOnlySectionAnchorOrder,
+    ReturnRegisterStoreStyle, SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle,
+    StoredGlobalReadStyle, SymbolTraversalStyle, VaArgScheduleStyle, ValueTrackedMutationStyle,
     WideConstantAddSchedule,
 };
 
@@ -70,6 +69,7 @@ pub enum Quirk {
     LegacyPartialNarrowStoreConversionElision,
     LegacyExplicitGlobalArrayAddress,
     LegacyExplicitIndexedRmwAddress,
+    LegacyReloadAfterGlobalStore,
     LegacyZeroEqualityNegate,
     LegacyReloadingPunnedFloatFrame,
     LegacyAddImmediateMaterializationCopy,
@@ -121,6 +121,7 @@ impl Quirk {
             Quirk::LegacyPartialNarrowStoreConversionElision => QuirkKind::Intentional,
             Quirk::LegacyExplicitGlobalArrayAddress => QuirkKind::Intentional,
             Quirk::LegacyExplicitIndexedRmwAddress => QuirkKind::Intentional,
+            Quirk::LegacyReloadAfterGlobalStore => QuirkKind::Intentional,
             Quirk::LegacyZeroEqualityNegate => QuirkKind::Intentional,
             Quirk::LegacyReloadingPunnedFloatFrame => QuirkKind::Intentional,
             Quirk::LegacyAddImmediateMaterializationCopy => QuirkKind::Intentional,
@@ -193,6 +194,9 @@ impl Quirk {
             }
             Quirk::LegacyExplicitIndexedRmwAddress => {
                 "explicit indexed read/modify/write assignments preserve an element address in build 163"
+            }
+            Quirk::LegacyReloadAfterGlobalStore => {
+                "a read following a global store reloads memory in build 163"
             }
             Quirk::LegacyZeroEqualityNegate => {
                 "zero equality negates into r0 before cntlzw in build 163"
@@ -360,6 +364,8 @@ pub struct Behavior {
     pub global_array_index_style: GlobalArrayIndexStyle,
     /// Addressing distinction between compound and explicit indexed RMW syntax.
     pub indexed_rmw_assignment_style: IndexedRmwAssignmentStyle,
+    /// Treatment of an immediate read following a store to the same global.
+    pub stored_global_read_style: StoredGlobalReadStyle,
     /// Whether zero equality negates its value into r0 before `cntlzw`.
     pub negate_before_zero_equality: bool,
     /// Frame/merge convention for type-punned floating parameters.
@@ -475,6 +481,7 @@ impl Behavior {
             comma_value_placement_style: config.build.profile.comma_value_placement_style(),
             global_array_index_style: config.build.profile.global_array_index_style(),
             indexed_rmw_assignment_style: config.build.profile.indexed_rmw_assignment_style(),
+            stored_global_read_style: config.build.profile.stored_global_read_style(),
             negate_before_zero_equality: config.build.profile.negate_before_zero_equality(),
             punned_float_frame_convention: config.build.profile.punned_float_frame_convention(),
             materialization_copy_style: config.build.profile.materialization_copy_style(),
@@ -524,12 +531,8 @@ impl Behavior {
         if self.legacy_float_cast_schedule {
             quirks.push(ActiveQuirk::of(Quirk::LegacyFloatCastSchedule));
         }
-        if self.int_call_result_conversion_style
-            == IntCallResultConversionStyle::LegacyBiasFirst
-        {
-            quirks.push(ActiveQuirk::of(
-                Quirk::LegacyIntCallResultConversion,
-            ));
+        if self.int_call_result_conversion_style == IntCallResultConversionStyle::LegacyBiasFirst {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyIntCallResultConversion));
         }
         if self.integer_select_style == IntegerSelectStyle::BranchPreserving {
             quirks.push(ActiveQuirk::of(Quirk::LegacyBranchPreservingIntegerSelect));
@@ -582,9 +585,7 @@ impl Behavior {
         if self.return_register_store_style
             == ReturnRegisterStoreStyle::DelayLeadingResultStoreOneSlot
         {
-            quirks.push(ActiveQuirk::of(
-                Quirk::LegacyDelayedLeadingResultStore,
-            ));
+            quirks.push(ActiveQuirk::of(Quirk::LegacyDelayedLeadingResultStore));
         }
         if self.comma_value_placement_style == CommaValuePlacementStyle::ParameterHome {
             quirks.push(ActiveQuirk::of(Quirk::LegacyCommaParameterHomes));
@@ -594,6 +595,9 @@ impl Behavior {
         }
         if self.indexed_rmw_assignment_style == IndexedRmwAssignmentStyle::PreserveExplicitAddress {
             quirks.push(ActiveQuirk::of(Quirk::LegacyExplicitIndexedRmwAddress));
+        }
+        if self.stored_global_read_style == StoredGlobalReadStyle::ReloadAfterStore {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyReloadAfterGlobalStore));
         }
         if self.negate_before_zero_equality {
             quirks.push(ActiveQuirk::of(Quirk::LegacyZeroEqualityNegate));
@@ -667,9 +671,7 @@ impl Behavior {
             ));
         }
         if self.guard_store_precedes_return_value {
-            quirks.push(ActiveQuirk::of(
-                Quirk::LegacyGuardStoreBeforeReturnValue,
-            ));
+            quirks.push(ActiveQuirk::of(Quirk::LegacyGuardStoreBeforeReturnValue));
         }
         if self.narrow_guard_schedule_style
             == NarrowGuardScheduleStyle::CompareFirstDeclarationOrder
@@ -736,7 +738,10 @@ mod tests {
             behavior.narrow_guard_schedule_style,
             NarrowGuardScheduleStyle::CompareFirstDeclarationOrder
         );
-        assert_eq!(behavior.va_arg_schedule_style, VaArgScheduleStyle::SerialScratch);
+        assert_eq!(
+            behavior.va_arg_schedule_style,
+            VaArgScheduleStyle::SerialScratch
+        );
         assert!(behavior.legacy_float_cast_schedule);
         assert_eq!(
             behavior.int_call_result_conversion_style,
@@ -753,6 +758,10 @@ mod tests {
         assert_eq!(
             behavior.indexed_rmw_assignment_style,
             IndexedRmwAssignmentStyle::PreserveExplicitAddress
+        );
+        assert_eq!(
+            behavior.stored_global_read_style,
+            StoredGlobalReadStyle::ReloadAfterStore
         );
         assert!(behavior.negate_before_zero_equality);
         assert_eq!(

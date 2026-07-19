@@ -206,9 +206,10 @@ pub(crate) struct Generator {
     pub(crate) inline_summaries: InlineSummaries,
     /// A global just stored, with the register holding the stored value and the
     /// instruction count at the moment of the store. A subsequent read of the
-    /// global reuses that register instead of reloading — but only while no
+    /// global may reuse that register instead of reloading — but only while no
     /// instruction has been emitted since (so the value is provably still there).
-    /// This reproduces mwcc keeping a just-written global live in its register.
+    /// The resolved version policy decides whether the compiler generation takes
+    /// advantage of that live value.
     pub(crate) stored_globals: HashMap<String, (u8, usize)>,
     /// Non-empty once a constant-address access in this function has materialized a
     /// base register (`lis hi`). mwcc handles multiple such accesses by allocating
