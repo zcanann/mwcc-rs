@@ -288,6 +288,13 @@ impl Generator {
         self.non_leaf = true;
         self.frame_size = plan.frame_size;
         self.callee_saved = homes;
+        let linkage_first = self.behavior.frame_convention == FrameConvention::LinkageFirst;
+        if linkage_first {
+            // This transaction's plan is already its physical three-home frame;
+            // build 163 does not infer another parameter-pressure lane.
+            self.legacy_callee_saved_frame_layout =
+                LegacyCalleeSavedFrameLayout::PreserveLogicalSize;
+        }
         self.output
             .instructions
             .push(Instruction::StoreWordWithUpdate {
@@ -338,7 +345,7 @@ impl Generator {
         ));
         self.emit_branch_to(epilogue);
         self.bind_label(initialize);
-        self.output.anonymous_label_bump += 2;
+        self.output.anonymous_label_bump += if linkage_first { 3 } else { 2 };
 
         self.record_relocation(RelocationKind::Rel24, shape.disable);
         self.output.instructions.push(Instruction::BranchAndLink {
@@ -347,14 +354,19 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::load_immediate(0, 0));
-        self.output
-            .instructions
-            .push(Instruction::move_register(5, Eabi::general_result().number));
+        if !linkage_first {
+            self.output
+                .instructions
+                .push(Instruction::move_register(5, Eabi::general_result().number));
+        }
         self.record_relocation(RelocationKind::Addr16Ha, shape.handler);
         self.output
             .instructions
             .push(Instruction::load_immediate_shifted(4, 0));
         self.emit_global_store(shape.callback, Pointee::UnsignedInt, 0)?;
+        if linkage_first {
+            self.emit_callee_saved_home_copy(old_home, Eabi::general_result().number);
+        }
         self.record_relocation(RelocationKind::Addr16Lo, shape.handler);
         self.output.instructions.push(Instruction::AddImmediate {
             d: 4,
@@ -364,9 +376,11 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::load_immediate(3, 6));
-        self.output
-            .instructions
-            .push(Instruction::move_register(old_home, 5));
+        if !linkage_first {
+            self.output
+                .instructions
+                .push(Instruction::move_register(old_home, 5));
+        }
         self.record_relocation(RelocationKind::Rel24, shape.install_handler);
         self.output.instructions.push(Instruction::BranchAndLink {
             target: shape.install_handler.to_string(),
@@ -388,49 +402,105 @@ impl Generator {
             .map_err(|_| Diagnostic::error("fixed-address RMW displacement is out of range"))?;
         self.output
             .instructions
-            .push(Instruction::load_immediate_shifted(4, high));
+            .push(Instruction::load_immediate_shifted(
+                if linkage_first { 3 } else { 4 },
+                high,
+            ));
         self.emit_global_store(shape.stack_pointer, Pointee::UnsignedInt, 0)?;
-        self.emit_global_store(shape.block_lengths, Pointee::UnsignedInt, stack_home)?;
-        self.output
-            .instructions
-            .push(crate::expressions::displacement_load(
-                Pointee::UnsignedShort,
-                3,
-                4,
-                fixed_offset,
-            )?);
-        self.output
-            .instructions
-            .push(crate::expressions::displacement_load(
-                Pointee::UnsignedShort,
-                0,
-                4,
-                fixed_offset,
-            )?);
-        self.output
-            .instructions
-            .push(Instruction::ClearLeftImmediate {
+        if linkage_first {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 4,
                 a: 3,
-                s: 3,
-                clear: 24,
+                immediate: low,
             });
-        self.output
-            .instructions
-            .push(Instruction::RotateAndMaskInsert {
-                a: 3,
+        }
+        self.emit_global_store(shape.block_lengths, Pointee::UnsignedInt, stack_home)?;
+        if linkage_first {
+            let element_offset = i16::try_from(shape.fixed_index * 2).map_err(|_| {
+                Diagnostic::error("fixed-address RMW element offset is out of range")
+            })?;
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_load(
+                    Pointee::UnsignedShort,
+                    0,
+                    4,
+                    element_offset,
+                )?);
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_load(
+                    Pointee::UnsignedShort,
+                    3,
+                    3,
+                    fixed_offset,
+                )?);
+            self.output.instructions.push(Instruction::RotateAndMask {
+                a: 0,
                 s: 0,
                 shift: 0,
-                begin: 16,
+                begin: 0,
                 end: 23,
             });
-        self.output
-            .instructions
-            .push(crate::expressions::displacement_store(
-                Pointee::UnsignedShort,
-                3,
-                4,
-                fixed_offset,
-            )?);
+            self.output
+                .instructions
+                .push(Instruction::RotateAndMaskInsert {
+                    a: 0,
+                    s: 3,
+                    shift: 0,
+                    begin: 24,
+                    end: 31,
+                });
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_store(
+                    Pointee::UnsignedShort,
+                    0,
+                    4,
+                    element_offset,
+                )?);
+        } else {
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_load(
+                    Pointee::UnsignedShort,
+                    3,
+                    4,
+                    fixed_offset,
+                )?);
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_load(
+                    Pointee::UnsignedShort,
+                    0,
+                    4,
+                    fixed_offset,
+                )?);
+            self.output
+                .instructions
+                .push(Instruction::ClearLeftImmediate {
+                    a: 3,
+                    s: 3,
+                    clear: 24,
+                });
+            self.output
+                .instructions
+                .push(Instruction::RotateAndMaskInsert {
+                    a: 3,
+                    s: 0,
+                    shift: 0,
+                    begin: 16,
+                    end: 23,
+                });
+            self.output
+                .instructions
+                .push(crate::expressions::displacement_store(
+                    Pointee::UnsignedShort,
+                    3,
+                    4,
+                    fixed_offset,
+                )?);
+        }
 
         self.record_relocation(RelocationKind::Rel24, shape.check_size);
         self.output.instructions.push(Instruction::BranchAndLink {
@@ -439,16 +509,44 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::load_immediate(0, 1));
-        self.output.instructions.push(Instruction::move_register(
-            Eabi::general_result().number,
-            old_home,
-        ));
-        self.emit_global_store(shape.initialized, Pointee::UnsignedInt, 0)?;
+        if linkage_first {
+            self.emit_global_store(shape.initialized, Pointee::UnsignedInt, 0)?;
+            self.output.instructions.push(Instruction::move_register(
+                Eabi::general_result().number,
+                old_home,
+            ));
+        } else {
+            self.output.instructions.push(Instruction::move_register(
+                Eabi::general_result().number,
+                old_home,
+            ));
+            self.emit_global_store(shape.initialized, Pointee::UnsignedInt, 0)?;
+        }
         self.record_relocation(RelocationKind::Rel24, shape.restore);
         self.output.instructions.push(Instruction::BranchAndLink {
             target: shape.restore.to_string(),
         });
         self.emit_global_load(shape.stack_pointer, Eabi::general_result().number)?;
+        if linkage_first {
+            // Scheduled first-reference order differs from source traversal for
+            // the handler/callback pair and the free/stack stores.
+            self.output.symbol_order = [
+                shape.initialized,
+                shape.disable,
+                shape.handler,
+                shape.callback,
+                shape.install_handler,
+                shape.unmask,
+                shape.free_blocks,
+                shape.stack_pointer,
+                shape.block_lengths,
+                shape.check_size,
+                shape.restore,
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        }
 
         self.bind_label(epilogue);
         self.output.instructions.extend(plan.epilogue());
