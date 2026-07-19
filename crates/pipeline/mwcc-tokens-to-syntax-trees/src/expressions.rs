@@ -845,7 +845,9 @@ impl Parser {
                     self.advance();
                     let field = self.parse_identifier()?;
                     let tag = struct_tag.take().ok_or_else(|| {
-                        Diagnostic::error(format!("member '{field}' on a non-struct-pointer base"))
+                        Diagnostic::error(format!(
+                            "member '{field}' on a non-struct-pointer base: {expression:?}"
+                        ))
                     })?;
                     let layout = self.structs.get(&tag).ok_or_else(|| {
                         Diagnostic::error(format!("struct '{tag}' is not declared"))

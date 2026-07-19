@@ -568,6 +568,12 @@ impl Parser {
             if let Err(error) =
                 self.parse_top_level_item(&mut globals, &mut functions, &mut prototypes)
             {
+                if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() {
+                    eprintln!(
+                        "skipped top-level item at token {start} ({:?}): {error}",
+                        self.tokens.get(start)
+                    );
+                }
                 // A declaration we can't parse (a typedef/struct/extern prototype or
                 // qualified type from a preprocessed header) is skipped so the
                 // function definitions can still be compiled; a function definition we
