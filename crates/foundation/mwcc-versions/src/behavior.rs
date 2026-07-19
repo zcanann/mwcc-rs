@@ -25,8 +25,8 @@ use crate::profile::{
     NegativePowerOfTwoMultiplyStyle, PunnedConditionalWritebackStyle, PunnedFloatFrameConvention,
     PunnedShiftWritebackStyle, RaiseFamilyStyle, ReadOnlySectionAnchorOrder,
     ReturnRegisterStoreStyle, SharedFloatDagStyle, SignedPowerOfTwoDivisionStyle,
-    SmallZeroDataLayoutStyle, StoredGlobalReadStyle, SymbolTraversalStyle, VaArgScheduleStyle,
-    ValueTrackedMutationStyle, WideConstantAddSchedule,
+    SmallZeroDataLayoutStyle, StoredGlobalReadStyle, SymbolTraversalStyle, TrigDispatcherStyle,
+    VaArgScheduleStyle, ValueTrackedMutationStyle, WideConstantAddSchedule,
 };
 
 /// Why a codegen decision diverges from the GameCube 2.4.x mainline.
@@ -83,6 +83,7 @@ pub enum Quirk {
     LegacyReloadingPunnedFloatFrame,
     LegacyBranchPunnedConditionalWriteback,
     LegacyReloadingPunnedShiftWriteback,
+    LegacyReloadingTrigDispatcher,
     LegacyAddImmediateMaterializationCopy,
     LegacySerialWideConstantAdd,
     LegacySymbolCreationOrder,
@@ -144,6 +145,7 @@ impl Quirk {
             Quirk::LegacyReloadingPunnedFloatFrame => QuirkKind::Intentional,
             Quirk::LegacyBranchPunnedConditionalWriteback => QuirkKind::Intentional,
             Quirk::LegacyReloadingPunnedShiftWriteback => QuirkKind::Intentional,
+            Quirk::LegacyReloadingTrigDispatcher => QuirkKind::Intentional,
             Quirk::LegacyAddImmediateMaterializationCopy => QuirkKind::Intentional,
             Quirk::LegacySerialWideConstantAdd => QuirkKind::Intentional,
             Quirk::LegacySymbolCreationOrder => QuirkKind::Intentional,
@@ -250,6 +252,9 @@ impl Quirk {
             }
             Quirk::LegacyReloadingPunnedShiftWriteback => {
                 "shifted-mask punned writebacks use build 163's reload and allocation plan"
+            }
+            Quirk::LegacyReloadingTrigDispatcher => {
+                "trigonometric dispatchers use build 163's linkage-first reload schedule"
             }
             Quirk::LegacyAddImmediateMaterializationCopy => {
                 "integer value materializations use build 163's add-immediate-zero copy encoding"
@@ -434,6 +439,8 @@ pub struct Behavior {
     pub punned_conditional_writeback_style: PunnedConditionalWritebackStyle,
     /// Frame, reload, and integer-allocation convention for shifted-mask writebacks.
     pub punned_shift_writeback_style: PunnedShiftWritebackStyle,
+    /// Linkage and floating-spill schedule for trigonometric dispatchers.
+    pub trig_dispatcher_style: TrigDispatcherStyle,
     /// Encoding of generation-specific integer value materializations.
     pub materialization_copy_style: MaterializationCopyStyle,
     /// Scheduling of unequal constant words in a 64-bit add/subtract.
@@ -562,6 +569,7 @@ impl Behavior {
                 .profile
                 .punned_conditional_writeback_style(),
             punned_shift_writeback_style: config.build.profile.punned_shift_writeback_style(),
+            trig_dispatcher_style: config.build.profile.trig_dispatcher_style(),
             materialization_copy_style: config.build.profile.materialization_copy_style(),
             wide_constant_add_schedule: config.build.profile.wide_constant_add_schedule(),
             symbol_traversal_style: config.build.profile.symbol_traversal_style(),
@@ -718,6 +726,9 @@ impl Behavior {
         }
         if self.punned_shift_writeback_style == PunnedShiftWritebackStyle::LegacyReloading {
             quirks.push(ActiveQuirk::of(Quirk::LegacyReloadingPunnedShiftWriteback));
+        }
+        if self.trig_dispatcher_style == TrigDispatcherStyle::LegacyReloading {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyReloadingTrigDispatcher));
         }
         if self.materialization_copy_style == MaterializationCopyStyle::AddImmediateZero {
             quirks.push(ActiveQuirk::of(
@@ -889,6 +900,10 @@ mod tests {
         assert_eq!(
             behavior.punned_shift_writeback_style,
             PunnedShiftWritebackStyle::LegacyReloading
+        );
+        assert_eq!(
+            behavior.trig_dispatcher_style,
+            TrigDispatcherStyle::LegacyReloading
         );
         assert_eq!(
             behavior.materialization_copy_style,

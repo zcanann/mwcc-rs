@@ -555,40 +555,79 @@ impl Generator {
         // -- emit --
         self.non_leaf = true;
         self.frame_size = 32;
-        self.output
-            .instructions
-            .push(Instruction::StoreWordWithUpdate {
-                s: 1,
+        let legacy_reloading = self.behavior.trig_dispatcher_style
+            == mwcc_versions::TrigDispatcherStyle::LegacyReloading;
+        if legacy_reloading {
+            self.output
+                .instructions
+                .push(Instruction::MoveFromLinkRegister { d: 0 });
+            self.output
+                .instructions
+                .push(Instruction::load_immediate_shifted(
+                    3,
+                    ((k1 + 0x8000) >> 16) as i16,
+                ));
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
                 a: 1,
-                offset: -32,
+                offset: 4,
             });
-        self.output
-            .instructions
-            .push(Instruction::MoveFromLinkRegister { d: 0 });
-        // K1's lis fills the mflr latency slot.
-        self.output
-            .instructions
-            .push(Instruction::load_immediate_shifted(
-                3,
-                ((k1 + 0x8000) >> 16) as i16,
-            ));
-        self.output
-            .instructions
-            .push(Instruction::StoreFloatDouble {
-                s: 1,
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 0,
+                a: 3,
+                immediate: k1 as i16,
+            });
+            self.output
+                .instructions
+                .push(Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -32,
+                });
+            self.output
+                .instructions
+                .push(Instruction::StoreFloatDouble {
+                    s: 1,
+                    a: 1,
+                    offset: 8,
+                });
+            self.load_double_constant(2, 0.0f64.to_bits());
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -32,
+                });
+            self.output
+                .instructions
+                .push(Instruction::MoveFromLinkRegister { d: 0 });
+            // K1's lis fills the mflr latency slot.
+            self.output
+                .instructions
+                .push(Instruction::load_immediate_shifted(
+                    3,
+                    ((k1 + 0x8000) >> 16) as i16,
+                ));
+            self.output
+                .instructions
+                .push(Instruction::StoreFloatDouble {
+                    s: 1,
+                    a: 1,
+                    offset: 8,
+                });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
                 a: 1,
-                offset: 8,
+                offset: 36,
             });
-        self.output.instructions.push(Instruction::StoreWord {
-            s: 0,
-            a: 1,
-            offset: 36,
-        });
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: 0,
-            a: 3,
-            immediate: k1 as i16,
-        });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 0,
+                a: 3,
+                immediate: k1 as i16,
+            });
+        }
         self.output.instructions.push(Instruction::LoadWord {
             d: 3,
             a: 1,
@@ -608,7 +647,15 @@ impl Generator {
         let huge_at = self.fresh_label();
         self.emit_branch_conditional_to(12, 1, huge_at); // bgt
                                                          // The small arm: kernel(x, z, 0).
-        self.load_double_constant(2, 0.0f64.to_bits());
+        if !legacy_reloading {
+            self.load_double_constant(2, 0.0f64.to_bits());
+        } else {
+            self.output.instructions.push(Instruction::LoadFloatDouble {
+                d: 1,
+                a: 1,
+                offset: 8,
+            });
+        }
         if let Some(int_argument) = small_int {
             self.output
                 .instructions
@@ -629,12 +676,30 @@ impl Generator {
             .push(Instruction::CompareWord { a: 3, b: 0 });
         let rem_at = self.fresh_label();
         self.emit_branch_conditional_to(12, 0, rem_at); // blt
-        self.output
-            .instructions
-            .push(Instruction::FloatSubtractDouble { d: 1, a: 1, b: 1 });
+        if legacy_reloading {
+            self.output.instructions.push(Instruction::LoadFloatDouble {
+                d: 0,
+                a: 1,
+                offset: 8,
+            });
+            self.output
+                .instructions
+                .push(Instruction::FloatSubtractDouble { d: 1, a: 0, b: 0 });
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::FloatSubtractDouble { d: 1, a: 1, b: 1 });
+        }
         self.emit_branch_to(epilogue);
         // n = rem_pio2(x, &y); the switch tree.
         self.bind_label(rem_at);
+        if legacy_reloading {
+            self.output.instructions.push(Instruction::LoadFloatDouble {
+                d: 1,
+                a: 1,
+                offset: 8,
+            });
+        }
         self.output.instructions.push(Instruction::AddImmediate {
             d: 3,
             a: 1,
@@ -681,19 +746,26 @@ impl Generator {
                 a: 1,
                 offset: 36,
             });
-            self.output
-                .instructions
-                .push(Instruction::MoveToLinkRegister { s: 0 });
+            if !legacy_reloading {
+                self.output
+                    .instructions
+                    .push(Instruction::MoveToLinkRegister { s: 0 });
+            }
             self.output.instructions.push(Instruction::AddImmediate {
                 d: 1,
                 a: 1,
                 immediate: 32,
             });
+            if legacy_reloading {
+                self.output
+                    .instructions
+                    .push(Instruction::MoveToLinkRegister { s: 0 });
+            }
             self.output
                 .instructions
                 .push(Instruction::BranchToLinkRegister);
             // Pre-pool labels (measure via objprobe on the tan object).
-            self.output.anonymous_label_bump += 8;
+            self.output.anonymous_label_bump += if legacy_reloading { 7 } else { 8 };
             return Ok(true);
         }
         self.output.instructions.push(Instruction::RotateAndMask {
@@ -779,20 +851,27 @@ impl Generator {
             a: 1,
             offset: 36,
         });
-        self.output
-            .instructions
-            .push(Instruction::MoveToLinkRegister { s: 0 });
+        if !legacy_reloading {
+            self.output
+                .instructions
+                .push(Instruction::MoveToLinkRegister { s: 0 });
+        }
         self.output.instructions.push(Instruction::AddImmediate {
             d: 1,
             a: 1,
             immediate: 32,
         });
+        if legacy_reloading {
+            self.output
+                .instructions
+                .push(Instruction::MoveToLinkRegister { s: 0 });
+        }
         self.output
             .instructions
             .push(Instruction::BranchToLinkRegister);
         // Pre-pool labels (measured @18 on the s_sin object vs the +0
         // base's @5).
-        self.output.anonymous_label_bump += 13;
+        self.output.anonymous_label_bump += if legacy_reloading { 12 } else { 13 };
         Ok(true)
     }
 

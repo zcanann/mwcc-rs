@@ -220,6 +220,15 @@ pub enum PunnedShiftWritebackStyle {
     LegacyReloading,
 }
 
+/// Linkage and floating-spill schedule for fdlibm trigonometric dispatchers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrigDispatcherStyle {
+    /// Mainline adjusts the frame first and keeps the incoming argument live.
+    LiveParameter,
+    /// Build 163 saves linkage through the incoming stack and reloads the argument spill.
+    LegacyReloading,
+}
+
 /// Encoding used for generation-specific integer value materializations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaterializationCopyStyle {
@@ -649,6 +658,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         PunnedShiftWritebackStyle::LiveParameter
     }
 
+    fn trig_dispatcher_style(&self) -> TrigDispatcherStyle {
+        TrigDispatcherStyle::LiveParameter
+    }
+
     fn materialization_copy_style(&self) -> MaterializationCopyStyle {
         MaterializationCopyStyle::LogicalOr
     }
@@ -875,6 +888,9 @@ impl CodegenProfile for Gc233Build163 {
     }
     fn punned_shift_writeback_style(&self) -> PunnedShiftWritebackStyle {
         PunnedShiftWritebackStyle::LegacyReloading
+    }
+    fn trig_dispatcher_style(&self) -> TrigDispatcherStyle {
+        TrigDispatcherStyle::LegacyReloading
     }
     fn materialization_copy_style(&self) -> MaterializationCopyStyle {
         MaterializationCopyStyle::AddImmediateZero
