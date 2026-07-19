@@ -3,6 +3,8 @@
 #[allow(unused_imports)]
 use super::*;
 
+mod policy;
+
 #[derive(Clone, Copy)]
 enum PunnedSelectArm {
     Constant(i16),
@@ -1045,15 +1047,16 @@ impl Generator {
         {
             return Ok(false);
         }
-        // -- emit (registers per the capture; r3 = the live pointer param) --
-        let (i0_reg, i1_reg, j0_reg, temp) = (5u8, 6u8, 7u8, 4u8);
-        self.frame_size = 16;
+        // -- emit (r3 is the live pointer parameter) --
+        let plan = policy::modf_ladder_plan(self.behavior.punned_float_frame_convention);
+        let (i0_reg, i1_reg, j0_reg, temp) = (plan.i0, plan.i1, plan.j0, plan.temp);
+        self.frame_size = plan.frame_size;
         self.output
             .instructions
             .push(Instruction::StoreWordWithUpdate {
                 s: 1,
                 a: 1,
-                offset: -16,
+                offset: -plan.frame_size,
             });
         self.output
             .instructions
@@ -1110,6 +1113,62 @@ impl Generator {
         // stores (measured), and the scratch is the temp r4 (the pointer
         // stays live here).
         let integral = |generator: &mut Self| {
+            if plan.reload_spill {
+                generator
+                    .output
+                    .instructions
+                    .push(Instruction::LoadFloatDouble {
+                        d: 0,
+                        a: 1,
+                        offset: 8,
+                    });
+                generator
+                    .output
+                    .instructions
+                    .push(Instruction::load_immediate(0, 0));
+                generator
+                    .output
+                    .instructions
+                    .push(Instruction::StoreFloatDouble {
+                        s: 0,
+                        a: 3,
+                        offset: 0,
+                    });
+                generator.output.instructions.push(Instruction::LoadWord {
+                    d: 3,
+                    a: 1,
+                    offset: 8,
+                });
+                generator
+                    .output
+                    .instructions
+                    .push(Instruction::RotateAndMask {
+                        a: 3,
+                        s: 3,
+                        shift: 0,
+                        begin: 0,
+                        end: 0,
+                    });
+                generator.output.instructions.push(Instruction::StoreWord {
+                    s: 3,
+                    a: 1,
+                    offset: 8,
+                });
+                generator.output.instructions.push(Instruction::StoreWord {
+                    s: 0,
+                    a: 1,
+                    offset: 12,
+                });
+                generator
+                    .output
+                    .instructions
+                    .push(Instruction::LoadFloatDouble {
+                        d: 1,
+                        a: 1,
+                        offset: 8,
+                    });
+                return;
+            }
             generator
                 .output
                 .instructions
@@ -1152,6 +1211,16 @@ impl Generator {
                 });
         };
         let fraction = |generator: &mut Self| {
+            if plan.reload_spill {
+                generator
+                    .output
+                    .instructions
+                    .push(Instruction::LoadFloatDouble {
+                        d: 1,
+                        a: 1,
+                        offset: 8,
+                    });
+            }
             generator
                 .output
                 .instructions
@@ -1181,25 +1250,43 @@ impl Generator {
         self.emit_branch_conditional_to(4, 0, arm2_at); // bge
                                                         // arm1: the sign pair through the pointer.
         self.output.instructions.push(Instruction::RotateAndMask {
-            a: temp,
+            a: if plan.reload_spill { 0 } else { temp },
             s: i0_reg,
             shift: 0,
             begin: 0,
             end: 0,
         });
-        self.output
-            .instructions
-            .push(Instruction::load_immediate(0, 0));
+        if !plan.reload_spill {
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(0, 0));
+        }
         self.output.instructions.push(Instruction::StoreWord {
-            s: temp,
+            s: if plan.reload_spill { 0 } else { temp },
             a: 3,
             offset: 0,
         });
-        self.output.instructions.push(Instruction::StoreWord {
-            s: 0,
-            a: 3,
-            offset: 4,
-        });
+        if !plan.reload_spill {
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: 3,
+                offset: 4,
+            });
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(0, 0));
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: 3,
+                offset: 4,
+            });
+            self.output.instructions.push(Instruction::LoadFloatDouble {
+                d: 1,
+                a: 1,
+                offset: 8,
+            });
+        }
         self.emit_branch_to(epilogue);
         // arm2.
         self.bind_label(arm2_at);
@@ -1238,18 +1325,29 @@ impl Generator {
         self.emit_branch_to(epilogue);
         self.bind_label(a2_frac_at);
         self.output.instructions.push(Instruction::AndComplement {
-            a: temp,
+            a: if plan.reload_spill { 0 } else { temp },
             s: i0_reg,
             b: temp,
         });
-        self.output
-            .instructions
-            .push(Instruction::load_immediate(0, 0));
-        self.output.instructions.push(Instruction::StoreWord {
-            s: temp,
-            a: 3,
-            offset: 0,
-        });
+        if plan.reload_spill {
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: 3,
+                offset: 0,
+            });
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(0, 0));
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(0, 0));
+            self.output.instructions.push(Instruction::StoreWord {
+                s: temp,
+                a: 3,
+                offset: 0,
+            });
+        }
         self.output.instructions.push(Instruction::StoreWord {
             s: 0,
             a: 3,
@@ -1313,7 +1411,7 @@ impl Generator {
         self.output.instructions.push(Instruction::AddImmediate {
             d: 1,
             a: 1,
-            immediate: 16,
+            immediate: plan.frame_size,
         });
         self.output
             .instructions
