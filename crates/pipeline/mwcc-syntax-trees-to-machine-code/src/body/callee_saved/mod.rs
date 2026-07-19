@@ -1065,6 +1065,99 @@ impl Generator {
                 .push(Instruction::BranchToLinkRegister);
             return Ok(true);
         }
+        if self.behavior.frame_convention == FrameConvention::LinkageFirst
+            && paired_parameter.is_none()
+            && guard.is_none()
+        {
+            if let MemoryLoad::Array { name, index } = &load {
+                // Build 163 threads the explicit array element address through
+                // the linkage-first prologue and reserves one extra frame lane:
+                // mflr; lis; stw LR; slwi r3; addi r0; stwu -24; add r3;
+                // save/load r31. The returned home moves into r3 before the LR
+                // reload in the matching epilogue.
+                self.non_leaf = true;
+                self.frame_size = 24;
+                let index_register = self.general_register_of_leaf(index)?;
+                let high = self.fresh_virtual_general();
+                let saved = self.fresh_virtual_general();
+                self.callee_saved = vec![saved];
+                self.output
+                    .instructions
+                    .push(Instruction::MoveFromLinkRegister { d: 0 });
+                self.emit_address_high(high, name);
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: 0,
+                    a: 1,
+                    offset: 4,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftLeftImmediate {
+                        a: index_register,
+                        s: index_register,
+                        shift: 2,
+                    });
+                self.record_relocation(RelocationKind::Addr16Lo, name);
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: GENERAL_SCRATCH,
+                    a: high,
+                    immediate: 0,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::StoreWordWithUpdate {
+                        s: 1,
+                        a: 1,
+                        offset: -24,
+                    });
+                self.output.instructions.push(Instruction::Add {
+                    d: index_register,
+                    a: GENERAL_SCRATCH,
+                    b: index_register,
+                });
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: saved,
+                    a: 1,
+                    offset: 20,
+                });
+                self.output.instructions.push(Instruction::LoadWord {
+                    d: saved,
+                    a: index_register,
+                    offset: 0,
+                });
+                for statement in calls {
+                    self.emit_statement(statement)?;
+                }
+                let result = mwcc_target::Eabi::general_result().number;
+                self.output.instructions.push(Instruction::Or {
+                    a: result,
+                    s: saved,
+                    b: saved,
+                });
+                self.output.instructions.push(Instruction::LoadWord {
+                    d: 0,
+                    a: 1,
+                    offset: 28,
+                });
+                self.output.instructions.push(Instruction::LoadWord {
+                    d: saved,
+                    a: 1,
+                    offset: 20,
+                });
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: 1,
+                    a: 1,
+                    immediate: 24,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::MoveToLinkRegister { s: 0 });
+                self.output
+                    .instructions
+                    .push(Instruction::BranchToLinkRegister);
+                return Ok(true);
+            }
+        }
         self.non_leaf = true;
         self.frame_size = 16;
         self.callee_saved = if paired_parameter.is_some() {
@@ -1368,16 +1461,29 @@ impl Generator {
         // The epilogue interleaves the result move between the LR and callee-saved
         // reloads. `saved` is the virtual for the guard-free scalar (apply() rewrites
         // the restore's field with the value's home) and the literal r31 otherwise.
-        self.output.instructions.push(Instruction::LoadWord {
-            d: 0,
-            a: 1,
-            offset: 20,
-        });
-        self.output.instructions.push(Instruction::Or {
-            a: result,
-            s: saved,
-            b: saved,
-        });
+        if self.behavior.frame_convention == FrameConvention::LinkageFirst {
+            self.output.instructions.push(Instruction::Or {
+                a: result,
+                s: saved,
+                b: saved,
+            });
+            self.output.instructions.push(Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: 20,
+            });
+        } else {
+            self.output.instructions.push(Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: 20,
+            });
+            self.output.instructions.push(Instruction::Or {
+                a: result,
+                s: saved,
+                b: saved,
+            });
+        }
         self.output.instructions.push(Instruction::LoadWord {
             d: saved,
             a: 1,
