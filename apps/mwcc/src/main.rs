@@ -1249,6 +1249,7 @@ fn compile(
             comment: mwcc_machine_code_to_object::CommentFormat {
                 marker: config.build.comment_marker,
                 version: config.build.comment_version,
+                optimized: config.flags.optimization != mwcc_versions::Optimization::O0,
             },
             emb_sda21_offset: config.build.emb_sda21_offset,
             function_symbol_order: if config.build.function_symbol_before_references {

@@ -68,6 +68,7 @@ fn comment_record(format: CommentFormat, symbol_records: &[(u32, u32)]) -> Vec<u
     record[12] = format.version.0;
     record[13] = format.version.1;
     record[14] = format.version.2;
+    record[16] = u8::from(format.optimized);
     record.extend_from_slice(&[0, 0, 0, 0]);
     for &(alignment, flags) in symbol_records {
         record.extend_from_slice(&alignment.to_be_bytes());
@@ -2844,6 +2845,7 @@ mod tests {
             CommentFormat {
                 marker: 0x08,
                 version: (2, 3, 0),
+                optimized: true,
             },
             &[],
         );
