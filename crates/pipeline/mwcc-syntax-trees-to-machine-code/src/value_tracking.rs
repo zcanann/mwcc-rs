@@ -434,7 +434,9 @@ impl Generator {
                 matches!(&guard.value, Expression::Variable(name)
                     if self.locations.get(name).is_some_and(|location| location.register == result && location.class == ValueClass::General))
             });
-            if all_constant && !tail_reads_result_register && distinct_parameter_reads <= 1 {
+            if self.try_legacy_tracked_guard_return(function, &inlined, result)? {
+                return Ok(true);
+            } else if all_constant && !tail_reads_result_register && distinct_parameter_reads <= 1 {
                 self.emit_guard_sequence(&function.guards, &inlined, function.return_type, result)?;
             } else if function.guards.len() == 1
                 && !all_constant

@@ -655,12 +655,13 @@ impl Generator {
             .count();
 
         // The legacy branch-preserving pipeline keeps an ordered early return ahead
-        // of its continuation.  If the guarded value is already in r3 this is a
-        // conditional return (`b<true>lr`); otherwise it is the literal source
-        // diamond followed by the independently compiled value-tracked tail.
+        // of its continuation, including when the condition reads the parameter
+        // reassigned by that continuation: the compare precedes the write. If the
+        // guarded value is already in r3 this is a conditional return
+        // (`b<true>lr`); otherwise it is the literal source diamond followed by
+        // the independently compiled value-tracked tail.
         if self.behavior.integer_select_style
             == mwcc_versions::IntegerSelectStyle::BranchPreserving
-            && !reads_written(condition)
         {
             self.emit_ordered_early_return_with_tracked_tail(
                 function, condition, value, rest,

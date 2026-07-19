@@ -3389,6 +3389,9 @@ impl Generator {
                 {
                     return Err(Diagnostic::error("a float-constant guard condition's pooled @N symbol is offset by mwcc's folded branch labels (roadmap)"));
                 }
+                if self.try_legacy_tracked_guard_return(function, return_expression, result)? {
+                    return Ok(());
+                }
                 // A null-guarded dereference (`if (!p) return CONST; return *p;` or the mirror
                 // `if (p) return *p; return CONST;`) cannot fold branchless — dereferencing null is
                 // unsafe — so mwcc branches on `p == 0` to the cold constant with the access in the
