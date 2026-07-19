@@ -12,7 +12,7 @@
 //! constant buried in instruction selection.
 
 use crate::config::CompilerConfig;
-use crate::flags::GlobalAddressing;
+use crate::flags::{GlobalAddressing, Optimization};
 use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
     CoefficientTableRelocationStyle, CommaValuePlacementStyle, ComputedStoreIssueStyle,
@@ -41,6 +41,27 @@ pub enum QuirkKind {
     /// original bytes. Kept distinct from [`QuirkKind::Intentional`] so bug
     /// emulation is always an explicit, documented choice.
     BugReproduction,
+}
+
+/// Lowering and scheduling applied to a NULL-terminated function-pointer-table
+/// walker such as a REL module's `_prolog`/`_epilog` ctor/dtor loop.
+///
+/// This is selected by the invocation's optimization level rather than the
+/// compiler build: GC/2.6 measurably exposes all four stages across `-O0`..`-O4`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerWalkerScheduleStyle {
+    /// `-O0`: form the table address directly in its callee-saved home and
+    /// independently load the entry in the loop body and condition.
+    DirectAddressDuplicateLoad,
+    /// `-O1`: stage the table address through r0, but retain the two source-level
+    /// entry loads.
+    ScratchAddressDuplicateLoad,
+    /// `-O2`/`-O3`: reuse the condition's r12 entry load as the next indirect
+    /// callee while keeping canonical linkage save/restore ordering.
+    ReusedConditionLoad,
+    /// `-O4`: additionally interleave address formation with linkage stores and
+    /// issue the saved-LR reload early in the epilogue.
+    LatencyInterleaved,
 }
 
 /// A named codegen decision that diverges from the mainline for some builds. The
@@ -405,6 +426,8 @@ pub struct Behavior {
     pub integer_dag_style: IntegerDagStyle,
     /// Entry, allocation, and scheduling policy for specialized integer loops.
     pub integer_loop_style: IntegerLoopStyle,
+    /// Optimization-level policy for ctor/dtor function-pointer walkers.
+    pub pointer_walker_schedule_style: PointerWalkerScheduleStyle,
     /// Allocation and scheduling for float DAGs shared by two return arms.
     pub shared_float_dag_style: SharedFloatDagStyle,
     /// In a float `if`-condition against a pool constant, whether the loaded value
@@ -558,6 +581,14 @@ impl Behavior {
             raise_family_style: config.build.profile.raise_family_style(),
             integer_dag_style: config.build.profile.integer_dag_style(),
             integer_loop_style: config.build.profile.integer_loop_style(),
+            pointer_walker_schedule_style: match config.flags.optimization {
+                Optimization::O0 => PointerWalkerScheduleStyle::DirectAddressDuplicateLoad,
+                Optimization::O1 => PointerWalkerScheduleStyle::ScratchAddressDuplicateLoad,
+                Optimization::O2 | Optimization::O3 => {
+                    PointerWalkerScheduleStyle::ReusedConditionLoad
+                }
+                Optimization::O4 => PointerWalkerScheduleStyle::LatencyInterleaved,
+            },
             shared_float_dag_style: config.build.profile.shared_float_dag_style(),
             float_compare_value_before_const: config
                 .build
@@ -878,6 +909,40 @@ impl Behavior {
 mod tests {
     use super::*;
     use crate::{build, flags::CharDefault};
+
+    #[test]
+    fn optimization_level_selects_each_pointer_walker_schedule() {
+        let expected = [
+            (
+                Optimization::O0,
+                PointerWalkerScheduleStyle::DirectAddressDuplicateLoad,
+            ),
+            (
+                Optimization::O1,
+                PointerWalkerScheduleStyle::ScratchAddressDuplicateLoad,
+            ),
+            (
+                Optimization::O2,
+                PointerWalkerScheduleStyle::ReusedConditionLoad,
+            ),
+            (
+                Optimization::O3,
+                PointerWalkerScheduleStyle::ReusedConditionLoad,
+            ),
+            (
+                Optimization::O4,
+                PointerWalkerScheduleStyle::LatencyInterleaved,
+            ),
+        ];
+        for (optimization, style) in expected {
+            let mut config = CompilerConfig::new(build::GC_2_6);
+            config.flags.optimization = optimization;
+            assert_eq!(
+                Behavior::resolve(&config).pointer_walker_schedule_style,
+                style
+            );
+        }
+    }
 
     #[test]
     fn mainline_has_no_active_quirks() {

@@ -64,6 +64,9 @@ pub struct Flags {
     /// `-str …,readonly` places pooled string literals in a read-only data
     /// section rather than writable `.data`.
     pub string_literals_read_only: bool,
+    /// Whether compiler pooling is enabled. The verified object-level effect is
+    /// byte 16 of the `.comment` header; pooling passes consume this same mode.
+    pub pooling_enabled: bool,
 }
 
 impl Default for Flags {
@@ -78,6 +81,7 @@ impl Default for Flags {
             cpp_exceptions: true,
             emit_mwcats: true,
             string_literals_read_only: false,
+            pooling_enabled: true,
         }
     }
 }

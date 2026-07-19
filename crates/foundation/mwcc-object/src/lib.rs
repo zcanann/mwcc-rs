@@ -14,9 +14,9 @@ mod writer;
 pub struct CommentFormat {
     pub marker: u8,
     pub version: (u8, u8, u8),
-    /// Byte 16 of the Metrowerks header: zero for an empty translation unit,
-    /// one when the object contains code.
-    pub has_code: bool,
+    /// Byte 16 of the Metrowerks header records the `-pool` mode: one when
+    /// compiler pooling is enabled, zero for `-pool off`.
+    pub pooling_enabled: bool,
 }
 
 /// Build-specific conventions affecting relocatable-object encoding.

@@ -68,7 +68,7 @@ fn comment_record(format: CommentFormat, symbol_records: &[(u32, u32)]) -> Vec<u
     record[12] = format.version.0;
     record[13] = format.version.1;
     record[14] = format.version.2;
-    record[16] = u8::from(format.has_code);
+    record[16] = u8::from(format.pooling_enabled);
     record.extend_from_slice(&[0, 0, 0, 0]);
     for &(alignment, flags) in symbol_records {
         record.extend_from_slice(&alignment.to_be_bytes());
@@ -2842,16 +2842,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_comment_format_is_independent_of_compiler_identity() {
-        let record = comment_record(
+    fn comment_header_records_pooling_mode() {
+        let enabled = comment_record(
             CommentFormat {
                 marker: 0x08,
                 version: (2, 3, 0),
-                has_code: true,
+                pooling_enabled: true,
             },
             &[],
         );
-        assert_eq!(record[11], 0x08);
-        assert_eq!(&record[12..16], &[2, 3, 0, 1]);
+        let disabled = comment_record(
+            CommentFormat {
+                marker: 0x08,
+                version: (2, 3, 0),
+                pooling_enabled: false,
+            },
+            &[],
+        );
+        assert_eq!(enabled[11], 0x08);
+        assert_eq!(&enabled[12..16], &[2, 3, 0, 1]);
+        assert_eq!(enabled[16], 1);
+        assert_eq!(disabled[16], 0);
     }
 }

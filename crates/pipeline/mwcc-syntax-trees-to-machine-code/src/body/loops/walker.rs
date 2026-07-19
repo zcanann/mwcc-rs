@@ -155,9 +155,20 @@ impl Generator {
         self.frame_size = 16;
         self.callee_saved = vec![WALKER];
         self.output.anonymous_label_bump = 5;
+        // This recognizer owns the complete function schedule for every optimization level.
+        self.output.pre_scheduled = true;
 
-        // Prologue with the table-address materialization interleaved: the `lis` fills the mflr->save
-        // latency slot, the `addi` (into the scratch r0) lands after it, then the walker is stashed.
+        let style = self.behavior.pointer_walker_schedule_style;
+        let direct_address = style == PointerWalkerScheduleStyle::DirectAddressDuplicateLoad;
+        let duplicate_entry_load = matches!(
+            style,
+            PointerWalkerScheduleStyle::DirectAddressDuplicateLoad
+                | PointerWalkerScheduleStyle::ScratchAddressDuplicateLoad
+        );
+        let interleave_linkage = style == PointerWalkerScheduleStyle::LatencyInterleaved;
+
+        // O0..O3 retain the canonical linkage saves before table materialization. O4 moves `lis`
+        // into the mflr latency slot and the dependent scratch `addi` between the two saves.
         self.output
             .instructions
             .push(Instruction::StoreWordWithUpdate {
@@ -168,6 +179,18 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::MoveFromLinkRegister { d: 0 });
+        if !interleave_linkage {
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 20,
+            });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: WALKER,
+                a: 1,
+                offset: 12,
+            });
+        }
         self.record_relocation(RelocationKind::Addr16Ha, &table);
         self.output
             .instructions
@@ -176,35 +199,48 @@ impl Generator {
                 a: 0,
                 immediate: 0,
             });
-        self.output.instructions.push(Instruction::StoreWord {
-            s: 0,
-            a: 1,
-            offset: 20,
-        });
+        if interleave_linkage {
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 20,
+            });
+        }
         self.record_relocation(RelocationKind::Addr16Lo, &table);
         self.output.instructions.push(Instruction::AddImmediate {
-            d: 0,
+            d: if direct_address { WALKER } else { 0 },
             a: 3,
             immediate: 0,
         });
-        self.output.instructions.push(Instruction::StoreWord {
-            s: WALKER,
-            a: 1,
-            offset: 12,
-        });
-        self.output.instructions.push(Instruction::Or {
-            a: WALKER,
-            s: 0,
-            b: 0,
-        });
+        if interleave_linkage {
+            self.output.instructions.push(Instruction::StoreWord {
+                s: WALKER,
+                a: 1,
+                offset: 12,
+            });
+        }
+        if !direct_address {
+            self.output.instructions.push(Instruction::Or {
+                a: WALKER,
+                s: 0,
+                b: 0,
+            });
+        }
 
-        // Bottom-tested walk: branch to the condition, which loads the next entry into r12 and tests
-        // it; the body reuses that r12 as the callee. A branch back on non-null.
+        // At O0/O1 the source-level body and condition each load `*walker`. O2+ eliminates the body
+        // load and reuses the condition's r12 value as the next indirect callee.
         let skip_to_condition = self.output.instructions.len();
         self.output
             .instructions
             .push(Instruction::Branch { target: 0 });
         let body_top = self.output.instructions.len();
+        if duplicate_entry_load {
+            self.output.instructions.push(Instruction::LoadWord {
+                d: 12,
+                a: WALKER,
+                offset: 0,
+            });
+        }
         self.output
             .instructions
             .push(Instruction::MoveToCountRegister { s: 12 });
@@ -220,15 +256,16 @@ impl Generator {
         if let Instruction::Branch { target } = &mut self.output.instructions[skip_to_condition] {
             *target = condition_top;
         }
+        let condition_register = if duplicate_entry_load { 0 } else { 12 };
         self.output.instructions.push(Instruction::LoadWord {
-            d: 12,
+            d: condition_register,
             a: WALKER,
             offset: 0,
         });
         self.output
             .instructions
             .push(Instruction::CompareLogicalWordImmediate {
-                a: 12,
+                a: condition_register,
                 immediate: 0,
             });
         self.output
@@ -239,19 +276,22 @@ impl Generator {
                 target: body_top,
             });
 
-        // The trailing calls, then the epilogue in final order (the loop branch makes the LR-reload
-        // hoist bail): LR reload, the `int` return value in its slot, the walker reload, `mtlr`.
+        // The trailing calls, then the final schedule. O4 issues the saved-LR reload early to overlap
+        // it with return-value materialization and the GPR reload; lower levels retain source/canonical
+        // `li; lwz r31; lwz r0` order.
         for name in &trailing_calls {
             self.record_relocation(RelocationKind::Rel24, name);
             self.output.instructions.push(Instruction::BranchAndLink {
                 target: name.clone(),
             });
         }
-        self.output.instructions.push(Instruction::LoadWord {
-            d: 0,
-            a: 1,
-            offset: self.frame_size + 4,
-        });
+        if interleave_linkage {
+            self.output.instructions.push(Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: self.frame_size + 4,
+            });
+        }
         if returns_zero {
             self.output.instructions.push(Instruction::AddImmediate {
                 d: 3,
@@ -264,6 +304,13 @@ impl Generator {
             a: 1,
             offset: self.frame_size - 4,
         });
+        if !interleave_linkage {
+            self.output.instructions.push(Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: self.frame_size + 4,
+            });
+        }
         self.output
             .instructions
             .push(Instruction::MoveToLinkRegister { s: 0 });

@@ -91,6 +91,16 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                     .get(index)
                     .is_some_and(|value| value.split(',').any(|part| part == "readonly"));
             }
+            // `-pool off` disables compiler pooling and is stamped into the
+            // object's `.comment` header. Accept `on` so the last flag wins.
+            "-pool" => {
+                index += 1;
+                invocation.flags.pooling_enabled = match arguments.get(index).map(String::as_str) {
+                    Some("off") => false,
+                    Some("on") => true,
+                    _ => invocation.flags.pooling_enabled,
+                };
+            }
             // `-sdata N`: a threshold of zero addresses globals absolutely.
             "-sdata" => {
                 index += 1;
@@ -1253,7 +1263,7 @@ fn compile(
             comment: mwcc_machine_code_to_object::CommentFormat {
                 marker: config.build.comment_marker,
                 version: config.build.comment_version,
-                has_code: !machine_functions.is_empty(),
+                pooling_enabled: config.flags.pooling_enabled,
             },
             emb_sda21_offset: config.build.emb_sda21_offset,
             function_symbol_order: if config.build.function_symbol_before_references {
@@ -1321,6 +1331,16 @@ mod tests {
             "reuse".into(),
         ]);
         assert!(!last_wins.flags.string_literals_read_only);
+    }
+
+    #[test]
+    fn command_line_pool_mode_is_last_wins() {
+        let off = parse_invocation(&["-pool".into(), "off".into()]);
+        assert!(!off.flags.pooling_enabled);
+
+        let last_wins =
+            parse_invocation(&["-pool".into(), "off".into(), "-pool".into(), "on".into()]);
+        assert!(last_wins.flags.pooling_enabled);
     }
 }
 
