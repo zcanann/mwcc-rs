@@ -6,6 +6,7 @@ members = [
     "crates/foundation/mwcc-target",
     "crates/foundation/mwcc-versions",
     "crates/foundation/mwcc-object",
+    "crates/foundation/mwcc-dwarf1",
 
     # representations — the data each phase produces (nouns)
     "crates/representations/mwcc-tokens",
@@ -36,6 +37,7 @@ mwcc-core = { path = "crates/foundation/mwcc-core" }
 mwcc-target = { path = "crates/foundation/mwcc-target" }
 mwcc-versions = { path = "crates/foundation/mwcc-versions" }
 mwcc-object = { path = "crates/foundation/mwcc-object" }
+mwcc-dwarf1 = { path = "crates/foundation/mwcc-dwarf1" }
 mwcc-tokens = { path = "crates/representations/mwcc-tokens" }
 mwcc-syntax-trees = { path = "crates/representations/mwcc-syntax-trees" }
 mwcc-machine-code = { path = "crates/representations/mwcc-machine-code" }

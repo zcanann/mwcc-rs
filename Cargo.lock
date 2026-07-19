@@ -30,6 +30,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "mwcc-dwarf1"
+version = "0.0.1"
+
+[[package]]
 name = "mwcc-machine-code"
 version = "0.0.1"
 dependencies = [
