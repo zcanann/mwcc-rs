@@ -71,6 +71,18 @@ pub enum IntegerDagStyle {
     PortAwareSerialR0,
 }
 
+/// Allocation and ready-op ordering for a float DAG shared by both arms of
+/// an integer-controlled return diamond.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharedFloatDagStyle {
+    /// 2.4.x orders prefix homes by reverse definition and keeps coefficient
+    /// loads ahead of newly ready shared-chain arithmetic.
+    ModernDefinitionDescending,
+    /// Build 163 rotates a three-product prefix to last/first/middle and lets
+    /// newly ready shared-chain arithmetic precede an independent pool load.
+    LegacyBalancedPrefix,
+}
+
 /// Lowering used when an integer condition selects the canonical boolean
 /// constants `1` and `0`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -478,6 +490,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         IntegerDagStyle::WideIssueClosedIntervals
     }
 
+    fn shared_float_dag_style(&self) -> SharedFloatDagStyle {
+        SharedFloatDagStyle::ModernDefinitionDescending
+    }
+
     /// In a float `if`-condition comparing a LOADED value (member/global) against a
     /// pool CONSTANT, whether the value operand is loaded BEFORE the constant.
     /// GC/2.0p1 and build 163 use `lfs f1,(v); lfs f0,k`, while mainline uses
@@ -760,6 +776,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn integer_dag_style(&self) -> IntegerDagStyle {
         IntegerDagStyle::PortAwareSerialR0
+    }
+
+    fn shared_float_dag_style(&self) -> SharedFloatDagStyle {
+        SharedFloatDagStyle::LegacyBalancedPrefix
     }
 
     fn float_compare_value_before_const(&self) -> bool {

@@ -9,7 +9,23 @@ use crate::generator::*;
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Type};
+use mwcc_versions::SharedFloatDagStyle;
 use mwcc_vreg::{assign_float_registers, linearize, DagNode, OpKind, FROZEN_FLOAT_REG, HAZARD_FPU};
+
+fn follows_independent_load(nodes: &[DagNode], order: &[usize], node: usize) -> bool {
+    let Some(position) = order.iter().position(|&candidate| candidate == node) else {
+        return false;
+    };
+    if position == 0 {
+        return false;
+    }
+    let previous = order[position - 1];
+    nodes[previous].kind == OpKind::Load
+        && !nodes[previous]
+            .writes
+            .iter()
+            .any(|value| nodes[node].reads.contains(value))
+}
 
 impl Generator {
     /// The DUAL-TAIL float return (the k_sin iy split's simple form):
@@ -483,14 +499,30 @@ impl Generator {
         };
         let mut condition_encoding: Option<(u8, u8)> = None;
         if !nodes.is_empty() {
-            let order = linearize(&nodes);
+            let mut order = linearize(&nodes);
+            let register_order = order.clone();
+            if !in_frame
+                && self.behavior.shared_float_dag_style == SharedFloatDagStyle::LegacyBalancedPrefix
+            {
+                // Build 163 starts the first ready shared-chain operation
+                // before the final independent coefficient load. The modern
+                // scheduler completes the whole load run first.
+                if let Some(position) = order.iter().position(|&node| {
+                    nodes[node].label == "fshared" && follows_independent_load(&nodes, &order, node)
+                }) {
+                    order.swap(position - 1, position);
+                }
+            }
             let mut model = FROZEN_FLOAT_REG;
             model.tier_position_desc = true;
+            model.legacy_three_tier_rotation = !in_frame
+                && self.behavior.shared_float_dag_style
+                    == SharedFloatDagStyle::LegacyBalancedPrefix;
             model.window_floor = window_floor;
             // The sink absorbs every consumer, so there is no return node;
             // the shared DAG still allocates on the reverse/tier machine.
             model.void_forward = false;
-            let registers = assign_float_registers(&nodes, &order, &params, model);
+            let registers = assign_float_registers(&nodes, &register_order, &params, model);
             if registers
                 .iter()
                 .enumerate()
@@ -740,7 +772,13 @@ impl Generator {
                         let both_params =
                             matches!(a, Operand::Param(_)) && matches!(c, Operand::Param(_));
                         let const_a = matches!(a, Operand::Node(index) if matches!(ops[*index], FloatOp::Const(_)));
-                        if !both_params && !const_a && rc > ra {
+                        if (in_frame
+                            || self.behavior.shared_float_dag_style
+                                != SharedFloatDagStyle::LegacyBalancedPrefix)
+                            && !both_params
+                            && !const_a
+                            && rc > ra
+                        {
                             std::mem::swap(&mut ra, &mut rc);
                         }
                         self.output
@@ -822,7 +860,18 @@ impl Generator {
                 target: 0,
             });
         // The if pair + the else-join label (measured: pools at @8/@9).
-        self.output.anonymous_label_bump += 3;
+        // Build 163's deep shared-chain construction consumes two additional
+        // internal labels before the per-arm pools; product-only prefixes do
+        // not take this path.
+        let legacy_shared_chain_gap = if !in_frame
+            && self.behavior.shared_float_dag_style == SharedFloatDagStyle::LegacyBalancedPrefix
+            && local_is_product.iter().any(|&product| !product)
+        {
+            2
+        } else {
+            0
+        };
+        self.output.anonymous_label_bump += 3 + legacy_shared_chain_gap;
         match self.try_float_dag_return(&synthetic(then_value)) {
             Ok(true) => {}
             other => {

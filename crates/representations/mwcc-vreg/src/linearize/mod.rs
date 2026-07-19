@@ -1435,6 +1435,10 @@ pub struct FloatRegModel {
     /// the fire-350/354 dual matrix; single-tail shapes keep death-asc).
     /// Set per-call by the dual composition arm.
     pub tier_position_desc: bool,
+    /// Build 163's shared dual-prefix allocator rotates exactly three named
+    /// product homes from reverse-definition [last, middle, first] to
+    /// [last, first, middle]. Other tier sizes retain their normal order.
+    pub legacy_three_tier_rotation: bool,
     /// The COMPOSED-tail regime (the k_cos else: an x re-reload AND a frame
     /// local together): the emission-ordered sequence takes the whole DAG —
     /// the tier-forward machine and the structural crossing tier stand down
@@ -1514,6 +1518,7 @@ pub const FROZEN_FLOAT_REG: FloatRegModel = FloatRegModel {
     local_top_tier: true,
     window_floor: 0,
     tier_position_desc: false,
+    legacy_three_tier_rotation: false,
     emission_over_tier: false,
     prepass_always: false,
     prepass_start_asc: false,
@@ -1704,6 +1709,12 @@ pub fn assign_float_registers(
             if model.tier_position_desc {
                 // Duals: definition DESC — the last-defined local tops.
                 tier.sort_by_key(|&node| std::cmp::Reverse(position[node]));
+                if model.legacy_three_tier_rotation
+                    && tier.len() == 3
+                    && tier.iter().all(|&node| nodes[node].local_home)
+                {
+                    tier.swap(1, 2);
+                }
             } else {
                 // Death ASCENDING (position tiebreak): the reload slots BETWEEN
                 // the locals (z f7, XR f6, v f5 in the real k_sin).

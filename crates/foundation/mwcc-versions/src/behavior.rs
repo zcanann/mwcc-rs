@@ -23,9 +23,9 @@ use crate::profile::{
     LocalDataSymbolOrder, LogicalOrValueStyle, MaterializationCopyStyle, NarrowCompoundShiftStyle,
     NarrowComputedReturnStyle, NarrowGuardScheduleStyle, NarrowStoreConversionStyle,
     NegativePowerOfTwoMultiplyStyle, PunnedFloatFrameConvention, RaiseFamilyStyle,
-    ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle, SignedPowerOfTwoDivisionStyle,
-    SmallZeroDataLayoutStyle, StoredGlobalReadStyle, SymbolTraversalStyle, VaArgScheduleStyle,
-    ValueTrackedMutationStyle, WideConstantAddSchedule,
+    ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle, SharedFloatDagStyle,
+    SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, StoredGlobalReadStyle,
+    SymbolTraversalStyle, VaArgScheduleStyle, ValueTrackedMutationStyle, WideConstantAddSchedule,
 };
 
 /// Why a codegen decision diverges from the GameCube 2.4.x mainline.
@@ -65,6 +65,7 @@ pub enum Quirk {
     LegacyFrexpPhysicalFrame,
     LegacyRaiseStagedLinkRegister,
     LegacyPortAwareIntegerDag,
+    LegacyBalancedSharedFloatDag,
     LegacyIntCallResultConversion,
     /// Build 163 preserves a compare/branch diamond for canonical integer
     /// boolean ternaries instead of using the 2.4.x branchless idioms.
@@ -125,6 +126,7 @@ impl Quirk {
             Quirk::LegacyFrexpPhysicalFrame => QuirkKind::Intentional,
             Quirk::LegacyRaiseStagedLinkRegister => QuirkKind::Intentional,
             Quirk::LegacyPortAwareIntegerDag => QuirkKind::Intentional,
+            Quirk::LegacyBalancedSharedFloatDag => QuirkKind::Intentional,
             Quirk::LegacyIntCallResultConversion => QuirkKind::Intentional,
             Quirk::LegacyBranchPreservingIntegerSelect => QuirkKind::Intentional,
             Quirk::LegacyCarryChainComparisonValues => QuirkKind::Intentional,
@@ -198,6 +200,9 @@ impl Quirk {
             }
             Quirk::LegacyPortAwareIntegerDag => {
                 "integer DAGs use build 163's port-aware scheduler and serial r0 lane"
+            }
+            Quirk::LegacyBalancedSharedFloatDag => {
+                "shared float DAGs use build 163's balanced prefix allocation and ready-op order"
             }
             Quirk::LegacyIntCallResultConversion => {
                 "integer call results use build 163's bias-first conversion frame"
@@ -356,6 +361,8 @@ pub struct Behavior {
     pub raise_family_style: RaiseFamilyStyle,
     /// Scheduler, register allocation, and symbol creation for integer DAGs.
     pub integer_dag_style: IntegerDagStyle,
+    /// Allocation and scheduling for float DAGs shared by two return arms.
+    pub shared_float_dag_style: SharedFloatDagStyle,
     /// In a float `if`-condition against a pool constant, whether the loaded value
     /// operand (member/global) is emitted before the constant load.
     pub float_compare_value_before_const: bool,
@@ -492,6 +499,7 @@ impl Behavior {
             frexp_family_style: config.build.profile.frexp_family_style(),
             raise_family_style: config.build.profile.raise_family_style(),
             integer_dag_style: config.build.profile.integer_dag_style(),
+            shared_float_dag_style: config.build.profile.shared_float_dag_style(),
             float_compare_value_before_const: config
                 .build
                 .profile
@@ -604,6 +612,9 @@ impl Behavior {
         }
         if self.integer_dag_style == IntegerDagStyle::PortAwareSerialR0 {
             quirks.push(ActiveQuirk::of(Quirk::LegacyPortAwareIntegerDag));
+        }
+        if self.shared_float_dag_style == SharedFloatDagStyle::LegacyBalancedPrefix {
+            quirks.push(ActiveQuirk::of(Quirk::LegacyBalancedSharedFloatDag));
         }
         if self.int_call_result_conversion_style == IntCallResultConversionStyle::LegacyBiasFirst {
             quirks.push(ActiveQuirk::of(Quirk::LegacyIntCallResultConversion));
@@ -920,6 +931,10 @@ mod tests {
         assert_eq!(
             behavior.integer_dag_style,
             IntegerDagStyle::PortAwareSerialR0
+        );
+        assert_eq!(
+            behavior.shared_float_dag_style,
+            SharedFloatDagStyle::LegacyBalancedPrefix
         );
         assert!(behavior.float_compare_value_before_const);
         assert_eq!(

@@ -1367,6 +1367,7 @@
                                                             local_top_tier,
                                                             window_floor: 0,
                                                             tier_position_desc: false,
+                                                            legacy_three_tier_rotation: false,
                                                             emission_over_tier: false,
                                                             prepass_always: false,
                                                             prepass_start_asc: false,
@@ -1403,6 +1404,7 @@
                     local_top_tier: false,
                     window_floor: 0,
                     tier_position_desc: false,
+                    legacy_three_tier_rotation: false,
                     emission_over_tier: false,
                     prepass_always: false,
                     prepass_start_asc: false,
@@ -2493,4 +2495,24 @@
             &[(1, 3), (2, 4)],
         );
         assert_eq!(registers, [Some(3), Some(3), None, Some(0), Some(3)]);
+    }
+
+    #[test]
+    fn legacy_shared_float_rotates_three_product_homes() {
+        use OpKind::Store as St;
+        let nodes = vec![
+            DagNode::new("z", ALU).local_home().reads(&[1]).writes(&[10]),
+            DagNode::new("v", ALU).local_home().reads(&[10, 1]).writes(&[11]),
+            DagNode::new("w", ALU).local_home().reads(&[11, 10]).writes(&[12]),
+            DagNode::new("sink", STORE).kind(St).reads(&[10, 11, 12]),
+        ];
+        let mut model = FROZEN_FLOAT_REG;
+        model.tier_position_desc = true;
+        model.legacy_three_tier_rotation = true;
+        model.window_floor = 6;
+        model.void_forward = false;
+        assert_eq!(
+            assign_float_registers(&nodes, &[0, 1, 2, 3], &[(1, 1)], model),
+            [Some(4), Some(3), Some(5), None]
+        );
     }
