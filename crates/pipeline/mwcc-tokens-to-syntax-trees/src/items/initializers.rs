@@ -475,6 +475,18 @@ impl Parser {
         tag: &str,
     ) -> Compilation<Option<(String, i32)>> {
         let start = self.position;
+        // Parentheses around the complete address expression are transparent:
+        // `((Callback)&function)`. This is distinct from the inner `(Callback)`
+        // cast handled below. If the grouped expression is not an address, rewind
+        // so the ordinary constant-expression parser can consume it unchanged.
+        if *self.peek() == Token::ParenOpen && !self.token_starts_type(self.peek_at(1)) {
+            self.advance();
+            if let Some(address) = self.parse_address_element(tag)? {
+                self.expect(Token::ParenClose)?;
+                return Ok(Some(address));
+            }
+            self.position = start;
+        }
         // optional cast(s): `(char*)`, `(void*)` ... skip `( type * )` groups.
         loop {
             if *self.peek() == Token::ParenOpen && self.token_starts_type(self.peek_at(1)) {
@@ -537,7 +549,7 @@ impl Parser {
             if let Some(Token::Identifier(name)) = self.tokens.get(self.position + 1) {
                 if matches!(
                     self.tokens.get(self.position + 2),
-                    Some(Token::Comma) | Some(Token::BraceClose)
+                    Some(Token::Comma) | Some(Token::BraceClose) | Some(Token::ParenClose)
                 ) {
                     let name = name.clone();
                     self.position += 2;
