@@ -540,7 +540,163 @@ mod xtr_strcmpi;
 
 use crate::generator::Generator;
 use mwcc_core::Compilation;
-use mwcc_syntax_trees::Function;
+use mwcc_syntax_trees::{ArmBody, Expression, Function, Statement};
+
+/// Remove front-end provenance wrappers that do not change a capture's
+/// historical semantic identity. Captures predate these nodes; hashing the raw
+/// derived `Debug` representation made every new provenance field invalidate
+/// otherwise identical templates.
+fn normalize_capture_expression(expression: &mut Expression) {
+    loop {
+        let replacement = match expression {
+            Expression::BitFieldRead { extracted, .. } => Some(std::mem::replace(
+                extracted,
+                Box::new(Expression::IntegerLiteral(0)),
+            )),
+            Expression::IndexedUpdateValue { value } => Some(std::mem::replace(
+                value,
+                Box::new(Expression::IntegerLiteral(0)),
+            )),
+            _ => None,
+        };
+        let Some(replacement) = replacement else {
+            break;
+        };
+        *expression = *replacement;
+    }
+
+    match expression {
+        Expression::AggregateLiteral(elements) => {
+            elements.iter_mut().for_each(normalize_capture_expression);
+        }
+        Expression::Binary { left, right, .. }
+        | Expression::Index {
+            base: left,
+            index: right,
+        }
+        | Expression::Assign {
+            target: left,
+            value: right,
+        }
+        | Expression::Comma { left, right } => {
+            normalize_capture_expression(left);
+            normalize_capture_expression(right);
+        }
+        Expression::Unary { operand, .. }
+        | Expression::Cast { operand, .. }
+        | Expression::Dereference { pointer: operand }
+        | Expression::AddressOf { operand }
+        | Expression::Member { base: operand, .. }
+        | Expression::MemberAddress { base: operand, .. }
+        | Expression::PostStep {
+            target: operand, ..
+        } => normalize_capture_expression(operand),
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+            ..
+        } => {
+            normalize_capture_expression(condition);
+            normalize_capture_expression(when_true);
+            normalize_capture_expression(when_false);
+        }
+        Expression::CallThrough { target, arguments } => {
+            normalize_capture_expression(target);
+            arguments.iter_mut().for_each(normalize_capture_expression);
+        }
+        Expression::Call { arguments, .. } => {
+            arguments.iter_mut().for_each(normalize_capture_expression);
+        }
+        Expression::BitFieldRead { .. } | Expression::IndexedUpdateValue { .. } => {
+            unreachable!("capture provenance wrappers were removed above")
+        }
+        Expression::IntegerLiteral(_)
+        | Expression::FloatLiteral(_)
+        | Expression::StringLiteral(_)
+        | Expression::Variable(_)
+        | Expression::CompoundLiteral { .. } => {}
+    }
+}
+
+fn normalize_capture_arm(body: &mut ArmBody) {
+    match body {
+        ArmBody::Return(expression) => normalize_capture_expression(expression),
+        ArmBody::Statements(statements) => normalize_capture_statements(statements),
+    }
+}
+
+fn normalize_capture_statements(statements: &mut [Statement]) {
+    for statement in statements {
+        match statement {
+            Statement::Store { target, value } => {
+                normalize_capture_expression(target);
+                normalize_capture_expression(value);
+            }
+            Statement::Assign { value, .. } | Statement::Expression(value) => {
+                normalize_capture_expression(value);
+            }
+            Statement::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                normalize_capture_expression(condition);
+                normalize_capture_statements(then_body);
+                normalize_capture_statements(else_body);
+            }
+            Statement::Return(value) => {
+                if let Some(value) = value {
+                    normalize_capture_expression(value);
+                }
+            }
+            Statement::Switch {
+                scrutinee,
+                arms,
+                default,
+            } => {
+                normalize_capture_expression(scrutinee);
+                for arm in arms {
+                    normalize_capture_arm(&mut arm.body);
+                }
+                if let Some(default) = default {
+                    normalize_capture_arm(default);
+                }
+            }
+            Statement::Loop {
+                initializer,
+                condition,
+                step,
+                body,
+                ..
+            } => {
+                for expression in [initializer, condition, step].into_iter().flatten() {
+                    normalize_capture_expression(expression);
+                }
+                normalize_capture_statements(body);
+            }
+            Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => {}
+        }
+    }
+}
+
+fn normalized_capture_function(function: &Function) -> Function {
+    let mut function = function.clone();
+    for local in &mut function.locals {
+        if let Some(initializer) = &mut local.initializer {
+            normalize_capture_expression(initializer);
+        }
+    }
+    normalize_capture_statements(&mut function.statements);
+    for guard in &mut function.guards {
+        normalize_capture_expression(&mut guard.condition);
+        normalize_capture_expression(&mut guard.value);
+    }
+    if let Some(expression) = &mut function.return_expression {
+        normalize_capture_expression(expression);
+    }
+    function
+}
 
 /// The total-verification gate: the Debug hash of the parsed function. Any
 /// deviation in names, constants, or statement order changes it — a capture
@@ -553,7 +709,8 @@ pub(crate) fn ast_hash(function: &Function) -> u64 {
     // reproduces the pre-field string and preserves every captured function's hash
     // (adding the field would otherwise shift all ~130 templates — the fire-465
     // re-bake hazard). Section placement is a writer concern, orthogonal to the AST.
-    let debug = format!("{function:?}");
+    let normalized = normalized_capture_function(function);
+    let debug = format!("{normalized:?}");
     let key = match debug.rfind(", section: ") {
         Some(index) => format!("{} }}", &debug[..index]),
         None => debug,
