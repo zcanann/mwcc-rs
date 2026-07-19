@@ -93,23 +93,41 @@ impl Generator {
                 Statement::Return(Some(value)) => {
                     // `return x+x` raises inexact/inf via fadd before the
                     // epilogue (measured M1: fadd f1,f1,f1; b epi); f1 is
-                    // never clobbered on walker paths, so a plain return
-                    // is the bare branch.
-                    if let Expression::Binary {
+                    // stays live on modern walker paths; legacy paths reload
+                    // it from the spill before either return form.
+                    let doubles_x = if let Expression::Binary {
                         operator: BinaryOperator::Add,
                         left,
                         right,
                     } = value
                     {
-                        if matches!((left.as_ref(), right.as_ref()),
+                        matches!((left.as_ref(), right.as_ref()),
                             (Expression::Variable(a), Expression::Variable(b)) if a == b)
-                        {
+                    } else {
+                        false
+                    };
+                    let legacy_reloading = self.behavior.punned_float_frame_convention
+                        == mwcc_versions::PunnedFloatFrameConvention::LegacyReloading;
+                    if legacy_reloading {
+                        let reload = if doubles_x { 0 } else { 1 };
+                        self.output.instructions.push(Instruction::LoadFloatDouble {
+                            d: reload,
+                            a: 1,
+                            offset: 8,
+                        });
+                        if doubles_x {
                             self.output.instructions.push(Instruction::FloatAddDouble {
                                 d: 1,
-                                a: 1,
-                                b: 1,
+                                a: 0,
+                                b: 0,
                             });
                         }
+                    } else if doubles_x {
+                        self.output.instructions.push(Instruction::FloatAddDouble {
+                            d: 1,
+                            a: 1,
+                            b: 1,
+                        });
                     }
                     self.emit_branch_to(epilogue);
                 }
@@ -129,6 +147,15 @@ impl Generator {
                             ));
                         }
                         self.load_double_constant(2, huge);
+                        if self.behavior.punned_float_frame_convention
+                            == mwcc_versions::PunnedFloatFrameConvention::LegacyReloading
+                        {
+                            self.output.instructions.push(Instruction::LoadFloatDouble {
+                                d: 1,
+                                a: 1,
+                                offset: 8,
+                            });
+                        }
                         self.load_double_constant(0, zero);
                         self.output.instructions.push(Instruction::FloatAddDouble {
                             d: 1,
@@ -146,6 +173,20 @@ impl Generator {
                     let (options, condition_bit) = self.emit_condition_test(condition)?;
                     if let [Statement::Return(Some(_))] = else_body.as_slice() {
                         if matches!(then_body.last(), Some(Statement::Return(_))) {
+                            if self.behavior.punned_float_frame_convention
+                                == mwcc_versions::PunnedFloatFrameConvention::LegacyReloading
+                            {
+                                // A legacy return reloads x from its spill,
+                                // so the else arm is no longer a bare branch
+                                // that can fold into the condition itself.
+                                let else_label = self.fresh_label();
+                                self.emit_branch_conditional_to(options, condition_bit, else_label);
+                                self.emit_writeback_block(then_body, bindings, join, epilogue)?;
+                                self.bind_label(else_label);
+                                self.emit_writeback_block(else_body, bindings, join, epilogue)?;
+                                index += 1;
+                                continue;
+                            }
                             // BOTH arms leave: the else's b-epilogue folds
                             // into the skip branch itself (measured M1:
                             // cmpwi; bne EPI; fadd; b EPI).

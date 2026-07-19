@@ -482,22 +482,41 @@ impl Generator {
                 || !(covered(block, name) && !else_body.is_empty() && covered(else_body, name))
         });
         let scratch_taken = scratch_written && any_original_survives;
-        let mut next_general = if guard_local.is_some() { 4u8 } else { 3u8 };
-        let guard_register = 3u8;
-        let mut registers: Vec<u8> = Vec::new();
-        let mut r0_used = scratch_taken;
-        for _ in &locals {
-            if !r0_used {
-                registers.push(0);
-                r0_used = true;
-            } else {
-                registers.push(next_general);
-                next_general += 1;
-            }
+        let legacy_reloading = self.behavior.punned_float_frame_convention
+            == mwcc_versions::PunnedFloatFrameConvention::LegacyReloading;
+        let outer_laddered =
+            !else_body.is_empty() || (guard_local.is_some() && guard_compare.is_none());
+        if outer_laddered && !(guard_local.is_some() && guard_compare.is_none()) {
+            // Only the measured multi-read guard enters the outer ladder
+            // walker; other ladder forms remain deferred.
+            return Ok(false);
         }
+        let guard_source = guard_local
+            .as_ref()
+            .and_then(|guard| locals.iter().position(|&(name, _)| name == guard.source));
+        let source_read_in_block = guard_local.as_ref().is_some_and(|guard| {
+            block_reads(block, guard.source) + block_reads(else_body, guard.source) != 0
+        });
+        let roles = super::policy::plan_guard_registers(
+            legacy_reloading,
+            guard_compare.is_some(),
+            locals.len(),
+            guard_source,
+            source_read_in_block,
+            scratch_taken,
+            guard_local.is_some(),
+        );
+        let registers = &roles.homes;
+        let load_registers = &roles.loads;
+        let guard_register = roles.guard;
         // Live int params below the allocated range are unmeasured — every
         // capture either had none or had them freed by the outer condition.
-        let top = registers.iter().copied().max().unwrap_or(0);
+        let top = registers
+            .iter()
+            .chain(load_registers.iter())
+            .copied()
+            .max()
+            .unwrap_or(0);
         for parameter in &function.parameters {
             if parameter.parameter_type == Type::Double {
                 continue;
@@ -510,20 +529,25 @@ impl Generator {
             }
         }
         // -- commit --
-        self.frame_size = 16;
+        let frame_size = super::policy::guard_frame_size(
+            legacy_reloading,
+            float_guard.is_some(),
+            outer_laddered,
+        );
+        self.frame_size = frame_size;
         self.output
             .instructions
             .push(Instruction::StoreWordWithUpdate {
                 s: 1,
                 a: 1,
-                offset: -16,
+                offset: -frame_size,
             });
         let hoisted = if guard_local.is_none() && float_guard.is_none() {
             Some(self.emit_condition_test(condition)?)
         } else {
             None
         };
-        if let Some((huge, _)) = float_guard {
+        if let Some((huge, _)) = float_guard.filter(|_| !legacy_reloading) {
             // The huge pool load precedes the spill (measured).
             self.load_double_constant(0, huge);
         }
@@ -534,17 +558,30 @@ impl Generator {
                 a: 1,
                 offset: 8,
             });
-        if let Some((_, zero)) = float_guard {
+        if let Some((huge, zero)) = float_guard {
             // fadd f1,f0,f1 clobbers x's register — the spill covers the
             // tail's reload; the pooled 0.0 loads before the int reads.
-            self.output
-                .instructions
-                .push(Instruction::FloatAddDouble { d: 1, a: 0, b: 1 });
-            self.load_double_constant(0, zero);
+            if legacy_reloading {
+                self.load_double_constant(2, huge);
+                self.output.instructions.push(Instruction::LoadFloatDouble {
+                    d: 1,
+                    a: 1,
+                    offset: 8,
+                });
+                self.load_double_constant(0, zero);
+                self.output
+                    .instructions
+                    .push(Instruction::FloatAddDouble { d: 1, a: 2, b: 1 });
+            } else {
+                self.output
+                    .instructions
+                    .push(Instruction::FloatAddDouble { d: 1, a: 0, b: 1 });
+                self.load_double_constant(0, zero);
+            }
         }
         for (index, &(_, offset)) in locals.iter().enumerate() {
             self.output.instructions.push(Instruction::LoadWord {
-                d: registers[index],
+                d: load_registers[index],
                 a: 1,
                 offset: 8 + offset,
             });
@@ -564,7 +601,7 @@ impl Generator {
             let source_register = locals
                 .iter()
                 .position(|&(name, _)| name == guard.source)
-                .map(|index| registers[index])
+                .map(|index| load_registers[index])
                 .expect("source is punned");
             match guard.mask {
                 Some(mask) => {
@@ -603,16 +640,6 @@ impl Generator {
         }
         let join = self.fresh_label();
         let epilogue = self.fresh_label();
-        let outer_laddered =
-            !else_body.is_empty() || (guard_local.is_some() && guard_compare.is_none());
-        if outer_laddered && !(guard_local.is_some() && guard_compare.is_none()) {
-            // Laddered forms are BYTE-verified only for the multi-read
-            // guard (L1: the addi lands in the home and every condition
-            // reads it plainly). A single-read fold or plain/float outer
-            // condition inside the walker is unfitted (L2's inverted
-            // else-return, the hoisted double-emission) — defer.
-            return Ok(false);
-        }
         if !outer_laddered {
             let (options, condition_bit) = match hoisted {
                 Some(encoding) => encoding,
@@ -657,6 +684,13 @@ impl Generator {
                     (4, 0) // bge — the Less guard's skip sense
                 }
             };
+            if let Some(source) = roles.copied_source {
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: registers[source],
+                    a: load_registers[source],
+                    immediate: 0,
+                });
+            }
             self.emit_branch_conditional_to(options, condition_bit, join);
         }
         // The punned locals resolve in every inner condition through
@@ -735,7 +769,7 @@ impl Generator {
         self.output.instructions.push(Instruction::AddImmediate {
             d: 1,
             a: 1,
-            immediate: 16,
+            immediate: frame_size,
         });
         self.output
             .instructions
@@ -768,6 +802,7 @@ impl Generator {
             + 2 * inner_conditions as u32
             + else_arms as u32
             + outer_laddered as u32
+            + roles.copied_source.is_some() as u32
             + count_fadd_returns(block)
             + count_fadd_returns(else_body);
         Ok(true)
