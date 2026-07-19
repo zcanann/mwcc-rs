@@ -98,7 +98,7 @@ fn pack_bit_field(image: &mut [u8], unit_base: usize, bit_offset: u8, width: u8,
     }
 }
 
-fn type_size(declared: Type) -> u16 {
+pub(crate) fn type_size(declared: Type) -> u16 {
     match declared {
         Type::Pointer(_) | Type::StructPointer { .. } => 4,
         Type::Struct { size, .. } => size,
@@ -108,7 +108,7 @@ fn type_size(declared: Type) -> u16 {
 
 /// A type's alignment for laying out a struct member: a struct value aligns to its
 /// own alignment (not its size), every other type to its size.
-fn type_alignment(declared: Type) -> u16 {
+pub(crate) fn type_alignment(declared: Type) -> u16 {
     match declared {
         Type::Struct { align, .. } => align as u16,
         other => type_size(other),
@@ -1312,6 +1312,16 @@ impl Parser {
             if *self.peek() == Token::EndOfFile {
                 return Ok(());
             }
+            if self.cplusplus
+                && matches!(self.peek(), Token::Identifier(word) if word == "class")
+                && matches!(self.peek_at(1), Token::Identifier(_))
+            {
+                let (name, layout, class) = self.parse_class_definition()?;
+                self.struct_typedefs.insert(name.clone(), name.clone());
+                self.structs.insert(name.clone(), layout);
+                self.cxx_classes.insert(name, class);
+                return Ok(());
+            }
             // A Metrowerks inline-`asm` function DEFINITION: `[static] asm <ret>
             // name(params) { <instructions> }`. Its body is assembled verbatim (no C
             // codegen), so it is parsed by its own path. A bodyless `asm` prototype
@@ -2227,12 +2237,23 @@ impl Parser {
             }
             self.expect(Token::ParenClose)?;
 
+            let constructor_scope = member_scope
+                .as_ref()
+                .filter(|scope| scope.as_str() == name.as_str())
+                .cloned();
+            let constructor_initializers = if let Some(scope) = &constructor_scope {
+                self.parse_constructor_initializers(scope)?
+            } else {
+                Vec::new()
+            };
+
             if let Some(scope) = member_scope {
                 let explicit_types: Vec<Type> = parameters
                     .iter()
                     .map(|parameter| parameter.parameter_type)
                     .collect();
-                name = crate::cxx::mangle_member_function(&scope, &name, &explicit_types)?;
+                let source_name = if constructor_scope.is_some() { "__ct" } else { &name };
+                name = crate::cxx::mangle_member_function(&scope, source_name, &explicit_types)?;
                 parameters.insert(
                     0,
                     Parameter {
@@ -2348,6 +2369,11 @@ impl Parser {
             }
             let mut function =
                 self.function_body(return_type, name, function_is_static, parameters)?;
+            if !constructor_initializers.is_empty() {
+                function
+                    .statements
+                    .splice(0..0, constructor_initializers);
+            }
             function.is_weak = function_is_weak;
             function.section = declspec_section.clone().or(proto_section);
             function.text_deferred = materialize_by_calls;

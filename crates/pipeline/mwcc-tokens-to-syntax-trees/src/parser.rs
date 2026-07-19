@@ -58,6 +58,8 @@ pub(crate) struct Parser {
     pub(crate) skipped_static_inline_label_base: u8,
     /// Declared struct layouts, by tag name.
     pub(crate) structs: HashMap<String, StructLayout>,
+    /// C++-specific base and declaration-order information for class layouts.
+    pub(crate) cxx_classes: HashMap<String, crate::cxx::ClassLayout>,
     /// Single-parameter C++ struct templates whose instance fields can be laid
     /// out when a concrete typedef such as `Vector3<float>` is encountered.
     pub(crate) struct_templates: HashMap<String, StructTemplate>,

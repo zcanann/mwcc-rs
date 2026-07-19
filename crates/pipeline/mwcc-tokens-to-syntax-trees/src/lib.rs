@@ -31,6 +31,7 @@ pub fn parse_translation_unit(
     // (`int const g = 5;` KEEPS its const: it routes the global to the
     // read-only section.)
     let mut tokens = cxx::normalize_linkage_specifications(tokens);
+    tokens = cxx::normalize_constructor_declarators(tokens);
     let mut index = 0;
     while index + 1 < tokens.len() {
         let is_east_pointee_qualifier = matches!(&tokens[index], Token::Identifier(word) if word == "const" || word == "volatile")
@@ -67,6 +68,7 @@ pub fn parse_translation_unit(
         cplusplus_stack: Vec::new(),
         force_active: false,
         structs: HashMap::new(),
+        cxx_classes: HashMap::new(),
         struct_templates: HashMap::new(),
         variable_structs: HashMap::new(),
         function_return_structs: HashMap::new(),
