@@ -544,13 +544,14 @@ impl Generator {
         let _ = Statement::Return(None); // keep the use import stable
 
         // ---- emission (rollback on a tail decline) ----
+        let has_else_composition = composition.is_some();
         let instructions_before = self.output.instructions.len();
         let relocations_before = self.output.relocations.len();
         let bump_before = self.output.anonymous_label_bump;
         let frame_before = self.frame_size;
         let legacy_reloading = self.behavior.punned_float_frame_convention
             == mwcc_versions::PunnedFloatFrameConvention::LegacyReloading;
-        let legacy_composed_frame = legacy_reloading && composition.is_some();
+        let legacy_composed_frame = legacy_reloading && has_else_composition;
         // The frame drives the extab/extabindex sections; the nested fctiwz
         // form needs a second conversion slot.
         let mut frame_size: i16 = if legacy_composed_frame {
@@ -888,6 +889,13 @@ impl Generator {
         // are otherwise unchanged in every measured generation.
         if nested && self.behavior.deferred_inlining {
             self.output.anonymous_label_bump += 3;
+        }
+        // The k_cos-specific inner qx diamond/else composition retains a
+        // second hidden block under deferred compilation. Its size contracts
+        // from seven labels in builds 163/53 to two in build 81 and later.
+        if has_else_composition {
+            self.output.anonymous_label_bump +=
+                u32::from(self.behavior.punned_float_composition_deferred_label_bump);
         }
         Ok(true)
     }

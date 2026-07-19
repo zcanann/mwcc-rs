@@ -536,6 +536,9 @@ pub struct Behavior {
     pub negate_before_zero_equality: bool,
     /// Frame/merge convention for type-punned floating parameters.
     pub punned_float_frame_convention: PunnedFloatFrameConvention,
+    /// Additional labels retained by deferred punned-float else compositions.
+    /// Zero for ordinary compilation.
+    pub punned_float_composition_deferred_label_bump: u8,
     /// Lowering of conditional punned integer writebacks.
     pub punned_conditional_writeback_style: PunnedConditionalWritebackStyle,
     /// Frame, reload, and integer-allocation convention for shifted-mask writebacks.
@@ -708,6 +711,14 @@ impl Behavior {
             stored_global_read_style: config.build.profile.stored_global_read_style(),
             negate_before_zero_equality: config.build.profile.negate_before_zero_equality(),
             punned_float_frame_convention: config.build.profile.punned_float_frame_convention(),
+            punned_float_composition_deferred_label_bump: if config.flags.inline_deferred {
+                config
+                    .build
+                    .profile
+                    .punned_float_composition_deferred_label_bump()
+            } else {
+                0
+            },
             punned_conditional_writeback_style: config
                 .build
                 .profile

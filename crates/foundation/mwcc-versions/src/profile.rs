@@ -734,6 +734,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         PunnedFloatFrameConvention::CompactLiveParameter
     }
 
+    /// Hidden labels retained by the deferred k_cos-style else composition.
+    /// Build 81 and later retain two; earlier builds override with seven.
+    fn punned_float_composition_deferred_label_bump(&self) -> u8 {
+        2
+    }
+
     fn punned_conditional_writeback_style(&self) -> PunnedConditionalWritebackStyle {
         PunnedConditionalWritebackStyle::Optimized
     }
@@ -868,6 +874,10 @@ impl CodegenProfile for Gc13Build53 {
 
     fn frexp_deferred_label_bump(&self) -> u8 {
         5
+    }
+
+    fn punned_float_composition_deferred_label_bump(&self) -> u8 {
+        7
     }
 }
 
@@ -1021,6 +1031,9 @@ impl CodegenProfile for Gc233Build163 {
     }
     fn punned_float_frame_convention(&self) -> PunnedFloatFrameConvention {
         PunnedFloatFrameConvention::LegacyReloading
+    }
+    fn punned_float_composition_deferred_label_bump(&self) -> u8 {
+        7
     }
     fn punned_conditional_writeback_style(&self) -> PunnedConditionalWritebackStyle {
         PunnedConditionalWritebackStyle::BranchDiamond
