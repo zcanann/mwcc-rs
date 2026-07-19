@@ -552,7 +552,14 @@ impl Generator {
         // The frame drives the extab/extabindex sections; the nested fctiwz
         // form needs a second conversion slot.
         let mut frame_size: i16 = if nested { 32 } else { 16 };
-        if legacy_reloading {
+        let legacy_nested_tail_slot = nested
+            && synthetic
+                .locals
+                .iter()
+                .filter(|local| local.declared_type == Type::Double)
+                .count()
+                >= 2;
+        if legacy_reloading && (!nested || legacy_nested_tail_slot) {
             frame_size += 8;
         }
         self.frame_size = frame_size;
@@ -632,10 +639,27 @@ impl Generator {
                     condition_bit: 0,
                     target: 0,
                 });
+            if legacy_reloading {
+                // Build 163 does not keep the punned parameter live across
+                // the outer integer comparison. Reload the conversion input;
+                // the float tail receives its own independently allocated
+                // reload after the guard.
+                self.output.instructions.push(Instruction::LoadFloatDouble {
+                    d: 1,
+                    a: 1,
+                    offset: 8,
+                });
+            }
             self.output
                 .instructions
                 .push(Instruction::ConvertToIntegerWordZero { d: 0, b: 1 });
-            let conversion_slot: i16 = if composition.is_some() { 24 } else { 16 };
+            let conversion_slot: i16 = if legacy_reloading {
+                frame_size - 8
+            } else if composition.is_some() {
+                24
+            } else {
+                16
+            };
             self.output
                 .instructions
                 .push(Instruction::StoreFloatDouble {
