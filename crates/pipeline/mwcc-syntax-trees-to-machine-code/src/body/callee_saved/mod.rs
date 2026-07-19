@@ -14,6 +14,7 @@ mod fixed_rmw_leaf;
 mod fixed_rmw_legacy;
 mod fixed_rmw_recognize;
 mod frame_convention;
+mod later_call_arguments;
 mod global_swap;
 mod guarded_initialization;
 mod guarded_pointer_call;
@@ -276,6 +277,19 @@ impl Generator {
                 .any(|name| expression_reads_name(expression, name)),
             _ => false,
         });
+        let first_call_reads_live = function
+            .statements
+            .iter()
+            .find(|statement| statement_has_call(statement))
+            .is_some_and(|statement| match statement {
+                Statement::Expression(expression) => live
+                    .iter()
+                    .any(|name| expression_reads_name(expression, name)),
+                Statement::Store { target, value } => live.iter().any(|name| {
+                    expression_reads_name(target, name) || expression_reads_name(value, name)
+                }),
+                _ => false,
+            });
         // (parameter index, name, incoming register) for each promoted value.
         let mut promoted: Vec<(usize, String, u8)> = Vec::new();
         for name in &live {
@@ -319,7 +333,28 @@ impl Generator {
                     if live.iter().all(|name|
                         expression_reads_name(target, name) || expression_reads_name(value, name))
             );
-        if passed_to_call && !single_store_consumes_both {
+        let return_reads_live = function.return_expression.as_ref().is_some_and(|expression| {
+            live.iter()
+                .any(|name| expression_reads_name(expression, name))
+        });
+        let later_call_argument_survivors = passed_to_call
+            && !first_call_reads_live
+            && !has_store
+            && !return_reads_live
+            && count == 2
+            && self.behavior.frame_convention == FrameConvention::Predecrement
+            && function.statements.iter().all(|statement| {
+                matches!(statement, Statement::Expression(Expression::Call { .. }))
+            })
+            && matches!(
+                function.statements.first(),
+                Some(Statement::Expression(Expression::Call { arguments, .. }))
+                    if matches!(arguments.get(1), Some(Expression::IntegerLiteral(_) | Expression::StringLiteral(_)))
+            );
+        if passed_to_call
+            && !single_store_consumes_both
+            && !later_call_argument_survivors
+        {
             return Ok(false);
         }
         if has_store
@@ -382,7 +417,7 @@ impl Generator {
         // values through a multiply, or three or more values (multi-step), reschedule
         // the restores. Restrict count > 1 to that one safe shape. (A two-value store sink
         // has its own epilogue order above, so it skips this return-shape gate.)
-        if count >= 2 && !has_store {
+        if count >= 2 && !has_store && return_reads_live {
             let single_op = matches!(
                 function.return_expression.as_ref(),
                 Some(Expression::Binary { operator, left, right })
@@ -418,6 +453,12 @@ impl Generator {
         self.frame_size = frame_size;
         self.legacy_callee_saved_frame_layout =
             LegacyCalleeSavedFrameLayout::RetainEntryParameterTable;
+        if later_call_argument_survivors {
+            // This family explicitly fills a save/copy latency slot below. The
+            // generic list scheduler would canonicalize the independent setup
+            // back into the body and undo that measured schedule.
+            self.output.pre_scheduled = true;
+        }
         // Phase D: the promoted parameters' homes are virtuals, created highest-rank
         // first — id order reproduces r31, r30, … through the callee-saved pool. The
         // interleaved save+move prologue comes from the FRAME BUILDER.
@@ -455,8 +496,12 @@ impl Generator {
                 }
             }
         }
-        for statement in &function.statements {
+        let body_start = self.output.instructions.len();
+        for (statement_index, statement) in function.statements.iter().enumerate() {
             self.emit_statement(statement)?;
+            if later_call_argument_survivors && statement_index == 0 {
+                self.schedule_later_call_argument_prologue(body_start)?;
+            }
             if !remapped && statement_has_call(statement) {
                 for (rank, (_, name, _)) in promoted.iter().rev().enumerate() {
                     if let Some(location) = self.locations.get_mut(name) {

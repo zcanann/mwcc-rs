@@ -2418,20 +2418,21 @@ impl Generator {
                 });
                 return Ok(());
             }
-            // The address of a data global. Under small-data this is `addi d,r13,ga@sda21`
-            // — the EMB_SDA21 relocation (the addi counterpart of the SDA value load),
-            // encoded as `addi d,0,0` pre-link.
-            if !self.locations.contains_key(name)
-                && self.globals.contains_key(name.as_str())
-                && self.behavior.global_addressing == GlobalAddressing::SmallData
-            {
-                self.record_relocation(RelocationKind::EmbSda21, name);
-                self.output.instructions.push(Instruction::AddImmediate {
-                    d: destination,
-                    a: 0,
-                    immediate: 0,
-                });
-                return Ok(());
+            // The address of a data global follows the OBJECT'S storage class:
+            // <=8 bytes may use SDA21, while a larger struct/array needs an
+            // ADDR16_HA/LO pair even when small-data addressing is enabled.
+            if !self.locations.contains_key(name) {
+                if let Some(&global_type) = self.globals.get(name.as_str()) {
+                    let total_size = self
+                        .global_array_sizes
+                        .get(name.as_str())
+                        .copied()
+                        .unwrap_or_else(|| match global_type {
+                            Type::Struct { size, .. } => u32::from(size),
+                            other => u32::from(other.width()).div_ceil(8),
+                        });
+                    return self.emit_global_array_base(name, total_size, destination);
+                }
             }
         }
         if let Expression::Index { base, index } = operand {

@@ -2287,6 +2287,9 @@ impl Parser {
                 if let Some(section) = &declspec_section {
                     self.section_functions.insert(name.clone(), section.clone());
                 }
+                if is_variadic {
+                    self.variadic_definitions.insert(name.clone());
+                }
                 prototypes.push((name, return_type, parameter_types));
                 return Ok(());
             }

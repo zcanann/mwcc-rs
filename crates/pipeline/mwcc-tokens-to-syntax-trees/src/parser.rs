@@ -98,7 +98,7 @@ pub(crate) struct Parser {
     pub(crate) global_sizes: HashMap<String, (u32, Option<u32>)>,
     /// `typedef`-declared type aliases (e.g. `u32` -> `unsigned int`).
     pub(crate) typedefs: HashMap<String, Type>,
-    /// Names of variadic function DEFINITIONS (side-set — never in the hashed AST).
+    /// Names of variadic function declarations/definitions (side-set — never in the hashed AST).
     pub(crate) variadic_definitions: std::collections::HashSet<String>,
     /// A float-array element whose initializer did NOT fold to a constant —
     /// stashed by `parse_scalar_constant` for the caller to attribute to an

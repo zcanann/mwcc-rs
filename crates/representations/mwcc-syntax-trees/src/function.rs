@@ -240,9 +240,9 @@ pub struct TranslationUnit {
     /// Skipped `inline` function definitions: each advanced mwcc's `@N` counter
     /// by 3 (compiled then dropped), so the writer pre-bumps the numbering.
     pub skipped_inline_functions: usize,
-    /// Names of VARIADIC function definitions in this unit. Kept OUTSIDE
-    /// `Function` so capture AST hashes stay stable; the general lowering
-    /// defers these (the variadic-register-save prologue is capture-only).
+    /// Names of VARIADIC function declarations/definitions in this unit. Kept
+    /// OUTSIDE `Function` so capture AST hashes stay stable. Definitions still
+    /// defer in general lowering; call sites use this to emit the EABI CR marker.
     pub variadic_definitions: std::collections::HashSet<String>,
     /// Per static-local NAME, the skipped-inline bump total at its declaration
     /// point (the parser's positional sample) — statics number off the

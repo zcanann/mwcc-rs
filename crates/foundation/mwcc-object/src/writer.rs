@@ -952,6 +952,43 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             && !static_forward(object)
             && object.static_local_owner.is_none()
     };
+    // Most pending zero statics are created in the early LOCAL-data phase below. When a
+    // function discovers one only after discovering one of its string literals, however,
+    // mwcc preserves that creation order: the function's `@N` strings precede the static.
+    // Keep only those first references for the per-function pass. This is intentionally a
+    // relocation timeline (rather than declaration order), matching the scheduler-hoisted
+    // zero-static behavior documented below.
+    let pending_zero_names: std::collections::HashSet<&str> = input
+        .data_objects
+        .iter()
+        .filter(|object| is_pending_zero_static(object))
+        .map(|object| object.name)
+        .collect();
+    let mut first_referenced_zero: std::collections::HashSet<&str> =
+        std::collections::HashSet::new();
+    let mut zero_statics_after_function_strings: std::collections::HashSet<&str> =
+        std::collections::HashSet::new();
+    for function in functions {
+        let strings_emit_at_front = function.string_number_after_constants.is_none()
+            && function.string_number_after_rodata.is_none();
+        let function_strings: std::collections::HashSet<&str> =
+            function.string_names.iter().map(String::as_str).collect();
+        let mut saw_string_reference = false;
+        for relocation in &function.relocations {
+            let name = match &relocation.target {
+                RelocationTarget::External(name)
+                | RelocationTarget::ExternalWithAddend(name, _) => name.as_str(),
+                _ => continue,
+            };
+            if function_strings.contains(name) {
+                saw_string_reference = true;
+            } else if pending_zero_names.contains(name) && first_referenced_zero.insert(name) {
+                if strings_emit_at_front && saw_string_reference {
+                    zero_statics_after_function_strings.insert(name);
+                }
+            }
+        }
+    }
     // A `.rodata` base ANCHOR: when codegen addresses the read-only tables
     // through one section-relative base (s_atan's atanhi/atanlo/aT off a
     // single lis/addi pair), mwcc emits a zero-size LOCAL `STT_NOTYPE`
@@ -1098,6 +1135,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // wind_waker abort_exit — __atexit_funcs before __atexit_curr_func,
         // opposite to the AST order symbol_order carries).
         for name in relocation_names {
+            if zero_statics_after_function_strings.contains(name) {
+                continue;
+            }
             if let Some(object) = input
                 .data_objects
                 .iter()
@@ -1121,7 +1161,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         }
     }
     for object in input.data_objects.iter().rev() {
-        if is_pending_zero_static(object) && !emitted_zero_static.contains(object.name) {
+        if is_pending_zero_static(object)
+            && !zero_statics_after_function_strings.contains(object.name)
+            && !emitted_zero_static.contains(object.name)
+        {
             local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(data_section[object.name]) as u16;
             write_symbol(
@@ -1348,6 +1391,39 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     section,
                 );
                 comment_values.push((data_aligns[name.as_str()], 0));
+            }
+            // A zero-filled file static first referenced after one of these strings is
+            // created here as part of the same function-local symbol timeline.
+            for relocation in &function.relocations {
+                let name = match &relocation.target {
+                    RelocationTarget::External(name)
+                    | RelocationTarget::ExternalWithAddend(name, _) => name.as_str(),
+                    _ => continue,
+                };
+                if !zero_statics_after_function_strings.contains(name) {
+                    continue;
+                }
+                let Some(object) = input
+                    .data_objects
+                    .iter()
+                    .find(|object| object.name == name && is_pending_zero_static(object))
+                else {
+                    continue;
+                };
+                if emitted_zero_static.insert(object.name) {
+                    local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
+                    let section = index_of(data_section[object.name]) as u16;
+                    write_symbol(
+                        &mut symtab,
+                        strtab.add(object.name),
+                        data_offsets[object.name],
+                        data_sizes[object.name],
+                        STB_LOCAL_OBJECT,
+                        0,
+                        section,
+                    );
+                    comment_values.push((data_aligns[object.name], 0));
+                }
             }
         }
         // The anonymous rodata blob's LOCAL `@N` symbol precedes the pool

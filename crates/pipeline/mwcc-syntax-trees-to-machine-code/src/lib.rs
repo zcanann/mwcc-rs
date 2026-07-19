@@ -150,6 +150,7 @@ pub fn lower_function(
     let variadic_definition = variadic_definitions.contains(&function.name);
     let mut generator = Generator {
         variadic_definition,
+        variadic_callees: variadic_definitions.clone(),
         output: MachineFunction::new(function.name.clone()),
         labels: mwcc_vreg::Labels::default(),
         locations: HashMap::new(),

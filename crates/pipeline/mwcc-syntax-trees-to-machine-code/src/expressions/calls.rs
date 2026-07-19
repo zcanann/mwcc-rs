@@ -117,6 +117,11 @@ impl Generator {
             ));
         }
         self.emit_arguments(arguments, name)?;
+        if self.variadic_callees.contains(name) {
+            self.output
+                .instructions
+                .push(Instruction::ConditionRegisterClear { d: 6 });
+        }
         self.record_relocation(RelocationKind::Rel24, name);
         self.output.instructions.push(Instruction::BranchAndLink {
             target: name.to_string(),
@@ -245,6 +250,59 @@ impl Generator {
                     }
                     _ => {}
                 }
+            }
+            let address_array_constant = match arguments {
+                [
+                    Expression::AddressOf { operand },
+                    Expression::Variable(array),
+                    Expression::IntegerLiteral(value),
+                ] if (i16::MIN as i64..=i16::MAX as i64).contains(value) => {
+                    let Expression::Variable(addressed) = operand.as_ref() else {
+                        return Err(Diagnostic::error(
+                            "a constant argument after a global load needs the LR-store-latency schedule (roadmap)",
+                        ));
+                    };
+                    let addressed_size = self.globals.get(addressed.as_str()).map(|ty| match ty {
+                        Type::Struct { size, .. } => u32::from(*size),
+                        other => u32::from(other.width()).div_ceil(8),
+                    });
+                    let array_size = self.global_array_sizes.get(array.as_str()).copied();
+                    let absolute = self.behavior.global_addressing == GlobalAddressing::Absolute;
+                    match (addressed_size, array_size) {
+                        (Some(first), Some(second))
+                            if absolute || (first > 8 && second > 8) =>
+                        {
+                            Some((addressed.clone(), array.clone(), *value as i16))
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            if let Some((addressed, array, value)) = address_array_constant {
+                // Two large object addresses plus an i16 constant use both
+                // address-high instructions first, then fill each dependent
+                // addi's latency slot: lis r3; lis r4; addi r3; li r5; addi r4.
+                self.emit_address_high(Eabi::FIRST_GENERAL_ARGUMENT, &addressed);
+                self.emit_address_high(Eabi::FIRST_GENERAL_ARGUMENT + 1, &array);
+                self.record_relocation(RelocationKind::Addr16Lo, &addressed);
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: Eabi::FIRST_GENERAL_ARGUMENT,
+                    a: Eabi::FIRST_GENERAL_ARGUMENT,
+                    immediate: 0,
+                });
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: Eabi::FIRST_GENERAL_ARGUMENT + 2,
+                    a: 0,
+                    immediate: value,
+                });
+                self.record_relocation(RelocationKind::Addr16Lo, &array);
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                    a: Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                    immediate: 0,
+                });
+                return Ok(());
             }
             if constant_after_global {
                 let direct_call =

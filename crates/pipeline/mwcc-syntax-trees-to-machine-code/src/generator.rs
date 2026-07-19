@@ -123,6 +123,9 @@ pub(crate) struct Generator {
     /// This function is a VARIADIC definition — only a capture may emit it
     /// (the register-save prologue is unmodeled in general codegen).
     pub(crate) variadic_definition: bool,
+    /// Direct callees declared variadic. EABI callers clear CR bit 6 before
+    /// branching so the callee knows no floating argument registers are live.
+    pub(crate) variadic_callees: HashSet<String>,
     pub(crate) output: MachineFunction,
     /// Branch labels awaiting resolution — the multi-block emission substrate.
     /// Resolved into `output.instructions` once body emission completes.
