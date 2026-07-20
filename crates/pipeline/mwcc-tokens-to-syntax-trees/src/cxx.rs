@@ -56,6 +56,7 @@ pub(crate) struct RecoveredCxxMethod {
     pub(crate) mangled: String,
     pub(crate) fixed_parameter_count: usize,
     pub(crate) variadic: bool,
+    pub(crate) parameters: Vec<Type>,
 }
 
 /// One entry in CodeWarrior's primary virtual table. Slot offsets include the
@@ -376,7 +377,7 @@ impl Parser {
         &mut self,
         source_name: &str,
         mangled: &str,
-        fixed_parameter_count: usize,
+        parameters: &[Type],
         variadic: bool,
     ) {
         let key = self.free_cxx_source_name(source_name);
@@ -384,8 +385,9 @@ impl Parser {
         if !methods.iter().any(|method| method.mangled == mangled) {
             methods.push(RecoveredCxxMethod {
                 mangled: mangled.to_string(),
-                fixed_parameter_count,
+                fixed_parameter_count: parameters.len(),
                 variadic,
+                parameters: parameters.to_vec(),
             });
         }
     }
@@ -395,7 +397,7 @@ impl Parser {
         scope: &str,
         source_name: &str,
         mangled: &str,
-        fixed_parameter_count: usize,
+        parameters: &[Type],
         variadic: bool,
     ) {
         let key = format!("{scope}::{source_name}");
@@ -403,8 +405,9 @@ impl Parser {
         if !methods.iter().any(|method| method.mangled == mangled) {
             methods.push(RecoveredCxxMethod {
                 mangled: mangled.to_string(),
-                fixed_parameter_count,
+                fixed_parameter_count: parameters.len(),
                 variadic,
+                parameters: parameters.to_vec(),
             });
         }
     }
@@ -412,7 +415,7 @@ impl Parser {
     pub(crate) fn resolve_free_cxx_call(
         &self,
         source_name: &str,
-        argument_count: usize,
+        arguments: &[Expression],
     ) -> Compilation<Option<String>> {
         let key = self.free_cxx_source_name(source_name);
         let candidates: Vec<&RecoveredCxxMethod> = self
@@ -421,16 +424,14 @@ impl Parser {
             .into_iter()
             .flatten()
             .filter(|method| {
-                method.fixed_parameter_count == argument_count
-                    || (method.variadic && argument_count >= method.fixed_parameter_count)
+                method.fixed_parameter_count == arguments.len()
+                    || (method.variadic && arguments.len() >= method.fixed_parameter_count)
             })
             .collect();
         match candidates.as_slice() {
             [] => Ok(None),
             [method] => Ok(Some(method.mangled.clone())),
-            _ => Err(Diagnostic::error(format!(
-                "C++ free-function call '{key}' is ambiguous (roadmap)"
-            ))),
+            _ => self.resolve_exact_cxx_overload(&key, &candidates, arguments),
         }
     }
 
@@ -438,7 +439,7 @@ impl Parser {
         &self,
         scope: &str,
         source_name: &str,
-        argument_count: usize,
+        arguments: &[Expression],
     ) -> Compilation<Option<String>> {
         let key = format!("{scope}::{source_name}");
         let candidates: Vec<&RecoveredCxxMethod> = self
@@ -447,16 +448,68 @@ impl Parser {
             .into_iter()
             .flatten()
             .filter(|method| {
-                method.fixed_parameter_count == argument_count
-                    || (method.variadic && argument_count >= method.fixed_parameter_count)
+                method.fixed_parameter_count == arguments.len()
+                    || (method.variadic && arguments.len() >= method.fixed_parameter_count)
             })
             .collect();
         match candidates.as_slice() {
             [] => Ok(None),
             [method] => Ok(Some(method.mangled.clone())),
+            _ => self.resolve_exact_cxx_overload(&key, &candidates, arguments),
+        }
+    }
+
+    /// Resolve an arity collision only when every argument's source type is
+    /// recoverable and selects exactly one declaration. This intentionally
+    /// implements exact matches before C++ conversion ranking; unresolved
+    /// promotion/conversion cases continue to defer instead of guessing.
+    fn resolve_exact_cxx_overload(
+        &self,
+        key: &str,
+        candidates: &[&RecoveredCxxMethod],
+        arguments: &[Expression],
+    ) -> Compilation<Option<String>> {
+        let Some(argument_types) = arguments
+            .iter()
+            .map(|argument| self.cxx_expression_type(argument))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return Err(Diagnostic::error(format!(
+                "C++ function call '{key}' is ambiguous (roadmap)"
+            )));
+        };
+        let exact: Vec<_> = candidates
+            .iter()
+            .filter(|method| method.parameters == argument_types)
+            .collect();
+        match exact.as_slice() {
+            [method] => Ok(Some(method.mangled.clone())),
             _ => Err(Diagnostic::error(format!(
-                "C++ namespace function call '{key}' is ambiguous (roadmap)"
+                "C++ function call '{key}' is ambiguous (roadmap)"
             ))),
+        }
+    }
+
+    fn cxx_expression_type(&self, expression: &Expression) -> Option<Type> {
+        match expression {
+            Expression::Variable(name) => self
+                .variable_types
+                .get(name)
+                .or_else(|| self.global_types.get(name))
+                .copied(),
+            Expression::IntegerLiteral(_) => Some(Type::Int),
+            Expression::FloatLiteral(_) => Some(Type::Float),
+            Expression::Cast { target_type, .. } => Some(*target_type),
+            Expression::Member { member_type, .. } => Some(*member_type),
+            Expression::Dereference { pointer } | Expression::Index { base: pointer, .. } => match self.cxx_expression_type(pointer)? {
+                Type::Pointer(pointee) => Some(pointee.element()),
+                Type::StructPointer { element_size } => Some(Type::Struct {
+                    size: element_size,
+                    align: 1,
+                }),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
@@ -877,6 +930,7 @@ impl Parser {
                 mangled: mangled.clone(),
                 fixed_parameter_count: parameters.len(),
                 variadic,
+                parameters: parameters.clone(),
             };
             let prototype_parameters = if is_static {
                 self.cxx_static_methods

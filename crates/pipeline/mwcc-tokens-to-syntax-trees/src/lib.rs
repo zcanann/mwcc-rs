@@ -1603,6 +1603,28 @@ mod tests {
     }
 
     #[test]
+    fn resolves_exact_cxx_overloads_from_dereferenced_argument_types() {
+        let source = r#"
+            int lower(char value) { return value; }
+            int lower(int value) { return value; }
+            int use(char* text) { return lower(text[0]); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[2].return_expression,
+            Some(mwcc_syntax_trees::Expression::Call { name, .. })
+                if name == "lower__Fc"
+        ));
+    }
+
+    #[test]
     fn leaves_primary_templates_on_the_recovery_path() {
         let source = r#"
             template <typename T> int value(T value) { return value; }

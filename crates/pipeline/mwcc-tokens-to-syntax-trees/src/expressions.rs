@@ -629,7 +629,7 @@ impl Parser {
                         self.resolve_qualified_free_cxx_call(
                             &scope,
                             &member,
-                            arguments.len(),
+                            &arguments,
                         )?
                         .ok_or_else(|| {
                             Diagnostic::error(format!(
@@ -699,7 +699,7 @@ impl Parser {
                         }
                         _ => {
                             let name = if self.cplusplus {
-                                self.resolve_free_cxx_call(&name, arguments.len())?
+                                self.resolve_free_cxx_call(&name, &arguments)?
                                     .unwrap_or(name)
                             } else {
                                 name

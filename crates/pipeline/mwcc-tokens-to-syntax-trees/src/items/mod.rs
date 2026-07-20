@@ -2561,7 +2561,10 @@ impl Parser {
                     scope,
                     &source_name,
                     &name,
-                    parameters.len(),
+                    &parameters
+                        .iter()
+                        .map(|parameter| parameter.parameter_type)
+                        .collect::<Vec<_>>(),
                     is_variadic,
                 );
                 if let Some(tag) = &return_struct_tag {
@@ -2577,7 +2580,10 @@ impl Parser {
                 self.register_free_cxx_function(
                     &source_name,
                     &name,
-                    parameters.len(),
+                    &parameters
+                        .iter()
+                        .map(|parameter| parameter.parameter_type)
+                        .collect::<Vec<_>>(),
                     is_variadic,
                 );
                 if let Some(tag) = &return_struct_tag {
