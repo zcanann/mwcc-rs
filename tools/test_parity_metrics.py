@@ -26,6 +26,7 @@ from parity_frontier import build_frontier
 from parity_identity import configuration_id
 from parity_loop import parse_args as parse_loop_args
 from reference_parity import (
+    code_verdict,
     harness_fingerprint,
     parity_metadata,
     result_cache_name,
@@ -74,6 +75,18 @@ class IdentityTests(unittest.TestCase):
             {"oracle_direct": "RUNNABLE", "comparison_input": "DIRECT"},
         )
         self.assertEqual(verdict_line(output), "BYTE src/test.c — exact")
+
+    def test_runner_code_layer_requires_explicit_projection_or_exact_object(self):
+        self.assertEqual(code_verdict("BYTE src/test.c — exact", "BYTE"), "BYTE")
+        self.assertEqual(
+            code_verdict("DEFER test.c — debug\nCODE BYTE — projected", "DEFER"),
+            "BYTE",
+        )
+        self.assertEqual(
+            code_verdict("DIFF test.c\nCODE DIFF — mismatch", "DIFF"),
+            "DIFF",
+        )
+        self.assertIsNone(code_verdict("DEFER test.c — parser", "DEFER"))
 
     def test_harness_fingerprint_covers_every_row_classification_input(self):
         names = (

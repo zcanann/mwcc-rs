@@ -203,6 +203,21 @@ def parity_metadata(output: str) -> Dict[str, str]:
     return metadata
 
 
+def code_verdict(output: str, object_status: str) -> Optional[str]:
+    """Return the independently measured code+text-relocation result.
+
+    Whole-object equality implies code equality. Other object outcomes count
+    only when refctx emitted an explicit same-flags code projection; parser,
+    debug, and harness failures otherwise remain unmeasured.
+    """
+
+    for line in output.splitlines():
+        for result in ("BYTE", "DIFF", "DEFER", "EMPTY"):
+            if line.startswith(f"CODE {result}"):
+                return result
+    return "BYTE" if object_status == "BYTE" else None
+
+
 def classify(output: str, returncode: int) -> str:
     first = verdict_line(output)
     for status in ("BYTE", "DIFF", "DEFER", "MISSING_DEPENDENCY", "INVALID_CONFIGURATION"):
@@ -323,6 +338,8 @@ def main() -> int:
     cached = {} if args.rerun else load_cache(cache)
     build_support: Dict[str, Tuple[bool, str]] = {}
     counts = {status: 0 for status in STATUSES}
+    code_counts = {status: 0 for status in ("BYTE", "DIFF", "DEFER", "EMPTY")}
+    code_unmeasured = 0
     reused = 0
 
     with cache.open("a", encoding="utf-8") as cache_output:
@@ -373,6 +390,11 @@ def main() -> int:
                 cache_output.write(json.dumps(record, sort_keys=True) + "\n")
                 cache_output.flush()
             counts[status] = counts.get(status, 0) + 1
+            code_status = code_verdict(detail, status)
+            if code_status is None:
+                code_unmeasured += 1
+            else:
+                code_counts[code_status] += 1
             first_detail = verdict_line(detail)
             print(
                 f'[{index}/{len(rows)}] {status:<17} {row["project"]} '
@@ -381,6 +403,14 @@ def main() -> int:
 
     summary = " / ".join(f"{status} {counts.get(status, 0)}" for status in STATUSES)
     print(f"== {len(rows)} configurations: {summary} / cached {reused} ==")
+    code_measured = code_counts["BYTE"] + code_counts["DIFF"]
+    print(
+        f"layers: whole-object exact {counts['BYTE']}/{len(rows)} configured; "
+        f"code exact {code_counts['BYTE']}/{code_measured} measured, "
+        f"wrong {code_counts['DIFF']}/{code_measured}, "
+        f"projection-deferred {code_counts['DEFER']}, empty {code_counts['EMPTY']}, "
+        f"unmeasured {code_unmeasured}"
+    )
     print(f"cache: {cache}")
     return 1 if any(
         counts[status]
