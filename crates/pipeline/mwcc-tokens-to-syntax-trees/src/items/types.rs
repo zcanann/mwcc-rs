@@ -1354,6 +1354,7 @@ impl Parser {
                 continue;
             }
             let mut field_type = self.parse_type()?;
+            let source_fundamental = self.last_source_fundamental;
             while self.eat_keyword(Token::Star) {
                 field_type = Type::Pointer(Pointee::Pointer);
                 self.last_struct_tag = None;
@@ -1407,7 +1408,7 @@ impl Parser {
                 name,
                 StructField {
                     member_type: storage_type,
-                    source_fundamental: source_fundamental(storage_type),
+                    source_fundamental,
                     offset: 0,
                     struct_tag,
                     array_element,

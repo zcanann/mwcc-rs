@@ -18,11 +18,17 @@ typedef struct {
     int* values;
 } Child;
 
+typedef union {
+    void* address;
+    long offset;
+} Choice;
+
 typedef struct {
     Named named;
     Child child;
     Child* child_pointer;
     u32* words;
+    Choice choice;
 } Root;
 
-Root root = {{0, 1}, {2, 0}, 0, 0};
+Root root = {{0, 1}, {2, 0}, 0, 0, {0}};

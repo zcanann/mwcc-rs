@@ -16,6 +16,7 @@ pub enum Tag {
     Member = 0x000d,
     CompileUnit = 0x0011,
     StructureType = 0x0013,
+    UnionType = 0x0017,
 }
 
 /// The high bits of a DWARF 1 attribute code. The low nibble is its form.

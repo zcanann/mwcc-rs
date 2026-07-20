@@ -160,7 +160,11 @@ pub(super) fn records<'a>(
                     ));
                     records.push(DebugRecord::Entry(DebugEntry {
                         id: aggregate.type_id,
-                        tag: Tag::StructureType,
+                        tag: if aggregate.definition.is_union {
+                            Tag::UnionType
+                        } else {
+                            Tag::StructureType
+                        },
                         attributes,
                     }));
                     for (member_index, member) in aggregate.definition.members.iter().enumerate() {
@@ -238,13 +242,6 @@ fn plan_aggregate<'a>(
             "debug-info: aggregate definition '{tag}' was not retained"
         ))
     })?;
-    if definition.is_union {
-        return Err(Diagnostic::error(format!(
-            "debug-info: aggregate '{}' is a union, whose legacy DWARF lowering is not implemented yet (roadmap)",
-            definition.name
-        )));
-    }
-
     // Register the type before descending so self-referential pointers close
     // the cycle without recursively duplicating the type.
     let type_id = allocate(next_id);
@@ -347,6 +344,9 @@ fn member_type_attribute(
     source_fundamental: Option<SourceFundamentalType>,
 ) -> Compilation<Attribute> {
     match declared_type {
+        Type::Pointer(_) if source_fundamental == Some(SourceFundamentalType::Void) => {
+            Ok(fundamental_attribute(FundamentalType::Pointer))
+        }
         Type::Pointer(pointee) => Ok(modified_fundamental_type(match source_fundamental {
             Some(source) => source_fundamental_type(source)?,
             None => pointee_type(pointee)?,
