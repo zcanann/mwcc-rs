@@ -2133,6 +2133,11 @@ impl Generator {
         if self.try_fixed_port_indexed_bitfield_update(function)? {
             return Ok(());
         }
+        // A two-bit enum remap feeds one state-word field and then ORs a dirty bit in another
+        // member. Keep the named remap local intact until its register schedule is recognized.
+        if self.try_enum_remap_member_update(function)? {
+            return Ok(());
+        }
         // A function's value-tracked locals are folded into its stores and trailing return,
         // then recompiled — `int x = a; gi = x; x = b; gj = x;` becomes `gi = a; gj = b;`,
         // and `int x = a; gi = x; return x;` becomes `gi = a; return a;`. The store paths

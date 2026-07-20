@@ -9,6 +9,7 @@ mod condition_linkage;
 mod conditional;
 mod dispatchers;
 mod driver;
+mod enum_remap_member_update;
 mod float_store_fill;
 mod fixed_port_bitfield;
 mod fixed_port_indexed_bitfield;
