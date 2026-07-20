@@ -35,11 +35,12 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
                 .filter_map(|(index, byte)| (*byte == b'\n').then_some(index + 1)),
         )
         .collect();
+    let logical_lines = logical_line_numbers(bytes, &line_starts);
     macro_rules! push_token {
         ($token:expr, $offset:expr) => {
             tokens.push(LocatedToken {
                 token: $token,
-                location: source_location(&line_starts, $offset),
+                location: source_location(&line_starts, &logical_lines, $offset),
             })
         };
     }
@@ -437,11 +438,48 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
     Ok(tokens)
 }
 
-fn source_location(line_starts: &[usize], byte_offset: usize) -> SourceLocation {
+/// Logical source line for every physical line. MWCC's `line_prepdump` mode
+/// preserves vertical spacing and emits ordinary `#line N` directives, which
+/// lets a preprocessed bridge retain the original translation unit's debug
+/// provenance without teaching later phases about preprocessing.
+fn logical_line_numbers(bytes: &[u8], line_starts: &[usize]) -> Vec<u32> {
+    let mut logical_lines = Vec::with_capacity(line_starts.len());
+    let mut next_logical = 1u32;
+    for (line_index, &start) in line_starts.iter().enumerate() {
+        logical_lines.push(next_logical);
+        let end = line_starts
+            .get(line_index + 1)
+            .copied()
+            .unwrap_or(bytes.len());
+        let line = &bytes[start..end];
+        next_logical = parse_line_directive(line).unwrap_or(next_logical.saturating_add(1));
+    }
+    logical_lines
+}
+
+fn parse_line_directive(line: &[u8]) -> Option<u32> {
+    let text = std::str::from_utf8(line).ok()?.trim();
+    let rest = text.strip_prefix('#')?.trim_start();
+    let rest = rest.strip_prefix("line")?;
+    if rest.as_bytes().first().is_some_and(|byte| !byte.is_ascii_whitespace()) {
+        return None;
+    }
+    rest.trim_start()
+        .split(|character: char| !character.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()
+}
+
+fn source_location(
+    line_starts: &[usize],
+    logical_lines: &[u32],
+    byte_offset: usize,
+) -> SourceLocation {
     let line_index = line_starts.partition_point(|start| *start <= byte_offset) - 1;
     SourceLocation {
         byte_offset: byte_offset as u32,
-        line: line_index as u32 + 1,
+        line: logical_lines[line_index],
         column: (byte_offset - line_starts[line_index]) as u32 + 1,
     }
 }
@@ -513,5 +551,19 @@ mod tests {
         assert_eq!(return_token.location.line, 2);
         assert_eq!(return_token.location.column, 3);
         assert_eq!(return_token.location.byte_offset, 16);
+    }
+
+    #[test]
+    fn located_tokens_follow_mwcc_line_prepdump_directives() {
+        let tokens = tokenize_bytes_located(
+            b"#line 40 \"header.h\"\nint declaration;\n#line 3 \"unit.c\"\n\n\nint f(void) { return 1; }\n",
+        )
+        .unwrap();
+        let return_token = tokens
+            .iter()
+            .find(|located| located.token == Token::KeywordReturn)
+            .unwrap();
+        assert_eq!(return_token.location.line, 5);
+        assert_eq!(return_token.location.column, 15);
     }
 }

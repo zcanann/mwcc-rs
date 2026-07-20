@@ -140,7 +140,8 @@ if direct_reference_output="$(
   cp "$dir/ref.o" "$dir/ref.direct.o"
   if direct_preprocess_output="$(
     cd "$project" && "$wibo" "$sjis" "$compiler" \
-      ${all_flags[@]+"${all_flags[@]}"} -E "$src" -o "$dir/ours/$source_name" 2>&1
+      ${all_flags[@]+"${all_flags[@]}"} -pragma "line_prepdump on" \
+      -E "$src" -o "$dir/ours/$source_name" 2>&1
   )"; then
     # MWCC emits no preprocessed file for an empty translation unit.
     [[ -f "$dir/ours/$source_name" ]] || : > "$dir/ours/$source_name"
@@ -263,7 +264,9 @@ sed -E \
 # decompctx_runner populates generated `.mch` include arms from their textual
 # `.pch` sources, so the real preprocessor can retain its normal `__MWERKS__`
 # branch selection while operating on a clean checkout.
-( cd "$dir" && "$wibo" "$sjis" "$compiler" ${compiler_flags[@]+"${compiler_flags[@]}"} -E "$preprocess_name" -o ctx.marked.i ) 2>/dev/null
+( cd "$dir" && "$wibo" "$sjis" "$compiler" \
+    ${compiler_flags[@]+"${compiler_flags[@]}"} -pragma "line_prepdump on" \
+    -E "$preprocess_name" -o ctx.marked.i ) 2>/dev/null
 sed -E \
   -e 's/^[[:space:]]*extern int __mwcc_refctx_pragma_push;[[:space:]]*$/#pragma push/' \
   -e 's/^[[:space:]]*extern int __mwcc_refctx_pragma_pop;[[:space:]]*$/#pragma pop/' \
