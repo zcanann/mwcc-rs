@@ -798,6 +798,14 @@ pub(super) fn assemble_line(
             expect_operand_count(mnemonic, operands, 0)?;
             Instruction::BranchToCountRegister
         }
+        "bctrl" => {
+            expect_operand_count(mnemonic, operands, 0)?;
+            Instruction::BranchToCountRegisterAndLink
+        }
+        "blrl" => {
+            expect_operand_count(mnemonic, operands, 0)?;
+            Instruction::BranchToLinkRegisterAndLink
+        }
         // Unconditional branch to a label, or a tail branch to an external symbol.
         "b" => {
             expect_operand_count(mnemonic, operands, 1)?;
@@ -1028,6 +1036,18 @@ mod tests {
         assert_eq!(
             assemble("mtcr", vec![AsmOperand::Gpr(4)]).unwrap(),
             Instruction::MoveToConditionRegisterFields { mask: 0xff, s: 4 }
+        );
+    }
+
+    #[test]
+    fn assembles_indirect_linked_branches() {
+        assert_eq!(
+            assemble("bctrl", vec![]).unwrap(),
+            Instruction::BranchToCountRegisterAndLink
+        );
+        assert_eq!(
+            assemble("blrl", vec![]).unwrap(),
+            Instruction::BranchToLinkRegisterAndLink
         );
     }
 
