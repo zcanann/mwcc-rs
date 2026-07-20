@@ -586,6 +586,83 @@ impl Parser {
         Ok(align)
     }
 
+    /// Decide whether the declaration at the struct-body cursor is a C++ member
+    /// function. The layout pass only needs object fields; callable declarations
+    /// are collected by the C++ scanner and must not make a C-compatible `struct`
+    /// layout disappear merely because their return type is the injected class
+    /// name (`Pixel& operator=(...)` is the common case).
+    ///
+    /// A function-pointer data member also contains top-level parentheses, so
+    /// remember its `(*name)` declarator and leave it to the ordinary field path.
+    fn cxx_struct_member_is_method(&self) -> bool {
+        if !self.cplusplus {
+            return false;
+        }
+        let mut index = self.position;
+        let mut paren_depth = 0usize;
+        let mut bracket_depth = 0usize;
+        let mut saw_function_pointer_declarator = false;
+        let mut saw_initializer = false;
+        while let Some(token) = self.tokens.get(index) {
+            if paren_depth == 0 && bracket_depth == 0 {
+                // Declarator attributes have their own top-level parentheses;
+                // they do not make an ordinary data member callable.
+                if matches!(token, Token::Identifier(word)
+                    if matches!(word.as_str(), "__attribute__" | "__declspec"))
+                    && self.tokens.get(index + 1) == Some(&Token::ParenOpen)
+                {
+                    index += 1;
+                    let mut depth = 0usize;
+                    while let Some(attribute_token) = self.tokens.get(index) {
+                        match attribute_token {
+                            Token::ParenOpen => depth += 1,
+                            Token::ParenClose => {
+                                depth = depth.saturating_sub(1);
+                                if depth == 0 {
+                                    index += 1;
+                                    break;
+                                }
+                            }
+                            Token::EndOfFile => return false,
+                            _ => {}
+                        }
+                        index += 1;
+                    }
+                    continue;
+                }
+                match token {
+                    Token::Identifier(word) if word == "operator" => return true,
+                    Token::Equals => saw_initializer = true,
+                    Token::ParenOpen => {
+                        if self.tokens.get(index + 1) == Some(&Token::Star) {
+                            saw_function_pointer_declarator = true;
+                            paren_depth = 1;
+                        } else if !saw_initializer && !saw_function_pointer_declarator {
+                            return true;
+                        } else {
+                            paren_depth = 1;
+                        }
+                    }
+                    Token::BracketOpen => bracket_depth = 1,
+                    Token::Semicolon | Token::BraceOpen | Token::BraceClose => return false,
+                    Token::EndOfFile => return false,
+                    _ => {}
+                }
+            } else {
+                match token {
+                    Token::ParenOpen => paren_depth += 1,
+                    Token::ParenClose => paren_depth = paren_depth.saturating_sub(1),
+                    Token::BracketOpen => bracket_depth += 1,
+                    Token::BracketClose => bracket_depth = bracket_depth.saturating_sub(1),
+                    Token::EndOfFile => return false,
+                    _ => {}
+                }
+            }
+            index += 1;
+        }
+        false
+    }
+
     pub(crate) fn parse_struct_body(&mut self) -> Compilation<StructLayout> {
         self.expect(Token::BraceOpen)?;
         let mut layout = StructLayout::default();
@@ -595,6 +672,13 @@ impl Parser {
         // far); an ordinary member or a different-typed bit-field closes it.
         let mut bit_unit: Option<(Type, u32, u8)> = None;
         while *self.peek() != Token::BraceClose {
+            if self.cxx_struct_member_is_method() {
+                self.skip_class_member()?;
+                // MWCC headers commonly spell an in-class definition as
+                // `return ...; };`; the semicolon is outside the balanced body.
+                self.eat_keyword(Token::Semicolon);
+                continue;
+            }
             // Static C++ members occupy no object storage. Their callable/data
             // declaration semantics are recovered separately by the C++ class
             // scanner; the C-compatible layout pass only needs to advance over
@@ -604,6 +688,7 @@ impl Parser {
                 && matches!(self.peek(), Token::Identifier(word) if word == "static")
             {
                 self.skip_class_member()?;
+                self.eat_keyword(Token::Semicolon);
                 continue;
             }
             // An inline struct definition as a member: `struct [Tag] { … } [name];`. An

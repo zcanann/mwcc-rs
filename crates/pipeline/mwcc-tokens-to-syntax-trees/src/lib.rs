@@ -1498,6 +1498,38 @@ mod tests {
     }
 
     #[test]
+    fn retains_struct_layout_across_inline_cxx_operators() {
+        let source = r#"
+            struct Pixel {
+                unsigned char red;
+                unsigned char green;
+                unsigned char blue;
+                unsigned char alpha;
+                Pixel& operator=(const Pixel& rhs) {
+                    red = rhs.red;
+                    green = rhs.green;
+                    blue = rhs.blue;
+                    alpha = rhs.alpha;
+                    return *this;
+                };
+            };
+            unsigned alpha(Pixel* pixel) { return pixel->alpha; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 3, .. })
+        ));
+    }
+
+    #[test]
     fn initializes_the_first_declared_union_member_deterministically() {
         let source = r#"
             typedef struct {
