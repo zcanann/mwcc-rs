@@ -653,9 +653,10 @@ impl Parser {
             // recovery to classify unused member definitions, then let the
             // ordinary item parser handle the concrete item that follows it.
             let skippable_inline_member = self.item_is_skippable_inline_member_definition();
-            if !skippable_inline_member {
-                self.consume_explicit_specialization_prefix();
-            }
+            let explicit_specialization = !skippable_inline_member
+                && self.consume_explicit_specialization_prefix();
+            let explicit_data_specialization = explicit_specialization
+                && self.item_is_explicit_data_specialization();
             let start = self.position;
             // Inline is declaration state, not layout state. Capture it before
             // either the C++ layout parser succeeds or recovery skips a class.
@@ -685,6 +686,18 @@ impl Parser {
                 // function definitions can still be compiled; a function definition we
                 // are expected to compile is propagated, deferring the unit honestly.
                 self.position = start;
+                // An unparsed explicit specialization is concrete, not a primary
+                // template declaration. Static data-member specializations such
+                // as `template <> Pool<T> Owner<T>::pool;` emit storage, startup
+                // code, constructors, and weak template bodies. Skipping one
+                // produces a plausible prefix object with the entire generated
+                // tail missing, so keep this an honest DEFER until instantiation
+                // lowering owns the full emission graph.
+                if explicit_data_specialization {
+                    return Err(Diagnostic::error(format!(
+                        "an explicit C++ template specialization was not lowered: {error}"
+                    )));
+                }
                 if self.item_is_function_definition() {
                     return Err(error);
                 }

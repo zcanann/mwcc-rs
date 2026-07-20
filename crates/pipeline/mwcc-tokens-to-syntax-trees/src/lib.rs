@@ -1958,4 +1958,25 @@ mod tests {
         assert_eq!(unit.functions.len(), 1);
         assert_eq!(unit.functions[0].name, "compiled__Fv");
     }
+
+    #[test]
+    fn rejects_unlowered_explicit_static_data_specializations() {
+        let source = r#"
+            template <typename T>
+            struct PoolOwner { static T pool; };
+            template <> int PoolOwner<int>::pool;
+            int compiled(void) { return 3; }
+        "#;
+        let error = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap_err();
+        assert!(error
+            .message
+            .contains("an explicit C++ template specialization was not lowered"));
+    }
 }

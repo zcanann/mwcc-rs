@@ -32,6 +32,49 @@ impl Parser {
         explicit_specialization
     }
 
+    /// Whether the item after a consumed `template <>` prefix is a concrete
+    /// data definition. Explicit class specializations are type declarations,
+    /// and function specializations have a top-level parameter list; neither
+    /// category necessarily emits an object merely by being present. A
+    /// semicolon-terminated qualified object with no parameter list does.
+    pub(crate) fn item_is_explicit_data_specialization(&self) -> bool {
+        if matches!(self.tokens.get(self.position), Some(Token::KeywordStruct))
+            || matches!(
+                self.tokens.get(self.position),
+                Some(Token::Identifier(word))
+                    if matches!(word.as_str(), "class" | "union" | "enum")
+            )
+        {
+            return false;
+        }
+
+        let mut index = self.position;
+        let mut angle_depth = 0i32;
+        let mut paren_depth = 0i32;
+        let mut saw_parameter_list = false;
+        while let Some(token) = self.tokens.get(index) {
+            match token {
+                Token::Less if paren_depth == 0 => angle_depth += 1,
+                Token::Greater if paren_depth == 0 && angle_depth > 0 => angle_depth -= 1,
+                Token::ParenOpen if angle_depth == 0 => paren_depth += 1,
+                Token::ParenClose if paren_depth > 0 => {
+                    paren_depth -= 1;
+                    if paren_depth == 0 {
+                        saw_parameter_list = true;
+                    }
+                }
+                Token::Semicolon if angle_depth == 0 && paren_depth == 0 => {
+                    return !saw_parameter_list;
+                }
+                Token::BraceOpen if angle_depth == 0 && paren_depth == 0 => return false,
+                Token::EndOfFile => return false,
+                _ => {}
+            }
+            index += 1;
+        }
+        false
+    }
+
     /// Parse a direct `[scope::]Template<Argument>` object type from a recovered
     /// template layout. This complements typedef instantiation: game headers
     /// commonly place concrete template objects directly in class layouts.
