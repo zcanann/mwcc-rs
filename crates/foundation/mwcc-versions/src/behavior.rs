@@ -653,6 +653,8 @@ pub struct Behavior {
     pub data_section_anchor_comment_flags: u32,
     /// Whether unused section-attributed prototypes remain in the symbol table.
     pub materialize_section_prototypes: bool,
+    /// Whether unused C++ static-inline asm helpers remain as LOCAL UND symbols.
+    pub retain_unused_cxx_inline_asm_symbols: bool,
     /// Whether unsaved single-precision use sets the extab FPU bit.
     pub mark_single_precision_extab: bool,
     /// First `$localstaticN` suffix within each plain inline definition.
@@ -929,6 +931,10 @@ impl Behavior {
                 .build
                 .profile
                 .materialize_section_prototypes(),
+            retain_unused_cxx_inline_asm_symbols: config
+                .build
+                .profile
+                .retain_unused_cxx_inline_asm_symbols(),
             mark_single_precision_extab: config.build.profile.mark_single_precision_extab(),
             plain_inline_localstatic_base: config.build.profile.plain_inline_localstatic_base(),
             skipped_static_inline_label_base: config

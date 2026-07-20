@@ -996,6 +996,63 @@ blr\n\
     }
 
     #[test]
+    fn lowers_an_implicit_virtual_member_call_through_its_vtable_slot() {
+        let source = r#"
+            class Bank {
+            public:
+                virtual unsigned count() const = 0;
+                int loading();
+            };
+            int Bank::loading() { return count(); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            unit.functions[0].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::VirtualCall {
+                object,
+                vptr_offset: 0,
+                slot_offset: 8,
+                arguments,
+                ..
+            }) if matches!(object.as_ref(), mwcc_syntax_trees::Expression::Variable(name) if name == "this")
+                && arguments.is_empty()
+        ));
+    }
+
+    #[test]
+    fn preserves_const_qualification_on_a_direct_instance_call() {
+        let source = r#"
+            class Item {
+            public:
+                int ready() const;
+            };
+            int check(Item* item) { return item->ready(); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            unit.functions[0].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Call { name, .. })
+                if name == "ready__4ItemCFv"
+        ));
+    }
+
+    #[test]
     fn mangles_free_cpp_functions_and_preserves_c_linkage() {
         let source = r#"
             extern "C" { int c_api(float); }

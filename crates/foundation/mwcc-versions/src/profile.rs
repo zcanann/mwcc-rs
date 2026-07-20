@@ -624,6 +624,12 @@ pub enum IntCallResultConversionStyle {
 /// 2.4.x mainline (mwcceppc build 81 through 2.4.7 build 108); a build that
 /// diverges implements this trait and overrides just the differing methods.
 pub trait CodegenProfile: core::fmt::Debug {
+    /// Whether unused C++ static-inline assembly helpers remain as LOCAL UND
+    /// symbols. The 2.4.2 line retains them; 2.4.7 drops them unless referenced.
+    fn retain_unused_cxx_inline_asm_symbols(&self) -> bool {
+        false
+    }
+
     /// Whether source-written names on function prototypes consume anonymous
     /// symbol ordinals. Measured on mwcceppc 4.1 build 51213 and Wii build 145;
     /// older generations discard the names without advancing the unit's stream.
@@ -1211,6 +1217,10 @@ impl CodegenProfile for Wii43Build145 {
 #[derive(Debug)]
 pub struct Gc13Build53;
 impl CodegenProfile for Gc13Build53 {
+    fn retain_unused_cxx_inline_asm_symbols(&self) -> bool {
+        true
+    }
+
     fn fixed_address_parameterized_rmw_style(&self) -> FixedAddressParameterizedRmwStyle {
         FixedAddressParameterizedRmwStyle::Early24
     }
@@ -1262,6 +1272,10 @@ impl CodegenProfile for Gc13Build53 {
 #[derive(Debug)]
 pub struct Gc132Build81;
 impl CodegenProfile for Gc132Build81 {
+    fn retain_unused_cxx_inline_asm_symbols(&self) -> bool {
+        true
+    }
+
     fn mem_copy_word_schedule_style(&self) -> MemCopyWordScheduleStyle {
         MemCopyWordScheduleStyle::SerialScratch
     }

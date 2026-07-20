@@ -79,6 +79,7 @@ pub(crate) struct MemberMethod {
     pub(crate) parameters: Vec<Type>,
     cxx_parameters: Vec<CxxParameterType>,
     pub(crate) is_inline: bool,
+    virtual_dispatch: Option<VirtualDispatch>,
 }
 
 pub(crate) struct ClassParameterTypes {
@@ -136,6 +137,11 @@ pub(crate) struct VirtualDispatch {
     pub(crate) slot_offset: u16,
     pub(crate) return_type: Type,
     pub(crate) variadic: bool,
+}
+
+pub(crate) enum ImplicitMemberCall {
+    Direct { name: String, is_inline: bool },
+    Virtual(VirtualDispatch),
 }
 
 /// The C++ ABI identity of one source parameter. The general syntax-tree
@@ -939,6 +945,7 @@ impl Parser {
             bool,
             bool,
             bool,
+            bool,
         )> {
             let mut is_static = false;
             let mut is_virtual = false;
@@ -1041,8 +1048,12 @@ impl Parser {
                 }
             }
             self.expect(Token::ParenClose)?;
+            let mut is_const_member = false;
             while matches!(self.peek(), Token::Identifier(word) if matches!(word.as_str(), "const" | "override" | "final"))
             {
+                if matches!(self.peek(), Token::Identifier(word) if word == "const") {
+                    is_const_member = true;
+                }
                 self.advance();
             }
             let has_body = *self.peek() == Token::BraceOpen;
@@ -1063,6 +1074,7 @@ impl Parser {
                 is_static,
                 is_virtual,
                 is_inline || has_body,
+                is_const_member,
             ))
         })();
 
@@ -1086,6 +1098,7 @@ impl Parser {
             is_static,
             is_virtual,
             is_inline,
+            is_const_member,
         )) = recovered
         {
             let inherited_virtual = self
@@ -1122,13 +1135,23 @@ impl Parser {
                 return Some(None);
             }
             let scopes: Vec<&str> = class.split("::").collect();
-            let mangled = mangle_qualified_member_function_variadic_typed(
-                &scopes,
-                &member,
-                &cxx_parameters,
-                variadic,
-            )
-            .ok()?;
+            let mangled = if is_const_member && !variadic {
+                mangle_qualified_member_function_cv_typed(
+                    &scopes,
+                    &member,
+                    &cxx_parameters,
+                    true,
+                )
+                .ok()?
+            } else {
+                mangle_qualified_member_function_variadic_typed(
+                    &scopes,
+                    &member,
+                    &cxx_parameters,
+                    variadic,
+                )
+                .ok()?
+            };
             let method = RecoveredCxxMethod {
                 mangled: mangled.clone(),
                 fixed_parameter_count: parameters.len(),
@@ -1378,7 +1401,7 @@ impl Parser {
         &self,
         function: &str,
         argument_count: usize,
-    ) -> Compilation<Option<(String, bool)>> {
+    ) -> Compilation<Option<ImplicitMemberCall>> {
         let Some(class_name) = self.current_member_scope.as_deref() else {
             return Ok(None);
         };
@@ -1399,14 +1422,17 @@ impl Parser {
             )));
         }
         let method = candidates[0];
-        Ok(Some((
-            self.mangle_typed_member_in_current_namespace(
+        if let Some(dispatch) = method.virtual_dispatch {
+            return Ok(Some(ImplicitMemberCall::Virtual(dispatch)));
+        }
+        Ok(Some(ImplicitMemberCall::Direct {
+            name: self.mangle_typed_member_in_current_namespace(
                 class_name,
                 function,
                 &method.cxx_parameters,
             )?,
-            method.is_inline,
-        )))
+            is_inline: method.is_inline,
+        }))
     }
 
     /// Parse one class definition and recover its object layout.
@@ -1552,9 +1578,28 @@ impl Parser {
             if *self.peek() == Token::ParenOpen {
                 let signature = self.parse_class_parameter_types()?;
                 let is_inline = self.skip_class_method_tail()?;
-                if is_virtual {
+                let virtual_dispatch = if is_virtual {
+                    let slot_offset = 8usize
+                        .checked_add(class.virtual_slots.checked_mul(4).ok_or_else(|| {
+                            Diagnostic::error("C++ primary vtable slot offset overflow")
+                        })?)
+                        .and_then(|offset| u16::try_from(offset).ok())
+                        .ok_or_else(|| {
+                            Diagnostic::error("C++ primary vtable slot offset overflow")
+                        })?;
+                    let vptr_offset = u16::try_from(class.vptr_offset.unwrap_or(0)).map_err(|_| {
+                        Diagnostic::error("C++ primary vptr offset overflow")
+                    })?;
                     class.virtual_slots += 1;
-                }
+                    Some(VirtualDispatch {
+                        vptr_offset,
+                        slot_offset,
+                        return_type: field_type,
+                        variadic: false,
+                    })
+                } else {
+                    None
+                };
                 class
                     .methods
                     .entry(field_name)
@@ -1563,6 +1608,7 @@ impl Parser {
                         parameters: signature.parameters,
                         cxx_parameters: signature.cxx_parameters,
                         is_inline,
+                        virtual_dispatch,
                     });
                 continue;
             }

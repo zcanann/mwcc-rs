@@ -10,6 +10,7 @@ mod fixed_port_zero_fill;
 pub(crate) mod policy;
 mod poll_search;
 mod search_guard_chain;
+mod virtual_scan;
 mod walker;
 
 /// Signedness of a byte pointer's element. Plain `char *` has already been

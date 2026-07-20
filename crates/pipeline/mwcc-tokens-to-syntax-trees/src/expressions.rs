@@ -681,18 +681,32 @@ impl Parser {
                     }
                 }
                 self.expect(Token::ParenClose)?;
-                if let Some((mangled, is_inline)) =
+                if let Some(member_call) =
                     self.resolve_implicit_member_call(&name, arguments.len())?
                 {
-                    if is_inline {
-                        return Err(Diagnostic::error(format!(
-                            "an inline C++ member call to '{name}' is not lowered yet (roadmap)"
-                        )));
-                    }
-                    arguments.insert(0, Expression::Variable("this".to_string()));
-                    Expression::Call {
-                        name: mangled,
-                        arguments,
+                    match member_call {
+                        crate::cxx::ImplicitMemberCall::Direct { name: mangled, is_inline } => {
+                            if is_inline {
+                                return Err(Diagnostic::error(format!(
+                                    "an inline C++ member call to '{name}' is not lowered yet (roadmap)"
+                                )));
+                            }
+                            arguments.insert(0, Expression::Variable("this".to_string()));
+                            Expression::Call {
+                                name: mangled,
+                                arguments,
+                            }
+                        }
+                        crate::cxx::ImplicitMemberCall::Virtual(dispatch) => {
+                            Expression::VirtualCall {
+                                object: Box::new(Expression::Variable("this".to_string())),
+                                vptr_offset: dispatch.vptr_offset,
+                                slot_offset: dispatch.slot_offset,
+                                return_type: dispatch.return_type,
+                                variadic: dispatch.variadic,
+                                arguments,
+                            }
+                        }
                     }
                 } else {
                     // A call to a PARSED single-return inline definition substitutes

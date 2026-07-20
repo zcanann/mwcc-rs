@@ -2856,6 +2856,9 @@ impl Generator {
             }
             // `while (n) { call(…n…); n--; }` — a counter kept in r31 across a
             // call-containing loop, updated in place.
+            if self.try_virtual_collection_scan(function)? {
+                return Ok(());
+            }
             if self.try_callee_saved_call_loop(function)? {
                 return Ok(());
             }

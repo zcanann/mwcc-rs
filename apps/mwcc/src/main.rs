@@ -1464,10 +1464,10 @@ fn compile(
         first.phantom_externals = unit.plain_inline_asm_helpers.clone();
     }
 
-    // C++ retains skipped static-inline asm helpers as LOCAL undefined symbols
-    // even under deferred processing (OSInitFastCast in Metroid Prime). C's
-    // deferred path drops unused helpers; immediate processing retains them in
-    // either language. Referenced helpers always need their local UND binding.
+    // The 2.4.2 C++ frontend retains skipped static-inline asm helpers as LOCAL
+    // undefined symbols even when unused (OSInitFastCast in Metroid Prime); the
+    // 2.4.7 line drops them. C's immediate path retains them. Referenced helpers
+    // always need their local UND binding in every generation.
     let referenced_targets: std::collections::HashSet<&str> = machine_functions
         .iter()
         .flat_map(|function| &function.relocations)
@@ -1483,8 +1483,9 @@ fn compile(
         .inline_asm_symbols
         .iter()
         .filter(|name| {
-            (is_cxx
-                || (!config.flags.inline_deferred
+            ((is_cxx && behavior.retain_unused_cxx_inline_asm_symbols)
+                || (!is_cxx
+                    && !config.flags.inline_deferred
                     && config.flags.optimization != mwcc_versions::Optimization::O0))
                 || referenced_targets.contains(name.as_str())
         })
