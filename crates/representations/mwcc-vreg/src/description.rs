@@ -233,8 +233,11 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
         MoveToLinkRegister { s } => visit(U, G, s),
         MoveToCountRegister { s } => visit(U, G, s),
         // SPR/MSR moves (inline-asm only; the SPR/MSR are not virtual registers).
-        MoveFromSpr { d, .. } | MoveFromTimeBase { d, .. } | MoveFromMsr { d } => visit(D, G, d),
-        MoveToSpr { s, .. } | MoveToMsr { s } => visit(U, G, s),
+        MoveFromSpr { d, .. }
+        | MoveFromTimeBase { d, .. }
+        | MoveFromSegmentRegister { d, .. }
+        | MoveFromMsr { d } => visit(D, G, d),
+        MoveToSpr { s, .. } | MoveToSegmentRegister { s, .. } | MoveToMsr { s } => visit(U, G, s),
         // Cache ops address (rA|0)+rB — both are uses (rA=0 is the literal 0).
         CacheOp { a, b, .. } => {
             if *a != 0 {

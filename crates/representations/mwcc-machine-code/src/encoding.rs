@@ -209,6 +209,12 @@ impl Instruction {
                 let field = ((spr as u32 & 0x1F) << 5) | ((spr as u32 >> 5) & 0x1F);
                 (31 << 26) | ((s as u32) << 21) | (field << 11) | (467 << 1)
             }
+            Instruction::MoveFromSegmentRegister { d, segment } => {
+                (31 << 26) | ((d as u32) << 21) | ((segment as u32) << 16) | (595 << 1)
+            }
+            Instruction::MoveToSegmentRegister { segment, s } => {
+                (31 << 26) | ((s as u32) << 21) | ((segment as u32) << 16) | (210 << 1)
+            }
             Instruction::MoveFromMsr { d } => (31 << 26) | ((d as u32) << 21) | (83 << 1),
             Instruction::MoveToMsr { s } => (31 << 26) | ((s as u32) << 21) | (146 << 1),
             Instruction::InstructionSynchronize => 0x4C00_012C,
@@ -220,6 +226,35 @@ impl Instruction {
             }
             Instruction::SystemCall => 0x4400_0002,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Instruction;
+
+    #[test]
+    fn encodes_move_from_segment_register_fields() {
+        assert_eq!(
+            Instruction::MoveFromSegmentRegister { d: 16, segment: 0 }.encode(),
+            0x7e00_04a6
+        );
+        assert_eq!(
+            Instruction::MoveFromSegmentRegister { d: 31, segment: 15 }.encode(),
+            0x7fef_04a6
+        );
+    }
+
+    #[test]
+    fn encodes_move_to_segment_register_fields() {
+        assert_eq!(
+            Instruction::MoveToSegmentRegister { segment: 0, s: 16 }.encode(),
+            0x7e00_01a4
+        );
+        assert_eq!(
+            Instruction::MoveToSegmentRegister { segment: 15, s: 31 }.encode(),
+            0x7fef_01a4
+        );
     }
 }
 

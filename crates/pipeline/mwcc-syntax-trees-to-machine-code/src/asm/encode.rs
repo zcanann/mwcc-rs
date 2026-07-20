@@ -489,6 +489,135 @@ pub(super) fn assemble_line(
             let s = gpr(mnemonic, &operands[1])?;
             Instruction::MoveToSpr { spr, s }
         }
+        "mfsr" => {
+            expect_operand_count(mnemonic, operands, 2)?;
+            let d = gpr(mnemonic, &operands[0])?;
+            let segment = immediate16u(mnemonic, &operands[1])?;
+            let segment = u8::try_from(segment)
+                .ok()
+                .filter(|segment| *segment < 16)
+                .ok_or_else(|| {
+                    Diagnostic::error(format!(
+                        "inline-asm '{mnemonic}' segment register must be 0..=15"
+                    ))
+                })?;
+            Instruction::MoveFromSegmentRegister { d, segment }
+        }
+        "mtsr" => {
+            expect_operand_count(mnemonic, operands, 2)?;
+            let segment = immediate16u(mnemonic, &operands[0])?;
+            let segment = u8::try_from(segment)
+                .ok()
+                .filter(|segment| *segment < 16)
+                .ok_or_else(|| {
+                    Diagnostic::error(format!(
+                        "inline-asm '{mnemonic}' segment register must be 0..=15"
+                    ))
+                })?;
+            let s = gpr(mnemonic, &operands[1])?;
+            Instruction::MoveToSegmentRegister { segment, s }
+        }
+        // Dedicated architecture spellings are aliases for fixed SPR numbers.
+        // Keeping them as structured SPR moves shares encoding and register-use
+        // semantics with the explicit `mfspr`/`mtspr` forms.
+        "mfpvr" | "mfdar" | "mfdsisr" | "mfdec" | "mfsdr1" | "mfear" => {
+            let [d] = gprs(mnemonic, operands)?;
+            let spr = match mnemonic {
+                "mfpvr" => 287,
+                "mfdar" => 19,
+                "mfdsisr" => 18,
+                "mfdec" => 22,
+                "mfsdr1" => 25,
+                "mfear" => 282,
+                _ => unreachable!(),
+            };
+            Instruction::MoveFromSpr { d, spr }
+        }
+        "mfibatu" | "mfibatl" | "mfdbatu" | "mfdbatl" => {
+            expect_operand_count(mnemonic, operands, 2)?;
+            let d = gpr(mnemonic, &operands[0])?;
+            let index = immediate16u(mnemonic, &operands[1])?;
+            if index > 3 {
+                return Err(Diagnostic::error(format!(
+                    "inline-asm '{mnemonic}' BAT index must be 0..=3"
+                )));
+            }
+            let base = if mnemonic.starts_with("mfibat") {
+                528
+            } else {
+                536
+            };
+            let lower = u16::from(mnemonic.ends_with('l'));
+            Instruction::MoveFromSpr {
+                d,
+                spr: base + index * 2 + lower,
+            }
+        }
+        "mfsprg" => {
+            expect_operand_count(mnemonic, operands, 2)?;
+            let d = gpr(mnemonic, &operands[0])?;
+            let index = immediate16u(mnemonic, &operands[1])?;
+            if index > 3 {
+                return Err(Diagnostic::error(format!(
+                    "inline-asm '{mnemonic}' SPRG index must be 0..=3"
+                )));
+            }
+            Instruction::MoveFromSpr {
+                d,
+                spr: 272 + index,
+            }
+        }
+        "mtibatu" | "mtibatl" | "mtdbatu" | "mtdbatl" => {
+            expect_operand_count(mnemonic, operands, 2)?;
+            let index = immediate16u(mnemonic, &operands[0])?;
+            if index > 3 {
+                return Err(Diagnostic::error(format!(
+                    "inline-asm '{mnemonic}' BAT index must be 0..=3"
+                )));
+            }
+            let s = gpr(mnemonic, &operands[1])?;
+            let base = if mnemonic.starts_with("mtibat") {
+                528
+            } else {
+                536
+            };
+            let lower = u16::from(mnemonic.ends_with('l'));
+            Instruction::MoveToSpr {
+                spr: base + index * 2 + lower,
+                s,
+            }
+        }
+        "mtdar" | "mtdsisr" | "mtdec" | "mtsdr1" | "mtear" => {
+            let [s] = gprs(mnemonic, operands)?;
+            let spr = match mnemonic {
+                "mtdar" => 19,
+                "mtdsisr" => 18,
+                "mtdec" => 22,
+                "mtsdr1" => 25,
+                "mtear" => 282,
+                _ => unreachable!(),
+            };
+            Instruction::MoveToSpr { spr, s }
+        }
+        "mtsprg" => {
+            expect_operand_count(mnemonic, operands, 2)?;
+            let index = immediate16u(mnemonic, &operands[0])?;
+            if index > 3 {
+                return Err(Diagnostic::error(format!(
+                    "inline-asm '{mnemonic}' SPRG index must be 0..=3"
+                )));
+            }
+            let s = gpr(mnemonic, &operands[1])?;
+            Instruction::MoveToSpr {
+                spr: 272 + index,
+                s,
+            }
+        }
+        "mttbl" | "mttbu" => {
+            let [s] = gprs(mnemonic, operands)?;
+            let spr = if mnemonic == "mttbl" { 284 } else { 285 };
+            Instruction::MoveToSpr { spr, s }
+        }
         "mftb" => {
             if !matches!(operands.len(), 1 | 2) {
                 return Err(Diagnostic::error(format!(
@@ -766,5 +895,80 @@ fn label_target(
         _ => Err(Diagnostic::error(format!(
             "inline-asm '{mnemonic}' expected a label operand"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assemble(mnemonic: &str, operands: Vec<AsmOperand>) -> Compilation<Instruction> {
+        assemble_line(
+            &AsmInstruction {
+                mnemonic: mnemonic.to_string(),
+                operands,
+                source_line: 1,
+            },
+            &HashMap::new(),
+            0,
+        )?
+        .ok_or_else(|| Diagnostic::error("test instruction emitted no word"))
+    }
+
+    #[test]
+    fn assembles_segment_register_moves() {
+        assert_eq!(
+            assemble(
+                "mfsr",
+                vec![AsmOperand::Gpr(16), AsmOperand::Immediate(0)]
+            )
+            .unwrap(),
+            Instruction::MoveFromSegmentRegister { d: 16, segment: 0 }
+        );
+        assert_eq!(
+            assemble(
+                "mtsr",
+                vec![AsmOperand::Immediate(15), AsmOperand::Gpr(31)]
+            )
+            .unwrap(),
+            Instruction::MoveToSegmentRegister { segment: 15, s: 31 }
+        );
+        assert!(assemble(
+            "mfsr",
+            vec![AsmOperand::Gpr(3), AsmOperand::Immediate(16)]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn assembles_privileged_spr_aliases() {
+        assert_eq!(
+            assemble(
+                "mfdbatl",
+                vec![AsmOperand::Gpr(25), AsmOperand::Immediate(0)]
+            )
+            .unwrap(),
+            Instruction::MoveFromSpr { d: 25, spr: 537 }
+        );
+        assert_eq!(
+            assemble(
+                "mtibatu",
+                vec![AsmOperand::Immediate(3), AsmOperand::Gpr(22)]
+            )
+            .unwrap(),
+            Instruction::MoveToSpr { spr: 534, s: 22 }
+        );
+        assert_eq!(
+            assemble(
+                "mfsprg",
+                vec![AsmOperand::Gpr(27), AsmOperand::Immediate(2)]
+            )
+            .unwrap(),
+            Instruction::MoveFromSpr { d: 27, spr: 274 }
+        );
+        assert_eq!(
+            assemble("mtsdr1", vec![AsmOperand::Gpr(22)]).unwrap(),
+            Instruction::MoveToSpr { spr: 25, s: 22 }
+        );
     }
 }

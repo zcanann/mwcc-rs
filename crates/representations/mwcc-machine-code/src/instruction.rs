@@ -337,6 +337,10 @@ pub enum Instruction {
     MoveFromTimeBase { d: u8, tbr: u16 },
     /// `mtspr SPR, rS` — move to a special-purpose register.
     MoveToSpr { spr: u16, s: u8 },
+    /// `mfsr rD, SR` — move from one of the sixteen segment registers.
+    MoveFromSegmentRegister { d: u8, segment: u8 },
+    /// `mtsr SR, rS` — move to one of the sixteen segment registers.
+    MoveToSegmentRegister { segment: u8, s: u8 },
     /// `mfmsr rD` — move from the machine-state register.
     MoveFromMsr { d: u8 },
     /// `mtmsr rS` — move to the machine-state register.
