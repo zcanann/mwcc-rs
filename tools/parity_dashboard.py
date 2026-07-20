@@ -329,6 +329,11 @@ def snapshot(
     missing = len(rows) - len(existing)
     counts = status_counts(rows, observations, unsupported_versions)
     observed = sum(row["configuration_id"] in observations for row in existing)
+    authoritative_byte = sum(
+        authoritative_result(observations[row["configuration_id"]]) == "BYTE"
+        for row in existing
+        if row["configuration_id"] in observations
+    )
     classified = len(existing) - counts["UNTESTED"]
     evaluable = counts["BYTE"] + counts["DIFF"] + counts["DEFER"]
     projects = source_projects or {row["project"] for row in rows}
@@ -347,6 +352,7 @@ def snapshot(
         "observed": observed,
         "classified": classified,
         "evaluable": evaluable,
+        "authoritative_byte": authoritative_byte,
         "source_inventory": {"discovered": discovered, "mapped": mapped, "unmapped": unmapped},
         "source_content": {
             "substantive_existing": substantive_existing,
@@ -355,7 +361,10 @@ def snapshot(
         "build_coverage": build_coverage(rows, observations, unsupported_versions),
         "statuses": {status: counts[status] for status in STATUSES},
         "rates": {
-            "byte_of_existing": counts["BYTE"] / len(existing) if existing else 0.0,
+            "byte_of_existing": (
+                authoritative_byte / len(existing) if existing else 0.0
+            ),
+            "raw_byte_of_existing": counts["BYTE"] / len(existing) if existing else 0.0,
             "byte_of_evaluable": counts["BYTE"] / evaluable if evaluable else 0.0,
             "observed_of_existing": observed / len(existing) if existing else 0.0,
             "classified_of_existing": classified / len(existing) if existing else 0.0,
@@ -589,6 +598,12 @@ def representative_audit(
             and authoritative_result(observation) == "UNKNOWN"
             for observation in direct.values()
         )
+        oracle_confirmed_low, oracle_confirmed_high = wilson_interval(
+            successes, oracle_runnable
+        )
+        oracle_upper_low, oracle_upper_high = wilson_interval(
+            successes + oracle_runnable_unknown, oracle_runnable
+        )
         code_results = Counter(
             code_status
             for observation in direct.values()
@@ -639,11 +654,15 @@ def representative_audit(
                 if provenance_complete and oracle_runnable
                 else None
             ),
+            "oracle_runnable_confirmed_interval_low": oracle_confirmed_low,
+            "oracle_runnable_confirmed_interval_high": oracle_confirmed_high,
             "oracle_runnable_identification_high": (
                 (successes + oracle_runnable_unknown) / oracle_runnable
                 if provenance_complete and oracle_runnable
                 else None
             ),
+            "oracle_runnable_upper_interval_low": oracle_upper_low,
+            "oracle_runnable_upper_interval_high": oracle_upper_high,
             "resolved_outcomes": resolved,
             "resolved_proportion": successes / resolved if resolved else None,
             "resolved_confidence": 0.95,
@@ -776,14 +795,14 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
     if build_report["unprobed_builds"]:
         print(f"unprobed identities: {', '.join(build_report['unprobed_builds'])}")
     print()
-    print(f"{'status':18} {'count':>8} {'% existing':>12}")
+    print(f"{'raw status':18} {'count':>8} {'% existing':>12}")
     for status in STATUSES:
         count = report["statuses"][status]
         rate = count / report["existing"] if report["existing"] else 0.0
         print(f"{status:18} {count:8d} {rate:11.1%}")
     print(
         f"\nproven exact parity (full-corpus lower bound): "
-        f"{report['statuses']['BYTE']}/{report['existing']} existing "
+        f"{report['authoritative_byte']}/{report['existing']} existing "
         f"({report['rates']['byte_of_existing']:.3%})"
     )
     audit = report.get("representative_audit")
@@ -856,7 +875,9 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
                 f"non-authoritative comparison {estimate['non_authoritative_unknown']}); "
                 f"sample parity bounds "
                 f"{estimate['identification_interval_low']:.1%}.."
-                f"{estimate['identification_interval_high']:.1%}"
+                f"{estimate['identification_interval_high']:.1%}; upper-endpoint "
+                f"sample 95% CI {estimate['identification_upper_interval_low']:.1%}.."
+                f"{estimate['identification_upper_interval_high']:.1%}"
             )
             if estimate["authoritative_provenance"] and estimate["oracle_runnable"]:
                 print(
@@ -866,7 +887,12 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
                     "identification bounds "
                     f"{estimate['oracle_runnable_confirmed_proportion']:.1%}.."
                     f"{estimate['oracle_runnable_identification_high']:.1%} "
-                    f"({estimate['oracle_runnable_unknown']} pipeline-unknown)"
+                    f"({estimate['oracle_runnable_unknown']} pipeline-unknown); "
+                    "endpoint sample 95% CIs "
+                    f"{estimate['oracle_runnable_confirmed_interval_low']:.1%}.."
+                    f"{estimate['oracle_runnable_confirmed_interval_high']:.1%} / "
+                    f"{estimate['oracle_runnable_upper_interval_low']:.1%}.."
+                    f"{estimate['oracle_runnable_upper_interval_high']:.1%}"
                 )
             elif estimate["resolved_outcomes"]:
                 print(

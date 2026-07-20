@@ -196,6 +196,27 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(report["missing_source"], 1)
         self.assertEqual(report["statuses"]["BYTE"], 1)
         self.assertEqual(report["statuses"]["UNTESTED"], 1)
+        self.assertEqual(report["authoritative_byte"], 0)
+
+    def test_snapshot_full_corpus_lower_bound_requires_direct_evidence(self):
+        rows = [row(source="src/direct.c"), row(source="src/synthetic.c")]
+        observations = {
+            rows[0]["configuration_id"]: {
+                "status": "BYTE",
+                "evidence": {"oracle_direct": "RUNNABLE", "comparison_input": "DIRECT"},
+            },
+            rows[1]["configuration_id"]: {
+                "status": "BYTE",
+                "evidence": {
+                    "oracle_direct": "RUNNABLE",
+                    "comparison_input": "SYNTHETIC",
+                },
+            },
+        }
+        report = snapshot({"projects": []}, rows, observations, "tool")
+        self.assertEqual(report["statuses"]["BYTE"], 2)
+        self.assertEqual(report["authoritative_byte"], 1)
+        self.assertEqual(report["rates"]["byte_of_existing"], 0.5)
 
     def test_one_unsupported_build_probe_classifies_the_whole_version(self):
         rows = [row(source=f"src/{index}.c", mw_version="Wii/1.0") for index in range(3)]
