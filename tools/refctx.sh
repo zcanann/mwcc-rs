@@ -135,11 +135,29 @@ if direct_reference_output="$(
 )"; then
   oracle_direct="RUNNABLE"
   cp "$dir/ref.o" "$dir/ref.direct.o"
+  direct_preprocess_ok=0
   if direct_preprocess_output="$(
     cd "$project" && "$wibo" "$sjis" "$compiler" \
       ${all_flags[@]+"${all_flags[@]}"} -pragma "line_prepdump on" \
       -E "$src" -o "$dir/ours/$source_name" 2>&1
   )"; then
+    direct_preprocess_ok=1
+  # The 2.3.3 standalone preprocessor rejects C++'s `or` alternative token in
+  # directive expressions even though the integrated compile accepts it.  A
+  # preprocessing-only macro is semantically identical and preserves the
+  # original include traversal, avoiding a synthetic decompctx comparison for
+  # Pikmin's shared DebugLog.h.
+  elif grep -Eq '(^|[[:space:]])or([[:space:]]|$)' <<<"$direct_preprocess_output" \
+      && grep -q 'expression syntax error' <<<"$direct_preprocess_output" \
+      && direct_preprocess_output="$(
+        cd "$project" && "$wibo" "$sjis" "$compiler" \
+          ${all_flags[@]+"${all_flags[@]}"} "-Dor=||" \
+          -pragma "line_prepdump on" -E "$src" \
+          -o "$dir/ours/$source_name" 2>&1
+      )"; then
+    direct_preprocess_ok=1
+  fi
+  if [[ $direct_preprocess_ok -eq 1 ]]; then
     # MWCC emits no preprocessed file for an empty translation unit.
     [[ -f "$dir/ours/$source_name" ]] || : > "$dir/ours/$source_name"
     # `-E` drops `#pragma peephole`, but it changes the emitted control-flow graph. Route those
