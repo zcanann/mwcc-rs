@@ -1,25 +1,27 @@
 //! Inline-`asm` function assembly.
 //!
-//! A Metrowerks `asm` function body is emitted VERBATIM — mwcc assembles the
-//! written instructions with no register allocation, scheduling, or optimizer
-//! pass, appending a trailing `blr` when the body does not already end in a
-//! branch/return. This module turns the parsed [`AsmInstruction`] lines into the
-//! shared [`Instruction`] stream (which the object writer already encodes), so
-//! the ordinary codegen path is bypassed entirely for these functions.
+//! A Metrowerks `asm` function body is assembled without the ordinary C/C++
+//! register allocator, scheduler, or optimizer. The written instructions remain
+//! verbatim, while assembler directives can request a generated linkage frame
+//! and the compiler may append a trailing `blr`. This module turns parsed
+//! [`AsmInstruction`] lines into the shared [`Instruction`] stream, so ordinary
+//! function-body codegen is bypassed entirely.
 //!
 //! The supported mnemonic set is deliberately small and grows one verified
 //! shape at a time (each backed by an oracle canary). An unsupported mnemonic or
 //! operand form is an ERROR, so its translation unit DEFERS rather than risking
 //! wrong bytes — the byte-exact-or-defer invariant.
 //!
-//! The assembler is split across three files: this driver (two-pass label/reloc
-//! resolution, the auto-frame wrapper, and the branch peepholes), [`encode`]
-//! (the per-line mnemonic match), and [`operands`] (operand extraction helpers).
+//! The assembler is split by responsibility: this driver owns two-pass label and
+//! relocation resolution plus branch peepholes; [`encode`] matches mnemonics;
+//! [`operands`] extracts operands; and [`frame`] synthesizes linkage frames.
 
 mod encode;
+mod frame;
 mod operands;
 
 use encode::assemble_line;
+use frame::{wrap_auto_frame, wrap_fralloc_frame};
 
 use mwcc_core::Compilation;
 use mwcc_machine_code::{
@@ -51,7 +53,16 @@ pub(crate) fn assemble_asm_function(
     let auto_frame = behavior.asm_function_finalization_style
         == AsmFunctionFinalizationStyle::GeneratedFrame
         && !mnemonics("nofralloc")
+        && !mnemonics("fralloc")
         && mnemonics("stwu");
+    let fralloc_frame = mnemonics("fralloc")
+        && body.iter().any(|item| {
+            matches!(
+                item,
+                AsmItem::Instruction(line)
+                    if matches!(line.mnemonic.as_str(), "bl" | "blrl" | "bctrl")
+            )
+        });
 
     // Pass 1: map each label to the index of the instruction it precedes (a label
     // with no following instruction points one past the end — the auto-`blr` slot),
@@ -145,7 +156,16 @@ pub(crate) fn assemble_asm_function(
     {
         apply_branch_peepholes(&mut instructions);
     }
-    if auto_frame {
+    if fralloc_frame {
+        wrap_fralloc_frame(
+            &mut instructions,
+            &mut relocations,
+            &mut entry_points,
+            frfree_position.unwrap_or(written_body_end),
+            behavior.frame_convention,
+            behavior.plain_linkage_epilogue_style,
+        )?;
+    } else if auto_frame {
         wrap_auto_frame(
             &mut instructions,
             &mut relocations,
@@ -167,56 +187,10 @@ pub(crate) fn assemble_asm_function(
     Ok(output)
 }
 
-/// Whether an assembled line contributes a machine word (the `nofralloc`/`frfree`
+/// Whether an assembled line contributes a machine word (the register-allocation
 /// directives do not) — used to number instructions for label resolution.
 fn emits_word(line: &AsmInstruction) -> bool {
-    !matches!(line.mnemonic.as_str(), "nofralloc" | "frfree")
-}
-
-/// Wrap an asm body that lacks `nofralloc` (but uses the stack) in mwcc's generated
-/// 16-byte frame: prologue `stwu r1,-16(r1); mr r31,r1` prepended, epilogue
-/// `mr r10,r1; lwz r1,0(r1)` inserted at the resolved epilogue position: the
-/// `frfree` directive when present, otherwise the end of the written body. Thus
-/// a compiler-appended `blr` follows teardown while a written `blr` precedes it.
-fn wrap_auto_frame(
-    instructions: &mut Vec<Instruction>,
-    relocations: &mut [Relocation],
-    entry_points: &mut [(String, usize)],
-    insertion: usize,
-) -> Compilation<()> {
-    // The prologue prepends two instructions (all indices +2), and the epilogue inserts
-    // two more at `insertion` (indices at or past it shift another +2).
-    let shift = |index: usize| index + 2 + if index >= insertion { 2 } else { 0 };
-    for instruction in instructions.iter_mut() {
-        match instruction {
-            Instruction::Branch { target } => *target = shift(*target),
-            Instruction::BranchConditionalForward { target, .. } => *target = shift(*target),
-            _ => {}
-        }
-    }
-    for relocation in relocations.iter_mut() {
-        relocation.instruction_index = shift(relocation.instruction_index);
-    }
-    for (_, index) in entry_points.iter_mut() {
-        *index = shift(*index);
-    }
-    let mut framed = Vec::with_capacity(instructions.len() + 4);
-    framed.push(Instruction::StoreWordWithUpdate {
-        s: 1,
-        a: 1,
-        offset: -16,
-    }); // stwu r1, -16(r1)
-    framed.push(Instruction::move_register(31, 1)); // mr r31, r1
-    framed.extend(instructions.drain(..insertion));
-    framed.push(Instruction::move_register(10, 1)); // mr r10, r1
-    framed.push(Instruction::LoadWord {
-        d: 1,
-        a: 1,
-        offset: 0,
-    }); // lwz r1, 0(r1)
-    framed.append(instructions);
-    *instructions = framed;
-    Ok(())
+    !matches!(line.mnemonic.as_str(), "fralloc" | "nofralloc" | "frfree")
 }
 
 /// Reproduce mwcc's two inline-asm branch peepholes, preserving instruction indices:

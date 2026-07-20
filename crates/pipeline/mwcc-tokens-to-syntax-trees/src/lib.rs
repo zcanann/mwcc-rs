@@ -653,6 +653,37 @@ mod tests {
     }
 
     #[test]
+    fn folds_bitwise_complemented_asm_immediates() {
+        let source = r#"
+            asm void flush(void) {
+                nofralloc
+                lis r5, ~0
+                ori r5, r5, ~14
+                blr
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let body = unit.functions[0].asm_body.as_ref().unwrap();
+        assert!(matches!(
+            &body[1],
+            mwcc_syntax_trees::AsmItem::Instruction(instruction)
+                if instruction.operands[1] == mwcc_syntax_trees::AsmOperand::Immediate(-1)
+        ));
+        assert!(matches!(
+            &body[2],
+            mwcc_syntax_trees::AsmItem::Instruction(instruction)
+                if instruction.operands[2] == mwcc_syntax_trees::AsmOperand::Immediate(-15)
+        ));
+    }
+
+    #[test]
     fn retains_function_source_boundaries() {
         let raw = [
             (Token::KeywordInt, 1),

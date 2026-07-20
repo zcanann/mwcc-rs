@@ -32,12 +32,11 @@ pub(super) fn assemble_line(
     };
     let operands = &line.operands;
     let instruction = match mnemonic {
-        // `nofralloc` suppresses the auto-generated stack frame. For the register-
-        // only bodies supported so far no frame is generated regardless, so it is a
-        // no-op directive; it emits nothing.
+        // Register-allocation directives affect mwcc's assembler bookkeeping but
+        // emit no instruction. `fralloc` explicitly enables the default state;
+        // `nofralloc` suppresses generated allocation, and `frfree` ends it.
+        "fralloc" => return Ok(None),
         "nofralloc" => return Ok(None),
-        // `frfree` releases the FP registers for the allocator — a directive with no
-        // frame in these bodies, so it emits nothing (like `nofralloc`).
         "frfree" => return Ok(None),
         // `mr rA, rS` — register move (`or rA, rS, rS`).
         "mr" => {
@@ -151,6 +150,13 @@ pub(super) fn assemble_line(
         }
         "addic." => {
             let (d, a, immediate) = rri(mnemonic, operands)?;
+            Instruction::AddImmediateCarryingRecord { d, a, immediate }
+        }
+        "subic." => {
+            let (d, a, immediate) = rri(mnemonic, operands)?;
+            let immediate = immediate.checked_neg().ok_or_else(|| {
+                Diagnostic::error("inline-asm 'subic.' immediate overflows on negation")
+            })?;
             Instruction::AddImmediateCarryingRecord { d, a, immediate }
         }
         "subfze" => {
@@ -1070,6 +1076,26 @@ mod tests {
                 d: 5,
                 a: 4,
                 immediate: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn assembles_recording_subtract_immediate_alias() {
+        assert_eq!(
+            assemble(
+                "subic.",
+                vec![
+                    AsmOperand::Gpr(4),
+                    AsmOperand::Gpr(4),
+                    AsmOperand::Immediate(8),
+                ],
+            )
+            .unwrap(),
+            Instruction::AddImmediateCarryingRecord {
+                d: 4,
+                a: 4,
+                immediate: -8,
             }
         );
     }

@@ -314,6 +314,13 @@ impl Parser {
     /// unit DEFERS rather than emitting wrong bytes.
     fn parse_asm_operand(&mut self) -> Compilation<AsmOperand> {
         let operand_start = self.position;
+        // SDK asm uses bitwise-complemented immediates (`lis r5, ~0`; `ori
+        // r5,r5,~14`).  Parse the complete constant expression before consuming
+        // its first token so the ordinary C constant folder owns unary syntax.
+        if *self.peek() == Token::Tilde {
+            let value = self.parse_integer_constant()?;
+            return self.finish_asm_integer_operand(value);
+        }
         let negate = *self.peek() == Token::Minus;
         if negate {
             self.advance();
@@ -339,47 +346,7 @@ impl Parser {
                     self.position = operand_start;
                     value = self.parse_enum_value()?;
                 }
-                // A `@`-suffix on a NUMERIC operand selects a 16-bit part of the value,
-                // computed at assembly time (`lis r3, 0x7FFFFFFF@h`) — no relocation.
-                if *self.peek() == Token::At {
-                    self.advance();
-                    let part = match self.advance() {
-                        Token::Identifier(s) if s == "h" => (value >> 16) & 0xffff,
-                        Token::Identifier(s) if s == "ha" => {
-                            ((value >> 16) + ((value >> 15) & 1)) & 0xffff
-                        }
-                        Token::Identifier(s) if s == "l" => value & 0xffff,
-                        other => {
-                            return Err(Diagnostic::error(format!(
-                                "unsupported asm numeric relocation suffix @{other}"
-                            )))
-                        }
-                    };
-                    return Ok(AsmOperand::Immediate(part));
-                }
-                // A displacement memory operand: `<disp>(<gpr>)`.
-                if *self.peek() == Token::ParenOpen {
-                    self.advance();
-                    let base = match self.advance() {
-                        Token::Identifier(word) => match parse_asm_register(&word) {
-                            Some(AsmOperand::Gpr(index)) => index,
-                            // A named register PARAMETER as the base (`PTMF.f(ptmf)`).
-                            _ => match self.asm_parameters.iter().find(|(name, _, _)| *name == word) {
-                                Some(&(_, gpr, _)) => gpr,
-                                None => return Err(Diagnostic::error(format!("asm memory operand base '{word}' must be a general-purpose register"))),
-                            },
-                        },
-                        other => return Err(Diagnostic::error(format!("expected a register in an asm memory operand, found {other}"))),
-                    };
-                    self.expect(Token::ParenClose)?;
-                    let displacement = i16::try_from(value).map_err(|_| {
-                        Diagnostic::error(format!(
-                            "asm memory displacement {value} does not fit in 16 bits"
-                        ))
-                    })?;
-                    return Ok(AsmOperand::Memory { displacement, base });
-                }
-                Ok(AsmOperand::Immediate(value))
+                self.finish_asm_integer_operand(value)
             }
             // A register name; a register PARAMETER (`mr r3,val`) or its member
             // (`stw r5,env->pc` — a displacement off the parameter's register); a
@@ -515,6 +482,59 @@ impl Parser {
                 "unexpected asm operand token {other}"
             ))),
         }
+    }
+
+    /// Finish the suffix shared by literal and folded-unary integer operands.
+    fn finish_asm_integer_operand(&mut self, value: i64) -> Compilation<AsmOperand> {
+        // A `@`-suffix on a NUMERIC operand selects a 16-bit part of the value,
+        // computed at assembly time (`lis r3, 0x7FFFFFFF@h`) — no relocation.
+        if *self.peek() == Token::At {
+            self.advance();
+            let part = match self.advance() {
+                Token::Identifier(s) if s == "h" => (value >> 16) & 0xffff,
+                Token::Identifier(s) if s == "ha" => ((value >> 16) + ((value >> 15) & 1)) & 0xffff,
+                Token::Identifier(s) if s == "l" => value & 0xffff,
+                other => {
+                    return Err(Diagnostic::error(format!(
+                        "unsupported asm numeric relocation suffix @{other}"
+                    )))
+                }
+            };
+            return Ok(AsmOperand::Immediate(part));
+        }
+        // A displacement memory operand: `<disp>(<gpr>)`.
+        if *self.peek() == Token::ParenOpen {
+            self.advance();
+            let base = match self.advance() {
+                Token::Identifier(word) => match parse_asm_register(&word) {
+                    Some(AsmOperand::Gpr(index)) => index,
+                    // A named register PARAMETER as the base (`PTMF.f(ptmf)`).
+                    _ => match self
+                        .asm_parameters
+                        .iter()
+                        .find(|(name, _, _)| *name == word)
+                    {
+                        Some(&(_, gpr, _)) => gpr,
+                        None => return Err(Diagnostic::error(format!(
+                            "asm memory operand base '{word}' must be a general-purpose register"
+                        ))),
+                    },
+                },
+                other => {
+                    return Err(Diagnostic::error(format!(
+                        "expected a register in an asm memory operand, found {other}"
+                    )))
+                }
+            };
+            self.expect(Token::ParenClose)?;
+            let displacement = i16::try_from(value).map_err(|_| {
+                Diagnostic::error(format!(
+                    "asm memory displacement {value} does not fit in 16 bits"
+                ))
+            })?;
+            return Ok(AsmOperand::Memory { displacement, base });
+        }
+        Ok(AsmOperand::Immediate(value))
     }
 
     /// Resolve `Tag.outer.words[3]` through the ordinary C layout table. The cursor starts on
