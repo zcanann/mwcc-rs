@@ -2281,10 +2281,14 @@ blr\n\
     fn parses_empty_nested_template_type_construction_as_a_value() {
         let source = r#"
             namespace rstl {
+                struct optional_object_null {};
                 template <typename T>
                 struct basic_string { struct literal_t {}; };
                 typedef basic_string<int> wstring;
-                void construct(void) { wstring::literal_t(); }
+                void construct(void) {
+                    wstring::literal_t();
+                    rstl::optional_object_null();
+                }
             }
         "#;
         let unit = parse_translation_unit(
@@ -2297,10 +2301,47 @@ blr\n\
         .unwrap();
         assert!(matches!(
             unit.functions[0].statements.as_slice(),
-            [mwcc_syntax_trees::Statement::Expression(
-                mwcc_syntax_trees::Expression::AggregateLiteral(elements)
-            )] if elements.is_empty()
+            [
+                mwcc_syntax_trees::Statement::Expression(
+                    mwcc_syntax_trees::Expression::AggregateLiteral(first)
+                ),
+                mwcc_syntax_trees::Statement::Expression(
+                    mwcc_syntax_trees::Expression::AggregateLiteral(second)
+                ),
+            ] if first.is_empty() && second.is_empty()
         ));
+    }
+
+    #[test]
+    fn lays_out_namespace_qualified_nested_template_instances() {
+        let source = r#"
+            namespace rstl {
+                template <typename T>
+                class ownership_transfer {
+                    mutable bool owns;
+                    mutable T* pointer;
+                };
+                template <typename T>
+                class optional_object {
+                    unsigned char data[sizeof(T)];
+                    bool valid __attribute__((aligned(4)));
+                };
+            }
+            class Item {};
+            rstl::optional_object<rstl::ownership_transfer<Item> > make(void) {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.functions[0].return_type, mwcc_syntax_trees::Type::Struct {
+            size: 12,
+            align: 4,
+        });
     }
 
     #[test]

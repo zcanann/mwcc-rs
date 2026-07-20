@@ -646,7 +646,8 @@ impl Parser {
                     }
                     self.expect(Token::ParenClose)?;
                     if arguments.is_empty()
-                        && self.is_empty_nested_type_constructor(&scope, &member)
+                        && (self.is_empty_nested_type_constructor(&scope, &member)
+                            || self.is_empty_qualified_type_constructor(&scope, &member))
                     {
                         Expression::AggregateLiteral(Vec::new())
                     } else {

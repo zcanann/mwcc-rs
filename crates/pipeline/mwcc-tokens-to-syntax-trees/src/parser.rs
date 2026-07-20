@@ -111,12 +111,15 @@ impl StructLayout {
 #[derive(Clone, Copy)]
 pub(crate) enum TemplateFieldType {
     Parameter,
+    /// Byte storage whose extent is `sizeof(T)` for the concrete argument.
+    ParameterByteArray,
     Concrete(mwcc_syntax_trees::Type),
 }
 
 pub(crate) struct TemplateField {
     pub(crate) name: String,
     pub(crate) field_type: TemplateFieldType,
+    pub(crate) alignment: u32,
 }
 
 /// Recoverable layout information from a skipped C++ class template. Method

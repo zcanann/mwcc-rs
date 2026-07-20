@@ -1254,6 +1254,20 @@ impl Parser {
         })
     }
 
+    /// A namespace-qualified empty aggregate construction (`N::empty_tag()`)
+    /// is likewise a value expression, not a free-function call.
+    pub(crate) fn is_empty_qualified_type_constructor(
+        &self,
+        scope: &str,
+        name: &str,
+    ) -> bool {
+        let qualified = format!("{scope}::{name}");
+        self.structs
+            .get(&qualified)
+            .or_else(|| self.structs.get(name))
+            .is_some_and(|layout| layout.fields.is_empty())
+    }
+
     pub(crate) fn resolve_instance_member_call(
         &self,
         class: &str,

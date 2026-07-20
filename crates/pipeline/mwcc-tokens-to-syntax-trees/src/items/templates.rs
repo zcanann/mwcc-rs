@@ -79,51 +79,15 @@ impl Parser {
     /// template layout. This complements typedef instantiation: game headers
     /// commonly place concrete template objects directly in class layouts.
     pub(crate) fn parse_template_instance_type(&mut self) -> Option<Type> {
-        let mut scan = self.position;
-        let mut components = Vec::new();
-        if let Some(Token::Identifier(component)) = self.tokens.get(scan) {
-            components.push(component.clone());
-            scan += 1;
-            while self.tokens.get(scan) == Some(&Token::Colon)
-                && self.tokens.get(scan + 1) == Some(&Token::Colon)
-            {
-                let Some(Token::Identifier(component)) = self.tokens.get(scan + 2) else {
-                    break;
-                };
-                components.push(component.clone());
-                scan += 3;
-            }
-        }
-        if self.tokens.get(scan) != Some(&Token::Less) {
-            return None;
-        }
-        let template_name = components.last()?;
-        let mut end = scan + 1;
-        let mut depth = 1i32;
-        while depth > 0 {
-            match self.tokens.get(end) {
-                Some(Token::Less) => depth += 1,
-                Some(Token::Greater) => depth -= 1,
-                Some(Token::EndOfFile) | None => return None,
-                _ => {}
-            }
-            end += 1;
-        }
-        let argument = match self.tokens.get(scan + 1) {
-            Some(Token::KeywordInt) => Some(Type::Int),
-            Some(Token::KeywordChar) => Some(Type::Char),
-            Some(Token::KeywordShort) => Some(Type::Short),
-            Some(Token::KeywordUnsigned) => Some(Type::UnsignedInt),
-            Some(Token::KeywordFloat) => Some(Type::Float),
-            Some(Token::Identifier(name)) => self
-                .typedefs
-                .get(name)
-                .copied()
-                .or_else(|| self.struct_value_type(name)),
-            _ => None,
-        };
+        let (_, tag, end) = self.parse_template_instance_at(self.position)?;
+        let template_name = tag
+            .split('<')
+            .next()
+            .and_then(|name| name.rsplit("::").next())?;
+        let argument = self
+            .template_argument_at(self.template_argument_start(self.position)?)?
+            .0;
         let layout = self.instantiate_struct_template_layout(template_name, argument)?;
-        let tag = format!("{}<...>", components.join("::"));
         let element_size = layout.size;
         let element_align = layout.align;
         self.structs.insert(tag.clone(), layout);
@@ -145,6 +109,77 @@ impl Parser {
         })
     }
 
+    fn template_argument_start(&self, start: usize) -> Option<usize> {
+        let mut scan = start + 1;
+        while self.tokens.get(scan) == Some(&Token::Colon)
+            && self.tokens.get(scan + 1) == Some(&Token::Colon)
+            && matches!(self.tokens.get(scan + 2), Some(Token::Identifier(_)))
+        {
+            scan += 3;
+        }
+        (self.tokens.get(scan) == Some(&Token::Less)).then_some(scan + 1)
+    }
+
+    fn parse_template_instance_at(&self, start: usize) -> Option<(Type, String, usize)> {
+        let mut scan = start;
+        let mut components = Vec::new();
+        let Token::Identifier(first) = self.tokens.get(scan)? else {
+            return None;
+        };
+        components.push(first.clone());
+        scan += 1;
+        while self.tokens.get(scan) == Some(&Token::Colon)
+            && self.tokens.get(scan + 1) == Some(&Token::Colon)
+        {
+            let Some(Token::Identifier(component)) = self.tokens.get(scan + 2) else {
+                break;
+            };
+            components.push(component.clone());
+            scan += 3;
+        }
+        if self.tokens.get(scan) != Some(&Token::Less) {
+            return None;
+        }
+        let argument = self.template_argument_at(scan + 1)?.0;
+        let mut end = scan + 1;
+        let mut depth = 1i32;
+        while depth > 0 {
+            match self.tokens.get(end) {
+                Some(Token::Less) => depth += 1,
+                Some(Token::Greater) => depth -= 1,
+                Some(Token::EndOfFile) | None => return None,
+                _ => {}
+            }
+            end += 1;
+        }
+        let template_name = components.last()?;
+        let layout = self.instantiate_struct_template_layout(template_name, argument)?;
+        Some((
+            Type::Struct {
+                size: layout.size,
+                align: layout.align,
+            },
+            format!("{}<...>", components.join("::")),
+            end,
+        ))
+    }
+
+    fn template_argument_at(&self, start: usize) -> Option<(Option<Type>, usize)> {
+        if let Some((instance, _, end)) = self.parse_template_instance_at(start) {
+            return Some((Some(instance), end));
+        }
+        let token = self.tokens.get(start)?;
+        let declared = self.template_argument_type(token).or_else(|| match token {
+            Token::Identifier(name) => self.struct_value_type(name),
+            _ => None,
+        });
+        if declared.is_some() || matches!(token, Token::Identifier(_)) {
+            Some((declared, start + 1))
+        } else {
+            None
+        }
+    }
+
     pub(crate) fn instantiate_struct_template_layout(
         &self,
         template_name: &str,
@@ -155,11 +190,19 @@ impl Parser {
         let mut max_alignment = 1u32;
         let mut fields = HashMap::new();
         for field in &template.fields {
-            let field_type = match field.field_type {
-                TemplateFieldType::Parameter => argument?,
-                TemplateFieldType::Concrete(field_type) => field_type,
+            let (field_type, field_size, natural_alignment) = match field.field_type {
+                TemplateFieldType::Parameter => {
+                    let field_type = argument?;
+                    (field_type, type_size(field_type), type_alignment(field_type))
+                }
+                TemplateFieldType::ParameterByteArray => {
+                    (Type::UnsignedChar, type_size(argument?), 1)
+                }
+                TemplateFieldType::Concrete(field_type) => {
+                    (field_type, type_size(field_type), type_alignment(field_type))
+                }
             };
-            let alignment = type_alignment(field_type).max(1);
+            let alignment = natural_alignment.max(1).max(field.alignment);
             max_alignment = max_alignment.max(alignment);
             offset = offset.div_ceil(alignment) * alignment;
             fields.insert(
@@ -174,7 +217,7 @@ impl Parser {
                     bit_field: None,
                 },
             );
-            offset += type_size(field_type);
+            offset += field_size;
         }
         let size = offset.div_ceil(max_alignment) * max_alignment;
         Some(StructLayout {
@@ -352,6 +395,7 @@ impl Parser {
                                         TemplateField {
                                             name,
                                             field_type: TemplateFieldType::Parameter,
+                                            alignment: 1,
                                         }
                                     }));
                                 }
@@ -470,14 +514,27 @@ impl Parser {
         if matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if word == "static") {
             return None;
         }
-        let mut field_type = match self.tokens.get(cursor)? {
-            Token::Identifier(name) if name == parameter => TemplateFieldType::Parameter,
-            Token::Identifier(_) if self.tokens.get(cursor + 1) == Some(&Token::Star) => {
-                TemplateFieldType::Concrete(Type::Pointer(mwcc_syntax_trees::Pointee::Int))
+        let (mut field_type, type_tokens) = match self.tokens.get(cursor)? {
+            Token::Identifier(name) if name == parameter => (TemplateFieldType::Parameter, 1),
+            Token::KeywordUnsigned
+                if self.tokens.get(cursor + 1) == Some(&Token::KeywordChar) =>
+            {
+                (TemplateFieldType::Concrete(Type::UnsignedChar), 2)
             }
-            token => TemplateFieldType::Concrete(self.template_argument_type(token)?),
+            Token::Identifier(_) if self.tokens.get(cursor + 1) == Some(&Token::Star) => {
+                (
+                    TemplateFieldType::Concrete(Type::Pointer(
+                        mwcc_syntax_trees::Pointee::Int,
+                    )),
+                    1,
+                )
+            }
+            token => (
+                TemplateFieldType::Concrete(self.template_argument_type(token)?),
+                1,
+            ),
         };
-        cursor += 1;
+        cursor += type_tokens;
         while matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if matches!(word.as_str(), "const" | "volatile")) {
             cursor += 1;
         }
@@ -498,8 +555,40 @@ impl Parser {
             fields.push(TemplateField {
                 name: name.clone(),
                 field_type,
+                alignment: 1,
             });
             cursor += 1;
+            if self.tokens.get(cursor) == Some(&Token::BracketOpen)
+                && matches!(
+                    self.tokens.get(cursor + 1..cursor + 6),
+                    Some([
+                        Token::Identifier(sizeof),
+                        Token::ParenOpen,
+                        Token::Identifier(sized),
+                        Token::ParenClose,
+                        Token::BracketClose,
+                    ]) if sizeof == "sizeof" && sized == parameter
+                )
+            {
+                fields.last_mut().unwrap().field_type = TemplateFieldType::ParameterByteArray;
+                cursor += 6;
+            }
+            if matches!(self.tokens.get(cursor), Some(Token::Identifier(attribute)) if attribute == "__attribute__") {
+                let end = (cursor..self.tokens.len()).find(|&index| {
+                    matches!(self.tokens[index], Token::Semicolon | Token::EndOfFile)
+                })?;
+                let alignment = self.tokens[cursor..end].windows(3).find_map(|tokens| {
+                    match tokens {
+                        [Token::Identifier(aligned), Token::ParenOpen, Token::IntegerLiteral(value)]
+                            if aligned == "aligned" => u32::try_from(*value).ok(),
+                        _ => None,
+                    }
+                });
+                if let Some(alignment) = alignment {
+                    fields.last_mut().unwrap().alignment = alignment;
+                }
+                cursor = end;
+            }
             match self.tokens.get(cursor) {
                 Some(Token::Comma) => cursor += 1,
                 Some(Token::Semicolon) => return Some((fields, cursor + 1)),
@@ -694,6 +783,9 @@ impl Parser {
             Token::KeywordFloat => Some(Type::Float),
             Token::Identifier(name) if self.cplusplus && name == "wchar_t" => {
                 Some(Type::UnsignedShort)
+            }
+            Token::Identifier(name) if self.cplusplus && name == "bool" => {
+                Some(Type::UnsignedChar)
             }
             Token::Identifier(name) => self.typedefs.get(name).copied(),
             _ => None,
