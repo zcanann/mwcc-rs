@@ -136,6 +136,7 @@ pub fn parse_located_translation_unit_with_enum_min(
         cxx_classes: HashMap::new(),
         struct_templates: HashMap::new(),
         inline_template_members: std::collections::HashSet::new(),
+        empty_nested_template_types: std::collections::HashSet::new(),
         inline_cxx_members: std::collections::HashSet::new(),
         cxx_static_methods: HashMap::new(),
         cxx_free_functions: HashMap::new(),
@@ -2274,6 +2275,32 @@ blr\n\
         .unwrap();
         assert_eq!(unit.functions.len(), 1);
         assert_eq!(unit.functions[0].name, "compiled__Fv");
+    }
+
+    #[test]
+    fn parses_empty_nested_template_type_construction_as_a_value() {
+        let source = r#"
+            namespace rstl {
+                template <typename T>
+                struct basic_string { struct literal_t {}; };
+                typedef basic_string<int> wstring;
+                void construct(void) { wstring::literal_t(); }
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::AggregateLiteral(elements)
+            )] if elements.is_empty()
+        ));
     }
 
     #[test]

@@ -557,6 +557,17 @@ impl Parser {
         let mut brace_depth = 1i32;
         while let Some(token) = self.tokens.get(index) {
             if brace_depth == 1 {
+                if token == &Token::KeywordStruct {
+                    if let Some([
+                        Token::Identifier(nested),
+                        Token::BraceOpen,
+                        Token::BraceClose,
+                    ]) = self.tokens.get(index + 1..index + 4)
+                    {
+                        self.empty_nested_template_types
+                            .insert((class_name.clone(), nested.clone()));
+                    }
+                }
                 if let Token::Identifier(member_name) = token {
                     if self.tokens.get(index + 1) == Some(&Token::ParenOpen) {
                         let mut cursor = index + 1;

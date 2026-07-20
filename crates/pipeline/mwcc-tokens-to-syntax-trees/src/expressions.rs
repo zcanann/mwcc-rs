@@ -645,21 +645,27 @@ impl Parser {
                         }
                     }
                     self.expect(Token::ParenClose)?;
-                    let name = if self.cxx_namespaces.contains(&scope) {
-                        self.resolve_qualified_free_cxx_call(
-                            &scope,
-                            &member,
-                            &arguments,
-                        )?
-                        .ok_or_else(|| {
-                            Diagnostic::error(format!(
-                                "C++ namespace function call '{scope}::{member}' is unavailable (roadmap)"
-                            ))
-                        })?
+                    if arguments.is_empty()
+                        && self.is_empty_nested_type_constructor(&scope, &member)
+                    {
+                        Expression::AggregateLiteral(Vec::new())
                     } else {
-                        self.resolve_static_member_call(&scope, &member, arguments.len())?
-                    };
-                    Expression::Call { name, arguments }
+                        let name = if self.cxx_namespaces.contains(&scope) {
+                            self.resolve_qualified_free_cxx_call(
+                                &scope,
+                                &member,
+                                &arguments,
+                            )?
+                            .ok_or_else(|| {
+                                Diagnostic::error(format!(
+                                    "C++ namespace function call '{scope}::{member}' is unavailable (roadmap)"
+                                ))
+                            })?
+                        } else {
+                            self.resolve_static_member_call(&scope, &member, arguments.len())?
+                        };
+                        Expression::Call { name, arguments }
+                    }
                 } else {
                     Expression::Variable(
                         self.mangle_data_member_in_current_namespace(&scope, &member)?,

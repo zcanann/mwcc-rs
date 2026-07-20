@@ -151,6 +151,10 @@ pub(crate) struct Parser {
     /// out-of-class concrete specialization of one of these remains inline and
     /// emits no code unless used; a merely declared member's specialization does.
     pub(crate) inline_template_members: std::collections::HashSet<(String, String)>,
+    /// Empty classes declared directly inside a primary class template. Their
+    /// value construction has no runtime payload, but remains semantically
+    /// distinct from a static member call during expression parsing.
+    pub(crate) empty_nested_template_types: std::collections::HashSet<(String, String)>,
     /// Fully-qualified `(class, member)` pairs declared `inline` in a skipped
     /// C++ aggregate body. A later out-of-class definition inherits that
     /// declaration's inline semantics even when it does not repeat `inline`.

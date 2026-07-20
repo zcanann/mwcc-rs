@@ -793,8 +793,9 @@ impl Parser {
             if begins_member {
                 member_declaration_start = index;
             }
-            let nested_class =
-                begins_member && matches!(token, Token::Identifier(word) if word == "class");
+            let nested_class = begins_member
+                && (matches!(token, Token::Identifier(word) if word == "class")
+                    || token == &Token::KeywordStruct);
             match token {
                 Token::ParenOpen if brace_depth == 1 => paren_depth += 1,
                 Token::ParenClose if brace_depth == 1 && paren_depth > 0 => paren_depth -= 1,
@@ -1215,6 +1216,42 @@ impl Parser {
             )));
         }
         Ok(candidates[0].mangled.clone())
+    }
+
+    /// Recognize `Alias::Nested()` when `Nested` is an empty class declared
+    /// inside the aliased template. This is a value construction, not a static
+    /// member call. Keeping the query in the C++ declaration registry prevents
+    /// expression parsing from guessing based on spelling alone.
+    pub(crate) fn is_empty_nested_type_constructor(
+        &self,
+        outer: &str,
+        nested: &str,
+    ) -> bool {
+        let qualified_outer = self.qualify_cxx_class_name(outer);
+        let template = self
+            .template_aliases
+            .get(outer)
+            .or_else(|| self.template_aliases.get(&qualified_outer));
+        if self
+            .empty_nested_template_types
+            .contains(&(template.map_or(outer, String::as_str).to_string(), nested.to_string()))
+        {
+            return true;
+        }
+        let qualified_template = template.map(|name| self.qualify_cxx_class_name(name));
+        let suffix = format!("::{nested}");
+        self.structs.iter().any(|(name, layout)| {
+            if !layout.fields.is_empty() || !name.ends_with(&suffix) {
+                return false;
+            }
+            let owner = &name[..name.len() - suffix.len()];
+            owner == outer
+                || owner == qualified_outer
+                || template.is_some_and(|template| owner == template)
+                || qualified_template
+                    .as_deref()
+                    .is_some_and(|template| owner == template)
+        })
     }
 
     pub(crate) fn resolve_instance_member_call(
