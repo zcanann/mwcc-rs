@@ -229,15 +229,9 @@ impl Generator {
                 return Err(Diagnostic::error("duplicate switch case values"));
             }
         }
-        // mwcc lays the case bodies out in SOURCE order (and elides the fall-through branch when
-        // the leading body is the last-tested case). The body layout below emits them in sorted
-        // value order, which only matches when the arms are already written ascending — so defer
-        // out-of-order arms rather than ship a mis-ordered (miscompiled) body layout.
-        if arms.windows(2).any(|pair| pair[0].value >= pair[1].value) {
-            return Err(Diagnostic::error(
-                "switch arms not in ascending source order (roadmap)",
-            ));
-        }
+        // Dispatch decisions use value order, while mwcc emits case bodies in
+        // source order. Keep those two orders independent and join them through
+        // the sorted body index when patching branches.
         // A switch whose case values span at most 6 (so a jump table would hold at
         // most 6 entries) is *always* the comparison tree; mwcc never tables a span
         // that small. A wider span is sometimes a jump table — a
@@ -251,6 +245,7 @@ impl Generator {
             if contiguous && sorted.len() >= 7 && register == result {
                 return self.emit_jump_table(
                     register,
+                    arms,
                     &sorted,
                     default,
                     default_is_labeled,
@@ -285,9 +280,33 @@ impl Generator {
             &mut patches,
         );
 
-        // Case bodies in sorted value order, then the default — each ends in `blr`.
+        // Case bodies in source order, then the default — each ends in `blr`.
         let mut body_start = vec![0usize; sorted.len()];
-        for (index, arm) in sorted.iter().enumerate() {
+        let sorted_index_by_value: std::collections::HashMap<i64, usize> = sorted
+            .iter()
+            .enumerate()
+            .map(|(index, arm)| (arm.value, index))
+            .collect();
+        let first_source_body = sorted_index_by_value[&arms[0].value];
+        // When the final dispatch operation is an unconditional branch to the
+        // first source body, that body is the natural fall-through. mwcc drops
+        // the otherwise redundant `b +4`.
+        let dispatch_end = self.output.instructions.len();
+        if dispatch_end != 0
+            && patches.iter().any(|&(index, target)| {
+                index == dispatch_end - 1
+                    && matches!(target, Target::Body(body) if body == first_source_body)
+            })
+            && matches!(
+                self.output.instructions[dispatch_end - 1],
+                Instruction::Branch { .. }
+            )
+        {
+            self.output.instructions.pop();
+            patches.retain(|&(index, _)| index != dispatch_end - 1);
+        }
+        for arm in arms {
+            let index = sorted_index_by_value[&arm.value];
             body_start[index] = self.output.instructions.len();
             let Some(arm_result) = arm.result() else {
                 return Err(Diagnostic::error(
@@ -327,8 +346,8 @@ impl Generator {
     /// trailing default block; with NO default (`None`) the dispatch's out-of-range
     /// branches are rewritten from branch-to-default into conditional/unconditional
     /// returns (`b default`->`blr`, `bge default`->`bgelr`), matching mwcc. Deferred
-    /// (never mis-compiled): a jump-table span (> 6), a fall-through arm, an out-of-order
-    /// arm, or an out-of-range case value — those keep the existing defer.
+    /// (never mis-compiled): a jump-table span (> 6), a fall-through arm, or an
+    /// out-of-range case value — those keep the existing defer.
     pub(crate) fn emit_statement_switch(
         &mut self,
         scrutinee: &Expression,
@@ -363,11 +382,6 @@ impl Generator {
             if pair[0].value == pair[1].value {
                 return Err(Diagnostic::error("duplicate switch case values"));
             }
-        }
-        if arms.windows(2).any(|pair| pair[0].value >= pair[1].value) {
-            return Err(Diagnostic::error(
-                "switch arms not in ascending source order (roadmap)",
-            ));
         }
         // Comparison tree only (defer a jump-table span); each `cmpwi v`/`cmpwi v+1` must fit i16.
         if sorted[sorted.len() - 1].value - sorted[0].value + 1 > 6 {
@@ -422,8 +436,30 @@ impl Generator {
             &mut patches,
         );
 
-        // No-default terminal collapse. The lowest-valued case's body (`Body(0)`) is laid out
-        // first, immediately after the dispatch. When that case's leaf is the LAST dispatch
+        let sorted_index_by_value: std::collections::HashMap<i64, usize> = sorted
+            .iter()
+            .enumerate()
+            .map(|(index, arm)| (arm.value, index))
+            .collect();
+        let first_source_body = sorted_index_by_value[&arms[0].value];
+
+        let dispatch_end = self.output.instructions.len();
+        if dispatch_end != 0
+            && patches.iter().any(|&(index, target)| {
+                index == dispatch_end - 1
+                    && matches!(target, Target::Body(body) if body == first_source_body)
+            })
+            && matches!(
+                self.output.instructions[dispatch_end - 1],
+                Instruction::Branch { .. }
+            )
+        {
+            self.output.instructions.pop();
+            patches.retain(|&(index, _)| index != dispatch_end - 1);
+        }
+
+        // No-default terminal collapse. The first source case's body is laid out
+        // immediately after the dispatch. When that case's leaf is the LAST dispatch
         // instruction pair — `<cond> Body(0); b Default` — and there is no default, mwcc does not
         // branch to the body and then return; it inverts the test into a conditional RETURN and
         // lets the body fall through: `cmpwi v; beq Body(0); b default` -> `cmpwi v; bnelr; <body>`
@@ -431,7 +467,7 @@ impl Generator {
         // `b default` and the branch-to-body, saving one instruction. (The with-default and
         // value-returning forms keep the explicit `bge; b` — the collapse is unique to a default
         // whose action is a bare return.) Detected structurally: the final two dispatch
-        // instructions are a forward conditional to `Body(0)` followed by an unconditional to
+        // instructions are a forward conditional to that body followed by an unconditional to
         // `Default`. Every other no-default shape is handled by the branch-to-return rewrite below.
         if default_statements.is_none() {
             let n = self.output.instructions.len();
@@ -440,15 +476,15 @@ impl Generator {
                     .iter()
                     .any(|&(i, t)| i == n - 1 && matches!(t, Target::Default))
                 && matches!(self.output.instructions[n - 1], Instruction::Branch { .. });
-            let prev_body_zero = n >= 2
+            let prev_first_body = n >= 2
                 && patches
                     .iter()
-                    .any(|&(i, t)| i == n - 2 && matches!(t, Target::Body(0)))
+                    .any(|&(i, t)| i == n - 2 && matches!(t, Target::Body(body) if body == first_source_body))
                 && matches!(
                     self.output.instructions[n - 2],
                     Instruction::BranchConditionalForward { .. }
                 );
-            if last_default && prev_body_zero {
+            if last_default && prev_first_body {
                 if let Instruction::BranchConditionalForward {
                     options,
                     condition_bit,
@@ -471,7 +507,8 @@ impl Generator {
 
         // Each arm's statements, then `blr` (the `break` returns from the void function).
         let mut body_start = vec![0usize; sorted.len()];
-        for (index, arm) in sorted.iter().enumerate() {
+        for arm in arms {
+            let index = sorted_index_by_value[&arm.value];
             body_start[index] = self.output.instructions.len();
             let ArmBody::Statements(statements) = &arm.body else {
                 unreachable!()
@@ -559,6 +596,7 @@ impl Generator {
     fn emit_jump_table(
         &mut self,
         register: u8,
+        arms: &[SwitchArm],
         sorted: &[&SwitchArm],
         default: &Expression,
         default_is_labeled: bool,
@@ -658,9 +696,9 @@ impl Generator {
             .instructions
             .push(Instruction::BranchToCountRegister);
 
-        // Case bodies in value order, then the default; record each value's offset.
+        // Case bodies in source order, then the default; record each value's offset.
         let mut body_offset = std::collections::HashMap::new();
-        for arm in sorted {
+        for arm in arms {
             body_offset.insert(arm.value, self.output.instructions.len() as u32 * 4);
             let Some(arm_result) = arm.result() else {
                 return Err(Diagnostic::error(
