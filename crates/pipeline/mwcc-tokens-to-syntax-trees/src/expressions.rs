@@ -515,6 +515,26 @@ impl Parser {
             return Ok(increment_assignment(operand, operator));
         }
 
+        // A C++ named static cast has the same expression representation as a
+        // C-style cast once its destination type is known. Keep the syntax in
+        // the parser rather than teaching later lowering stages about two
+        // spellings of the same conversion.
+        if self.cplusplus
+            && matches!(self.peek(), Token::Identifier(name) if name == "static_cast")
+        {
+            self.advance();
+            self.expect(Token::Less)?;
+            let target_type = self.parse_type()?;
+            self.expect(Token::Greater)?;
+            self.expect(Token::ParenOpen)?;
+            let operand = self.expression()?;
+            self.expect(Token::ParenClose)?;
+            return Ok(Expression::Cast {
+                target_type,
+                operand: Box::new(operand),
+            });
+        }
+
         // `_var_arg_typeof(type)` is an mwcc intrinsic: the EABI vararg class
         // code fed to `__va_arg` (measured GC/2.6: aggregate -> 0, gpr scalar/
         // pointer -> 1, long long pair -> 2, float/double -> 3).

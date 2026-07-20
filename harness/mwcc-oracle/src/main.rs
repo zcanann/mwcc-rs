@@ -36,7 +36,6 @@ const COMPILE_FLAGS: &[&str] = &[
     "on",
     "-str",
     "reuse",
-    "-lang=c",
 ];
 
 fn main() -> std::process::ExitCode {
@@ -86,7 +85,10 @@ fn main() -> std::process::ExitCode {
     let mut entries: Vec<PathBuf> = std::fs::read_dir(&canaries)
         .expect("cannot read canaries/")
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| path.extension().is_some_and(|extension| extension == "c"))
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "c" || extension == "cpp")
+        })
         .collect();
     entries.sort();
     if let Ok(filter) = std::env::var("MWCC_ORACLE_FILTER") {
@@ -120,6 +122,10 @@ fn main() -> std::process::ExitCode {
             .arg(&sjis)
             .arg(&real_compiler)
             .args(COMPILE_FLAGS)
+            .args(
+                (source.extension().is_some_and(|extension| extension == "c"))
+                    .then_some("-lang=c"),
+            )
             .args(&extra_flags)
             .arg("-c")
             .arg(&source)

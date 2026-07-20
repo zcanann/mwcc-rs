@@ -193,6 +193,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parses_cpp_named_static_cast_as_an_ordinary_conversion() {
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize("float convert(unsigned value) { return static_cast<float>(value); }").unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Cast {
+                target_type: mwcc_syntax_trees::Type::Float,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn distinguishes_a_lexically_empty_translation_unit() {
         let empty = parse_translation_unit(
             mwcc_source_to_tokens::tokenize("// comment only\n").unwrap(),
