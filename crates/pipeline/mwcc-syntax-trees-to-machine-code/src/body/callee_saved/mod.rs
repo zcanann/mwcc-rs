@@ -20,6 +20,7 @@ mod frame_convention;
 mod later_call_arguments;
 mod global_swap;
 mod global_aggregate_initialization;
+mod global_aggregate_pop;
 mod guarded_initialization;
 mod guarded_bitmask_call_sequence;
 mod guarded_pointer_call;

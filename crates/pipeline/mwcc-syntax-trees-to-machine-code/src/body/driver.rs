@@ -1200,6 +1200,9 @@ impl Generator {
         if self.try_global_aggregate_call_initialization(function)? {
             return Ok(());
         }
+        if self.try_global_aggregate_pop(function)? {
+            return Ok(());
+        }
         if self.try_inlined_queue_post_transaction(function)? {
             return Ok(());
         }
