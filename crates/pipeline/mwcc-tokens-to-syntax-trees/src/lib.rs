@@ -91,6 +91,7 @@ pub fn parse_located_translation_unit(
         defer_codegen: false,
         deferred_function_names: Vec::new(),
         skipped_inline_functions: 0,
+        cxx_inline_ordinal_facts: mwcc_syntax_trees::CxxInlineOrdinalFacts::default(),
         named_prototype_parameters: 0,
         static_local_prebumps: std::collections::HashMap::new(),
         counted_enum_positions: std::collections::HashSet::new(),
@@ -628,6 +629,39 @@ mod tests {
             unit.functions[1].return_expression.as_ref(),
             Some(mwcc_syntax_trees::Expression::Call { name, .. }) if name == "cpp_api__Ff"
         ));
+    }
+
+    #[test]
+    fn records_cxx_inline_ordinal_facts_without_assigning_version_weights() {
+        let source = r#"
+            class Id {
+                unsigned short value;
+            public:
+                virtual ~Id() {}
+                Id() { clear(); }
+                void clear() { value = 0; }
+                unsigned short get() const { return value; }
+            };
+            int probe() { return 0; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.cxx_inline_ordinal_facts,
+            mwcc_syntax_trees::CxxInlineOrdinalFacts {
+                class_definitions: 1,
+                inline_definitions: 4,
+                virtual_destructors: 1,
+                direct_calls: 1,
+            }
+        );
     }
 
     #[test]

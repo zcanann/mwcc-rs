@@ -505,7 +505,17 @@ fn compile(
     let read_only_small_data =
         config.flags.read_only_global_addressing == mwcc_versions::GlobalAddressing::SmallData;
     let mut static_local_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
+    let cxx_inline_facts = unit.cxx_inline_ordinal_facts;
+    let cxx_inline_bump = cxx_inline_facts.class_definitions
+        * usize::from(behavior.cxx_class_definition_label_bump)
+        + cxx_inline_facts.inline_definitions
+            * usize::from(behavior.cxx_inline_definition_label_bump)
+        + cxx_inline_facts.virtual_destructors
+            * usize::from(behavior.cxx_virtual_destructor_label_bump)
+        + cxx_inline_facts.direct_calls
+            * usize::from(behavior.cxx_inline_ipa_call_label_bump);
     let unit_declaration_bump = unit.skipped_inline_functions
+        + cxx_inline_bump
         + if config
             .build
             .profile

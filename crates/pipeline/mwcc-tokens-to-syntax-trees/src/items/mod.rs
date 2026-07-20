@@ -843,6 +843,7 @@ impl Parser {
             inline_asm_symbols: std::mem::take(&mut self.inline_asm_symbols),
             plain_inline_asm_helpers: std::mem::take(&mut self.plain_inline_asm_helpers),
             skipped_inline_functions: self.skipped_inline_functions,
+            cxx_inline_ordinal_facts: self.cxx_inline_ordinal_facts,
             static_local_prebumps: std::mem::take(&mut self.static_local_prebumps),
             implicitly_materialized: std::mem::take(&mut self.implicitly_materialized),
             materialized_inline_candidates: std::mem::take(

@@ -646,6 +646,11 @@ pub struct Behavior {
     pub plain_inline_localstatic_base: u8,
     /// Base anonymous-label cost of a skipped static-inline definition.
     pub skipped_static_inline_label_base: u8,
+    /// Version-specific weights applied to parser-recorded C++ inline facts.
+    pub cxx_class_definition_label_bump: u8,
+    pub cxx_inline_definition_label_bump: u8,
+    pub cxx_virtual_destructor_label_bump: u8,
+    pub cxx_inline_ipa_call_label_bump: u8,
     /// Whether initialized `T a[] = ...` objects bypass small-data routing.
     pub inferred_array_uses_full_data_section: bool,
     /// Post-resolution optimization of branches written in `asm` functions.
@@ -896,6 +901,23 @@ impl Behavior {
                 .build
                 .profile
                 .skipped_static_inline_label_base(),
+            cxx_class_definition_label_bump: config
+                .build
+                .profile
+                .cxx_class_definition_label_bump(),
+            cxx_inline_definition_label_bump: config
+                .build
+                .profile
+                .cxx_inline_definition_label_bump(),
+            cxx_virtual_destructor_label_bump: config
+                .build
+                .profile
+                .cxx_virtual_destructor_label_bump(),
+            cxx_inline_ipa_call_label_bump: if config.flags.ipa_file {
+                config.build.profile.cxx_inline_ipa_call_label_bump()
+            } else {
+                0
+            },
             inferred_array_uses_full_data_section: config
                 .build
                 .profile
@@ -1620,6 +1642,19 @@ mod tests {
         let gc41 = Behavior::resolve(&CompilerConfig::new(build::GC_3_0A3P1));
         assert_eq!(mainline.folded_float_guard_label_bump, 2);
         assert_eq!(gc41.folded_float_guard_label_bump, 1);
+        assert_eq!(mainline.cxx_inline_definition_label_bump, 0);
+        assert_eq!(mainline.cxx_virtual_destructor_label_bump, 2);
+        assert_eq!(gc41.cxx_class_definition_label_bump, 1);
+        assert_eq!(gc41.cxx_inline_definition_label_bump, 4);
+        assert_eq!(gc41.cxx_virtual_destructor_label_bump, 3);
+        assert_eq!(gc41.cxx_inline_ipa_call_label_bump, 0);
+
+        let mut ipa_config = CompilerConfig::new(build::GC_3_0A3P1);
+        ipa_config.flags.ipa_file = true;
+        assert_eq!(
+            Behavior::resolve(&ipa_config).cxx_inline_ipa_call_label_bump,
+            1
+        );
     }
 
     #[test]

@@ -405,6 +405,7 @@ impl Parser {
         if self.tokens.get(index) != Some(&Token::BraceOpen) {
             return Vec::new();
         }
+        self.cxx_inline_ordinal_facts.class_definitions += 1;
 
         // Seed the primary dispatch table from the one supported base. A base
         // declared in the current namespace is preferred, with the written
@@ -451,6 +452,8 @@ impl Parser {
         let mut paren_depth = 0i32;
         let mut explicitly_inline = false;
         let mut member_name: Option<String> = None;
+        let mut member_declaration_start = body_start;
+        let mut inline_body_start = None;
         while let Some(token) = self.tokens.get(index) {
             let begins_member = brace_depth == 1
                 && paren_depth == 0
@@ -473,6 +476,9 @@ impl Parser {
                         });
                 }
             }
+            if begins_member {
+                member_declaration_start = index;
+            }
             match token {
                 Token::ParenOpen if brace_depth == 1 => paren_depth += 1,
                 Token::ParenClose if brace_depth == 1 && paren_depth > 0 => paren_depth -= 1,
@@ -482,6 +488,15 @@ impl Parser {
                     if brace_depth == 1 && paren_depth == 0 {
                         if let Some(member) = member_name.take() {
                             self.inline_cxx_members.insert((class.clone(), member));
+                            self.cxx_inline_ordinal_facts.inline_definitions += 1;
+                            let declaration = &self.tokens[member_declaration_start..index];
+                            if declaration.iter().any(
+                                |token| matches!(token, Token::Identifier(word) if word == "virtual"),
+                            ) && declaration.iter().any(|token| token == &Token::Tilde)
+                            {
+                                self.cxx_inline_ordinal_facts.virtual_destructors += 1;
+                            }
+                            inline_body_start = Some(index + 1);
                         }
                     }
                     brace_depth += 1;
@@ -492,6 +507,16 @@ impl Parser {
                         return prototypes;
                     }
                     if brace_depth == 1 {
+                        if let Some(body_start) = inline_body_start.take() {
+                            self.cxx_inline_ordinal_facts.direct_calls += self.tokens
+                                [body_start..index]
+                                .windows(2)
+                                .filter(|tokens| {
+                                    matches!(tokens[0], Token::Identifier(_))
+                                        && tokens[1] == Token::ParenOpen
+                                })
+                                .count();
+                        }
                         explicitly_inline = false;
                         member_name = None;
                     }

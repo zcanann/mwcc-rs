@@ -230,6 +230,18 @@ pub enum PointerElement {
     Scalar(i64),
 }
 
+/// Source facts from C++ class bodies whose inline definitions are compiled for
+/// optimizer analysis but do not survive as out-of-line functions. Version
+/// profiles assign the observable anonymous-symbol weights later; the parser
+/// records syntax only.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CxxInlineOrdinalFacts {
+    pub class_definitions: usize,
+    pub inline_definitions: usize,
+    pub virtual_destructors: usize,
+    pub direct_calls: usize,
+}
+
 /// A translation unit: file-scope globals (and skipped prototypes) interleaved
 /// with one or more function definitions, in source order.
 #[derive(Debug, Clone)]
@@ -248,6 +260,8 @@ pub struct TranslationUnit {
     /// Skipped `inline` function definitions: each advanced mwcc's `@N` counter
     /// by 3 (compiled then dropped), so the writer pre-bumps the numbering.
     pub skipped_inline_functions: usize,
+    /// Structural facts for version-specific C++ inline ordinal accounting.
+    pub cxx_inline_ordinal_facts: CxxInlineOrdinalFacts,
     /// Names of VARIADIC function declarations/definitions in this unit. Kept
     /// OUTSIDE `Function` so capture AST hashes stay stable. Definitions still
     /// defer in general lowering; call sites use this to emit the EABI CR marker.

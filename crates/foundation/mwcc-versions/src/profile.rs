@@ -936,6 +936,25 @@ pub trait CodegenProfile: core::fmt::Debug {
         3
     }
 
+    /// Anonymous-symbol weights for structural facts from in-class C++ inline
+    /// definitions. The 2.4.x generation only exposes the virtual-destructor
+    /// artifact; GC 4.1 overrides the optimizer-analysis costs.
+    fn cxx_class_definition_label_bump(&self) -> u8 {
+        0
+    }
+
+    fn cxx_inline_definition_label_bump(&self) -> u8 {
+        0
+    }
+
+    fn cxx_virtual_destructor_label_bump(&self) -> u8 {
+        2
+    }
+
+    fn cxx_inline_ipa_call_label_bump(&self) -> u8 {
+        0
+    }
+
     /// Whether an initialized array whose written length was inferred from `[]`
     /// bypasses the small-data size threshold. Build 163 places writable forms
     /// in `.data` and const forms in `.rodata`; the 2.4.x mainline uses the same
@@ -1004,6 +1023,22 @@ impl CodegenProfile for Gc41Build51213 {
     }
 
     fn folded_float_guard_label_bump(&self) -> u8 {
+        1
+    }
+
+    fn cxx_class_definition_label_bump(&self) -> u8 {
+        1
+    }
+
+    fn cxx_inline_definition_label_bump(&self) -> u8 {
+        4
+    }
+
+    fn cxx_virtual_destructor_label_bump(&self) -> u8 {
+        3
+    }
+
+    fn cxx_inline_ipa_call_label_bump(&self) -> u8 {
         1
     }
 
