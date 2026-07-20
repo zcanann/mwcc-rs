@@ -59,7 +59,9 @@ impl Parser {
                 self.expect(Token::Semicolon)?;
                 Ok(Some(Statement::Goto(name)))
             }
-            _ if *self.peek_at(1) == Token::Colon => {
+            // A source label is one colon. `Class::member(...)` begins with the
+            // same two tokens but must remain an expression statement.
+            _ if *self.peek_at(1) == Token::Colon && *self.peek_at(2) != Token::Colon => {
                 let name = self.parse_identifier()?;
                 self.advance(); // the colon
                 Ok(Some(Statement::Label(name)))

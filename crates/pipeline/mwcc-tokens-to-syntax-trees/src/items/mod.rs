@@ -613,7 +613,7 @@ impl Parser {
             let start = self.position;
             // Inline is declaration state, not layout state. Capture it before
             // either the C++ layout parser succeeds or recovery skips a class.
-            self.capture_cxx_inline_members();
+            prototypes.extend(self.capture_cxx_class_declarations());
             let functions_before = functions.len();
             let globals_before = globals.len();
             let bump_before_item = self.skipped_inline_functions;

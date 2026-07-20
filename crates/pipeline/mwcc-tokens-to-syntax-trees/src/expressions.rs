@@ -515,6 +515,30 @@ impl Parser {
             Token::FloatLiteral(value) => Expression::FloatLiteral(value),
             // A string literal (the raw bytes) — pooled and loaded by address.
             Token::StringLiteral(bytes) => Expression::StringLiteral(bytes),
+            // A qualified static-member call has no implicit `this`, but its
+            // declaration supplies the overload signature used by MWCC mangling.
+            Token::Identifier(scope)
+                if *self.peek() == Token::Colon && *self.peek_at(1) == Token::Colon =>
+            {
+                self.advance();
+                self.advance();
+                let member = self.parse_identifier()?;
+                self.expect(Token::ParenOpen)?;
+                let mut arguments = Vec::new();
+                if *self.peek() != Token::ParenClose {
+                    loop {
+                        arguments.push(self.expression()?);
+                        if *self.peek() == Token::Comma {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                self.expect(Token::ParenClose)?;
+                let name = self.resolve_static_member_call(&scope, &member, arguments.len())?;
+                Expression::Call { name, arguments }
+            }
             // `name(args)` is a call; a bare `name` is a variable.
             Token::Identifier(name) if *self.peek() == Token::ParenOpen => {
                 self.advance();

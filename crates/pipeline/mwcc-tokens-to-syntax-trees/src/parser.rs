@@ -72,6 +72,10 @@ pub(crate) struct Parser {
     /// C++ aggregate body. A later out-of-class definition inherits that
     /// declaration's inline semantics even when it does not repeat `inline`.
     pub(crate) inline_cxx_members: std::collections::HashSet<(String, String)>,
+    /// Static class-member overloads recovered from aggregate declarations,
+    /// keyed by fully-qualified `(class, member)` name. Calls carry no implicit
+    /// `this`, but still require CodeWarrior member-function mangling.
+    pub(crate) cxx_static_methods: HashMap<(String, String), Vec<Vec<Type>>>,
     /// Concrete template typedef alias -> primary template name. This is kept
     /// separately from layout aliases because nested/multi-argument templates
     /// may be opaque for layout while still carrying inline-member semantics.

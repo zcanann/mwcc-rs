@@ -133,26 +133,29 @@ impl Parser {
         }
     }
 
-    /// Recover inline semantics from a C++ aggregate that the layout parser
-    /// cannot yet consume. Methods defined in a class body are implicitly
-    /// inline; declarations carrying `inline` remain inline when their later
-    /// out-of-class definition omits the keyword.
+    /// Recover declaration semantics from a C++ aggregate independently of
+    /// layout parsing. Methods defined in a class body are implicitly inline;
+    /// declarations carrying `inline` remain inline when a later out-of-class
+    /// definition omits the keyword. Static method declarations supply callable
+    /// signatures and their source-order prototype symbols.
     ///
-    /// This deliberately records only names and never layout. It is used solely
-    /// to decide whether an otherwise unparseable, unused definition may be
-    /// dropped; calls to such skipped names still defer rather than invent code.
-    pub(crate) fn capture_cxx_inline_members(&mut self) {
+    /// This deliberately never infers layout. Calls to skipped inline names still
+    /// defer, while a static call is admitted only when one recovered overload
+    /// matches its arity.
+    pub(crate) fn capture_cxx_class_declarations(
+        &mut self,
+    ) -> Vec<(String, Type, Vec<Type>)> {
         if !self.cplusplus {
-            return;
+            return Vec::new();
         }
         let start = self.position;
         let is_aggregate = matches!(self.tokens.get(start), Some(Token::KeywordStruct))
             || matches!(self.tokens.get(start), Some(Token::Identifier(word)) if word == "class");
         if !is_aggregate {
-            return;
+            return Vec::new();
         }
         let Some(Token::Identifier(class)) = self.tokens.get(start + 1) else {
-            return;
+            return Vec::new();
         };
         let class = self.qualify_cxx_class_name(class);
         let mut index = start + 2;
@@ -163,15 +166,19 @@ impl Parser {
             index += 1;
         }
         if self.tokens.get(index) != Some(&Token::BraceOpen) {
-            return;
+            return Vec::new();
         }
 
         index += 1;
+        let mut prototypes = Vec::new();
         let mut brace_depth = 1i32;
         let mut paren_depth = 0i32;
         let mut explicitly_inline = false;
         let mut member_name: Option<String> = None;
         while let Some(token) = self.tokens.get(index) {
+            let is_static_member = brace_depth == 1
+                && paren_depth == 0
+                && matches!(token, Token::Identifier(word) if word == "static");
             if brace_depth == 1 && paren_depth == 0 {
                 if matches!(token, Token::Identifier(word) if word == "inline" || word == "__inline")
                 {
@@ -203,7 +210,7 @@ impl Parser {
                 Token::BraceClose => {
                     brace_depth -= 1;
                     if brace_depth == 0 {
-                        return;
+                        return prototypes;
                     }
                     if brace_depth == 1 {
                         explicitly_inline = false;
@@ -219,11 +226,89 @@ impl Parser {
                     explicitly_inline = false;
                     member_name = None;
                 }
-                Token::EndOfFile => return,
+                Token::EndOfFile => return prototypes,
                 _ => {}
+            }
+            if is_static_member {
+                if let Some(prototype) = self.capture_static_cxx_method(index, &class) {
+                    prototypes.push(prototype);
+                }
             }
             index += 1;
         }
+        prototypes
+    }
+
+    /// Speculatively reuse the ordinary type/declarator parser on a single
+    /// `static Return member(params);` declaration. The main cursor and its
+    /// transient type side channels are restored regardless of success.
+    fn capture_static_cxx_method(
+        &mut self,
+        static_index: usize,
+        class: &str,
+    ) -> Option<(String, Type, Vec<Type>)> {
+        let saved_position = self.position;
+        let saved_struct_tag = self.last_struct_tag.clone();
+        let saved_array_typedef = self.last_array_typedef;
+        let saved_type_const = self.last_type_was_const;
+        let saved_pointer_const = self.last_pointer_const;
+        let saved_volatile = self.last_type_was_volatile;
+
+        self.position = static_index + 1;
+        let recovered = (|| -> Compilation<(String, Type, Vec<Type>)> {
+            let return_type = self.parse_type()?;
+            self.last_struct_tag.take();
+            self.last_array_typedef.take();
+            let member = self.parse_identifier()?;
+            let parameters = self.parse_class_parameter_types()?;
+            Ok((member, return_type, parameters))
+        })();
+
+        self.position = saved_position;
+        self.last_struct_tag = saved_struct_tag;
+        self.last_array_typedef = saved_array_typedef;
+        self.last_type_was_const = saved_type_const;
+        self.last_pointer_const = saved_pointer_const;
+        self.last_type_was_volatile = saved_volatile;
+
+        if let Ok((member, return_type, parameters)) = recovered {
+            let overloads = self
+                .cxx_static_methods
+                .entry((class.to_string(), member.clone()))
+                .or_default();
+            if !overloads.contains(&parameters) {
+                overloads.push(parameters.clone());
+            }
+            let scopes: Vec<&str> = class.split("::").collect();
+            let mangled = mangle_qualified_member_function(&scopes, &member, &parameters).ok()?;
+            return Some((mangled, return_type, parameters));
+        }
+        None
+    }
+
+    /// Resolve `Class::member(args)` using recovered static declarations.
+    /// Arity is sufficient only when it selects one overload; ambiguity defers.
+    pub(crate) fn resolve_static_member_call(
+        &self,
+        class: &str,
+        member: &str,
+        argument_count: usize,
+    ) -> Compilation<String> {
+        let class = self.qualify_cxx_class_name(class);
+        let candidates: Vec<&Vec<Type>> = self
+            .cxx_static_methods
+            .get(&(class.clone(), member.to_string()))
+            .into_iter()
+            .flatten()
+            .filter(|parameters| parameters.len() == argument_count)
+            .collect();
+        if candidates.len() != 1 {
+            return Err(Diagnostic::error(format!(
+                "static C++ member call '{class}::{member}' is ambiguous or unavailable (roadmap)"
+            )));
+        }
+        let scopes: Vec<&str> = class.split("::").collect();
+        mangle_qualified_member_function(&scopes, member, candidates[0])
     }
 
     /// Mangle a member declared in the active namespace scope. Class layouts
