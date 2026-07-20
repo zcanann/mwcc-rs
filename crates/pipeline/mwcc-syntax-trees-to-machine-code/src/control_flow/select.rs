@@ -4,6 +4,85 @@
 use super::*;
 
 impl Generator {
+    /// A legacy offset-zero global-struct-array comparison forms its address with
+    /// two temporary GPRs. Once the load completes, the scaled-index lane is dead;
+    /// mwcc reclaims that lane as the persistent short-circuit 0/1 accumulator.
+    /// This is required when the right comparison also loads through r0: using r0
+    /// as the accumulator would return the loaded field rather than normalized 1.
+    fn legacy_short_circuit_accumulator(
+        &self,
+        condition: &Expression,
+    ) -> Compilation<Option<u8>> {
+        let Expression::Binary { left, right, .. } = condition else {
+            return Ok(None);
+        };
+        let indexed_member = [left.as_ref(), right.as_ref()].into_iter().find_map(
+            |operand| match operand {
+                Expression::Member {
+                    base: member_base,
+                    offset,
+                    index_stride: Some(stride),
+                    ..
+                } => Some((member_base.as_ref(), *offset, *stride)),
+                _ => None,
+            },
+        );
+        let Some((Expression::Index { base, index }, offset, stride)) = indexed_member else {
+            return Ok(None);
+        };
+        let Expression::Variable(name) = base.as_ref() else {
+            return Ok(None);
+        };
+        let Some(&total_size) = self.global_array_sizes.get(name.as_str()) else {
+            return Ok(None);
+        };
+        let Some(index_name) = leaf_name(index) else {
+            return Ok(None);
+        };
+        let Some(index_register) = self.locations.get(index_name).map(|location| location.register)
+        else {
+            return Ok(None);
+        };
+        if offset != 0
+            || !stride.is_power_of_two()
+            || self.behavior.global_array_index_style
+                != mwcc_versions::GlobalArrayIndexStyle::ExplicitAddress
+            || (self.behavior.global_addressing == mwcc_versions::GlobalAddressing::SmallData
+                && total_size <= 8)
+        {
+            return Ok(None);
+        }
+        let high = self.free_general_excluding(index_register)?;
+        Ok(Some(
+            self.free_general_excluding_two(index_register, high)?,
+        ))
+    }
+
+    /// Insert a value preload into the final load/compare latency slot emitted by
+    /// a simple condition. Relocations already point at the preceding loads; shift
+    /// only entries at or after the comparison insertion point.
+    fn insert_before_terminal_compare(&mut self, instruction: Instruction) -> bool {
+        let Some(position) = self.output.instructions.len().checked_sub(1) else {
+            return false;
+        };
+        if !matches!(
+            self.output.instructions[position],
+            Instruction::CompareWordImmediate { .. }
+                | Instruction::CompareWordImmediateField { .. }
+                | Instruction::CompareWord { .. }
+                | Instruction::CompareLogicalWordImmediate { .. }
+        ) {
+            return false;
+        }
+        self.output.instructions.insert(position, instruction);
+        for relocation in &mut self.output.relocations {
+            if relocation.instruction_index >= position {
+                relocation.instruction_index += 1;
+            }
+        }
+        true
+    }
+
     /// Emit a short-circuit `&&`/`||` in tail position as mwcc does: each operand
     /// is tested (a leaf against zero, a comparison directly) with an early
     /// conditional return. Each operand may be a leaf or a comparison.
@@ -169,22 +248,33 @@ impl Generator {
                 if self.behavior.logical_or_value_style
                     == mwcc_versions::LogicalOrValueStyle::TrueFirst
                 {
+                    let accumulator = self
+                        .legacy_short_circuit_accumulator(left)?
+                        .unwrap_or(scratch);
                     let (left_skip, left_bit) = self.emit_condition_test(left)?;
-                    self.output
-                        .instructions
-                        .push(Instruction::load_immediate(scratch, 1));
+                    let preload = Instruction::load_immediate(accumulator, 1);
+                    if accumulator == scratch
+                        || !self.insert_before_terminal_compare(preload.clone())
+                    {
+                        self.output.instructions.push(preload);
+                    }
                     let exit = self.fresh_label();
                     self.emit_branch_conditional_to(left_skip ^ 8, left_bit, exit);
-                    let (right_skip, right_bit) = self.emit_condition_test(right)?;
+                    let restore = accumulator != scratch && self.reserved.insert(accumulator);
+                    let right_test = self.emit_condition_test(right);
+                    if restore {
+                        self.reserved.remove(&accumulator);
+                    }
+                    let (right_skip, right_bit) = right_test?;
                     self.emit_branch_conditional_to(right_skip ^ 8, right_bit, exit);
                     self.output
                         .instructions
-                        .push(Instruction::load_immediate(scratch, 0));
+                        .push(Instruction::load_immediate(accumulator, 0));
                     self.bind_label(exit);
-                    if result != scratch {
+                    if result != accumulator {
                         self.output
                             .instructions
-                            .push(Instruction::move_register(result, scratch));
+                            .push(Instruction::move_register(result, accumulator));
                     }
                     return Ok(());
                 }

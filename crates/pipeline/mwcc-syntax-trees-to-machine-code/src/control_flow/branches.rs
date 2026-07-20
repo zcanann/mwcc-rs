@@ -1219,7 +1219,21 @@ impl Generator {
                     }
                 }
                 let signed = self.signedness_of(left)? && self.signedness_of(right)?;
-                let left_register = self.condition_operand_register(left)?;
+                // A memory-valued left operand may need a temporary address GPR.
+                // Keep every fixed register read by the right operand live while
+                // selecting that address; otherwise `global.field == parameter`
+                // can materialize the global base over the parameter and compare
+                // against the address it just wrote (SIBios's `Si.chan == chan`).
+                let newly_reserved: Vec<u8> = self
+                    .registers_used_by(right)
+                    .into_iter()
+                    .filter(|register| self.reserved.insert(*register))
+                    .collect();
+                let left_result = self.condition_operand_register(left);
+                for register in newly_reserved {
+                    self.reserved.remove(&register);
+                }
+                let left_register = left_result?;
                 // An operand whose register isn't already the right width must be
                 // extended before the compare: a `short`/`char` leaf in its home register
                 // (mwcc emits extsh/extsb/clrlwi, record form against zero), or a *signed*

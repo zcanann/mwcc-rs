@@ -465,12 +465,20 @@ impl Parser {
                     let _ = self.eat_keyword(Token::KeywordInt);
                     Type::Short
                 }
-                // `signed`, `signed int`, `signed long [long] [int]` — all 32-bit
-                // signed on this target.
+                // `signed`, `signed int`, and `signed long [int]` are 32-bit on
+                // this target; `signed long long [int]` is the 64-bit register-pair
+                // type, just like the unprefixed `long long` spelling above.
                 _ => {
-                    while self.eat_word("long") {}
+                    let mut long_count = 0;
+                    while self.eat_word("long") {
+                        long_count += 1;
+                    }
                     let _ = self.eat_keyword(Token::KeywordInt);
-                    Type::Int
+                    if long_count >= 2 {
+                        Type::LongLong
+                    } else {
+                        Type::Int
+                    }
                 }
             },
             other => {

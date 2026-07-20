@@ -121,7 +121,7 @@ impl Generator {
             // (SDA21 `li d,g@sda21` small / `lis;addi` large), then load the field at
             // its offset — `li d,g; lwz d,offset(d)`. The base register cannot be the
             // scratch r0 (it is then its own load base).
-            if !self.locations.contains_key(name.as_str()) && destination != GENERAL_SCRATCH {
+            if !self.locations.contains_key(name.as_str()) {
                 if let Some(Type::Struct { size, .. }) = self.globals.get(name.as_str()).copied() {
                     let pointee = pointee_of_type(member_type)
                         .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
@@ -145,12 +145,40 @@ impl Generator {
                         )?);
                         return Ok(());
                     }
-                    self.emit_global_array_base(name, size as u32, destination)?;
-                    let displacement = self.emit_member_base_adjustment(destination, offset);
+                    // The field destination cannot always double as the object's
+                    // address register. A comparison deliberately loads into r0,
+                    // which cannot be a D-form base, and a float destination names
+                    // an FPR (f1 must not accidentally address through r1/sp).
+                    // Keep the compact self-based load for an ordinary GPR result;
+                    // otherwise allocate a distinct GPR for the aggregate address.
+                    let address = if destination == GENERAL_SCRATCH
+                        || matches!(pointee, Pointee::Float | Pointee::Double)
+                    {
+                        self.lowest_free_general()?
+                    } else {
+                        destination
+                    };
+                    // A large aggregate's offset-zero field folds the low
+                    // relocation into the load: `lis base,g@ha; lwz d,g@l(base)`.
+                    // Materializing a separate `addi` changes both text and the
+                    // relocation site (SIBios's `Si.chan` comparison).
+                    if offset == 0 {
+                        self.emit_address_high(address, name);
+                        self.record_relocation(RelocationKind::Addr16Lo, name);
+                        self.output.instructions.push(displacement_load(
+                            pointee,
+                            destination,
+                            address,
+                            0,
+                        )?);
+                        return Ok(());
+                    }
+                    self.emit_global_array_base(name, size as u32, address)?;
+                    let displacement = self.emit_member_base_adjustment(address, offset);
                     self.output.instructions.push(displacement_load(
                         pointee,
                         destination,
-                        destination,
+                        address,
                         displacement,
                     )?);
                     return Ok(());
@@ -287,13 +315,14 @@ impl Generator {
     ) -> Compilation<()> {
         let pointee = pointee_of_type(member_type)
             .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
-        // The base materializes into `destination` and is then its own load base, so
-        // `destination` cannot be the scratch r0.
-        if destination == GENERAL_SCRATCH {
-            return Err(Diagnostic::error("a global struct-array member into the scratch register is not supported yet (roadmap)"));
-        }
         // A constant index folds into the load displacement.
         if let Some(constant) = constant_value(index) {
+            // A nonzero-sized aggregate needs a real GPR base; r0 reads as literal
+            // zero in a D-form address. Constant-index scratch loads need their own
+            // measured schedule rather than silently treating r0 as that base.
+            if destination == GENERAL_SCRATCH {
+                return Err(Diagnostic::error("a constant-index global struct-array member into the scratch register is not supported yet (roadmap)"));
+            }
             let total = constant * stride as i64 + offset as i64;
             let total = i16::try_from(total).map_err(|_| {
                 Diagnostic::error("struct-array member offset out of range (roadmap)")
@@ -311,6 +340,19 @@ impl Generator {
             return Err(Diagnostic::error("a global struct-array member with a non-power-of-two stride is not supported yet (roadmap)"));
         }
         let index_register = self.general_register_of_leaf(index)?;
+        if destination == GENERAL_SCRATCH {
+            if self.emit_legacy_global_struct_array_scratch_load(
+                name,
+                total_size,
+                index_register,
+                stride,
+                offset,
+                pointee,
+            )? {
+                return Ok(());
+            }
+            return Err(Diagnostic::error("a global struct-array member into the scratch register is not supported yet (roadmap)"));
+        }
         let shift = stride.trailing_zeros() as u8;
         if self.emit_legacy_global_struct_array_address(
             name,

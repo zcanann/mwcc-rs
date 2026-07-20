@@ -4,6 +4,62 @@
 use super::*;
 
 impl Generator {
+    /// Load an offset-zero field from a variable-indexed global struct array into
+    /// r0 under the legacy explicit-address schedule. The ordinary address helper
+    /// assumes its destination can also hold the element address; r0 cannot (and
+    /// is already the low-half staging register). Keep the address and scaled
+    /// index in separate virtual GPRs instead:
+    /// `lis hi; slwi scaled,index; addi r0,hi,@l; add hi,r0,scaled; lwz r0,0(hi)`.
+    pub(crate) fn emit_legacy_global_struct_array_scratch_load(
+        &mut self,
+        name: &str,
+        total_size: u32,
+        index: u8,
+        stride: u32,
+        member_offset: u32,
+        pointee: Pointee,
+    ) -> Compilation<bool> {
+        if self.behavior.global_array_index_style
+            != mwcc_versions::GlobalArrayIndexStyle::ExplicitAddress
+            || (self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8)
+            || !stride.is_power_of_two()
+            || member_offset != 0
+        {
+            return Ok(false);
+        }
+        // These homes stay physical because the legacy schedule deliberately
+        // retains the now-dead scaled-index register as the later boolean result
+        // lane. Keep both distinct from the live source index and from each other.
+        let high = self.free_general_excluding(index)?;
+        let scaled = self.free_general_excluding_two(index, high)?;
+        self.emit_address_high(high, name);
+        self.output
+            .instructions
+            .push(Instruction::ShiftLeftImmediate {
+                a: scaled,
+                s: index,
+                shift: stride.trailing_zeros() as u8,
+            });
+        self.record_relocation(RelocationKind::Addr16Lo, name);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: GENERAL_SCRATCH,
+            a: high,
+            immediate: 0,
+        });
+        self.output.instructions.push(Instruction::Add {
+            d: high,
+            a: GENERAL_SCRATCH,
+            b: scaled,
+        });
+        self.output.instructions.push(displacement_load(
+            pointee,
+            GENERAL_SCRATCH,
+            high,
+            0,
+        )?);
+        Ok(true)
+    }
+
     /// Build 163 materializes the low relocated byte-table base in r0, adds the
     /// unscaled (optionally u8-normalized) index to form one element address,
     /// then loads through displacement zero instead of using `lbzx`.

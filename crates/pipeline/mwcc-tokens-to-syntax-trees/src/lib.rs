@@ -1568,6 +1568,45 @@ mod tests {
     }
 
     #[test]
+    fn retains_signed_long_long_width_in_struct_layouts() {
+        let source = r#"
+            typedef signed long long int OSTime;
+            typedef struct Packet {
+                int channel;
+                void* output;
+                unsigned output_bytes;
+                void* input;
+                unsigned input_bytes;
+                void (*callback)(int, unsigned, void*);
+                OSTime fire;
+            } Packet;
+            static Packet packets[4];
+            int channel(Packet* packet, int index) {
+                return packets[index].channel;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.globals[0].declared_type,
+            mwcc_syntax_trees::Type::Struct { size: 32, align: 8 }
+        ));
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member {
+                index_stride: Some(32),
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn resolves_a_virtual_member_to_its_measured_vtable_slot() {
         let source = r#"
             struct Stream {
