@@ -90,7 +90,9 @@ pub(crate) fn assemble_asm_function(
             if let Some(instruction) = assemble_line(line, &labels, instruction_index)? {
                 instructions.push(instruction);
                 for operand in &line.operands {
-                    if let AsmOperand::Symbol { name, suffix } = operand {
+                    if let AsmOperand::Symbol { name, suffix }
+                    | AsmOperand::SymbolMemory { name, suffix, .. } = operand
+                    {
                         relocations.push(Relocation {
                             instruction_index,
                             kind: relocation_kind(*suffix),

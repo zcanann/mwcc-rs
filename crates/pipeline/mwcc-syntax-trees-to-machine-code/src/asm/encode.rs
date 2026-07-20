@@ -406,6 +406,14 @@ pub(super) fn assemble_line(
             let (s, offset, a) = fpr_mem(mnemonic, operands)?;
             Instruction::StoreFloatSingle { s, a, offset }
         }
+        "psq_l" => {
+            let (d, offset, a, w, i) = quantized_fpr_mem(mnemonic, operands)?;
+            Instruction::PairedSingleQuantizedLoad { d, a, offset, w, i }
+        }
+        "psq_st" => {
+            let (s, offset, a, w, i) = quantized_fpr_mem(mnemonic, operands)?;
+            Instruction::PairedSingleQuantizedStore { s, a, offset, w, i }
+        }
 
         // Compares with an optional explicit condition field. `cmpwi` handles any
         // `crN`; the others model cr0 only (a non-cr0 field DEFERS). `cmpi`/`cmpli`
@@ -837,6 +845,24 @@ pub(super) fn assemble_line(
                 target,
             }
         }
+        // Raw conditional-branch spelling: `bc BO, BI, label`.
+        "bc" => {
+            expect_operand_count(mnemonic, operands, 3)?;
+            let branch_field = |operand: &AsmOperand, name: &str| match operand {
+                AsmOperand::Immediate(value @ 0..=31) => Ok(*value as u8),
+                _ => Err(Diagnostic::error(format!(
+                    "inline-asm '{mnemonic}' {name} field must be 0..=31"
+                ))),
+            };
+            let options = branch_field(&operands[0], "BO")?;
+            let condition_bit = branch_field(&operands[1], "BI")?;
+            let target = label_target(mnemonic, &operands[2..], labels)?;
+            Instruction::BranchConditionalForward {
+                options,
+                condition_bit,
+                target,
+            }
+        }
 
         other => {
             return Err(Diagnostic::error(format!(
@@ -969,6 +995,75 @@ mod tests {
         assert_eq!(
             assemble("mtsdr1", vec![AsmOperand::Gpr(22)]).unwrap(),
             Instruction::MoveToSpr { spr: 25, s: 22 }
+        );
+    }
+
+    #[test]
+    fn assembles_quantized_paired_single_memory_operations() {
+        let operands = vec![
+            AsmOperand::Fpr(31),
+            AsmOperand::Memory {
+                displacement: -16,
+                base: 3,
+            },
+            AsmOperand::Immediate(1),
+            AsmOperand::Immediate(7),
+        ];
+        assert_eq!(
+            assemble("psq_l", operands.clone()).unwrap(),
+            Instruction::PairedSingleQuantizedLoad {
+                d: 31,
+                a: 3,
+                offset: -16,
+                w: 1,
+                i: 7,
+            }
+        );
+        assert_eq!(
+            assemble("psq_st", operands).unwrap(),
+            Instruction::PairedSingleQuantizedStore {
+                s: 31,
+                a: 3,
+                offset: -16,
+                w: 1,
+                i: 7,
+            }
+        );
+        assert!(assemble(
+            "psq_l",
+            vec![
+                AsmOperand::Fpr(0),
+                AsmOperand::Memory {
+                    displacement: 2048,
+                    base: 3,
+                },
+                AsmOperand::Immediate(0),
+                AsmOperand::Immediate(0),
+            ],
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn assembles_raw_conditional_branch_fields() {
+        let mut labels = HashMap::new();
+        labels.insert("done", 9);
+        let line = AsmInstruction {
+            mnemonic: "bc".to_string(),
+            operands: vec![
+                AsmOperand::Immediate(12),
+                AsmOperand::Immediate(2),
+                AsmOperand::Label("done".to_string()),
+            ],
+            source_line: 1,
+        };
+        assert_eq!(
+            assemble_line(&line, &labels, 3).unwrap().unwrap(),
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 9,
+            }
         );
     }
 }

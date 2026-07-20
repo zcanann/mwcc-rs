@@ -172,6 +172,40 @@ pub(super) fn fpr_mem(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u
     Ok((register, displacement, base))
 }
 
+/// Read the Gekko quantized-memory form `fT, disp(rA), W, I`.
+/// The displacement is a signed 12-bit field, W is one bit, and I selects one
+/// of eight graphics quantization registers.
+pub(super) fn quantized_fpr_mem(
+    mnemonic: &str,
+    operands: &[AsmOperand],
+) -> Compilation<(u8, i16, u8, u8, u8)> {
+    expect_operand_count(mnemonic, operands, 4)?;
+    let register = fpr(mnemonic, &operands[0])?;
+    let (displacement, base) = memory(mnemonic, &operands[1])?;
+    if !(-2048..=2047).contains(&displacement) {
+        return Err(Diagnostic::error(format!(
+            "inline-asm '{mnemonic}' displacement {displacement} does not fit in 12 bits"
+        )));
+    }
+    let w = match &operands[2] {
+        AsmOperand::Immediate(value @ 0..=1) => *value as u8,
+        _ => {
+            return Err(Diagnostic::error(format!(
+                "inline-asm '{mnemonic}' W field must be 0 or 1"
+            )))
+        }
+    };
+    let i = match &operands[3] {
+        AsmOperand::Immediate(value @ 0..=7) => *value as u8,
+        _ => {
+            return Err(Diagnostic::error(format!(
+                "inline-asm '{mnemonic}' I field must be 0..=7"
+            )))
+        }
+    };
+    Ok((register, displacement, base, w, i))
+}
+
 /// Read a `(GPR, immediate)` operand pair.
 pub(super) fn gpr_immediate(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u8, i16)> {
     expect_operand_count(mnemonic, operands, 2)?;
@@ -192,6 +226,7 @@ fn fpr(mnemonic: &str, operand: &AsmOperand) -> Compilation<u8> {
 fn memory(mnemonic: &str, operand: &AsmOperand) -> Compilation<(i16, u8)> {
     match operand {
         AsmOperand::Memory { displacement, base } => Ok((*displacement, *base)),
+        AsmOperand::SymbolMemory { base, .. } => Ok((0, *base)),
         _ => Err(Diagnostic::error(format!(
             "inline-asm '{mnemonic}' expected a `<disp>(<reg>)` memory operand"
         ))),
@@ -228,7 +263,7 @@ pub(super) fn gpr(mnemonic: &str, operand: &AsmOperand) -> Compilation<u8> {
 /// the field from a recorded relocation).
 pub(super) fn signed_immediate_or_symbol(mnemonic: &str, operand: &AsmOperand) -> Compilation<i16> {
     match operand {
-        AsmOperand::Symbol { .. } => Ok(0),
+        AsmOperand::Symbol { .. } | AsmOperand::SymbolMemory { .. } => Ok(0),
         _ => immediate16(mnemonic, operand),
     }
 }
@@ -239,7 +274,7 @@ pub(super) fn unsigned_immediate_or_symbol(
     operand: &AsmOperand,
 ) -> Compilation<u16> {
     match operand {
-        AsmOperand::Symbol { .. } => Ok(0),
+        AsmOperand::Symbol { .. } | AsmOperand::SymbolMemory { .. } => Ok(0),
         _ => immediate16u(mnemonic, operand),
     }
 }

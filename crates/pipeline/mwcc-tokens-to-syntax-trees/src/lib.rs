@@ -553,6 +553,66 @@ mod tests {
     }
 
     #[test]
+    fn resolves_indexed_asm_parameter_members() {
+        let source = r#"
+            typedef struct Words { unsigned int values[4]; } Words;
+            typedef struct Context { int prefix; Words registers; } Context;
+            asm void save(register Context* context) {
+                nofralloc
+                lwz r3, context->registers.values[2]
+                stw r3, context->registers.values[3]
+                ori r4, r4, 0x8000 | 0x20 | 0x2
+                lwz r5, (r4)
+                stw r5, current_context@l(r4)
+                blr
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let body = unit.functions[0].asm_body.as_ref().unwrap();
+        assert!(matches!(
+            &body[1],
+            mwcc_syntax_trees::AsmItem::Instruction(instruction)
+                if instruction.operands[1]
+                    == mwcc_syntax_trees::AsmOperand::Memory { displacement: 12, base: 3 }
+        ));
+        assert!(matches!(
+            &body[2],
+            mwcc_syntax_trees::AsmItem::Instruction(instruction)
+                if instruction.operands[1]
+                    == mwcc_syntax_trees::AsmOperand::Memory { displacement: 16, base: 3 }
+        ));
+        assert!(matches!(
+            &body[3],
+            mwcc_syntax_trees::AsmItem::Instruction(instruction)
+                if instruction.operands[2]
+                    == mwcc_syntax_trees::AsmOperand::Immediate(0x8022)
+        ));
+        assert!(matches!(
+            &body[4],
+            mwcc_syntax_trees::AsmItem::Instruction(instruction)
+                if instruction.operands[1]
+                    == mwcc_syntax_trees::AsmOperand::Memory { displacement: 0, base: 4 }
+        ));
+        assert!(matches!(
+            &body[5],
+            mwcc_syntax_trees::AsmItem::Instruction(instruction)
+                if instruction.operands[1]
+                    == mwcc_syntax_trees::AsmOperand::SymbolMemory {
+                        name: "current_context".to_string(),
+                        suffix: mwcc_syntax_trees::AsmRelocSuffix::Lo,
+                        base: 4,
+                    }
+        ));
+    }
+
+    #[test]
     fn retains_function_source_boundaries() {
         let raw = [
             (Token::KeywordInt, 1),

@@ -435,6 +435,14 @@ pub enum AsmOperand {
         name: String,
         suffix: AsmRelocSuffix,
     },
+    /// A relocated displacement with a base register,
+    /// `symbol@suffix(<gpr>)`. The encoded displacement is zero and the object
+    /// relocation patches that field.
+    SymbolMemory {
+        name: String,
+        suffix: AsmRelocSuffix,
+        base: u8,
+    },
 }
 
 /// The `@`-suffix on an inline-`asm` symbol operand, selecting which 16-bit part of

@@ -309,17 +309,36 @@ impl Parser {
         Ok(items)
     }
 
-    /// Parse one asm operand: a register name, or an (optionally negative) integer
-    /// immediate. Unsupported operand forms (member `env->field`, labels) error, so
-    /// the enclosing translation unit DEFERS rather than emitting wrong bytes.
+    /// Parse one asm operand: a register, constant immediate, memory/member path,
+    /// relocation, or label. Unknown forms error so the enclosing translation
+    /// unit DEFERS rather than emitting wrong bytes.
     fn parse_asm_operand(&mut self) -> Compilation<AsmOperand> {
+        let operand_start = self.position;
         let negate = *self.peek() == Token::Minus;
         if negate {
             self.advance();
         }
         match self.advance() {
             Token::IntegerLiteral(value) => {
-                let value = if negate { -value } else { value };
+                let mut value = if negate { -value } else { value };
+                // Immediate operands may be unparenthesized constant expressions
+                // (`ori r11,r11,FLAG_A | FLAG_B`). Reparse from the operand start
+                // through the shared integer-constant grammar when an operator
+                // follows the first literal; commas/newlines delimit the operand.
+                if matches!(
+                    self.peek(),
+                    Token::Plus
+                        | Token::Minus
+                        | Token::Star
+                        | Token::Ampersand
+                        | Token::Pipe
+                        | Token::Caret
+                        | Token::ShiftLeft
+                        | Token::ShiftRight
+                ) {
+                    self.position = operand_start;
+                    value = self.parse_enum_value()?;
+                }
                 // A `@`-suffix on a NUMERIC operand selects a 16-bit part of the value,
                 // computed at assembly time (`lis r3, 0x7FFFFFFF@h`) — no relocation.
                 if *self.peek() == Token::At {
@@ -391,29 +410,14 @@ impl Parser {
                 {
                     if *self.peek() == Token::Arrow {
                         self.advance();
-                        let field = match self.advance() {
-                            Token::Identifier(field) => field,
-                            other => {
-                                return Err(Diagnostic::error(format!(
-                                    "expected a field name after '{word}->', found {other}"
-                                )))
-                            }
-                        };
                         let tag = tag.ok_or_else(|| {
                             Diagnostic::error(format!(
-                                "asm parameter '{word}' has no struct type for '->{field}'"
+                                "asm parameter '{word}' has no struct type for member access"
                             ))
                         })?;
-                        let offset = self
-                            .structs
-                            .get(&tag)
-                            .and_then(|layout| layout.fields.get(&field))
-                            .map(|member| member.offset)
-                            .ok_or_else(|| {
-                                Diagnostic::error(format!("no field '{field}' in struct '{tag}'"))
-                            })?;
+                        let offset = self.parse_asm_member_offset(tag)?;
                         return Ok(AsmOperand::Memory {
-                            displacement: offset as i16,
+                            displacement: offset,
                             base: gpr,
                         });
                     }
@@ -431,6 +435,14 @@ impl Parser {
                             )))
                         }
                     };
+                    if *self.peek() == Token::ParenOpen {
+                        let base = self.parse_asm_memory_base()?;
+                        return Ok(AsmOperand::SymbolMemory {
+                            name: word,
+                            suffix,
+                            base,
+                        });
+                    }
                     return Ok(AsmOperand::Symbol { name: word, suffix });
                 }
                 Ok(AsmOperand::Label(word))
@@ -445,6 +457,18 @@ impl Parser {
                     let value = self.parse_integer_constant()?;
                     self.expect(Token::ParenClose)?;
                     return Ok(AsmOperand::Immediate(value));
+                }
+                // Zero-displacement memory syntax: `(rN)` (or `(parameter)`).
+                if *self.peek_at(1) == Token::ParenClose {
+                    if let Token::Identifier(register) = self.peek().clone() {
+                        let base = self.asm_memory_base_register(&register)?;
+                        self.advance();
+                        self.advance();
+                        return Ok(AsmOperand::Memory {
+                            displacement: 0,
+                            base,
+                        });
+                    }
                 }
                 let root = match self.advance() {
                     Token::Identifier(root) => root,
@@ -495,10 +519,17 @@ impl Parser {
 
     /// Resolve `Tag.outer.words[3]` through the ordinary C layout table. The cursor starts on
     /// the first dot and stops after the final field/index, immediately before the `(rN)` base.
-    fn parse_asm_struct_offset(&mut self, mut tag: String) -> Compilation<i16> {
+    fn parse_asm_struct_offset(&mut self, tag: String) -> Compilation<i16> {
+        self.expect(Token::Dot)?;
+        self.parse_asm_member_offset(tag)
+    }
+
+    /// Resolve a member path after its first separator. This is shared by
+    /// `Tag.field[index](rN)` and register-parameter `value->field[index]`
+    /// operands so both spellings use identical layout and bounds rules.
+    fn parse_asm_member_offset(&mut self, mut tag: String) -> Compilation<i16> {
         let mut offset = 0i64;
         loop {
-            self.expect(Token::Dot)?;
             let field_name = match self.advance() {
                 Token::Identifier(field) => field,
                 other => {
@@ -532,6 +563,7 @@ impl Parser {
             if *self.peek() != Token::Dot {
                 break;
             }
+            self.advance();
             tag = next_tag.ok_or_else(|| {
                 Diagnostic::error(format!(
                     "asm struct field '{tag}.{field_name}' has no nested layout"
@@ -556,21 +588,25 @@ impl Parser {
                 )))
             }
         };
-        let base = match parse_asm_register(&register) {
-            Some(AsmOperand::Gpr(index)) => index,
+        let base = self.asm_memory_base_register(&register)?;
+        self.expect(Token::ParenClose)?;
+        Ok(base)
+    }
+
+    fn asm_memory_base_register(&self, register: &str) -> Compilation<u8> {
+        match parse_asm_register(register) {
+            Some(AsmOperand::Gpr(index)) => Ok(index),
             _ => self
                 .asm_parameters
                 .iter()
-                .find(|(name, _, _)| *name == register)
+                .find(|(name, _, _)| name == register)
                 .map(|(_, gpr, _)| *gpr)
                 .ok_or_else(|| {
                     Diagnostic::error(format!(
                         "asm memory operand base '{register}' must be a general-purpose register"
                     ))
-                })?,
-        };
-        self.expect(Token::ParenClose)?;
-        Ok(base)
+                }),
+        }
     }
 
     /// Read the name after a `@` in an asm body: `@exit` (identifier) or `@1`
