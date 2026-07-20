@@ -1157,6 +1157,9 @@ impl Generator {
         if self.try_captures(function)? {
             return Ok(());
         }
+        if self.try_global_call_store_guard_tail(function)? {
+            return Ok(());
+        }
         if self.try_tail_call(function)? {
             return Ok(());
         }
@@ -3437,6 +3440,28 @@ impl Generator {
 
     pub(crate) fn emit_epilogue_and_return(&mut self) {
         if self.behavior.frame_convention == FrameConvention::LinkageFirst && self.non_leaf {
+            if self.callee_saved.is_empty()
+                && self.behavior.plain_linkage_epilogue_style
+                    == PlainLinkageEpilogueStyle::StackRestoreBeforeReload
+            {
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: 1,
+                    a: 1,
+                    immediate: self.frame_size,
+                });
+                self.output.instructions.push(Instruction::LoadWord {
+                    d: 0,
+                    a: 1,
+                    offset: 4,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::MoveToLinkRegister { s: 0 });
+                self.output
+                    .instructions
+                    .push(Instruction::BranchToLinkRegister);
+                return;
+            }
             self.output.instructions.push(Instruction::LoadWord {
                 d: 0,
                 a: 1,

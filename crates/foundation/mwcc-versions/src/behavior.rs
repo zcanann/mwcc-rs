@@ -27,11 +27,12 @@ use crate::profile::{
     MaterializationCopyStyle, MemCopyRemainderMaskStyle, MemCopyWordScheduleStyle,
     NarrowCompoundShiftStyle, NarrowComputedReturnStyle, NarrowGuardScheduleStyle,
     NarrowStoreConversionStyle, NegativePowerOfTwoMultiplyStyle, PunnedConditionalWritebackStyle,
-    PunnedFloatFrameConvention, PunnedShiftWritebackStyle, QueueServiceInliningStyle,
-    RaiseFamilyStyle, ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle, SharedFloatDagStyle,
-    SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, StoredGlobalReadStyle,
-    SymbolTraversalStyle, TrigDispatcherStyle, TrigZeroConstantPlacement, VaArgScheduleStyle,
-    ValueTrackedMutationStyle, WideConstantAddSchedule,
+    PlainLinkageEpilogueStyle, PunnedFloatFrameConvention, PunnedShiftWritebackStyle,
+    QueueServiceInliningStyle, RaiseFamilyStyle, ReadOnlySectionAnchorOrder,
+    ReturnRegisterStoreStyle, SharedFloatDagStyle, SignedPowerOfTwoDivisionStyle,
+    SmallZeroDataLayoutStyle, StoredGlobalReadStyle, SymbolTraversalStyle, TrigDispatcherStyle,
+    TrigZeroConstantPlacement, VaArgScheduleStyle, ValueTrackedMutationStyle,
+    WideConstantAddSchedule,
 };
 
 /// Why a codegen decision diverges from the GameCube 2.4.x mainline.
@@ -191,6 +192,7 @@ pub enum Quirk {
     LegacyGuardStoreBeforeReturnValue,
     LegacyCompareFirstNarrowGuards,
     LegacySerialVaArgSchedule,
+    Gc11PatchPlainLinkageReload,
     LaterTerminalIndirectTailCall,
 }
 
@@ -265,6 +267,7 @@ impl Quirk {
             Quirk::LegacyGuardStoreBeforeReturnValue => QuirkKind::Intentional,
             Quirk::LegacyCompareFirstNarrowGuards => QuirkKind::Intentional,
             Quirk::LegacySerialVaArgSchedule => QuirkKind::Intentional,
+            Quirk::Gc11PatchPlainLinkageReload => QuirkKind::Intentional,
             Quirk::LaterTerminalIndirectTailCall => QuirkKind::Intentional,
         }
     }
@@ -465,6 +468,9 @@ impl Quirk {
             Quirk::LegacySerialVaArgSchedule => {
                 "__va_arg ALIGN paths use build 163's serial r0 schedule"
             }
+            Quirk::Gc11PatchPlainLinkageReload => {
+                "GC/1.1p1 restores r1 before reloading LR from the caller linkage area"
+            }
             Quirk::LaterTerminalIndirectTailCall => {
                 "later compilers lower terminal indirect calls as unlinked sibling branches"
             }
@@ -542,6 +548,8 @@ pub struct Behavior {
     pub frexp_scale_before_eptr_store: bool,
     /// Placement/order of the non-leaf linkage area.
     pub frame_convention: FrameConvention,
+    /// Saved-LR reload order for a linkage-first frame with no saved GPRs.
+    pub plain_linkage_epilogue_style: PlainLinkageEpilogueStyle,
     /// Whether stack-using leaf functions carry unwind-table entries.
     pub emit_leaf_frame_unwind: bool,
     /// Whether constant non-leaf join returns precede the saved-LR reload.
@@ -779,6 +787,10 @@ impl Behavior {
                 .float_compare_value_before_const(),
             frexp_scale_before_eptr_store: config.build.profile.frexp_scale_before_eptr_store(),
             frame_convention: config.build.profile.frame_convention(),
+            plain_linkage_epilogue_style: config
+                .build
+                .profile
+                .plain_linkage_epilogue_style(),
             emit_leaf_frame_unwind: config.build.profile.emit_leaf_frame_unwind(),
             constant_join_return_precedes_lr_reload: config
                 .build
@@ -1160,6 +1172,11 @@ impl Behavior {
         if self.va_arg_schedule_style == VaArgScheduleStyle::SerialScratch {
             quirks.push(ActiveQuirk::of(Quirk::LegacySerialVaArgSchedule));
         }
+        if self.plain_linkage_epilogue_style
+            == PlainLinkageEpilogueStyle::StackRestoreBeforeReload
+        {
+            quirks.push(ActiveQuirk::of(Quirk::Gc11PatchPlainLinkageReload));
+        }
         if self.terminal_indirect_tail_call {
             quirks.push(ActiveQuirk::of(Quirk::LaterTerminalIndirectTailCall));
         }
@@ -1522,6 +1539,30 @@ mod tests {
             BitFieldLoadPlacement::ResultRegister
         );
         assert!(Behavior::resolve(&CompilerConfig::new(build::GC_1_3_2)).emit_leaf_frame_unwind);
+    }
+
+    #[test]
+    fn gc11_patch_restores_plain_linkage_stack_before_reloading_lr() {
+        let original = Behavior::resolve(&CompilerConfig::new(build::GC_1_1));
+        let patched = Behavior::resolve(&CompilerConfig::new(build::GC_1_1P1));
+        let build_163 = Behavior::resolve(&CompilerConfig::new(build::GC_1_2_5));
+
+        assert_eq!(
+            original.plain_linkage_epilogue_style,
+            PlainLinkageEpilogueStyle::ReloadBeforeStackRestore
+        );
+        assert_eq!(
+            patched.plain_linkage_epilogue_style,
+            PlainLinkageEpilogueStyle::StackRestoreBeforeReload
+        );
+        assert!(patched
+            .active_quirks()
+            .iter()
+            .any(|active| active.quirk == Quirk::Gc11PatchPlainLinkageReload));
+        assert_eq!(
+            build_163.plain_linkage_epilogue_style,
+            PlainLinkageEpilogueStyle::ReloadBeforeStackRestore
+        );
     }
 
     #[test]

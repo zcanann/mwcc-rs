@@ -4,8 +4,8 @@
 //! profile in [`crate::profile`].
 
 use crate::profile::{
-    CodegenProfile, Gc132Build81, Gc13Build53, Gc20Patch1, Gc233Build163, Gc41Build51213, Mainline,
-    Wii43Build145,
+    CodegenProfile, Gc132Build81, Gc13Build53, Gc20Patch1, Gc41Build51213, Mainline,
+    Wii43Build145, GC233_BUILD159_PATCH1, GC233_BUILD163,
 };
 
 /// A specific mwcceppc build we aim to reproduce byte-for-byte.
@@ -50,7 +50,7 @@ pub const GC_1_1: CompilerBuild = CompilerBuild {
     label: "GC/1.1",
     product: "CodeWarrior for GameCube 1.1",
     build: 159,
-    profile: &Gc233Build163,
+    profile: &GC233_BUILD163,
     ..GC_1_2_5
 };
 
@@ -58,6 +58,7 @@ pub const GC_1_1: CompilerBuild = CompilerBuild {
 pub const GC_1_1P1: CompilerBuild = CompilerBuild {
     label: "GC/1.1p1",
     product: "CodeWarrior for GameCube 1.1 (patch 1)",
+    profile: &GC233_BUILD159_PATCH1,
     ..GC_1_1
 };
 
@@ -77,7 +78,7 @@ pub const GC_1_2_5: CompilerBuild = CompilerBuild {
     initial_anonymous_counter: 2,
     post_leaf_function_anonymous_bump: 1,
     post_framed_function_anonymous_bump: 1,
-    profile: &Gc233Build163,
+    profile: &GC233_BUILD163,
 };
 
 /// GC/1.2.5n — Nintendo's distribution of the same compiler build.
@@ -95,7 +96,7 @@ pub const GC_1_2_5N: CompilerBuild = CompilerBuild {
     initial_anonymous_counter: 2,
     post_leaf_function_anonymous_bump: 1,
     post_framed_function_anonymous_bump: 1,
-    profile: &Gc233Build163,
+    profile: &GC233_BUILD163,
 };
 
 /// GC/1.3 — mwcceppc 2.4.2 build 53. The earliest preserved 2.4.2 build; the

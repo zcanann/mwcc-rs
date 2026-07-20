@@ -8,6 +8,143 @@
 use super::*;
 
 impl Generator {
+    /// `g = enter(); if (g == 0) { a(); b(); } return g = leave();`.
+    ///
+    /// This is one cross-statement region: legacy 2.3.3 keeps the absolute
+    /// address produced for the first store, updates it with `stwu`, and reloads
+    /// the condition through that base. The 2.4.x scheduler instead compares the
+    /// still-live call result before issuing the store. Selection emits a virtual
+    /// address base; ordinary liveness allocation chooses r4 beside the r3 result.
+    pub(super) fn try_global_call_store_guard_tail(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if !function.parameters.is_empty()
+            || !function.locals.is_empty()
+            || !function.guards.is_empty()
+            || !self.frame_slots.is_empty()
+            || !matches!(function.return_type, Type::Int | Type::UnsignedInt)
+            || self.behavior.global_addressing != GlobalAddressing::Absolute
+            || self.behavior.absolute_access_style
+                != mwcc_versions::AbsoluteAccessStyle::FoldedDisplacement
+        {
+            return Ok(false);
+        }
+
+        let [Statement::Store {
+            target: Expression::Variable(global),
+            value:
+                Expression::Call {
+                    name: enter,
+                    arguments: enter_arguments,
+                },
+        }, Statement::If {
+            condition:
+                Expression::Binary {
+                    operator: BinaryOperator::Equal,
+                    left,
+                    right,
+                },
+            then_body,
+            else_body,
+        }] = function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        let Some(Expression::Assign {
+            target: return_target,
+            value: return_value,
+        }) = function.return_expression.as_ref()
+        else {
+            return Ok(false);
+        };
+        let Expression::Variable(return_global) = return_target.as_ref() else {
+            return Ok(false);
+        };
+        let Expression::Call {
+            name: leave,
+            arguments: leave_arguments,
+        } = return_value.as_ref()
+        else {
+            return Ok(false);
+        };
+        if return_global != global
+            || !matches!(left.as_ref(), Expression::Variable(name) if name == global)
+            || !is_zero_literal(right)
+            || !else_body.is_empty()
+            || then_body.is_empty()
+            || !enter_arguments.is_empty()
+            || !leave_arguments.is_empty()
+            || then_body.iter().any(|statement| {
+                !matches!(statement, Statement::Expression(Expression::Call { arguments, .. }) if arguments.is_empty())
+            })
+            || self.globals.get(global.as_str()).copied() != Some(function.return_type)
+        {
+            return Ok(false);
+        }
+        let Some(pointee @ (Pointee::Int | Pointee::UnsignedInt)) =
+            pointee_of_type(function.return_type)
+        else {
+            return Ok(false);
+        };
+
+        self.emit_plain_nonleaf_prologue();
+        let result = Eabi::general_result().number;
+        self.emit_call(enter, enter_arguments, Some(result), false)?;
+
+        let address = self.fresh_virtual_general_preferring(4);
+        self.emit_address_high(address, global);
+        match self.behavior.frame_convention {
+            FrameConvention::LinkageFirst => {
+                self.record_relocation(RelocationKind::Addr16Lo, global);
+                self.output
+                    .instructions
+                    .push(Instruction::StoreWordWithUpdate {
+                        s: result,
+                        a: address,
+                        offset: 0,
+                    });
+                self.output.instructions.push(Instruction::LoadWord {
+                    d: GENERAL_SCRATCH,
+                    a: address,
+                    offset: 0,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::CompareWordImmediate {
+                        a: GENERAL_SCRATCH,
+                        immediate: 0,
+                    });
+            }
+            FrameConvention::Predecrement => {
+                self.output
+                    .instructions
+                    .push(Instruction::CompareWordImmediate {
+                        a: result,
+                        immediate: 0,
+                    });
+                self.record_relocation(RelocationKind::Addr16Lo, global);
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: result,
+                    a: address,
+                    offset: 0,
+                });
+            }
+        }
+
+        let after_guard = self.fresh_label();
+        self.emit_branch_conditional_to(4, 2, after_guard);
+        for statement in then_body {
+            self.emit_statement(statement)?;
+        }
+        self.bind_label(after_guard);
+
+        self.emit_call(leave, leave_arguments, Some(result), false)?;
+        self.emit_global_store(global, pointee, result)?;
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     /// `if (g) return E; g = S; return R;` for integer constants. The guarded
     /// return is emitted as a forward branch, while the continuation schedules
     /// the independent final return value into the constant-store latency slot:

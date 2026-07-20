@@ -16,6 +16,17 @@ pub enum FrameConvention {
     LinkageFirst,
 }
 
+/// Ordering of the saved-LR reload in a linkage-first frame without saved GPRs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlainLinkageEpilogueStyle {
+    /// Build 159 and build 163 reload through the decremented stack pointer,
+    /// then restore r1: `lwz r0,frame+4(r1); addi r1,r1,frame`.
+    ReloadBeforeStackRestore,
+    /// GC/1.1p1 restores r1 first and reloads through the caller linkage area:
+    /// `addi r1,r1,frame; lwz r0,4(r1)`.
+    StackRestoreBeforeReload,
+}
+
 /// Placement of a bare floating-point comparison relative to non-leaf linkage
 /// when a following `cror` folds equality for `<=` or `>=`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -700,6 +711,11 @@ pub trait CodegenProfile: core::fmt::Debug {
         FrameConvention::Predecrement
     }
 
+    /// Saved-LR reload order for a plain linkage-first non-leaf frame.
+    fn plain_linkage_epilogue_style(&self) -> PlainLinkageEpilogueStyle {
+        PlainLinkageEpilogueStyle::ReloadBeforeStackRestore
+    }
+
     /// Whether a terminal call through a function pointer is lowered as an
     /// unlinked `bctr` sibling call without requiring IPA.
     /// This appears with the 4.x optimizer generation.
@@ -1103,10 +1119,25 @@ impl CodegenProfile for Gc132Build81 {
 /// difference is the linkage-first stack frame; additional scheduler differences
 /// remain under characterization, so this profile is experimental.
 #[derive(Debug)]
-pub struct Gc233Build163;
+pub struct Gc233Build163 {
+    plain_linkage_epilogue_style: PlainLinkageEpilogueStyle,
+}
+
+pub const GC233_BUILD163: Gc233Build163 = Gc233Build163 {
+    plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::ReloadBeforeStackRestore,
+};
+
+pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
+    plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::StackRestoreBeforeReload,
+};
+
 impl CodegenProfile for Gc233Build163 {
     fn frame_convention(&self) -> FrameConvention {
         FrameConvention::LinkageFirst
+    }
+
+    fn plain_linkage_epilogue_style(&self) -> PlainLinkageEpilogueStyle {
+        self.plain_linkage_epilogue_style
     }
 
     fn data_section_relocation_style(&self) -> DataSectionRelocationStyle {
