@@ -22,6 +22,7 @@ mod punned_select;
 mod punned_writeback;
 mod store_fill;
 mod store_return_schedule;
+mod switch_assignment_call_tail;
 mod tail_call;
 
 pub(crate) use callee_saved::{

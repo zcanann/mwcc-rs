@@ -2487,6 +2487,11 @@ impl Generator {
         if self.try_flag_while_loop(function)? {
             return Ok(());
         }
+        // A two-case switch that selects a narrow local, followed by a call tail.
+        // The selected value occupies r31 while the incoming argument spills.
+        if self.try_switch_assignment_call_tail(function)? {
+            return Ok(());
+        }
         // A function whose body is a single `switch` lowers to the dispatch tree:
         // the comparisons, then the case bodies, then the default (the `default:`
         // arm if present, else the function's trailing `return`). The cases and
