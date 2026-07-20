@@ -7,7 +7,7 @@ use crate::parser::{Parser, StructField, StructLayout};
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_syntax_trees::{
     Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, LoopKind, Parameter,
-    Pointee, PointerElement, Statement, SwitchArm, TranslationUnit, Type,
+    Pointee, PointerElement, SourceFundamentalType, Statement, SwitchArm, TranslationUnit, Type,
 };
 use mwcc_tokens::Token;
 
@@ -21,6 +21,23 @@ fn advance_layout_offset(offset: u32, size: u32) -> Compilation<u32> {
     offset
         .checked_add(size)
         .ok_or_else(|| Diagnostic::error("aggregate layout exceeds the 32-bit address space"))
+}
+
+fn source_fundamental(declared_type: Type) -> Option<SourceFundamentalType> {
+    Some(match declared_type {
+        Type::Int => SourceFundamentalType::SignedInteger,
+        Type::UnsignedInt => SourceFundamentalType::UnsignedInteger,
+        Type::Char => SourceFundamentalType::SignedChar,
+        Type::UnsignedChar => SourceFundamentalType::UnsignedChar,
+        Type::Short => SourceFundamentalType::SignedShort,
+        Type::UnsignedShort => SourceFundamentalType::UnsignedShort,
+        Type::Float => SourceFundamentalType::Float,
+        Type::Double => SourceFundamentalType::Double,
+        Type::Void => SourceFundamentalType::Void,
+        Type::LongLong => SourceFundamentalType::SignedLongLong,
+        Type::UnsignedLongLong => SourceFundamentalType::UnsignedLongLong,
+        Type::Pointer(_) | Type::StructPointer { .. } | Type::Struct { .. } => return None,
+    })
 }
 
 fn minimum_enum_storage(minimum: i64, maximum: i64) -> Type {
@@ -105,6 +122,7 @@ impl Parser {
         self.last_struct_tag = None;
         self.last_enum_tag = None;
         self.last_type_was_wchar = false;
+        self.last_source_fundamental = None;
         self.last_type_was_aggregate_reference = false;
         self.last_pointer_const = false;
         self.last_cxx_pointer_depth = 0;
@@ -377,6 +395,11 @@ impl Parser {
         // A `typedef`-declared alias resolves to its underlying type.
         if let Token::Identifier(name) = self.peek() {
             if let Some(&aliased) = self.typedefs.get(name) {
+                self.last_source_fundamental = self
+                    .typedef_source_fundamentals
+                    .get(name)
+                    .copied()
+                    .or_else(|| source_fundamental(aliased));
                 self.advance();
                 if *self.peek() == Token::Star {
                     self.advance();
@@ -419,6 +442,7 @@ impl Parser {
                 return Ok(Type::Pointer(pointee_of(element)?));
             }
         }
+        let mut source_override = None;
         let base = match self.advance() {
             Token::KeywordInt => Type::Int,
             // Plain `char` follows the build's signedness default: signed on
@@ -462,6 +486,7 @@ impl Parser {
                     if long_count >= 2 {
                         Type::UnsignedLongLong
                     } else {
+                        source_override = Some(SourceFundamentalType::UnsignedLong);
                         Type::UnsignedInt
                     }
                 }
@@ -474,7 +499,10 @@ impl Parser {
             // are already normalized to zero/one, so the unsigned-byte lane keeps
             // field layout and loads/stores exact. C++ parameter mangling will need
             // a distinct IR type before bool-valued parameters can be accepted.
-            Token::Identifier(word) if word == "bool" => Type::UnsignedChar,
+            Token::Identifier(word) if word == "bool" => {
+                source_override = Some(SourceFundamentalType::Boolean);
+                Type::UnsignedChar
+            }
             Token::Identifier(word) if self.cplusplus && word == "wchar_t" => {
                 self.last_type_was_wchar = true;
                 Type::UnsignedShort
@@ -496,6 +524,7 @@ impl Parser {
                     let _ = self.eat_keyword(Token::KeywordInt);
                     Type::LongLong
                 } else {
+                    source_override = Some(SourceFundamentalType::SignedLong);
                     let _ = self.eat_keyword(Token::KeywordInt);
                     Type::Int
                 }
@@ -523,6 +552,9 @@ impl Parser {
                     if long_count >= 2 {
                         Type::LongLong
                     } else {
+                        if long_count == 1 {
+                            source_override = Some(SourceFundamentalType::SignedLong);
+                        }
                         Type::Int
                     }
                 }
@@ -535,6 +567,7 @@ impl Parser {
                 )));
             }
         };
+        self.last_source_fundamental = source_override.or_else(|| source_fundamental(base));
         // East-const/volatile: a qualifier may TRAIL the base type (`float const`, the
         // mirror of the leading `const float` — dolphin/MSL headers use both). Fold
         // `const` into `last_type_was_const` so the global path still sees it as read-only.
@@ -785,6 +818,7 @@ impl Parser {
                                     size: inner_size,
                                     align: inner_align as u8,
                                 },
+                                source_fundamental: None,
                                 offset,
                                 struct_tag: Some(tag),
                                 array_element: None,
@@ -815,6 +849,7 @@ impl Parser {
                                     size: inner_size,
                                     align: inner_align as u8,
                                 },
+                                source_fundamental: None,
                                 offset,
                                 struct_tag: Some(synthetic),
                                 array_element: None,
@@ -832,6 +867,7 @@ impl Parser {
                                 field_name.clone(),
                                 StructField {
                                     member_type: field.member_type,
+                                    source_fundamental: field.source_fundamental,
                                     offset: offset + field.offset,
                                     struct_tag: field.struct_tag.clone(),
                                     array_element: field.array_element,
@@ -902,6 +938,7 @@ impl Parser {
                                     size: inner_size,
                                     align: inner_align as u8,
                                 },
+                                source_fundamental: None,
                                 offset,
                                 struct_tag: Some(variant_tag),
                                 array_element: None,
@@ -924,6 +961,7 @@ impl Parser {
                                 field_name.clone(),
                                 StructField {
                                     member_type: field.member_type,
+                                    source_fundamental: field.source_fundamental,
                                     offset: offset + field.offset,
                                     struct_tag: field.struct_tag.clone(),
                                     array_element: field.array_element,
@@ -967,6 +1005,7 @@ impl Parser {
                         field_name,
                         StructField {
                             member_type: Type::Pointer(pointee_of(element)?),
+                            source_fundamental: source_fundamental(element),
                             offset,
                             struct_tag: None,
                             array_element: None,
@@ -1004,6 +1043,7 @@ impl Parser {
                         field_name,
                         StructField {
                             member_type: element,
+                            source_fundamental: source_fundamental(element),
                             offset,
                             struct_tag: None,
                             array_element: Some(pointee_of(element)?),
@@ -1023,6 +1063,7 @@ impl Parser {
             let field_is_function_pointer_typedef =
                 matches!(self.peek(), Token::Identifier(word) if self.function_pointer_typedefs.contains(word));
             let mut field_type = self.parse_type()?;
+            let source_fundamental = self.last_source_fundamental;
             while self.eat_keyword(Token::Star) {
                 field_type = Type::Pointer(Pointee::Pointer);
                 self.last_struct_tag = None;
@@ -1081,6 +1122,7 @@ impl Parser {
                         pointer_name.clone(),
                         StructField {
                             member_type: Type::StructPointer { element_size: 0 },
+                            source_fundamental: None,
                             offset,
                             struct_tag: None,
                             array_element: None,
@@ -1139,6 +1181,7 @@ impl Parser {
                         field_name,
                         StructField {
                             member_type: field_type,
+                            source_fundamental,
                             offset: unit_offset,
                             struct_tag: None,
                             array_element: None,
@@ -1207,6 +1250,7 @@ impl Parser {
                     field_name.clone(),
                     StructField {
                         member_type: field_type,
+                        source_fundamental,
                         offset,
                         struct_tag: struct_tag.clone(),
                         array_element,
@@ -1277,6 +1321,7 @@ impl Parser {
                                 size: inner_size,
                                 align: inner_align as u8,
                             },
+                            source_fundamental: None,
                             offset: 0,
                             struct_tag: Some(variant_tag),
                             array_element: None,
@@ -1290,6 +1335,7 @@ impl Parser {
                             field_name.clone(),
                             StructField {
                                 member_type: field.member_type,
+                                source_fundamental: field.source_fundamental,
                                 offset: field.offset,
                                 struct_tag: field.struct_tag.clone(),
                                 array_element: field.array_element,
@@ -1361,6 +1407,7 @@ impl Parser {
                 name,
                 StructField {
                     member_type: storage_type,
+                    source_fundamental: source_fundamental(storage_type),
                     offset: 0,
                     struct_tag,
                     array_element,

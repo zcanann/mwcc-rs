@@ -154,10 +154,12 @@ pub fn parse_located_translation_unit_with_enum_min(
         last_struct_tag: None,
         last_enum_tag: None,
         last_type_was_wchar: false,
+        last_source_fundamental: None,
         last_type_was_aggregate_reference: false,
         asm_parameters: Vec::new(),
         expression_struct_tag: None,
         typedefs: HashMap::new(),
+        typedef_source_fundamentals: HashMap::new(),
         function_pointer_typedefs: std::collections::HashSet::new(),
         last_type_was_const: false,
         last_pointer_const: false,
@@ -704,6 +706,7 @@ mod tests {
         let source = r#"
             typedef unsigned char u8;
             typedef short s16;
+            typedef unsigned long u32;
             typedef struct animation_s {
                 u8* flag_table;
                 s16* data_table;
@@ -712,8 +715,12 @@ mod tests {
                 s16 pad;
                 s16 frames;
             } Animation;
+            typedef struct {
+                u32* words;
+            } Anonymous;
             u8 flags[] = { 0, 1 };
             Animation animation = { flags, 0, 0, 0, -1, 11 };
+            Anonymous anonymous = { 0 };
         "#;
         let unit = parse_translation_unit(
             mwcc_source_to_tokens::tokenize(source).unwrap(),
@@ -726,6 +733,7 @@ mod tests {
 
         assert_eq!(unit.global_aggregate_tags["animation"], "animation_s");
         let aggregate = &unit.aggregate_definitions["animation_s"];
+        assert_eq!(aggregate.source_tag.as_deref(), Some("animation_s"));
         assert_eq!(aggregate.byte_size, 20);
         assert_eq!(
             aggregate
@@ -759,6 +767,12 @@ mod tests {
                 ("pad", mwcc_syntax_trees::Type::Short, 16),
                 ("frames", mwcc_syntax_trees::Type::Short, 18),
             ]
+        );
+        let anonymous = &unit.aggregate_definitions["Anonymous"];
+        assert_eq!(anonymous.source_tag, None);
+        assert_eq!(
+            anonymous.members[0].source_fundamental,
+            Some(mwcc_syntax_trees::SourceFundamentalType::UnsignedLong)
         );
     }
 

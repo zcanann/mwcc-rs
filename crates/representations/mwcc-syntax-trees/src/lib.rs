@@ -8,7 +8,7 @@ mod function;
 mod operators;
 mod types;
 
-pub use aggregate::{AggregateDefinition, AggregateMember};
+pub use aggregate::{AggregateDefinition, AggregateMember, SourceFundamentalType};
 pub use expression::{ConditionalOrigin, Expression};
 pub use function::{
     ArmBody, AsmInstruction, AsmItem, AsmOperand, AsmRelocSuffix, CxxInlineOrdinalFacts, Function,

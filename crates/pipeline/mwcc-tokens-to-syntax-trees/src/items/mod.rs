@@ -1542,6 +1542,7 @@ impl Parser {
                     } else {
                         self.parse_struct_body()?
                     };
+                    layout.source_tag = (!tag.is_empty()).then(|| tag.clone());
                     if let Some(align) = self.skip_attributes()? {
                         layout.align = layout.align.max(align as u8);
                         let align = u32::from(align);
@@ -1673,6 +1674,7 @@ impl Parser {
                     }
                 }
                 let aliased = self.parse_type()?;
+                let aliased_source_fundamental = self.last_source_fundamental;
                 // `typedef RET (*name)(params);` (function pointer, a 4-byte word
                 // pointer) or `typedef T (*name)[N];` (pointer to array — a ROW
                 // pointer whose subscript strides by N elements).
@@ -1735,6 +1737,10 @@ impl Parser {
                     return Ok(());
                 }
                 self.expect(Token::Semicolon)?;
+                if let Some(source_fundamental) = aliased_source_fundamental {
+                    self.typedef_source_fundamentals
+                        .insert(name.clone(), source_fundamental);
+                }
                 self.typedefs.insert(name, aliased);
                 return Ok(());
             }
@@ -1752,7 +1758,8 @@ impl Parser {
             {
                 self.advance(); // `union`
                 let tag = self.parse_identifier()?;
-                let layout = self.parse_union_body()?;
+                let mut layout = self.parse_union_body()?;
+                layout.source_tag = Some(tag.clone());
                 self.structs.insert(tag, layout);
                 if *self.peek() == Token::Semicolon {
                     self.advance();
@@ -1767,7 +1774,8 @@ impl Parser {
             {
                 self.expect(Token::KeywordStruct)?;
                 let tag = self.parse_identifier()?;
-                let layout = self.parse_struct_body()?;
+                let mut layout = self.parse_struct_body()?;
+                layout.source_tag = Some(tag.clone());
                 self.structs.insert(tag.clone(), layout);
                 if *self.peek() == Token::Semicolon {
                     self.advance();

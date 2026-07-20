@@ -1,7 +1,7 @@
 //! The token cursor: the `Parser` state and its primitive operations.
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{Pointee, Type};
+use mwcc_syntax_trees::{Pointee, SourceFundamentalType, Type};
 use mwcc_tokens::{SourceLocation, Token};
 use std::collections::HashMap;
 
@@ -10,6 +10,7 @@ use std::collections::HashMap;
 /// chained access `a->b->c` resolves), or the element type when it is an array.
 pub(crate) struct StructField {
     pub(crate) member_type: Type,
+    pub(crate) source_fundamental: Option<SourceFundamentalType>,
     pub(crate) offset: u32,
     pub(crate) struct_tag: Option<String>,
     pub(crate) array_element: Option<Pointee>,
@@ -27,6 +28,9 @@ pub(crate) struct StructField {
 /// later). Offsets follow natural alignment (the `-align powerpc` default).
 #[derive(Default)]
 pub(crate) struct StructLayout {
+    /// Source-written aggregate tag. Anonymous typedefs still acquire an
+    /// internal key from their alias, but remain unnamed in debug information.
+    pub(crate) source_tag: Option<String>,
     pub(crate) fields: HashMap<String, StructField>,
     /// Source declaration order. Offsets alone cannot order overlapping union
     /// members, and hash-map iteration must never decide which member a plain
@@ -83,6 +87,7 @@ impl StructLayout {
                 mwcc_syntax_trees::AggregateMember {
                     name: member_name.clone(),
                     declared_type: field.member_type,
+                    source_fundamental: field.source_fundamental,
                     offset: field.offset,
                     aggregate_tag: field.struct_tag.clone(),
                     array_length: field
@@ -93,6 +98,7 @@ impl StructLayout {
             })
             .collect();
         mwcc_syntax_trees::AggregateDefinition {
+            source_tag: self.source_tag.clone(),
             name,
             byte_size: self.size,
             alignment: self.align,
@@ -217,6 +223,9 @@ pub(crate) struct Parser {
     pub(crate) global_types: HashMap<String, Type>,
     /// `typedef`-declared type aliases (e.g. `u32` -> `unsigned int`).
     pub(crate) typedefs: HashMap<String, Type>,
+    /// Source scalar identity for typedefs whose storage type has been folded
+    /// into the executable IR.
+    pub(crate) typedef_source_fundamentals: HashMap<String, SourceFundamentalType>,
     /// Typedef names declared as function pointers. Their storage type is a
     /// plain word pointer, while struct-member call syntax needs the stronger
     /// callable identity.
@@ -250,6 +259,9 @@ pub(crate) struct Parser {
     /// Whether the most recently parsed scalar base was C++ `wchar_t`. Storage
     /// is unsigned 16-bit on this target, but its ABI mangling code is `w`.
     pub(crate) last_type_was_wchar: bool,
+    /// Source scalar identity of the most recently parsed type. For a scalar
+    /// pointer this describes the pointee.
+    pub(crate) last_source_fundamental: Option<SourceFundamentalType>,
     /// The most recently parsed type was a named aggregate followed immediately
     /// by `&`. Its EABI storage is pointer-shaped, but C++ mangling must encode
     /// the named aggregate itself rather than an extra pointer layer. Kept

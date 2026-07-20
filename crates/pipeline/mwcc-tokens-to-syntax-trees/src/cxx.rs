@@ -1256,6 +1256,7 @@ impl Parser {
                         field_name.clone(),
                         StructField {
                             member_type: field.member_type,
+                            source_fundamental: field.source_fundamental,
                             offset: base_offset + field.offset,
                             struct_tag: field.struct_tag.clone(),
                             array_element: field.array_element,
@@ -1386,6 +1387,7 @@ impl Parser {
                 field_name.clone(),
                 StructField {
                     member_type: field_type,
+                    source_fundamental: None,
                     offset,
                     struct_tag,
                     array_element: None,

@@ -166,6 +166,7 @@ impl Parser {
                 field.name.clone(),
                 StructField {
                     member_type: field_type,
+                    source_fundamental: None,
                     offset,
                     struct_tag: None,
                     array_element: None,
@@ -177,6 +178,7 @@ impl Parser {
         }
         let size = offset.div_ceil(max_alignment) * max_alignment;
         Some(StructLayout {
+            source_tag: None,
             field_order: template
                 .fields
                 .iter()

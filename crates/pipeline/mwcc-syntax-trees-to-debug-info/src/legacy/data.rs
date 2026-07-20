@@ -6,7 +6,10 @@ use mwcc_dwarf1::{
     Address, Attribute, AttributeName, AttributeValue, Block, BlockRelocation, DebugEntry,
     DebugEntryId, DebugRecord, FundamentalType, Tag,
 };
-use mwcc_syntax_trees::{AggregateDefinition, GlobalDeclaration, Pointee, TranslationUnit, Type};
+use mwcc_syntax_trees::{
+    AggregateDefinition, GlobalDeclaration, Pointee, SourceFundamentalType, TranslationUnit, Type,
+};
+use std::collections::HashMap;
 
 const DATA_END: DebugEntryId = DebugEntryId(u32::MAX - 3);
 
@@ -16,11 +19,17 @@ enum PlanKind<'a> {
         type_id: DebugEntryId,
     },
     Aggregate {
-        type_id: DebugEntryId,
-        member_ids: Vec<DebugEntryId>,
-        children_end: DebugEntryId,
-        definition: &'a AggregateDefinition,
+        root_type_id: DebugEntryId,
+        types: Vec<AggregatePlan<'a>>,
     },
+}
+
+struct AggregatePlan<'a> {
+    type_id: DebugEntryId,
+    member_ids: Vec<DebugEntryId>,
+    member_type_ids: Vec<Option<DebugEntryId>>,
+    children_end: DebugEntryId,
+    definition: &'a AggregateDefinition,
 }
 
 struct GlobalPlan<'a> {
@@ -36,11 +45,6 @@ pub(super) fn records<'a>(
     first_id: DebugEntryId,
 ) -> Compilation<Vec<DebugRecord>> {
     let mut next_id = first_id.0;
-    let mut allocate = || {
-        let id = DebugEntryId(next_id);
-        next_id += 1;
-        id
-    };
     let mut plans = Vec::with_capacity(globals.len());
     for global in globals {
         let (start_id, global_id, kind) = if let Some(length) = global.array_length {
@@ -51,8 +55,8 @@ pub(super) fn records<'a>(
                 )));
             }
             fundamental_type(global.declared_type)?;
-            let type_id = allocate();
-            let global_id = allocate();
+            let type_id = allocate(&mut next_id);
+            let global_id = allocate(&mut next_id);
             (type_id, global_id, PlanKind::Array { type_id })
         } else if matches!(global.declared_type, Type::Struct { .. }) {
             let tag = unit
@@ -64,46 +68,24 @@ pub(super) fn records<'a>(
                         global.name
                     ))
                 })?;
-            let definition = unit.aggregate_definitions.get(tag).ok_or_else(|| {
-                Diagnostic::error(format!(
-                    "debug-info: aggregate definition '{tag}' was not retained"
-                ))
+            let mut type_ids = HashMap::new();
+            let mut types = Vec::new();
+            let root_type_id = plan_aggregate(unit, tag, &mut next_id, &mut type_ids, &mut types)?;
+            let start_id = types.first().map(|plan| plan.type_id).ok_or_else(|| {
+                Diagnostic::error(format!("debug-info: aggregate graph '{tag}' is empty"))
             })?;
-            if definition.is_union
-                || definition.members.iter().any(|member| {
-                    member.array_length.is_some()
-                        || member.bit_field.is_some()
-                        || matches!(
-                            member.declared_type,
-                            Type::Struct { .. } | Type::StructPointer { .. }
-                        )
-                })
-            {
-                return Err(Diagnostic::error(format!(
-                    "debug-info: aggregate '{}' uses a member shape not implemented by legacy DWARF lowering yet (roadmap)",
-                    definition.name
-                )));
-            }
-            for member in &definition.members {
-                member_type_attribute(member.declared_type)?;
-            }
-            let type_id = allocate();
-            let member_ids = definition.members.iter().map(|_| allocate()).collect();
-            let children_end = allocate();
-            let global_id = allocate();
+            let global_id = allocate(&mut next_id);
             (
-                type_id,
+                start_id,
                 global_id,
                 PlanKind::Aggregate {
-                    type_id,
-                    member_ids,
-                    children_end,
-                    definition,
+                    root_type_id,
+                    types,
                 },
             )
         } else {
             global_type_attribute(global.declared_type, None)?;
-            let global_id = allocate();
+            let global_id = allocate(&mut next_id);
             (global_id, global_id, PlanKind::Scalar)
         };
         plans.push(GlobalPlan {
@@ -155,57 +137,69 @@ pub(super) fn records<'a>(
                 )));
             }
             PlanKind::Aggregate {
-                type_id,
-                member_ids,
-                children_end,
-                definition,
+                root_type_id,
+                types,
             } => {
-                records.push(DebugRecord::Entry(DebugEntry {
-                    id: *type_id,
-                    tag: Tag::StructureType,
-                    attributes: vec![
-                        attribute(
-                            AttributeName::Sibling,
-                            AttributeValue::Reference(plan.global_id),
-                        ),
-                        attribute(
+                for (type_index, aggregate) in types.iter().enumerate() {
+                    let sibling = types
+                        .get(type_index + 1)
+                        .map_or(plan.global_id, |following| following.type_id);
+                    let mut attributes = vec![attribute(
+                        AttributeName::Sibling,
+                        AttributeValue::Reference(sibling),
+                    )];
+                    if let Some(source_tag) = &aggregate.definition.source_tag {
+                        attributes.push(attribute(
                             AttributeName::Name,
-                            AttributeValue::String(definition.name.clone()),
-                        ),
-                        attribute(
-                            AttributeName::ByteSize,
-                            AttributeValue::Data4(definition.byte_size),
-                        ),
-                    ],
-                }));
-                for (member_index, member) in definition.members.iter().enumerate() {
-                    let sibling = member_ids
-                        .get(member_index + 1)
-                        .copied()
-                        .unwrap_or(*children_end);
+                            AttributeValue::String(source_tag.clone()),
+                        ));
+                    }
+                    attributes.push(attribute(
+                        AttributeName::ByteSize,
+                        AttributeValue::Data4(aggregate.definition.byte_size),
+                    ));
                     records.push(DebugRecord::Entry(DebugEntry {
-                        id: member_ids[member_index],
-                        tag: Tag::Member,
-                        attributes: vec![
-                            attribute(AttributeName::Sibling, AttributeValue::Reference(sibling)),
-                            attribute(
-                                AttributeName::Name,
-                                AttributeValue::String(member.name.clone()),
-                            ),
-                            member_type_attribute(member.declared_type)?,
-                            member_location(member.offset),
-                        ],
+                        id: aggregate.type_id,
+                        tag: Tag::StructureType,
+                        attributes,
                     }));
+                    for (member_index, member) in aggregate.definition.members.iter().enumerate() {
+                        let member_sibling = aggregate
+                            .member_ids
+                            .get(member_index + 1)
+                            .copied()
+                            .unwrap_or(aggregate.children_end);
+                        records.push(DebugRecord::Entry(DebugEntry {
+                            id: aggregate.member_ids[member_index],
+                            tag: Tag::Member,
+                            attributes: vec![
+                                attribute(
+                                    AttributeName::Sibling,
+                                    AttributeValue::Reference(member_sibling),
+                                ),
+                                attribute(
+                                    AttributeName::Name,
+                                    AttributeValue::String(member.name.clone()),
+                                ),
+                                member_type_attribute(
+                                    member.declared_type,
+                                    aggregate.member_type_ids[member_index],
+                                    member.source_fundamental,
+                                )?,
+                                member_location(member.offset),
+                            ],
+                        }));
+                    }
+                    records.push(DebugRecord::Marker(aggregate.children_end));
+                    records.push(DebugRecord::Raw(vec![0, 0, 0, 4]));
                 }
-                records.push(DebugRecord::Marker(*children_end));
-                records.push(DebugRecord::Raw(vec![0, 0, 0, 4]));
                 records.push(DebugRecord::Entry(global_entry(
                     plan.global,
                     plan.global_id,
                     next,
                     attribute(
                         AttributeName::UserDefinedType,
-                        AttributeValue::Reference(*type_id),
+                        AttributeValue::Reference(*root_type_id),
                     ),
                 )));
             }
@@ -218,6 +212,82 @@ pub(super) fn records<'a>(
     ]);
     debug_assert_ne!(DATA_END, UNIT_END);
     Ok(records)
+}
+
+fn allocate(next_id: &mut u32) -> DebugEntryId {
+    let id = DebugEntryId(*next_id);
+    *next_id += 1;
+    id
+}
+
+/// Build the reachable aggregate type graph in MWCC's measured postorder:
+/// dependencies appear before the aggregate that references them, and a shared
+/// dependency is emitted only once for each global's type graph.
+fn plan_aggregate<'a>(
+    unit: &'a TranslationUnit,
+    tag: &str,
+    next_id: &mut u32,
+    type_ids: &mut HashMap<String, DebugEntryId>,
+    plans: &mut Vec<AggregatePlan<'a>>,
+) -> Compilation<DebugEntryId> {
+    if let Some(id) = type_ids.get(tag) {
+        return Ok(*id);
+    }
+    let definition = unit.aggregate_definitions.get(tag).ok_or_else(|| {
+        Diagnostic::error(format!(
+            "debug-info: aggregate definition '{tag}' was not retained"
+        ))
+    })?;
+    if definition.is_union {
+        return Err(Diagnostic::error(format!(
+            "debug-info: aggregate '{}' is a union, whose legacy DWARF lowering is not implemented yet (roadmap)",
+            definition.name
+        )));
+    }
+
+    // Register the type before descending so self-referential pointers close
+    // the cycle without recursively duplicating the type.
+    let type_id = allocate(next_id);
+    type_ids.insert(tag.to_owned(), type_id);
+    let mut member_type_ids = Vec::with_capacity(definition.members.len());
+    for member in &definition.members {
+        if member.array_length.is_some() || member.bit_field.is_some() {
+            return Err(Diagnostic::error(format!(
+                "debug-info: aggregate '{}' uses an array or bit-field member not implemented by legacy DWARF lowering yet (roadmap)",
+                definition.name
+            )));
+        }
+        let referenced_type = match member.declared_type {
+            Type::Struct { .. } | Type::StructPointer { .. } => {
+                let member_tag = member.aggregate_tag.as_deref().ok_or_else(|| {
+                    Diagnostic::error(format!(
+                        "debug-info: aggregate identity for member '{}.{}' was not retained",
+                        definition.name, member.name
+                    ))
+                })?;
+                Some(plan_aggregate(unit, member_tag, next_id, type_ids, plans)?)
+            }
+            _ => {
+                member_type_attribute(member.declared_type, None, member.source_fundamental)?;
+                None
+            }
+        };
+        member_type_ids.push(referenced_type);
+    }
+    let member_ids = definition
+        .members
+        .iter()
+        .map(|_| allocate(next_id))
+        .collect();
+    let children_end = allocate(next_id);
+    plans.push(AggregatePlan {
+        type_id,
+        member_ids,
+        member_type_ids,
+        children_end,
+        definition,
+    });
+    Ok(type_id)
 }
 
 fn global_entry(
@@ -271,14 +341,70 @@ fn global_type_attribute(
     }
 }
 
-fn member_type_attribute(declared_type: Type) -> Compilation<Attribute> {
+fn member_type_attribute(
+    declared_type: Type,
+    aggregate_id: Option<DebugEntryId>,
+    source_fundamental: Option<SourceFundamentalType>,
+) -> Compilation<Attribute> {
     match declared_type {
-        Type::Pointer(pointee) => Ok(modified_fundamental_type(pointee_type(pointee)?)),
-        Type::Struct { .. } | Type::StructPointer { .. } => Err(Diagnostic::error(
-            "debug-info: nested aggregate member types are not implemented yet (roadmap)",
-        )),
-        other => Ok(fundamental_attribute(fundamental_type(other)?)),
+        Type::Pointer(pointee) => Ok(modified_fundamental_type(match source_fundamental {
+            Some(source) => source_fundamental_type(source)?,
+            None => pointee_type(pointee)?,
+        })),
+        Type::Struct { .. } => aggregate_id
+            .map(|id| {
+                attribute(
+                    AttributeName::UserDefinedType,
+                    AttributeValue::Reference(id),
+                )
+            })
+            .ok_or_else(|| Diagnostic::error("debug-info: a struct member needs an aggregate DIE")),
+        Type::StructPointer { .. } => {
+            aggregate_id.map(modified_user_defined_type).ok_or_else(|| {
+                Diagnostic::error("debug-info: a struct pointer member needs an aggregate DIE")
+            })
+        }
+        other => Ok(fundamental_attribute(match source_fundamental {
+            Some(source) => source_fundamental_type(source)?,
+            None => fundamental_type(other)?,
+        })),
     }
+}
+
+fn source_fundamental_type(source: SourceFundamentalType) -> Compilation<FundamentalType> {
+    Ok(match source {
+        SourceFundamentalType::Boolean => FundamentalType::Boolean,
+        SourceFundamentalType::SignedChar => FundamentalType::SignedChar,
+        SourceFundamentalType::UnsignedChar => FundamentalType::UnsignedChar,
+        SourceFundamentalType::SignedShort => FundamentalType::SignedShort,
+        SourceFundamentalType::UnsignedShort => FundamentalType::UnsignedShort,
+        SourceFundamentalType::SignedInteger => FundamentalType::SignedInteger,
+        SourceFundamentalType::UnsignedInteger => FundamentalType::UnsignedInteger,
+        SourceFundamentalType::SignedLong => FundamentalType::SignedLong,
+        SourceFundamentalType::UnsignedLong => FundamentalType::UnsignedLong,
+        SourceFundamentalType::Float => FundamentalType::Float,
+        SourceFundamentalType::Double => FundamentalType::Double,
+        SourceFundamentalType::Void => FundamentalType::Void,
+        SourceFundamentalType::SignedLongLong => FundamentalType::SignedLongLong,
+        SourceFundamentalType::UnsignedLongLong => {
+            return Err(Diagnostic::error(
+                "debug-info: unsigned long long has no measured legacy fundamental encoding yet",
+            ))
+        }
+    })
+}
+
+fn modified_user_defined_type(id: DebugEntryId) -> Attribute {
+    attribute(
+        AttributeName::ModifiedUserDefinedType,
+        AttributeValue::RelocatableBlock2(Block {
+            bytes: vec![1, 0, 0, 0, 0],
+            relocations: vec![BlockRelocation {
+                offset: 1,
+                address: Address::debug_entry(id),
+            }],
+        }),
+    )
 }
 
 fn fundamental_attribute(fundamental: FundamentalType) -> Attribute {
