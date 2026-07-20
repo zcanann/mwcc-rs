@@ -281,7 +281,8 @@ fn member_offset(expression: &Expression, base_name: &str) -> Option<u16> {
     else {
         return None;
     };
-    matches!(base.as_ref(), Expression::Variable(name) if name == base_name).then_some(*offset)
+    matches!(base.as_ref(), Expression::Variable(name) if name == base_name)
+        .then(|| u16::try_from(*offset).ok())?
 }
 
 fn member_equal_zero(condition: &Expression, base_name: &str) -> Option<u16> {

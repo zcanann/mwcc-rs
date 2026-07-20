@@ -90,8 +90,8 @@ impl Generator {
         name: &str,
         total_size: u32,
         index: u8,
-        stride: u16,
-        member_offset: u16,
+        stride: u32,
+        member_offset: u32,
         address: u8,
     ) -> Compilation<bool> {
         if self.behavior.global_array_index_style

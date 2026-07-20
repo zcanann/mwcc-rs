@@ -639,6 +639,40 @@ mod tests {
     }
 
     #[test]
+    fn retains_aggregate_sizes_and_member_offsets_above_64k() {
+        let source = r#"
+            typedef struct {
+                unsigned char first[20000];
+                unsigned char second[20000];
+                unsigned char third[20000];
+                unsigned char fourth[20000];
+                int tail;
+            } Huge;
+            Huge value;
+            int read_tail(Huge* value) { return value->tail; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.globals[0].declared_type,
+            mwcc_syntax_trees::Type::Struct {
+                size: 80_004,
+                align: 4
+            }
+        ));
+        assert!(matches!(
+            unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 80_000, .. })
+        ));
+    }
+
+    #[test]
     fn resolves_a_virtual_member_to_its_measured_vtable_slot() {
         let source = r#"
             struct Stream {

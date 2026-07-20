@@ -888,14 +888,14 @@ impl Parser {
                             };
                             let element_bytes = element.width() as i64 / 8;
                             let offset = row * stride as i64 + column * element_bytes;
-                            if offset < 0 || offset > u16::MAX as i64 {
+                            if offset < 0 || offset > u32::MAX as i64 {
                                 return Err(Diagnostic::error(
                                     "an array-typedef subscript offset is out of range",
                                 ));
                             }
                             expression = Expression::Member {
                                 base: Box::new(expression),
-                                offset: offset as u16,
+                                offset: offset as u32,
                                 member_type: element,
                                 index_stride: None,
                             };
@@ -991,8 +991,8 @@ impl Parser {
                     // itself, so unwrap one dereference level here (the index_stride check
                     // above already saw the original shape). Without this the base would be
                     // `*p` and codegen would emit a spurious extra load.
-                    let mut base_offset = 0u16;
-                    let mut base_stride: Option<u16> = None;
+                    let mut base_offset = 0u32;
+                    let mut base_stride: Option<u32> = None;
                     expression = match expression {
                         Expression::Dereference { pointer } => *pointer,
                         // An EMBEDDED struct-value member folds into its base:
@@ -1033,7 +1033,7 @@ impl Parser {
                             load_bits - (bit_offset as u32 - byte_start as u32 * 8) - width as u32;
                         let load = Expression::Member {
                             base: Box::new(expression),
-                            offset: offset + byte_start,
+                                offset: offset + u32::from(byte_start),
                             member_type: load_type,
                             index_stride,
                         };

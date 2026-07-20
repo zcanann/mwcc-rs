@@ -1160,7 +1160,9 @@ impl Generator {
             };
             ReturnBase::Member {
                 base: register,
-                offset: *offset,
+                offset: u16::try_from(*offset).map_err(|_| {
+                    Diagnostic::error("conditional member offset out of range (roadmap)")
+                })?,
             }
         } else {
             return Ok(false);

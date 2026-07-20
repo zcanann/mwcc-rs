@@ -81,7 +81,7 @@ pub(crate) fn pointee_of_type(value_type: Type) -> Option<Pointee> {
 /// (so `p + n` advances by whole structs), or `None` for a scalar pointer (which
 /// scales by its `pointee` size) and a non-pointer. A zero element size — an opaque
 /// struct or a function pointer — yields `None` so arithmetic stays unscaled.
-pub(crate) fn pointer_stride(value_type: Type) -> Option<u16> {
+pub(crate) fn pointer_stride(value_type: Type) -> Option<u32> {
     match value_type {
         Type::StructPointer { element_size } if element_size > 1 => Some(element_size),
         _ => None,

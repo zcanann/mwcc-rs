@@ -30,7 +30,7 @@ fn member_store<'a>(statement: &'a Statement, base: &str) -> Option<(u16, &'a Ex
         return None;
     };
     matches!(target_base.as_ref(), Expression::Variable(name) if name == base)
-        .then_some((*offset, value))
+        .then(|| Some((u16::try_from(*offset).ok()?, value)))?
 }
 
 fn empty_call(statement: &Statement) -> Option<&str> {
@@ -103,7 +103,7 @@ fn queue_arm<'a>(
     else {
         return None;
     };
-    (*offset == next_offset
+    (*offset == u32::from(next_offset)
         && linked_request == request
         && empty_queue == queue
         && queued_request == request

@@ -318,11 +318,11 @@ impl Parser {
         tag: &str,
     ) -> Compilation<
         Vec<(
-            u16,
+            u32,
             Type,
             Option<String>,
             Option<Pointee>,
-            Option<u16>,
+            Option<u32>,
             Option<(u8, u8)>,
         )>,
     > {

@@ -11,17 +11,16 @@ use mwcc_syntax_trees::{
 };
 use mwcc_tokens::Token;
 
-fn align_layout_offset(offset: u16, alignment: u16) -> Compilation<u16> {
-    offset
-        .div_ceil(alignment)
-        .checked_mul(alignment)
-        .ok_or_else(|| Diagnostic::error("aggregate layout exceeds 65535 bytes (roadmap)"))
+fn align_layout_offset(offset: u32, alignment: u32) -> Compilation<u32> {
+    offset.div_ceil(alignment).checked_mul(alignment).ok_or_else(|| {
+        Diagnostic::error("aggregate layout exceeds the 32-bit address space")
+    })
 }
 
-fn advance_layout_offset(offset: u16, size: u16) -> Compilation<u16> {
+fn advance_layout_offset(offset: u32, size: u32) -> Compilation<u32> {
     offset
         .checked_add(size)
-        .ok_or_else(|| Diagnostic::error("aggregate layout exceeds 65535 bytes (roadmap)"))
+        .ok_or_else(|| Diagnostic::error("aggregate layout exceeds the 32-bit address space"))
 }
 
 impl Parser {
@@ -508,11 +507,11 @@ impl Parser {
     pub(crate) fn parse_struct_body(&mut self) -> Compilation<StructLayout> {
         self.expect(Token::BraceOpen)?;
         let mut layout = StructLayout::default();
-        let mut offset: u16 = 0;
-        let mut alignment_max: u16 = 1;
+        let mut offset: u32 = 0;
+        let mut alignment_max: u32 = 1;
         // The open bit-field allocation unit (its type, byte offset, bits used so
         // far); an ordinary member or a different-typed bit-field closes it.
-        let mut bit_unit: Option<(Type, u16, u8)> = None;
+        let mut bit_unit: Option<(Type, u32, u8)> = None;
         while *self.peek() != Token::BraceClose {
             // An inline struct definition as a member: `struct [Tag] { … } [name];`. An
             // ANONYMOUS one with no member name promotes (flattens) its fields into this
@@ -531,7 +530,7 @@ impl Parser {
                 };
                 let inner = self.parse_struct_body()?;
                 let inner_size = inner.size;
-                let inner_align = (inner.align as u16).max(1);
+                let inner_align = (inner.align as u32).max(1);
                 let member_name = if matches!(self.peek(), Token::Identifier(_)) {
                     Some(self.parse_identifier()?)
                 } else {
@@ -540,10 +539,10 @@ impl Parser {
                 // An inline struct member may be an ARRAY — `struct { … } queue[3];` (EXIControl's
                 // callback queue). Parse the dimension(s); `array_bytes` is the total so the fields
                 // after it lay out correctly (`count * inner_size`), `None` for a scalar member.
-                let mut array_count: Option<u16> = None;
+                let mut array_count: Option<u32> = None;
                 while *self.peek() == Token::BracketOpen {
                     self.advance();
-                    let dimension = self.parse_integer_constant()? as u16;
+                    let dimension = self.parse_integer_constant()? as u32;
                     array_count = Some(array_count.unwrap_or(1).saturating_mul(dimension));
                     self.expect(Token::BracketClose)?;
                 }
@@ -628,7 +627,7 @@ impl Parser {
                     // mwcc TRIMS the container to the bytes its bits use
                     // (measured: 4 bits -> next byte member at +1; 9-12 bits
                     // -> +2; the container type still sets the alignment).
-                    offset = unit_offset + (bits_used as u16).div_ceil(8);
+                    offset = unit_offset + u32::from(bits_used).div_ceil(8);
                 }
                 continue;
             }
@@ -649,7 +648,7 @@ impl Parser {
                 };
                 let inner = self.parse_union_body()?;
                 let inner_size = inner.size;
-                let inner_align = (inner.align as u16).max(1);
+                let inner_align = (inner.align as u32).max(1);
                 let member_name = if matches!(self.peek(), Token::Identifier(_)) {
                     Some(self.parse_identifier()?)
                 } else {
@@ -660,7 +659,7 @@ impl Parser {
                     // mwcc TRIMS the container to the bytes its bits use
                     // (measured: 4 bits -> next byte member at +1; 9-12 bits
                     // -> +2; the container type still sets the alignment).
-                    offset = unit_offset + (bits_used as u16).div_ceil(8);
+                    offset = unit_offset + u32::from(bits_used).div_ceil(8);
                 }
                 match (tag, member_name) {
                     // A named inline union is an ordinary aggregate-value member.
@@ -756,13 +755,15 @@ impl Parser {
                 }
                 let attr_align = self.skip_attributes()?;
                 let element_size = type_size(element);
-                let alignment = type_alignment(element).max(1).max(attr_align.unwrap_or(1));
+                let alignment = type_alignment(element)
+                    .max(1)
+                    .max(u32::from(attr_align.unwrap_or(1)));
                 loop {
                     let field_name = self.parse_identifier()?;
-                    let mut count = base_len;
+                    let mut count = u32::from(base_len);
                     while *self.peek() == Token::BracketOpen {
                         self.advance();
-                        let extra = self.parse_integer_constant()? as u16;
+                        let extra = self.parse_integer_constant()? as u32;
                         self.expect(Token::BracketClose)?;
                         count = count.saturating_mul(extra);
                     }
@@ -770,7 +771,7 @@ impl Parser {
                         // mwcc TRIMS the container to the bytes its bits use
                         // (measured: 4 bits -> next byte member at +1; 9-12 bits
                         // -> +2; the container type still sets the alignment).
-                        offset = unit_offset + (bits_used as u16).div_ceil(8);
+                        offset = unit_offset + u32::from(bits_used).div_ceil(8);
                     }
                     alignment_max = alignment_max.max(alignment);
                     offset = align_layout_offset(offset, alignment)?;
@@ -846,9 +847,9 @@ impl Parser {
                         // mwcc TRIMS the container to the bytes its bits use
                         // (measured: 4 bits -> next byte member at +1; 9-12 bits
                         // -> +2; the container type still sets the alignment).
-                        offset = unit_offset + (bits_used as u16).div_ceil(8);
+                        offset = unit_offset + u32::from(bits_used).div_ceil(8);
                     }
-                    let alignment = 4u16;
+                    let alignment = 4u32;
                     alignment_max = alignment_max.max(alignment);
                     offset = align_layout_offset(offset, alignment)?;
                     layout.fields.insert(
@@ -897,7 +898,7 @@ impl Parser {
                             _ => {
                                 let alignment = type_alignment(field_type)
                                     .max(1)
-                                    .max(attr_align.unwrap_or(1));
+                                    .max(u32::from(attr_align.unwrap_or(1)));
                                 let unit_offset = align_layout_offset(offset, alignment)?;
                                 offset = unit_offset + type_size(field_type);
                                 alignment_max = alignment_max.max(alignment);
@@ -936,7 +937,7 @@ impl Parser {
                         _ => {
                             let alignment = type_alignment(field_type)
                                 .max(1)
-                                .max(attr_align.unwrap_or(1));
+                                .max(u32::from(attr_align.unwrap_or(1)));
                             let unit_offset = align_layout_offset(offset, alignment)?;
                             offset = unit_offset + type_size(field_type);
                             alignment_max = alignment_max.max(alignment);
@@ -965,7 +966,7 @@ impl Parser {
                     // mwcc TRIMS the container to the bytes its bits use
                     // (measured: 4 bits -> next byte member at +1; 9-12 bits
                     // -> +2; the container type still sets the alignment).
-                    offset = unit_offset + (bits_used as u16).div_ceil(8);
+                    offset = unit_offset + u32::from(bits_used).div_ceil(8);
                 }
                 // An array member `type name[N]` occupies `N` elements; its access
                 // yields the array address rather than a loaded value.
@@ -991,10 +992,10 @@ impl Parser {
                     // product of the (constant-expression) lengths times the element
                     // size. (Member *access* of a multi-dimensional field still defers in
                     // codegen; the layout is needed so the rest of the struct registers.)
-                    let mut total: u16 = 1;
+                    let mut total: u32 = 1;
                     while *self.peek() == Token::BracketOpen {
                         self.advance();
-                        let count = self.parse_integer_constant()? as u16;
+                        let count = self.parse_integer_constant()? as u32;
                         self.expect(Token::BracketClose)?;
                         total = total.saturating_mul(count);
                     }
@@ -1005,7 +1006,7 @@ impl Parser {
                 // element's).
                 let alignment = type_alignment(field_type)
                     .max(1)
-                    .max(attr_align.unwrap_or(1));
+                    .max(u32::from(attr_align.unwrap_or(1)));
                 alignment_max = alignment_max.max(alignment);
                 offset = align_layout_offset(offset, alignment)?;
                 layout.fields.insert(
@@ -1045,8 +1046,8 @@ impl Parser {
     pub(crate) fn parse_union_body(&mut self) -> Compilation<StructLayout> {
         self.expect(Token::BraceOpen)?;
         let mut layout = StructLayout::default();
-        let mut max_size: u16 = 0;
-        let mut max_align: u16 = 1;
+        let mut max_size: u32 = 0;
+        let mut max_align: u32 = 1;
         while *self.peek() != Token::BraceClose {
             // An inline struct *variant* of the union (`struct [Tag] { … } name;`),
             // e.g. HsfObjectData's `mesh`. Register its layout under a tag so
@@ -1063,7 +1064,7 @@ impl Parser {
                 };
                 let inner = self.parse_struct_body()?;
                 let inner_size = inner.size;
-                let inner_align = (inner.align as u16).max(1);
+                let inner_align = (inner.align as u32).max(1);
                 // A NAMED inline struct variant (`struct {…} name;`) registers as a struct-value
                 // field so `u.name.field` chains. An ANONYMOUS one (`struct {…};`) flattens its
                 // fields into the union at the union base (offset 0), each keeping its struct-relative
@@ -1132,7 +1133,9 @@ impl Parser {
                 .transpose()?;
             let mut is_array = array_typedef.is_some_and(|(_, total, _)| total != 0);
             let mut size = match array_typedef {
-                Some((element, total, _)) if total != 0 => total * type_size(element),
+                Some((element, total, _)) if total != 0 => {
+                    u32::from(total) * type_size(element)
+                }
                 Some(_) => 4,
                 None => type_size(field_type),
             };
@@ -1141,10 +1144,10 @@ impl Parser {
                 if array_element.is_none() {
                     array_element = Some(pointee_of(field_type)?);
                 }
-                let mut total: u16 = 1;
+                let mut total: u32 = 1;
                 while *self.peek() == Token::BracketOpen {
                     self.advance();
-                    total = total.saturating_mul(self.parse_integer_constant()? as u16);
+                    total = total.saturating_mul(self.parse_integer_constant()? as u32);
                     self.expect(Token::BracketClose)?;
                 }
                 size = total.saturating_mul(size);
@@ -1158,7 +1161,7 @@ impl Parser {
             });
             let align = type_alignment(storage_type)
                 .max(1)
-                .max(attr_align.unwrap_or(1));
+                .max(u32::from(attr_align.unwrap_or(1)));
             layout.fields.insert(
                 name,
                 StructField {

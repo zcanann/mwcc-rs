@@ -158,7 +158,10 @@ impl Generator {
                 return Ok(false);
             }
             values.push(*value);
-            offsets.push(*offset);
+            let Ok(offset) = u16::try_from(*offset) else {
+                return Ok(false);
+            };
+            offsets.push(offset);
         }
         let Some(base_register) = self.lookup_general(&base_name) else {
             return Ok(false);
@@ -324,7 +327,10 @@ impl Generator {
                     Materialize::Integer(*literal)
                 }
             };
-            parsed.push((name.clone(), *offset, pointee, materialize));
+            let Ok(offset) = u16::try_from(*offset) else {
+                return Ok(false);
+            };
+            parsed.push((name.clone(), offset, pointee, materialize));
         }
         // Same base pointer, and exactly one float-class member paired with one integer-class member.
         if parsed[0].0 != parsed[1].0 {

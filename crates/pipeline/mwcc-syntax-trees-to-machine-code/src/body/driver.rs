@@ -1384,7 +1384,12 @@ impl Generator {
                 ) {
                     return None;
                 }
-                Some((name.clone(), *offset, size as u32, member_type.width()))
+                Some((
+                    name.clone(),
+                    u16::try_from(*offset).ok()?,
+                    size,
+                    member_type.width(),
+                ))
             };
             let store_by_width = |width: u8, source: u8, base: u8, offset: i16| -> Instruction {
                 match width {
@@ -1574,7 +1579,7 @@ impl Generator {
                 if !matches!(member_type, Type::Int | Type::UnsignedInt) {
                     return None;
                 }
-                Some((name.clone(), *offset, size as u32))
+                Some((name.clone(), u16::try_from(*offset).ok()?, size))
             };
             if function.return_type == Type::Void
                 && function.return_expression.is_none()

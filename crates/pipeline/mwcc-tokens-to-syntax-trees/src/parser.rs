@@ -10,12 +10,12 @@ use std::collections::HashMap;
 /// chained access `a->b->c` resolves), or the element type when it is an array.
 pub(crate) struct StructField {
     pub(crate) member_type: Type,
-    pub(crate) offset: u16,
+    pub(crate) offset: u32,
     pub(crate) struct_tag: Option<String>,
     pub(crate) array_element: Option<Pointee>,
     /// For an array member, the array's TOTAL byte size (dimensions x element
     /// size) — feeds the `sizeof(s.arr)` constant fold. `None` for a scalar.
-    pub(crate) array_bytes: Option<u16>,
+    pub(crate) array_bytes: Option<u32>,
     /// For a bit-field member, `(bit_offset, width)` — the field occupies `width` bits
     /// starting `bit_offset` bits from the most-significant end of its storage unit
     /// (which begins at byte `offset`). `None` for an ordinary member. Member access
@@ -35,7 +35,7 @@ pub(crate) struct StructLayout {
     pub(crate) function_pointer_fields: std::collections::HashSet<String>,
     /// The struct's total size in bytes (members plus trailing padding to the
     /// struct's alignment) — the stride for an array/pointer of this struct.
-    pub(crate) size: u16,
+    pub(crate) size: u32,
     /// The struct's alignment (the max member alignment) — a struct value's stack
     /// slot is aligned to this, not to its size.
     pub(crate) align: u8,
@@ -197,7 +197,7 @@ pub(crate) struct Parser {
     /// Set when a member access decays an ARRAY member to its address
     /// (`Expression::MemberAddress`): the array's total byte size. Consumed by
     /// the `sizeof(s.arr)` fold, which resets it before parsing its operand.
-    pub(crate) last_member_array_bytes: Option<u16>,
+    pub(crate) last_member_array_bytes: Option<u32>,
     /// Active block-scope shadow renames, innermost last: (source name,
     /// internal hoisted name like `i@2`). Pushed when a block declaration
     /// shadows an existing local; truncated at the block's close brace.

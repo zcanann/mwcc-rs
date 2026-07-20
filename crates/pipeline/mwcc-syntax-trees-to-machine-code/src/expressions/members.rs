@@ -3,13 +3,18 @@
 #[allow(unused_imports)]
 use super::*;
 
+fn member_displacement(offset: u32) -> Compilation<i16> {
+    i16::try_from(offset)
+        .map_err(|_| Diagnostic::error("struct member offset out of range (roadmap)"))
+}
+
 impl Generator {
     pub(crate) fn emit_member_load(
         &mut self,
         base: &Expression,
-        offset: u16,
+        offset: u32,
         member_type: Type,
-        index_stride: Option<u16>,
+        index_stride: Option<u32>,
         destination: u8,
     ) -> Compilation<()> {
         // `a[i].field`: scale the index by the struct size, then load at the field
@@ -50,11 +55,15 @@ impl Generator {
             if let Some(slot) = self.frame_slots.get(name) {
                 let pointee = pointee_of_type(member_type)
                     .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
+                let displacement = i16::try_from(i64::from(slot.offset) + i64::from(offset))
+                    .map_err(|_| {
+                        Diagnostic::error("frame struct member offset out of range (roadmap)")
+                    })?;
                 self.output.instructions.push(displacement_load(
                     pointee,
                     destination,
                     1,
-                    slot.offset + offset as i16,
+                    displacement,
                 )?);
                 return Ok(());
             }
@@ -71,6 +80,7 @@ impl Generator {
             {
                 let pointee = pointee_of_type(member_type)
                     .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
+                let displacement = member_displacement(offset)?;
                 // A FLOAT/double member loads into an FPR, so the pointer must go to a GPR base —
                 // reusing the FPR destination's NUMBER would address through the matching GPR
                 // (`f1`↔`r1`/sp). Integer members share the destination GPR as both base and result.
@@ -81,7 +91,7 @@ impl Generator {
                         pointee,
                         destination,
                         base,
-                        offset as i16,
+                        displacement,
                     )?);
                 } else {
                     self.emit_global_load_value(name, destination)?;
@@ -89,7 +99,7 @@ impl Generator {
                         pointee,
                         destination,
                         destination,
-                        offset as i16,
+                        displacement,
                     )?);
                 }
                 return Ok(());
@@ -123,11 +133,12 @@ impl Generator {
                         return Ok(());
                     }
                     self.emit_global_array_base(name, size as u32, destination)?;
+                    let displacement = member_displacement(offset)?;
                     self.output.instructions.push(displacement_load(
                         pointee,
                         destination,
                         destination,
-                        offset as i16,
+                        displacement,
                     )?);
                     return Ok(());
                 }
@@ -160,11 +171,12 @@ impl Generator {
             return Err(Diagnostic::error("a member load through a call base needs the call-return epilogue schedule (roadmap)"));
         }
         let address = self.member_base_register(base)?;
+        let displacement = member_displacement(offset)?;
         self.output.instructions.push(displacement_load(
             pointee,
             destination,
             address,
-            offset as i16,
+            displacement,
         )?);
         Ok(())
     }
@@ -175,8 +187,8 @@ impl Generator {
         &mut self,
         array: &Expression,
         index: &Expression,
-        stride: u16,
-        offset: u16,
+        stride: u32,
+        offset: u32,
         member_type: Type,
         destination: u8,
     ) -> Compilation<()> {
@@ -207,12 +219,14 @@ impl Generator {
                     shift: stride.trailing_zeros() as u8,
                 });
         } else {
+            let immediate = i16::try_from(stride)
+                .map_err(|_| Diagnostic::error("struct-array stride out of range (roadmap)"))?;
             self.output
                 .instructions
                 .push(Instruction::MultiplyImmediate {
                     d: GENERAL_SCRATCH,
                     a: index_register,
-                    immediate: stride as i16,
+                    immediate,
                 });
         }
         let pointee = pointee_of_type(member_type)
@@ -230,11 +244,12 @@ impl Generator {
                 a: array_register,
                 b: GENERAL_SCRATCH,
             });
+            let displacement = member_displacement(offset)?;
             self.output.instructions.push(displacement_load(
                 pointee,
                 destination,
                 array_register,
-                offset as i16,
+                displacement,
             )?);
         }
         Ok(())
@@ -252,8 +267,8 @@ impl Generator {
         name: &str,
         total_size: u32,
         index: &Expression,
-        stride: u16,
-        offset: u16,
+        stride: u32,
+        offset: u32,
         member_type: Type,
         destination: u8,
     ) -> Compilation<()> {
@@ -292,11 +307,12 @@ impl Generator {
             offset,
             destination,
         )? {
+            let displacement = member_displacement(offset)?;
             self.output.instructions.push(displacement_load(
                 pointee,
                 destination,
                 destination,
-                offset as i16,
+                displacement,
             )?);
             return Ok(());
         }
@@ -350,11 +366,12 @@ impl Generator {
                 a: destination,
                 b: GENERAL_SCRATCH,
             });
+            let displacement = member_displacement(offset)?;
             self.output.instructions.push(displacement_load(
                 pointee,
                 destination,
                 destination,
-                offset as i16,
+                displacement,
             )?);
         }
         Ok(())
@@ -373,8 +390,8 @@ impl Generator {
         name: &str,
         total_size: u32,
         index: &Expression,
-        stride: u16,
-        offset: u16,
+        stride: u32,
+        offset: u32,
         pointee: Pointee,
         value: &Expression,
     ) -> Compilation<()> {
@@ -429,11 +446,12 @@ impl Generator {
             } else {
                 self.general_register_of_leaf(value)?
             };
+            let displacement = member_displacement(offset)?;
             self.output.instructions.push(displacement_store(
                 pointee,
                 source,
                 index_register,
-                offset as i16,
+                displacement,
             )?);
             return Ok(());
         }
@@ -474,11 +492,12 @@ impl Generator {
                 a: index_register,
                 b: GENERAL_SCRATCH,
             });
+            let displacement = member_displacement(offset)?;
             self.output.instructions.push(displacement_store(
                 pointee,
                 source,
                 index_register,
-                offset as i16,
+                displacement,
             )?);
         }
         Ok(())
@@ -496,10 +515,11 @@ impl Generator {
                 ..
             } => {
                 let register = self.member_base_register(inner)?;
+                let displacement = member_displacement(*offset)?;
                 self.output.instructions.push(Instruction::LoadWord {
                     d: register,
                     a: register,
-                    offset: *offset as i16,
+                    offset: displacement,
                 });
                 Ok(register)
             }
@@ -591,11 +611,12 @@ impl Generator {
                     a: address,
                     b: scaled,
                 });
+                let displacement = member_displacement(*offset)?;
                 self.output.instructions.push(displacement_load(
                     *element,
                     destination,
                     address,
-                    *offset as i16,
+                    displacement,
                 )?);
             }
             return Ok(());
@@ -1130,7 +1151,7 @@ impl Generator {
         &mut self,
         name: &str,
         size: u32,
-        offset: u16,
+        offset: u32,
         destination: u8,
     ) -> Compilation<()> {
         // The base materializes into `destination` and is then its own `addi` base, so it cannot

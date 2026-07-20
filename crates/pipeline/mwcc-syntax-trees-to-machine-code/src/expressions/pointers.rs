@@ -122,12 +122,12 @@ impl Generator {
         &mut self,
         pointee: Pointee,
         address: u32,
-        offset: u16,
+        offset: u32,
         destination: u8,
     ) -> Compilation<bool> {
         let (high, low) = split_address(address);
-        let Some(displacement) = (low as i32)
-            .checked_add(offset as i32)
+        let Some(displacement) = i64::from(low)
+            .checked_add(i64::from(offset))
             .and_then(|d| i16::try_from(d).ok())
         else {
             return Ok(false);
@@ -183,12 +183,12 @@ impl Generator {
         &mut self,
         pointee: Pointee,
         address: u32,
-        offset: u16,
+        offset: u32,
         value: &Expression,
     ) -> Compilation<bool> {
         let (high, low) = split_address(address);
-        let Some(displacement) = (low as i32)
-            .checked_add(offset as i32)
+        let Some(displacement) = i64::from(low)
+            .checked_add(i64::from(offset))
             .and_then(|d| i16::try_from(d).ok())
         else {
             return Ok(false);
@@ -254,7 +254,7 @@ impl Generator {
     /// The pointee size of a leaf pointer variable, when greater than one byte
     /// (so its arithmetic needs scaling). A byte pointer returns `None` — its
     /// arithmetic is a plain add.
-    pub(crate) fn scaled_pointer(&self, operand: &Expression) -> Option<u16> {
+    pub(crate) fn scaled_pointer(&self, operand: &Expression) -> Option<u32> {
         if let Expression::Variable(name) = operand {
             if let Some(location) = self.locations.get(name) {
                 // A struct pointer scales by the struct's byte size; a scalar pointer
@@ -264,7 +264,7 @@ impl Generator {
                 }
                 let size = location.pointee?.size();
                 if size > 1 {
-                    return Some(size as u16);
+                    return Some(u32::from(size));
                 }
             }
         }
@@ -279,7 +279,7 @@ impl Generator {
     pub(crate) fn pointer_arithmetic_base(
         &mut self,
         operand: &Expression,
-    ) -> Compilation<Option<(u8, u16)>> {
+    ) -> Compilation<Option<(u8, u32)>> {
         if let Expression::MemberAddress {
             base,
             offset: 0,
@@ -287,7 +287,7 @@ impl Generator {
         } = operand
         {
             let register = self.member_base_register(base)?;
-            return Ok(Some((register, u16::from(element.size()))));
+            return Ok(Some((register, u32::from(element.size()))));
         }
         if let Some(size) = self.scaled_pointer(operand) {
             return Ok(Some((self.general_register_of_leaf(operand)?, size)));
@@ -297,13 +297,13 @@ impl Generator {
 
     /// The register and pointee size of a leaf pointer variable, with no side
     /// effects (just the home register). Used to recognize `ptr - ptr`.
-    pub(crate) fn pointer_leaf_register_size(&self, operand: &Expression) -> Option<(u8, u16)> {
+    pub(crate) fn pointer_leaf_register_size(&self, operand: &Expression) -> Option<(u8, u32)> {
         if let Expression::Variable(name) = operand {
             let location = self.locations.get(name)?;
             if let Some(stride) = location.stride {
                 return Some((location.register, stride));
             }
-            return Some((location.register, location.pointee?.size() as u16));
+            return Some((location.register, u32::from(location.pointee?.size())));
         }
         None
     }

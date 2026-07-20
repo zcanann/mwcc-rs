@@ -92,15 +92,15 @@ pub enum Expression {
     /// `None` for a plain pointer base.
     Member {
         base: Box<Expression>,
-        offset: u16,
+        offset: u32,
         member_type: Type,
-        index_stride: Option<u16>,
+        index_stride: Option<u32>,
     },
     /// `base->arr` where `arr` is an array member — the *address* of the array
     /// (`base + offset`), an `element`-typed pointer that decays for subscripting.
     MemberAddress {
         base: Box<Expression>,
-        offset: u16,
+        offset: u32,
         element: Pointee,
     },
     /// `target(arguments)` where the callee is an EXPRESSION (a function-

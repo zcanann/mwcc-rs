@@ -87,12 +87,12 @@ pub enum Type {
     /// struct's byte size, so pointer arithmetic (`p + n`, `p++`) can scale by it.
     /// `element_size` is 0 for an opaque struct or a function pointer (which reuses
     /// this variant); those defer scaled arithmetic rather than mis-scale.
-    StructPointer { element_size: u16 },
+    StructPointer { element_size: u32 },
     /// A struct *value* (passed/declared by value), carrying its byte size and
     /// alignment (the max member alignment, NOT the size). Used so far for a
     /// frame-resident struct local — `struct S v;` gets a stack slot of this size,
     /// aligned to `align`, and `&v` is its address.
-    Struct { size: u16, align: u8 },
+    Struct { size: u32, align: u8 },
 }
 
 impl Type {

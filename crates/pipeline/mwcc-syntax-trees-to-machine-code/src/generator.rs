@@ -33,7 +33,7 @@ pub(crate) struct Location {
     /// For a struct pointer, the struct's byte size — the stride for scaled pointer
     /// arithmetic (`p + n`, `p++`). `None` for scalar pointers (which scale by the
     /// `pointee` size) and non-pointers.
-    pub(crate) stride: Option<u16>,
+    pub(crate) stride: Option<u32>,
 }
 
 /// The float-composition channel (see `Generator::float`).

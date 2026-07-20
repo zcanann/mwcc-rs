@@ -806,8 +806,8 @@ impl Parser {
         let name = self.parse_identifier()?;
         let mut class = ClassLayout::default();
         let mut layout = StructLayout::default();
-        let mut offset = 0u16;
-        let mut max_align = 1u16;
+        let mut offset = 0u32;
+        let mut max_align = 1u32;
 
         if self.eat_keyword(Token::Colon) {
             loop {
@@ -831,7 +831,7 @@ impl Parser {
                         "base class '{base_name}' must be defined before '{name}'"
                     ))
                 })?;
-                let base_align = (base.align as u16).max(1);
+                let base_align = (base.align as u32).max(1);
                 offset = offset.div_ceil(base_align) * base_align;
                 let base_offset = offset;
                 for (field_name, field) in &base.fields {
@@ -943,7 +943,9 @@ impl Parser {
                 ));
             }
             self.advance();
-            let align = type_alignment(field_type).max(attribute_align).max(1);
+            let align = type_alignment(field_type)
+                .max(u32::from(attribute_align))
+                .max(1);
             offset = offset.div_ceil(align) * align;
             layout.fields.insert(
                 field_name.clone(),

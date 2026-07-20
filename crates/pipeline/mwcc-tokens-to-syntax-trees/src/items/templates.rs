@@ -438,8 +438,8 @@ impl Parser {
         let Some(argument) = self.template_argument_type(argument_token) else {
             return false;
         };
-        let mut offset = 0u16;
-        let mut max_alignment = 1u16;
+        let mut offset = 0u32;
+        let mut max_alignment = 1u32;
         let mut fields = HashMap::new();
         for field in &template.fields {
             let field_type = match field.field_type {

@@ -98,19 +98,19 @@ fn pack_bit_field(image: &mut [u8], unit_base: usize, bit_offset: u8, width: u8,
     }
 }
 
-pub(crate) fn type_size(declared: Type) -> u16 {
+pub(crate) fn type_size(declared: Type) -> u32 {
     match declared {
         Type::Pointer(_) | Type::StructPointer { .. } => 4,
         Type::Struct { size, .. } => size,
-        other => (other.width() / 8) as u16,
+        other => (other.width() / 8) as u32,
     }
 }
 
 /// A type's alignment for laying out a struct member: a struct value aligns to its
 /// own alignment (not its size), every other type to its size.
-pub(crate) fn type_alignment(declared: Type) -> u16 {
+pub(crate) fn type_alignment(declared: Type) -> u32 {
     match declared {
-        Type::Struct { align, .. } => align as u16,
+        Type::Struct { align, .. } => align as u32,
         other => type_size(other),
     }
 }
@@ -1226,7 +1226,9 @@ impl Parser {
                     let byte_size = match declared_type {
                         Type::Double => 8u16,
                         Type::Char | Type::UnsignedChar => 1,
-                        Type::Struct { size, .. } => size,
+                        Type::Struct { size, .. } => u16::try_from(size).map_err(|_| {
+                            Diagnostic::error("a skipped static local exceeds 65535 bytes")
+                        })?,
                         _ => 4,
                     };
                     statics.push(SkippedStaticLocal {
@@ -1436,6 +1438,7 @@ impl Parser {
                     };
                     if let Some(align) = self.skip_attributes()? {
                         layout.align = layout.align.max(align as u8);
+                        let align = u32::from(align);
                         layout.size = layout.size.div_ceil(align) * align;
                     }
                     // One or more comma-separated declarators: a value alias `Vec`
@@ -3204,7 +3207,7 @@ impl Parser {
                             let bytes =
                                 self.parse_struct_array_initializer(tag, &mut data_relocations)?;
                             let element_size = match declared_type {
-                                Type::Struct { size, .. } => usize::from(size),
+                                Type::Struct { size, .. } => size as usize,
                                 _ => unreachable!(),
                             };
                             let count =

@@ -189,7 +189,7 @@ fn recognize<'a>(
         fixed_index,
         preserve_mask,
         set_bits,
-        context_size,
+        context_size: u16::try_from(context_size).ok()?,
     })
 }
 
