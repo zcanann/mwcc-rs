@@ -13,6 +13,7 @@ mod enum_remap_member_update;
 mod float_store_fill;
 mod fixed_port_bitfield;
 mod fixed_port_indexed_bitfield;
+mod fixed_port_replay_update;
 mod guards_ifs;
 mod if_else;
 mod indirect_call;
