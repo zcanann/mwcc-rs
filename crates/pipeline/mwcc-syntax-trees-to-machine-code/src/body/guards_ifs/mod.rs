@@ -2,6 +2,7 @@
 //! (fire 614) into cohesive submodules; behavior-identical.
 
 mod call_return_chain;
+mod call_short_circuit;
 mod early_return;
 mod guard_block;
 mod guard_sequence;
@@ -16,6 +17,20 @@ mod trailing_if;
 use super::*;
 
 impl Generator {
+    /// A source `if` whose float-constant comparison is later folded into a
+    /// select still consumes its two branch labels before pool numbering.
+    /// The labels emit no instructions, but their anonymous ordinals remain
+    /// observable in the constant symbol name.
+    pub(crate) fn account_folded_float_guard_labels(&mut self, condition: &Expression) {
+        if matches!(condition, Expression::Binary { operator, left, right }
+            if crate::analysis::is_comparison(*operator)
+                && (matches!(left.as_ref(), Expression::FloatLiteral(_))
+                    || matches!(right.as_ref(), Expression::FloatLiteral(_))))
+        {
+            self.output.anonymous_label_bump += 2;
+        }
+    }
+
     /// Whether a comparison's operands are both signed — the case in which
     /// `emit_condition_test` emits a plain `cmpw`/`cmpwi` with no unsigned
     /// equality fold, so another branch can consume the same CR0 value.

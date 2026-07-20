@@ -362,6 +362,19 @@ impl Parser {
                     if let Ok(value) = fold_constant_expression(&left) {
                         left = Expression::IntegerLiteral(value);
                     }
+                } else if matches!(
+                    (lhs.as_ref(), rhs.as_ref()),
+                    (Expression::FloatLiteral(_), Expression::FloatLiteral(_))
+                        | (Expression::FloatLiteral(_), Expression::IntegerLiteral(_))
+                        | (Expression::IntegerLiteral(_), Expression::FloatLiteral(_))
+                ) {
+                    // Ordinary function expressions get the same arithmetic
+                    // constant folding as float globals. Keeping this in the
+                    // parser means codegen only sees the literal mwcc pools,
+                    // rather than a synthetic runtime divide tree.
+                    if let Ok(value) = fold_constant_float(&left) {
+                        left = Expression::FloatLiteral(value);
+                    }
                 }
             }
         }
@@ -441,6 +454,12 @@ impl Parser {
                 if matches!(operand.as_ref(), Expression::IntegerLiteral(_)) {
                     if let Ok(value) = fold_constant_expression(&unary_expression) {
                         return Ok(Expression::IntegerLiteral(value));
+                    }
+                } else if operator == UnaryOperator::Negate
+                    && matches!(operand.as_ref(), Expression::FloatLiteral(_))
+                {
+                    if let Ok(value) = fold_constant_float(&unary_expression) {
+                        return Ok(Expression::FloatLiteral(value));
                     }
                 }
             }

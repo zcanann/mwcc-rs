@@ -162,6 +162,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn folds_float_arithmetic_inside_function_expressions() {
+        let source = r#"
+            int roof(float y) {
+                if (y < (-4.0f / 5.0f)) return 1;
+                return 0;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            &unit.functions[0].guards[0].condition,
+            mwcc_syntax_trees::Expression::Binary {
+                operator: mwcc_syntax_trees::BinaryOperator::Less,
+                right,
+                ..
+            } if matches!(right.as_ref(), mwcc_syntax_trees::Expression::FloatLiteral(value)
+                if (*value as f32).to_bits() == (-0.8f32).to_bits())
+        ));
+    }
+
+    #[test]
     fn records_peephole_pragma_scope_on_functions() {
         let source = r#"
             #pragma peephole off
