@@ -12,6 +12,7 @@ mod fixed_read;
 mod fixed_rmw;
 mod fixed_rmw_inline_tail;
 mod fixed_rmw_leaf;
+mod fixed_rmw_split_word;
 mod fixed_rmw_word;
 mod fixed_rmw_legacy;
 mod fixed_rmw_recognize;
