@@ -208,6 +208,17 @@ missing_dependencies=()
 while IFS= read -r missing; do
   [[ -n "$missing" ]] || continue
   normalized_missing="${missing//\\//}"
+  # Project build graphs generate `.mch` precompiled headers from a same-path
+  # `.pch` source (for example Twilight Princess's d/dolzel.{mch,pch}). A clean
+  # checkout intentionally lacks the binary `.mch`; decompctx expands the `.pch`
+  # source into the self-contained fallback, so this is not a missing source
+  # dependency. Keep genuine orphaned `.mch` paths classified as missing.
+  if [[ "$normalized_missing" == *.mch ]]; then
+    pch_source="${normalized_missing%.mch}.pch"
+    if find "$project" -type f -path "*/$pch_source" -print -quit 2>/dev/null | grep -q .; then
+      continue
+    fi
+  fi
   if ! find "$project" -type f -path "*/$normalized_missing" -print -quit 2>/dev/null | grep -q .; then
     missing_dependencies+=("$normalized_missing")
   fi
@@ -244,6 +255,9 @@ sed -E \
   -e 's/^[[:space:]]*#pragma[[:space:]]+peephole[[:space:]]+off[[:space:]]*$/extern int __mwcc_refctx_pragma_peephole_off;/' \
   -e 's/^[[:space:]]*#pragma[[:space:]]+peephole[[:space:]]+reset[[:space:]]*$/extern int __mwcc_refctx_pragma_peephole_reset;/' \
   "$dir/$ctx_name" > "$dir/$preprocess_name"
+# decompctx_runner populates generated `.mch` include arms from their textual
+# `.pch` sources, so the real preprocessor can retain its normal `__MWERKS__`
+# branch selection while operating on a clean checkout.
 ( cd "$dir" && "$wibo" "$sjis" "$compiler" ${compiler_flags[@]+"${compiler_flags[@]}"} -E "$preprocess_name" -o ctx.marked.i ) 2>/dev/null
 sed -E \
   -e 's/^[[:space:]]*extern int __mwcc_refctx_pragma_push;[[:space:]]*$/#pragma push/' \

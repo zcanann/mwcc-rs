@@ -29,7 +29,24 @@ def normalize_lookup(module: ModuleType) -> None:
     original: Callable[..., str] = module.import_h_file
 
     def import_h_file(include: str, *args: object, **kwargs: object) -> str:
-        return original(include.replace("\\", "/"), *args, **kwargs)
+        normalized = include.replace("\\", "/")
+        if normalized.endswith(".mch") and hasattr(module, "defines"):
+            # Generated MWCC precompiled headers are absent in a clean checkout,
+            # while their same-path textual `.pch` sources are present. Context
+            # generators do not evaluate `#if`, so they visit both the `.mch`
+            # and `.pch` arms and globally remember include guards from the first
+            # arm. Expand the textual source for the `.mch` arm, but roll back
+            # that speculative guard state so the mutually exclusive `.pch` arm
+            # can independently expand too; the real preprocessor will select
+            # exactly one populated arm afterward.
+            saved_defines = set(module.defines)
+            module.defines.clear()
+            rendered = original(f"{normalized[:-4]}.pch", *args, **kwargs)
+            module.defines.clear()
+            module.defines.update(saved_defines)
+            if rendered:
+                return rendered
+        return original(normalized, *args, **kwargs)
 
     module.import_h_file = import_h_file
 

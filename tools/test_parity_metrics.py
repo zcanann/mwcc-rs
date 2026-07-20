@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+from pathlib import Path
+import tempfile
 import unittest
 
 from parity_audit import build_audit
@@ -21,7 +23,7 @@ from parity_dashboard import (
 from parity_frontier import build_frontier
 from parity_identity import configuration_id
 from parity_loop import parse_args as parse_loop_args
-from reference_parity import result_cache_name, stable_sample
+from reference_parity import harness_fingerprint, result_cache_name, stable_sample
 
 
 def row(**overrides):
@@ -45,6 +47,26 @@ def row(**overrides):
 
 
 class IdentityTests(unittest.TestCase):
+    def test_harness_fingerprint_covers_every_row_classification_input(self):
+        names = (
+            "refctx.sh",
+            "reference_parity.py",
+            "parity_identity.py",
+            "decompctx_runner.py",
+            "object_code_metrics.py",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in names:
+                (root / name).write_text(name, encoding="utf-8")
+            baseline = harness_fingerprint(root)
+            for name in names:
+                path = root / name
+                original = path.read_text(encoding="utf-8")
+                path.write_text(f"{original} changed", encoding="utf-8")
+                self.assertNotEqual(harness_fingerprint(root), baseline, name)
+                path.write_text(original, encoding="utf-8")
+
     def test_parity_loop_separates_fast_work_from_periodic_audit(self):
         work = parse_loop_args(["--work-only"])
         self.assertTrue(work.work_only)

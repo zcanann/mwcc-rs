@@ -12,8 +12,7 @@ import subprocess
 import sys
 from typing import List, Optional, Sequence
 
-from parity_identity import files_fingerprint
-from reference_parity import result_cache_name
+from reference_parity import harness_fingerprint, result_cache_name
 
 
 INVENTORY_SCHEMA_VERSION = 5
@@ -142,9 +141,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print("warning: inventory contains project capture errors", file=sys.stderr)
 
     compiler_hash = sha256_file(compiler)
-    harness_hash = files_fingerprint(
-        (tools / "refctx.sh", tools / "reference_parity.py", tools / "parity_identity.py")
-    )
+    harness_hash = harness_fingerprint(tools)
     fingerprint = f"{compiler_hash}:{harness_hash}"
     result = runs / result_cache_name(compiler_hash, harness_hash)
     previous_results = sorted(runs.glob("*.jsonl"))

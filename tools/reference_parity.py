@@ -45,6 +45,20 @@ def result_cache_name(compiler_hash: str, harness_hash: str) -> str:
     return f"{compiler_hash[:16]}-{harness_hash[:16]}.jsonl"
 
 
+def harness_fingerprint(script_dir: Path) -> str:
+    """Hash every executable input that can change a row classification."""
+
+    return files_fingerprint(
+        (
+            script_dir / "refctx.sh",
+            script_dir / "reference_parity.py",
+            script_dir / "parity_identity.py",
+            script_dir / "decompctx_runner.py",
+            script_dir / "object_code_metrics.py",
+        )
+    )
+
+
 def load_inventory(args: argparse.Namespace, script_dir: Path) -> Dict[str, Any]:
     if args.inventory is not None:
         with args.inventory.open(encoding="utf-8") as source:
@@ -281,7 +295,7 @@ def main() -> int:
         return 0
 
     compiler_hash = sha256_file(compiler)
-    harness_hash = files_fingerprint((refctx, Path(__file__), script_dir / "parity_identity.py"))
+    harness_hash = harness_fingerprint(script_dir)
     fingerprint = compiler_hash + ":" + harness_hash
     cache = args.cache
     if cache is None:
