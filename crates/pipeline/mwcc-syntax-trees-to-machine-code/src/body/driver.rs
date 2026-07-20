@@ -2128,6 +2128,11 @@ impl Generator {
         if self.try_fixed_port_bitfield_update(function)? {
             return Ok(());
         }
+        // The indexed sibling computes two copies of a state-array element address and schedules
+        // two narrow bit inserts around its loads before writing the updated word to a fixed port.
+        if self.try_fixed_port_indexed_bitfield_update(function)? {
+            return Ok(());
+        }
         // A function's value-tracked locals are folded into its stores and trailing return,
         // then recompiled — `int x = a; gi = x; x = b; gj = x;` becomes `gi = a; gj = b;`,
         // and `int x = a; gi = x; return x;` becomes `gi = a; return a;`. The store paths
