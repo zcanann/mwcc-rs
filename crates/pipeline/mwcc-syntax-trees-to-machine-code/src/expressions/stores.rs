@@ -204,8 +204,8 @@ impl Generator {
                             .insert(name.clone(), (source, self.output.instructions.len()));
                     }
                     GlobalAddressing::Absolute => {
-                        if !self.behavior.scheduler_enabled {
-                            // Without instruction scheduling, mwcc completes the
+                        if !self.behavior.schedule_latency_slots {
+                            // Without O4 latency scheduling, mwcc completes the
                             // source value before materializing the absolute
                             // destination address (`li value; lis target; stw`).
                             let source = self.place_store_value(value, pointee)?;
