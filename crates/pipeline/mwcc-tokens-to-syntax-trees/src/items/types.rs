@@ -56,6 +56,69 @@ impl Parser {
         }
         // `struct Name*` — a pointer to a (already declared) struct. The tag is
         // stashed in `last_struct_tag` for the declarator parser to record.
+        // A qualified C++ aggregate name (`JUtility::TColor`) names the same
+        // layout as its locally declared tag while retaining the qualified ABI
+        // identity in `struct_typedefs`. Recognize an arbitrary namespace/class
+        // chain before the ordinary one-token typedef path below.
+        if self.cplusplus {
+            let mut scan = self.position;
+            let mut components = Vec::new();
+            if let Some(Token::Identifier(first)) = self.tokens.get(scan) {
+                components.push(first.clone());
+                scan += 1;
+                while self.tokens.get(scan) == Some(&Token::Colon)
+                    && self.tokens.get(scan + 1) == Some(&Token::Colon)
+                {
+                    let Some(Token::Identifier(component)) = self.tokens.get(scan + 2) else {
+                        break;
+                    };
+                    components.push(component.clone());
+                    scan += 3;
+                }
+            }
+            if components.len() >= 2 {
+                let qualified = components.join("::");
+                let local = components.last().unwrap().clone();
+                let layout_key = if self.structs.contains_key(&qualified) {
+                    qualified.clone()
+                } else {
+                    local.clone()
+                };
+                let known = self.structs.contains_key(&layout_key)
+                    || self
+                        .struct_typedefs
+                        .values()
+                        .any(|mapped| mapped == &qualified);
+                if known {
+                    self.position = scan;
+                    self.struct_typedefs
+                        .entry(local)
+                        .or_insert_with(|| qualified.clone());
+                    if *self.peek() == Token::Star {
+                        self.advance();
+                        let element_size = self
+                            .structs
+                            .get(&layout_key)
+                            .map_or(0, |layout| layout.size);
+                        self.last_struct_tag = Some(layout_key);
+                        if *self.peek() == Token::Star {
+                            self.advance();
+                            return Ok(Type::Pointer(Pointee::Pointer));
+                        }
+                        return Ok(Type::StructPointer { element_size });
+                    }
+                    return match self.struct_value_type(&layout_key) {
+                        Some(struct_type) => {
+                            self.last_struct_tag = Some(layout_key);
+                            Ok(struct_type)
+                        }
+                        None => Err(Diagnostic::error(format!(
+                            "struct '{qualified}' value layout is not declared",
+                        ))),
+                    };
+                }
+            }
+        }
         if *self.peek() == Token::KeywordStruct {
             self.advance();
             let tag = self.parse_identifier()?;

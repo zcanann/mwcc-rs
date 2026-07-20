@@ -81,6 +81,42 @@ pub(crate) struct VirtualDispatch {
     pub(crate) variadic: bool,
 }
 
+/// The C++ ABI identity of one source parameter. The general syntax-tree
+/// [`Type`] intentionally describes storage and register class only; it cannot
+/// distinguish `A*` from `B*`, or a reference from its pointer-shaped calling
+/// convention. Name mangling needs those distinctions, so they live in this
+/// declaration-only companion instead of leaking into C code generation.
+#[derive(Clone)]
+pub(crate) struct CxxParameterType {
+    source_type: Type,
+    qualified_name: Option<String>,
+    is_reference: bool,
+    pointee_const: bool,
+    pointer_const: bool,
+}
+
+impl CxxParameterType {
+    pub(crate) fn parsed(
+        source_type: Type,
+        qualified_name: Option<String>,
+        is_reference: bool,
+        pointee_const: bool,
+        pointer_const: bool,
+    ) -> Self {
+        Self {
+            source_type,
+            qualified_name,
+            is_reference,
+            pointee_const,
+            pointer_const,
+        }
+    }
+
+    pub(crate) fn plain(source_type: Type) -> Self {
+        Self::parsed(source_type, None, false, false, false)
+    }
+}
+
 pub(crate) struct BaseClass {
     pub(crate) name: String,
 }
@@ -365,7 +401,16 @@ impl Parser {
         let saved_volatile = self.last_type_was_volatile;
 
         self.position = declaration_index;
-        let recovered = (|| -> Compilation<(String, Type, Vec<Type>, bool, bool, bool, bool)> {
+        let recovered = (|| -> Compilation<(
+            String,
+            Type,
+            Vec<Type>,
+            Vec<CxxParameterType>,
+            bool,
+            bool,
+            bool,
+            bool,
+        )> {
             let mut is_static = false;
             let mut is_virtual = false;
             let mut is_inline = false;
@@ -384,6 +429,7 @@ impl Parser {
             let member = self.parse_identifier()?;
             self.expect(Token::ParenOpen)?;
             let mut parameters = Vec::new();
+            let mut cxx_parameters = Vec::new();
             let mut variadic = false;
             if *self.peek() == Token::KeywordVoid && *self.peek_at(1) == Token::ParenClose {
                 self.advance();
@@ -411,6 +457,9 @@ impl Parser {
                                 self.advance();
                             }
                             parameters.push(Type::StructPointer { element_size: 0 });
+                            cxx_parameters.push(CxxParameterType::plain(
+                                Type::StructPointer { element_size: 0 },
+                            ));
                             if !self.eat_keyword(Token::Comma) {
                                 break;
                             }
@@ -418,14 +467,28 @@ impl Parser {
                         }
                         Err(error) => return Err(error),
                     };
-                    self.last_struct_tag.take();
+                    let struct_tag = self.last_struct_tag.take();
+                    let qualified_name = struct_tag.map(|tag| {
+                        self.struct_typedefs.get(&tag).cloned().unwrap_or(tag)
+                    });
                     self.last_array_typedef.take();
-                    if self.eat_keyword(Token::Ampersand) {
+                    let pointee_const = self.last_type_was_const;
+                    let pointer_const = self.last_pointer_const;
+                    let is_reference = self.eat_keyword(Token::Ampersand);
+                    let cxx_storage_type = parameter_type;
+                    if is_reference {
                         parameter_type = Type::StructPointer { element_size: 0 };
                     }
                     if matches!(self.peek(), Token::Identifier(_)) {
                         self.advance();
                     }
+                    cxx_parameters.push(CxxParameterType::parsed(
+                        cxx_storage_type,
+                        qualified_name,
+                        is_reference,
+                        pointee_const,
+                        pointer_const,
+                    ));
                     parameters.push(parameter_type);
                     if !self.eat_keyword(Token::Comma) {
                         break;
@@ -450,6 +513,7 @@ impl Parser {
                 member,
                 return_type,
                 parameters,
+                cxx_parameters,
                 variadic,
                 is_static,
                 is_virtual,
@@ -464,8 +528,16 @@ impl Parser {
         self.last_pointer_const = saved_pointer_const;
         self.last_type_was_volatile = saved_volatile;
 
-        if let Ok((member, return_type, parameters, variadic, is_static, is_virtual, is_inline)) =
-            recovered
+        if let Ok((
+            member,
+            return_type,
+            parameters,
+            cxx_parameters,
+            variadic,
+            is_static,
+            is_virtual,
+            is_inline,
+        )) = recovered
         {
             let inherited_virtual = self
                 .cxx_dispatch_tables
@@ -501,10 +573,10 @@ impl Parser {
                 return Some(None);
             }
             let scopes: Vec<&str> = class.split("::").collect();
-            let mangled = mangle_qualified_member_function_variadic(
+            let mangled = mangle_qualified_member_function_variadic_typed(
                 &scopes,
                 &member,
-                &parameters,
+                &cxx_parameters,
                 variadic,
             )
             .ok()?;
@@ -659,6 +731,19 @@ impl Parser {
         let mut scopes: Vec<&str> = self.namespace_stack.iter().map(String::as_str).collect();
         scopes.push(class);
         mangle_qualified_member_function(&scopes, function, explicit_parameters)
+    }
+
+    /// Typed sibling used by parsed C++ declarators whose aggregate names,
+    /// references, and cv-qualifiers must survive into the ABI symbol.
+    pub(crate) fn mangle_typed_member_in_current_namespace(
+        &self,
+        class: &str,
+        function: &str,
+        explicit_parameters: &[CxxParameterType],
+    ) -> Compilation<String> {
+        let mut scopes: Vec<&str> = self.namespace_stack.iter().map(String::as_str).collect();
+        scopes.push(class);
+        mangle_qualified_member_function_typed(&scopes, function, explicit_parameters)
     }
 
     /// Resolve an unqualified call inside a member body. Arity is enough for the
@@ -1078,13 +1163,31 @@ pub(crate) fn mangle_qualified_member_function(
     function: &str,
     explicit_parameters: &[Type],
 ) -> Compilation<String> {
-    mangle_qualified_member_function_variadic(scopes, function, explicit_parameters, false)
+    let parameters: Vec<CxxParameterType> = explicit_parameters
+        .iter()
+        .copied()
+        .map(CxxParameterType::plain)
+        .collect();
+    mangle_qualified_member_function_variadic_typed(scopes, function, &parameters, false)
 }
 
-fn mangle_qualified_member_function_variadic(
+fn mangle_qualified_member_function_typed(
     scopes: &[&str],
     function: &str,
-    explicit_parameters: &[Type],
+    explicit_parameters: &[CxxParameterType],
+) -> Compilation<String> {
+    mangle_qualified_member_function_variadic_typed(
+        scopes,
+        function,
+        explicit_parameters,
+        false,
+    )
+}
+
+fn mangle_qualified_member_function_variadic_typed(
+    scopes: &[&str],
+    function: &str,
+    explicit_parameters: &[CxxParameterType],
     variadic: bool,
 ) -> Compilation<String> {
     if scopes.is_empty() || scopes.iter().any(|scope| scope.is_empty()) || function.is_empty() {
@@ -1095,7 +1198,6 @@ fn mangle_qualified_member_function_variadic(
     } else {
         explicit_parameters
             .iter()
-            .copied()
             .map(encode_type)
             .collect::<Compilation<Vec<_>>>()?
             .concat()
@@ -1115,8 +1217,32 @@ fn mangle_qualified_member_function_variadic(
     Ok(format!("{function}__{qualified_scope}F{arguments}"))
 }
 
-fn encode_type(parameter: Type) -> Compilation<String> {
-    let code = match parameter {
+fn encode_type(parameter: &CxxParameterType) -> Compilation<String> {
+    let mut code = String::new();
+    if parameter.is_reference {
+        code.push('R');
+        // A top-level const pointer matters only through a reference (`T* const&`).
+        if parameter.pointer_const {
+            code.push('C');
+        }
+    }
+    let is_pointer = matches!(
+        parameter.source_type,
+        Type::Pointer(_) | Type::StructPointer { .. }
+    );
+    if is_pointer {
+        code.push('P');
+    }
+    // Leading const binds the referred object or a pointer's pointee. Top-level
+    // const on a by-value parameter is absent from the function type.
+    if parameter.pointee_const && (parameter.is_reference || is_pointer) {
+        code.push('C');
+    }
+    if let Some(name) = parameter.qualified_name.as_deref() {
+        code.push_str(&encode_qualified_type_name(name)?);
+        return Ok(code);
+    }
+    let base = match parameter.source_type {
         Type::Int => "i".to_string(),
         Type::UnsignedInt => "Ui".to_string(),
         Type::Char => "c".to_string(),
@@ -1127,7 +1253,7 @@ fn encode_type(parameter: Type) -> Compilation<String> {
         Type::Double => "d".to_string(),
         Type::LongLong => "x".to_string(),
         Type::UnsignedLongLong => "Ux".to_string(),
-        Type::Pointer(pointee) => format!("P{}", encode_pointee(pointee)?),
+        Type::Pointer(pointee) => encode_pointee(pointee)?.to_string(),
         Type::Void => {
             return Err(Diagnostic::error(
                 "a named void C++ parameter is not supported",
@@ -1139,7 +1265,24 @@ fn encode_type(parameter: Type) -> Compilation<String> {
             ))
         }
     };
+    code.push_str(&base);
     Ok(code)
+}
+
+fn encode_qualified_type_name(name: &str) -> Compilation<String> {
+    let scopes: Vec<&str> = name.split("::").collect();
+    if scopes.is_empty() || scopes.iter().any(|scope| scope.is_empty()) {
+        return Err(Diagnostic::error("an empty qualified C++ type name is invalid"));
+    }
+    if scopes.len() == 1 {
+        Ok(format!("{}{name}", name.len()))
+    } else {
+        let components = scopes
+            .iter()
+            .map(|scope| format!("{}{scope}", scope.len()))
+            .collect::<String>();
+        Ok(format!("Q{}{components}", scopes.len()))
+    }
 }
 
 fn encode_pointee(pointee: Pointee) -> Compilation<&'static str> {
@@ -1229,6 +1372,54 @@ mod tests {
             )
             .unwrap(),
             "init__Q210homebutton15FrameControllerFifff"
+        );
+    }
+
+    #[test]
+    fn mangles_named_value_pointer_reference_and_cv_layers() {
+        let named = |storage_type, is_reference, pointee_const, pointer_const| {
+            CxxParameterType::parsed(
+                storage_type,
+                Some("JUtility::TColor".to_string()),
+                is_reference,
+                pointee_const,
+                pointer_const,
+            )
+        };
+        let value = named(Type::Struct { size: 4, align: 4 }, false, false, false);
+        let pointer = named(
+            Type::StructPointer { element_size: 4 },
+            false,
+            true,
+            false,
+        );
+        let reference = named(Type::Struct { size: 4, align: 4 }, true, true, false);
+        let const_pointer_reference = named(
+            Type::StructPointer { element_size: 4 },
+            true,
+            true,
+            true,
+        );
+        assert_eq!(
+            mangle_qualified_member_function_typed(&["A"], "v", &[value]).unwrap(),
+            "v__1AFQ28JUtility6TColor"
+        );
+        assert_eq!(
+            mangle_qualified_member_function_typed(&["A"], "p", &[pointer]).unwrap(),
+            "p__1AFPCQ28JUtility6TColor"
+        );
+        assert_eq!(
+            mangle_qualified_member_function_typed(&["A"], "r", &[reference]).unwrap(),
+            "r__1AFRCQ28JUtility6TColor"
+        );
+        assert_eq!(
+            mangle_qualified_member_function_typed(
+                &["A"],
+                "q",
+                &[const_pointer_reference],
+            )
+            .unwrap(),
+            "q__1AFRCPCQ28JUtility6TColor"
         );
     }
 

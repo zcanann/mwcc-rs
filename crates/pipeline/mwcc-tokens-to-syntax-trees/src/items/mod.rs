@@ -2190,6 +2190,7 @@ impl Parser {
             self.expect(Token::ParenOpen)?;
 
             let mut parameters = Vec::new();
+            let mut cxx_parameters = Vec::new();
             let mut is_variadic = false;
             // Row-stride records are scoped to ONE function's parameters — a stale
             // entry from a previous function would mis-stride a same-named variable.
@@ -2211,6 +2212,9 @@ impl Parser {
                         break;
                     }
                     let mut parameter_type = self.parse_type()?;
+                    let cxx_source_type = parameter_type;
+                    let cxx_pointee_const = self.last_type_was_const;
+                    let cxx_pointer_const = self.last_pointer_const;
                     // An array-typedef (`Mtx m`) or row-pointer-typedef (`MtxPtr m`)
                     // parameter: the type already decayed to the element pointer;
                     // keep `(element, inner)` to record the row stride under the
@@ -2226,6 +2230,19 @@ impl Parser {
                         parameter_type = Type::Pointer(Pointee::Pointer);
                     }
                     let struct_tag = self.last_struct_tag.take();
+                    let cxx_qualified_name = struct_tag.as_ref().map(|tag| {
+                        self.struct_typedefs
+                            .get(tag)
+                            .cloned()
+                            .unwrap_or_else(|| tag.clone())
+                    });
+                    let is_reference = self.eat_keyword(Token::Ampersand);
+                    if is_reference {
+                        // References use a word-sized address in the EABI, while
+                        // their source identity remains in `cxx_parameters` for
+                        // CodeWarrior name mangling.
+                        parameter_type = Type::StructPointer { element_size: 0 };
+                    }
                     // A function-pointer parameter `RET (*name)(params)` is a 4-byte
                     // opaque pointer; consume its declarator and signature.
                     if *self.peek() == Token::ParenOpen
@@ -2257,6 +2274,9 @@ impl Parser {
                             parameter_type: Type::StructPointer { element_size: 0 },
                             name,
                         });
+                        cxx_parameters.push(crate::cxx::CxxParameterType::plain(
+                            Type::StructPointer { element_size: 0 },
+                        ));
                     } else {
                         // The name is optional (a prototype may write just the type).
                         let name = if matches!(self.peek(), Token::Identifier(_)) {
@@ -2286,9 +2306,9 @@ impl Parser {
                         } else {
                             parameter_type
                         };
-                        if let Some(tag) = struct_tag {
+                        if let Some(tag) = &struct_tag {
                             if !name.is_empty() {
-                                self.variable_structs.insert(name.clone(), tag);
+                                self.variable_structs.insert(name.clone(), tag.clone());
                             }
                         }
                         // Record the row stride for a decayed array-typedef / row-pointer
@@ -2304,6 +2324,13 @@ impl Parser {
                             parameter_type,
                             name,
                         });
+                        cxx_parameters.push(crate::cxx::CxxParameterType::parsed(
+                            cxx_source_type,
+                            cxx_qualified_name,
+                            is_reference,
+                            cxx_pointee_const,
+                            cxx_pointer_const,
+                        ));
                     }
                     if *self.peek() == Token::Comma {
                         self.advance();
@@ -2325,17 +2352,16 @@ impl Parser {
             };
 
             if let Some(scope) = &member_scope {
-                let explicit_types: Vec<Type> = parameters
-                    .iter()
-                    .map(|parameter| parameter.parameter_type)
-                    .collect();
                 let source_name = if constructor_scope.is_some() {
                     "__ct"
                 } else {
                     &name
                 };
-                name =
-                    self.mangle_member_in_current_namespace(scope, source_name, &explicit_types)?;
+                name = self.mangle_typed_member_in_current_namespace(
+                    scope,
+                    source_name,
+                    &cxx_parameters,
+                )?;
                 parameters.insert(
                     0,
                     Parameter {

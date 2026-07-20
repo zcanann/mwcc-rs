@@ -324,6 +324,40 @@ mod tests {
     }
 
     #[test]
+    fn retains_named_parameter_identity_in_member_definition_symbols() {
+        let source = r#"
+            struct Creature { int value; };
+            struct Action {
+                void pointer(const Creature*);
+                void reference(const Creature&);
+                void value(Creature);
+            };
+            void Action::pointer(const Creature* creature) { }
+            void Action::reference(const Creature& creature) { }
+            void Action::value(Creature creature) { }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(
+            unit.functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "pointer__6ActionFPC8Creature",
+                "reference__6ActionFRC8Creature",
+                "value__6ActionF8Creature",
+            ]
+        );
+    }
+
+    #[test]
     fn resolves_a_declared_static_cxx_member_call() {
         let source = r#"
             struct System { static void halt(char*, int, char*); };
