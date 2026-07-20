@@ -1066,6 +1066,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             matches!(&relocation.target, RelocationTarget::External(name) if name == "...rodata.0")
         })
     });
+    let bss_anchor_needed_by_code = input.functions.iter().any(|function| {
+        function.relocations.iter().any(|relocation| {
+            matches!(&relocation.target, RelocationTarget::External(name) if name == "...bss.0")
+        })
+    });
     let rodata_anchor_needed_by_data = input.object_format.data_relocations_use_section_anchors
         && data_relocation_targets_section(".rodata");
     let rodata_anchor_needed = rodata_anchor_needed_by_code || rodata_anchor_needed_by_data;
@@ -1247,6 +1252,22 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             );
             comment_values.push((data_aligns[object.name], 0));
         }
+    }
+    // Some aggregate-base schedules address a full-BSS object through the
+    // section's zero-offset local anchor. MWCC emits that marker after the
+    // file-local BSS objects and before function-local anonymous entries.
+    if bss_anchor_needed_by_code {
+        local_data_symbols.insert("...bss.0", (symtab.len() / SYMBOL_SIZE) as u32);
+        write_symbol(
+            &mut symtab,
+            strtab.add("...bss.0"),
+            0,
+            0,
+            0,
+            0,
+            index_of(".bss") as u16,
+        );
+        comment_values.push((1, 0));
     }
     // `static` functions are file-local: a LOCAL `STT_FUNC` symbol each, in
     // declaration order, after the static data and before the functions' `@N`

@@ -1200,6 +1200,9 @@ impl Generator {
         if self.try_global_aggregate_call_initialization(function)? {
             return Ok(());
         }
+        if self.try_global_call_result_guard(function)? {
+            return Ok(());
+        }
         if self.try_global_aggregate_pop(function)? {
             return Ok(());
         }
@@ -1814,7 +1817,10 @@ impl Generator {
                         _ => false,
                     });
                 if body_reads_condition_global {
-                    return Err(Diagnostic::error("a global read in both an if-condition and its body needs value reuse across the branch (roadmap)"));
+                    return Err(Diagnostic::error(format!(
+                        "a global read in both an if-condition and its body needs value reuse across the branch (roadmap; function '{}')",
+                        function.name
+                    )));
                 }
             }
         }
@@ -3015,7 +3021,10 @@ impl Generator {
                     .iter()
                     .all(|statement| matches!(statement, Statement::Store { .. }))
             {
-                return Err(Diagnostic::error("a leading store before a trailing if needs the cross-statement scheduler (roadmap)"));
+                return Err(Diagnostic::error(format!(
+                    "a leading store before a trailing if needs the cross-statement scheduler (roadmap; function '{}')",
+                    function.name
+                )));
             }
         }
 

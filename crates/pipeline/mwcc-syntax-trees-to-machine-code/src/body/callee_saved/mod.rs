@@ -19,6 +19,7 @@ mod fixed_rmw_recognize;
 mod frame_convention;
 mod later_call_arguments;
 mod global_swap;
+mod global_call_result_guard;
 mod global_aggregate_initialization;
 mod global_aggregate_pop;
 mod global_aggregate_post;
