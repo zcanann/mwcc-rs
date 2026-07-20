@@ -1096,13 +1096,7 @@ impl Parser {
                 continue;
             }
             let field_type = self.parse_type()?;
-            // An array-typedef (or row-pointer-typedef) union member would lay out at
-            // the decayed pointer's size (4) instead of the array's — defer.
-            if self.last_array_typedef.take().is_some() {
-                return Err(Diagnostic::error(
-                    "an array-typedef union member is not supported yet (roadmap)",
-                ));
-            }
+            let array_typedef = self.last_array_typedef.take();
             let struct_tag = self.last_struct_tag.take();
             let attr_align = self.skip_attributes()?;
             let name = self.parse_identifier()?;
@@ -1114,27 +1108,41 @@ impl Parser {
             }
             // An array member occupies the product of its dimensions; it still
             // starts at offset 0, so it only widens the union.
-            let mut array_element = None;
-            let mut is_array = false;
-            let mut size = type_size(field_type);
+            let mut array_element = array_typedef.map(|(element, _, _)| pointee_of(element))
+                .transpose()?;
+            let mut is_array = array_typedef.is_some_and(|(_, total, _)| total != 0);
+            let mut size = match array_typedef {
+                Some((element, total, _)) if total != 0 => total * type_size(element),
+                Some(_) => 4,
+                None => type_size(field_type),
+            };
             if *self.peek() == Token::BracketOpen {
                 is_array = true;
-                array_element = Some(pointee_of(field_type)?);
+                if array_element.is_none() {
+                    array_element = Some(pointee_of(field_type)?);
+                }
                 let mut total: u16 = 1;
                 while *self.peek() == Token::BracketOpen {
                     self.advance();
                     total = total.saturating_mul(self.parse_integer_constant()? as u16);
                     self.expect(Token::BracketClose)?;
                 }
-                size = total * type_size(field_type);
+                size = total.saturating_mul(size);
             }
-            let align = type_alignment(field_type)
+            let storage_type = array_typedef.map_or(field_type, |(element, total, _)| {
+                if total == 0 {
+                    Type::Pointer(Pointee::Pointer)
+                } else {
+                    element
+                }
+            });
+            let align = type_alignment(storage_type)
                 .max(1)
                 .max(attr_align.unwrap_or(1));
             layout.fields.insert(
                 name,
                 StructField {
-                    member_type: field_type,
+                    member_type: storage_type,
                     offset: 0,
                     struct_tag,
                     array_element,

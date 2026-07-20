@@ -542,6 +542,36 @@ mod tests {
     }
 
     #[test]
+    fn retains_array_typedef_storage_in_union_layouts() {
+        let source = r#"
+            typedef long Mtx_t[4][4];
+            typedef union {
+                Mtx_t m;
+                long long force_alignment;
+            } Mtx;
+            typedef struct {
+                unsigned char prefix[16];
+                Mtx first;
+                Mtx second;
+                unsigned short tail;
+            } Demo;
+            Demo value;
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.globals[0].declared_type,
+            mwcc_syntax_trees::Type::Struct { size: 152, align: 8 }
+        ));
+    }
+
+    #[test]
     fn resolves_a_virtual_member_to_its_measured_vtable_slot() {
         let source = r#"
             struct Stream {
