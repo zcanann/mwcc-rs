@@ -714,7 +714,17 @@ impl Parser {
                     return Err(Diagnostic::error("a scalar static local initializer in a nested block is not supported yet (roadmap)"));
                 }
                 if self.eat_keyword(Token::Equals) {
-                    let value = self.expression()?;
+                    // A declaration inside a nested block may use the same
+                    // braced aggregate syntax as a function-scope local. Keep
+                    // it at the declaration's executable position as an
+                    // assignment (block locals are hoisted in the AST); later
+                    // lowering can either claim the aggregate shape or defer
+                    // without losing the rest of the function.
+                    let value = if *self.peek() == Token::BraceOpen {
+                        self.aggregate_literal()?
+                    } else {
+                        self.expression()?
+                    };
                     statements.push(Statement::Assign { name, value });
                 }
                 if !self.eat_keyword(Token::Comma) {

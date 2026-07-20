@@ -224,6 +224,41 @@ mod tests {
     }
 
     #[test]
+    fn retains_a_nested_block_aggregate_initializer_at_its_execution_point() {
+        let source = r#"
+            typedef float f32;
+            typedef struct Vec { f32 x, y, z; } Vec;
+            void use(Vec*);
+            void f(int active) {
+                if (active) {
+                    Vec value = { 1.0f, 2.0f, 3.0f };
+                    use(&value);
+                }
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let mwcc_syntax_trees::Statement::If { then_body, .. } =
+            &unit.functions[0].statements[0]
+        else {
+            panic!("expected the source if-block");
+        };
+        assert!(matches!(
+            &then_body[0],
+            mwcc_syntax_trees::Statement::Assign {
+                value: mwcc_syntax_trees::Expression::AggregateLiteral(elements),
+                ..
+            } if elements.len() == 3
+        ));
+    }
+
+    #[test]
     fn records_peephole_pragma_scope_on_functions() {
         let source = r#"
             #pragma peephole off
