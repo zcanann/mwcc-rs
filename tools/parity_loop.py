@@ -72,7 +72,22 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--epoch", default="0", help="change to rotate equally ranked work")
     parser.add_argument("--refresh-inventory", action="store_true")
     parser.add_argument("--rerun", action="store_true")
-    parser.add_argument("--frontier-only", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--work-only",
+        action="store_true",
+        help="run only the rotating failure-prioritized frontier (fast edit loop)",
+    )
+    mode.add_argument(
+        "--audit-only",
+        action="store_true",
+        help="run only the fixed representative audit (periodic measurement)",
+    )
+    parser.add_argument(
+        "--frontier-only",
+        action="store_true",
+        help="prepare selection manifests without compiling (legacy name)",
+    )
     parser.add_argument("--version", action="append", help="limit to a compiler build (repeatable)")
     return parser.parse_args(argv)
 
@@ -152,7 +167,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         *filters,
         *result_arguments(previous_results),
     ]
-    if subprocess.run(frontier_command).returncode:
+    if not args.audit_only and subprocess.run(frontier_command).returncode:
         return 2
     audit_command = [
         sys.executable,
@@ -169,48 +184,50 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         args.audit_epoch,
         *filters,
     ]
-    if subprocess.run(audit_command).returncode:
+    if not args.work_only and subprocess.run(audit_command).returncode:
         return 2
     if args.frontier_only:
         return 0
 
-    audit_run_command = [
-        sys.executable,
-        str(tools / "reference_parity.py"),
-        "--inventory",
-        str(inventory),
-        "--compiler",
-        str(compiler),
-        "--selection",
-        str(audit),
-        "--cache",
-        str(result),
-        *filters,
-    ]
-    if args.rerun:
-        audit_run_command.append("--rerun")
-    run_status = subprocess.run(audit_run_command).returncode
-    if run_status not in (0, 1):
-        return run_status
+    if not args.work_only:
+        audit_run_command = [
+            sys.executable,
+            str(tools / "reference_parity.py"),
+            "--inventory",
+            str(inventory),
+            "--compiler",
+            str(compiler),
+            "--selection",
+            str(audit),
+            "--cache",
+            str(result),
+            *filters,
+        ]
+        if args.rerun:
+            audit_run_command.append("--rerun")
+        run_status = subprocess.run(audit_run_command).returncode
+        if run_status not in (0, 1):
+            return run_status
 
-    frontier_run_command = [
-        sys.executable,
-        str(tools / "reference_parity.py"),
-        "--inventory",
-        str(inventory),
-        "--compiler",
-        str(compiler),
-        "--selection",
-        str(frontier),
-        "--cache",
-        str(result),
-        *filters,
-    ]
-    if args.rerun:
-        frontier_run_command.append("--rerun")
-    run_status = subprocess.run(frontier_run_command).returncode
-    if run_status not in (0, 1):
-        return run_status
+    if not args.audit_only:
+        frontier_run_command = [
+            sys.executable,
+            str(tools / "reference_parity.py"),
+            "--inventory",
+            str(inventory),
+            "--compiler",
+            str(compiler),
+            "--selection",
+            str(frontier),
+            "--cache",
+            str(result),
+            *filters,
+        ]
+        if args.rerun:
+            frontier_run_command.append("--rerun")
+        run_status = subprocess.run(frontier_run_command).returncode
+        if run_status not in (0, 1):
+            return run_status
 
     all_results = sorted(runs.glob("*.jsonl"))
     dashboard_command = [
@@ -220,13 +237,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         str(inventory),
         "--tool-fingerprint",
         fingerprint,
-        "--audit-selection",
-        str(audit),
-        "--frontier-selection",
-        str(frontier),
         *filters,
         *result_arguments(all_results),
     ]
+    if not args.work_only:
+        dashboard_command.extend(("--audit-selection", str(audit)))
+    if not args.audit_only:
+        dashboard_command.extend(("--frontier-selection", str(frontier)))
     baseline = newest_other_tool(all_results, fingerprint)
     if baseline is not None:
         dashboard_command.extend(("--baseline-tool-fingerprint", baseline))

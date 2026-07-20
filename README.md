@@ -45,7 +45,11 @@ detection:
 
 ```sh
 cargo build --release -p mwcc
-python3 tools/parity_loop.py --refresh-inventory --size 256 --epoch 0
+# Fast edit loop: rotate a failure-biased sample; prior BYTE rows need not stay green.
+python3 tools/parity_loop.py --work-only --size 32 --epoch 0
+
+# Periodic scorecard: rerun the frozen representative sample from scratch.
+python3 tools/parity_loop.py --audit-only --audit-size 384 --rerun
 ```
 
 The report separates `BYTE`, `DIFF`, `DEFER`, `HARNESS`, unsupported builds, and

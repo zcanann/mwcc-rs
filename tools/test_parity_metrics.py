@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import unittest
 
 from parity_audit import build_audit
@@ -16,6 +18,7 @@ from parity_dashboard import (
 )
 from parity_frontier import build_frontier
 from parity_identity import configuration_id
+from parity_loop import parse_args as parse_loop_args
 from reference_parity import result_cache_name, stable_sample
 
 
@@ -40,6 +43,12 @@ def row(**overrides):
 
 
 class IdentityTests(unittest.TestCase):
+    def test_parity_loop_separates_fast_work_from_periodic_audit(self):
+        self.assertTrue(parse_loop_args(["--work-only"]).work_only)
+        self.assertTrue(parse_loop_args(["--audit-only"]).audit_only)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parse_loop_args(["--work-only", "--audit-only"])
+
     def test_result_cache_name_changes_with_either_tool_input(self):
         baseline = result_cache_name("a" * 64, "b" * 64)
         self.assertNotEqual(baseline, result_cache_name("c" * 64, "b" * 64))
