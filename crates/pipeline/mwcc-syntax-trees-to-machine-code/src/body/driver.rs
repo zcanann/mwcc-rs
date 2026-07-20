@@ -3502,12 +3502,7 @@ impl Generator {
                     ));
                 }
                 self.evaluate(target, Type::UnsignedInt, 12)?;
-                self.output
-                    .instructions
-                    .push(Instruction::MoveToCountRegister { s: 12 });
-                self.output
-                    .instructions
-                    .push(Instruction::BranchToCountRegisterAndLink);
+                self.emit_indirect_branch_and_link(12);
                 Ok(())
             }
             // A bare CONSTANT expression statement is a no-op — mwcc emits

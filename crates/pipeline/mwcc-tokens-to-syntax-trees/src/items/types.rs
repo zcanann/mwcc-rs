@@ -569,6 +569,9 @@ impl Parser {
                                 },
                             );
                         }
+                        layout
+                            .function_pointer_fields
+                            .extend(inner.function_pointer_fields.iter().cloned());
                         offset += inner_size;
                     }
                 }
@@ -660,6 +663,9 @@ impl Parser {
                                 },
                             );
                         }
+                        layout
+                            .function_pointer_fields
+                            .extend(inner.function_pointer_fields.iter().cloned());
                         offset += inner_size;
                     }
                 }
@@ -741,6 +747,8 @@ impl Parser {
                 self.expect(Token::Semicolon)?;
                 continue;
             }
+            let field_is_function_pointer_typedef =
+                matches!(self.peek(), Token::Identifier(word) if self.function_pointer_typedefs.contains(word));
             let field_type = self.parse_type()?;
             // Only a ROW-POINTER typedef member reaches here (an array-typedef member
             // was intercepted above); its subscript stride isn't carried through the
@@ -793,7 +801,7 @@ impl Parser {
                     alignment_max = alignment_max.max(alignment);
                     offset = offset.div_ceil(alignment) * alignment;
                     layout.fields.insert(
-                        pointer_name,
+                        pointer_name.clone(),
                         StructField {
                             member_type: Type::StructPointer { element_size: 0 },
                             offset,
@@ -803,6 +811,7 @@ impl Parser {
                             bit_field: None,
                         },
                     );
+                    layout.function_pointer_fields.insert(pointer_name);
                     offset += 4;
                     if !self.eat_keyword(Token::Comma) {
                         break;
@@ -949,7 +958,7 @@ impl Parser {
                 alignment_max = alignment_max.max(alignment);
                 offset = offset.div_ceil(alignment) * alignment;
                 layout.fields.insert(
-                    field_name,
+                    field_name.clone(),
                     StructField {
                         member_type: field_type,
                         offset,
@@ -959,6 +968,9 @@ impl Parser {
                         bit_field: None,
                     },
                 );
+                if field_is_function_pointer_typedef && !is_array {
+                    layout.function_pointer_fields.insert(field_name);
+                }
                 offset += size;
                 if !self.eat_keyword(Token::Comma) {
                     break;
@@ -1039,6 +1051,9 @@ impl Parser {
                             },
                         );
                     }
+                    layout
+                        .function_pointer_fields
+                        .extend(inner.function_pointer_fields.iter().cloned());
                 }
                 max_size = max_size.max(inner_size);
                 max_align = max_align.max(inner_align);

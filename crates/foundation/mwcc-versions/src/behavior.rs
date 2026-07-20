@@ -177,6 +177,7 @@ pub enum Quirk {
     LegacyGuardStoreBeforeReturnValue,
     LegacyCompareFirstNarrowGuards,
     LegacySerialVaArgSchedule,
+    LaterTerminalIndirectTailCall,
 }
 
 impl Quirk {
@@ -250,6 +251,7 @@ impl Quirk {
             Quirk::LegacyGuardStoreBeforeReturnValue => QuirkKind::Intentional,
             Quirk::LegacyCompareFirstNarrowGuards => QuirkKind::Intentional,
             Quirk::LegacySerialVaArgSchedule => QuirkKind::Intentional,
+            Quirk::LaterTerminalIndirectTailCall => QuirkKind::Intentional,
         }
     }
 
@@ -449,6 +451,9 @@ impl Quirk {
             Quirk::LegacySerialVaArgSchedule => {
                 "__va_arg ALIGN paths use build 163's serial r0 schedule"
             }
+            Quirk::LaterTerminalIndirectTailCall => {
+                "later compilers lower terminal indirect calls as unlinked sibling branches"
+            }
         }
     }
 }
@@ -646,6 +651,9 @@ pub struct Behavior {
     /// Whether whole-file IPA may replace a terminal call/return with a sibling
     /// branch after marshaling its arguments.
     pub tail_call_optimization: bool,
+    /// Whether the 4.x optimizer turns a terminal indirect call into an
+    /// unlinked `bctr` sibling call without requiring whole-file IPA.
+    pub terminal_indirect_tail_call: bool,
 }
 
 /// A quirk that is active for a configuration, paired with its kind and summary
@@ -850,6 +858,10 @@ impl Behavior {
             use_lmw_stmw: config.flags.use_lmw_stmw,
             scheduler_enabled: config.flags.scheduler_enabled,
             tail_call_optimization: config.flags.ipa_file,
+            terminal_indirect_tail_call: config
+                .build
+                .profile
+                .terminal_indirect_tail_call(),
         }
     }
 
@@ -1100,6 +1112,9 @@ impl Behavior {
         }
         if self.va_arg_schedule_style == VaArgScheduleStyle::SerialScratch {
             quirks.push(ActiveQuirk::of(Quirk::LegacySerialVaArgSchedule));
+        }
+        if self.terminal_indirect_tail_call {
+            quirks.push(ActiveQuirk::of(Quirk::LaterTerminalIndirectTailCall));
         }
         quirks
     }
@@ -1472,10 +1487,15 @@ mod tests {
             );
             assert_eq!(plain.trig_dispatcher_hidden_label_bump, 3);
             assert_eq!(plain.trig_dispatcher_ipa_label_bump, 4);
+            assert!(plain.terminal_indirect_tail_call);
             assert!(plain
                 .active_quirks()
                 .iter()
                 .any(|active| active.quirk == Quirk::EagerTrigZeroConstant));
+            assert!(plain
+                .active_quirks()
+                .iter()
+                .any(|active| active.quirk == Quirk::LaterTerminalIndirectTailCall));
 
             config.flags.ipa_file = true;
             let ipa = Behavior::resolve(&config);

@@ -833,6 +833,9 @@ impl Parser {
                         },
                     );
                 }
+                layout
+                    .function_pointer_fields
+                    .extend(base.function_pointer_fields.iter().cloned());
                 class.bases.push(BaseClass { name: base_name });
                 class.is_polymorphic |= base_is_polymorphic;
                 offset += base.size;

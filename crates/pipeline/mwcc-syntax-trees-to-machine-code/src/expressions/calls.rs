@@ -5,6 +5,25 @@ use super::*;
 use mwcc_versions::FrameConvention;
 
 impl Generator {
+    /// Preserve an indirect callee across argument marshaling in r12. The copy
+    /// instruction follows the generation's ordinary register-copy encoding.
+    pub(crate) fn stage_indirect_callee(&mut self, register: u8) {
+        match self.behavior.frame_convention {
+            FrameConvention::Predecrement => self.output.instructions.push(Instruction::Or {
+                a: 12,
+                s: register,
+                b: register,
+            }),
+            FrameConvention::LinkageFirst => {
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: 12,
+                    a: register,
+                    immediate: 0,
+                })
+            }
+        }
+    }
+
     pub(crate) fn emit_indirect_branch_and_link(&mut self, register: u8) {
         match self.behavior.frame_convention {
             FrameConvention::Predecrement => {
@@ -99,20 +118,7 @@ impl Generator {
         // a register): copy it to r12 before the arguments (which would overwrite its
         // register), then `mtctr r12; bctrl`. A named function is the direct `bl` below.
         if let Some(pointer_register) = self.locations.get(name).map(|location| location.register) {
-            match self.behavior.frame_convention {
-                FrameConvention::Predecrement => self.output.instructions.push(Instruction::Or {
-                    a: 12,
-                    s: pointer_register,
-                    b: pointer_register,
-                }),
-                FrameConvention::LinkageFirst => {
-                    self.output.instructions.push(Instruction::AddImmediate {
-                        d: 12,
-                        a: pointer_register,
-                        immediate: 0,
-                    })
-                }
-            }
+            self.stage_indirect_callee(pointer_register);
             self.emit_arguments(arguments, name)?;
             self.emit_indirect_branch_and_link(12);
             if let Some(destination) = destination {

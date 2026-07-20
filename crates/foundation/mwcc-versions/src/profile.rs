@@ -662,6 +662,13 @@ pub trait CodegenProfile: core::fmt::Debug {
         FrameConvention::Predecrement
     }
 
+    /// Whether a terminal call through a function pointer is lowered as an
+    /// unlinked `bctr` sibling call without requiring IPA.
+    /// This appears with the 4.x optimizer generation.
+    fn terminal_indirect_tail_call(&self) -> bool {
+        false
+    }
+
     /// Whether a leaf function that only allocates stack scratch receives
     /// extab/extabindex unwind metadata. The 2.4.x line catalogs these frames;
     /// build 163 omits them unless the function is non-leaf.
@@ -918,6 +925,10 @@ impl CodegenProfile for Mainline {}
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn terminal_indirect_tail_call(&self) -> bool {
+        true
+    }
+
     fn global_array_decay_store_style(&self) -> GlobalArrayDecayStoreStyle {
         GlobalArrayDecayStoreStyle::DirectAddress
     }
@@ -940,6 +951,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn terminal_indirect_tail_call(&self) -> bool {
+        true
+    }
+
     fn global_array_decay_store_style(&self) -> GlobalArrayDecayStoreStyle {
         GlobalArrayDecayStoreStyle::DirectAddress
     }

@@ -1522,7 +1522,12 @@ impl Parser {
                     let struct_tag = self.struct_typedefs.get(&existing).cloned();
                     let pointer_tag = self.struct_pointer_typedefs.get(&existing).cloned();
                     let array_entry = self.array_typedefs.get(&existing).cloned();
-                    if struct_tag.is_some() || pointer_tag.is_some() || array_entry.is_some() {
+                    let function_pointer = self.function_pointer_typedefs.contains(&existing);
+                    if struct_tag.is_some()
+                        || pointer_tag.is_some()
+                        || array_entry.is_some()
+                        || function_pointer
+                    {
                         self.advance(); // the existing alias
                         let alias = self.parse_identifier()?;
                         // An ARRAY declarator on the re-alias (`typedef _va_list_struct
@@ -1542,7 +1547,10 @@ impl Parser {
                             self.struct_pointer_typedefs.insert(alias.clone(), tag);
                         }
                         if let Some(entry) = array_entry {
-                            self.array_typedefs.insert(alias, entry);
+                            self.array_typedefs.insert(alias.clone(), entry);
+                        }
+                        if function_pointer {
+                            self.function_pointer_typedefs.insert(alias);
                         }
                         return Ok(());
                     }
@@ -1581,7 +1589,9 @@ impl Parser {
                         }
                     }
                     self.expect(Token::Semicolon)?;
-                    self.typedefs.insert(alias, Type::Pointer(Pointee::Int));
+                    self.typedefs
+                        .insert(alias.clone(), Type::Pointer(Pointee::Int));
+                    self.function_pointer_typedefs.insert(alias);
                     return Ok(());
                 }
                 let name = self.parse_identifier()?;

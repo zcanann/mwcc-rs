@@ -911,7 +911,11 @@ impl Parser {
                             "member '{field}' on a non-struct-pointer base: {expression:?}"
                         ))
                     })?;
-                    if *self.peek() == Token::ParenOpen {
+                    let is_function_pointer_field = self
+                        .structs
+                        .get(&tag)
+                        .is_some_and(|layout| layout.function_pointer_fields.contains(&field));
+                    if *self.peek() == Token::ParenOpen && !is_function_pointer_field {
                         // A non-virtual instance method is a direct call with
                         // the object pointer prepended as the implicit `this`.
                         // Virtual declarations are deliberately absent from the

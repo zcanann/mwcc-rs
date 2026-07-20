@@ -327,6 +327,7 @@ impl Parser {
             alias.clone(),
             StructLayout {
                 fields,
+                function_pointer_fields: std::collections::HashSet::new(),
                 size,
                 align: alignment as u8,
             },

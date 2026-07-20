@@ -128,6 +128,7 @@ pub fn parse_located_translation_unit(
         asm_parameters: Vec::new(),
         expression_struct_tag: None,
         typedefs: HashMap::new(),
+        function_pointer_typedefs: std::collections::HashSet::new(),
         last_type_was_const: false,
         last_pointer_const: false,
         last_type_was_volatile: false,
@@ -403,6 +404,31 @@ mod tests {
             [mwcc_syntax_trees::Statement::Expression(
                 mwcc_syntax_trees::Expression::Call { name, arguments }
             )] if name == "print__6StreamFPce" && arguments.len() == 3
+        ));
+    }
+
+    #[test]
+    fn keeps_function_pointer_data_member_calls_indirect() {
+        let source = r#"
+            typedef int (*Callback)(int);
+            struct Holder { Callback callback; };
+            int caller(Holder* holder) { return holder->callback(7); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::CallThrough {
+                target,
+                arguments,
+            }) if matches!(target.as_ref(), mwcc_syntax_trees::Expression::Member { offset: 0, .. })
+                && arguments.len() == 1
         ));
     }
 

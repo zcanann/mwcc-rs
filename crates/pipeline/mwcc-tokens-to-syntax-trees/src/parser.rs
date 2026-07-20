@@ -28,6 +28,11 @@ pub(crate) struct StructField {
 #[derive(Default)]
 pub(crate) struct StructLayout {
     pub(crate) fields: HashMap<String, StructField>,
+    /// Data members whose stored word is a callable function pointer. This is
+    /// declaration identity rather than layout, but keeping it beside the
+    /// resolved fields lets postfix parsing distinguish `s->callback()` from a
+    /// C++ instance-method call without guessing from a four-byte type.
+    pub(crate) function_pointer_fields: std::collections::HashSet<String>,
     /// The struct's total size in bytes (members plus trailing padding to the
     /// struct's alignment) — the stride for an array/pointer of this struct.
     pub(crate) size: u16,
@@ -130,6 +135,10 @@ pub(crate) struct Parser {
     pub(crate) global_sizes: HashMap<String, (u32, Option<u32>)>,
     /// `typedef`-declared type aliases (e.g. `u32` -> `unsigned int`).
     pub(crate) typedefs: HashMap<String, Type>,
+    /// Typedef names declared as function pointers. Their storage type is a
+    /// plain word pointer, while struct-member call syntax needs the stronger
+    /// callable identity.
+    pub(crate) function_pointer_typedefs: std::collections::HashSet<String>,
     /// Names of variadic function declarations/definitions (side-set — never in the hashed AST).
     pub(crate) variadic_definitions: std::collections::HashSet<String>,
     /// A float-array element whose initializer did NOT fold to a constant —
