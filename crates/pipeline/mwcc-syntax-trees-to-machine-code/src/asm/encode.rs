@@ -327,11 +327,11 @@ pub(super) fn assemble_line(
 
         // Register + signed-immediate ALU (`op dst, src, SIMM`).
         "addi" => {
-            let (d, a, immediate) = rri(mnemonic, operands)?;
+            let (d, a, immediate) = rri_symbolic(mnemonic, operands)?;
             Instruction::AddImmediate { d, a, immediate }
         }
         "addis" => {
-            let (d, a, immediate) = rri(mnemonic, operands)?;
+            let (d, a, immediate) = rri_symbolic(mnemonic, operands)?;
             Instruction::AddImmediateShifted { d, a, immediate }
         }
         "subfic" => {
@@ -1028,6 +1028,29 @@ mod tests {
         assert_eq!(
             assemble("mtcr", vec![AsmOperand::Gpr(4)]).unwrap(),
             Instruction::MoveToConditionRegisterFields { mask: 0xff, s: 4 }
+        );
+    }
+
+    #[test]
+    fn assembles_relocated_add_immediates() {
+        assert_eq!(
+            assemble(
+                "addi",
+                vec![
+                    AsmOperand::Gpr(5),
+                    AsmOperand::Gpr(4),
+                    AsmOperand::Symbol {
+                        name: "target".to_string(),
+                        suffix: mwcc_syntax_trees::AsmRelocSuffix::Lo,
+                    },
+                ],
+            )
+            .unwrap(),
+            Instruction::AddImmediate {
+                d: 5,
+                a: 4,
+                immediate: 0,
+            }
         );
     }
 

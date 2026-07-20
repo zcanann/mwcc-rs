@@ -147,6 +147,21 @@ pub(super) fn rri(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u8, u
     Ok((d, a, immediate))
 }
 
+/// Read a `(GPR, GPR, signed-immediate-or-relocated-symbol)` triple. This is
+/// separate from [`rri`] because only instructions whose immediate is patched
+/// directly by the linker can safely accept a relocation; aliases such as
+/// `subic` transform the immediate and must remain numeric-only.
+pub(super) fn rri_symbolic(
+    mnemonic: &str,
+    operands: &[AsmOperand],
+) -> Compilation<(u8, u8, i16)> {
+    expect_operand_count(mnemonic, operands, 3)?;
+    let d = gpr(mnemonic, &operands[0])?;
+    let a = gpr(mnemonic, &operands[1])?;
+    let immediate = signed_immediate_or_symbol(mnemonic, &operands[2])?;
+    Ok((d, a, immediate))
+}
+
 /// Read a `(GPR, GPR, unsigned-immediate)` triple (`op dst, src, UIMM`).
 pub(super) fn rri_u(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u8, u8, u16)> {
     expect_operand_count(mnemonic, operands, 3)?;
