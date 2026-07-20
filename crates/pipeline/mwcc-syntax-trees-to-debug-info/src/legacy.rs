@@ -1,6 +1,7 @@
 //! Measured grouped DWARF-1 emitted by the 2.3.x and early 2.4.x compilers.
 
 mod data;
+mod functions;
 
 use super::convert_relocations;
 use mwcc_core::{Compilation, Diagnostic};
@@ -9,10 +10,8 @@ use mwcc_dwarf1::{
     DebugEntryId, DebugInfo, DebugRecord, FundamentalType, LineRecord, LineTable, Tag,
 };
 use mwcc_machine_code::MachineFunction;
-use mwcc_object::{
-    layout_function_placements, DebugLayout, DebugSections, FunctionPlacement,
-};
-use mwcc_syntax_trees::{Expression, Function, TranslationUnit, Type};
+use mwcc_object::{layout_function_placements, DebugLayout, DebugSections, FunctionPlacement};
+use mwcc_syntax_trees::{AsmItem, Expression, Function, TranslationUnit, Type};
 use mwcc_versions::CompilerBuild;
 
 const COMPILE_UNIT: DebugEntryId = DebugEntryId(0);
@@ -31,6 +30,9 @@ enum MeasuredShape {
     /// A functionless translation unit containing supported scalar, array, and
     /// aggregate data declarations.
     DataOnly,
+    /// Aggregate data followed by no-frame inline-asm functions. Each written
+    /// asm instruction has an exact source line and emits one machine word.
+    VerbatimAsmWithData,
 }
 
 pub(super) fn lower(
@@ -45,7 +47,7 @@ pub(super) fn lower(
         .iter()
         .filter(|global| !global.is_extern && !global.is_static && !global.name.is_empty())
         .collect();
-    let shape = classify_shape(unit, machine_functions, &globals)?;
+    let shape = classify_shape(unit, machine_functions, &globals, build)?;
 
     let placements: Vec<FunctionPlacement> = machine_functions
         .iter()
@@ -73,26 +75,57 @@ pub(super) fn lower(
             .get(index)
             .copied()
             .flatten()
-            .ok_or_else(|| Diagnostic::error("debug-info: physical source provenance is required"))?;
+            .ok_or_else(|| {
+                Diagnostic::error("debug-info: physical source provenance is required")
+            })?;
         source_functions.push((&unit.functions[index], source));
     }
 
     let mut line_records = Vec::with_capacity(machine_functions.len() + 1);
-    for (machine_index, (_, source)) in source_functions.iter().enumerate() {
-        let terminal_return_line = source.terminal_return_line.ok_or_else(|| {
-            Diagnostic::error(
-                "debug-info: a legacy function without a terminal return is not implemented yet (roadmap)",
-            )
-        })?;
-        line_records.push(LineRecord {
-            line: if build.version == (2, 3, 3) {
-                source.body_start_line
-            } else {
-                terminal_return_line
-            },
-            column: u16::MAX,
-            address_delta: layout.offsets[machine_index],
-        });
+    if shape == MeasuredShape::VerbatimAsmWithData {
+        for (machine_index, (function, _)) in source_functions.iter().enumerate() {
+            let mut address = layout.offsets[machine_index];
+            for item in function
+                .asm_body
+                .as_ref()
+                .expect("verbatim-asm shape has an asm body")
+            {
+                if let AsmItem::Instruction(instruction) = item {
+                    if matches!(instruction.mnemonic.as_str(), "nofralloc" | "frfree") {
+                        continue;
+                    }
+                    line_records.push(LineRecord {
+                        line: instruction.source_line,
+                        column: u16::MAX,
+                        address_delta: address,
+                    });
+                    address += 4;
+                }
+            }
+            if address != layout.offsets[machine_index] + layout.sizes[machine_index] {
+                return Err(Diagnostic::error(format!(
+                    "debug-info: inline-asm source map for '{}' does not cover its emitted text",
+                    function.name
+                )));
+            }
+        }
+    } else {
+        for (machine_index, (_, source)) in source_functions.iter().enumerate() {
+            let terminal_return_line = source.terminal_return_line.ok_or_else(|| {
+                Diagnostic::error(
+                    "debug-info: a legacy function without a terminal return is not implemented yet (roadmap)",
+                )
+            })?;
+            line_records.push(LineRecord {
+                line: if build.version == (2, 3, 3) {
+                    source.body_start_line
+                } else {
+                    terminal_return_line
+                },
+                column: u16::MAX,
+                address_delta: layout.offsets[machine_index],
+            });
+        }
     }
     line_records.push(LineRecord {
         line: 0,
@@ -118,7 +151,10 @@ pub(super) fn lower(
                 AttributeName::Producer,
                 AttributeValue::String("MW EABI PPC C-Compiler".into()),
             ),
-            attribute(AttributeName::Name, AttributeValue::String(source_name.into())),
+            attribute(
+                AttributeName::Name,
+                AttributeValue::String(source_name.into()),
+            ),
             attribute(AttributeName::Language, AttributeValue::Data4(1)),
             attribute(
                 AttributeName::LowPc,
@@ -140,7 +176,24 @@ pub(super) fn lower(
 
     if shape == MeasuredShape::DataOnly {
         let mut records: Vec<_> = entries.into_iter().map(DebugRecord::Entry).collect();
-        records.extend(data::records(unit, &globals, first_global_id)?);
+        records.extend(data::records(unit, &globals, first_global_id, false)?.records);
+        return finish(line, records, DebugLayout::AfterDataGrouped);
+    }
+
+    if shape == MeasuredShape::VerbatimAsmWithData {
+        let mut records: Vec<_> = entries.into_iter().map(DebugRecord::Entry).collect();
+        let data = data::records(unit, &globals, first_global_id, true)?;
+        records.extend(data.records);
+        records.extend(functions::records(
+            unit,
+            &source_functions
+                .iter()
+                .map(|(function, _)| *function)
+                .collect::<Vec<_>>(),
+            &layout,
+            data.next_id,
+            &data.aggregate_ids,
+        )?);
         return finish(line, records, DebugLayout::AfterDataGrouped);
     }
 
@@ -247,6 +300,9 @@ pub(super) fn lower(
             DebugRecord::Raw(vec![0, 0, 0, 4]),
         ]),
         MeasuredShape::DataOnly => unreachable!("data-only units return before function records"),
+        MeasuredShape::VerbatimAsmWithData => {
+            unreachable!("verbatim asm/data units return before legacy function records")
+        }
     }
     finish(line, records, DebugLayout::BeforeDataGrouped)
 }
@@ -286,6 +342,7 @@ fn classify_shape(
     unit: &TranslationUnit,
     machine_functions: &[MachineFunction],
     globals: &[&mwcc_syntax_trees::GlobalDeclaration],
+    build: CompilerBuild,
 ) -> Compilation<MeasuredShape> {
     let basic_parameter = globals.len() == 1
         && unit.functions.len() == 1
@@ -310,6 +367,28 @@ fn classify_shape(
         return Ok(MeasuredShape::DataOnly);
     }
 
+    let verbatim_asm_with_data = build.version == (2, 4, 2)
+        && build.build == 81
+        && !globals.is_empty()
+        && !unit.functions.is_empty()
+        && unit.functions.len() == machine_functions.len()
+        && unit.functions.iter().all(|function| {
+            !function.is_static
+                && function.return_type == Type::Void
+                && function
+                    .parameters
+                    .iter()
+                    .all(|parameter| matches!(parameter.parameter_type, Type::StructPointer { .. }))
+                && function.asm_body.as_ref().is_some_and(|body| {
+                    body.iter().any(|item| {
+                        matches!(item, AsmItem::Instruction(instruction) if instruction.mnemonic == "nofralloc")
+                    })
+                })
+        });
+    if verbatim_asm_with_data {
+        return Ok(MeasuredShape::VerbatimAsmWithData);
+    }
+
     Err(Diagnostic::error(
         "debug-info: this translation unit's legacy DWARF DIE shape is not implemented yet (roadmap)",
     ))
@@ -321,7 +400,10 @@ fn is_exported_constant_int_function(function: &Function) -> bool {
         && function.locals.is_empty()
         && function.statements.is_empty()
         && function.guards.is_empty()
-        && matches!(function.return_expression, Some(Expression::IntegerLiteral(_)))
+        && matches!(
+            function.return_expression,
+            Some(Expression::IntegerLiteral(_))
+        )
 }
 
 fn attribute(name: AttributeName, value: AttributeValue) -> Attribute {

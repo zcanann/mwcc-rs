@@ -151,6 +151,7 @@ pub fn parse_located_translation_unit_with_enum_min(
         variable_array_bytes: HashMap::new(),
         global_sizes: HashMap::new(),
         global_types: HashMap::new(),
+        function_parameter_structs: HashMap::new(),
         last_struct_tag: None,
         last_enum_tag: None,
         last_type_was_wchar: false,
@@ -463,6 +464,49 @@ mod tests {
                 body_end_line: 4,
             })]
         );
+    }
+
+    #[test]
+    fn retains_typed_asm_parameters_and_instruction_lines() {
+        let source = b"typedef struct Record { int value; } Record;\n\
+asm void load(register Record* record) {\n\
+nofralloc\n\
+lwz r3, Record.value(record)\n\
+blr\n\
+}\n";
+        let unit = parse_located_translation_unit(
+            mwcc_source_to_tokens::tokenize_bytes_located(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(unit.functions[0].parameters.len(), 1);
+        assert_eq!(unit.functions[0].parameters[0].name, "record");
+        assert_eq!(
+            unit.functions[0].parameters[0].parameter_type,
+            mwcc_syntax_trees::Type::StructPointer { element_size: 4 }
+        );
+        assert_eq!(
+            unit.function_parameter_aggregate_tags
+                .get(&("load".to_string(), "record".to_string())),
+            Some(&"Record".to_string())
+        );
+        let instruction_lines = unit.functions[0]
+            .asm_body
+            .as_ref()
+            .unwrap()
+            .iter()
+            .filter_map(|item| match item {
+                mwcc_syntax_trees::AsmItem::Instruction(instruction) => {
+                    Some(instruction.source_line)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(instruction_lines, [3, 4, 5]);
     }
 
     #[test]

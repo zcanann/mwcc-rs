@@ -1,4 +1,4 @@
-//! Legacy DWARF-1 records for functionless data translation units.
+//! Data declarations and their reachable type graphs in legacy DWARF-1 units.
 
 use super::{attribute, UNIT_END};
 use mwcc_core::{Compilation, Diagnostic};
@@ -12,6 +12,15 @@ use mwcc_syntax_trees::{
 use std::collections::HashMap;
 
 const DATA_END: DebugEntryId = DebugEntryId(u32::MAX - 3);
+
+pub(super) struct DataRecords {
+    pub records: Vec<DebugRecord>,
+    pub next_id: DebugEntryId,
+    /// First emitted DIE for each retained aggregate identity. Function
+    /// parameters can reference the same declaration graph that data globals
+    /// caused to be materialized.
+    pub aggregate_ids: HashMap<String, DebugEntryId>,
+}
 
 enum PlanKind<'a> {
     Scalar,
@@ -43,9 +52,11 @@ pub(super) fn records<'a>(
     unit: &'a TranslationUnit,
     globals: &[&'a GlobalDeclaration],
     first_id: DebugEntryId,
-) -> Compilation<Vec<DebugRecord>> {
+    has_following_functions: bool,
+) -> Compilation<DataRecords> {
     let mut next_id = first_id.0;
     let mut plans = Vec::with_capacity(globals.len());
+    let mut aggregate_ids = HashMap::new();
     for global in globals {
         let (start_id, global_id, kind) = if let Some(length) = global.array_length {
             if length == 0 {
@@ -71,6 +82,9 @@ pub(super) fn records<'a>(
             let mut type_ids = HashMap::new();
             let mut types = Vec::new();
             let root_type_id = plan_aggregate(unit, tag, &mut next_id, &mut type_ids, &mut types)?;
+            for (tag, id) in &type_ids {
+                aggregate_ids.entry(tag.clone()).or_insert(*id);
+            }
             let start_id = types.first().map(|plan| plan.type_id).ok_or_else(|| {
                 Diagnostic::error(format!("debug-info: aggregate graph '{tag}' is empty"))
             })?;
@@ -209,13 +223,19 @@ pub(super) fn records<'a>(
             }
         }
     }
-    records.extend([
-        DebugRecord::Marker(DATA_END),
-        DebugRecord::Raw(vec![0, 0, 0, 4]),
-        DebugRecord::Raw(vec![0, 0, 0, 4]),
-    ]);
+    records.push(DebugRecord::Marker(DATA_END));
+    if !has_following_functions {
+        records.extend([
+            DebugRecord::Raw(vec![0, 0, 0, 4]),
+            DebugRecord::Raw(vec![0, 0, 0, 4]),
+        ]);
+    }
     debug_assert_ne!(DATA_END, UNIT_END);
-    Ok(records)
+    Ok(DataRecords {
+        records,
+        next_id: DebugEntryId(next_id),
+        aggregate_ids,
+    })
 }
 
 fn allocate(next_id: &mut u32) -> DebugEntryId {
@@ -338,7 +358,7 @@ fn global_type_attribute(
     }
 }
 
-fn member_type_attribute(
+pub(super) fn member_type_attribute(
     declared_type: Type,
     aggregate_id: Option<DebugEntryId>,
     source_fundamental: Option<SourceFundamentalType>,

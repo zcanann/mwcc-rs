@@ -257,6 +257,11 @@ pub struct TranslationUnit {
     /// pointer. Kept separately so ordinary codegen does not carry debug-only
     /// declaration names through every expression.
     pub global_aggregate_tags: std::collections::HashMap<String, String>,
+    /// Source aggregate identity for function parameters, keyed by emitted
+    /// function name and parameter name. Executable lowering only needs the
+    /// resolved pointer width/stride; legacy DWARF needs the declaration graph.
+    pub function_parameter_aggregate_tags:
+        std::collections::HashMap<(String, String), String>,
     /// Function prototypes (`type name(params);`) by name, return type, and
     /// parameter types, so a call to an externally-defined function knows its
     /// result type (e.g. a `double`-returning math routine) and its parameter
@@ -437,4 +442,8 @@ pub enum AsmRelocSuffix {
 pub struct AsmInstruction {
     pub mnemonic: String,
     pub operands: Vec<AsmOperand>,
+    /// Logical source line after preprocessing and `#line` interpretation.
+    /// Inline asm maps one source instruction to one emitted word, making this
+    /// the authoritative input for its legacy DWARF line program.
+    pub source_line: u32,
 }

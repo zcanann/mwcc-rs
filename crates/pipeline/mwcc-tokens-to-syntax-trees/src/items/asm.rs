@@ -4,7 +4,9 @@
 
 use crate::parser::Parser;
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{AsmInstruction, AsmItem, AsmOperand, AsmRelocSuffix, Function, Type};
+use mwcc_syntax_trees::{
+    AsmInstruction, AsmItem, AsmOperand, AsmRelocSuffix, Function, Parameter, Type,
+};
 use mwcc_tokens::Token;
 
 impl Parser {
@@ -80,6 +82,9 @@ impl Parser {
         let mut parameter_name: Option<String> = None;
         let mut parameter_tag: Option<String> = None;
         let mut parameter_is_float = false;
+        let mut parameter_is_pointer = false;
+        let mut source_parameters = Vec::new();
+        let mut source_parameter_tags = Vec::new();
         let mut depth = 1;
         loop {
             let token = self.advance();
@@ -91,6 +96,14 @@ impl Parser {
                     if depth == 0 {
                         if let Some(name) = parameter_name.take() {
                             if !parameter_is_float {
+                                source_parameters.push(Parameter {
+                                    parameter_type: self.asm_parameter_type(
+                                        parameter_tag.as_deref(),
+                                        parameter_is_pointer,
+                                    ),
+                                    name: name.clone(),
+                                });
+                                source_parameter_tags.push(parameter_tag.clone());
                                 parameters.push((
                                     name,
                                     3 + parameters.len() as u8,
@@ -107,6 +120,7 @@ impl Parser {
                 // `register double d` is only ever fp1), never by name.
                 Token::KeywordFloat => parameter_is_float = true,
                 Token::Identifier(word) if word == "double" => parameter_is_float = true,
+                Token::Star => parameter_is_pointer = true,
                 Token::Identifier(word) if word != "register" && word != "const" => {
                     if self.structs.contains_key(word.as_str()) {
                         parameter_tag = Some(word.clone());
@@ -121,10 +135,17 @@ impl Parser {
             if end_of_parameter {
                 if let Some(name) = parameter_name.take() {
                     if !parameter_is_float {
+                        source_parameters.push(Parameter {
+                            parameter_type: self
+                                .asm_parameter_type(parameter_tag.as_deref(), parameter_is_pointer),
+                            name: name.clone(),
+                        });
+                        source_parameter_tags.push(parameter_tag.clone());
                         parameters.push((name, 3 + parameters.len() as u8, parameter_tag.take()));
                     }
                 }
                 parameter_is_float = false;
+                parameter_is_pointer = false;
             }
         }
         // A bodyless prototype ends here; there is nothing to define.
@@ -138,6 +159,12 @@ impl Parser {
         let asm_body = self.parse_asm_body();
         self.asm_parameters = Vec::new();
         let asm_body = asm_body?;
+        for (parameter, tag) in source_parameters.iter().zip(&source_parameter_tags) {
+            if let Some(tag) = tag {
+                self.function_parameter_structs
+                    .insert((name.clone(), parameter.name.clone()), tag.clone());
+            }
+        }
         let body_end_line = self.locations[self.position.saturating_sub(1)].line;
         self.function_sources
             .push(Some(mwcc_syntax_trees::FunctionSource {
@@ -152,7 +179,7 @@ impl Parser {
             name,
             is_static,
             is_weak,
-            parameters: Vec::new(),
+            parameters: source_parameters,
             locals: Vec::new(),
             statements: Vec::new(),
             guards: Vec::new(),
@@ -161,6 +188,24 @@ impl Parser {
             asm_body: Some(asm_body),
             force_active: self.force_active,
         }))
+    }
+
+    fn asm_parameter_type(&self, aggregate_tag: Option<&str>, is_pointer: bool) -> Type {
+        aggregate_tag
+            .and_then(|tag| self.structs.get(tag))
+            .map(|layout| {
+                if is_pointer {
+                    Type::StructPointer {
+                        element_size: layout.size,
+                    }
+                } else {
+                    Type::Struct {
+                        size: layout.size,
+                        align: layout.align,
+                    }
+                }
+            })
+            .unwrap_or(Type::Int)
     }
 
     /// Parse the body items of an asm function up to the closing `}` (already past
@@ -196,6 +241,7 @@ impl Parser {
                 }
                 _ => {}
             }
+            let source_line = self.current_location().line;
             let mut mnemonic = match self.advance() {
                 Token::Identifier(word) => word,
                 other => {
@@ -254,7 +300,11 @@ impl Parser {
                     _ => operands.push(self.parse_asm_operand()?),
                 }
             }
-            items.push(AsmItem::Instruction(AsmInstruction { mnemonic, operands }));
+            items.push(AsmItem::Instruction(AsmInstruction {
+                mnemonic,
+                operands,
+                source_line,
+            }));
         }
         Ok(items)
     }
@@ -398,11 +448,9 @@ impl Parser {
                 }
                 let root = match self.advance() {
                     Token::Identifier(root) => root,
-                    other => {
-                        return Err(Diagnostic::error(format!(
-                            "expected a struct name in an asm displacement expression, found {other}"
-                        )))
-                    }
+                    other => return Err(Diagnostic::error(format!(
+                        "expected a struct name in an asm displacement expression, found {other}"
+                    ))),
                 };
                 let struct_tag = self
                     .struct_typedefs

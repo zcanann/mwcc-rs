@@ -901,6 +901,9 @@ impl Parser {
             functions,
             aggregate_definitions,
             global_aggregate_tags: std::mem::take(&mut self.global_structs),
+            function_parameter_aggregate_tags: std::mem::take(
+                &mut self.function_parameter_structs,
+            ),
             prototypes,
             named_prototype_parameters: self.named_prototype_parameters,
             inline_asm_symbols: std::mem::take(&mut self.inline_asm_symbols),
