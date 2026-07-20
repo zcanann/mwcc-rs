@@ -3314,6 +3314,28 @@ impl Generator {
             // mwcc lowers a single guard as a select (working-register form) but a
             // chain of guards as separate return blocks.
             if let [guard] = function.guards.as_slice() {
+                if constant_value(&guard.value) == Some(1)
+                    && constant_value(return_expression) == Some(0)
+                {
+                    if let Expression::Binary {
+                        operator,
+                        left,
+                        right,
+                    } = &guard.condition
+                    {
+                        if self.try_emit_unsigned_narrow_less_constant(
+                            *operator,
+                            left,
+                            right,
+                            result,
+                        )? {
+                            self.output
+                                .instructions
+                                .push(Instruction::BranchToLinkRegister);
+                            return Ok(());
+                        }
+                    }
+                }
                 // A logical (&&/||) condition short-circuits straight into the two return
                 // blocks rather than computing the operator as a 0/1 value.
                 if self.try_emit_short_circuit_guard(

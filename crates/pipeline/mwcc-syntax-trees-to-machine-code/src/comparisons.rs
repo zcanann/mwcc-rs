@@ -8,6 +8,56 @@ use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{BinaryOperator, Expression};
 
 impl Generator {
+    /// Materialize `unsigned narrow < C` as the sign bit of `value - C`.
+    /// A zero-extended byte/halfword never reaches bit 31, so subtraction by a
+    /// positive 16-bit immediate makes that bit exactly the borrow predicate:
+    /// `lhz d; addi r0,d,-C; srwi d,r0,31`.
+    pub(crate) fn try_emit_unsigned_narrow_less_constant(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+    ) -> Compilation<bool> {
+        if operator != BinaryOperator::Less || self.signedness_of(left)? {
+            return Ok(false);
+        }
+        let is_unsigned_narrow = match left {
+            Expression::Variable(name) => self.locations.get(name).is_some_and(|location| {
+                location.class == ValueClass::General && location.width <= 16 && !location.signed
+            }),
+            Expression::Member { member_type, .. } => {
+                matches!(member_type, mwcc_syntax_trees::Type::UnsignedChar | mwcc_syntax_trees::Type::UnsignedShort)
+            }
+            _ => false,
+        };
+        if !is_unsigned_narrow {
+            return Ok(false);
+        }
+        let Some(negative_constant) = constant_value(right)
+            .filter(|constant| *constant > 0)
+            .and_then(|constant| constant.checked_neg())
+            .and_then(|constant| i16::try_from(constant).ok())
+        else {
+            return Ok(false);
+        };
+
+        self.evaluate_general(left, destination)?;
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: GENERAL_SCRATCH,
+            a: destination,
+            immediate: negative_constant,
+        });
+        self.output
+            .instructions
+            .push(Instruction::ShiftRightLogicalImmediate {
+                a: destination,
+                s: GENERAL_SCRATCH,
+                shift: 31,
+            });
+        Ok(true)
+    }
+
     /// Emit a comparison as mwcc's branchless idiom. Currently handles `==` (and
     /// `== 0`) and signed `< 0`; the richer signed less/greater idioms are not
     /// implemented yet.
@@ -78,6 +128,9 @@ impl Generator {
             } else {
                 self.signedness_of(left)? && self.signedness_of(right)?
             };
+        if self.try_emit_unsigned_narrow_less_constant(operator, left, right, d)? {
+            return Ok(());
+        }
         // Unsigned comparisons against literal ZERO collapse to `== 0` / `!= 0` — since an
         // unsigned value is always >= 0, `u > 0` (and `0 < u`) is `u != 0`, and `u <= 0` (and
         // `0 >= u`) is `u == 0`. mwcc emits the cheaper equality idiom for these. (It keeps
@@ -1151,7 +1204,11 @@ impl Generator {
         let double = self.is_double_value(left) || self.is_double_value(right);
         let a = self.place_float_compare_operand(left, double)?;
         let b = self.place_float_compare_operand(right, double)?;
-        let scratch = GENERAL_SCRATCH;
+        // mfcr writes the final destination directly. The following rotate is
+        // destructive and consumes no prior destination value, so routing it
+        // through r0 would add an unnecessary register edge and differs from
+        // mwcc's `mfcr r3; rlwinm r3,r3,...` return schedule.
+        let scratch = destination;
         if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
             // `==`/`!=` are commutative; mwcc canonicalizes a literal operand to
             // the front (it loaded the constant first), so `x == 0.0` is `fcmpu 0,x`.
