@@ -924,6 +924,37 @@ impl Parser {
             }
         }
 
+        let declares_virtual = {
+            let mut scan = self.position + 1;
+            let mut depth = 1i32;
+            let mut found = false;
+            while depth > 0 {
+                match self.tokens.get(scan) {
+                    Some(Token::BraceOpen) => depth += 1,
+                    Some(Token::BraceClose) => depth -= 1,
+                    Some(Token::Identifier(word)) if depth == 1 && word == "virtual" => {
+                        found = true;
+                        break;
+                    }
+                    Some(Token::EndOfFile) | None => break,
+                    _ => {}
+                }
+                scan += 1;
+            }
+            found
+        };
+        if declares_virtual && !class.is_polymorphic {
+            if class.bases.is_empty() {
+                offset = 4;
+                max_align = 4;
+                class.is_polymorphic = true;
+            } else {
+                return Err(Diagnostic::error(
+                    "a polymorphic class with a non-polymorphic base is not supported yet (roadmap)",
+                ));
+            }
+        }
+
         self.expect(Token::BraceOpen)?;
         while *self.peek() != Token::BraceClose {
             if matches!(self.peek(), Token::Identifier(word)

@@ -562,6 +562,35 @@ mod tests {
     }
 
     #[test]
+    fn reserves_a_vptr_before_fields_declared_ahead_of_virtual_methods() {
+        let source = r#"
+            class Id {
+                unsigned short value;
+            public:
+                void set(int);
+                virtual ~Id() {}
+            };
+            void Id::set(int input) { value = input; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Store {
+                target: mwcc_syntax_trees::Expression::Member { offset: 4, .. },
+                ..
+            }]
+        ));
+    }
+
+    #[test]
     fn resolves_a_declared_static_cxx_member_call() {
         let source = r#"
             struct System { static void halt(char*, int, char*); };
