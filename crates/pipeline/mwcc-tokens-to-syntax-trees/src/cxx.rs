@@ -133,10 +133,10 @@ pub(crate) struct BaseClass {
     pub(crate) name: String,
 }
 
-/// Remove C++ linkage-specification syntax while retaining every enclosed token
-/// in source order. `extern "C" { declarations }` becomes `declarations`, and
-/// `extern "C" declaration` keeps the `extern` storage class but drops the
-/// language string. The latter distinction matters for data declarations.
+/// Normalize C++ linkage specifications into the same scoped language pragmas
+/// the top-level parser already understands. The braces are declaration
+/// wrappers rather than C++ scopes, while a single-declaration form retains
+/// `extern` as its storage class.
 pub(crate) fn normalize_linkage_specifications(
     mut tokens: Vec<LocatedToken>,
 ) -> Vec<LocatedToken> {
@@ -148,6 +148,25 @@ pub(crate) fn normalize_linkage_specifications(
             index += 1;
             continue;
         }
+
+        let location = tokens[index].location;
+        let cplusplus = matches!(&tokens[index + 1].token, Token::StringLiteral(language) if language == b"C++");
+        let push = LocatedToken {
+            token: Token::Pragma("push".to_string()),
+            location,
+        };
+        let language = LocatedToken {
+            token: Token::Pragma(if cplusplus {
+                "cplusplus on".to_string()
+            } else {
+                "cplusplus off".to_string()
+            }),
+            location,
+        };
+        let pop = LocatedToken {
+            token: Token::Pragma("pop".to_string()),
+            location,
+        };
 
         if tokens
             .get(index + 2)
@@ -172,14 +191,57 @@ pub(crate) fn normalize_linkage_specifications(
                 cursor += 1;
             }
             if let Some(close) = close {
-                tokens.remove(close);
-                tokens.drain(index..index + 3);
+                tokens[close] = pop;
+                tokens.splice(index..index + 3, [push, language]);
+                index += 2;
                 continue;
             }
         } else {
-            // Keep `extern` so an object declaration remains a declaration rather
-            // than becoming a tentative definition.
+            // Keep `extern`, but scope the language mode through the declaration's
+            // terminal semicolon. Function definitions in this spelling are rare;
+            // their closing brace is accepted when no semicolon follows it.
             tokens.remove(index + 1);
+            tokens.insert(index, push);
+            tokens.insert(index + 1, language);
+            let mut cursor = index + 3;
+            let mut parens = 0i32;
+            let mut brackets = 0i32;
+            let mut braces = 0i32;
+            let mut terminal = None;
+            while cursor < tokens.len() {
+                match tokens[cursor].token {
+                    Token::ParenOpen => parens += 1,
+                    Token::ParenClose => parens -= 1,
+                    Token::BracketOpen => brackets += 1,
+                    Token::BracketClose => brackets -= 1,
+                    Token::BraceOpen => braces += 1,
+                    Token::BraceClose => {
+                        braces -= 1;
+                        if braces == 0
+                            && parens == 0
+                            && brackets == 0
+                            && !tokens
+                                .get(cursor + 1)
+                                .is_some_and(|next| next.token == Token::Semicolon)
+                        {
+                            terminal = Some(cursor);
+                            break;
+                        }
+                    }
+                    Token::Semicolon if parens == 0 && brackets == 0 && braces == 0 => {
+                        terminal = Some(cursor);
+                        break;
+                    }
+                    Token::EndOfFile => break,
+                    _ => {}
+                }
+                cursor += 1;
+            }
+            if let Some(terminal) = terminal {
+                tokens.insert(terminal + 1, pop);
+                index = terminal + 2;
+                continue;
+            }
         }
         index += 1;
     }
@@ -242,6 +304,57 @@ pub(crate) fn normalize_constructor_declarators(
 }
 
 impl Parser {
+    fn free_cxx_source_name(&self, function: &str) -> String {
+        if self.namespace_stack.is_empty() {
+            function.to_string()
+        } else {
+            format!("{}::{function}", self.namespace_stack.join("::"))
+        }
+    }
+
+    pub(crate) fn register_free_cxx_function(
+        &mut self,
+        source_name: &str,
+        mangled: &str,
+        fixed_parameter_count: usize,
+        variadic: bool,
+    ) {
+        let key = self.free_cxx_source_name(source_name);
+        let methods = self.cxx_free_functions.entry(key).or_default();
+        if !methods.iter().any(|method| method.mangled == mangled) {
+            methods.push(RecoveredCxxMethod {
+                mangled: mangled.to_string(),
+                fixed_parameter_count,
+                variadic,
+            });
+        }
+    }
+
+    pub(crate) fn resolve_free_cxx_call(
+        &self,
+        source_name: &str,
+        argument_count: usize,
+    ) -> Compilation<Option<String>> {
+        let key = self.free_cxx_source_name(source_name);
+        let candidates: Vec<&RecoveredCxxMethod> = self
+            .cxx_free_functions
+            .get(&key)
+            .into_iter()
+            .flatten()
+            .filter(|method| {
+                method.fixed_parameter_count == argument_count
+                    || (method.variadic && argument_count >= method.fixed_parameter_count)
+            })
+            .collect();
+        match candidates.as_slice() {
+            [] => Ok(None),
+            [method] => Ok(Some(method.mangled.clone())),
+            _ => Err(Diagnostic::error(format!(
+                "C++ free-function call '{key}' is ambiguous (roadmap)"
+            ))),
+        }
+    }
+
     pub(crate) fn qualify_cxx_class_name(&self, class: &str) -> String {
         if self.namespace_stack.is_empty() {
             class.to_string()
@@ -789,6 +902,41 @@ impl Parser {
         mangle_qualified_member_function_typed(&scopes, function, explicit_parameters)
     }
 
+    pub(crate) fn mangle_typed_const_member_in_current_namespace(
+        &self,
+        class: &str,
+        function: &str,
+        explicit_parameters: &[CxxParameterType],
+    ) -> Compilation<String> {
+        let mut scopes: Vec<&str> = self.namespace_stack.iter().map(String::as_str).collect();
+        scopes.extend(class.split("::"));
+        mangle_qualified_member_function_cv_typed(
+            &scopes,
+            function,
+            explicit_parameters,
+            true,
+        )
+    }
+
+    /// Mangle a non-member C++ function. A namespace-qualified free function
+    /// uses the qualified member spelling; a global free function has the
+    /// compact `name__F<arguments>` form.
+    pub(crate) fn mangle_typed_free_function(
+        &self,
+        function: &str,
+        explicit_parameters: &[CxxParameterType],
+        variadic: bool,
+    ) -> Compilation<String> {
+        let arguments = encode_function_arguments(explicit_parameters, variadic)?;
+        if self.namespace_stack.is_empty() {
+            Ok(format!("{function}__F{arguments}"))
+        } else {
+            let scopes: Vec<&str> = self.namespace_stack.iter().map(String::as_str).collect();
+            let qualified_scope = encode_qualified_scope(&scopes)?;
+            Ok(format!("{function}__{qualified_scope}F{arguments}"))
+        }
+    }
+
     /// Mangle a static data member declared in the active namespace scope.
     /// Data members share the class/namespace encoding used by member functions,
     /// but carry no `F<parameters>` suffix.
@@ -1306,12 +1454,22 @@ fn mangle_qualified_member_function_typed(
     function: &str,
     explicit_parameters: &[CxxParameterType],
 ) -> Compilation<String> {
-    mangle_qualified_member_function_variadic_typed(
-        scopes,
-        function,
-        explicit_parameters,
-        false,
-    )
+    mangle_qualified_member_function_cv_typed(scopes, function, explicit_parameters, false)
+}
+
+fn mangle_qualified_member_function_cv_typed(
+    scopes: &[&str],
+    function: &str,
+    explicit_parameters: &[CxxParameterType],
+    is_const: bool,
+) -> Compilation<String> {
+    if function.is_empty() {
+        return Err(Diagnostic::error("an empty C++ member name is invalid"));
+    }
+    let arguments = encode_function_arguments(explicit_parameters, false)?;
+    let qualified_scope = encode_qualified_scope(scopes)?;
+    let cv = if is_const { "C" } else { "" };
+    Ok(format!("{function}__{qualified_scope}{cv}F{arguments}"))
 }
 
 fn mangle_qualified_member_function_variadic_typed(
@@ -1323,6 +1481,15 @@ fn mangle_qualified_member_function_variadic_typed(
     if function.is_empty() {
         return Err(Diagnostic::error("an empty C++ member name is invalid"));
     }
+    let arguments = encode_function_arguments(explicit_parameters, variadic)?;
+    let qualified_scope = encode_qualified_scope(scopes)?;
+    Ok(format!("{function}__{qualified_scope}F{arguments}"))
+}
+
+fn encode_function_arguments(
+    explicit_parameters: &[CxxParameterType],
+    variadic: bool,
+) -> Compilation<String> {
     let mut arguments = if explicit_parameters.is_empty() && !variadic {
         "v".to_string()
     } else {
@@ -1335,8 +1502,7 @@ fn mangle_qualified_member_function_variadic_typed(
     if variadic {
         arguments.push('e');
     }
-    let qualified_scope = encode_qualified_scope(scopes)?;
-    Ok(format!("{function}__{qualified_scope}F{arguments}"))
+    Ok(arguments)
 }
 
 fn encode_qualified_scope(scopes: &[&str]) -> Compilation<String> {
@@ -1458,7 +1624,7 @@ mod tests {
     }
 
     #[test]
-    fn strips_block_linkage_without_losing_declarations() {
+    fn scopes_block_linkage_without_losing_declarations() {
         let tokens = vec![
             Token::Identifier("extern".to_string()),
             Token::StringLiteral(b"C".to_vec()),
@@ -1472,9 +1638,12 @@ mod tests {
         assert_eq!(
             strip(normalize_linkage_specifications(locate(tokens))),
             vec![
+                Token::Pragma("push".to_string()),
+                Token::Pragma("cplusplus off".to_string()),
                 Token::KeywordInt,
                 Token::Identifier("value".to_string()),
                 Token::Semicolon,
+                Token::Pragma("pop".to_string()),
                 Token::EndOfFile,
             ]
         );

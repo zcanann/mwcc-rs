@@ -649,7 +649,15 @@ impl Parser {
                                 .collect();
                             substitute_variables(body, &map)
                         }
-                        _ => Expression::Call { name, arguments },
+                        _ => {
+                            let name = if self.cplusplus {
+                                self.resolve_free_cxx_call(&name, arguments.len())?
+                                    .unwrap_or(name)
+                            } else {
+                                name
+                            };
+                            Expression::Call { name, arguments }
+                        }
                     }
                 }
             }

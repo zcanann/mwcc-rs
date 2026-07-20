@@ -116,6 +116,7 @@ pub fn parse_located_translation_unit(
         inline_template_members: std::collections::HashSet::new(),
         inline_cxx_members: std::collections::HashSet::new(),
         cxx_static_methods: HashMap::new(),
+        cxx_free_functions: HashMap::new(),
         cxx_instance_methods: HashMap::new(),
         cxx_dispatch_tables: HashMap::new(),
         incomplete_cxx_dispatch: std::collections::HashSet::new(),
@@ -319,7 +320,7 @@ mod tests {
                 .iter()
                 .map(|function| function.name.as_str())
                 .collect::<Vec<_>>(),
-            ["compiled"]
+            ["compiled__Fv"]
         );
         assert!(unit.skipped_inline_names.contains("get"));
     }
@@ -359,7 +360,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(unit.functions.len(), 1);
-        assert_eq!(unit.functions[0].name, "compiled");
+        assert_eq!(unit.functions[0].name, "compiled__Fv");
     }
 
     #[test]
@@ -380,7 +381,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(unit.functions.len(), 1);
-        assert_eq!(unit.functions[0].name, "compiled");
+        assert_eq!(unit.functions[0].name, "compiled__Fv");
         assert!(unit.skipped_inline_names.contains("get"));
     }
 
@@ -406,7 +407,7 @@ mod tests {
                 .iter()
                 .map(|function| function.name.as_str())
                 .collect::<Vec<_>>(),
-            ["compiled"]
+            ["compiled__Fv"]
         );
         assert!(unit.skipped_inline_names.contains("dropped"));
     }
@@ -586,7 +587,47 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(unit.functions[0].name, "read__Q25Outer5InnerFv");
+        assert_eq!(unit.functions[0].name, "read__Q25Outer5InnerCFv");
+    }
+
+    #[test]
+    fn mangles_free_cpp_functions_and_preserves_c_linkage() {
+        let source = r#"
+            extern "C" { int c_api(float); }
+            int cpp_api(float);
+            int cpp_api(float value) { return c_api(value); }
+            int caller(float value) { return cpp_api(value); }
+            class Id {
+                unsigned short value;
+            public:
+                int used() const;
+            };
+            int Id::used() const { return value; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            ["cpp_api__Ff", "caller__Ff", "used__2IdCFv"]
+        );
+        assert!(matches!(
+            unit.functions[0].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Call { name, .. }) if name == "c_api"
+        ));
+        assert!(matches!(
+            unit.functions[1].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Call { name, .. }) if name == "cpp_api__Ff"
+        ));
     }
 
     #[test]
@@ -1058,7 +1099,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(unit.functions.len(), 1);
-        assert_eq!(unit.functions[0].name, "answer");
+        assert_eq!(unit.functions[0].name, "answer__Fv");
     }
 
     #[test]

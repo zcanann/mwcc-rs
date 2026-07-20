@@ -93,6 +93,11 @@ pub(crate) struct Parser {
     /// `this`, but still require CodeWarrior member-function mangling.
     pub(crate) cxx_static_methods:
         HashMap<(String, String), Vec<crate::cxx::RecoveredCxxMethod>>,
+    /// Free C++ function overloads recovered from prototypes/definitions,
+    /// keyed by their unqualified source name. Calls resolve by arity only when
+    /// that selects one ABI symbol unambiguously.
+    pub(crate) cxx_free_functions:
+        HashMap<String, Vec<crate::cxx::RecoveredCxxMethod>>,
     /// Non-virtual, non-inline instance methods recovered from skipped class
     /// bodies. These support direct `object->member(args)` calls without layout.
     pub(crate) cxx_instance_methods:

@@ -2412,10 +2412,14 @@ impl Parser {
                 }
             }
             self.expect(Token::ParenClose)?;
+            let mut member_is_const = false;
             if member_scope.is_some() {
                 while matches!(self.peek(), Token::Identifier(word)
                     if matches!(word.as_str(), "const" | "volatile" | "override" | "final"))
                 {
+                    if matches!(self.peek(), Token::Identifier(word) if word == "const") {
+                        member_is_const = true;
+                    }
                     self.advance();
                 }
             }
@@ -2445,11 +2449,19 @@ impl Parser {
                 } else {
                     &name
                 };
-                name = self.mangle_typed_member_in_current_namespace(
-                    scope,
-                    source_name,
-                    &cxx_parameters,
-                )?;
+                name = if member_is_const {
+                    self.mangle_typed_const_member_in_current_namespace(
+                        scope,
+                        source_name,
+                        &cxx_parameters,
+                    )?
+                } else {
+                    self.mangle_typed_member_in_current_namespace(
+                        scope,
+                        source_name,
+                        &cxx_parameters,
+                    )?
+                };
                 parameters.insert(
                     0,
                     Parameter {
@@ -2462,6 +2474,22 @@ impl Parser {
                         name: "this".to_string(),
                     },
                 );
+            } else if self.cplusplus && name != "main" {
+                let source_name = name.clone();
+                name = self.mangle_typed_free_function(
+                    &source_name,
+                    &cxx_parameters,
+                    is_variadic,
+                )?;
+                self.register_free_cxx_function(
+                    &source_name,
+                    &name,
+                    parameters.len(),
+                    is_variadic,
+                );
+                if let Some(tag) = &return_struct_tag {
+                    self.function_return_structs.insert(name.clone(), tag.clone());
+                }
             }
 
             if *self.peek() == Token::Semicolon {
