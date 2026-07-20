@@ -368,8 +368,18 @@ impl Parser {
     /// full constant expression so an enum constant (`case GX_MODULATE:`) or a folded
     /// expression (`case A | B:`) resolves, not just a bare integer literal.
     pub(crate) fn parse_integer_constant(&mut self) -> Compilation<i64> {
+        let expression_start = self.position;
         let expression = self.expression()?;
-        crate::expressions::fold_constant_expression(&expression)
+        crate::expressions::fold_constant_expression(&expression).map_err(|error| {
+            if std::env::var_os("MWCC_PARSE_DEBUG").is_some() {
+                eprintln!(
+                    "non-constant integer expression at {} (tokens {expression_start}..{}): {expression:?}",
+                    self.diagnostic_position(expression_start),
+                    self.position,
+                );
+            }
+            error
+        })
     }
 
     /// Parse `switch (scrutinee) { case <int>: return E; ... default: return E; }`.

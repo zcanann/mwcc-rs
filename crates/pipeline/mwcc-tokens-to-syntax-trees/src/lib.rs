@@ -193,6 +193,37 @@ mod tests {
     }
 
     #[test]
+    fn folds_floating_constant_expressions_cast_to_static_integer_elements() {
+        let source = r#"
+            void f(void) {
+                static short angles[4] = {
+                    (short)(0.0f * (65536.0f / 360.0f)),
+                    (short)(90.0f * (65536.0f / 360.0f)),
+                    (short)(-180.0f * (65536.0f / 360.0f)),
+                    (short)(-90.0f * (65536.0f / 360.0f)),
+                };
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let angles = unit.functions[0]
+            .locals
+            .iter()
+            .find(|local| local.name == "angles")
+            .unwrap();
+        assert_eq!(
+            angles.data_bytes.as_deref(),
+            Some(&[0x00, 0x00, 0x40, 0x00, 0x80, 0x00, 0xc0, 0x00][..])
+        );
+    }
+
+    #[test]
     fn records_peephole_pragma_scope_on_functions() {
         let source = r#"
             #pragma peephole off

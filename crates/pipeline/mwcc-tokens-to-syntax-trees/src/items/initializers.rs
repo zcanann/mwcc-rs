@@ -242,6 +242,7 @@ impl Parser {
                 // (`M_PI / 180`, `1.0f / 3.0f`, a bare literal, `-1.5f`), then narrowed to
                 // the element width. Parse and fold it rather than accepting only a single
                 // literal.
+                let expression_start = self.position;
                 let expression = self.expression()?;
                 let value = match crate::expressions::fold_constant_float(&expression) {
                     Ok(value) => value,
@@ -249,6 +250,13 @@ impl Parser {
                     // mwcc zero-fills the image and synthesizes a `__sinit`
                     // startup assignment. Stash for the caller to attribute.
                     Err(_) => {
+                        if std::env::var_os("MWCC_PARSE_DEBUG").is_some() {
+                            eprintln!(
+                                "non-constant floating initializer for {element_type:?} at {} (tokens {expression_start}..{})",
+                                self.diagnostic_position(expression_start),
+                                self.position,
+                            );
+                        }
                         self.unfolded_float_element = Some(expression);
                         0.0
                     }
@@ -260,8 +268,18 @@ impl Parser {
                 })
             }
             _ => {
+                let expression_start = self.position;
                 let expression = self.expression()?;
-                crate::expressions::fold_constant_expression(&expression)
+                crate::expressions::fold_constant_expression(&expression).map_err(|error| {
+                    if std::env::var_os("MWCC_PARSE_DEBUG").is_some() {
+                        eprintln!(
+                            "non-constant integer initializer for {element_type:?} at {} (tokens {expression_start}..{})",
+                            self.diagnostic_position(expression_start),
+                            self.position,
+                        );
+                    }
+                    error
+                })
             }
         }
     }

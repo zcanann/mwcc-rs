@@ -71,15 +71,26 @@ pub(crate) fn fold_constant_expression(expression: &Expression) -> Compilation<i
             target_type,
             operand,
         } => {
-            let value = fold_constant_expression(operand)?;
             match target_type {
                 // A pointer cast keeps the (integer) address value; a non-integer
                 // cast cannot be represented here.
-                Type::Pointer(_) | Type::StructPointer { .. } => value,
+                Type::Pointer(_) | Type::StructPointer { .. } => {
+                    fold_constant_expression(operand)?
+                }
                 Type::Float | Type::Double | Type::Struct { .. } | Type::Void => {
                     return Err(Diagnostic::error("a non-integer cast in a constant initializer is not supported yet (roadmap)"))
                 }
-                integer => truncate_to_integer(value, *integer),
+                integer => {
+                    // An explicit integer cast makes an otherwise-floating
+                    // constant expression valid in an integer initializer:
+                    // `(s16)(90.0f * (65536.0f / 360.0f))`. C truncates toward
+                    // zero before applying the destination width/sign.
+                    let value = match fold_constant_expression(operand) {
+                        Ok(value) => value,
+                        Err(_) => fold_constant_float(operand)?.trunc() as i64,
+                    };
+                    truncate_to_integer(value, *integer)
+                }
             }
         }
         _ => {
@@ -126,6 +137,24 @@ pub(crate) fn fold_constant_float(expression: &Expression) -> Compilation<f64> {
                 }
             }
         }
+        Expression::Cast {
+            target_type: Type::Float | Type::Double,
+            operand,
+        } => fold_constant_float(operand)?,
+        Expression::Cast {
+            target_type,
+            operand,
+        } if matches!(
+            target_type,
+            Type::Int
+                | Type::UnsignedInt
+                | Type::Char
+                | Type::UnsignedChar
+                | Type::Short
+                | Type::UnsignedShort
+                | Type::LongLong
+                | Type::UnsignedLongLong
+        ) => fold_constant_expression(operand)? as f64,
         _ => {
             return Err(Diagnostic::error(
                 "a non-constant float global initializer is not supported yet (roadmap)",
