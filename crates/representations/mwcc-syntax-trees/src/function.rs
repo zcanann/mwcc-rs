@@ -290,6 +290,11 @@ pub struct TranslationUnit {
     /// indexes it (`lis; addi; lwzx`), distinct from a pointer cast's high-adjusted fold — so codegen
     /// keeps the address rather than desugaring the name (which would compile as the wrong form).
     pub fixed_address_arrays: std::collections::HashMap<String, (i64, Type)>,
+    /// Fixed-address SCALAR/AGGREGATE globals (`volatile PPCWGPipe GXFIFO : 0xCC008000;`):
+    /// name -> address. Expressions still lower through the ordinary
+    /// constant-address dereference shape, but retaining the declaration origin lets scheduling
+    /// distinguish an MWCC absolute object from a source-level pointer cast at the same address.
+    pub fixed_address_objects: std::collections::HashMap<String, i64>,
     /// Physical source boundaries for parsed function definitions, aligned with
     /// `functions`. Compiler-synthesized functions have no physical source.
     pub function_sources: Vec<Option<FunctionSource>>,

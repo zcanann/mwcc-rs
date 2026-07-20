@@ -2138,6 +2138,12 @@ impl Generator {
         if self.try_enum_remap_member_update(function)? {
             return Ok(());
         }
+        // An MWCC absolute-address aggregate carries scheduler provenance that an explicit cast
+        // to the same integer address does not. Preserve that distinction through TU metadata and
+        // claim the SDK command/data/dirty-clear schedule before generic constant-address stores.
+        if self.try_fixed_address_object_flush(function)? {
+            return Ok(());
+        }
         // A single state-field insert followed by command/constant and command/state replay pairs
         // on one fixed port. The repeated command materially changes the build-163 schedule.
         if self.try_fixed_port_replay_update(function)? {

@@ -397,6 +397,7 @@ fn compile(
             &prototyped_names,
             &unit.variadic_definitions,
             &unit.fixed_address_arrays,
+            &unit.fixed_address_objects,
             &inline_summaries,
             config,
         ) {

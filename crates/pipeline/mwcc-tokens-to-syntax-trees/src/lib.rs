@@ -180,6 +180,35 @@ mod tests {
     }
 
     #[test]
+    fn retains_fixed_address_object_origin_after_expression_desugaring() {
+        let source = r#"
+            typedef union Pipe { unsigned char u8; unsigned u32; } Pipe;
+            volatile Pipe PORT : (0xCC008000);
+            void write(void) { PORT.u8 = 0x61; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.fixed_address_objects.get("PORT"), Some(&0xCC008000));
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Store {
+                target: mwcc_syntax_trees::Expression::Member {
+                    base,
+                    member_type: mwcc_syntax_trees::Type::UnsignedChar,
+                    ..
+                },
+                ..
+            }] if matches!(base.as_ref(), mwcc_syntax_trees::Expression::Cast { .. })
+        ));
+    }
+
+    #[test]
     fn retains_function_source_boundaries() {
         let raw = [
             (Token::KeywordInt, 1),

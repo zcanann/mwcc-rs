@@ -853,6 +853,10 @@ impl Parser {
             deferred_function_names: std::mem::take(&mut self.deferred_function_names),
             variadic_definitions: std::mem::take(&mut self.variadic_definitions),
             fixed_address_arrays: std::mem::take(&mut self.fixed_address_arrays),
+            fixed_address_objects: std::mem::take(&mut self.fixed_address_globals)
+                .into_iter()
+                .map(|(name, (address, _cast_target, _tag))| (name, address))
+                .collect(),
             function_sources: std::mem::take(&mut self.function_sources),
         })
     }

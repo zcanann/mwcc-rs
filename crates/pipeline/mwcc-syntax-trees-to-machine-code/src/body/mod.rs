@@ -11,6 +11,7 @@ mod dispatchers;
 mod driver;
 mod enum_remap_member_update;
 mod float_store_fill;
+mod fixed_address_object_flush;
 mod fixed_port_bitfield;
 mod fixed_port_indexed_bitfield;
 mod fixed_port_replay_update;

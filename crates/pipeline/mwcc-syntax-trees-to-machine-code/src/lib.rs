@@ -53,6 +53,7 @@ pub fn lower_function(
     prototyped_names: &std::collections::HashSet<String>,
     variadic_definitions: &std::collections::HashSet<String>,
     fixed_address_arrays: &HashMap<String, (i64, mwcc_syntax_trees::Type)>,
+    fixed_address_objects: &HashMap<String, i64>,
     inline_summaries: &InlineSummaries,
     config: CompilerConfig,
 ) -> Compilation<MachineFunction> {
@@ -260,6 +261,10 @@ pub fn lower_function(
         fixed_address_arrays: fixed_address_arrays
             .iter()
             .map(|(name, (address, element))| (name.clone(), (*address as u32, *element)))
+            .collect(),
+        fixed_address_objects: fixed_address_objects
+            .iter()
+            .map(|(name, address)| (name.clone(), *address as u32))
             .collect(),
         frame_row_bytes: function
             .locals
