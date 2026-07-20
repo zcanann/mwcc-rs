@@ -372,6 +372,14 @@ impl Generator {
             if constant_after_global {
                 let direct_call =
                     !self.globals.contains_key(name) && !self.locations.contains_key(name);
+                if self.try_emit_unscheduled_global_constant_arguments(arguments, direct_call)? {
+                    return Ok(());
+                }
+                if self
+                    .try_emit_absolute_short_global_constant_arguments(arguments, direct_call)?
+                {
+                    return Ok(());
+                }
                 let mut global_argument: Option<(usize, String)> = None;
                 let mut constants: Vec<(usize, i16)> = Vec::new();
                 let mut simple = direct_call && arguments.len() <= 3;
