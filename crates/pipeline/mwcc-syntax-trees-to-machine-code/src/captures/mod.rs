@@ -296,6 +296,9 @@ mod mpc_fpclassifyd;
 mod mpc_fpclassifyf;
 mod mpc_powf;
 mod mpc_sinf;
+mod mp_ianim_advancement;
+mod mp_ianim_vsimplified;
+mod mp_wstring_l;
 mod mtc_logf;
 mod mth_fabsf;
 mod mth_frexp;
@@ -778,6 +781,9 @@ impl Generator {
             );
         }
         let fired = self.try_rt_va_arg(function)?
+            || self.try_mp_ianim_advancement(function)?
+            || self.try_mp_ianim_vsimplified(function)?
+            || self.try_mp_wstring_l(function)?
             || self.try_ack_kigae_mv(function)?
             || self.try_ar_checksize(function)?
             || self.try_rt_va_arg_50(function)?

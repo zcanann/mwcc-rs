@@ -1166,6 +1166,9 @@ impl Generator {
         if self.try_captures(function)? {
             return Ok(());
         }
+        if self.try_guarded_virtual_forwarder(function)? {
+            return Ok(());
+        }
         // A callback nested in a large global aggregate, with a by-value aggregate second
         // argument and a ninth stack argument. Claim the complete EABI transaction before
         // broad statement handlers split its address-taken parameter and callback apart.
@@ -1369,9 +1372,10 @@ impl Generator {
         // not modeled. Defer rather than emit a bare `blr` that drops the result (a miscompile:
         // the caller would read the input pointer / stale registers as the returned struct).
         if matches!(function.return_type, Type::Struct { .. }) {
-            return Err(Diagnostic::error(
-                "returning a struct by value is not supported yet (roadmap)",
-            ));
+            return Err(Diagnostic::error(format!(
+                "returning a struct by value is not supported yet (roadmap; function '{}')",
+                function.name
+            )));
         }
         // A whole-array float/double constant-init run (`g[0]=1.0f; g[1]=2.0f; …`) uses mwcc's
         // shared-base `stfsu` schedule — claim it before the base-addressed-aggregate pre-check
