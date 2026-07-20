@@ -320,6 +320,42 @@ def build_coverage(
     }
 
 
+def goal_completion(
+    rows: List[Dict[str, Any]], observations: Dict[str, Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Report literal proof against the all-configurations success criterion."""
+
+    by_project: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        if row["source_exists"]:
+            by_project[row["project"]].append(row)
+
+    projects = []
+    for name, project_rows in sorted(by_project.items()):
+        exact = sum(
+            authoritative_result(observations[row["configuration_id"]]) == "BYTE"
+            for row in project_rows
+            if row["configuration_id"] in observations
+        )
+        projects.append(
+            {
+                "name": name,
+                "configurations": len(project_rows),
+                "authoritative_exact": exact,
+                "remaining": len(project_rows) - exact,
+                "proven_complete": exact == len(project_rows),
+            }
+        )
+    return {
+        "criterion": "every configured translation unit is whole-object byte-identical",
+        "configurations": sum(item["configurations"] for item in projects),
+        "authoritative_exact": sum(item["authoritative_exact"] for item in projects),
+        "projects": len(projects),
+        "projects_proven_complete": sum(item["proven_complete"] for item in projects),
+        "by_project": projects,
+    }
+
+
 def snapshot(
     inventory: Dict[str, Any],
     rows: List[Dict[str, Any]],
@@ -362,6 +398,7 @@ def snapshot(
             "substantive_existing": substantive_existing,
             "trivial_existing": len(existing) - substantive_existing,
         },
+        "goal_completion": goal_completion(rows, observations),
         "build_coverage": build_coverage(rows, observations, unsupported_versions),
         "statuses": {status: counts[status] for status in STATUSES},
         "rates": {
@@ -545,6 +582,18 @@ def representative_audit(
         for version, identity in manifest.get("version_coverage", {}).items()
         if identity in universe
     }
+    coverage_cells = [
+        {
+            **cell,
+            "status": (
+                observations[cell["configuration_id"]]["status"]
+                if cell["configuration_id"] in observations
+                else "UNTESTED"
+            ),
+        }
+        for cell in manifest.get("coverage_cells", [])
+        if cell.get("configuration_id") in universe
+    ]
     declared_population = manifest.get("population_size")
     population_matches = declared_population is None or declared_population == len(universe)
     selection_members_present = len(selected) == len(selection)
@@ -568,6 +617,14 @@ def representative_audit(
         "execution_observed": len(execution_direct),
         "version_coverage": version_coverage,
         "version_sentinels": len(manifest.get("version_sentinel_configuration_ids", [])),
+        "breadth_coverage_dimensions": manifest.get("coverage_dimensions", []),
+        "breadth_coverage_cells": len(coverage_cells),
+        "breadth_coverage_observed": sum(
+            cell["status"] != "UNTESTED" for cell in coverage_cells
+        ),
+        "breadth_sentinels": len(
+            manifest.get("coverage_sentinel_configuration_ids", [])
+        ),
         "runtime": runtime_summary(execution_direct.values()),
         "estimate": None,
     }
@@ -783,6 +840,12 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
         f"configurations: {report['existing']} existing / {report['configured']} configured "
         f"({report['missing_source']} missing source)"
     )
+    goal = report["goal_completion"]
+    print(
+        "goal completion proof: whole-object exact "
+        f"{goal['authoritative_exact']}/{goal['configurations']} configured TUs; "
+        f"fully exact project matrices {goal['projects_proven_complete']}/{goal['projects']}"
+    )
     print(
         f"classified: {report['classified']}/{report['existing']} "
         f"({report['rates']['classified_of_existing']:.1%}); "
@@ -814,11 +877,6 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
         count = report["statuses"][status]
         rate = count / report["existing"] if report["existing"] else 0.0
         print(f"{status:18} {count:8d} {rate:11.1%}")
-    print(
-        f"\nproven exact parity (full-corpus lower bound): "
-        f"{report['authoritative_byte']}/{report['existing']} existing "
-        f"({report['rates']['byte_of_existing']:.3%})"
-    )
     audit = report.get("representative_audit")
     if audit is not None:
         print(
@@ -834,6 +892,13 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
             print(
                 f"audit compiler-version coverage: {covered}/{len(audit['version_coverage'])} "
                 f"observed ({audit['version_sentinels']} out-of-sample sentinels)"
+            )
+        if audit["breadth_coverage_cells"]:
+            dimensions = " x ".join(audit["breadth_coverage_dimensions"])
+            print(
+                f"audit breadth coverage ({dimensions}): "
+                f"{audit['breadth_coverage_observed']}/{audit['breadth_coverage_cells']} "
+                f"cells observed ({audit['breadth_sentinels']} out-of-sample sentinels)"
             )
         if runtime["measured"]:
             print(
@@ -858,6 +923,12 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
                 f"{estimate['confirmed_proportion']:.1%}; sample 95% CI "
                 f"{estimate['confirmed_interval_low']:.1%}.."
                 f"{estimate['confirmed_interval_high']:.1%}"
+            )
+            print(
+                "audit measurement completeness: resolved parity outcomes "
+                f"{estimate['resolved_outcomes']}/{estimate['total']} = "
+                f"{estimate['resolved_outcomes'] / estimate['total']:.1%}; "
+                f"unknown {estimate['measurement_unknown']}/{estimate['total']}"
             )
             if estimate["substantive_source_total"]:
                 print(

@@ -52,8 +52,19 @@ python3 tools/parity_loop.py --work-only --epoch 0
 python3 tools/parity_loop.py --audit-only --audit-size 384 --rerun
 ```
 
-The report separates `BYTE`, `DIFF`, `DEFER`, `HARNESS`, unsupported builds, and
-untested configurations, with language, compiler-version, and project
+The scorecard leads with the literal completion proof: authoritative exact
+translation-unit configurations over the full configured corpus, and project
+matrices for which every configuration is proven exact. The fixed audit is a
+simple random sample without replacement, so it reports a corpus estimate and
+confidence interval with an explicit denominator. Measurement-unknown rows
+(missing dependencies, invalid captured configurations, harness failures, or
+non-authoritative synthetic comparisons) widen separate identification bounds;
+they are never silently counted as compiler failures or successes. Deterministic
+out-of-sample canaries cover every project x compiler-version x language cell,
+while remaining outside the statistical estimator.
+
+The report also separates `BYTE`, `DIFF`, `DEFER`, `HARNESS`, unsupported builds,
+and untested configurations, with language, compiler-version, and project
 breakdowns. Full-object parity remains the credited success measure. A separate
 code-plus-text-relocation diagnostic includes explicitly labeled, non-credit
 `-sym off` projections for configurations blocked only by unimplemented debug

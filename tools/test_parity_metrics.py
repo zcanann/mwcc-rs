@@ -268,6 +268,32 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(report["statuses"]["BYTE"], 2)
         self.assertEqual(report["authoritative_byte"], 1)
         self.assertEqual(report["rates"]["byte_of_existing"], 0.5)
+        self.assertEqual(report["goal_completion"]["authoritative_exact"], 1)
+        self.assertEqual(report["goal_completion"]["projects_proven_complete"], 0)
+
+    def test_goal_completion_requires_every_project_configuration(self):
+        rows = [
+            row(project="complete", source="src/a.c"),
+            row(project="partial", source="src/a.c"),
+            row(project="partial", source="src/b.c"),
+        ]
+        observations = {
+            item["configuration_id"]: {
+                "status": "BYTE",
+                "evidence": {
+                    "oracle_direct": "RUNNABLE",
+                    "comparison_input": "DIRECT",
+                },
+            }
+            for item in rows[:2]
+        }
+        goal = snapshot({"projects": []}, rows, observations, "tool")[
+            "goal_completion"
+        ]
+        self.assertEqual(goal["authoritative_exact"], 2)
+        self.assertEqual(goal["configurations"], 3)
+        self.assertEqual(goal["projects_proven_complete"], 1)
+        self.assertEqual(goal["projects"], 2)
 
     def test_one_unsupported_build_probe_classifies_the_whole_version(self):
         rows = [row(source=f"src/{index}.c", mw_version="Wii/1.0") for index in range(3)]
@@ -583,6 +609,31 @@ class AuditSelectionTests(unittest.TestCase):
             for item in (large, small, nonmatching)
         ):
             self.assertEqual(audit["version_coverage"]["GC/1.1"], small["configuration_id"])
+
+    def test_fixed_audit_covers_every_project_version_language_cell(self):
+        rows = [row(source=f"src/common-{index}.c") for index in range(20)]
+        rare = row(
+            project="rare-project",
+            source="src/rare.cpp",
+            language="c++",
+            mw_version="GC/1.1",
+        )
+        rows.append(rare)
+        audit = build_audit(rows, 1, "seed", "0")
+        cells = {
+            (cell["project"], cell["mw_version"], cell["language"]): cell[
+                "configuration_id"
+            ]
+            for cell in audit["coverage_cells"]
+        }
+        self.assertEqual(
+            set(cells),
+            {("project", "GC/2.6", "c"), ("rare-project", "GC/1.1", "c++")},
+        )
+        self.assertIn(rare["configuration_id"], audit["configuration_ids"])
+        self.assertEqual(
+            len(audit["configuration_ids"]), len(set(audit["configuration_ids"]))
+        )
 
 
 class FrontierTests(unittest.TestCase):
