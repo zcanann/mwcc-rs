@@ -1276,9 +1276,10 @@ impl Generator {
         if self.try_writeback_norm(function)? {
             return Ok(());
         }
-        // Even an empty variadic definition receives the EABI parameter-save
-        // area. Its self-contained owner runs before the broader variadic gate.
-        if self.try_empty_variadic_definition(function)? {
+        // Even a side-effect-free variadic definition receives the EABI
+        // parameter-save area. Its self-contained owner runs before the broader
+        // variadic gate.
+        if self.try_simple_variadic_definition(function)? {
             return Ok(());
         }
         // A non-empty VARIADIC definition only a capture may claim — composing
