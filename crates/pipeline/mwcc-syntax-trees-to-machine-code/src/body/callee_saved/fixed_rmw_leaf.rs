@@ -11,12 +11,17 @@ impl Generator {
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
+        if self.try_fixed_address_word_rmw_return(function)? {
+            return Ok(true);
+        }
         if self.try_fixed_address_direct_immediate_rmw(function)? {
+            return Ok(true);
+        }
+        if self.try_fixed_address_parameterized_rmw(function)? {
             return Ok(true);
         }
         self.try_fixed_address_local_rmw(function)
     }
-
     fn try_fixed_address_direct_immediate_rmw(&mut self, function: &Function) -> Compilation<bool> {
         if !function.parameters.is_empty()
             || !function.locals.is_empty()

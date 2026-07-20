@@ -609,6 +609,8 @@ impl Generator {
                     Ok(location.signed)
                 } else if let Some(global_type) = self.globals.get(name) {
                     Ok(global_type.is_signed())
+                } else if let Some((_, element_type)) = self.fixed_address_arrays.get(name) {
+                    Ok(element_type.is_signed())
                 } else {
                     Err(Diagnostic::error(format!("unknown variable '{name}'")))
                 }
@@ -714,6 +716,17 @@ impl Generator {
             {
                 return Ok(pointee);
             }
+        }
+        // Fixed-address hardware-register arrays carry their element type in a
+        // separate addressing table rather than in emitted globals. Type queries
+        // must still classify `bank[index]` before the specialized load/store
+        // emitter materializes the absolute base.
+        if let Some(pointee) = self
+            .fixed_address_arrays
+            .get(name)
+            .and_then(|(_, element_type)| crate::expressions::pointee_of_type(*element_type))
+        {
+            return Ok(pointee);
         }
         Err(Diagnostic::error(format!("'{name}' is not a pointer")))
     }

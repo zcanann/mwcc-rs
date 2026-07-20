@@ -475,6 +475,31 @@ pub enum FixedAddressRmwStyle {
     MaterializedPageWithPromotedMask,
 }
 
+/// Register placement and scheduling for a word-sized fixed-address RMW that
+/// inserts shifted parameter bits and returns a constant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixedAddressParameterizedRmwStyle {
+    /// GC 2.4.x folds the bank low half into the load/store displacement.
+    Mainline24,
+    /// GC 2.3.3 materializes the complete bank address before the load.
+    Legacy233,
+    /// GC 1.3 build 53 materializes the preserve mask in a third register.
+    Early24,
+    /// The 4.x optimizer reverses the base/value registers and folds the
+    /// constant insert into the loaded value rather than the shifted parameter.
+    Modern4x,
+}
+
+/// Scheduling of the base and value materializations for a constant written to
+/// a constant-index fixed-address array slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixedAddressConstantStoreStyle {
+    /// Mainline 2.4.x and GC 4.1 materialize the r0 value before the base.
+    ValueFirst,
+    /// GC 2.3.3 and Wii 4.3 materialize the fixed base before the r0 value.
+    BaseFirst,
+}
+
 /// Address shape used by a busy-wait load from a fixed-address register bank.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FixedAddressPollAddressStyle {
@@ -894,6 +919,14 @@ pub trait CodegenProfile: core::fmt::Debug {
         FixedAddressRmwStyle::FoldedDisplacementWithNarrowMask
     }
 
+    fn fixed_address_parameterized_rmw_style(&self) -> FixedAddressParameterizedRmwStyle {
+        FixedAddressParameterizedRmwStyle::Mainline24
+    }
+
+    fn fixed_address_constant_store_style(&self) -> FixedAddressConstantStoreStyle {
+        FixedAddressConstantStoreStyle::ValueFirst
+    }
+
     fn fixed_address_poll_address_style(&self) -> FixedAddressPollAddressStyle {
         FixedAddressPollAddressStyle::MaterializedElementForNonzeroIndex
     }
@@ -925,6 +958,10 @@ impl CodegenProfile for Mainline {}
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn fixed_address_parameterized_rmw_style(&self) -> FixedAddressParameterizedRmwStyle {
+        FixedAddressParameterizedRmwStyle::Modern4x
+    }
+
     fn terminal_indirect_tail_call(&self) -> bool {
         true
     }
@@ -951,6 +988,14 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn fixed_address_parameterized_rmw_style(&self) -> FixedAddressParameterizedRmwStyle {
+        FixedAddressParameterizedRmwStyle::Modern4x
+    }
+
+    fn fixed_address_constant_store_style(&self) -> FixedAddressConstantStoreStyle {
+        FixedAddressConstantStoreStyle::BaseFirst
+    }
+
     fn terminal_indirect_tail_call(&self) -> bool {
         true
     }
@@ -977,6 +1022,10 @@ impl CodegenProfile for Wii43Build145 {
 #[derive(Debug)]
 pub struct Gc13Build53;
 impl CodegenProfile for Gc13Build53 {
+    fn fixed_address_parameterized_rmw_style(&self) -> FixedAddressParameterizedRmwStyle {
+        FixedAddressParameterizedRmwStyle::Early24
+    }
+
     fn char_is_signed(&self) -> bool {
         false
     }
@@ -1240,6 +1289,14 @@ impl CodegenProfile for Gc233Build163 {
 
     fn fixed_address_rmw_style(&self) -> FixedAddressRmwStyle {
         FixedAddressRmwStyle::MaterializedPageWithPromotedMask
+    }
+
+    fn fixed_address_parameterized_rmw_style(&self) -> FixedAddressParameterizedRmwStyle {
+        FixedAddressParameterizedRmwStyle::Legacy233
+    }
+
+    fn fixed_address_constant_store_style(&self) -> FixedAddressConstantStoreStyle {
+        FixedAddressConstantStoreStyle::BaseFirst
     }
 
     fn fixed_address_poll_address_style(&self) -> FixedAddressPollAddressStyle {

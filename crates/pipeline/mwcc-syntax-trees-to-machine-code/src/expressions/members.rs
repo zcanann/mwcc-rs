@@ -1791,7 +1791,9 @@ impl Generator {
     /// the base materialized in the INDEX register (there is no load destination): a `mulli` scale
     /// takes the index reg as the base (`mulli r0; lis idx; addi idx; …`); a `slwi` scale puts the
     /// base-high in a scratch (avoiding the value and index) then the base in the index register.
-    /// The value must be a register variable and must not alias the index register; otherwise defers.
+    /// A constant-index store also accepts an integer constant value: mwcc
+    /// materializes the fixed base first and the value in r0 second. A variable
+    /// index still requires a register value that does not alias the index.
     pub(crate) fn emit_fixed_address_array_subscript_store(
         &mut self,
         element: Pointee,
@@ -1799,10 +1801,11 @@ impl Generator {
         index: &Expression,
         value: &Expression,
     ) -> Compilation<bool> {
-        if !matches!(value, Expression::Variable(_)) {
-            return Ok(false);
-        }
-        let source = self.general_register_of_leaf(value)?;
+        let variable_source = if matches!(value, Expression::Variable(_)) {
+            Some(self.general_register_of_leaf(value)?)
+        } else {
+            None
+        };
         let high_adjusted = (((address as i64 + 0x8000) >> 16) & 0xFFFF) as i16;
         let low = address as i16;
         let size = element.size() as i64;
@@ -1810,15 +1813,44 @@ impl Generator {
             let displacement = i16::try_from(low as i64 + constant * size).map_err(|_| {
                 Diagnostic::error("fixed-address array subscript offset out of range (roadmap)")
             })?;
-            let base = self.free_general_excluding(source)?;
-            self.output
-                .instructions
-                .push(Instruction::load_immediate_shifted(base, high_adjusted));
+            if variable_source.is_none()
+                && (constant_value(value).is_none()
+                    || matches!(element, Pointee::Float | Pointee::Double))
+            {
+                return Ok(false);
+            }
+            let (base, source) = if let Some(source) = variable_source {
+                let base = self.free_general_excluding(source)?;
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate_shifted(base, high_adjusted));
+                (base, source)
+            } else if self.behavior.fixed_address_constant_store_style
+                == mwcc_versions::FixedAddressConstantStoreStyle::ValueFirst
+            {
+                let source = self.place_store_value(value, element)?;
+                let base = self.free_general_excluding(source)?;
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate_shifted(base, high_adjusted));
+                (base, source)
+            } else {
+                let source = GENERAL_SCRATCH;
+                let base = self.free_general_excluding(source)?;
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate_shifted(base, high_adjusted));
+                let source = self.place_store_value(value, element)?;
+                (base, source)
+            };
             self.output
                 .instructions
                 .push(displacement_store(element, source, base, displacement)?);
             return Ok(true);
         }
+        let Some(source) = variable_source else {
+            return Ok(false);
+        };
         let Some((leaf, factor, offset)) = split_scaled_index(index) else {
             return Ok(false);
         };

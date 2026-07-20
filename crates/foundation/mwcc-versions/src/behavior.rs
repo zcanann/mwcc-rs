@@ -16,8 +16,9 @@ use crate::flags::{GlobalAddressing, Optimization};
 use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
     CoefficientTableRelocationStyle, CommaValuePlacementStyle, ComputedStoreIssueStyle,
-    ConstantStoreScheduleStyle, FieldMergeStyle, FixedAddressPollAddressStyle,
-    FixedAddressRmwStyle, FoldedFloatCompareLinkageStyle, FrameConvention, FrexpFamilyStyle,
+    ConstantStoreScheduleStyle, FieldMergeStyle, FixedAddressConstantStoreStyle,
+    FixedAddressParameterizedRmwStyle, FixedAddressPollAddressStyle, FixedAddressRmwStyle,
+    FoldedFloatCompareLinkageStyle, FrameConvention, FrexpFamilyStyle,
     DataSectionRelocationStyle, GlobalArrayDecayStoreStyle, GlobalArrayIndexStyle,
     IndexedRmwAssignmentStyle,
     IntCallResultConversionStyle,
@@ -624,6 +625,10 @@ pub struct Behavior {
     pub asm_function_finalization_style: AsmFunctionFinalizationStyle,
     /// Base and mask selection for fixed-address halfword RMW leaves.
     pub fixed_address_rmw_style: FixedAddressRmwStyle,
+    /// Register/schedule family for word fixed-address parameterized RMW leaves.
+    pub fixed_address_parameterized_rmw_style: FixedAddressParameterizedRmwStyle,
+    /// Base/value materialization order for fixed-address constant stores.
+    pub fixed_address_constant_store_style: FixedAddressConstantStoreStyle,
     /// Address materialization used by fixed-register busy-wait loads.
     pub fixed_address_poll_address_style: FixedAddressPollAddressStyle,
     /// Whether verified compound queue callers inline the service helper CFG.
@@ -845,6 +850,14 @@ impl Behavior {
             asm_branch_optimization_style: config.build.profile.asm_branch_optimization_style(),
             asm_function_finalization_style: config.build.profile.asm_function_finalization_style(),
             fixed_address_rmw_style: config.build.profile.fixed_address_rmw_style(),
+            fixed_address_parameterized_rmw_style: config
+                .build
+                .profile
+                .fixed_address_parameterized_rmw_style(),
+            fixed_address_constant_store_style: config
+                .build
+                .profile
+                .fixed_address_constant_store_style(),
             fixed_address_poll_address_style: config
                 .build
                 .profile
