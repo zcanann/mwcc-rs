@@ -13,6 +13,7 @@ from parity_dashboard import (
     code_result,
     failure_reason,
     representative_audit,
+    runtime_summary,
     snapshot,
     wilson_interval,
     work_frontier,
@@ -77,6 +78,22 @@ class IdentityTests(unittest.TestCase):
 
 
 class DashboardTests(unittest.TestCase):
+    def test_runtime_summary_reports_cost_distribution_and_missing_count(self):
+        report = runtime_summary(
+            [
+                {"elapsed_seconds": 4.0},
+                {"elapsed_seconds": 1.0},
+                {},
+                {"elapsed_seconds": 3.0},
+                {"elapsed_seconds": 2.0},
+            ]
+        )
+        self.assertEqual(report["measured"], 4)
+        self.assertEqual(report["total_seconds"], 10.0)
+        self.assertEqual(report["median_seconds"], 2.5)
+        self.assertEqual(report["p95_seconds"], 4.0)
+        self.assertEqual(report["max_seconds"], 4.0)
+
     def test_code_result_distinguishes_full_exact_projection_and_unknown(self):
         self.assertEqual(code_result({"status": "BYTE"}), "BYTE")
         self.assertEqual(

@@ -398,6 +398,40 @@ def wilson_interval(successes: int, total: int, z: float = 1.959963984540054) ->
     return (max(0.0, center - radius), min(1.0, center + radius))
 
 
+def runtime_summary(observations: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+    """Summarize measured per-configuration wall time without guessing missing values."""
+
+    elapsed = sorted(
+        float(observation["elapsed_seconds"])
+        for observation in observations
+        if isinstance(observation.get("elapsed_seconds"), (int, float))
+        and observation["elapsed_seconds"] >= 0
+    )
+    if not elapsed:
+        return {
+            "measured": 0,
+            "total_seconds": None,
+            "median_seconds": None,
+            "p95_seconds": None,
+            "max_seconds": None,
+        }
+    count = len(elapsed)
+    middle = count // 2
+    median = (
+        elapsed[middle]
+        if count % 2
+        else (elapsed[middle - 1] + elapsed[middle]) / 2.0
+    )
+    p95_index = math.ceil(0.95 * count) - 1
+    return {
+        "measured": count,
+        "total_seconds": sum(elapsed),
+        "median_seconds": median,
+        "p95_seconds": elapsed[p95_index],
+        "max_seconds": elapsed[-1],
+    }
+
+
 def substantive_source_estimate(
     rows: List[Dict[str, Any]],
     selected: set[str],
@@ -469,6 +503,7 @@ def representative_audit(
         "observed": len(direct),
         "complete": complete,
         "statuses": {status: counts[status] for status in STATUSES if status != "UNTESTED"},
+        "runtime": runtime_summary(direct.values()),
         "estimate": None,
     }
     if complete and selected and design_valid:
@@ -660,6 +695,13 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
             f"({'complete' if audit['complete'] else 'INCOMPLETE'}; "
             f"design {'valid' if audit['design_valid'] else 'INVALID'})"
         )
+        runtime = audit["runtime"]
+        if runtime["measured"]:
+            print(
+                f"audit execution cost: {runtime['total_seconds']:.1f}s aggregate for "
+                f"{runtime['measured']} rows; median {runtime['median_seconds']:.3f}s; "
+                f"p95 {runtime['p95_seconds']:.3f}s; max {runtime['max_seconds']:.3f}s"
+            )
         if not audit["design_valid"]:
             print(
                 "audit estimate suppressed: inventory population or fixed sample membership changed; "
