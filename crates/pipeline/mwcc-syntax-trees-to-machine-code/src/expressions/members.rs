@@ -918,9 +918,7 @@ impl Generator {
         // `destination` cannot be the scratch r0 (an `addi`/load based on r0 reads
         // literal zero, not the register). A BYTE element's base is a separate
         // (virtual) register, so its variable-index path below tolerates r0.
-        if destination == GENERAL_SCRATCH
-            && !(pointee.size() == 1 && constant_value(index).is_none())
-        {
+        if destination == GENERAL_SCRATCH && constant_value(index).is_some() {
             return Err(Diagnostic::error(
                 "a global-array subscript into the scratch register is not supported yet (roadmap)",
             ));
@@ -1110,6 +1108,8 @@ impl Generator {
         let shift = size.trailing_zeros() as u8;
         let base_gpr = if matches!(pointee, Pointee::Float | Pointee::Double) {
             self.free_general_excluding(GENERAL_SCRATCH)?
+        } else if destination == GENERAL_SCRATCH {
+            self.fresh_virtual_general()
         } else {
             destination
         };

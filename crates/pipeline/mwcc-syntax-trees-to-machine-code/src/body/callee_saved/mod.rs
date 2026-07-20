@@ -6,6 +6,7 @@ mod combine;
 mod bitmask_call_chain;
 mod computed_between_calls;
 mod conditional;
+mod conditional_member_callback;
 mod context_callback_handler;
 mod critical_globals;
 mod fixed_read;

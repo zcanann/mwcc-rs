@@ -295,6 +295,53 @@ impl Generator {
                 self.emit_epilogue_and_return();
                 return Ok(true);
             }
+            // A pointer-shaped local that is only a spelling alias for a
+            // parameter has no independent value or lifetime. Substitute it
+            // through a straight run of stores so member-address formation
+            // continues to use the incoming parameter register.
+            if !function_makes_call(function)
+                && function.guards.is_empty()
+                && function
+                    .statements
+                    .iter()
+                    .all(|statement| matches!(statement, Statement::Store { .. }))
+            {
+                if let [local] = function.locals.as_slice() {
+                    let alias_source = match local.initializer.as_ref() {
+                        Some(Expression::Variable(source)) => Some(source.as_str()),
+                        Some(Expression::Cast { operand, .. }) => match operand.as_ref() {
+                            Expression::Variable(source) => Some(source.as_str()),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    let pointer_shaped = matches!(
+                        local.declared_type,
+                        Type::Pointer(_) | Type::StructPointer { .. }
+                    );
+                    if pointer_shaped
+                        && alias_source.is_some_and(|source| {
+                            function.parameters.iter().any(|parameter| {
+                                parameter.name == source
+                                    && matches!(
+                                        parameter.parameter_type,
+                                        Type::Pointer(_) | Type::StructPointer { .. }
+                                    )
+                            })
+                        })
+                    {
+                        let mut aliases = HashMap::new();
+                        aliases.insert(local.name.clone(), local.initializer.clone().unwrap());
+                        for statement in &function.statements {
+                            let statement =
+                                crate::body::substitute_statement(statement, &aliases);
+                            self.emit_statement(&statement)?;
+                        }
+                        self.emit_epilogue_and_return();
+                        return Ok(true);
+                    }
+                }
+            }
             // A void leaf function that computes ONE `int` local once and stores it to two-plus
             // scratch-safe targets (`int t = a + b; g = t; h = t;`). mwcc materializes the local in
             // the scratch (r0) and stores from it — it does NOT duplicate the computation the way
