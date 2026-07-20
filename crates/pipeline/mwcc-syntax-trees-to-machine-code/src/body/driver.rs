@@ -51,6 +51,9 @@ impl Generator {
     /// (`r3:r4` = high:low). Only a narrow set of shapes is modeled; the rest defer rather than
     /// fall through to the 32-bit codegen (which emits a single-register result for a 64-bit value).
     pub(crate) fn emit_long_long(&mut self, function: &Function) -> Compilation<()> {
+        if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() {
+            eprintln!("long-long function: {function:#?}");
+        }
         // Fold trivial long-long LOCALS (each initialized once, no reassignment,
         // and used without duplicating a non-leaf computation) into the return —
         // `long long c = a+b; return c;` is byte-identical to `return a+b;`. This
@@ -199,13 +202,19 @@ impl Generator {
                 }
             }
         }
-        // Long-long LOCALS (which need pair spills), guards, and statements are not modeled yet.
+        if self.try_volatile_long_long_wait(function)? {
+            return Ok(());
+        }
+        // Other long-long LOCALS (which need pair spills), guards, and statements are not modeled yet.
         if !function.locals.is_empty()
             || !function.guards.is_empty()
             || !function.statements.is_empty()
         {
             return Err(Diagnostic::error(
-                "this long long shape is not modeled yet (roadmap)",
+                format!(
+                    "this long long shape is not modeled yet (roadmap; function '{}')",
+                    function.name
+                ),
             ));
         }
         let high = Eabi::general_result().number; // r3 — the result HIGH word

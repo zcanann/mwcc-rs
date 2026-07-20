@@ -20,6 +20,7 @@ mod if_else;
 mod indirect_call;
 mod ladders;
 mod legacy_constant_store;
+mod long_long_wait;
 mod loops;
 mod member_store_fill;
 mod passes;
