@@ -303,6 +303,9 @@ def snapshot(
     unmapped = sum(len(project.get("unmapped_sources", [])) for project in project_entries)
     discovered = sum(project.get("source_count", 0) for project in project_entries)
     mapped = sum(project.get("mapped_source_count", 0) for project in project_entries)
+    substantive_existing = sum(
+        bool(row.get("source_has_non_whitespace", True)) for row in existing
+    )
     return {
         "tool_fingerprint": tool,
         "configured": len(rows),
@@ -312,6 +315,10 @@ def snapshot(
         "classified": classified,
         "evaluable": evaluable,
         "source_inventory": {"discovered": discovered, "mapped": mapped, "unmapped": unmapped},
+        "source_content": {
+            "substantive_existing": substantive_existing,
+            "trivial_existing": len(existing) - substantive_existing,
+        },
         "build_coverage": build_coverage(rows, observations, unsupported_versions),
         "statuses": {status: counts[status] for status in STATUSES},
         "rates": {
@@ -356,6 +363,47 @@ def wilson_interval(successes: int, total: int, z: float = 1.959963984540054) ->
         / denominator
     )
     return (max(0.0, center - radius), min(1.0, center + radius))
+
+
+def substantive_source_estimate(
+    rows: List[Dict[str, Any]],
+    selected: set[str],
+    observations: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Measure the fixed sample without whitespace-only source placeholders."""
+
+    row_by_identity = {row["configuration_id"]: row for row in rows}
+    substantive = {
+        identity
+        for identity in selected
+        if row_by_identity[identity].get("source_has_non_whitespace", True)
+    }
+    counts = Counter(observations[identity]["status"] for identity in substantive)
+    unknown = (
+        counts["HARNESS"]
+        + counts["MISSING_DEPENDENCY"]
+        + counts["INVALID_CONFIGURATION"]
+    )
+    resolved = len(substantive) - unknown
+    low, high = wilson_interval(counts["BYTE"], resolved)
+    return {
+        "substantive_source_total": len(substantive),
+        "trivial_source_total": len(selected) - len(substantive),
+        "substantive_source_successes": counts["BYTE"],
+        "substantive_source_confirmed_proportion": (
+            counts["BYTE"] / len(substantive) if substantive else None
+        ),
+        "substantive_source_known_nonparity": (
+            counts["DIFF"] + counts["DEFER"] + counts["UNSUPPORTED_BUILD"]
+        ),
+        "substantive_source_measurement_unknown": unknown,
+        "substantive_source_resolved_outcomes": resolved,
+        "substantive_source_resolved_proportion": (
+            counts["BYTE"] / resolved if resolved else None
+        ),
+        "substantive_source_resolved_interval_low": low,
+        "substantive_source_resolved_interval_high": high,
+    }
 
 
 def representative_audit(
@@ -463,6 +511,10 @@ def representative_audit(
             "code_exact_confidence": 0.95,
             "code_exact_interval_low": code_exact_low,
             "code_exact_interval_high": code_exact_high,
+            # Whitespace-only source placeholders can produce exact trivial
+            # objects. They remain in the goal metric, while this conditional
+            # view makes their contribution explicit.
+            **substantive_source_estimate(rows, selected, direct),
         }
     return result
 
@@ -576,6 +628,24 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
                 f"{estimate['successes']}/{estimate['total']} = "
                 f"{estimate['confirmed_proportion']:.1%}"
             )
+            if estimate["substantive_source_total"]:
+                print(
+                    "non-whitespace-source diagnostic: "
+                    f"{estimate['substantive_source_successes']}/"
+                    f"{estimate['substantive_source_total']} = "
+                    f"{estimate['substantive_source_confirmed_proportion']:.1%} confirmed; "
+                    f"{estimate['trivial_source_total']} whitespace-only rows excluded"
+                )
+                if estimate["substantive_source_resolved_outcomes"]:
+                    print(
+                        "non-whitespace resolved-outcome parity: "
+                        f"{estimate['substantive_source_successes']}/"
+                        f"{estimate['substantive_source_resolved_outcomes']} = "
+                        f"{estimate['substantive_source_resolved_proportion']:.1%}; "
+                        "conditional 95% CI "
+                        f"{estimate['substantive_source_resolved_interval_low']:.1%}.."
+                        f"{estimate['substantive_source_resolved_interval_high']:.1%}"
+                    )
             print(
                 f"known non-parity: {estimate['known_nonparity']}/{estimate['total']} "
                 "(DIFF + DEFER + unsupported compiler build)"

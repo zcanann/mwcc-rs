@@ -33,19 +33,24 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from parity_identity import configuration_id
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 SOURCE_SUFFIXES = {".c", ".cc", ".cp", ".cpp", ".cxx"}
 EXCLUDED_MW_VERSIONS = {"GC/1.3.2r", "ProDG/3.5"}
 
 
-def sha256_file(path: Path) -> Optional[str]:
+def source_metadata(path: Path) -> Dict[str, Any]:
     if not path.is_file():
-        return None
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+        return {
+            "source_sha256": None,
+            "source_size_bytes": None,
+            "source_has_non_whitespace": None,
+        }
+    data = path.read_bytes()
+    return {
+        "source_sha256": hashlib.sha256(data).hexdigest(),
+        "source_size_bytes": len(data),
+        "source_has_non_whitespace": bool(data.strip()),
+    }
 
 
 def source_files(project: Path) -> Iterable[Path]:
@@ -168,6 +173,7 @@ def capture_project(project: Path, variant: Optional[str]) -> List[Dict[str, Any
                 source = Path(obj.src_path)
                 if source.suffix.lower() not in SOURCE_SUFFIXES:
                     continue
+                metadata = source_metadata(source)
                 options = obj.options
                 completed = getattr(obj, "completed", False)
                 matching = (
@@ -180,7 +186,7 @@ def capture_project(project: Path, variant: Optional[str]) -> List[Dict[str, Any
                         "project": project.name,
                         "variant": str(config_version),
                         "source": source.as_posix(),
-                        "source_sha256": sha256_file(source),
+                        **metadata,
                         "language": "c++" if source.suffix.lower() != ".c" else "c",
                         "mw_version": options["mw_version"],
                         "cflags": jsonable(options.get("cflags") or []),

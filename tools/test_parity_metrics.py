@@ -32,6 +32,7 @@ def row(**overrides):
         "extab_padding": None,
         "matching": True,
         "source_exists": True,
+        "source_has_non_whitespace": True,
     }
     value.update(overrides)
     value["configuration_id"] = configuration_id(value)
@@ -250,6 +251,27 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(estimate["code_exact"], 2)
         self.assertEqual(estimate["code_wrong"], 1)
         self.assertEqual(estimate["code_exact_proportion"], 2 / 3)
+
+    def test_substantive_source_diagnostic_excludes_trivial_exact_objects(self):
+        rows = [
+            row(source="src/empty.c", source_has_non_whitespace=False),
+            row(source="src/code.c"),
+            row(source="src/deferred.c"),
+        ]
+        observations = {
+            rows[0]["configuration_id"]: {"status": "BYTE"},
+            rows[1]["configuration_id"]: {"status": "BYTE"},
+            rows[2]["configuration_id"]: {"status": "DEFER"},
+        }
+        report = representative_audit(
+            rows, observations, {item["configuration_id"] for item in rows}
+        )
+        estimate = report["estimate"]
+        self.assertEqual(estimate["successes"], 2)
+        self.assertEqual(estimate["trivial_source_total"], 1)
+        self.assertEqual(estimate["substantive_source_total"], 2)
+        self.assertEqual(estimate["substantive_source_successes"], 1)
+        self.assertEqual(estimate["substantive_source_resolved_proportion"], 0.5)
 
     def test_audit_suppresses_estimate_after_inventory_drift(self):
         rows = [row(source="src/a.c"), row(source="src/b.c")]
