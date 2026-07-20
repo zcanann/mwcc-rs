@@ -1221,6 +1221,9 @@ impl Generator {
         if self.try_conditional_member_callback(function)? {
             return Ok(());
         }
+        if self.try_guarded_display_list_packet(function)? {
+            return Ok(());
+        }
         if self.try_global_aggregate_call_initialization(function)? {
             return Ok(());
         }
