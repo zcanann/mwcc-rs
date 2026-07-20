@@ -253,9 +253,9 @@ pub struct TranslationUnit {
     /// result type (e.g. a `double`-returning math routine) and its parameter
     /// types (so an argument's int<->float register placement is correct).
     pub prototypes: Vec<(String, Type, Vec<Type>)>,
-    /// Source-written parameter names on function prototypes. GC 4.1 consumes
-    /// one anonymous ordinal for each even though names do not survive in the
-    /// callable type itself.
+    /// Source-written parameter names on function prototypes. GC 4.1 and Wii
+    /// build 145 consume one anonymous ordinal for each even though names do
+    /// not survive in the callable type itself.
     pub named_prototype_parameters: usize,
     /// Skipped `inline` function definitions: each advanced mwcc's `@N` counter
     /// by 3 (compiled then dropped), so the writer pre-bumps the numbering.

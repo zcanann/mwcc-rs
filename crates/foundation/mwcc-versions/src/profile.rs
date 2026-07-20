@@ -605,8 +605,8 @@ pub enum IntCallResultConversionStyle {
 /// diverges implements this trait and overrides just the differing methods.
 pub trait CodegenProfile: core::fmt::Debug {
     /// Whether source-written names on function prototypes consume anonymous
-    /// symbol ordinals. Measured on mwcceppc 4.1 build 51213; older generations
-    /// discard the names without advancing the unit's ordinal stream.
+    /// symbol ordinals. Measured on mwcceppc 4.1 build 51213 and Wii build 145;
+    /// older generations discard the names without advancing the unit's stream.
     fn prototype_parameter_names_consume_labels(&self) -> bool {
         false
     }
@@ -614,6 +614,12 @@ pub trait CodegenProfile: core::fmt::Debug {
     /// Extra hidden label retained per call-dispatch switch arm by deferred
     /// inlining. This is separate from the ordinary case-body label.
     fn deferred_call_dispatcher_labels_per_case(&self) -> u8 {
+        0
+    }
+
+    /// Hidden labels retained by the optimizer around a call-dispatch jump
+    /// table, independent of labels attributed to individual case arms.
+    fn call_dispatcher_hidden_label_bump(&self) -> u8 {
         0
     }
 
@@ -1043,6 +1049,10 @@ impl CodegenProfile for Gc41Build51213 {
         1
     }
 
+    fn call_dispatcher_hidden_label_bump(&self) -> u8 {
+        3
+    }
+
     fn folded_float_guard_label_bump(&self) -> u8 {
         3
     }
@@ -1101,6 +1111,14 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn prototype_parameter_names_consume_labels(&self) -> bool {
+        true
+    }
+
+    fn deferred_call_dispatcher_labels_per_case(&self) -> u8 {
+        1
+    }
+
     fn fixed_address_parameterized_rmw_style(&self) -> FixedAddressParameterizedRmwStyle {
         FixedAddressParameterizedRmwStyle::Modern4x
     }

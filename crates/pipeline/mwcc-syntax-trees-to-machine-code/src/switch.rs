@@ -168,10 +168,13 @@ impl Generator {
         self.output.jump_tables.push(JumpTable {
             entries,
             // The dispatch and join consume three labels in addition to one
-            // label per source arm. GC 4.1's deferred inliner retains one more
-            // hidden label for every arm (measured on GC/3.0a3p1).
+            // label per source arm. Modern optimizers retain a separate
+            // three-label dispatch block, and deferred inlining retains one
+            // more hidden label for every arm (measured on GC/3.0a3p1 and
+            // Wii/1.0).
             anonymous_offset: arms.len() as u32
                 + 3
+                + u32::from(self.behavior.call_dispatcher_hidden_label_bump)
                 + arms.len() as u32
                     * u32::from(self.behavior.deferred_call_dispatcher_labels_per_case),
         });

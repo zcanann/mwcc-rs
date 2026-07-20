@@ -486,6 +486,9 @@ impl Quirk {
 /// selection — codegen reads a plain field, never a trait object or a flag.
 #[derive(Debug, Clone, Copy)]
 pub struct Behavior {
+    /// Hidden labels retained around a call-dispatch jump table, separate from
+    /// labels attributed to its individual arms.
+    pub call_dispatcher_hidden_label_bump: u8,
     /// Hidden deferred-inlining labels retained per call-dispatch switch arm.
     /// Zero for ordinary compilation and for unmeasured compiler generations.
     pub deferred_call_dispatcher_labels_per_case: u8,
@@ -722,6 +725,10 @@ impl Behavior {
     /// profile and the flags into one flat set of values.
     pub fn resolve(config: &CompilerConfig) -> Self {
         Behavior {
+            call_dispatcher_hidden_label_bump: config
+                .build
+                .profile
+                .call_dispatcher_hidden_label_bump(),
             deferred_call_dispatcher_labels_per_case: if config.flags.inline_deferred {
                 config
                     .build
@@ -1666,6 +1673,25 @@ mod tests {
         assert_eq!(gc41.cxx_inline_definition_label_bump, 4);
         assert_eq!(gc41.cxx_virtual_destructor_label_bump, 3);
         assert_eq!(gc41.cxx_inline_ipa_call_label_bump, 0);
+        assert_eq!(mainline.call_dispatcher_hidden_label_bump, 0);
+        assert_eq!(gc41.call_dispatcher_hidden_label_bump, 3);
+
+        let mut gc41_deferred_config = CompilerConfig::new(build::GC_3_0A3P1);
+        gc41_deferred_config.flags.inline_deferred = true;
+        assert_eq!(
+            Behavior::resolve(&gc41_deferred_config).deferred_call_dispatcher_labels_per_case,
+            1
+        );
+
+        let mut wii_deferred_config = CompilerConfig::new(build::WII_1_0);
+        wii_deferred_config.flags.inline_deferred = true;
+        let wii_deferred = Behavior::resolve(&wii_deferred_config);
+        assert_eq!(wii_deferred.call_dispatcher_hidden_label_bump, 0);
+        assert_eq!(wii_deferred.deferred_call_dispatcher_labels_per_case, 1);
+        assert!(wii_deferred_config
+            .build
+            .profile
+            .prototype_parameter_names_consume_labels());
 
         let mut ipa_config = CompilerConfig::new(build::GC_3_0A3P1);
         ipa_config.flags.ipa_file = true;
