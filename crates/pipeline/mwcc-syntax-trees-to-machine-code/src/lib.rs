@@ -543,9 +543,20 @@ fn hoist_link_register_reload(generator: &mut Generator) {
     if generator.behavior.frame_convention == mwcc_versions::FrameConvention::LinkageFirst
         && generator.behavior.plain_linkage_epilogue_style
             == mwcc_versions::PlainLinkageEpilogueStyle::StackRestoreBeforeReload
-        && generator.callee_saved.is_empty()
     {
-        return;
+        let stack_restore = generator.output.instructions.iter().position(|instruction| {
+            matches!(instruction, Instruction::AddImmediate { d: 1, a: 1, immediate }
+                if *immediate == generator.frame_size)
+        });
+        let restored_stack_link_load = generator.output.instructions.iter().position(
+            |instruction| {
+                matches!(instruction, Instruction::LoadWord { d: 0, a: 1, offset: 4 })
+            },
+        );
+        if matches!((stack_restore, restored_stack_link_load), (Some(restore), Some(load)) if restore < load)
+        {
+            return;
+        }
     }
     let permutation = mwcc_vreg::hoist_link_register_reload(&mut generator.output.instructions);
     for relocation in &mut generator.output.relocations {

@@ -19,6 +19,7 @@ mod fixed_rmw_recognize;
 mod frame_convention;
 mod later_call_arguments;
 mod global_swap;
+mod global_aggregate_initialization;
 mod guarded_initialization;
 mod guarded_bitmask_call_sequence;
 mod guarded_pointer_call;
