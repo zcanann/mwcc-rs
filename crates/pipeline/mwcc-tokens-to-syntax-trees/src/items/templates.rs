@@ -6,7 +6,9 @@
 //! instance fields; methods, nested bodies, and static members remain skipped.
 
 use super::{type_alignment, type_size};
-use crate::parser::{Parser, StructField, StructLayout, StructTemplate};
+use crate::parser::{
+    Parser, StructField, StructLayout, StructTemplate, TemplateField, TemplateFieldType,
+};
 use mwcc_syntax_trees::Type;
 use mwcc_tokens::Token;
 use std::collections::HashMap;
@@ -126,6 +128,7 @@ impl Parser {
             [Token::Identifier(template), Token::Less, Token::Identifier(parameter_kind), Token::Identifier(parameter), Token::Greater, struct_or_class, Token::Identifier(name), Token::BraceOpen],
         ) = header
         else {
+            self.capture_mixed_struct_template();
             return;
         };
         let is_struct_or_class = *struct_or_class == Token::KeywordStruct
@@ -167,7 +170,12 @@ impl Parser {
                             Token::Comma if !expect_name => expect_name = true,
                             Token::Semicolon => {
                                 if valid && !expect_name && !candidate_fields.is_empty() {
-                                    fields.extend(candidate_fields);
+                                    fields.extend(candidate_fields.into_iter().map(|name| {
+                                        TemplateField {
+                                            name,
+                                            field_type: TemplateFieldType::Parameter,
+                                        }
+                                    }));
                                 }
                                 cursor += 1;
                                 break;
@@ -189,9 +197,136 @@ impl Parser {
         }
     }
 
+    /// Recover mixed-layout templates with multiple/defaulted parameters. This
+    /// intentionally reads declarations only: parameter-valued fields remain
+    /// symbolic, while scalar fields and every pointer field have concrete
+    /// target storage independent of template arguments.
+    fn capture_mixed_struct_template(&mut self) {
+        let start = self.position;
+        if !matches!(self.tokens.get(start), Some(Token::Identifier(word)) if word == "template")
+            || self.tokens.get(start + 1) != Some(&Token::Less)
+        {
+            return;
+        }
+        let mut cursor = start + 2;
+        let mut angle_depth = 1i32;
+        let mut parameter = None;
+        while angle_depth > 0 {
+            match self.tokens.get(cursor) {
+                Some(Token::Identifier(kind)) if parameter.is_none() && matches!(kind.as_str(), "typename" | "class") => {
+                    if let Some(Token::Identifier(name)) = self.tokens.get(cursor + 1) {
+                        parameter = Some(name.clone());
+                    }
+                }
+                Some(Token::Less) => angle_depth += 1,
+                Some(Token::Greater) => angle_depth -= 1,
+                Some(Token::EndOfFile) | None => return,
+                _ => {}
+            }
+            cursor += 1;
+        }
+        let Some(parameter) = parameter else { return };
+        if !matches!(self.tokens.get(cursor), Some(Token::KeywordStruct))
+            && !matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if word == "class")
+        {
+            return;
+        }
+        let Some(Token::Identifier(name)) = self.tokens.get(cursor + 1) else {
+            return;
+        };
+        let name = name.clone();
+        cursor += 2;
+        while !matches!(self.tokens.get(cursor), Some(Token::BraceOpen | Token::EndOfFile) | None) {
+            cursor += 1;
+        }
+        if self.tokens.get(cursor) != Some(&Token::BraceOpen) {
+            return;
+        }
+        cursor += 1;
+        let mut depth = 1i32;
+        let mut fields = Vec::new();
+        while depth > 0 {
+            match self.tokens.get(cursor) {
+                Some(Token::BraceOpen) => {
+                    depth += 1;
+                    cursor += 1;
+                }
+                Some(Token::BraceClose) => {
+                    depth -= 1;
+                    cursor += 1;
+                }
+                Some(Token::EndOfFile) | None => return,
+                _ if depth == 1 => {
+                    if let Some((mut declaration, next)) =
+                        self.capture_template_field_declaration(cursor, &parameter)
+                    {
+                        fields.append(&mut declaration);
+                        cursor = next;
+                    } else {
+                        cursor += 1;
+                    }
+                }
+                _ => cursor += 1,
+            }
+        }
+        if !fields.is_empty() {
+            self.struct_templates.insert(name, StructTemplate { fields });
+        }
+    }
+
+    fn capture_template_field_declaration(
+        &self,
+        start: usize,
+        parameter: &str,
+    ) -> Option<(Vec<TemplateField>, usize)> {
+        let mut cursor = start;
+        while matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if matches!(word.as_str(), "const" | "volatile" | "mutable")) {
+            cursor += 1;
+        }
+        if matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if word == "static") {
+            return None;
+        }
+        let mut field_type = match self.tokens.get(cursor)? {
+            Token::Identifier(name) if name == parameter => TemplateFieldType::Parameter,
+            Token::Identifier(_) if self.tokens.get(cursor + 1) == Some(&Token::Star) => {
+                TemplateFieldType::Concrete(Type::Pointer(mwcc_syntax_trees::Pointee::Int))
+            }
+            token => TemplateFieldType::Concrete(self.template_argument_type(token)?),
+        };
+        cursor += 1;
+        while matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if matches!(word.as_str(), "const" | "volatile")) {
+            cursor += 1;
+        }
+        if self.tokens.get(cursor) == Some(&Token::Star) {
+            field_type = TemplateFieldType::Concrete(Type::Pointer(mwcc_syntax_trees::Pointee::Int));
+            while self.tokens.get(cursor) == Some(&Token::Star) {
+                cursor += 1;
+            }
+            while matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if matches!(word.as_str(), "const" | "volatile")) {
+                cursor += 1;
+            }
+        }
+        let mut fields = Vec::new();
+        loop {
+            let Some(Token::Identifier(name)) = self.tokens.get(cursor) else {
+                return None;
+            };
+            fields.push(TemplateField {
+                name: name.clone(),
+                field_type,
+            });
+            cursor += 1;
+            match self.tokens.get(cursor) {
+                Some(Token::Comma) => cursor += 1,
+                Some(Token::Semicolon) => return Some((fields, cursor + 1)),
+                _ => return None,
+            }
+        }
+    }
+
     /// Record methods defined directly inside any class-template body. This is
-    /// deliberately independent of layout recovery, which currently supports
-    /// only one type parameter; Pikmin's trig templates use both an integer and
+    /// deliberately independent of layout recovery, which substitutes only
+    /// the first type parameter; Pikmin's trig templates use both an integer and
     /// a type parameter but still need correct specialization materialization.
     fn capture_inline_template_members(&mut self) {
         let start = self.position;
@@ -303,16 +438,22 @@ impl Parser {
         let Some(argument) = self.template_argument_type(argument_token) else {
             return false;
         };
-        let alignment = type_alignment(argument).max(1);
-        let field_size = type_size(argument);
         let mut offset = 0u16;
+        let mut max_alignment = 1u16;
         let mut fields = HashMap::new();
-        for name in &template.fields {
+        for field in &template.fields {
+            let field_type = match field.field_type {
+                TemplateFieldType::Parameter => argument,
+                TemplateFieldType::Concrete(field_type) => field_type,
+            };
+            let alignment = type_alignment(field_type).max(1);
+            max_alignment = max_alignment.max(alignment);
+            let field_size = type_size(field_type);
             offset = offset.div_ceil(alignment) * alignment;
             fields.insert(
-                name.clone(),
+                field.name.clone(),
                 StructField {
-                    member_type: argument,
+                    member_type: field_type,
                     offset,
                     struct_tag: None,
                     array_element: None,
@@ -322,14 +463,14 @@ impl Parser {
             );
             offset += field_size;
         }
-        let size = offset.div_ceil(alignment) * alignment;
+        let size = offset.div_ceil(max_alignment) * max_alignment;
         self.structs.insert(
             alias.clone(),
             StructLayout {
                 fields,
                 function_pointer_fields: std::collections::HashSet::new(),
                 size,
-                align: alignment as u8,
+                align: max_alignment as u8,
             },
         );
         self.struct_typedefs.insert(alias.clone(), alias.clone());
@@ -389,6 +530,9 @@ impl Parser {
             Token::KeywordShort => Some(Type::Short),
             Token::KeywordUnsigned => Some(Type::UnsignedInt),
             Token::KeywordFloat => Some(Type::Float),
+            Token::Identifier(name) if self.cplusplus && name == "wchar_t" => {
+                Some(Type::UnsignedShort)
+            }
             Token::Identifier(name) => self.typedefs.get(name).copied(),
             _ => None,
         }

@@ -26,6 +26,7 @@ impl Parser {
     fn parse_type_base(&mut self) -> Compilation<Type> {
         self.last_struct_tag = None;
         self.last_enum_tag = None;
+        self.last_type_was_wchar = false;
         self.last_pointer_const = false;
         // The array-typedef marker is only ever set by the LAST parse_type call, so a
         // consumer that `.take()`s right after its own call can never read a stale one.
@@ -345,6 +346,10 @@ impl Parser {
             // field layout and loads/stores exact. C++ parameter mangling will need
             // a distinct IR type before bool-valued parameters can be accepted.
             Token::Identifier(word) if word == "bool" => Type::UnsignedChar,
+            Token::Identifier(word) if self.cplusplus && word == "wchar_t" => {
+                self.last_type_was_wchar = true;
+                Type::UnsignedShort
+            }
             // `double` (and `long double`, which is also 64-bit here).
             Token::Identifier(word) if word == "double" => Type::Double,
             // `long` / `long int` — 32-bit signed on this target; `long double` is a

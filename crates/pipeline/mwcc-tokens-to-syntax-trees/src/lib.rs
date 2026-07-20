@@ -126,6 +126,7 @@ pub fn parse_located_translation_unit(
         global_sizes: HashMap::new(),
         last_struct_tag: None,
         last_enum_tag: None,
+        last_type_was_wchar: false,
         asm_parameters: Vec::new(),
         expression_struct_tag: None,
         typedefs: HashMap::new(),
@@ -473,6 +474,71 @@ mod tests {
             unit.functions[0].parameters[1].parameter_type,
             mwcc_syntax_trees::Type::Int
         );
+    }
+
+    #[test]
+    fn recovers_mixed_layout_from_a_multi_parameter_template() {
+        let source = r#"
+            typedef unsigned int uint;
+            template <typename T, typename Traits = int, typename Alloc = int>
+            class Box {
+                struct Metadata { uint capacity; };
+                const T* data;
+                Metadata* metadata;
+                uint size;
+                uint padding;
+                void ignored(int);
+            };
+            typedef Box<char> CharBox;
+            CharBox value;
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.globals[0].declared_type,
+            mwcc_syntax_trees::Type::Struct { size: 16, align: 4 }
+        ));
+    }
+
+    #[test]
+    fn recovers_wchar_specialization_layout_and_abi_names() {
+        let source = r#"
+            typedef unsigned int uint;
+            template <typename T, typename Traits = int, typename Alloc = int>
+            class Box {
+                struct Metadata { uint capacity; };
+                const T* data;
+                Metadata* metadata;
+                uint size;
+                uint padding;
+                void ignored(int);
+            };
+            typedef Box<wchar_t> WideBox;
+            WideBox value;
+            struct Text { void set(wchar_t); void ptr(wchar_t*); };
+            void Text::set(wchar_t) {}
+            void Text::ptr(wchar_t*) {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.globals[0].declared_type,
+            mwcc_syntax_trees::Type::Struct { size: 16, align: 4 }
+        ));
+        assert_eq!(unit.functions[0].name, "set__4TextFw");
+        assert_eq!(unit.functions[1].name, "ptr__4TextFPw");
     }
 
     #[test]

@@ -41,11 +41,22 @@ pub(crate) struct StructLayout {
     pub(crate) align: u8,
 }
 
-/// Recoverable layout information from a skipped single-parameter C++ struct
-/// template. Methods and static members are irrelevant to object layout; each
-/// recorded name is an instance field whose type is the template parameter.
+#[derive(Clone, Copy)]
+pub(crate) enum TemplateFieldType {
+    Parameter,
+    Concrete(mwcc_syntax_trees::Type),
+}
+
+pub(crate) struct TemplateField {
+    pub(crate) name: String,
+    pub(crate) field_type: TemplateFieldType,
+}
+
+/// Recoverable layout information from a skipped C++ class template. Method
+/// bodies and static members are irrelevant; fields retain source order and
+/// either substitute the first type parameter or carry concrete storage.
 pub(crate) struct StructTemplate {
-    pub(crate) fields: Vec<String>,
+    pub(crate) fields: Vec<TemplateField>,
 }
 
 pub(crate) struct Parser {
@@ -165,6 +176,9 @@ pub(crate) struct Parser {
     /// storage under `-enum int`, but member-function mangling must retain the
     /// declared type name instead of encoding the parameter as fundamental int.
     pub(crate) last_enum_tag: Option<String>,
+    /// Whether the most recently parsed scalar base was C++ `wchar_t`. Storage
+    /// is unsigned 16-bit on this target, but its ABI mangling code is `w`.
+    pub(crate) last_type_was_wchar: bool,
     /// The struct tag of the expression `factor` just returned, so the tag survives
     /// a wrapping `(...)` — `((struct S *)x)->field` resolves through the parens.
     pub(crate) expression_struct_tag: Option<String>,

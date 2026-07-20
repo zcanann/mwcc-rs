@@ -90,6 +90,7 @@ pub(crate) struct VirtualDispatch {
 pub(crate) struct CxxParameterType {
     source_type: Type,
     qualified_name: Option<String>,
+    is_wchar: bool,
     is_reference: bool,
     pointee_const: bool,
     pointer_const: bool,
@@ -99,6 +100,7 @@ impl CxxParameterType {
     pub(crate) fn parsed(
         source_type: Type,
         qualified_name: Option<String>,
+        is_wchar: bool,
         is_reference: bool,
         pointee_const: bool,
         pointer_const: bool,
@@ -106,6 +108,7 @@ impl CxxParameterType {
         Self {
             source_type,
             qualified_name,
+            is_wchar,
             is_reference,
             pointee_const,
             pointer_const,
@@ -113,7 +116,7 @@ impl CxxParameterType {
     }
 
     pub(crate) fn plain(source_type: Type) -> Self {
-        Self::parsed(source_type, None, false, false, false)
+        Self::parsed(source_type, None, false, false, false, false)
     }
 }
 
@@ -396,6 +399,7 @@ impl Parser {
         let saved_position = self.position;
         let saved_struct_tag = self.last_struct_tag.clone();
         let saved_enum_tag = self.last_enum_tag.clone();
+        let saved_wchar = self.last_type_was_wchar;
         let saved_array_typedef = self.last_array_typedef;
         let saved_type_const = self.last_type_was_const;
         let saved_pointer_const = self.last_pointer_const;
@@ -427,6 +431,7 @@ impl Parser {
             let return_type = self.parse_type()?;
             self.last_struct_tag.take();
             self.last_enum_tag.take();
+            self.last_type_was_wchar = false;
             self.last_array_typedef.take();
             let member = self.parse_identifier()?;
             self.expect(Token::ParenOpen)?;
@@ -471,6 +476,7 @@ impl Parser {
                     };
                     let struct_tag = self.last_struct_tag.take();
                     let enum_tag = self.last_enum_tag.take();
+                    let is_wchar = self.last_type_was_wchar;
                     let qualified_name = enum_tag.or_else(|| {
                         struct_tag.map(|tag| {
                             self.struct_typedefs.get(&tag).cloned().unwrap_or(tag)
@@ -490,6 +496,7 @@ impl Parser {
                     cxx_parameters.push(CxxParameterType::parsed(
                         cxx_storage_type,
                         qualified_name,
+                        is_wchar,
                         is_reference,
                         pointee_const,
                         pointer_const,
@@ -529,6 +536,7 @@ impl Parser {
         self.position = saved_position;
         self.last_struct_tag = saved_struct_tag;
         self.last_enum_tag = saved_enum_tag;
+        self.last_type_was_wchar = saved_wchar;
         self.last_array_typedef = saved_array_typedef;
         self.last_type_was_const = saved_type_const;
         self.last_pointer_const = saved_pointer_const;
@@ -1248,6 +1256,10 @@ fn encode_type(parameter: &CxxParameterType) -> Compilation<String> {
     if parameter.pointee_const && (parameter.is_reference || is_pointer) {
         code.push('C');
     }
+    if parameter.is_wchar {
+        code.push('w');
+        return Ok(code);
+    }
     if let Some(name) = parameter.qualified_name.as_deref() {
         code.push_str(&encode_qualified_type_name(name)?);
         return Ok(code);
@@ -1391,6 +1403,7 @@ mod tests {
             CxxParameterType::parsed(
                 storage_type,
                 Some("JUtility::TColor".to_string()),
+                false,
                 is_reference,
                 pointee_const,
                 pointer_const,

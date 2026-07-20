@@ -2223,6 +2223,7 @@ impl Parser {
                     }
                     let mut parameter_type = self.parse_type()?;
                     let cxx_source_type = parameter_type;
+                    let cxx_is_wchar = self.last_type_was_wchar;
                     let cxx_pointee_const = self.last_type_was_const;
                     let cxx_pointer_const = self.last_pointer_const;
                     // An array-typedef (`Mtx m`) or row-pointer-typedef (`MtxPtr m`)
@@ -2340,6 +2341,7 @@ impl Parser {
                         cxx_parameters.push(crate::cxx::CxxParameterType::parsed(
                             cxx_source_type,
                             cxx_qualified_name,
+                            cxx_is_wchar,
                             is_reference,
                             cxx_pointee_const,
                             cxx_pointer_const,
@@ -3660,7 +3662,9 @@ impl Parser {
                 ) || self.typedefs.contains_key(word)
                     || self.struct_typedefs.contains_key(word)
                     || self.struct_pointer_typedefs.contains_key(word)
-                    || (self.cplusplus && self.enum_types.contains(word))
+                    || (self.cplusplus
+                        && (matches!(word.as_str(), "bool" | "wchar_t")
+                            || self.enum_types.contains(word)))
             }
             _ => false,
         }
