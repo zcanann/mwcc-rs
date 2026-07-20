@@ -589,8 +589,20 @@ impl Parser {
                         }
                     }
                     self.expect(Token::ParenClose)?;
-                    let name =
-                        self.resolve_static_member_call(&scope, &member, arguments.len())?;
+                    let name = if self.cxx_namespaces.contains(&scope) {
+                        self.resolve_qualified_free_cxx_call(
+                            &scope,
+                            &member,
+                            arguments.len(),
+                        )?
+                        .ok_or_else(|| {
+                            Diagnostic::error(format!(
+                                "C++ namespace function call '{scope}::{member}' is unavailable (roadmap)"
+                            ))
+                        })?
+                    } else {
+                        self.resolve_static_member_call(&scope, &member, arguments.len())?
+                    };
                     Expression::Call { name, arguments }
                 } else {
                     Expression::Variable(

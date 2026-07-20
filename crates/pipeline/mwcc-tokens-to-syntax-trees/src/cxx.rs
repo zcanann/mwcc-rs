@@ -330,6 +330,25 @@ impl Parser {
         }
     }
 
+    pub(crate) fn register_qualified_free_cxx_function(
+        &mut self,
+        scope: &str,
+        source_name: &str,
+        mangled: &str,
+        fixed_parameter_count: usize,
+        variadic: bool,
+    ) {
+        let key = format!("{scope}::{source_name}");
+        let methods = self.cxx_free_functions.entry(key).or_default();
+        if !methods.iter().any(|method| method.mangled == mangled) {
+            methods.push(RecoveredCxxMethod {
+                mangled: mangled.to_string(),
+                fixed_parameter_count,
+                variadic,
+            });
+        }
+    }
+
     pub(crate) fn resolve_free_cxx_call(
         &self,
         source_name: &str,
@@ -351,6 +370,32 @@ impl Parser {
             [method] => Ok(Some(method.mangled.clone())),
             _ => Err(Diagnostic::error(format!(
                 "C++ free-function call '{key}' is ambiguous (roadmap)"
+            ))),
+        }
+    }
+
+    pub(crate) fn resolve_qualified_free_cxx_call(
+        &self,
+        scope: &str,
+        source_name: &str,
+        argument_count: usize,
+    ) -> Compilation<Option<String>> {
+        let key = format!("{scope}::{source_name}");
+        let candidates: Vec<&RecoveredCxxMethod> = self
+            .cxx_free_functions
+            .get(&key)
+            .into_iter()
+            .flatten()
+            .filter(|method| {
+                method.fixed_parameter_count == argument_count
+                    || (method.variadic && argument_count >= method.fixed_parameter_count)
+            })
+            .collect();
+        match candidates.as_slice() {
+            [] => Ok(None),
+            [method] => Ok(Some(method.mangled.clone())),
+            _ => Err(Diagnostic::error(format!(
+                "C++ namespace function call '{key}' is ambiguous (roadmap)"
             ))),
         }
     }
@@ -960,6 +1005,19 @@ impl Parser {
             let qualified_scope = encode_qualified_scope(&scopes)?;
             Ok(format!("{function}__{qualified_scope}F{arguments}"))
         }
+    }
+
+    pub(crate) fn mangle_typed_free_function_in_scope(
+        &self,
+        scope: &str,
+        function: &str,
+        explicit_parameters: &[CxxParameterType],
+        variadic: bool,
+    ) -> Compilation<String> {
+        let arguments = encode_function_arguments(explicit_parameters, variadic)?;
+        let scopes: Vec<&str> = scope.split("::").collect();
+        let qualified_scope = encode_qualified_scope(&scopes)?;
+        Ok(format!("{function}__{qualified_scope}F{arguments}"))
     }
 
     /// Mangle a static data member declared in the active namespace scope.

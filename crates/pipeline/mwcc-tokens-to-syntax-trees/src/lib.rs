@@ -108,6 +108,7 @@ pub fn parse_located_translation_unit(
         cplusplus,
         cplusplus_stack: Vec::new(),
         namespace_stack: Vec::new(),
+        cxx_namespaces: std::collections::HashSet::new(),
         current_member_scope: None,
         force_active: false,
         peephole_disabled: false,
@@ -629,6 +630,37 @@ mod tests {
             unit.functions[1].return_expression.as_ref(),
             Some(mwcc_syntax_trees::Expression::Call { name, .. }) if name == "cpp_api__Ff"
         ));
+    }
+
+    #[test]
+    fn resolves_namespace_qualified_free_function_calls_and_definitions() {
+        let source = r#"
+            namespace std { float sinf(float value); }
+            float wrapper(float value) { return std::sinf(value); }
+            float std::sinf(float value) { return value; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            ["wrapper__Ff", "sinf__3stdFf"]
+        );
+        assert!(matches!(
+            unit.functions[0].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Call { name, .. }) if name == "sinf__3stdFf"
+        ));
+        assert_eq!(unit.functions[1].parameters.len(), 1);
+        assert_eq!(unit.functions[1].parameters[0].name, "value");
     }
 
     #[test]

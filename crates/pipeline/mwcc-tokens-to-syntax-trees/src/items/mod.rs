@@ -597,6 +597,12 @@ impl Parser {
             if self.cplusplus && self.eat_word("namespace") {
                 let namespace = self.parse_identifier()?;
                 self.expect(Token::BraceOpen)?;
+                let qualified = if self.namespace_stack.is_empty() {
+                    namespace.clone()
+                } else {
+                    format!("{}::{namespace}", self.namespace_stack.join("::"))
+                };
+                self.cxx_namespaces.insert(qualified);
                 self.namespace_stack.push(namespace);
                 continue;
             }
@@ -1871,7 +1877,7 @@ impl Parser {
             // `Return Class::method(args)`. Keep qualification separate from
             // ordinary identifiers: the ELF symbol is CodeWarrior-mangled and
             // the ABI carries an implicit `this` parameter in r3.
-            let member_scope = if *self.peek() == Token::Colon && *self.peek_at(1) == Token::Colon {
+            let qualified_scope = if *self.peek() == Token::Colon && *self.peek_at(1) == Token::Colon {
                 let mut scopes = Vec::new();
                 loop {
                     scopes.push(name);
@@ -1886,6 +1892,11 @@ impl Parser {
             } else {
                 None
             };
+            let namespace_scope = qualified_scope
+                .as_ref()
+                .filter(|scope| self.cxx_namespaces.contains(scope.as_str()))
+                .cloned();
+            let member_scope = qualified_scope.filter(|_| namespace_scope.is_none());
             let member_layout_scope = member_scope
                 .as_deref()
                 .and_then(|scope| scope.rsplit("::").next())
@@ -2475,6 +2486,24 @@ impl Parser {
                         name: "this".to_string(),
                     },
                 );
+            } else if let Some(scope) = &namespace_scope {
+                let source_name = name.clone();
+                name = self.mangle_typed_free_function_in_scope(
+                    scope,
+                    &source_name,
+                    &cxx_parameters,
+                    is_variadic,
+                )?;
+                self.register_qualified_free_cxx_function(
+                    scope,
+                    &source_name,
+                    &name,
+                    parameters.len(),
+                    is_variadic,
+                );
+                if let Some(tag) = &return_struct_tag {
+                    self.function_return_structs.insert(name.clone(), tag.clone());
+                }
             } else if self.cplusplus && name != "main" {
                 let source_name = name.clone();
                 name = self.mangle_typed_free_function(

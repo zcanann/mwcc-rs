@@ -280,6 +280,10 @@ pub(crate) struct Parser {
     /// are declaration containers; this stack supplies CodeWarrior's `Qn`
     /// qualification when member symbols are mangled.
     pub(crate) namespace_stack: Vec<String>,
+    /// Fully-qualified namespace names declared in this translation unit. This
+    /// distinguishes `N::free_function()` from `Class::static_method()` when
+    /// both use the same surface qualification syntax.
+    pub(crate) cxx_namespaces: std::collections::HashSet<String>,
     /// Class whose out-of-class member body is currently being parsed. This
     /// drives implicit `this` field access and member-call lookup, and is scoped
     /// to one function body by the top-level parser.
