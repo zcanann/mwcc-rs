@@ -666,6 +666,10 @@ impl Parser {
                         member_type: member.member_type,
                         index_stride: None,
                     }
+                } else if let Some(mangled) =
+                    self.resolve_implicit_static_data_member(&name)?
+                {
+                    Expression::Variable(mangled)
                 } else if let Some(&value) = self.enum_constants.get(&name) {
                     Expression::IntegerLiteral(value)
                 } else {

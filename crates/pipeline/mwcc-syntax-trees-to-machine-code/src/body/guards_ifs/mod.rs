@@ -6,6 +6,7 @@ mod early_return;
 mod guard_block;
 mod guard_sequence;
 mod guarded_access;
+mod global_fallback;
 mod leading;
 mod legacy_tracked_return;
 mod live_across;

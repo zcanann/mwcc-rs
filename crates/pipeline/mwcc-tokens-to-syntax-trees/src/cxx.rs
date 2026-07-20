@@ -802,6 +802,21 @@ impl Parser {
         mangle_qualified_data_member(&scopes, member)
     }
 
+    /// Resolve a bare static-data-member name inside one of its class methods.
+    /// The out-of-class definition is already registered under its ABI name;
+    /// this lookup keeps ordinary local/instance-member shadowing in the
+    /// expression parser while centralizing C++ qualification here.
+    pub(crate) fn resolve_implicit_static_data_member(
+        &self,
+        member: &str,
+    ) -> Compilation<Option<String>> {
+        let Some(class) = self.current_member_scope.as_deref() else {
+            return Ok(None);
+        };
+        let mangled = self.mangle_data_member_in_current_namespace(class, member)?;
+        Ok(self.global_sizes.contains_key(&mangled).then_some(mangled))
+    }
+
     /// Resolve an unqualified call inside a member body. Arity is enough for the
     /// currently modeled overload set; ambiguous same-arity overloads defer.
     pub(crate) fn resolve_implicit_member_call(

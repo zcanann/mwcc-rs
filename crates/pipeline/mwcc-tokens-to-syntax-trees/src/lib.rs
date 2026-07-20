@@ -477,6 +477,36 @@ mod tests {
     }
 
     #[test]
+    fn resolves_a_bare_static_data_member_inside_its_class_method() {
+        let source = r#"
+            namespace Audio {
+                class Bank {
+                public:
+                    static int current;
+                    int read();
+                };
+                int Bank::current = 0;
+                int Bank::read() { return current; }
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(unit.globals[0].name, "current__Q25Audio4Bank");
+        assert!(matches!(
+            unit.functions[0].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Variable(name))
+                if name == "current__Q25Audio4Bank"
+        ));
+    }
+
+    #[test]
     fn resolves_a_declared_static_cxx_member_call() {
         let source = r#"
             struct System { static void halt(char*, int, char*); };

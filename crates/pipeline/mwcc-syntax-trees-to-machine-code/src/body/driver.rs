@@ -1160,6 +1160,9 @@ impl Generator {
         if self.try_global_call_store_guard_tail(function)? {
             return Ok(());
         }
+        if self.try_global_pointer_fallback_getter(function)? {
+            return Ok(());
+        }
         if self.try_tail_call(function)? {
             return Ok(());
         }
