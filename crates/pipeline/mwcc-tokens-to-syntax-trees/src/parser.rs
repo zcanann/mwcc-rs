@@ -410,11 +410,23 @@ impl Parser {
     }
 
     pub(crate) fn parse_identifier(&mut self) -> Compilation<String> {
+        let token_index = self.position;
         match self.advance() {
             Token::Identifier(name) => Ok(name),
-            other => Err(Diagnostic::error(format!(
-                "expected an identifier, found {other}"
-            ))),
+            other => {
+                if std::env::var_os("MWCC_PARSE_DEBUG").is_some() {
+                    let start = token_index.saturating_sub(8);
+                    let end = (token_index + 9).min(self.tokens.len());
+                    eprintln!(
+                        "parse context at token {token_index}: {:?}",
+                        &self.tokens[start..end]
+                    );
+                }
+                Err(Diagnostic::error(format!(
+                    "expected an identifier, found {other} at {}",
+                    self.diagnostic_position(token_index)
+                )))
+            }
         }
     }
 }
