@@ -25,6 +25,7 @@ mod long_long_support;
 mod long_long_wait;
 mod loops;
 mod member_store_fill;
+mod member_initialization;
 mod nested_global_indirect_call;
 mod passes;
 mod punned_ladder_policy;

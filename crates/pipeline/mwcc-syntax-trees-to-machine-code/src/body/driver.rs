@@ -2280,6 +2280,9 @@ impl Generator {
         if self.try_member_parameter_two_constant_fill(function)? {
             return Ok(());
         }
+        if self.try_narrow_member_initialization(function)? {
+            return Ok(());
+        }
         // The float sibling: a leaf void body of float-literal stores to `float` globals
         // (`gf=1.0f; gg=2.0f;`) pre-loads each into a distinct FPR, then stores.
         if self.try_float_constant_store_fill(function)? {
