@@ -323,41 +323,15 @@ impl Parser {
                 // `Tag.field(rN)` — a struct-TAG-qualified field offset as a
                 // displacement memory operand (`lwz r5, PTMF.this_delta(r3)` ->
                 // `lwz r5, 0(r3)`, the field's offset off the base register).
-                if self.structs.contains_key(word.as_str()) && *self.peek() == Token::Dot {
-                    self.advance();
-                    let field = match self.advance() {
-                        Token::Identifier(field) => field,
-                        other => {
-                            return Err(Diagnostic::error(format!(
-                                "expected a field name after '{word}.', found {other}"
-                            )))
-                        }
-                    };
-                    let offset = self
-                        .structs
-                        .get(&word)
-                        .and_then(|layout| layout.fields.get(&field))
-                        .map(|member| member.offset)
-                        .ok_or_else(|| {
-                            Diagnostic::error(format!("no field '{field}' in struct '{word}'"))
-                        })?;
-                    self.expect(Token::ParenOpen)?;
-                    let base = match self.advance() {
-                        Token::Identifier(register) => match parse_asm_register(&register) {
-                            Some(AsmOperand::Gpr(index)) => index,
-                            // A named register PARAMETER as the base (`PTMF.f(ptmf)`).
-                            _ => match self.asm_parameters.iter().find(|(name, _, _)| *name == register) {
-                                Some(&(_, gpr, _)) => gpr,
-                                None => return Err(Diagnostic::error(format!("asm memory operand base '{register}' must be a general-purpose register"))),
-                            },
-                        },
-                        other => return Err(Diagnostic::error(format!("expected a register in an asm memory operand, found {other}"))),
-                    };
-                    self.expect(Token::ParenClose)?;
-                    return Ok(AsmOperand::Memory {
-                        displacement: offset as i16,
-                        base,
-                    });
+                let struct_tag = self
+                    .struct_typedefs
+                    .get(&word)
+                    .cloned()
+                    .unwrap_or_else(|| word.clone());
+                if self.structs.contains_key(&struct_tag) && *self.peek() == Token::Dot {
+                    let displacement = self.parse_asm_struct_offset(struct_tag)?;
+                    let base = self.parse_asm_memory_base()?;
+                    return Ok(AsmOperand::Memory { displacement, base });
                 }
                 if let Some((_, gpr, tag)) = self
                     .asm_parameters
@@ -411,12 +385,136 @@ impl Parser {
                 }
                 Ok(AsmOperand::Label(word))
             }
+            // Parenthesized symbolic displacement arithmetic, used by the TRK runtime:
+            // `(ProcessorState_PPC.Extended1.exceptionID + 2)(r2)`.
+            Token::ParenOpen => {
+                let root = match self.advance() {
+                    Token::Identifier(root) => root,
+                    other => {
+                        return Err(Diagnostic::error(format!(
+                            "expected a struct name in an asm displacement expression, found {other}"
+                        )))
+                    }
+                };
+                let struct_tag = self
+                    .struct_typedefs
+                    .get(&root)
+                    .cloned()
+                    .unwrap_or(root.clone());
+                if !self.structs.contains_key(&struct_tag) || *self.peek() != Token::Dot {
+                    return Err(Diagnostic::error(format!(
+                        "asm displacement expression '{root}' is not a declared struct path"
+                    )));
+                }
+                let mut displacement = i64::from(self.parse_asm_struct_offset(struct_tag)?);
+                if *self.peek() == Token::Plus || *self.peek() == Token::Minus {
+                    let subtract = *self.peek() == Token::Minus;
+                    self.advance();
+                    let addend = match self.advance() {
+                        Token::IntegerLiteral(value) => value,
+                        other => {
+                            return Err(Diagnostic::error(format!(
+                                "expected an integer asm displacement addend, found {other}"
+                            )))
+                        }
+                    };
+                    displacement += if subtract { -addend } else { addend };
+                }
+                self.expect(Token::ParenClose)?;
+                let displacement = i16::try_from(displacement).map_err(|_| {
+                    Diagnostic::error(format!(
+                        "asm symbolic displacement {displacement} does not fit in 16 bits"
+                    ))
+                })?;
+                let base = self.parse_asm_memory_base()?;
+                Ok(AsmOperand::Memory { displacement, base })
+            }
             // A `@`-prefixed local label used as a branch target (`blt cr0, @exit`).
             Token::At => Ok(AsmOperand::Label(self.parse_asm_at_name()?)),
             other => Err(Diagnostic::error(format!(
                 "unexpected asm operand token {other}"
             ))),
         }
+    }
+
+    /// Resolve `Tag.outer.words[3]` through the ordinary C layout table. The cursor starts on
+    /// the first dot and stops after the final field/index, immediately before the `(rN)` base.
+    fn parse_asm_struct_offset(&mut self, mut tag: String) -> Compilation<i16> {
+        let mut offset = 0i64;
+        loop {
+            self.expect(Token::Dot)?;
+            let field_name = match self.advance() {
+                Token::Identifier(field) => field,
+                other => {
+                    return Err(Diagnostic::error(format!(
+                        "expected a field name in asm struct path, found {other}"
+                    )))
+                }
+            };
+            let (field_offset, next_tag, array_element) = self
+                .structs
+                .get(&tag)
+                .and_then(|layout| layout.fields.get(&field_name))
+                .map(|field| (field.offset, field.struct_tag.clone(), field.array_element))
+                .ok_or_else(|| {
+                    Diagnostic::error(format!("no field '{field_name}' in struct '{tag}'"))
+                })?;
+            offset += i64::from(field_offset);
+
+            if *self.peek() == Token::BracketOpen {
+                self.advance();
+                let index = self.parse_integer_constant()?;
+                self.expect(Token::BracketClose)?;
+                let element = array_element.ok_or_else(|| {
+                    Diagnostic::error(format!(
+                        "asm struct field '{tag}.{field_name}' is not an indexable scalar array"
+                    ))
+                })?;
+                offset += index * i64::from(element.size());
+            }
+
+            if *self.peek() != Token::Dot {
+                break;
+            }
+            tag = next_tag.ok_or_else(|| {
+                Diagnostic::error(format!(
+                    "asm struct field '{tag}.{field_name}' has no nested layout"
+                ))
+            })?;
+        }
+        i16::try_from(offset).map_err(|_| {
+            Diagnostic::error(format!(
+                "asm symbolic displacement {offset} does not fit in 16 bits"
+            ))
+        })
+    }
+
+    /// Parse the `(rN)` suffix shared by numeric and layout-derived memory operands.
+    fn parse_asm_memory_base(&mut self) -> Compilation<u8> {
+        self.expect(Token::ParenOpen)?;
+        let register = match self.advance() {
+            Token::Identifier(register) => register,
+            other => {
+                return Err(Diagnostic::error(format!(
+                    "expected a register in an asm memory operand, found {other}"
+                )))
+            }
+        };
+        let base = match parse_asm_register(&register) {
+            Some(AsmOperand::Gpr(index)) => index,
+            _ => self
+                .asm_parameters
+                .iter()
+                .find(|(name, _, _)| *name == register)
+                .map(|(_, gpr, _)| *gpr)
+                .ok_or_else(|| {
+                    Diagnostic::error(format!(
+                        "asm memory operand base '{register}' must be a general-purpose register"
+                    ))
+                })?,
+        };
+        self.expect(Token::ParenClose)?;
+        Ok(base)
     }
 
     /// Read the name after a `@` in an asm body: `@exit` (identifier) or `@1`

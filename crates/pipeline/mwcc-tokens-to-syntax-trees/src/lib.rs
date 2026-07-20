@@ -263,6 +263,42 @@ mod tests {
     }
 
     #[test]
+    fn resolves_nested_asm_struct_displacements() {
+        let source = r#"
+            typedef struct Words { unsigned int values[4]; } Words;
+            typedef struct StateImpl { int prefix; Words registers; } StateImpl;
+            typedef StateImpl State;
+            asm void save(void) {
+                nofralloc
+                lwz r3, State.registers.values[2](r2)
+                stw r3, (State.registers.values[1] + 2)(r2)
+                blr
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let body = unit.functions[0].asm_body.as_ref().unwrap();
+        assert!(matches!(
+            &body[1],
+            mwcc_syntax_trees::AsmItem::Instruction(instruction)
+                if instruction.operands[1]
+                    == mwcc_syntax_trees::AsmOperand::Memory { displacement: 12, base: 2 }
+        ));
+        assert!(matches!(
+            &body[2],
+            mwcc_syntax_trees::AsmItem::Instruction(instruction)
+                if instruction.operands[1]
+                    == mwcc_syntax_trees::AsmOperand::Memory { displacement: 10, base: 2 }
+        ));
+    }
+
+    #[test]
     fn retains_function_source_boundaries() {
         let raw = [
             (Token::KeywordInt, 1),
@@ -846,6 +882,30 @@ mod tests {
                 arguments,
             }) if matches!(target.as_ref(), mwcc_syntax_trees::Expression::Member { offset: 0, .. })
                 && arguments.len() == 1
+        ));
+    }
+
+    #[test]
+    fn parses_scoped_function_pointer_typedef_calls() {
+        let source = r#"
+            void invoke(void* code, void* value) {
+                typedef void (*Access)(void*, void*);
+                ((Access)code)(value, 0);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::CallThrough { arguments, .. }
+            )] if arguments.len() == 2
         ));
     }
 

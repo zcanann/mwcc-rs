@@ -3207,11 +3207,31 @@ impl Parser {
         // statement that begins with a type keyword is a local declaration;
         // `return` ends the body.
         let mut locals = Vec::new();
+        // Function-scope typedefs temporarily participate in expression parsing, then are restored
+        // when this body closes. Keeping the restoration here prevents a local alias from leaking
+        // into a later function in the translation unit.
+        let mut local_function_pointer_typedefs: Vec<(String, Option<Type>, bool)> = Vec::new();
         // A local declaration may open with a storage-class keyword: `static` gives the variable
         // static storage (codegen'd like a global, so recorded and deferred for now), while
         // `register`/`auto` are ordinary-automatic hints with no codegen effect. These are
         // `Identifier` tokens, so peek past them before the type test below.
         loop {
+            if matches!(self.peek(), Token::Identifier(word) if word == "typedef") {
+                let alias = self.parse_local_function_pointer_typedef()?;
+                let previous_type = self
+                    .typedefs
+                    .insert(alias.clone(), Type::Pointer(Pointee::Int));
+                let was_function_pointer = self
+                    .function_pointer_typedefs
+                    .replace(alias.clone())
+                    .is_some();
+                local_function_pointer_typedefs.push((
+                    alias,
+                    previous_type,
+                    was_function_pointer,
+                ));
+                continue;
+            }
             let mut is_static = false;
             while let Token::Identifier(word) = self.peek() {
                 match word.as_str() {
@@ -3836,6 +3856,24 @@ impl Parser {
             self.expect(Token::BraceClose)?;
         }
 
+        for (alias, previous_type, was_function_pointer) in
+            local_function_pointer_typedefs.into_iter().rev()
+        {
+            match previous_type {
+                Some(previous) => {
+                    self.typedefs.insert(alias.clone(), previous);
+                }
+                None => {
+                    self.typedefs.remove(&alias);
+                }
+            }
+            if was_function_pointer {
+                self.function_pointer_typedefs.insert(alias);
+            } else {
+                self.function_pointer_typedefs.remove(&alias);
+            }
+        }
+
         let mut locals = locals;
         locals.extend(block_locals);
         self.function_sources
@@ -3860,6 +3898,35 @@ impl Parser {
             asm_body: None,
             force_active: self.force_active,
         })
+    }
+
+    /// Parse a function-scope `typedef RET (*Alias)(params);`. The alias registration is owned by
+    /// `function_body`, which can restore a shadowed file-scope typedef at the closing brace.
+    fn parse_local_function_pointer_typedef(&mut self) -> Compilation<String> {
+        if !self.eat_word("typedef") {
+            return Err(Diagnostic::error("expected a local typedef"));
+        }
+        self.parse_type()?;
+        self.expect(Token::ParenOpen)?;
+        self.expect(Token::Star)?;
+        let alias = self.parse_identifier()?;
+        self.expect(Token::ParenClose)?;
+        self.expect(Token::ParenOpen)?;
+        let mut depth = 1;
+        while depth > 0 {
+            match self.advance() {
+                Token::ParenOpen => depth += 1,
+                Token::ParenClose => depth -= 1,
+                Token::EndOfFile => {
+                    return Err(Diagnostic::error(
+                        "unterminated local function-pointer typedef",
+                    ))
+                }
+                _ => {}
+            }
+        }
+        self.expect(Token::Semicolon)?;
+        Ok(alias)
     }
 
     pub(crate) fn peek_is_type(&self) -> bool {
