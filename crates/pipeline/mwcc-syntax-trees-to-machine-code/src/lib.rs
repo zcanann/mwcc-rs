@@ -528,6 +528,18 @@ fn hoist_link_register_reload(generator: &mut Generator) {
     if !generator.behavior.schedule_latency_slots {
         return;
     }
+    // GC/1.1p1 deliberately restores the caller stack pointer before loading LR through
+    // `4(r1)`. That load is address-dependent on the stack restore and therefore is not an
+    // epilogue latency candidate (`li result; addi r1,...; lwz r0,4(r1)`). The generic hoist
+    // only understands the reload-through-current-frame convention and would incorrectly move
+    // this load ahead of both operations.
+    if generator.behavior.frame_convention == mwcc_versions::FrameConvention::LinkageFirst
+        && generator.behavior.plain_linkage_epilogue_style
+            == mwcc_versions::PlainLinkageEpilogueStyle::StackRestoreBeforeReload
+        && generator.callee_saved.is_empty()
+    {
+        return;
+    }
     let permutation = mwcc_vreg::hoist_link_register_reload(&mut generator.output.instructions);
     for relocation in &mut generator.output.relocations {
         relocation.instruction_index = permutation[relocation.instruction_index];
