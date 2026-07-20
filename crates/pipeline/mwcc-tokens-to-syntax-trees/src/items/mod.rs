@@ -1488,6 +1488,14 @@ impl Parser {
             }
             // `typedef <type> <name>;` registers a type alias. (Function-pointer and
             // array typedefs are not in the subset yet.)
+            // Preserve the primary-template identity even when layout recovery
+            // makes the ordinary typedef parser succeed. Error recovery already
+            // does this for opaque template instances; the successful path needs
+            // the same fact so a later explicit member specialization inherits
+            // its class-body (implicit-inline) status.
+            if matches!(self.peek(), Token::Identifier(word) if word == "typedef") {
+                self.capture_template_alias();
+            }
             if self.eat_word("typedef") {
                 // `typedef struct/union [Tag] { … } Alias;` registers the layout and the
                 // alias->tag mapping (an anonymous one uses the alias as its tag). A union is

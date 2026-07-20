@@ -581,7 +581,7 @@ impl Parser {
     /// argument list is too complex for layout recovery. The immediate name
     /// before the outer `<` is the primary template; the final top-level name
     /// after its matching `>` is the alias.
-    fn capture_template_alias(&mut self) {
+    pub(crate) fn capture_template_alias(&mut self) {
         let start = self.position;
         if !matches!(self.tokens.get(start), Some(Token::Identifier(word)) if word == "typedef") {
             return;

@@ -1574,4 +1574,34 @@ mod tests {
         assert_eq!(unit.functions.len(), 1);
         assert_eq!(unit.functions[0].name, "compiled__Fv");
     }
+
+    #[test]
+    fn drops_unused_specializations_of_inline_class_template_members() {
+        let source = r#"
+            namespace J {
+                template <typename T, class Allocator = T>
+                struct Vector {
+                    T* begin;
+                    unsigned capacity;
+                    void** Insert_raw(T* first, unsigned count) { return 0; }
+                };
+            }
+            typedef J::Vector<void*, void*> VectorAlias;
+            template <>
+            void** VectorAlias::Insert_raw(void** first, unsigned count) {
+                return first;
+            }
+            int compiled(void) { return 3; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.functions.len(), 1);
+        assert_eq!(unit.functions[0].name, "compiled__Fv");
+    }
 }
