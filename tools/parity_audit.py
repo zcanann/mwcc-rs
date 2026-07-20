@@ -42,6 +42,7 @@ def build_audit(rows: List[Dict[str, Any]], size: int, seed: str, epoch: str) ->
         : min(size, len(identities))
     ]
     rows_by_version: Dict[str, List[str]] = {}
+    row_by_identity = {row["configuration_id"]: row for row in rows}
     for row in rows:
         rows_by_version.setdefault(row["mw_version"], []).append(row["configuration_id"])
     sample_set = set(sample)
@@ -52,9 +53,18 @@ def build_audit(rows: List[Dict[str, Any]], size: int, seed: str, epoch: str) ->
         if represented:
             version_coverage[version] = represented[0]
             continue
+        # A sentinel is a build-coverage canary, not part of the estimator.
+        # Prefer an authored matching source and then the smallest context so
+        # a giant, harness-fragile TU cannot obscure whether the compiler build
+        # itself works. Hash ranking only breaks equal-cost ties deterministically.
         sentinel = min(
             set(version_identities),
-            key=lambda identity: audit_rank(identity, f"{seed}\0VERSION\0{version}", epoch),
+            key=lambda identity: (
+                not row_by_identity[identity].get("matching", False),
+                not row_by_identity[identity].get("source_has_non_whitespace", True),
+                row_by_identity[identity].get("source_size_bytes", 1 << 62),
+                audit_rank(identity, f"{seed}\0VERSION\0{version}", epoch),
+            ),
         )
         version_coverage[version] = sentinel
         sentinels.append(sentinel)

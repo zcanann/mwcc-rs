@@ -404,6 +404,27 @@ class AuditSelectionTests(unittest.TestCase):
             )
         self.assertEqual(set(audit["version_coverage"]), {"GC/1.1", "GC/2.6"})
 
+    def test_version_sentinel_prefers_small_matching_source(self):
+        common = [row(source=f"src/common-{index}.c") for index in range(20)]
+        large = row(
+            source="src/large.c", mw_version="GC/1.1", source_size_bytes=10000
+        )
+        small = row(
+            source="src/small.c", mw_version="GC/1.1", source_size_bytes=100
+        )
+        nonmatching = row(
+            source="src/nonmatching.c",
+            mw_version="GC/1.1",
+            source_size_bytes=1,
+            matching=False,
+        )
+        audit = build_audit(common + [large, small, nonmatching], 1, "seed", "0")
+        if not any(
+            item["configuration_id"] in audit["sample_configuration_ids"]
+            for item in (large, small, nonmatching)
+        ):
+            self.assertEqual(audit["version_coverage"]["GC/1.1"], small["configuration_id"])
+
 
 class FrontierTests(unittest.TestCase):
     def test_zero_size_frontier_supports_audit_only_runs(self):
