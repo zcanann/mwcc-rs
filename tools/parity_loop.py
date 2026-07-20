@@ -55,10 +55,15 @@ def newest_other_tool(paths: List[Path], current: str) -> Optional[str]:
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--compiler", type=Path, default=Path("target/release/mwcc"))
+    parser.add_argument("--compiler", type=Path, default=Path("target/debug/mwcc"))
     parser.add_argument("--reference-root", type=Path)
     parser.add_argument("--state-dir", type=Path, default=Path("target/reference-parity/frontier"))
-    parser.add_argument("--size", type=int, default=256)
+    parser.add_argument(
+        "--size",
+        type=int,
+        default=32,
+        help="rotating nonpassing work budget (default: 32 configurations)",
+    )
     parser.add_argument(
         "--byte-audit",
         type=int,

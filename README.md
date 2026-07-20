@@ -44,9 +44,9 @@ and reserves a small rotating sample of previous byte matches for regression
 detection:
 
 ```sh
-cargo build --release -p mwcc
+cargo build -p mwcc
 # Fast edit loop: rotate a failure-biased sample; prior BYTE rows need not stay green.
-python3 tools/parity_loop.py --work-only --size 32 --epoch 0
+python3 tools/parity_loop.py --work-only --epoch 0
 
 # Periodic scorecard: rerun the frozen representative sample from scratch.
 python3 tools/parity_loop.py --audit-only --audit-size 384 --rerun

@@ -135,7 +135,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--inventory", type=Path, required=True)
     parser.add_argument("--result", type=Path, action="append", default=[])
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--size", type=int, default=256)
+    parser.add_argument("--size", type=int, default=32)
     parser.add_argument(
         "--byte-audit",
         type=int,
