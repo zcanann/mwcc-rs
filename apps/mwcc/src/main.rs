@@ -1000,7 +1000,16 @@ fn compile(
         //   * no initializer at all is uninitialized (`.sbss`/`.bss`).
         let is_array = global.array_length.is_some();
         let (initial_bytes, is_explicit_zero) = match materialized {
-            Some(bytes) if bytes.iter().any(|&value| value != 0) => (Some(bytes), false),
+            // A relocation is itself initialized content even when every
+            // placeholder byte is zero. Vtables and address-only aggregate
+            // images must therefore remain PROGBITS `.data`, never collapse
+            // into NOBITS `.bss`.
+            Some(bytes)
+                if bytes.iter().any(|&value| value != 0)
+                    || !global.data_relocations.is_empty() =>
+            {
+                (Some(bytes), false)
+            }
             Some(bytes) if is_array => (Some(bytes), false),
             Some(_) => (None, true),
             None => (None, false),

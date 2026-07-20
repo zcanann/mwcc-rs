@@ -737,6 +737,49 @@ mod tests {
     }
 
     #[test]
+    fn parses_out_of_class_constructor_and_destructor_definitions() {
+        let source = r#"
+            class Binder {
+            public:
+                Binder();
+                virtual ~Binder();
+            };
+            Binder::Binder() {}
+            Binder::~Binder() {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            ["__ct__6BinderFv", "__dt__6BinderFv"]
+        );
+        let destructor = &unit.functions[1];
+        assert_eq!(destructor.parameters.len(), 2);
+        assert_eq!(destructor.parameters[1].name, "__destroy");
+        assert_eq!(destructor.parameters[1].parameter_type, mwcc_syntax_trees::Type::Short);
+        let vtable = unit
+            .globals
+            .iter()
+            .find(|global| global.name == "__vt__6Binder")
+            .expect("the out-of-line virtual destructor owns the class vtable");
+        assert_eq!(vtable.data_bytes.as_deref(), Some(&[0; 12][..]));
+        assert_eq!(
+            vtable.data_relocations,
+            vec![(8, "__dt__6BinderFv".to_string(), 0)]
+        );
+    }
+
+    #[test]
     fn records_cxx_inline_ordinal_facts_without_assigning_version_weights() {
         let source = r#"
             class Id {

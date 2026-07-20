@@ -19,6 +19,7 @@ mod casts;
 mod comparisons;
 mod control_flow;
 mod copy_convention;
+mod cxx_abi;
 mod dag_emitter;
 mod division;
 mod expressions;
@@ -78,6 +79,12 @@ pub fn lower_function(
     // scheduling, or optimizer — so it bypasses the ordinary codegen path entirely.
     if function.asm_body.is_some() {
         return asm::assemble_asm_function(function, Behavior::resolve(&config));
+    }
+    if let Some(output) = cxx_abi::lower_virtual_constructor(function, globals) {
+        return Ok(output);
+    }
+    if let Some(output) = cxx_abi::lower_virtual_destructor(function, globals, config.clone()) {
+        return Ok(output);
     }
     // A STATIC CONST float/double global is DE-NAMED by mwcc: every read compiles
     // as the literal value, pooled anonymously (@N in .sdata2) with no named

@@ -23,6 +23,17 @@ pub(crate) struct ClassLayout {
     /// The class has a virtual dispatch table pointer. This is layout state,
     /// not merely syntax: a polymorphic primary base already supplies the slot.
     pub(crate) is_polymorphic: bool,
+    /// Byte offset of the primary vptr. CodeWarrior places a class's first vptr
+    /// at the declaration position of its first virtual member rather than
+    /// unconditionally at offset zero.
+    pub(crate) vptr_offset: Option<u32>,
+    /// Number of primary-table callable slots introduced by this class. The
+    /// two ABI header words are not included.
+    pub(crate) virtual_slots: usize,
+    /// Whether the class declares a virtual destructor. Its out-of-line
+    /// definition is a key function and owns the primary vtable in the subset
+    /// currently materialized by the frontend.
+    pub(crate) has_virtual_destructor: bool,
 }
 
 pub(crate) struct MemberMethod {
@@ -248,9 +259,12 @@ pub(crate) fn normalize_linkage_specifications(
     tokens
 }
 
-/// C++ constructors have no written return type. Insert the parser-internal
-/// `void` only for a top-level `Class::Class(` declarator, leaving class-body
-/// prototypes and expression-level qualified names untouched.
+/// C++ constructors and destructors have no written return type. Insert the
+/// parser-internal `void` only for top-level `Class::Class(` / `Class::~Class(`
+/// declarators, leaving class-body prototypes and expression-level qualified
+/// names untouched. A destructor's written `~Class` is normalized to its
+/// CodeWarrior ABI source name `__dt` so the ordinary qualified-member parser
+/// can handle both special members through one path.
 pub(crate) fn normalize_constructor_declarators(
     mut tokens: Vec<LocatedToken>,
 ) -> Vec<LocatedToken> {
@@ -286,8 +300,28 @@ pub(crate) fn normalize_constructor_declarators(
             && tokens[index + 1].token == Token::Colon
             && tokens[index + 2].token == Token::Colon
             && tokens[index + 4].token == Token::ParenOpen;
+        let destructor = index + 5 < tokens.len()
+            && declaration_scopes.iter().all(|scope| *scope)
+            && matches!((&tokens[index].token, &tokens[index + 4].token),
+                (Token::Identifier(scope), Token::Identifier(name)) if scope == name)
+            && tokens[index + 1].token == Token::Colon
+            && tokens[index + 2].token == Token::Colon
+            && tokens[index + 3].token == Token::Tilde
+            && tokens[index + 5].token == Token::ParenOpen;
         if constructor {
             let location = tokens[index].location;
+            tokens.insert(
+                index,
+                LocatedToken {
+                    token: Token::KeywordVoid,
+                    location,
+                },
+            );
+            index += 6;
+        } else if destructor {
+            let location = tokens[index].location;
+            tokens[index + 3].token = Token::Identifier("__dt".to_string());
+            tokens.remove(index + 4);
             tokens.insert(
                 index,
                 LocatedToken {
@@ -1126,10 +1160,12 @@ impl Parser {
                     ));
                 }
                 let base_name = self.parse_identifier()?;
-                let base_is_polymorphic = self
+                let (base_is_polymorphic, base_vptr_offset, base_virtual_slots) = self
                     .cxx_classes
                     .get(&base_name)
-                    .is_some_and(|base| base.is_polymorphic);
+                    .map_or((false, None, 0), |base| {
+                        (base.is_polymorphic, base.vptr_offset, base.virtual_slots)
+                    });
                 let base = self.structs.get(&base_name).ok_or_else(|| {
                     Diagnostic::error(format!(
                         "base class '{base_name}' must be defined before '{name}'"
@@ -1156,6 +1192,10 @@ impl Parser {
                     .extend(base.function_pointer_fields.iter().cloned());
                 class.bases.push(BaseClass { name: base_name });
                 class.is_polymorphic |= base_is_polymorphic;
+                if class.vptr_offset.is_none() {
+                    class.vptr_offset = base_vptr_offset.map(|offset| base_offset + offset);
+                }
+                class.virtual_slots = class.virtual_slots.max(base_virtual_slots);
                 offset += base.size;
                 max_align = max_align.max(base_align);
                 if !self.eat_keyword(Token::Comma) {
@@ -1178,14 +1218,17 @@ impl Parser {
                 continue;
             }
             let is_explicit = self.eat_word("explicit");
-            if self.eat_word("virtual") {
+            let is_virtual = self.eat_word("virtual");
+            if is_virtual {
                 if !class.is_polymorphic {
                     // Unlike modern Itanium-style layouts, this ABI inserts the
                     // vptr where the first virtual declaration appears. A class
                     // beginning with data therefore keeps that data at offset 0
                     // and receives an aligned vptr after it. Polymorphic bases
                     // already supply the primary vptr and skip this path.
-                    offset = offset.div_ceil(4) * 4 + 4;
+                    offset = offset.div_ceil(4) * 4;
+                    class.vptr_offset = Some(offset);
+                    offset += 4;
                     max_align = max_align.max(4);
                     class.is_polymorphic = true;
                 }
@@ -1208,6 +1251,10 @@ impl Parser {
                 ));
             }
             if *self.peek() == Token::Tilde {
+                if is_virtual {
+                    class.virtual_slots += 1;
+                    class.has_virtual_destructor = true;
+                }
                 self.skip_class_member()?;
                 continue;
             }
@@ -1224,6 +1271,9 @@ impl Parser {
             if *self.peek() == Token::ParenOpen {
                 let signature = self.parse_class_parameter_types()?;
                 let is_inline = self.skip_class_method_tail()?;
+                if is_virtual {
+                    class.virtual_slots += 1;
+                }
                 class
                     .methods
                     .entry(field_name)

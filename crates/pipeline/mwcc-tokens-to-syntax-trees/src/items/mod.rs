@@ -2465,6 +2465,10 @@ impl Parser {
                 .as_ref()
                 .filter(|scope| scope.as_str() == name.as_str())
                 .cloned();
+            let destructor_scope = member_layout_scope
+                .as_ref()
+                .filter(|_| name == "__dt")
+                .cloned();
             let constructor_initializers = if let Some(scope) = &constructor_scope {
                 self.parse_constructor_initializers(scope)?
             } else {
@@ -2502,6 +2506,20 @@ impl Parser {
                         name: "this".to_string(),
                     },
                 );
+                // A virtual destructor has an ABI-only signed-short deleting
+                // flag in r4. It is deliberately absent from the mangled type,
+                // but must be present in executable IR so the ordinary
+                // conditional/call lowering can generate the deleting form.
+                if destructor_scope
+                    .as_deref()
+                    .and_then(|layout_scope| self.cxx_classes.get(layout_scope))
+                    .is_some_and(|class| class.has_virtual_destructor)
+                {
+                    parameters.push(Parameter {
+                        parameter_type: Type::Short,
+                        name: "__destroy".to_string(),
+                    });
+                }
             } else if let Some(scope) = &namespace_scope {
                 let source_name = name.clone();
                 name = self.mangle_typed_free_function_in_scope(
@@ -2684,6 +2702,82 @@ impl Parser {
             let mut function = parsed_function?;
             if !constructor_initializers.is_empty() {
                 function.statements.splice(0..0, constructor_initializers);
+            }
+            let special_member_scope = constructor_scope.as_ref().or(destructor_scope.as_ref());
+            if let Some(scope) = special_member_scope {
+                if let Some(class) = self.cxx_classes.get(scope) {
+                    if let Some(vptr_offset) = class.vptr_offset {
+                        let vtable = format!("__vt__{}{}", scope.len(), scope);
+                        let target = Expression::Member {
+                            base: Box::new(Expression::Variable("this".to_string())),
+                            offset: vptr_offset,
+                            member_type: Type::UnsignedInt,
+                            index_stride: None,
+                        };
+                        let vptr_store = Statement::Store {
+                            target,
+                            value: Expression::AddressOf {
+                                operand: Box::new(Expression::Variable(vtable.clone())),
+                            },
+                        };
+                        if destructor_scope.is_some() && class.has_virtual_destructor {
+                            function.return_type = Type::StructPointer {
+                                element_size: self.structs.get(scope).map_or(0, |layout| layout.size),
+                            };
+                            function.statements = vec![Statement::If {
+                                condition: Expression::Variable("this".to_string()),
+                                then_body: vec![
+                                    vptr_store,
+                                    Statement::If {
+                                        condition: Expression::Binary {
+                                            operator: mwcc_syntax_trees::BinaryOperator::Greater,
+                                            left: Box::new(Expression::Variable("__destroy".to_string())),
+                                            right: Box::new(Expression::IntegerLiteral(0)),
+                                        },
+                                        then_body: vec![Statement::Expression(Expression::Call {
+                                            name: "__dl__FPv".to_string(),
+                                            arguments: vec![Expression::Variable("this".to_string())],
+                                        })],
+                                        else_body: Vec::new(),
+                                    },
+                                ],
+                                else_body: Vec::new(),
+                            }];
+                            function.return_expression =
+                                Some(Expression::Variable("this".to_string()));
+
+                            if !globals.iter().any(|global| global.name == vtable) {
+                                let table_size = 8 + class.virtual_slots.max(1) * 4;
+                                globals.push(GlobalDeclaration {
+                                    declared_type: Type::Struct {
+                                        size: table_size as u32,
+                                        align: 4,
+                                    },
+                                    name: vtable,
+                                    is_extern: false,
+                                    is_static: false,
+                                    is_weak: false,
+                                    non_static_functions_before: functions
+                                        .iter()
+                                        .filter(|function| !function.is_static)
+                                        .count(),
+                                    functions_before: functions.len(),
+                                    array_length: None,
+                                    array_length_inferred: false,
+                                    initializer: None,
+                                    is_const: false,
+                                    address_initializer: None,
+                                    data_bytes: Some(vec![0; table_size]),
+                                    data_relocations: vec![(8, function.name.clone(), 0)],
+                                    section: None,
+                                    attribute_alignment: None,
+                                });
+                            }
+                        } else if constructor_scope.is_some() {
+                            function.statements.insert(0, vptr_store);
+                        }
+                    }
+                }
             }
             if constructor_scope.is_some() && function.return_expression.is_none() {
                 function.return_expression = Some(Expression::Variable("this".to_string()));
