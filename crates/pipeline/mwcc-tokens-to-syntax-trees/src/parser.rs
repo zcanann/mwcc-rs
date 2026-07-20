@@ -81,6 +81,16 @@ pub(crate) struct Parser {
     /// bodies. These support direct `object->member(args)` calls without layout.
     pub(crate) cxx_instance_methods:
         HashMap<(String, String), Vec<crate::cxx::RecoveredCxxMethod>>,
+    /// Recovered primary virtual tables, including inherited entries. Keeping
+    /// ABI slot state separate from object layout lets calls through opaque
+    /// header-only class declarations resolve without pretending their fields
+    /// were parsed.
+    pub(crate) cxx_dispatch_tables:
+        HashMap<String, crate::cxx::RecoveredCxxDispatchTable>,
+    /// Classes whose virtual declaration sequence could not be recovered in
+    /// full. No virtual call through one is admitted: an unknown earlier entry
+    /// would make every later slot unsafe.
+    pub(crate) incomplete_cxx_dispatch: std::collections::HashSet<String>,
     /// Concrete template typedef alias -> primary template name. This is kept
     /// separately from layout aliases because nested/multi-argument templates
     /// may be opaque for layout while still carrying inline-member semantics.

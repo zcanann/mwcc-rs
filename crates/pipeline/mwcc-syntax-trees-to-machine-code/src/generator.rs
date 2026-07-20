@@ -595,6 +595,7 @@ impl Generator {
             // An indirect call's return type is unknown — signed by default,
             // like an unprototyped direct call.
             Expression::CallThrough { .. } => Ok(true),
+            Expression::VirtualCall { return_type, .. } => Ok(self.signed_of(*return_type)),
             Expression::AggregateLiteral(_) => Err(Diagnostic::error(
                 "an aggregate initializer is not supported here (captures only)",
             )),

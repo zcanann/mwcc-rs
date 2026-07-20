@@ -26,6 +26,65 @@ impl Generator {
         }
     }
 
+    /// Emit a primary-vtable virtual call. The object is both the implicit
+    /// first EABI argument and the address used for dispatch. Argument
+    /// marshaling runs first; unsupported call-bearing later arguments defer in
+    /// the ordinary argument scheduler before any unsafe sequence is emitted.
+    pub(crate) fn emit_virtual_call(
+        &mut self,
+        object: &Expression,
+        vptr_offset: u16,
+        slot_offset: u16,
+        variadic: bool,
+        arguments: &[Expression],
+        destination: Option<u8>,
+        float_result: bool,
+    ) -> Compilation<()> {
+        let mut all_arguments = Vec::with_capacity(arguments.len() + 1);
+        all_arguments.push(object.clone());
+        all_arguments.extend_from_slice(arguments);
+        self.emit_arguments(&all_arguments, "<virtual>")?;
+
+        let vptr_offset = i16::try_from(vptr_offset)
+            .map_err(|_| Diagnostic::error("a virtual-table pointer offset is out of range"))?;
+        let slot_offset = i16::try_from(slot_offset)
+            .map_err(|_| Diagnostic::error("a virtual-table slot offset is out of range"))?;
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 12,
+            a: Eabi::FIRST_GENERAL_ARGUMENT,
+            offset: vptr_offset,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 12,
+            a: 12,
+            offset: slot_offset,
+        });
+        if variadic {
+            self.output
+                .instructions
+                .push(Instruction::ConditionRegisterClear { d: 6 });
+        }
+        self.emit_indirect_branch_and_link(12);
+        if let Some(destination) = destination {
+            let result = if float_result {
+                Eabi::float_result().number
+            } else {
+                Eabi::general_result().number
+            };
+            if destination != result {
+                self.output.instructions.push(if float_result {
+                    Instruction::FloatMove {
+                        d: destination,
+                        b: result,
+                    }
+                } else {
+                    Instruction::move_register(destination, result)
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Emit a direct call. Arguments are placed in the EABI argument registers,
     /// then `bl name`; the result (in r3 / f1) is moved to `destination` when one
     /// is wanted (a discarded call statement passes `None`).

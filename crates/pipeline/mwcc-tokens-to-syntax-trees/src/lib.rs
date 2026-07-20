@@ -114,6 +114,8 @@ pub fn parse_located_translation_unit(
         inline_cxx_members: std::collections::HashSet::new(),
         cxx_static_methods: HashMap::new(),
         cxx_instance_methods: HashMap::new(),
+        cxx_dispatch_tables: HashMap::new(),
+        incomplete_cxx_dispatch: std::collections::HashSet::new(),
         template_aliases: HashMap::new(),
         variable_structs: HashMap::new(),
         function_return_structs: HashMap::new(),
@@ -367,6 +369,99 @@ mod tests {
             [mwcc_syntax_trees::Statement::Expression(
                 mwcc_syntax_trees::Expression::Call { name, arguments }
             )] if name == "print__6StreamFPce" && arguments.len() == 3
+        ));
+    }
+
+    #[test]
+    fn resolves_a_virtual_member_to_its_measured_vtable_slot() {
+        let source = r#"
+            struct Stream {
+                virtual int first(void);
+                virtual void write(void*, int);
+            };
+            void caller(Stream* stream, void* bytes, int count) {
+                stream->write(bytes, count);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::VirtualCall {
+                    vptr_offset: 0,
+                    slot_offset: 12,
+                    arguments,
+                    ..
+                }
+            )] if arguments.len() == 2
+        ));
+    }
+
+    #[test]
+    fn inherited_virtual_overrides_reuse_the_base_slot() {
+        let source = r#"
+            struct Base { virtual int value(int); };
+            struct Child : Base {
+                int value(int);
+                virtual void added(void);
+            };
+            int caller(Child* child, int input) { return child->value(input); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::VirtualCall {
+                vptr_offset: 0,
+                slot_offset: 8,
+                arguments,
+                ..
+            }) if arguments.len() == 1
+        ));
+    }
+
+    #[test]
+    fn opaque_reference_and_inline_virtuals_preserve_later_slots() {
+        let source = r#"
+            struct String;
+            struct Stream {
+                virtual void first(String&);
+                virtual bool ready(void) { return false; }
+                virtual void write(void*, int);
+            };
+            void caller(Stream* stream, void* bytes, int count) {
+                stream->write(bytes, count);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::VirtualCall {
+                    slot_offset: 16,
+                    ..
+                }
+            )]
         ));
     }
 

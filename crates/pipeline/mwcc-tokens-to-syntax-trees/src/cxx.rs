@@ -34,9 +34,50 @@ pub(crate) struct MemberMethod {
 /// The ready-mangled name keeps overload selection independent of expression
 /// type inference; fixed arity plus the variadic bit is enough to reject
 /// ambiguous calls safely.
+#[derive(Clone)]
 pub(crate) struct RecoveredCxxMethod {
     pub(crate) mangled: String,
     pub(crate) fixed_parameter_count: usize,
+    pub(crate) variadic: bool,
+}
+
+/// One entry in CodeWarrior's primary virtual table. Slot offsets include the
+/// two-word ABI header: the first callable entry is therefore byte offset 8.
+#[derive(Clone)]
+pub(crate) struct RecoveredCxxVirtualMethod {
+    pub(crate) return_type: Type,
+    pub(crate) parameters: Vec<Type>,
+    pub(crate) fixed_parameter_count: usize,
+    pub(crate) variadic: bool,
+    pub(crate) vptr_offset: u16,
+    pub(crate) slot_offset: u16,
+}
+
+/// Declaration-only virtual dispatch state. This is intentionally independent
+/// of [`ClassLayout`]: large preprocessed headers often contain class syntax we
+/// cannot lay out yet, while their primary vtable declarations remain enough
+/// to lower a call safely.
+#[derive(Clone)]
+pub(crate) struct RecoveredCxxDispatchTable {
+    pub(crate) methods:
+        std::collections::HashMap<String, Vec<RecoveredCxxVirtualMethod>>,
+    pub(crate) next_slot_offset: u16,
+}
+
+impl Default for RecoveredCxxDispatchTable {
+    fn default() -> Self {
+        Self {
+            methods: std::collections::HashMap::new(),
+            next_slot_offset: 8,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct VirtualDispatch {
+    pub(crate) vptr_offset: u16,
+    pub(crate) slot_offset: u16,
+    pub(crate) return_type: Type,
     pub(crate) variadic: bool,
 }
 
@@ -186,6 +227,44 @@ impl Parser {
             return Vec::new();
         }
 
+        // Seed the primary dispatch table from the one supported base. A base
+        // declared in the current namespace is preferred, with the written
+        // name as a fallback for already-qualified/preprocessed declarations.
+        // Multiple or virtual inheritance stays an honest defer: secondary
+        // vptrs require this-adjusting thunks and cannot share this model.
+        let header = &self.tokens[start + 2..index];
+        let mut dispatch = RecoveredCxxDispatchTable::default();
+        if let Some(colon) = header.iter().position(|token| *token == Token::Colon) {
+            let inheritance = &header[colon + 1..];
+            let unsupported = inheritance.iter().any(|token| {
+                token == &Token::Comma
+                    || matches!(token, Token::Identifier(word) if word == "virtual")
+            });
+            let base = inheritance.iter().find_map(|token| match token {
+                Token::Identifier(word)
+                    if !matches!(word.as_str(), "public" | "private" | "protected") =>
+                {
+                    Some(word.as_str())
+                }
+                _ => None,
+            });
+            if unsupported {
+                self.incomplete_cxx_dispatch.insert(class.clone());
+            } else if let Some(base) = base {
+                let qualified_base = self.qualify_cxx_class_name(base);
+                if let Some(base_dispatch) = self
+                    .cxx_dispatch_tables
+                    .get(&qualified_base)
+                    .or_else(|| self.cxx_dispatch_tables.get(base))
+                {
+                    dispatch = base_dispatch.clone();
+                } else {
+                    self.incomplete_cxx_dispatch.insert(class.clone());
+                }
+            }
+        }
+        self.cxx_dispatch_tables.insert(class.clone(), dispatch);
+
         index += 1;
         let body_start = index;
         let mut prototypes = Vec::new();
@@ -251,8 +330,17 @@ impl Parser {
                 _ => {}
             }
             if begins_member {
-                if let Some(prototype) = self.capture_cxx_method(index, &class) {
-                    prototypes.push(prototype);
+                let starts_virtual = matches!(self.tokens.get(index), Some(Token::Identifier(word)) if word == "virtual");
+                match self.capture_cxx_method(index, &class) {
+                    Some(Some(prototype)) => prototypes.push(prototype),
+                    Some(None) => {}
+                    None if starts_virtual => {
+                        // A destructor, pointer-to-member signature, or another
+                        // unmodeled virtual declaration may consume a slot. Refuse
+                        // every virtual call through the class until it is modeled.
+                        self.incomplete_cxx_dispatch.insert(class.clone());
+                    }
+                    None => {}
                 }
             }
             index += 1;
@@ -268,7 +356,7 @@ impl Parser {
         &mut self,
         declaration_index: usize,
         class: &str,
-    ) -> Option<(String, Type, Vec<Type>)> {
+    ) -> Option<Option<(String, Type, Vec<Type>)>> {
         let saved_position = self.position;
         let saved_struct_tag = self.last_struct_tag.clone();
         let saved_array_typedef = self.last_array_typedef;
@@ -277,7 +365,7 @@ impl Parser {
         let saved_volatile = self.last_type_was_volatile;
 
         self.position = declaration_index;
-        let recovered = (|| -> Compilation<(String, Type, Vec<Type>, bool, bool, bool)> {
+        let recovered = (|| -> Compilation<(String, Type, Vec<Type>, bool, bool, bool, bool)> {
             let mut is_static = false;
             let mut is_virtual = false;
             let mut is_inline = false;
@@ -309,9 +397,32 @@ impl Parser {
                         variadic = true;
                         break;
                     }
-                    let parameter_type = self.parse_type()?;
+                    let parameter_start = self.position;
+                    let mut parameter_type = match self.parse_type() {
+                        Ok(parameter_type) => parameter_type,
+                        Err(_) if is_virtual => {
+                            // Slot recovery needs declaration order and arity,
+                            // not a complete value ABI. Preserve one opaque
+                            // aggregate/reference parameter while skipping its
+                            // spelling; a call using that overload can still be
+                            // selected safely by arity.
+                            self.position = parameter_start;
+                            while !matches!(self.peek(), Token::Comma | Token::ParenClose | Token::EndOfFile) {
+                                self.advance();
+                            }
+                            parameters.push(Type::StructPointer { element_size: 0 });
+                            if !self.eat_keyword(Token::Comma) {
+                                break;
+                            }
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    };
                     self.last_struct_tag.take();
                     self.last_array_typedef.take();
+                    if self.eat_keyword(Token::Ampersand) {
+                        parameter_type = Type::StructPointer { element_size: 0 };
+                    }
                     if matches!(self.peek(), Token::Identifier(_)) {
                         self.advance();
                     }
@@ -326,7 +437,13 @@ impl Parser {
             {
                 self.advance();
             }
-            if *self.peek() != Token::Semicolon {
+            let has_body = *self.peek() == Token::BraceOpen;
+            if self.eat_keyword(Token::Equals) {
+                // Pure virtual (`= 0`) and deleted/defaulted declarations all
+                // still occupy their declaration-selected slot.
+                self.advance();
+            }
+            if *self.peek() != Token::Semicolon && !has_body {
                 return Err(Diagnostic::error("not a class method declaration"));
             }
             Ok((
@@ -335,7 +452,8 @@ impl Parser {
                 parameters,
                 variadic,
                 is_static,
-                is_virtual || is_inline,
+                is_virtual,
+                is_inline || has_body,
             ))
         })();
 
@@ -346,9 +464,42 @@ impl Parser {
         self.last_pointer_const = saved_pointer_const;
         self.last_type_was_volatile = saved_volatile;
 
-        if let Ok((member, return_type, parameters, variadic, is_static, skip_direct_call)) =
+        if let Ok((member, return_type, parameters, variadic, is_static, is_virtual, is_inline)) =
             recovered
         {
+            let inherited_virtual = self
+                .cxx_dispatch_tables
+                .get(class)
+                .and_then(|table| table.methods.get(&member))
+                .and_then(|methods| {
+                    methods
+                        .iter()
+                        .find(|method| method.parameters == parameters && method.variadic == variadic)
+                })
+                .cloned();
+            let is_virtual = is_virtual || inherited_virtual.is_some();
+            if is_virtual {
+                let table = self.cxx_dispatch_tables.get_mut(class)?;
+                if inherited_virtual.is_none() {
+                    let slot_offset = table.next_slot_offset;
+                    table.next_slot_offset = table.next_slot_offset.checked_add(4)?;
+                    table
+                        .methods
+                        .entry(member)
+                        .or_default()
+                        .push(RecoveredCxxVirtualMethod {
+                            return_type,
+                            parameters: parameters.clone(),
+                            fixed_parameter_count: parameters.len(),
+                            variadic,
+                            vptr_offset: 0,
+                            slot_offset,
+                        });
+                }
+                // A virtual call never references the out-of-line member symbol
+                // directly. Recording the slot is the complete result.
+                return Some(None);
+            }
             let scopes: Vec<&str> = class.split("::").collect();
             let mangled = mangle_qualified_member_function_variadic(
                 &scopes,
@@ -368,7 +519,7 @@ impl Parser {
                     .or_default()
                     .push(method);
                 parameters
-            } else if !skip_direct_call {
+            } else if !is_inline {
                 self.cxx_instance_methods
                     .entry((class.to_string(), member))
                     .or_default()
@@ -379,12 +530,12 @@ impl Parser {
                 prototype_parameters.extend(parameters);
                 prototype_parameters
             } else {
-                return None;
+                return Some(None);
             };
             if variadic {
                 self.variadic_definitions.insert(mangled.clone());
             }
-            return Some((mangled, return_type, prototype_parameters));
+            return Some(Some((mangled, return_type, prototype_parameters)));
         }
         None
     }
@@ -448,6 +599,50 @@ impl Parser {
             [method] => Ok(Some(method.mangled.clone())),
             _ => Err(Diagnostic::error(format!(
                 "C++ member call '{class}::{member}' is ambiguous (roadmap)"
+            ))),
+        }
+    }
+
+    /// Resolve a virtual member by declaration signature and return the ABI
+    /// dispatch location. As with direct members, arity is accepted only when it
+    /// identifies exactly one overload. Incomplete tables never produce a slot.
+    pub(crate) fn resolve_virtual_member_call(
+        &self,
+        class: &str,
+        member: &str,
+        argument_count: usize,
+    ) -> Compilation<Option<VirtualDispatch>> {
+        let source_class = class;
+        let class = self.qualify_cxx_class_name(source_class);
+        let resolved_class = if self.cxx_dispatch_tables.contains_key(&class) {
+            class
+        } else {
+            source_class.to_string()
+        };
+        if self.incomplete_cxx_dispatch.contains(&resolved_class) {
+            return Ok(None);
+        }
+        let candidates: Vec<&RecoveredCxxVirtualMethod> = self
+            .cxx_dispatch_tables
+            .get(&resolved_class)
+            .and_then(|table| table.methods.get(member))
+            .into_iter()
+            .flatten()
+            .filter(|method| {
+                method.fixed_parameter_count == argument_count
+                    || (method.variadic && argument_count >= method.fixed_parameter_count)
+            })
+            .collect();
+        match candidates.as_slice() {
+            [] => Ok(None),
+            [method] => Ok(Some(VirtualDispatch {
+                vptr_offset: method.vptr_offset,
+                slot_offset: method.slot_offset,
+                return_type: method.return_type,
+                variadic: method.variadic,
+            })),
+            _ => Err(Diagnostic::error(format!(
+                "virtual C++ member call '{resolved_class}::{member}' is ambiguous (roadmap)"
             ))),
         }
     }

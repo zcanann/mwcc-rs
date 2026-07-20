@@ -2834,6 +2834,14 @@ fn walk(expression: &Expression, names: &mut HashSet<String>) {
                 walk(argument, names);
             }
         }
+        Expression::VirtualCall {
+            object, arguments, ..
+        } => {
+            walk(object, names);
+            for argument in arguments {
+                walk(argument, names);
+            }
+        }
         Expression::AggregateLiteral(_) => {}
         Expression::PostStep { target, .. } => walk(target, names),
         // A string literal takes no `&variable` of its own.

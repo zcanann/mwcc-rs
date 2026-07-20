@@ -963,7 +963,7 @@ fn used_in_sign_sensitive_op(
 ) -> bool {
     match expression {
         Expression::CompoundLiteral { .. } => false,
-        Expression::CallThrough { .. } => true, // conservative: an indirect call blocks folds
+        Expression::CallThrough { .. } | Expression::VirtualCall { .. } => true, // conservative: an indirect call blocks folds
         Expression::AggregateLiteral(_) => false,
         Expression::PostStep { .. } => true, // conservative: block folds through a postfix step
         Expression::Binary {
@@ -1058,7 +1058,7 @@ fn has_additive_chain(expression: &Expression) -> bool {
     }
     match expression {
         Expression::CompoundLiteral { .. } => false,
-        Expression::CallThrough { .. } => true, // conservative
+        Expression::CallThrough { .. } | Expression::VirtualCall { .. } => true, // conservative
         Expression::AggregateLiteral(_) => false,
         Expression::PostStep { .. } => true, // conservative
         Expression::Binary {
@@ -1127,6 +1127,15 @@ fn count_references(name: &str, expression: &Expression) -> usize {
                     .map(|argument| count_references(name, argument))
                     .sum::<usize>()
         }
+        Expression::VirtualCall {
+            object, arguments, ..
+        } => {
+            count_references(name, object)
+                + arguments
+                    .iter()
+                    .map(|argument| count_references(name, argument))
+                    .sum::<usize>()
+        }
         Expression::AggregateLiteral(_) => 0,
         Expression::PostStep { target, .. } => 2 * count_references(name, target),
         Expression::Variable(variable) => usize::from(variable == name),
@@ -1181,7 +1190,9 @@ pub(crate) fn substitute(
     match expression {
         Expression::CompoundLiteral { .. } => expression.clone(),
         // Never substitute through an indirect call (its target is a live load).
-        other @ Expression::CallThrough { .. } => other.clone(),
+        other @ Expression::CallThrough { .. } | other @ Expression::VirtualCall { .. } => {
+            other.clone()
+        }
         other @ Expression::AggregateLiteral(_) => other.clone(),
         // A postfix step mutates its target — never substitute through it.
         Expression::PostStep { .. } => expression.clone(),

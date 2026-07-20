@@ -607,6 +607,12 @@ fn normalize_capture_expression(expression: &mut Expression) {
             normalize_capture_expression(target);
             arguments.iter_mut().for_each(normalize_capture_expression);
         }
+        Expression::VirtualCall {
+            object, arguments, ..
+        } => {
+            normalize_capture_expression(object);
+            arguments.iter_mut().for_each(normalize_capture_expression);
+        }
         Expression::Call { arguments, .. } => {
             arguments.iter_mut().for_each(normalize_capture_expression);
         }

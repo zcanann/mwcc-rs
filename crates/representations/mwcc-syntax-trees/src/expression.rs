@@ -110,6 +110,20 @@ pub enum Expression {
         target: Box<Expression>,
         arguments: Vec<Expression>,
     },
+    /// `object->method(arguments)` where `method` is virtual. The frontend has
+    /// resolved the declaration to one ABI dispatch slot, but deliberately
+    /// keeps the object separate from the explicit arguments: code generation
+    /// must both pass it as the implicit `this` argument and use it to load the
+    /// vptr. `vptr_offset` supports secondary-base dispatch once that layout is
+    /// recovered; the currently accepted single-primary-base subset uses zero.
+    VirtualCall {
+        object: Box<Expression>,
+        vptr_offset: u16,
+        slot_offset: u16,
+        return_type: Type,
+        variadic: bool,
+        arguments: Vec<Expression>,
+    },
     /// `name(arguments)` — a direct call.
     Call {
         name: String,

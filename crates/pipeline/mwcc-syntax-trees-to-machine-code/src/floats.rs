@@ -27,6 +27,29 @@ impl Generator {
             Expression::CallThrough { .. } => Err(Diagnostic::error(
                 "an indirect call through a member function pointer is not supported here (captures only)",
             )),
+            Expression::VirtualCall {
+                object,
+                vptr_offset,
+                slot_offset,
+                return_type,
+                variadic,
+                arguments,
+            } => {
+                if !matches!(return_type, Type::Float | Type::Double) {
+                    return Err(Diagnostic::error(
+                        "an integer virtual-call result used as a float needs conversion (roadmap)",
+                    ));
+                }
+                self.emit_virtual_call(
+                    object,
+                    *vptr_offset,
+                    *slot_offset,
+                    *variadic,
+                    arguments,
+                    Some(destination),
+                    true,
+                )
+            }
             Expression::AggregateLiteral(_) => Err(Diagnostic::error("an aggregate initializer is not supported here (captures only)")),
             Expression::PostStep { .. } => Err(Diagnostic::error(
                 "a postfix step used as a float value is not supported yet (roadmap)",

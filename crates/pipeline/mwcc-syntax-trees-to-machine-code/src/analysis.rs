@@ -134,6 +134,15 @@ pub(crate) fn count_name_occurrences(expression: &Expression, name: &str) -> usi
                     .map(|argument| count_name_occurrences(argument, name))
                     .sum::<usize>()
         }
+        Expression::VirtualCall {
+            object, arguments, ..
+        } => {
+            count_name_occurrences(object, name)
+                + arguments
+                    .iter()
+                    .map(|argument| count_name_occurrences(argument, name))
+                    .sum::<usize>()
+        }
         Expression::AggregateLiteral(_) => 0,
         Expression::Variable(variable) => usize::from(variable == name),
         Expression::IntegerLiteral(_)
@@ -480,6 +489,14 @@ fn collect_register_reads(
                 collect_register_reads(argument, registers, collected);
             }
         }
+        Expression::VirtualCall {
+            object, arguments, ..
+        } => {
+            collect_register_reads(object, registers, collected);
+            for argument in arguments {
+                collect_register_reads(argument, registers, collected);
+            }
+        }
         Expression::AggregateLiteral(_) => {}
         Expression::PostStep { target, .. } => collect_register_reads(target, registers, collected),
         Expression::Variable(name) => {
@@ -663,6 +680,25 @@ fn reads_register_after_call(expression: &Expression, registers: &HashSet<&str>)
                 )
                 || reads_register_after_call(target, registers)
         }
+        // The object and explicit arguments all run before dispatch. Preserve
+        // the ordinary call-argument safety rule for nested calls.
+        Expression::VirtualCall {
+            object, arguments, ..
+        } => {
+            let mut argument_called = false;
+            for argument in std::iter::once(object.as_ref()).chain(arguments) {
+                if argument_called && reads_register(argument, registers) {
+                    return true;
+                }
+                if reads_register_after_call(argument, registers) {
+                    return true;
+                }
+                if expression_has_call(argument) {
+                    argument_called = true;
+                }
+            }
+            false
+        }
         Expression::CompoundLiteral { .. } => false,
         Expression::AggregateLiteral(_) => false,
         Expression::PostStep { target, .. } => {
@@ -734,6 +770,14 @@ pub(crate) fn reads_register(expression: &Expression, registers: &HashSet<&str>)
                     .iter()
                     .any(|argument| reads_register(argument, registers))
         }
+        Expression::VirtualCall {
+            object, arguments, ..
+        } => {
+            reads_register(object, registers)
+                || arguments
+                    .iter()
+                    .any(|argument| reads_register(argument, registers))
+        }
         Expression::AggregateLiteral(_) => false,
         Expression::PostStep { target, .. } => reads_register(target, registers),
         Expression::Variable(name) => registers.contains(name.as_str()),
@@ -801,7 +845,7 @@ pub(crate) fn expression_has_call(expression: &Expression) -> bool {
         Expression::Call { .. } => true,
         // An indirect call (through a function pointer) always makes the function
         // non-leaf — the link register must be saved around the `bctrl`.
-        Expression::CallThrough { .. } => true,
+        Expression::CallThrough { .. } | Expression::VirtualCall { .. } => true,
         Expression::Binary { left, right, .. } => {
             expression_has_call(left) || expression_has_call(right)
         }
@@ -838,7 +882,10 @@ pub(crate) fn expression_has_call(expression: &Expression) -> bool {
 /// Used to decide whether a comma operand can be peeled to its right value or must defer.
 pub(crate) fn expression_has_side_effect(expression: &Expression) -> bool {
     match expression {
-        Expression::Call { .. } | Expression::Assign { .. } => true,
+        Expression::Call { .. }
+        | Expression::CallThrough { .. }
+        | Expression::VirtualCall { .. }
+        | Expression::Assign { .. } => true,
         Expression::Binary { left, right, .. } => {
             expression_has_side_effect(left) || expression_has_side_effect(right)
         }
@@ -1279,6 +1326,14 @@ fn collect_computed_subexpressions<'a>(expression: &'a Expression, into: &mut Ve
         Expression::CompoundLiteral { .. } => {}
         Expression::CallThrough { target, arguments } => {
             collect_computed_subexpressions(target, into);
+            for argument in arguments {
+                collect_computed_subexpressions(argument, into);
+            }
+        }
+        Expression::VirtualCall {
+            object, arguments, ..
+        } => {
+            collect_computed_subexpressions(object, into);
             for argument in arguments {
                 collect_computed_subexpressions(argument, into);
             }

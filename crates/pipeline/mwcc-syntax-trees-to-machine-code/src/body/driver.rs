@@ -3465,6 +3465,22 @@ impl Generator {
             Statement::Expression(Expression::Call { name, arguments }) => {
                 self.emit_call(name, arguments, None, false)
             }
+            Statement::Expression(Expression::VirtualCall {
+                object,
+                vptr_offset,
+                slot_offset,
+                variadic,
+                arguments,
+                ..
+            }) => self.emit_virtual_call(
+                object,
+                *vptr_offset,
+                *slot_offset,
+                *variadic,
+                arguments,
+                None,
+                false,
+            ),
             // A bare indirect-call statement `(*s->fp)()` / `(**pp)()`: load the
             // callee pointer into r12, then `mtctr r12; bctrl`. Only the NO-ARGUMENT
             // form is modeled — an argument collides with the pointer's own base
@@ -3759,6 +3775,14 @@ impl Generator {
                 Expression::CompoundLiteral { .. } => false,
                 Expression::CallThrough { target, arguments } => {
                     feeds_an_addition(name, target)
+                        || arguments
+                            .iter()
+                            .any(|argument| feeds_an_addition(name, argument))
+                }
+                Expression::VirtualCall {
+                    object, arguments, ..
+                } => {
+                    feeds_an_addition(name, object)
                         || arguments
                             .iter()
                             .any(|argument| feeds_an_addition(name, argument))

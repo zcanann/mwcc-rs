@@ -92,7 +92,9 @@ fn is_leaf(expression: &Expression) -> bool {
 
 fn contains_call(expression: &Expression) -> bool {
     match expression {
-        Expression::Call { .. } | Expression::CallThrough { .. } => true,
+        Expression::Call { .. }
+        | Expression::CallThrough { .. }
+        | Expression::VirtualCall { .. } => true,
         Expression::Binary { left, right, .. }
         | Expression::Comma { left, right }
         | Expression::Assign {
@@ -221,6 +223,14 @@ fn collect(expression: &Expression, names: &mut Names) {
         Expression::CompoundLiteral { .. } => {}
         Expression::CallThrough { target, arguments } => {
             collect(target, names);
+            for argument in arguments {
+                collect(argument, names);
+            }
+        }
+        Expression::VirtualCall {
+            object, arguments, ..
+        } => {
+            collect(object, names);
             for argument in arguments {
                 collect(argument, names);
             }

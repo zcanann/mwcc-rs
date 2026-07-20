@@ -929,15 +929,27 @@ impl Parser {
                             }
                         }
                         self.expect(Token::ParenClose)?;
-                        let Some(name) =
+                        if let Some(name) =
                             self.resolve_instance_member_call(&tag, &field, arguments.len())?
-                        else {
+                        {
+                            arguments.insert(0, expression);
+                            expression = Expression::Call { name, arguments };
+                        } else if let Some(dispatch) =
+                            self.resolve_virtual_member_call(&tag, &field, arguments.len())?
+                        {
+                            expression = Expression::VirtualCall {
+                                object: Box::new(expression),
+                                vptr_offset: dispatch.vptr_offset,
+                                slot_offset: dispatch.slot_offset,
+                                return_type: dispatch.return_type,
+                                variadic: dispatch.variadic,
+                                arguments,
+                            };
+                        } else {
                             return Err(Diagnostic::error(format!(
-                                "C++ member call '{tag}::{field}' is virtual, inline, or unavailable (roadmap)"
+                                "C++ member call '{tag}::{field}' is inline or unavailable (roadmap)"
                             )));
-                        };
-                        arguments.insert(0, expression);
-                        expression = Expression::Call { name, arguments };
+                        }
                         struct_tag = None;
                         continue;
                     }
