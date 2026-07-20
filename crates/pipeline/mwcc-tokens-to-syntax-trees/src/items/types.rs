@@ -23,6 +23,36 @@ fn advance_layout_offset(offset: u32, size: u32) -> Compilation<u32> {
         .ok_or_else(|| Diagnostic::error("aggregate layout exceeds the 32-bit address space"))
 }
 
+fn minimum_enum_storage(minimum: i64, maximum: i64) -> Type {
+    if minimum >= 0 {
+        if maximum <= u8::MAX as i64 {
+            Type::UnsignedChar
+        } else if maximum <= u16::MAX as i64 {
+            Type::UnsignedShort
+        } else {
+            Type::UnsignedInt
+        }
+    } else if minimum >= i8::MIN as i64 && maximum <= i8::MAX as i64 {
+        Type::Char
+    } else if minimum >= i16::MIN as i64 && maximum <= i16::MAX as i64 {
+        Type::Short
+    } else {
+        Type::Int
+    }
+}
+
+fn scalar_pointee(declared: Type) -> Option<Pointee> {
+    Some(match declared {
+        Type::Int => Pointee::Int,
+        Type::UnsignedInt => Pointee::UnsignedInt,
+        Type::Char => Pointee::Char,
+        Type::UnsignedChar => Pointee::UnsignedChar,
+        Type::Short => Pointee::Short,
+        Type::UnsignedShort => Pointee::UnsignedShort,
+        _ => return None,
+    })
+}
+
 fn merged_attribute_alignment(before: Option<u16>, after: Option<u16>) -> u32 {
     u32::from(before.unwrap_or(1).max(after.unwrap_or(1)))
 }
@@ -86,8 +116,8 @@ impl Parser {
         // is noted for the global path, which defers a read-only global); `volatile`
         // changes access semantics (memory accesses can't be elided), so defer it.
         self.skip_type_qualifiers()?;
-        // `enum [Tag] [{ … }]` — an `int` (`-enum int`); a `{ … }` body registers
-        // its enumerators so a bare enumerator resolves to its value.
+        // `enum [Tag] [{ … }]`: a body registers its enumerators and, under
+        // `-enum min`, selects storage from their complete value range.
         if matches!(self.peek(), Token::Identifier(word) if word == "enum") {
             self.advance();
             let tag = if let Token::Identifier(tag) = self.peek() {
@@ -99,12 +129,9 @@ impl Parser {
             };
             let tagged = tag.is_some();
             if self.cplusplus {
-                if let Some(tag) = &tag {
-                    self.enum_types.insert(tag.clone());
-                    self.last_enum_tag = Some(tag.clone());
-                }
+                self.last_enum_tag = tag.clone();
             }
-            if *self.peek() == Token::BraceOpen {
+            let storage = if *self.peek() == Token::BraceOpen {
                 // An ANONYMOUS enum definition consumes one anonymous-`@N` number
                 // (measured fire 494: `typedef enum {…} E;` shifts the next pool
                 // constant by +1; a TAGGED enum adds nothing — pikmin's uart TU
@@ -113,9 +140,26 @@ impl Parser {
                 if !tagged && self.counted_enum_positions.insert(self.position) {
                     self.skipped_inline_functions += 1;
                 }
-                self.parse_enum_body()?;
+                let (minimum, maximum) = self.parse_enum_body()?;
+                let storage = if self.enum_min {
+                    minimum_enum_storage(minimum, maximum)
+                } else {
+                    Type::Int
+                };
+                if let Some(tag) = &tag {
+                    self.enum_types.insert(tag.clone(), storage);
+                }
+                storage
+            } else {
+                tag.as_ref()
+                    .and_then(|tag| self.enum_types.get(tag).copied())
+                    .unwrap_or(Type::Int)
+            };
+            if *self.peek() == Token::Star {
+                self.advance();
+                return Ok(Type::Pointer(scalar_pointee(storage).unwrap_or(Pointee::Int)));
             }
-            return Ok(Type::Int);
+            return Ok(storage);
         }
         // `struct Name*` — a pointer to a (already declared) struct. The tag is
         // stashed in `last_struct_tag` for the declarator parser to record.
@@ -257,12 +301,12 @@ impl Parser {
             }
             return Ok(Type::StructPointer { element_size });
         }
-        // A named C++ enum may be used without the `enum` prefix. Its storage is
-        // `int`, while `last_enum_tag` preserves declaration identity for C++
-        // member-function mangling.
+        // A named C++ enum may be used without the `enum` prefix. Its configured
+        // storage is separate from the source identity retained for mangling.
         if let Token::Identifier(name) = self.peek() {
-            if self.cplusplus && self.enum_types.contains(name) {
+            if self.cplusplus && self.enum_types.contains_key(name) {
                 let name = name.clone();
+                let storage = self.enum_types[&name];
                 self.advance();
                 self.last_enum_tag = Some(name);
                 if *self.peek() == Token::Star {
@@ -271,9 +315,11 @@ impl Parser {
                         self.last_pointer_const = true;
                     }
                     self.consume_trailing_qualifiers();
-                    return Ok(Type::Pointer(Pointee::Int));
+                    return Ok(Type::Pointer(
+                        scalar_pointee(storage).unwrap_or(Pointee::Int),
+                    ));
                 }
-                return Ok(Type::Int);
+                return Ok(storage);
             }
         }
         // A struct-pointer typedef (`VecPtr`) is itself a pointer to the struct —

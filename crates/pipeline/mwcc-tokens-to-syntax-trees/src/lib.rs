@@ -55,6 +55,26 @@ pub fn parse_located_translation_unit(
     plain_inline_localstatic_base: u8,
     skipped_static_inline_label_base: u8,
 ) -> Compilation<TranslationUnit> {
+    parse_located_translation_unit_with_enum_min(
+        tokens,
+        cplusplus,
+        char_is_signed,
+        plain_inline_localstatic_base,
+        skipped_static_inline_label_base,
+        false,
+    )
+}
+
+/// Parse tokens with an explicit enumeration-storage policy. The compatibility
+/// entry points above retain mwcc's `-enum int` default for existing callers.
+pub fn parse_located_translation_unit_with_enum_min(
+    tokens: Vec<LocatedToken>,
+    cplusplus: bool,
+    char_is_signed: bool,
+    plain_inline_localstatic_base: u8,
+    skipped_static_inline_label_base: u8,
+    enum_min: bool,
+) -> Compilation<TranslationUnit> {
     // "East" pointee qualifiers (`u8 const* i`, `int volatile* p`) are
     // codegen-transparent — the qualifier binds the POINTEE, which access
     // codegen doesn't distinguish. Normalize them away when they directly
@@ -153,7 +173,8 @@ pub fn parse_located_translation_unit(
         last_array_typedef: None,
         decayed_row_pointers: HashMap::new(),
         enum_constants: HashMap::new(),
-        enum_types: std::collections::HashSet::new(),
+        enum_types: HashMap::new(),
+        enum_min,
         function_sources: Vec::new(),
         variadic_definitions: std::collections::HashSet::new(),
         unfolded_float_element: None,
@@ -166,6 +187,36 @@ pub fn parse_located_translation_unit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enum_min_uses_value_range_for_typedef_and_struct_members() {
+        let source = b"\
+            typedef enum Kind { Zero = 0, Five = 5 } Kind;\n\
+            struct Event { Kind kind; unsigned id; };\n\
+            void set(struct Event* event, Kind kind) { event->kind = kind; }\n";
+        let unit = parse_located_translation_unit_with_enum_min(
+            mwcc_source_to_tokens::tokenize_bytes_located(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.functions[0].parameters[1].parameter_type,
+            mwcc_syntax_trees::Type::UnsignedChar
+        );
+        let mwcc_syntax_trees::Statement::Store {
+            target: mwcc_syntax_trees::Expression::Member { member_type, .. },
+            ..
+        } = &unit.functions[0].statements[0]
+        else {
+            panic!("expected a member store");
+        };
+        assert_eq!(*member_type, mwcc_syntax_trees::Type::UnsignedChar);
+    }
 
     #[test]
     fn folds_float_arithmetic_inside_function_expressions() {

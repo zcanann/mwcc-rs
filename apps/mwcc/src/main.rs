@@ -22,7 +22,7 @@ struct Invocation {
 }
 
 fn parse_invocation(arguments: &[String]) -> Invocation {
-    use mwcc_versions::{CharDefault, GlobalAddressing, Optimization};
+    use mwcc_versions::{CharDefault, EnumStorage, GlobalAddressing, Optimization};
     let mut invocation = Invocation {
         input: None,
         output: None,
@@ -56,6 +56,16 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                     Some("signed") => CharDefault::Signed,
                     Some("unsigned") => CharDefault::Unsigned,
                     _ => CharDefault::BuildDefault,
+                };
+            }
+            // `-enum min` uses the narrowest storage that contains the declared
+            // values; `-enum int` restores the four-byte default.
+            "-enum" => {
+                index += 1;
+                invocation.flags.enum_storage = match arguments.get(index).map(String::as_str) {
+                    Some("min") => EnumStorage::Minimum,
+                    Some("int") => EnumStorage::Int,
+                    _ => invocation.flags.enum_storage,
                 };
             }
             // `-Cpp_exceptions off` suppresses the extab/extabindex unwind tables.
@@ -294,7 +304,7 @@ fn compile(
         .map(|located| located.token.clone())
         .collect();
     let behavior = mwcc_versions::Behavior::resolve(&config);
-    let unit = mwcc_tokens_to_syntax_trees::parse_located_translation_unit(
+    let unit = mwcc_tokens_to_syntax_trees::parse_located_translation_unit_with_enum_min(
         located_tokens,
         matches!(
             std::path::Path::new(source_name)
@@ -305,6 +315,7 @@ fn compile(
         config.char_is_signed(),
         behavior.plain_inline_localstatic_base,
         behavior.skipped_static_inline_label_base,
+        config.flags.enum_storage == mwcc_versions::EnumStorage::Minimum,
     )?;
     // Every callable's return type (prototypes + this unit's definitions) so a
     // call's result type is known during lowering.
@@ -1535,7 +1546,21 @@ fn compile(
 #[cfg(test)]
 mod tests {
     use super::parse_invocation;
-    use mwcc_versions::GlobalAddressing;
+    use mwcc_versions::{EnumStorage, GlobalAddressing};
+
+    #[test]
+    fn command_line_enum_storage_is_last_wins() {
+        let minimum = parse_invocation(&["-enum".into(), "min".into()]);
+        assert_eq!(minimum.flags.enum_storage, EnumStorage::Minimum);
+
+        let integer = parse_invocation(&[
+            "-enum".into(),
+            "min".into(),
+            "-enum".into(),
+            "int".into(),
+        ]);
+        assert_eq!(integer.flags.enum_storage, EnumStorage::Int);
+    }
 
     #[test]
     fn command_line_cats_pragma_controls_object_catalogs() {

@@ -44,6 +44,15 @@ pub enum CharDefault {
     Unsigned,
 }
 
+/// Storage policy for enumeration types. `-enum int` gives every enum ordinary
+/// `int` storage; `-enum min` selects the narrowest integer representation that
+/// contains every enumerator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnumStorage {
+    Int,
+    Minimum,
+}
+
 /// The codegen-affecting flags of one invocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Flags {
@@ -53,6 +62,7 @@ pub struct Flags {
     /// Read-only globals controlled by `-sdata2` and addressed through r2 when on.
     pub read_only_global_addressing: GlobalAddressing,
     pub char_default: CharDefault,
+    pub enum_storage: EnumStorage,
     /// `-inline …,deferred`: deferred inlining emits the object's compiler-generated
     /// functions in REVERSE definition order (and thus their symbols/records too).
     /// Hand-written `asm` functions are emitted immediately and retain source order.
@@ -98,6 +108,7 @@ impl Default for Flags {
             global_addressing: GlobalAddressing::SmallData,
             read_only_global_addressing: GlobalAddressing::SmallData,
             char_default: CharDefault::BuildDefault,
+            enum_storage: EnumStorage::Int,
             inline_deferred: false,
             cpp_exceptions: true,
             emit_mwcats: true,

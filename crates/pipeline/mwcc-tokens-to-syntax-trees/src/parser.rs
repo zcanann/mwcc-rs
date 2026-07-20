@@ -365,11 +365,13 @@ pub(crate) struct Parser {
     /// to the plain `Index` stride would compute the wrong address.
     pub(crate) decayed_row_pointers: HashMap<String, (Type, u16)>,
     /// Enumeration constant values, so a bare enumerator resolves to its integer
-    /// value in an expression. (`-enum int`: an enum type is a 4-byte `int`.)
+    /// value in an expression. Storage is tracked separately in `enum_types`.
     pub(crate) enum_constants: HashMap<String, i64>,
-    /// Named C++ enum types introduced by `enum Name { ... }`. C++ permits the
-    /// bare `Name` spelling; C continues to require `enum Name` or a typedef.
-    pub(crate) enum_types: std::collections::HashSet<String>,
+    /// Named enum types and their configured storage. C++ permits the bare
+    /// `Name` spelling; C continues to require `enum Name` or a typedef.
+    pub(crate) enum_types: HashMap<String, Type>,
+    /// Whether `-enum min` selects storage from the enumerator value range.
+    pub(crate) enum_min: bool,
     pub(crate) function_sources: Vec<Option<mwcc_syntax_trees::FunctionSource>>,
 }
 

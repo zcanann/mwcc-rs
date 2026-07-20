@@ -277,9 +277,11 @@ impl Parser {
     /// Parse a single integer constant: an integer literal, optionally negated.
     /// Parse an enum body `{ NAME [= value], … }` (cursor at the `{`), registering
     /// each enumerator's value (auto-incrementing from 0, or an explicit constant).
-    pub(crate) fn parse_enum_body(&mut self) -> Compilation<()> {
+    pub(crate) fn parse_enum_body(&mut self) -> Compilation<(i64, i64)> {
         self.expect(Token::BraceOpen)?;
         let mut next = 0i64;
+        let mut minimum = i64::MAX;
+        let mut maximum = i64::MIN;
         while *self.peek() != Token::BraceClose {
             let name = self.parse_identifier()?;
             let value = if self.eat_keyword(Token::Equals) {
@@ -288,6 +290,8 @@ impl Parser {
                 next
             };
             self.enum_constants.insert(name, value);
+            minimum = minimum.min(value);
+            maximum = maximum.max(value);
             next = value + 1;
             if *self.peek() == Token::Comma {
                 self.advance();
@@ -296,7 +300,7 @@ impl Parser {
             }
         }
         self.expect(Token::BraceClose)?;
-        Ok(())
+        Ok((minimum, maximum))
     }
 
     /// Evaluate a constant enumerator expression — integer/char literals, prior
@@ -4118,7 +4122,7 @@ impl Parser {
                     || self.struct_pointer_typedefs.contains_key(word)
                     || (self.cplusplus
                         && (matches!(word.as_str(), "bool" | "wchar_t")
-                            || self.enum_types.contains(word)))
+                            || self.enum_types.contains_key(word)))
             }
             _ => false,
         }

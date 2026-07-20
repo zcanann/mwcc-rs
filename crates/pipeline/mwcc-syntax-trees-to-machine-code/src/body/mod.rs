@@ -21,6 +21,7 @@ mod indirect_call;
 mod ladders;
 mod legacy_constant_store;
 mod loops;
+mod member_store_fill;
 mod passes;
 mod punned_ladder_policy;
 mod punned_select;
