@@ -2837,6 +2837,9 @@ impl Parser {
         if self.item_is_skippable_inline_member_definition() {
             return false;
         }
+        if self.item_is_kr_function_definition() {
+            return true;
+        }
         let mut index = self.position;
         let mut paren_depth = 0i32;
         let mut saw_parameter_list = false;
@@ -2862,6 +2865,66 @@ impl Parser {
                 // A top-level `{` is a function body iff a `(params)` group preceded
                 // it (otherwise it opens a struct/enum/union or an initializer).
                 Token::BraceOpen if paren_depth == 0 => return saw_parameter_list,
+                Token::EndOfFile => return false,
+                _ => {}
+            }
+            index += 1;
+        }
+        false
+    }
+
+    /// Recognize an old-style K&R function definition:
+    /// `int f(a, b) int a; short b; { ... }`. The ordinary definition
+    /// lookahead stops at the first parameter-declaration semicolon and used to
+    /// misclassify these as skippable declarations, allowing a partial object
+    /// with missing `.text` to escape. Lowering K&R parameters is still roadmap;
+    /// this detector exists to preserve the byte-exact-or-defer invariant.
+    fn item_is_kr_function_definition(&self) -> bool {
+        let mut index = self.position;
+        while let Some(token) = self.tokens.get(index) {
+            match token {
+                Token::ParenOpen => break,
+                Token::Semicolon | Token::BraceOpen | Token::EndOfFile => return false,
+                _ => index += 1,
+            }
+        }
+        if self.tokens.get(index) != Some(&Token::ParenOpen) {
+            return false;
+        }
+        index += 1;
+        let mut saw_parameter = false;
+        let mut expect_parameter = true;
+        loop {
+            match self.tokens.get(index) {
+                Some(Token::Identifier(_)) if expect_parameter => {
+                    saw_parameter = true;
+                    expect_parameter = false;
+                }
+                Some(Token::Comma) if !expect_parameter => expect_parameter = true,
+                Some(Token::ParenClose) if saw_parameter && !expect_parameter => {
+                    index += 1;
+                    break;
+                }
+                _ => return false,
+            }
+            index += 1;
+        }
+
+        let mut saw_parameter_declaration = false;
+        let (mut paren_depth, mut bracket_depth) = (0i32, 0i32);
+        while let Some(token) = self.tokens.get(index) {
+            match token {
+                Token::ParenOpen => paren_depth += 1,
+                Token::ParenClose => paren_depth -= 1,
+                Token::BracketOpen => bracket_depth += 1,
+                Token::BracketClose => bracket_depth -= 1,
+                Token::Semicolon if paren_depth == 0 && bracket_depth == 0 => {
+                    saw_parameter_declaration = true;
+                }
+                Token::BraceOpen if paren_depth == 0 && bracket_depth == 0 => {
+                    return saw_parameter_declaration;
+                }
+                Token::Equals if paren_depth == 0 && bracket_depth == 0 => return false,
                 Token::EndOfFile => return false,
                 _ => {}
             }

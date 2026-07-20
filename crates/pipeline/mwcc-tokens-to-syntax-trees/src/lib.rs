@@ -740,6 +740,27 @@ mod tests {
     }
 
     #[test]
+    fn defers_unlowered_kr_function_definitions_instead_of_dropping_text() {
+        let source = r#"
+            int add(left, right)
+            int left;
+            int right;
+            {
+                return left + right;
+            }
+        "#;
+        let error = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap_err();
+        assert!(error.message.contains("expected a type"));
+    }
+
+    #[test]
     fn resolves_a_virtual_member_to_its_measured_vtable_slot() {
         let source = r#"
             struct Stream {
