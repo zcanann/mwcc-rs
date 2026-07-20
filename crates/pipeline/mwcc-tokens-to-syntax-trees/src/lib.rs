@@ -125,6 +125,7 @@ pub fn parse_located_translation_unit(
         variable_array_bytes: HashMap::new(),
         global_sizes: HashMap::new(),
         last_struct_tag: None,
+        last_enum_tag: None,
         asm_parameters: Vec::new(),
         expression_struct_tag: None,
         typedefs: HashMap::new(),
@@ -141,6 +142,7 @@ pub fn parse_located_translation_unit(
         last_array_typedef: None,
         decayed_row_pointers: HashMap::new(),
         enum_constants: HashMap::new(),
+        enum_types: std::collections::HashSet::new(),
         function_sources: Vec::new(),
         variadic_definitions: std::collections::HashSet::new(),
         unfolded_float_element: None,
@@ -449,6 +451,28 @@ mod tests {
         assert_eq!(unit.globals.len(), 2);
         assert_eq!(unit.globals[0].initializer, Some(vec![1]));
         assert_eq!(unit.globals[1].initializer, Some(vec![0]));
+    }
+
+    #[test]
+    fn retains_named_cxx_enum_parameter_identity() {
+        let source = r#"
+            enum Material { Solid, Water };
+            struct Actor { void set(Material); };
+            void Actor::set(Material material) {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.functions[0].name, "set__5ActorF8Material");
+        assert_eq!(
+            unit.functions[0].parameters[1].parameter_type,
+            mwcc_syntax_trees::Type::Int
+        );
     }
 
     #[test]

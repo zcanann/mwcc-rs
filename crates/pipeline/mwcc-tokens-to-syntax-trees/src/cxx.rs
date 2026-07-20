@@ -395,6 +395,7 @@ impl Parser {
     ) -> Option<Option<(String, Type, Vec<Type>)>> {
         let saved_position = self.position;
         let saved_struct_tag = self.last_struct_tag.clone();
+        let saved_enum_tag = self.last_enum_tag.clone();
         let saved_array_typedef = self.last_array_typedef;
         let saved_type_const = self.last_type_was_const;
         let saved_pointer_const = self.last_pointer_const;
@@ -425,6 +426,7 @@ impl Parser {
             }
             let return_type = self.parse_type()?;
             self.last_struct_tag.take();
+            self.last_enum_tag.take();
             self.last_array_typedef.take();
             let member = self.parse_identifier()?;
             self.expect(Token::ParenOpen)?;
@@ -468,8 +470,11 @@ impl Parser {
                         Err(error) => return Err(error),
                     };
                     let struct_tag = self.last_struct_tag.take();
-                    let qualified_name = struct_tag.map(|tag| {
-                        self.struct_typedefs.get(&tag).cloned().unwrap_or(tag)
+                    let enum_tag = self.last_enum_tag.take();
+                    let qualified_name = enum_tag.or_else(|| {
+                        struct_tag.map(|tag| {
+                            self.struct_typedefs.get(&tag).cloned().unwrap_or(tag)
+                        })
                     });
                     self.last_array_typedef.take();
                     let pointee_const = self.last_type_was_const;
@@ -523,6 +528,7 @@ impl Parser {
 
         self.position = saved_position;
         self.last_struct_tag = saved_struct_tag;
+        self.last_enum_tag = saved_enum_tag;
         self.last_array_typedef = saved_array_typedef;
         self.last_type_was_const = saved_type_const;
         self.last_pointer_const = saved_pointer_const;
@@ -965,6 +971,7 @@ impl Parser {
                 let parameter_type = self.parse_type()?;
                 self.last_array_typedef.take();
                 self.last_struct_tag.take();
+                self.last_enum_tag.take();
                 if matches!(self.peek(), Token::Identifier(_)) {
                     self.advance();
                 }

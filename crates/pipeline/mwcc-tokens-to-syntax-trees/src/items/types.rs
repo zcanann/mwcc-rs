@@ -25,6 +25,7 @@ impl Parser {
 
     fn parse_type_base(&mut self) -> Compilation<Type> {
         self.last_struct_tag = None;
+        self.last_enum_tag = None;
         self.last_pointer_const = false;
         // The array-typedef marker is only ever set by the LAST parse_type call, so a
         // consumer that `.take()`s right after its own call can never read a stale one.
@@ -37,9 +38,19 @@ impl Parser {
         // its enumerators so a bare enumerator resolves to its value.
         if matches!(self.peek(), Token::Identifier(word) if word == "enum") {
             self.advance();
-            let tagged = matches!(self.peek(), Token::Identifier(_));
-            if tagged {
-                self.advance(); // the tag
+            let tag = if let Token::Identifier(tag) = self.peek() {
+                let tag = tag.clone();
+                self.advance();
+                Some(tag)
+            } else {
+                None
+            };
+            let tagged = tag.is_some();
+            if self.cplusplus {
+                if let Some(tag) = &tag {
+                    self.enum_types.insert(tag.clone());
+                    self.last_enum_tag = Some(tag.clone());
+                }
             }
             if *self.peek() == Token::BraceOpen {
                 // An ANONYMOUS enum definition consumes one anonymous-`@N` number
@@ -173,6 +184,25 @@ impl Parser {
                 return Ok(Type::Pointer(Pointee::Pointer));
             }
             return Ok(Type::StructPointer { element_size });
+        }
+        // A named C++ enum may be used without the `enum` prefix. Its storage is
+        // `int`, while `last_enum_tag` preserves declaration identity for C++
+        // member-function mangling.
+        if let Token::Identifier(name) = self.peek() {
+            if self.cplusplus && self.enum_types.contains(name) {
+                let name = name.clone();
+                self.advance();
+                self.last_enum_tag = Some(name);
+                if *self.peek() == Token::Star {
+                    self.advance();
+                    if matches!(self.peek(), Token::Identifier(word) if word == "const") {
+                        self.last_pointer_const = true;
+                    }
+                    self.consume_trailing_qualifiers();
+                    return Ok(Type::Pointer(Pointee::Int));
+                }
+                return Ok(Type::Int);
+            }
         }
         // A struct-pointer typedef (`VecPtr`) is itself a pointer to the struct —
         // no trailing `*` — carrying the layout's tag.

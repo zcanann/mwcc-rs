@@ -161,6 +161,10 @@ pub(crate) struct Parser {
     /// Set by [`Parser::parse_type`] when it just parsed a `struct Name*`, so the
     /// declarator parser can associate the variable name with the struct tag.
     pub(crate) last_struct_tag: Option<String>,
+    /// C++ enum identity from the most recently parsed type. Enums use `int`
+    /// storage under `-enum int`, but member-function mangling must retain the
+    /// declared type name instead of encoding the parameter as fundamental int.
+    pub(crate) last_enum_tag: Option<String>,
     /// The struct tag of the expression `factor` just returned, so the tag survives
     /// a wrapping `(...)` — `((struct S *)x)->field` resolves through the parens.
     pub(crate) expression_struct_tag: Option<String>,
@@ -285,6 +289,9 @@ pub(crate) struct Parser {
     /// Enumeration constant values, so a bare enumerator resolves to its integer
     /// value in an expression. (`-enum int`: an enum type is a 4-byte `int`.)
     pub(crate) enum_constants: HashMap<String, i64>,
+    /// Named C++ enum types introduced by `enum Name { ... }`. C++ permits the
+    /// bare `Name` spelling; C continues to require `enum Name` or a typedef.
+    pub(crate) enum_types: std::collections::HashSet<String>,
     pub(crate) function_sources: Vec<Option<mwcc_syntax_trees::FunctionSource>>,
 }
 

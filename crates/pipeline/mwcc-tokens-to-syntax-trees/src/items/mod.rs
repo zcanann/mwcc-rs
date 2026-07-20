@@ -2240,11 +2240,14 @@ impl Parser {
                         parameter_type = Type::Pointer(Pointee::Pointer);
                     }
                     let struct_tag = self.last_struct_tag.take();
-                    let cxx_qualified_name = struct_tag.as_ref().map(|tag| {
-                        self.struct_typedefs
-                            .get(tag)
-                            .cloned()
-                            .unwrap_or_else(|| tag.clone())
+                    let enum_tag = self.last_enum_tag.take();
+                    let cxx_qualified_name = enum_tag.or_else(|| {
+                        struct_tag.as_ref().map(|tag| {
+                            self.struct_typedefs
+                                .get(tag)
+                                .cloned()
+                                .unwrap_or_else(|| tag.clone())
+                        })
                     });
                     let is_reference = self.eat_keyword(Token::Ampersand);
                     if is_reference {
@@ -3657,6 +3660,7 @@ impl Parser {
                 ) || self.typedefs.contains_key(word)
                     || self.struct_typedefs.contains_key(word)
                     || self.struct_pointer_typedefs.contains_key(word)
+                    || (self.cplusplus && self.enum_types.contains(word))
             }
             _ => false,
         }
