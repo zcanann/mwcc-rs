@@ -1720,6 +1720,35 @@ impl Generator {
         let displacement = i16::try_from(offset * size).map_err(|_| {
             Diagnostic::error("fixed-address array subscript offset out of range (roadmap)")
         })?;
+        if self.behavior.fixed_address_parameterized_rmw_style
+            == mwcc_versions::FixedAddressParameterizedRmwStyle::Modern4x
+            && destination != GENERAL_SCRATCH
+            && low == 0
+            && offset == 0
+            && scale > 1
+            && (scale as u64).is_power_of_two()
+        {
+            self.output
+                .instructions
+                .push(Instruction::ShiftLeftImmediate {
+                    a: GENERAL_SCRATCH,
+                    s: index_register,
+                    shift: (scale as u64).trailing_zeros() as u8,
+                });
+            self.output
+                .instructions
+                .push(Instruction::load_immediate_shifted(
+                    destination,
+                    high_adjusted,
+                ));
+            self.output.instructions.push(indexed_load(
+                element,
+                destination,
+                destination,
+                GENERAL_SCRATCH,
+            )?);
+            return Ok(());
+        }
         if scale != 1 && !(scale as u64).is_power_of_two() {
             let Ok(scale) = i16::try_from(scale) else {
                 return Err(Diagnostic::error(
@@ -1904,6 +1933,34 @@ impl Generator {
         let displacement = i16::try_from(offset * size).map_err(|_| {
             Diagnostic::error("fixed-address array subscript offset out of range (roadmap)")
         })?;
+        if self.behavior.fixed_address_parameterized_rmw_style
+            == mwcc_versions::FixedAddressParameterizedRmwStyle::Modern4x
+            && low == 0
+            && offset == 0
+            && scale > 1
+            && (scale as u64).is_power_of_two()
+        {
+            self.output
+                .instructions
+                .push(Instruction::ShiftLeftImmediate {
+                    a: GENERAL_SCRATCH,
+                    s: index_register,
+                    shift: (scale as u64).trailing_zeros() as u8,
+                });
+            self.output
+                .instructions
+                .push(Instruction::load_immediate_shifted(
+                    index_register,
+                    high_adjusted,
+                ));
+            self.output.instructions.push(indexed_store(
+                element,
+                source,
+                index_register,
+                GENERAL_SCRATCH,
+            )?);
+            return Ok(true);
+        }
         if scale != 1 && !(scale as u64).is_power_of_two() {
             let Ok(scale) = i16::try_from(scale) else {
                 return Ok(false);

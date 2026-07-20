@@ -24,6 +24,7 @@ mod global_aggregate_initialization;
 mod global_aggregate_pop;
 mod global_aggregate_post;
 mod guarded_initialization;
+mod guarded_pointer_pair_initialization;
 mod guarded_bitmask_call_sequence;
 mod guarded_pointer_call;
 mod indirect_call_schedule;
