@@ -840,6 +840,10 @@ impl Parser {
             Expression::Member { .. } | Expression::Index { .. } => {
                 self.expression_struct_tag.take()
             }
+            // `(&p->embedded)->field`: the inner member access resolved `embedded`'s
+            // aggregate tag before address-of wrapped it. Address-of changes a struct value into
+            // a pointer to that same struct, so preserve the recorded tag for the next `->`.
+            Expression::AddressOf { .. } => self.expression_struct_tag.take(),
             // `get()->field`: a call to a function that RETURNS a struct pointer carries the
             // pointee's tag (recorded from the `struct S *get(...)` declaration).
             Expression::Call { name, .. } => self.function_return_structs.get(name).cloned(),

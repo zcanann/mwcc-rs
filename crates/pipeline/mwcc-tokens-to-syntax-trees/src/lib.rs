@@ -1088,6 +1088,28 @@ mod tests {
     }
 
     #[test]
+    fn preserves_embedded_struct_identity_through_address_of() {
+        let source = r#"
+            typedef struct Inner { int value; } Inner;
+            typedef struct Outer { int prefix; Inner inner; } Outer;
+            int read(Outer* outer) { return (&outer->inner)->value; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Member { offset: 0, base, .. })
+                if matches!(base.as_ref(), mwcc_syntax_trees::Expression::AddressOf { .. })
+        ));
+    }
+
+    #[test]
     fn retains_deep_pointer_members_and_trailing_type_alignment() {
         let source = r#"
             typedef struct {
