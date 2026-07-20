@@ -14,6 +14,24 @@ use mwcc_tokens::Token;
 use std::collections::HashMap;
 
 impl Parser {
+    /// Consume the declaration-scope marker on an explicit specialization.
+    ///
+    /// The translation-unit loop calls this only after giving inline-template
+    /// recovery a chance to inspect the marker. What follows is an ordinary
+    /// concrete declaration or definition as far as parsing and mangling are
+    /// concerned; primary templates retain their non-empty parameter list and
+    /// continue through the existing recovery path.
+    pub(crate) fn consume_explicit_specialization_prefix(&mut self) -> bool {
+        let explicit_specialization = matches!(
+            self.tokens.get(self.position..self.position + 3),
+            Some([Token::Identifier(template), Token::Less, Token::Greater]) if template == "template"
+        );
+        if explicit_specialization {
+            self.position += 3;
+        }
+        explicit_specialization
+    }
+
     /// Parse a direct `[scope::]Template<Argument>` object type from a recovered
     /// template layout. This complements typedef instantiation: game headers
     /// commonly place concrete template objects directly in class layouts.

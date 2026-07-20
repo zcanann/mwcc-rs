@@ -1540,22 +1540,38 @@ mod tests {
     }
 
     #[test]
-    fn does_not_classify_explicit_specializations_as_skippable_primary_templates() {
+    fn parses_explicit_function_specializations_as_concrete_definitions() {
         let source = r#"
-            template <typename T> int value(void) { return 1; }
-            template <> int value<int>(void) { return 2; }
-            int compiled(void) { return 3; }
+            template <typename T> int value(T value);
+            template <> int value(int input) { return input + 2; }
         "#;
-        let error = parse_translation_unit(
+        let unit = parse_translation_unit(
             mwcc_source_to_tokens::tokenize(source).unwrap(),
             true,
             true,
             1,
             3,
         )
-        .unwrap_err();
-        assert!(error
-            .message
-            .contains("expected a type, found Identifier(\"template\")"));
+        .unwrap();
+        assert_eq!(unit.functions.len(), 1);
+        assert_eq!(unit.functions[0].name, "value__Fi");
+    }
+
+    #[test]
+    fn leaves_primary_templates_on_the_recovery_path() {
+        let source = r#"
+            template <typename T> int value(T value) { return value; }
+            int compiled(void) { return 3; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.functions.len(), 1);
+        assert_eq!(unit.functions[0].name, "compiled__Fv");
     }
 }

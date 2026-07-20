@@ -644,6 +644,14 @@ impl Parser {
             if self.eat_keyword(Token::Semicolon) {
                 continue;
             }
+            // An explicit specialization emits as a concrete declaration or
+            // definition. Preserve the prefix long enough for inline-template
+            // recovery to classify unused member definitions, then let the
+            // ordinary item parser handle the concrete item that follows it.
+            let skippable_inline_member = self.item_is_skippable_inline_member_definition();
+            if !skippable_inline_member {
+                self.consume_explicit_specialization_prefix();
+            }
             let start = self.position;
             // Inline is declaration state, not layout state. Capture it before
             // either the C++ layout parser succeeds or recovery skips a class.
@@ -651,7 +659,6 @@ impl Parser {
             let functions_before = functions.len();
             let globals_before = globals.len();
             let bump_before_item = self.skipped_inline_functions;
-            let skippable_inline_member = self.item_is_skippable_inline_member_definition();
             let item_result = if skippable_inline_member {
                 // Route definitions whose inherited inline status was proven by
                 // declaration recovery through the same dropped-inline accounting
