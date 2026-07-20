@@ -184,14 +184,32 @@ pub(crate) fn normalize_constructor_declarators(
     mut tokens: Vec<LocatedToken>,
 ) -> Vec<LocatedToken> {
     let mut index = 0usize;
-    let mut brace_depth = 0usize;
+    // Track which braces are declaration-only namespace wrappers. A constructor
+    // inside a namespace is still a top-level declarator; one inside a class or
+    // function body is not. Keeping the scope kind avoids treating all nonzero
+    // brace depth alike.
+    let mut declaration_scopes: Vec<bool> = Vec::new();
     while index + 4 < tokens.len() {
         match tokens[index].token {
-            Token::BraceOpen => brace_depth += 1,
-            Token::BraceClose => brace_depth = brace_depth.saturating_sub(1),
+            Token::BraceOpen => {
+                let opens_namespace = matches!(
+                    tokens.get(index.wrapping_sub(1)).map(|located| &located.token),
+                    Some(Token::Identifier(word)) if word == "namespace"
+                ) || (matches!(
+                    tokens.get(index.wrapping_sub(2)).map(|located| &located.token),
+                    Some(Token::Identifier(word)) if word == "namespace"
+                ) && matches!(
+                    tokens.get(index.wrapping_sub(1)).map(|located| &located.token),
+                    Some(Token::Identifier(_))
+                ));
+                declaration_scopes.push(opens_namespace);
+            }
+            Token::BraceClose => {
+                declaration_scopes.pop();
+            }
             _ => {}
         }
-        let constructor = brace_depth == 0
+        let constructor = declaration_scopes.iter().all(|scope| *scope)
             && matches!((&tokens[index].token, &tokens[index + 3].token),
                 (Token::Identifier(scope), Token::Identifier(name)) if scope == name)
             && tokens[index + 1].token == Token::Colon
@@ -760,6 +778,19 @@ impl Parser {
         mangle_qualified_member_function_typed(&scopes, function, explicit_parameters)
     }
 
+    /// Mangle a static data member declared in the active namespace scope.
+    /// Data members share the class/namespace encoding used by member functions,
+    /// but carry no `F<parameters>` suffix.
+    pub(crate) fn mangle_data_member_in_current_namespace(
+        &self,
+        class: &str,
+        member: &str,
+    ) -> Compilation<String> {
+        let mut scopes: Vec<&str> = self.namespace_stack.iter().map(String::as_str).collect();
+        scopes.push(class);
+        mangle_qualified_data_member(&scopes, member)
+    }
+
     /// Resolve an unqualified call inside a member body. Arity is enough for the
     /// currently modeled overload set; ambiguous same-arity overloads defer.
     pub(crate) fn resolve_implicit_member_call(
@@ -1191,6 +1222,19 @@ pub(crate) fn mangle_qualified_member_function(
     mangle_qualified_member_function_variadic_typed(scopes, function, &parameters, false)
 }
 
+/// Mangle a static data member. For example, `Game::Creature::enabled`
+/// becomes `enabled__Q24Game8Creature`.
+pub(crate) fn mangle_qualified_data_member(
+    scopes: &[&str],
+    member: &str,
+) -> Compilation<String> {
+    if member.is_empty() {
+        return Err(Diagnostic::error("an empty C++ data-member name is invalid"));
+    }
+    let qualified_scope = encode_qualified_scope(scopes)?;
+    Ok(format!("{member}__{qualified_scope}"))
+}
+
 fn mangle_qualified_member_function_typed(
     scopes: &[&str],
     function: &str,
@@ -1210,7 +1254,7 @@ fn mangle_qualified_member_function_variadic_typed(
     explicit_parameters: &[CxxParameterType],
     variadic: bool,
 ) -> Compilation<String> {
-    if scopes.is_empty() || scopes.iter().any(|scope| scope.is_empty()) || function.is_empty() {
+    if function.is_empty() {
         return Err(Diagnostic::error("an empty C++ member name is invalid"));
     }
     let mut arguments = if explicit_parameters.is_empty() && !variadic {
@@ -1225,16 +1269,23 @@ fn mangle_qualified_member_function_variadic_typed(
     if variadic {
         arguments.push('e');
     }
-    let qualified_scope = if scopes.len() == 1 {
-        format!("{}{}", scopes[0].len(), scopes[0])
+    let qualified_scope = encode_qualified_scope(scopes)?;
+    Ok(format!("{function}__{qualified_scope}F{arguments}"))
+}
+
+fn encode_qualified_scope(scopes: &[&str]) -> Compilation<String> {
+    if scopes.is_empty() || scopes.iter().any(|scope| scope.is_empty()) {
+        return Err(Diagnostic::error("an empty qualified C++ scope is invalid"));
+    }
+    if scopes.len() == 1 {
+        Ok(format!("{}{}", scopes[0].len(), scopes[0]))
     } else {
         let components = scopes
             .iter()
             .map(|scope| format!("{}{scope}", scope.len()))
             .collect::<String>();
-        format!("Q{}{components}", scopes.len())
-    };
-    Ok(format!("{function}__{qualified_scope}F{arguments}"))
+        Ok(format!("Q{}{components}", scopes.len()))
+    }
 }
 
 fn encode_type(parameter: &CxxParameterType) -> Compilation<String> {
@@ -1295,18 +1346,7 @@ fn encode_type(parameter: &CxxParameterType) -> Compilation<String> {
 
 fn encode_qualified_type_name(name: &str) -> Compilation<String> {
     let scopes: Vec<&str> = name.split("::").collect();
-    if scopes.is_empty() || scopes.iter().any(|scope| scope.is_empty()) {
-        return Err(Diagnostic::error("an empty qualified C++ type name is invalid"));
-    }
-    if scopes.len() == 1 {
-        Ok(format!("{}{name}", name.len()))
-    } else {
-        let components = scopes
-            .iter()
-            .map(|scope| format!("{}{scope}", scope.len()))
-            .collect::<String>();
-        Ok(format!("Q{}{components}", scopes.len()))
-    }
+    encode_qualified_scope(&scopes)
 }
 
 fn encode_pointee(pointee: Pointee) -> Compilation<&'static str> {
@@ -1400,6 +1440,18 @@ mod tests {
     }
 
     #[test]
+    fn mangles_static_data_members_without_a_function_suffix() {
+        assert_eq!(
+            mangle_qualified_data_member(&["Game", "Creature"], "usePacketCulling").unwrap(),
+            "usePacketCulling__Q24Game8Creature"
+        );
+        assert_eq!(
+            mangle_qualified_data_member(&["Counter"], "value").unwrap(),
+            "value__7Counter"
+        );
+    }
+
+    #[test]
     fn mangles_named_value_pointer_reference_and_cv_layers() {
         let named = |storage_type, is_reference, pointee_const, pointer_const| {
             CxxParameterType::parsed(
@@ -1489,5 +1541,31 @@ mod tests {
             .unwrap();
         assert_eq!(constructor[2], Token::Colon);
         assert_eq!(constructor[3], Token::Colon);
+    }
+
+    #[test]
+    fn adds_internal_return_type_to_namespace_scoped_constructors() {
+        let tokens = vec![
+            Token::Identifier("namespace".to_string()),
+            Token::Identifier("Game".to_string()),
+            Token::BraceOpen,
+            Token::Identifier("Creature".to_string()),
+            Token::Colon,
+            Token::Colon,
+            Token::Identifier("Creature".to_string()),
+            Token::ParenOpen,
+            Token::ParenClose,
+            Token::BraceOpen,
+            Token::BraceClose,
+            Token::BraceClose,
+            Token::EndOfFile,
+        ];
+        let normalized = strip(normalize_constructor_declarators(locate(tokens)));
+        assert!(normalized.windows(6).any(|window| {
+            window[0] == Token::KeywordVoid
+                && matches!(&window[1], Token::Identifier(name) if name == "Creature")
+                && window[2] == Token::Colon
+                && window[3] == Token::Colon
+        }));
     }
 }

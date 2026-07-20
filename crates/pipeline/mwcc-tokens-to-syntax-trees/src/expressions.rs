@@ -546,29 +546,38 @@ impl Parser {
             Token::Identifier(name) if self.cplusplus && name == "false" => {
                 Expression::IntegerLiteral(0)
             }
-            // A qualified static-member call has no implicit `this`, but its
-            // declaration supplies the overload signature used by MWCC mangling.
+            // A qualified static member has no implicit `this`. A following
+            // argument list is a call whose declaration supplies overload
+            // information; a bare member is a data object and uses the same
+            // class/namespace encoding without a function suffix.
             Token::Identifier(scope)
                 if *self.peek() == Token::Colon && *self.peek_at(1) == Token::Colon =>
             {
                 self.advance();
                 self.advance();
                 let member = self.parse_identifier()?;
-                self.expect(Token::ParenOpen)?;
-                let mut arguments = Vec::new();
-                if *self.peek() != Token::ParenClose {
-                    loop {
-                        arguments.push(self.expression()?);
-                        if *self.peek() == Token::Comma {
-                            self.advance();
-                        } else {
-                            break;
+                if *self.peek() == Token::ParenOpen {
+                    self.advance();
+                    let mut arguments = Vec::new();
+                    if *self.peek() != Token::ParenClose {
+                        loop {
+                            arguments.push(self.expression()?);
+                            if *self.peek() == Token::Comma {
+                                self.advance();
+                            } else {
+                                break;
+                            }
                         }
                     }
+                    self.expect(Token::ParenClose)?;
+                    let name =
+                        self.resolve_static_member_call(&scope, &member, arguments.len())?;
+                    Expression::Call { name, arguments }
+                } else {
+                    Expression::Variable(
+                        self.mangle_data_member_in_current_namespace(&scope, &member)?,
+                    )
                 }
-                self.expect(Token::ParenClose)?;
-                let name = self.resolve_static_member_call(&scope, &member, arguments.len())?;
-                Expression::Call { name, arguments }
             }
             // `name(args)` is a call; a bare `name` is a variable.
             Token::Identifier(name) if *self.peek() == Token::ParenOpen => {

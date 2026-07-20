@@ -270,27 +270,35 @@ impl Parser {
         // A struct typedef (`FILE`) behaves like its `struct Tag`: `FILE *` is a
         // struct pointer carrying the layout's tag; a struct value isn't supported.
         if let Token::Identifier(name) = self.peek() {
-            if let Some(tag) = self.struct_typedefs.get(name).cloned() {
-                self.advance();
-                if *self.peek() != Token::Star {
-                    return match self.struct_value_type(&tag) {
-                        Some(struct_type) => {
-                            self.last_struct_tag = Some(tag);
-                            Ok(struct_type)
-                        }
-                        None => Err(Diagnostic::error(format!(
-                            "struct '{tag}' value layout is not declared",
-                        ))),
-                    };
-                }
-                self.advance();
-                let element_size = self.structs.get(&tag).map_or(0, |layout| layout.size);
-                self.last_struct_tag = Some(tag);
-                if *self.peek() == Token::Star {
+            // Recovery may conservatively register the final identifier of a
+            // malformed header typedef as an opaque aggregate. C++ fundamental
+            // types still have lexical precedence over that recovery state: a
+            // stray `bool -> bool` entry must not turn `bool C::flag` into an
+            // attempted struct-value declaration.
+            let cxx_fundamental = self.cplusplus && matches!(name.as_str(), "bool" | "wchar_t");
+            if !cxx_fundamental {
+                if let Some(tag) = self.struct_typedefs.get(name).cloned() {
                     self.advance();
-                    return Ok(Type::Pointer(Pointee::Pointer));
+                    if *self.peek() != Token::Star {
+                        return match self.struct_value_type(&tag) {
+                            Some(struct_type) => {
+                                self.last_struct_tag = Some(tag);
+                                Ok(struct_type)
+                            }
+                            None => Err(Diagnostic::error(format!(
+                                "struct '{tag}' value layout is not declared",
+                            ))),
+                        };
+                    }
+                    self.advance();
+                    let element_size = self.structs.get(&tag).map_or(0, |layout| layout.size);
+                    self.last_struct_tag = Some(tag);
+                    if *self.peek() == Token::Star {
+                        self.advance();
+                        return Ok(Type::Pointer(Pointee::Pointer));
+                    }
+                    return Ok(Type::StructPointer { element_size });
                 }
-                return Ok(Type::StructPointer { element_size });
             }
         }
         // A `typedef`-declared alias resolves to its underlying type.

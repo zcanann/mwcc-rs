@@ -1852,10 +1852,10 @@ impl Parser {
             // entered (otherwise the stray `__attribute__` falls to the function path and
             // the declaration is skipped — a missing-symbol DIFF). `None` when absent.
             let attribute_alignment_name = self.skip_attributes()?;
-            if member_scope.is_some() && *self.peek() != Token::ParenOpen {
-                return Err(Diagnostic::error(
-                    "a qualified C++ data definition is not supported yet (roadmap)",
-                ));
+            if let Some(scope) = &member_scope {
+                if *self.peek() != Token::ParenOpen {
+                    name = self.mangle_data_member_in_current_namespace(scope, &name)?;
+                }
             }
             // A `(` after the name begins a FUNCTION declarator: record a struct-pointer
             // return tag so `name()->field` resolves the returned pointee's layout.
