@@ -1607,6 +1607,41 @@ mod tests {
     }
 
     #[test]
+    fn accepts_a_trailing_comma_in_scoped_static_arrays() {
+        let source = r#"
+            void parse(void) {
+                if (1) {
+                    static unsigned commands[] = {
+                        0xED000000,
+                        0x005003C0,
+                        0xDE010000,
+                    };
+                }
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let commands = unit.functions[0]
+            .locals
+            .iter()
+            .find(|local| local.name == "commands")
+            .unwrap();
+        assert_eq!(commands.array_length, Some(3));
+        assert_eq!(
+            commands.data_bytes.as_deref(),
+            Some(&[
+                0xED, 0x00, 0x00, 0x00, 0x00, 0x50, 0x03, 0xC0, 0xDE, 0x01, 0x00, 0x00,
+            ][..])
+        );
+    }
+
+    #[test]
     fn resolves_a_virtual_member_to_its_measured_vtable_slot() {
         let source = r#"
             struct Stream {

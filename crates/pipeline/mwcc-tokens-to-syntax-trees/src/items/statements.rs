@@ -663,6 +663,12 @@ impl Parser {
                         if !self.eat_keyword(Token::Comma) {
                             break;
                         }
+                        // C permits a trailing comma in an initializer list. Once
+                        // consumed, `}` ends the list rather than beginning an
+                        // unsupported phantom element (rdp's command-code table).
+                        if *self.peek() == Token::BraceClose {
+                            break;
+                        }
                     }
                     self.expect(Token::BraceClose)?;
                     let length = explicit.unwrap_or(count);
