@@ -16,7 +16,7 @@ from parity_identity import files_fingerprint
 from reference_parity import result_cache_name
 
 
-INVENTORY_SCHEMA_VERSION = 3
+INVENTORY_SCHEMA_VERSION = 4
 
 
 def sha256_file(path: Path) -> str:

@@ -10,7 +10,8 @@ and writes generated files into the project.  This tool intercepts the project's
 By default every immediate child of the reference-project root is inspected and
 a deterministic JSON document is written to stdout.  ``GC/1.3.2r`` is recorded
 but excluded from the required translation-unit matrix: it is the Animal
-Crossing rodata-pooling workaround build, not a required parity target.
+Crossing rodata-pooling workaround build, not a required parity target.  ProDG
+rows are also excluded because they target SN Systems' compiler, not MWCC.
 """
 
 from __future__ import annotations
@@ -32,9 +33,9 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from parity_identity import configuration_id
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 SOURCE_SUFFIXES = {".c", ".cc", ".cp", ".cpp", ".cxx"}
-EXCLUDED_MW_VERSIONS = {"GC/1.3.2r"}
+EXCLUDED_MW_VERSIONS = {"GC/1.3.2r", "ProDG/3.5"}
 
 
 def sha256_file(path: Path) -> Optional[str]:

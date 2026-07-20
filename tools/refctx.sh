@@ -283,7 +283,7 @@ if ! "$ours" --build "$build" ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$d
   # core visibility, retry only this capability boundary with a final `-sym off`
   # and compare `.text` plus its relocations against the real debug-enabled
   # object. This is a non-credit projection, never a BYTE result.
-  if [[ "$defer_detail" == "CodeWarrior debug-info emission requested by '-sym on' is not implemented (roadmap)" ]]; then
+  if [[ "$defer_detail" == debug-info:* ]]; then
     if "$ours" --build "$build" ${compiler_flags[@]+"${compiler_flags[@]}"} -sym off \
         -c "$dir/ours/$ctx_name" -o "$dir/projected.o" 2>"$dir/projected.err"; then
       "$objdump" -dr "$dir/ref.o" | sed -n '/>:/,/^$/p' > "$dir/ref.code"

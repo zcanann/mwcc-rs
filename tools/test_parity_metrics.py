@@ -297,6 +297,12 @@ class AuditSelectionTests(unittest.TestCase):
 
 
 class FrontierTests(unittest.TestCase):
+    def test_zero_size_frontier_supports_audit_only_runs(self):
+        rows = [row(source="src/a.c")]
+        args = argparse.Namespace(size=0, byte_audit=0, seed="seed", epoch="0")
+        frontier = build_frontier(rows, {}, args)
+        self.assertEqual(frontier["configuration_ids"], [])
+
     def test_nonpassing_results_stay_ahead_of_untested_and_byte_audit(self):
         rows = [row(source=f"src/{index}.c") for index in range(8)]
         observations = {

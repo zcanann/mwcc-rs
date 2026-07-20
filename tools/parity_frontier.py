@@ -157,8 +157,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
-    if args.size < 1 or args.byte_audit < 0:
-        print("parity frontier: size must be positive and byte audit non-negative")
+    if args.size < 0 or args.byte_audit < 0:
+        print("parity frontier: size and byte audit must be non-negative")
         return 2
     try:
         inventory = load_inventory(args.inventory)

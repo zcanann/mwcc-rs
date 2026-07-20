@@ -37,7 +37,7 @@ pub fn lower_debug_info(
 ) -> Compilation<DebugSections> {
     if build.version.0 >= 4 || (build.version == (2, 4, 2) && build.build == 81) {
         return Err(Diagnostic::error(
-            "this compiler generation's fragmented/interleaved debug-object format is not implemented yet (roadmap)",
+            "debug-info: this compiler generation's fragmented/interleaved object format is not implemented yet (roadmap)",
         ));
     }
 
@@ -55,7 +55,7 @@ pub fn lower_debug_info(
         || unit.functions[0].parameters[0].parameter_type != Type::Int
     {
         return Err(Diagnostic::error(
-            "this translation unit's legacy DWARF DIE shape is not implemented yet (roadmap)",
+            "debug-info: this translation unit's legacy DWARF DIE shape is not implemented yet (roadmap)",
         ));
     }
     let source = unit
@@ -63,9 +63,9 @@ pub fn lower_debug_info(
         .first()
         .copied()
         .flatten()
-        .ok_or_else(|| Diagnostic::error("debug information requires physical source provenance"))?;
+        .ok_or_else(|| Diagnostic::error("debug-info: physical source provenance is required"))?;
     let terminal_return_line = source.terminal_return_line.ok_or_else(|| {
-        Diagnostic::error("legacy debug information for a function without a terminal return is not implemented yet (roadmap)")
+        Diagnostic::error("debug-info: a legacy function without a terminal return is not implemented yet (roadmap)")
     })?;
     let statement_line = if build.version == (2, 3, 3) {
         source.body_start_line
