@@ -2,7 +2,7 @@
 // aggregates remain unnamed, while source-written tags retain their names.
 // Struct values and pointers reference the shared type DIE, and source scalar
 // spelling survives storage lowering (`unsigned long` is not `unsigned int`).
-// builds: GC/2.6
+// builds: GC/1.3.2 GC/2.6
 // flags: -char unsigned -sdata 0 -sdata2 0 -O4,p -inline off -sym on
 
 typedef unsigned char u8;

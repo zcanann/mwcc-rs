@@ -25,7 +25,14 @@ pub fn lower_debug_info(
     build: CompilerBuild,
     code_alignment: u32,
 ) -> Compilation<DebugSections> {
-    if build.version.0 >= 4 || (build.version == (2, 4, 2) && build.build == 81) {
+    let fragmented_generation =
+        build.version.0 >= 4 || (build.version == (2, 4, 2) && build.build == 81);
+    // Functionless data units retain the same monolithic DWARF-1 DIE stream in
+    // the later generations. Their container layout moved after ordinary data,
+    // which the legacy data lowering already models independently. Fragmented
+    // `.dwarf.*` symbols first appear when functions participate in the unit.
+    let monolithic_data_unit = unit.functions.is_empty() && machine_functions.is_empty();
+    if fragmented_generation && !monolithic_data_unit {
         return Err(Diagnostic::error(
             "debug-info: this compiler generation's fragmented/interleaved object format is not implemented yet (roadmap)",
         ));

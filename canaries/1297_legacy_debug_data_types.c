@@ -1,6 +1,6 @@
 // Functionless debug units retain scalar and array types, plus the source
 // identity and ordered members of aggregates used by global definitions.
-// builds: GC/2.6
+// builds: GC/1.3.2 GC/2.6
 // flags: -char unsigned -sdata 0 -sdata2 0 -O4,p -inline off -sym on
 
 typedef unsigned char u8;
