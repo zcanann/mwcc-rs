@@ -3367,9 +3367,6 @@ impl Parser {
                             Some(length) => explicit = Some(length.saturating_mul(extra)),
                             None => return Err(Diagnostic::error("a multi-dimensional local array needs explicit dimensions (roadmap)")),
                         }
-                        if *self.peek() == Token::Equals {
-                            return Err(Diagnostic::error("a multi-dimensional local array initializer is not supported yet (roadmap)"));
-                        }
                     }
                     if *self.peek() == Token::Equals {
                         self.advance();
@@ -3428,6 +3425,30 @@ impl Parser {
                             // An AUTOMATIC initialized array parses like the static
                             // form (its byte image on the local); native frame copy-in
                             // remains a generator concern.
+                            if inner_elements > 1 && !is_static {
+                                return Err(Diagnostic::error("an automatic multi-dimensional array initializer is not supported yet (roadmap)"));
+                            }
+                            if inner_elements > 1 {
+                                let values = self.parse_constant_initializer(declared_type)?;
+                                let count = u16::try_from(values.len()).map_err(|_| {
+                                    Diagnostic::error("too many static array initializer elements")
+                                })?;
+                                let mut bytes = Vec::new();
+                                for value in values {
+                                    match declared_type {
+                                        Type::Float | Type::Int | Type::UnsignedInt => bytes
+                                            .extend_from_slice(&(value as u32).to_be_bytes()),
+                                        Type::Double => bytes
+                                            .extend_from_slice(&(value as u64).to_be_bytes()),
+                                        Type::Char | Type::UnsignedChar => bytes.push(value as u8),
+                                        Type::Short | Type::UnsignedShort => bytes
+                                            .extend_from_slice(&(value as u16).to_be_bytes()),
+                                        _ => return Err(Diagnostic::error("a multi-dimensional static-local initializer element is not supported yet (roadmap)")),
+                                    }
+                                }
+                                data_bytes = Some(bytes);
+                                Some(explicit.unwrap_or(count))
+                            } else {
                             self.expect(Token::BraceOpen)?;
                             let mut bytes = Vec::new();
                             let mut count = 0u16;
@@ -3471,6 +3492,7 @@ impl Parser {
                             self.expect(Token::BraceClose)?;
                             data_bytes = Some(bytes);
                             Some(explicit.unwrap_or(count))
+                            }
                         }
                     } else {
                         match explicit {

@@ -697,6 +697,31 @@ mod tests {
     }
 
     #[test]
+    fn flattens_static_multidimensional_local_initializer_row_major() {
+        let source = r#"
+            int probe(void) {
+                static short values[2][2] = {{1, 2}, {3, 4}};
+                return 0;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let local = &unit.functions[0].locals[0];
+        assert_eq!(local.array_length, Some(4));
+        assert_eq!(local.row_bytes, Some(4));
+        assert_eq!(
+            local.data_bytes.as_deref(),
+            Some(&[0, 1, 0, 2, 0, 3, 0, 4][..])
+        );
+    }
+
+    #[test]
     fn inserts_a_vptr_at_the_first_virtual_declaration() {
         let source = r#"
             class Id {
