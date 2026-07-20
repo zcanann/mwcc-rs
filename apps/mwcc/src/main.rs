@@ -1374,23 +1374,26 @@ fn compile(
     defined_globals.extend(function_string_objects);
     defined_globals.extend(static_local_globals);
 
-    // A `static` function whose ADDRESS is taken in a `.text` body before its
-    // definition gets its LOCAL FUNC symbol created at that reference — so it sorts
-    // ahead of statics first seen at their definition (measured: OSAlarm's
-    // `DecrementerExceptionHandler`, prototyped at the top and passed to
-    // `__OSSetExceptionHandler` in OSInitAlarm — an ADDR16_HA/LO reference, not a
-    // call). A forward-declared static that is only CALLED (REL24) keeps its symbol
-    // at the definition (measured: alloc.c's SubBlock_merge_prev/link_new_block).
-    // Detect the address-of by a non-REL24 relocation against the name; require a
-    // prototype (an address taken before the definition needs one), in prototype order.
+    // A `static` function whose ADDRESS is taken before its definition gets its
+    // LOCAL FUNC symbol created at that reference. Data initializers are visited in
+    // their relocation-emission order (often reverse field order), while text-body
+    // address references follow prototype order. A forward-declared static that is
+    // only CALLED (REL24) keeps its symbol at the definition.
+    //
+    // Measured examples:
+    // - Animal Crossing's iam_ef_kigae profile creates dw/mv/ct/init from its
+    //   descending-offset `.data` relocations before any function-local constants.
+    // - OSAlarm creates DecrementerExceptionHandler when its address is passed to
+    //   __OSSetExceptionHandler in a text body.
     let forward_declared_statics: Vec<String> = {
-        let static_defined: std::collections::HashSet<&str> = unit
+        let static_definition_index: std::collections::HashMap<&str, usize> = unit
             .functions
             .iter()
-            .filter(|function| function.is_static)
-            .map(|function| function.name.as_str())
+            .enumerate()
+            .filter(|(_, function)| function.is_static)
+            .map(|(index, function)| (function.name.as_str(), index))
             .collect();
-        let address_taken: std::collections::HashSet<&str> = machine_functions
+        let text_address_taken: std::collections::HashSet<&str> = machine_functions
             .iter()
             .flat_map(|function| function.relocations.iter())
             .filter(|relocation| {
@@ -1405,15 +1408,41 @@ fn compile(
             })
             .collect();
         let mut seen = std::collections::HashSet::new();
-        unit.prototypes
-            .iter()
-            .map(|(name, _, _)| name)
-            .filter(|name| {
-                static_defined.contains(name.as_str()) && address_taken.contains(name.as_str())
-            })
-            .filter(|name| seen.insert((*name).clone()))
-            .cloned()
-            .collect()
+        let mut symbols = Vec::new();
+        for global in &defined_globals {
+            // Ordinary data relocation records are emitted in reverse element
+            // order by the object writer; MWCC's symbol creation follows that
+            // same traversal. Constructor chains are the one forward-ordered
+            // section.
+            let relocation_indices: Box<dyn Iterator<Item = usize>> =
+                if global.section.as_deref() == Some(".ctors") {
+                    Box::new(0..global.relocations.len())
+                } else {
+                    Box::new((0..global.relocations.len()).rev())
+                };
+            for relocation_index in relocation_indices {
+                let relocation = &global.relocations[relocation_index];
+                let Some(&definition_index) =
+                    static_definition_index.get(relocation.target.as_str())
+                else {
+                    continue;
+                };
+                if definition_index >= global.functions_before
+                    && seen.insert(relocation.target.clone())
+                {
+                    symbols.push(relocation.target.clone());
+                }
+            }
+        }
+        for (name, _, _) in &unit.prototypes {
+            if static_definition_index.contains_key(name.as_str())
+                && text_address_taken.contains(name.as_str())
+                && seen.insert(name.clone())
+            {
+                symbols.push(name.clone());
+            }
+        }
+        symbols
     };
 
     // C's plain-`inline` asm helpers (OSFastCast's `inline __OSf32tos16`) are

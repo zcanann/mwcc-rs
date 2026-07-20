@@ -22,6 +22,7 @@ mod acf_str2dec;
 mod acf_timesdec;
 mod acf_two_exp;
 mod acf_ull2dec;
+mod ack_kigae_mv;
 mod afp_ctzl;
 mod afp_dec2num_pik;
 mod afp_num2dec;
@@ -777,6 +778,7 @@ impl Generator {
             );
         }
         let fired = self.try_rt_va_arg(function)?
+            || self.try_ack_kigae_mv(function)?
             || self.try_ar_checksize(function)?
             || self.try_rt_va_arg_50(function)?
             || self.try_afp_ctzl(function)?

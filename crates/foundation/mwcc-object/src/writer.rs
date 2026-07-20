@@ -129,9 +129,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         .iter()
         .any(|function| !function.relocations.is_empty());
     let has_frame = functions.iter().any(|function| function.frame.is_some());
-    let has_constants = functions
+    let has_small_constants = functions
         .iter()
-        .any(|function| !function.constants.is_empty());
+        .flat_map(|function| &function.constants)
+        .any(|constant| !constant.force_full_data_section);
+    let has_full_constants = functions
+        .iter()
+        .flat_map(|function| &function.constants)
+        .any(|constant| constant.force_full_data_section);
     // Each defined object is routed to a section by const-ness, size, and whether
     // it is initialized: a writable global to `.sdata` (initialized) or `.sbss`
     // (zero), a const one to `.sdata2` (≤ 8 bytes) or `.rodata` (larger). mwcc lays
@@ -193,7 +198,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         || input
             .functions
             .iter()
-            .any(|function| !function.anonymous_rodata.is_empty());
+            .any(|function| !function.anonymous_rodata.is_empty())
+        || has_full_constants;
     let has_const_sdata2 = input
         .data_objects
         .iter()
@@ -461,9 +467,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // index, every entry filled by an `ADDR32` relocation (so the file bytes are
     // zero). Each table is recorded at its offset; `.data` is 8-aligned.
 
-    // `.sdata2` constant pool — the const globals routed here (laid out above) come
-    // first, then every function's float constants appended in source order, each at
-    // its natural alignment. Record the byte offset of each function's j-th constant.
+    // Compiler-managed constant pools: const globals routed to `.sdata2` come
+    // first, while full-addressed constants append to `.rodata` after named data
+    // and anonymous blobs. Record each function constant's offset in its selected
+    // section. Pooling is section-local: equal values reached through SDA21 and
+    // ADDR16 references cannot share a symbol.
     let mut sdata2 = vec![0u8; sdata2_global_size as usize];
     for object in &input.data_objects {
         if section_of(object) == ".sdata2" {
@@ -479,11 +487,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // appending a duplicate. Dedup by (bits, width); a single and a double zero stay
     // distinct (different widths → different `lfs`/`lfd` slots).
     let mut constant_offsets: Vec<Vec<u32>> = Vec::new();
-    let mut pooled_offset: HashMap<(u64, u8), u32> = HashMap::new();
+    let mut pooled_offset: HashMap<(u64, u8, bool), u32> = HashMap::new();
     for function in functions {
         let mut offsets = Vec::new();
         for constant in &function.constants {
-            let fresh_slot = |sdata2: &mut Vec<u8>| {
+            let fresh_slot = |pool: &mut Vec<u8>| {
                 // An 8-byte STATIC-SLOT entry is a struct IMAGE (two floats/ints):
                 // it aligns 4, unlike a genuine double constant (align 8).
                 let alignment = if constant.byte_width == 8 && constant.static_slot {
@@ -491,24 +499,33 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 } else {
                     constant.byte_width as usize
                 };
-                while sdata2.len() % alignment != 0 {
-                    sdata2.push(0);
+                while pool.len() % alignment != 0 {
+                    pool.push(0);
                 }
-                let offset = sdata2.len() as u32;
+                let offset = pool.len() as u32;
                 match constant.byte_width {
-                    8 => sdata2.extend_from_slice(&constant.bits.to_be_bytes()),
-                    _ => sdata2.extend_from_slice(&(constant.bits as u32).to_be_bytes()),
+                    8 => pool.extend_from_slice(&constant.bits.to_be_bytes()),
+                    _ => pool.extend_from_slice(&(constant.bits as u32).to_be_bytes()),
                 }
                 offset
+            };
+            let pool = if constant.force_full_data_section {
+                &mut rodata
+            } else {
+                &mut sdata2
             };
             // A FORCE-NEW slot never joins the dedup map: it takes a fresh
             // offset and leaves the first slot as the shared one.
             let offset = if constant.force_new {
-                fresh_slot(&mut sdata2)
+                fresh_slot(pool)
             } else {
                 *pooled_offset
-                    .entry((constant.bits, constant.byte_width))
-                    .or_insert_with(|| fresh_slot(&mut sdata2))
+                    .entry((
+                        constant.bits,
+                        constant.byte_width,
+                        constant.force_full_data_section,
+                    ))
+                    .or_insert_with(|| fresh_slot(pool))
             };
             offsets.push(offset);
         }
@@ -803,7 +820,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_sbss {
         order.push(".sbss");
     }
-    if has_constants || has_const_sdata2 {
+    if has_small_constants || has_const_sdata2 {
         order.push(".sdata2");
     }
     if debug.is_some_and(|debug| !debug.layout.before_data()) {
@@ -822,9 +839,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_text_relocations {
         order.push(&rela_text_section);
     }
-    if debug.is_some_and(|debug| {
-        debug.layout.before_data() && !debug.layout.interleaved_relocations()
-    }) {
+    if debug
+        .is_some_and(|debug| debug.layout.before_data() && !debug.layout.interleaved_relocations())
+    {
         order.push(".rela.line");
         order.push(".rela.debug");
     }
@@ -873,9 +890,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_sdata2_relocs {
         order.push(".rela.sdata2");
     }
-    if debug.is_some_and(|debug| {
-        !debug.layout.before_data() && !debug.layout.interleaved_relocations()
-    }) {
+    if debug
+        .is_some_and(|debug| !debug.layout.before_data() && !debug.layout.interleaved_relocations())
+    {
         order.push(".rela.line");
         order.push(".rela.debug");
     }
@@ -952,8 +969,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         write_symbol(&mut symtab, 0, 0, 0, STT_SECTION, 0, index_of(name) as u16);
         comment_values.push((section_align(name), 0));
     }
-    let mut debug_symbols: std::collections::HashMap<&str, u32> =
-        std::collections::HashMap::new();
+    let mut debug_symbols: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     if let Some(debug) = debug {
         for symbol in debug.symbols.iter().filter(|symbol| !symbol.is_global) {
             debug_symbols.insert(symbol.name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
@@ -1294,7 +1310,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // One `.sdata2` symbol per distinct constant — declared here so the EARLY
     // image emission registers into the same dedup map an ordinary pool
     // reference consults (ww's wcstombs reuses unicode's @47 image plainly).
-    let mut constant_symbol: HashMap<(u64, u8), u32> = HashMap::new();
+    let mut constant_symbol: HashMap<(u64, u8, bool), u32> = HashMap::new();
     // The `...data.0` SECTION-ALIAS marker is emitted LAZILY: immediately
     // before the unit's first `.data`-section string/object symbol (measured:
     // strikers — after 5 static FUNC symbols, before @229; wind_waker — after
@@ -1623,12 +1639,17 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     continue;
                 }
             }
-            match constant_symbol.get(&(constant.bits, constant.byte_width)) {
+            let pool_key = (
+                constant.bits,
+                constant.byte_width,
+                constant.force_full_data_section,
+            );
+            match constant_symbol.get(&pool_key) {
                 Some(&existing) if !constant.force_new => symbols.push(existing),
                 _ => {
                     let symbol = (symtab.len() / SYMBOL_SIZE) as u32;
                     if !constant.force_new {
-                        constant_symbol.insert((constant.bits, constant.byte_width), symbol);
+                        constant_symbol.insert(pool_key, symbol);
                     }
                     symbols.push(symbol);
                     let name = strtab.add(&format!("@{}", constant_numbers[index][constant_index]));
@@ -1639,7 +1660,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         constant.byte_width as u32,
                         STB_LOCAL_OBJECT,
                         0,
-                        index_of(".sdata2") as u16,
+                        index_of(if constant.force_full_data_section {
+                            ".rodata"
+                        } else {
+                            ".sdata2"
+                        }) as u16,
                     );
                     comment_values.push((
                         if constant.byte_width == 8 && constant.static_slot {
@@ -2887,7 +2912,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             sbss_size,
         );
     }
-    if has_constants || has_const_sdata2 {
+    if has_small_constants || has_const_sdata2 {
         push(
             ".sdata2",
             SHT_PROGBITS,
@@ -2971,9 +2996,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             0,
         );
     }
-    if debug.is_some_and(|debug| {
-        debug.layout.before_data() && !debug.layout.interleaved_relocations()
-    }) {
+    if debug
+        .is_some_and(|debug| debug.layout.before_data() && !debug.layout.interleaved_relocations())
+    {
         push(
             ".rela.line",
             SHT_RELA,
@@ -3078,9 +3103,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             0,
         );
     }
-    if debug.is_some_and(|debug| {
-        !debug.layout.before_data() && !debug.layout.interleaved_relocations()
-    }) {
+    if debug
+        .is_some_and(|debug| !debug.layout.before_data() && !debug.layout.interleaved_relocations())
+    {
         push(
             ".rela.line",
             SHT_RELA,

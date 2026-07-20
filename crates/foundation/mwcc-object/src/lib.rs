@@ -7,9 +7,9 @@
 //! `.text`, constant pool, and unwind sections. `lib.rs` exposes the input shape
 //! and the entry point; the assembly lives in [`writer`].
 
-mod writer;
 mod debug;
 mod function_layout;
+mod writer;
 
 pub use debug::{
     DebugLayout, DebugRelocation, DebugRelocationKind, DebugRelocationTarget, DebugSection,
@@ -205,8 +205,8 @@ pub struct FunctionObject<'a> {
     /// `.text` relocations against external symbols (globals, callees) or pooled
     /// constants. Offsets are relative to this function's start.
     pub relocations: Vec<TextRelocation>,
-    /// Constants this function loads from `.sdata2`. Each becomes an anonymous
-    /// `@N` object.
+    /// Constants this function loads from a compiler-managed read-only pool.
+    /// Each becomes an anonymous `@N` object in `.sdata2` or `.rodata`.
     pub constants: Vec<Sdata2Constant>,
     /// Unwind-table layout for a stack-frame function; `None` for a pure leaf.
     pub frame: Option<FrameLayout>,
@@ -304,8 +304,8 @@ pub struct TextRelocation {
     pub target: RelocationTarget,
 }
 
-/// A constant placed in `.sdata2`: its big-endian bit pattern and byte width
-/// (4 for a single-precision float, 8 for a double).
+/// A compiler-managed read-only constant: its big-endian bit pattern, byte
+/// width, and section-placement policy.
 pub struct Sdata2Constant {
     pub bits: u64,
     pub byte_width: u8,
@@ -316,6 +316,9 @@ pub struct Sdata2Constant {
     pub image: bool,
     /// A fresh slot even when an equal constant exists (twin zero doubles).
     pub force_new: bool,
+    /// Place the constant in `.rodata` instead of `.sdata2`. Absolute
+    /// ADDR16_HA/LO references require this when read-only small data is off.
+    pub force_full_data_section: bool,
 }
 
 /// The `extab`/`extabindex` unwind tables a stack-frame function carries. The

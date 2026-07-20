@@ -4,16 +4,35 @@
 //! big-endian PowerPC object matching mwcceppc's layout (sections, symbols,
 //! relocations, and the Metrowerks metadata records).
 
-use mwcc_machine_code::{MachineFunction, RelocationTarget as MachineTarget};
+use mwcc_machine_code::{
+    MachineFunction, RelocationKind as MachineRelocationKind, RelocationTarget as MachineTarget,
+};
 use mwcc_object::{
     DataObject, FrameLayout, FunctionObject, JumpTable, ObjectInput, RelocationTarget,
     Sdata2Constant, TextRelocation,
 };
 
+pub use mwcc_object::DebugSections;
 /// A data-section `ADDR32` relocation (re-exported so callers can build a
 /// `DefinedGlobal`'s relocations without depending on `mwcc-object` directly).
 pub use mwcc_object::{CommentFormat, DataRelocation, FunctionSymbolOrder, ObjectFormat};
-pub use mwcc_object::DebugSections;
+
+fn constant_uses_absolute_addressing(function: &MachineFunction, constant_index: usize) -> bool {
+    function.relocations.iter().any(|relocation| {
+        let targets_constant = matches!(
+            relocation.target,
+            MachineTarget::Constant(index) | MachineTarget::ConstantWithAddend(index, _)
+                if index == constant_index
+        );
+        targets_constant
+            && matches!(
+                relocation.kind,
+                MachineRelocationKind::Addr16Ha
+                    | MachineRelocationKind::Addr16Hi
+                    | MachineRelocationKind::Addr16Lo
+            )
+    })
+}
 
 /// A file-scope variable *defined* in this unit (placed in a data section), in
 /// declaration order. The caller decides which globals qualify (non-`extern`,
@@ -138,12 +157,17 @@ pub fn assemble_object(
             constants: function
                 .constants
                 .iter()
-                .map(|constant| Sdata2Constant {
+                .enumerate()
+                .map(|(constant_index, constant)| Sdata2Constant {
                     bits: constant.bits,
                     byte_width: constant.byte_width,
                     static_slot: constant.static_slot,
                     image: constant.image,
                     force_new: constant.force_new,
+                    force_full_data_section: constant_uses_absolute_addressing(
+                        function,
+                        constant_index,
+                    ),
                 })
                 .collect(),
             frame: function.frame.map(|frame| FrameLayout {
@@ -183,9 +207,7 @@ pub fn assemble_object(
             symbol_order: function.symbol_order.clone(),
             referenced_function_symbols: function.referenced_function_symbols.clone(),
             implicit_external_callees: function.implicit_external_callees.clone(),
-            early_implicit_external_callees: function
-                .early_implicit_external_callees
-                .clone(),
+            early_implicit_external_callees: function.early_implicit_external_callees.clone(),
         })
         .collect();
     let data_objects = defined_globals
