@@ -229,10 +229,11 @@ pub(crate) struct Parser {
     /// Source scalar identity for typedefs whose storage type has been folded
     /// into the executable IR.
     pub(crate) typedef_source_fundamentals: HashMap<String, SourceFundamentalType>,
-    /// Typedef names declared as function pointers. Their storage type is a
-    /// plain word pointer, while struct-member call syntax needs the stronger
-    /// callable identity.
-    pub(crate) function_pointer_typedefs: std::collections::HashSet<String>,
+    /// Typedef names declared as function pointers, with their declaration-only
+    /// C++ ABI signatures. Their executable storage type is still a plain word
+    /// pointer; the signature also supplies callable-member identity in C.
+    pub(crate) function_pointer_typedefs:
+        HashMap<String, crate::cxx::CxxFunctionType>,
     /// Names of variadic function declarations/definitions (side-set — never in the hashed AST).
     pub(crate) variadic_definitions: std::collections::HashSet<String>,
     /// A float-array element whose initializer did NOT fold to a constant —
@@ -286,6 +287,9 @@ pub(crate) struct Parser {
     /// mangling still needs both pointer depth and the innermost scalar type.
     pub(crate) last_cxx_pointer_depth: u8,
     pub(crate) last_cxx_pointer_base: Option<Type>,
+    /// Function type behind the most recently parsed function-pointer typedef.
+    /// Kept beside the other source-only C++ facts and consumed by declarators.
+    pub(crate) last_cxx_function_type: Option<crate::cxx::CxxFunctionType>,
     /// Set by `skip_type_qualifiers` when the just-parsed type carried `volatile`.
     /// Layout and a simple access ignore it; a value-tracked local guards on it and
     /// defers (a volatile local's access must not be elided/folded).

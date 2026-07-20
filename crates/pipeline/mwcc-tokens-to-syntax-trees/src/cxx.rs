@@ -114,6 +114,31 @@ pub(crate) struct CxxParameterType {
     pointer_const: bool,
     pointer_depth: u8,
     pointer_base: Option<Type>,
+    function_type: Option<Box<CxxFunctionType>>,
+}
+
+/// Source-level function type retained behind a function-pointer declarator.
+///
+/// The executable IR only needs to know that a function pointer is one word,
+/// but CodeWarrior's C++ ABI encodes the complete parameter and return type in
+/// every symbol that mentions it. Keeping that declaration-only identity here
+/// avoids widening storage/codegen types while preserving enough information
+/// for nested `P F <arguments> _ <return>` mangling.
+#[derive(Clone)]
+pub(crate) struct CxxFunctionType {
+    return_type: CxxParameterType,
+    parameters: Vec<CxxParameterType>,
+    variadic: bool,
+}
+
+impl CxxFunctionType {
+    pub(crate) fn new(
+        return_type: CxxParameterType,
+        parameters: Vec<CxxParameterType>,
+        variadic: bool,
+    ) -> Self {
+        Self { return_type, parameters, variadic }
+    }
 }
 
 impl CxxParameterType {
@@ -138,6 +163,7 @@ impl CxxParameterType {
                     && matches!(source_type, Type::Pointer(_) | Type::StructPointer { .. }),
             ),
             pointer_base: None,
+            function_type: None,
         }
     }
 
@@ -150,6 +176,11 @@ impl CxxParameterType {
             self.pointer_depth = pointer_depth;
             self.pointer_base = pointer_base;
         }
+        self
+    }
+
+    pub(crate) fn with_function_type(mut self, function_type: Option<CxxFunctionType>) -> Self {
+        self.function_type = function_type.map(Box::new);
         self
     }
 
@@ -356,6 +387,85 @@ pub(crate) fn normalize_constructor_declarators(
 }
 
 impl Parser {
+    /// Consume the source-only facts left by `parse_type` into one ABI type.
+    /// Storage/codegen keeps using the returned `Type` independently.
+    pub(crate) fn take_cxx_type_identity(
+        &mut self,
+        source_type: Type,
+        is_reference: bool,
+    ) -> CxxParameterType {
+        let qualified_name = self.last_enum_tag.take().or_else(|| {
+            self.last_struct_tag.take().map(|tag| {
+                self.struct_typedefs
+                    .get(&tag)
+                    .cloned()
+                    .unwrap_or(tag)
+            })
+        });
+        CxxParameterType::parsed(
+            source_type,
+            qualified_name,
+            self.last_type_was_wchar,
+            is_reference,
+            self.last_type_was_aggregate_reference,
+            self.last_type_was_const,
+            self.last_pointer_const,
+        )
+        .with_pointer_shape(self.last_cxx_pointer_depth, self.last_cxx_pointer_base)
+        .with_function_type(self.last_cxx_function_type.take())
+    }
+
+    /// Parse the `(parameters)` portion of a function type after its return
+    /// type and pointer declarator have already been consumed.
+    pub(crate) fn parse_cxx_function_type(
+        &mut self,
+        return_type: CxxParameterType,
+    ) -> Compilation<CxxFunctionType> {
+        self.expect(Token::ParenOpen)?;
+        let mut parameters = Vec::new();
+        let mut variadic = false;
+        if *self.peek() == Token::KeywordVoid && *self.peek_at(1) == Token::ParenClose {
+            self.advance();
+        } else {
+            while *self.peek() != Token::ParenClose {
+                if matches!(
+                    self.tokens.get(self.position..self.position + 3),
+                    Some([Token::Dot, Token::Dot, Token::Dot])
+                ) {
+                    self.position += 3;
+                    variadic = true;
+                    break;
+                }
+                let mut storage_type = self.parse_type()?;
+                while *self.peek() == Token::Star {
+                    self.advance();
+                    self.last_cxx_pointer_depth =
+                        self.last_cxx_pointer_depth.saturating_add(1).max(1);
+                    storage_type = Type::Pointer(Pointee::Pointer);
+                }
+                let is_reference = self.eat_keyword(Token::Ampersand);
+                if matches!(self.peek(), Token::Identifier(_)) {
+                    self.advance();
+                }
+                if *self.peek() == Token::BracketOpen {
+                    self.advance();
+                    while !matches!(self.peek(), Token::BracketClose | Token::EndOfFile) {
+                        self.advance();
+                    }
+                    self.expect(Token::BracketClose)?;
+                    self.last_cxx_pointer_depth =
+                        self.last_cxx_pointer_depth.saturating_add(1).max(1);
+                }
+                parameters.push(self.take_cxx_type_identity(storage_type, is_reference));
+                if !self.eat_keyword(Token::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect(Token::ParenClose)?;
+        Ok(CxxFunctionType::new(return_type, parameters, variadic))
+    }
+
     fn named_namespace_scopes(&self) -> Vec<&str> {
         self.namespace_stack
             .iter()
@@ -814,6 +924,7 @@ impl Parser {
                     let pointer_const = self.last_pointer_const;
                     let pointer_depth = self.last_cxx_pointer_depth;
                     let pointer_base = self.last_cxx_pointer_base;
+                    let function_type = self.last_cxx_function_type.take();
                     let is_reference = self.eat_keyword(Token::Ampersand);
                     let cxx_storage_type = parameter_type;
                     if is_reference {
@@ -822,15 +933,19 @@ impl Parser {
                     if matches!(self.peek(), Token::Identifier(_)) {
                         self.advance();
                     }
-                    cxx_parameters.push(CxxParameterType::parsed(
-                        cxx_storage_type,
-                        qualified_name,
-                        is_wchar,
-                        is_reference,
-                        source_is_aggregate_value,
-                        pointee_const,
-                        pointer_const,
-                    ).with_pointer_shape(pointer_depth, pointer_base));
+                    cxx_parameters.push(
+                        CxxParameterType::parsed(
+                            cxx_storage_type,
+                            qualified_name,
+                            is_wchar,
+                            is_reference,
+                            source_is_aggregate_value,
+                            pointee_const,
+                            pointer_const,
+                        )
+                        .with_pointer_shape(pointer_depth, pointer_base)
+                        .with_function_type(function_type),
+                    );
                     parameters.push(parameter_type);
                     if !self.eat_keyword(Token::Comma) {
                         break;
@@ -1432,6 +1547,7 @@ impl Parser {
                 let pointer_const = self.last_pointer_const;
                 let pointer_depth = self.last_cxx_pointer_depth;
                 let pointer_base = self.last_cxx_pointer_base;
+                let function_type = self.last_cxx_function_type.take();
                 let is_reference = self.eat_keyword(Token::Ampersand);
                 if is_reference {
                     parameter_type = Type::StructPointer { element_size: 0 };
@@ -1440,15 +1556,19 @@ impl Parser {
                     self.advance();
                 }
                 parameters.push(parameter_type);
-                cxx_parameters.push(CxxParameterType::parsed(
-                    source_type,
-                    qualified_name,
-                    is_wchar,
-                    is_reference,
-                    source_is_aggregate_value,
-                    pointee_const,
-                    pointer_const,
-                ).with_pointer_shape(pointer_depth, pointer_base));
+                cxx_parameters.push(
+                    CxxParameterType::parsed(
+                        source_type,
+                        qualified_name,
+                        is_wchar,
+                        is_reference,
+                        source_is_aggregate_value,
+                        pointee_const,
+                        pointer_const,
+                    )
+                    .with_pointer_shape(pointer_depth, pointer_base)
+                    .with_function_type(function_type),
+                );
                 if !self.eat_keyword(Token::Comma) {
                     break;
                 }
@@ -1766,6 +1886,16 @@ fn encode_type(parameter: &CxxParameterType) -> Compilation<String> {
         code.push('w');
         return Ok(code);
     }
+    if let Some(function_type) = parameter.function_type.as_deref() {
+        code.push('F');
+        code.push_str(&encode_function_arguments(
+            &function_type.parameters,
+            function_type.variadic,
+        )?);
+        code.push('_');
+        code.push_str(&encode_type(&function_type.return_type)?);
+        return Ok(code);
+    }
     if let Some(name) = parameter.qualified_name.as_deref() {
         code.push_str(&encode_qualified_type_name(name)?);
         return Ok(code);
@@ -1790,15 +1920,7 @@ fn encode_type(parameter: &CxxParameterType) -> Compilation<String> {
                 "a nested C++ pointer base is not supported yet (roadmap)",
             ))
         }
-        Type::Void => {
-            if is_pointer {
-                "v".to_string()
-            } else {
-                return Err(Diagnostic::error(
-                    "a named void C++ parameter is not supported",
-                ));
-            }
-        }
+        Type::Void => "v".to_string(),
         Type::StructPointer { .. } | Type::Struct { .. } => {
             return Err(Diagnostic::error(
                 "a struct-valued C++ member parameter needs qualified type mangling (roadmap)",

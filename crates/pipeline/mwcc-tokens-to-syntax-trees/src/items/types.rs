@@ -127,6 +127,7 @@ impl Parser {
         self.last_pointer_const = false;
         self.last_cxx_pointer_depth = 0;
         self.last_cxx_pointer_base = None;
+        self.last_cxx_function_type = None;
         // The array-typedef marker is only ever set by the LAST parse_type call, so a
         // consumer that `.take()`s right after its own call can never read a stale one.
         self.last_array_typedef = None;
@@ -395,14 +396,22 @@ impl Parser {
         // A `typedef`-declared alias resolves to its underlying type.
         if let Token::Identifier(name) = self.peek() {
             if let Some(&aliased) = self.typedefs.get(name) {
+                let function_type = self.function_pointer_typedefs.get(name).cloned();
                 self.last_source_fundamental = self
                     .typedef_source_fundamentals
                     .get(name)
                     .copied()
                     .or_else(|| source_fundamental(aliased));
                 self.advance();
+                if let Some(function_type) = function_type {
+                    self.last_cxx_pointer_depth = 1;
+                    self.last_cxx_function_type = Some(function_type);
+                }
                 if *self.peek() == Token::Star {
                     self.advance();
+                    if self.last_cxx_function_type.is_some() {
+                        self.last_cxx_pointer_depth = self.last_cxx_pointer_depth.saturating_add(1);
+                    }
                     // A star on an already-pointer typedef (`voidfunctionptr*`)
                     // is a pointer-to-pointer: word element, inner untracked.
                     if matches!(aliased, Type::Pointer(_) | Type::StructPointer { .. }) {
@@ -1061,7 +1070,7 @@ impl Parser {
                 continue;
             }
             let field_is_function_pointer_typedef =
-                matches!(self.peek(), Token::Identifier(word) if self.function_pointer_typedefs.contains(word));
+                matches!(self.peek(), Token::Identifier(word) if self.function_pointer_typedefs.contains_key(word));
             let mut field_type = self.parse_type()?;
             let source_fundamental = self.last_source_fundamental;
             while self.eat_keyword(Token::Star) {

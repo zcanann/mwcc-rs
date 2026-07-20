@@ -1643,11 +1643,12 @@ impl Parser {
                     let struct_tag = self.struct_typedefs.get(&existing).cloned();
                     let pointer_tag = self.struct_pointer_typedefs.get(&existing).cloned();
                     let array_entry = self.array_typedefs.get(&existing).cloned();
-                    let function_pointer = self.function_pointer_typedefs.contains(&existing);
+                    let function_pointer =
+                        self.function_pointer_typedefs.get(&existing).cloned();
                     if struct_tag.is_some()
                         || pointer_tag.is_some()
                         || array_entry.is_some()
-                        || function_pointer
+                        || function_pointer.is_some()
                     {
                         self.advance(); // the existing alias
                         let alias = self.parse_identifier()?;
@@ -1670,8 +1671,8 @@ impl Parser {
                         if let Some(entry) = array_entry {
                             self.array_typedefs.insert(alias.clone(), entry);
                         }
-                        if function_pointer {
-                            self.function_pointer_typedefs.insert(alias);
+                        if let Some(function_type) = function_pointer {
+                            self.function_pointer_typedefs.insert(alias, function_type);
                         }
                         return Ok(());
                     }
@@ -1684,6 +1685,7 @@ impl Parser {
                 if *self.peek() == Token::ParenOpen
                     && self.tokens.get(self.position + 1) == Some(&Token::Star)
                 {
+                    let return_identity = self.take_cxx_type_identity(aliased, false);
                     self.advance(); // `(`
                     self.advance(); // `*`
                     let alias = self.parse_identifier()?;
@@ -1696,24 +1698,11 @@ impl Parser {
                         self.row_pointer_typedefs.insert(alias, (aliased, length));
                         return Ok(());
                     }
-                    self.expect(Token::ParenOpen)?;
-                    let mut depth = 1;
-                    while depth > 0 {
-                        match self.advance() {
-                            Token::ParenOpen => depth += 1,
-                            Token::ParenClose => depth -= 1,
-                            Token::EndOfFile => {
-                                return Err(Diagnostic::error(
-                                    "unterminated function-pointer typedef",
-                                ))
-                            }
-                            _ => {}
-                        }
-                    }
+                    let function_type = self.parse_cxx_function_type(return_identity)?;
                     self.expect(Token::Semicolon)?;
                     self.typedefs
                         .insert(alias.clone(), Type::Pointer(Pointee::Int));
-                    self.function_pointer_typedefs.insert(alias);
+                    self.function_pointer_typedefs.insert(alias, function_type);
                     return Ok(());
                 }
                 let name = self.parse_identifier()?;
@@ -2374,6 +2363,7 @@ impl Parser {
                     let cxx_pointer_const = self.last_pointer_const;
                     let cxx_pointer_depth = self.last_cxx_pointer_depth;
                     let cxx_pointer_base = self.last_cxx_pointer_base;
+                    let cxx_function_type = self.last_cxx_function_type.take();
                     // An array-typedef (`Mtx m`) or row-pointer-typedef (`MtxPtr m`)
                     // parameter: the type already decayed to the element pointer;
                     // keep `(element, inner)` to record the row stride under the
@@ -2486,15 +2476,19 @@ impl Parser {
                             parameter_type,
                             name,
                         });
-                        cxx_parameters.push(crate::cxx::CxxParameterType::parsed(
-                            cxx_source_type,
-                            cxx_qualified_name,
-                            cxx_is_wchar,
-                            is_reference,
-                            cxx_source_is_aggregate_value,
-                            cxx_pointee_const,
-                            cxx_pointer_const,
-                        ).with_pointer_shape(cxx_pointer_depth, cxx_pointer_base));
+                        cxx_parameters.push(
+                            crate::cxx::CxxParameterType::parsed(
+                                cxx_source_type,
+                                cxx_qualified_name,
+                                cxx_is_wchar,
+                                is_reference,
+                                cxx_source_is_aggregate_value,
+                                cxx_pointee_const,
+                                cxx_pointer_const,
+                            )
+                            .with_pointer_shape(cxx_pointer_depth, cxx_pointer_base)
+                            .with_function_type(cxx_function_type),
+                        );
                     }
                     if *self.peek() == Token::Comma {
                         self.advance();
@@ -3390,25 +3384,28 @@ impl Parser {
         // Function-scope typedefs temporarily participate in expression parsing, then are restored
         // when this body closes. Keeping the restoration here prevents a local alias from leaking
         // into a later function in the translation unit.
-        let mut local_function_pointer_typedefs: Vec<(String, Option<Type>, bool)> = Vec::new();
+        let mut local_function_pointer_typedefs: Vec<(
+            String,
+            Option<Type>,
+            Option<crate::cxx::CxxFunctionType>,
+        )> = Vec::new();
         // A local declaration may open with a storage-class keyword: `static` gives the variable
         // static storage (codegen'd like a global, so recorded and deferred for now), while
         // `register`/`auto` are ordinary-automatic hints with no codegen effect. These are
         // `Identifier` tokens, so peek past them before the type test below.
         loop {
             if matches!(self.peek(), Token::Identifier(word) if word == "typedef") {
-                let alias = self.parse_local_function_pointer_typedef()?;
+                let (alias, function_type) = self.parse_local_function_pointer_typedef()?;
                 let previous_type = self
                     .typedefs
                     .insert(alias.clone(), Type::Pointer(Pointee::Int));
-                let was_function_pointer = self
+                let previous_function_type = self
                     .function_pointer_typedefs
-                    .replace(alias.clone())
-                    .is_some();
+                    .insert(alias.clone(), function_type);
                 local_function_pointer_typedefs.push((
                     alias,
                     previous_type,
-                    was_function_pointer,
+                    previous_function_type,
                 ));
                 continue;
             }
@@ -4036,7 +4033,7 @@ impl Parser {
             self.expect(Token::BraceClose)?;
         }
 
-        for (alias, previous_type, was_function_pointer) in
+        for (alias, previous_type, previous_function_type) in
             local_function_pointer_typedefs.into_iter().rev()
         {
             match previous_type {
@@ -4047,8 +4044,8 @@ impl Parser {
                     self.typedefs.remove(&alias);
                 }
             }
-            if was_function_pointer {
-                self.function_pointer_typedefs.insert(alias);
+            if let Some(function_type) = previous_function_type {
+                self.function_pointer_typedefs.insert(alias, function_type);
             } else {
                 self.function_pointer_typedefs.remove(&alias);
             }
@@ -4082,31 +4079,21 @@ impl Parser {
 
     /// Parse a function-scope `typedef RET (*Alias)(params);`. The alias registration is owned by
     /// `function_body`, which can restore a shadowed file-scope typedef at the closing brace.
-    fn parse_local_function_pointer_typedef(&mut self) -> Compilation<String> {
+    fn parse_local_function_pointer_typedef(
+        &mut self,
+    ) -> Compilation<(String, crate::cxx::CxxFunctionType)> {
         if !self.eat_word("typedef") {
             return Err(Diagnostic::error("expected a local typedef"));
         }
-        self.parse_type()?;
+        let return_type = self.parse_type()?;
+        let return_identity = self.take_cxx_type_identity(return_type, false);
         self.expect(Token::ParenOpen)?;
         self.expect(Token::Star)?;
         let alias = self.parse_identifier()?;
         self.expect(Token::ParenClose)?;
-        self.expect(Token::ParenOpen)?;
-        let mut depth = 1;
-        while depth > 0 {
-            match self.advance() {
-                Token::ParenOpen => depth += 1,
-                Token::ParenClose => depth -= 1,
-                Token::EndOfFile => {
-                    return Err(Diagnostic::error(
-                        "unterminated local function-pointer typedef",
-                    ))
-                }
-                _ => {}
-            }
-        }
+        let function_type = self.parse_cxx_function_type(return_identity)?;
         self.expect(Token::Semicolon)?;
-        Ok(alias)
+        Ok((alias, function_type))
     }
 
     pub(crate) fn peek_is_type(&self) -> bool {

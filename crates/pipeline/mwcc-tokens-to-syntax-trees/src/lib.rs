@@ -161,11 +161,12 @@ pub fn parse_located_translation_unit_with_enum_min(
         expression_struct_tag: None,
         typedefs: HashMap::new(),
         typedef_source_fundamentals: HashMap::new(),
-        function_pointer_typedefs: std::collections::HashSet::new(),
+        function_pointer_typedefs: HashMap::new(),
         last_type_was_const: false,
         last_pointer_const: false,
         last_cxx_pointer_depth: 0,
         last_cxx_pointer_base: None,
+        last_cxx_function_type: None,
         last_type_was_volatile: false,
         inline_asm_symbols: Vec::new(),
         plain_inline_asm_helpers: Vec::new(),
@@ -1203,6 +1204,31 @@ blr\n\
                 arguments,
             }) if matches!(target.as_ref(), mwcc_syntax_trees::Expression::Member { offset: 0, .. })
                 && arguments.len() == 1
+        ));
+    }
+
+    #[test]
+    fn retains_function_pointer_typedef_signatures_in_free_function_mangling() {
+        let source = r#"
+            #pragma cplusplus on
+            typedef int (*Callback)(void*, void*);
+            extern int invoke(short kind, Callback callback, void* context);
+            int caller(void) { return invoke(1, 0, 0); }
+            #pragma cplusplus off
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.prototypes[0].0, "invoke__FsPFPvPv_iPv");
+        assert!(matches!(
+            unit.functions[0].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Call { name, .. })
+                if name == "invoke__FsPFPvPv_iPv"
         ));
     }
 
