@@ -11,6 +11,19 @@ use mwcc_syntax_trees::{
 };
 use mwcc_tokens::Token;
 
+fn align_layout_offset(offset: u16, alignment: u16) -> Compilation<u16> {
+    offset
+        .div_ceil(alignment)
+        .checked_mul(alignment)
+        .ok_or_else(|| Diagnostic::error("aggregate layout exceeds 65535 bytes (roadmap)"))
+}
+
+fn advance_layout_offset(offset: u16, size: u16) -> Compilation<u16> {
+    offset
+        .checked_add(size)
+        .ok_or_else(|| Diagnostic::error("aggregate layout exceeds 65535 bytes (roadmap)"))
+}
+
 impl Parser {
     pub(crate) fn parse_type(&mut self) -> Compilation<Type> {
         let parsed = self.parse_type_base()?;
@@ -541,7 +554,7 @@ impl Parser {
                     (Some(tag), Some(name)) => {
                         self.structs.insert(tag.clone(), inner);
                         alignment_max = alignment_max.max(inner_align);
-                        offset = offset.div_ceil(inner_align) * inner_align;
+                        offset = align_layout_offset(offset, inner_align)?;
                         layout.fields.insert(
                             name,
                             StructField {
@@ -556,7 +569,7 @@ impl Parser {
                                 bit_field: None,
                             },
                         );
-                        offset += member_bytes;
+                        offset = advance_layout_offset(offset, member_bytes)?;
                     }
                     (Some(tag), None) => {
                         // A named struct type registered inside this one (no member).
@@ -571,7 +584,7 @@ impl Parser {
                         let synthetic = format!("@anon{}", self.structs.len());
                         self.structs.insert(synthetic.clone(), inner);
                         alignment_max = alignment_max.max(inner_align);
-                        offset = offset.div_ceil(inner_align) * inner_align;
+                        offset = align_layout_offset(offset, inner_align)?;
                         layout.fields.insert(
                             name,
                             StructField {
@@ -586,11 +599,11 @@ impl Parser {
                                 bit_field: None,
                             },
                         );
-                        offset += member_bytes;
+                        offset = advance_layout_offset(offset, member_bytes)?;
                     }
                     (None, None) => {
                         alignment_max = alignment_max.max(inner_align);
-                        offset = offset.div_ceil(inner_align) * inner_align;
+                        offset = align_layout_offset(offset, inner_align)?;
                         for (field_name, field) in &inner.fields {
                             layout.fields.insert(
                                 field_name.clone(),
@@ -607,7 +620,7 @@ impl Parser {
                         layout
                             .function_pointer_fields
                             .extend(inner.function_pointer_fields.iter().cloned());
-                        offset += inner_size;
+                        offset = advance_layout_offset(offset, inner_size)?;
                     }
                 }
                 self.expect(Token::Semicolon)?;
@@ -650,32 +663,30 @@ impl Parser {
                     offset = unit_offset + (bits_used as u16).div_ceil(8);
                 }
                 match (tag, member_name) {
-                    // A named WORD-SIZED union member (`union {…} f_data;` — the ptmf
-                    // function-pointer payload): lay it out as a field at the aligned
-                    // offset occupying the union's size. A 4-byte union reads/writes as
-                    // its word representation (a union value copy is a word copy), so it
-                    // registers as UnsignedInt; member-of-member access (`.f_addr`) does
-                    // not resolve through it and defers. Other sizes keep deferring.
-                    (_, Some(name)) => {
-                        if inner_size != 4 {
-                            return Err(Diagnostic::error(
-                                "a named union member of this size is not supported yet (roadmap)",
-                            ));
-                        }
+                    // A named inline union is an ordinary aggregate-value member.
+                    // Retain its own layout identity so both small flag overlays and
+                    // larger variant payloads chain through `outer.variant.field`.
+                    (tag, Some(name)) => {
+                        let variant_tag =
+                            tag.unwrap_or_else(|| format!("@anon{}", self.structs.len()));
+                        self.structs.insert(variant_tag.clone(), inner);
                         alignment_max = alignment_max.max(inner_align);
-                        offset = offset.div_ceil(inner_align) * inner_align;
+                        offset = align_layout_offset(offset, inner_align)?;
                         layout.fields.insert(
                             name,
                             StructField {
-                                member_type: Type::UnsignedInt,
+                                member_type: Type::Struct {
+                                    size: inner_size,
+                                    align: inner_align as u8,
+                                },
                                 offset,
-                                struct_tag: None,
+                                struct_tag: Some(variant_tag),
                                 array_element: None,
                                 array_bytes: None,
                                 bit_field: None,
                             },
                         );
-                        offset += inner_size;
+                        offset = advance_layout_offset(offset, inner_size)?;
                     }
                     // `union Tag { … };` — register the tag, no member contributed.
                     (Some(tag), None) => {
@@ -684,7 +695,7 @@ impl Parser {
                     // `union { … };` — flatten every member at the union's offset.
                     (None, None) => {
                         alignment_max = alignment_max.max(inner_align);
-                        offset = offset.div_ceil(inner_align) * inner_align;
+                        offset = align_layout_offset(offset, inner_align)?;
                         for (field_name, field) in &inner.fields {
                             layout.fields.insert(
                                 field_name.clone(),
@@ -701,7 +712,7 @@ impl Parser {
                         layout
                             .function_pointer_fields
                             .extend(inner.function_pointer_fields.iter().cloned());
-                        offset += inner_size;
+                        offset = advance_layout_offset(offset, inner_size)?;
                     }
                 }
                 continue;
@@ -727,7 +738,7 @@ impl Parser {
                         return Err(Diagnostic::error("an array-typedef-pointer member declarator list is not supported yet (roadmap)"));
                     }
                     self.advance(); // `;`
-                    offset = offset.div_ceil(4) * 4;
+                    offset = align_layout_offset(offset, 4)?;
                     alignment_max = alignment_max.max(4);
                     layout.fields.insert(
                         field_name,
@@ -740,7 +751,7 @@ impl Parser {
                             bit_field: None,
                         },
                     );
-                    offset += 4;
+                    offset = advance_layout_offset(offset, 4)?;
                     continue;
                 }
                 let attr_align = self.skip_attributes()?;
@@ -762,7 +773,7 @@ impl Parser {
                         offset = unit_offset + (bits_used as u16).div_ceil(8);
                     }
                     alignment_max = alignment_max.max(alignment);
-                    offset = offset.div_ceil(alignment) * alignment;
+                    offset = align_layout_offset(offset, alignment)?;
                     layout.fields.insert(
                         field_name,
                         StructField {
@@ -774,7 +785,8 @@ impl Parser {
                             bit_field: None,
                         },
                     );
-                    offset += count.saturating_mul(element_size);
+                    offset =
+                        advance_layout_offset(offset, count.saturating_mul(element_size))?;
                     if !self.eat_keyword(Token::Comma) {
                         break;
                     }
@@ -784,7 +796,11 @@ impl Parser {
             }
             let field_is_function_pointer_typedef =
                 matches!(self.peek(), Token::Identifier(word) if self.function_pointer_typedefs.contains(word));
-            let field_type = self.parse_type()?;
+            let mut field_type = self.parse_type()?;
+            while self.eat_keyword(Token::Star) {
+                field_type = Type::Pointer(Pointee::Pointer);
+                self.last_struct_tag = None;
+            }
             // Only a ROW-POINTER typedef member reaches here (an array-typedef member
             // was intercepted above); its subscript stride isn't carried through the
             // member model yet, so defer rather than lay it out as a plain pointer
@@ -834,7 +850,7 @@ impl Parser {
                     }
                     let alignment = 4u16;
                     alignment_max = alignment_max.max(alignment);
-                    offset = offset.div_ceil(alignment) * alignment;
+                    offset = align_layout_offset(offset, alignment)?;
                     layout.fields.insert(
                         pointer_name.clone(),
                         StructField {
@@ -847,7 +863,7 @@ impl Parser {
                         },
                     );
                     layout.function_pointer_fields.insert(pointer_name);
-                    offset += 4;
+                    offset = advance_layout_offset(offset, 4)?;
                     if !self.eat_keyword(Token::Comma) {
                         break;
                     }
@@ -882,7 +898,7 @@ impl Parser {
                                 let alignment = type_alignment(field_type)
                                     .max(1)
                                     .max(attr_align.unwrap_or(1));
-                                let unit_offset = offset.div_ceil(alignment) * alignment;
+                                let unit_offset = align_layout_offset(offset, alignment)?;
                                 offset = unit_offset + type_size(field_type);
                                 alignment_max = alignment_max.max(alignment);
                                 bit_unit = Some((field_type, unit_offset, width));
@@ -921,7 +937,7 @@ impl Parser {
                             let alignment = type_alignment(field_type)
                                 .max(1)
                                 .max(attr_align.unwrap_or(1));
-                            let unit_offset = offset.div_ceil(alignment) * alignment;
+                            let unit_offset = align_layout_offset(offset, alignment)?;
                             offset = unit_offset + type_size(field_type);
                             alignment_max = alignment_max.max(alignment);
                             bit_unit = Some((field_type, unit_offset, width));
@@ -991,7 +1007,7 @@ impl Parser {
                     .max(1)
                     .max(attr_align.unwrap_or(1));
                 alignment_max = alignment_max.max(alignment);
-                offset = offset.div_ceil(alignment) * alignment;
+                offset = align_layout_offset(offset, alignment)?;
                 layout.fields.insert(
                     field_name.clone(),
                     StructField {
@@ -1006,7 +1022,7 @@ impl Parser {
                 if field_is_function_pointer_typedef && !is_array {
                     layout.function_pointer_fields.insert(field_name);
                 }
-                offset += size;
+                offset = advance_layout_offset(offset, size)?;
                 if !self.eat_keyword(Token::Comma) {
                     break;
                 }
@@ -1015,7 +1031,7 @@ impl Parser {
         }
         self.expect(Token::BraceClose)?;
         // The struct size includes trailing padding to its own alignment.
-        layout.size = offset.div_ceil(alignment_max) * alignment_max;
+        layout.size = align_layout_offset(offset, alignment_max)?;
         layout.align = alignment_max as u8;
         Ok(layout)
     }
@@ -1095,7 +1111,11 @@ impl Parser {
                 self.expect(Token::Semicolon)?;
                 continue;
             }
-            let field_type = self.parse_type()?;
+            let mut field_type = self.parse_type()?;
+            while self.eat_keyword(Token::Star) {
+                field_type = Type::Pointer(Pointee::Pointer);
+                self.last_struct_tag = None;
+            }
             let array_typedef = self.last_array_typedef.take();
             let struct_tag = self.last_struct_tag.take();
             let attr_align = self.skip_attributes()?;

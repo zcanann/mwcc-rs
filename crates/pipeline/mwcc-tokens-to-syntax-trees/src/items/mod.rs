@@ -1429,18 +1429,21 @@ impl Parser {
                     } else {
                         String::new()
                     };
-                    let layout = if is_union_kw {
+                    let mut layout = if is_union_kw {
                         self.parse_union_body()?
                     } else {
                         self.parse_struct_body()?
                     };
+                    if let Some(align) = self.skip_attributes()? {
+                        layout.align = layout.align.max(align as u8);
+                        layout.size = layout.size.div_ceil(align) * align;
+                    }
                     // One or more comma-separated declarators: a value alias `Vec`
                     // or a pointer alias `*VecPtr`. The first value alias names an
                     // anonymous struct's tag.
                     let mut is_pointer = self.eat_keyword(Token::Star);
                     let mut alias = self.parse_identifier()?;
                     let tag = if tag.is_empty() { alias.clone() } else { tag };
-                    self.structs.insert(tag.clone(), layout);
                     loop {
                         // An ARRAY declarator (`typedef struct {…} __va_list[1];` — the
                         // stdarg va_list shape): the alias still resolves through the
@@ -1451,6 +1454,10 @@ impl Parser {
                             self.parse_integer_constant()?;
                             self.expect(Token::BracketClose)?;
                         }
+                        // MWCC accepts a GNU attribute after the typedef alias,
+                        // but unlike one before the alias it does not alter the
+                        // aliased aggregate's `sizeof`/natural alignment.
+                        self.skip_attributes()?;
                         if is_pointer {
                             self.struct_pointer_typedefs.insert(alias, tag.clone());
                         } else {
@@ -1462,6 +1469,7 @@ impl Parser {
                         is_pointer = self.eat_keyword(Token::Star);
                         alias = self.parse_identifier()?;
                     }
+                    self.structs.insert(tag.clone(), layout);
                     self.expect(Token::Semicolon)?;
                     return Ok(());
                 }

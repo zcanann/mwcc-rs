@@ -572,6 +572,73 @@ mod tests {
     }
 
     #[test]
+    fn retains_named_inline_unions_of_any_size() {
+        let source = r#"
+            typedef struct {
+                unsigned char head;
+                union {
+                    unsigned char raw;
+                    signed char signed_raw;
+                } flags;
+                union {
+                    int words[3];
+                    double force_alignment;
+                } payload;
+                unsigned short tail;
+            } Packet;
+            Packet value;
+            unsigned char raw(Packet* packet) { return packet->flags.raw; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.globals[0].declared_type,
+            mwcc_syntax_trees::Type::Struct { size: 32, align: 8 }
+        ));
+        assert!(matches!(
+            unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 1, .. })
+        ));
+    }
+
+    #[test]
+    fn retains_deep_pointer_members_and_trailing_type_alignment() {
+        let source = r#"
+            typedef struct {
+                unsigned char** animation;
+                int count;
+            } __attribute__((aligned(32))) TextureAnimation;
+            typedef struct {
+                int value;
+            } PostAligned __attribute__((aligned(32)));
+            TextureAnimation first;
+            PostAligned second;
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.globals[0].declared_type,
+            mwcc_syntax_trees::Type::Struct { size: 32, align: 32 }
+        ));
+        assert!(matches!(
+            unit.globals[1].declared_type,
+            mwcc_syntax_trees::Type::Struct { size: 4, align: 4 }
+        ));
+    }
+
+    #[test]
     fn resolves_a_virtual_member_to_its_measured_vtable_slot() {
         let source = r#"
             struct Stream {
