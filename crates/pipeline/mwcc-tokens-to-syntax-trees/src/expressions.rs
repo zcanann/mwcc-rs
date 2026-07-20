@@ -240,7 +240,14 @@ impl Parser {
             Expression::Variable(name) => self
                 .global_sizes
                 .get(name)
-                .and_then(|&(_, array_element)| array_element),
+                .and_then(|&(_, array_element)| array_element)
+                .or_else(|| match self.global_types.get(name) {
+                    Some(Type::Pointer(pointee)) => {
+                        Some(Self::sizeof_type_bytes(pointee.element()))
+                    }
+                    Some(Type::StructPointer { element_size }) => Some(*element_size),
+                    _ => None,
+                }),
             Expression::Member { member_type, .. }
             | Expression::Cast {
                 target_type: member_type,

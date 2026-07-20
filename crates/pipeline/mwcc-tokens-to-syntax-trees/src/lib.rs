@@ -130,6 +130,7 @@ pub fn parse_located_translation_unit(
         variable_types: HashMap::new(),
         variable_array_bytes: HashMap::new(),
         global_sizes: HashMap::new(),
+        global_types: HashMap::new(),
         last_struct_tag: None,
         last_enum_tag: None,
         last_type_was_wchar: false,
@@ -1443,6 +1444,30 @@ mod tests {
         assert!(matches!(
             &unit.functions[0].return_expression,
             Some(mwcc_syntax_trees::Expression::IntegerLiteral(5))
+        ));
+    }
+
+    #[test]
+    fn resolves_sizeof_through_a_global_struct_pointer() {
+        let source = r#"
+            struct Data {
+                int first;
+                short second;
+            };
+            extern struct Data* gx;
+            int size(void) { return sizeof(*gx); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::IntegerLiteral(8))
         ));
     }
 

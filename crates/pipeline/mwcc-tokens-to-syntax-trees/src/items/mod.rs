@@ -2246,6 +2246,8 @@ impl Parser {
                     let array_element = array_length.map(|_| element_bytes);
                     self.global_sizes
                         .insert(declarator_name.clone(), (total_bytes, array_element));
+                    self.global_types
+                        .insert(declarator_name.clone(), return_type);
                     // For a POINTER declarator, a LEADING `const` binds the
                     // POINTEE (`const char* dummy = "C"` is a WRITABLE pointer
                     // in `.sdata` — measured: locale) — the object itself is

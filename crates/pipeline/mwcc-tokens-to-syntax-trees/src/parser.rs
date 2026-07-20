@@ -149,6 +149,11 @@ pub(crate) struct Parser {
     /// not the 4-byte pointer, so a non-array keeps element `None` and those forms defer. NOT
     /// cleared per function — globals stay in scope for every function's body.
     pub(crate) global_sizes: HashMap<String, (u32, Option<u32>)>,
+    /// File-scope variables mapped to their declared type. Size alone cannot
+    /// distinguish a four-byte scalar from `struct S*`; retaining the type lets
+    /// unevaluated expressions such as `sizeof(*global_pointer)` recover the
+    /// pointee size without pretending a pointer global is an array.
+    pub(crate) global_types: HashMap<String, Type>,
     /// `typedef`-declared type aliases (e.g. `u32` -> `unsigned int`).
     pub(crate) typedefs: HashMap<String, Type>,
     /// Typedef names declared as function pointers. Their storage type is a
