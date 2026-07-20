@@ -9,6 +9,7 @@ import unittest
 
 from parity_audit import build_audit
 from parity_dashboard import (
+    code_component_result,
     code_result,
     failure_reason,
     representative_audit,
@@ -96,6 +97,23 @@ class DashboardTests(unittest.TestCase):
             "EMPTY",
         )
         self.assertIsNone(code_result({"status": "DEFER", "output": "DEFER x.c"}))
+
+    def test_code_components_do_not_conflate_bytes_and_symbol_ordinals(self):
+        record = {
+            "status": "DEFER",
+            "output": (
+                "DEFER x.cpp — debug\n"
+                "CODE DIFF — component mismatch\n"
+                "TEXT_BYTES BYTE — raw bytes match\n"
+                "TEXT_RELOC_SHAPE BYTE — sites match\n"
+                "TEXT_RELOC_TARGETS DIFF — targets differ\n"
+                "ANON_ORDINALS DIFF — only anonymous numbers differ"
+            ),
+        }
+        self.assertEqual(code_component_result(record, "TEXT_BYTES"), "BYTE")
+        self.assertEqual(code_component_result(record, "TEXT_RELOC_SHAPE"), "BYTE")
+        self.assertEqual(code_component_result(record, "TEXT_RELOC_TARGETS"), "DIFF")
+        self.assertEqual(code_component_result(record, "ANON_ORDINALS"), "DIFF")
 
     def test_snapshot_keeps_untested_in_the_denominator(self):
         rows = [row(source="src/a.c"), row(source="src/b.c"), row(source="src/missing.c", source_exists=False)]
@@ -260,6 +278,36 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(estimate["code_exact"], 2)
         self.assertEqual(estimate["code_wrong"], 1)
         self.assertEqual(estimate["code_exact_proportion"], 2 / 3)
+
+    def test_layered_code_diagnostics_have_independent_denominators(self):
+        rows = [row(source=f"src/{index}.cpp") for index in range(3)]
+        observations = {
+            rows[0]["configuration_id"]: {"status": "BYTE"},
+            rows[1]["configuration_id"]: {
+                "status": "DEFER",
+                "output": (
+                    "DEFER x.cpp — debug\n"
+                    "CODE DIFF — components\n"
+                    "TEXT_BYTES BYTE — exact\n"
+                    "TEXT_RELOC_SHAPE BYTE — exact\n"
+                    "TEXT_RELOC_TARGETS DIFF — ordinals\n"
+                    "ANON_ORDINALS DIFF — only ordinals"
+                ),
+            },
+            rows[2]["configuration_id"]: {"status": "DEFER", "output": "DEFER parser"},
+        }
+        estimate = representative_audit(
+            rows, observations, {item["configuration_id"] for item in rows}
+        )["estimate"]
+        self.assertEqual(
+            estimate["code_components"]["text_bytes"],
+            {"measured": 2, "exact": 2, "wrong": 0, "empty": 0},
+        )
+        self.assertEqual(
+            estimate["code_components"]["text_reloc_targets"],
+            {"measured": 2, "exact": 1, "wrong": 1, "empty": 0},
+        )
+        self.assertEqual(estimate["anonymous_ordinal_only_mismatches"], 1)
 
     def test_substantive_source_diagnostic_excludes_trivial_exact_objects(self):
         rows = [

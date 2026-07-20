@@ -37,6 +37,7 @@ sjis="$FFCC/build/tools/sjiswrap.exe"
 objdump="$FFCC/build/binutils/powerpc-eabi-objdump"
 here="$(cd "$(dirname "$0")/.." && pwd)"
 ours="${MWCC_BIN:-$here/target/release/mwcc}"
+code_metrics="$here/tools/object_code_metrics.py"
 
 project="$(cd "$project" && pwd)"
 # Resolve the real compiler independently from the tools checkout. Some builds
@@ -299,15 +300,8 @@ if ! "$ours" --build "$build" ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$d
   if [[ "$defer_detail" == debug-info:* ]]; then
     if "$ours" --build "$build" ${compiler_flags[@]+"${compiler_flags[@]}"} -sym off \
         -c "$dir/ours/$ctx_name" -o "$dir/projected.o" 2>"$dir/projected.err"; then
-      "$objdump" -dr "$dir/ref.o" | sed -n '/>:/,/^$/p' > "$dir/ref.code"
-      "$objdump" -dr "$dir/projected.o" | sed -n '/>:/,/^$/p' > "$dir/projected.code"
-      if [[ ! -s "$dir/ref.code" && ! -s "$dir/projected.code" ]]; then
-        echo "CODE EMPTY — neither object has emitted code"
-      elif cmp -s "$dir/ref.code" "$dir/projected.code"; then
-        echo "CODE BYTE — .text and text relocations match in the -sym off projection"
-      else
-        echo "CODE DIFF — .text or text relocations differ in the -sym off projection"
-      fi
+      python3 "$code_metrics" "$objdump" "$dir/ref.o" "$dir/projected.o" \
+        --context "the -sym off projection"
     else
       projected_detail="$(sed 's/^mwcc: //' "$dir/projected.err" | head -1)"
       echo "CODE DEFER — $projected_detail"
@@ -318,22 +312,8 @@ fi
 
 if cmp -s "$dir/ref.o" "$dir/our.o"; then
   echo "BYTE   $src — whole object byte-identical ✅"
-  "$objdump" -dr "$dir/ref.o" | sed -n '/>:/,/^$/p' > "$dir/ref.code"
-  if [[ -s "$dir/ref.code" ]]; then
-    echo "CODE BYTE — .text and text relocations match"
-  else
-    echo "CODE EMPTY — byte-exact object has no emitted code"
-  fi
+  python3 "$code_metrics" "$objdump" "$dir/ref.o" "$dir/our.o"
 else
-  echo "DIFF   $src — objects differ; first .text diff:"
-  "$objdump" -dr "$dir/ref.o" | sed -n '/>:/,/^$/p' > "$dir/ref.code"
-  "$objdump" -dr "$dir/our.o" | sed -n '/>:/,/^$/p' > "$dir/our.code"
-  if [[ ! -s "$dir/ref.code" && ! -s "$dir/our.code" ]]; then
-    echo "CODE EMPTY — neither object has emitted code"
-  elif cmp -s "$dir/ref.code" "$dir/our.code"; then
-    echo "CODE BYTE — .text and text relocations match"
-  else
-    echo "CODE DIFF — .text or text relocations differ"
-    diff "$dir/ref.code" "$dir/our.code" | head -30
-  fi
+  echo "DIFF   $src — objects differ"
+  python3 "$code_metrics" "$objdump" "$dir/ref.o" "$dir/our.o"
 fi

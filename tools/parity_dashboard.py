@@ -99,6 +99,39 @@ def code_result(record: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def code_component_result(record: Dict[str, Any], component: str) -> Optional[str]:
+    """Return one independently measured code component status.
+
+    New harness records expose these dimensions directly.  A legacy whole-object
+    BYTE safely implies equality for every component; no claim is inferred from
+    legacy failures or deferrals.
+    """
+
+    prefix = f"{component} "
+    for line in record.get("output", "").splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix) :].split(maxsplit=1)[0]
+    if record["status"] == "BYTE":
+        return "BYTE"
+    return None
+
+
+def component_summary(
+    observations: Iterable[Dict[str, Any]], component: str
+) -> Dict[str, int]:
+    results = Counter(
+        status
+        for observation in observations
+        if (status := code_component_result(observation, component)) is not None
+    )
+    return {
+        "measured": results["BYTE"] + results["DIFF"],
+        "exact": results["BYTE"],
+        "wrong": results["DIFF"],
+        "empty": results["EMPTY"],
+    }
+
+
 def blocker_breakdown(
     rows: List[Dict[str, Any]],
     observations: Dict[str, Dict[str, Any]],
@@ -459,6 +492,15 @@ def representative_audit(
         )
         code_measured = code_results["BYTE"] + code_results["DIFF"]
         code_exact_low, code_exact_high = wilson_interval(code_results["BYTE"], code_measured)
+        code_components = {
+            "text_bytes": component_summary(direct.values(), "TEXT_BYTES"),
+            "text_reloc_shape": component_summary(direct.values(), "TEXT_RELOC_SHAPE"),
+            "text_reloc_targets": component_summary(direct.values(), "TEXT_RELOC_TARGETS"),
+        }
+        anonymous_ordinal_only_mismatches = sum(
+            code_component_result(observation, "ANON_ORDINALS") == "DIFF"
+            for observation in direct.values()
+        )
         result["estimate"] = {
             "measure": "configured_byte_exact",
             "successes": successes,
@@ -511,6 +553,8 @@ def representative_audit(
             "code_exact_confidence": 0.95,
             "code_exact_interval_low": code_exact_low,
             "code_exact_interval_high": code_exact_high,
+            "code_components": code_components,
+            "anonymous_ordinal_only_mismatches": anonymous_ordinal_only_mismatches,
             # Whitespace-only source placeholders can produce exact trivial
             # objects. They remain in the goal metric, while this conditional
             # view makes their contribution explicit.
@@ -695,6 +739,23 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
                     f"unmeasured-after-projection {estimate['code_deferred']}; "
                     f"exact-share 95% CI {estimate['code_exact_interval_low']:.1%}.."
                     f"{estimate['code_exact_interval_high']:.1%}"
+                )
+            for component, label in (
+                ("text_bytes", "raw .text bytes"),
+                ("text_reloc_shape", "text relocation offsets/types"),
+                ("text_reloc_targets", "text relocation targets"),
+            ):
+                summary = estimate["code_components"][component]
+                if summary["measured"]:
+                    print(
+                        f"{label}: exact {summary['exact']}/{summary['measured']}; "
+                        f"wrong {summary['wrong']}/{summary['measured']}; "
+                        f"empty {summary['empty']}"
+                    )
+            if estimate["anonymous_ordinal_only_mismatches"]:
+                print(
+                    "anonymous-ordinal-only relocation mismatches: "
+                    f"{estimate['anonymous_ordinal_only_mismatches']}"
                 )
         counts = " / ".join(
             f"{status} {audit['statuses'][status]}"
