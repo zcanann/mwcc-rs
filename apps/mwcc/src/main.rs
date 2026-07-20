@@ -527,6 +527,8 @@ fn compile(
         * usize::from(behavior.cxx_class_definition_label_bump)
         + cxx_inline_facts.inline_definitions
             * usize::from(behavior.cxx_inline_definition_label_bump)
+        + cxx_inline_facts.control_flow_labels
+            * usize::from(behavior.cxx_inline_control_flow_label_weight)
         + cxx_inline_facts.virtual_destructors
             * usize::from(behavior.cxx_virtual_destructor_label_bump)
         + cxx_inline_facts.direct_calls
@@ -1433,10 +1435,10 @@ fn compile(
         first.phantom_externals = unit.plain_inline_asm_helpers.clone();
     }
 
-    // Optimized immediate inline processing retains every skipped static-inline
-    // asm helper as a LOCAL undefined symbol. Deferred processing and `-O0` drop
-    // helpers that no emitted function calls; referenced helpers still need their
-    // local UND entry so call relocations bind correctly.
+    // C++ retains skipped static-inline asm helpers as LOCAL undefined symbols
+    // even under deferred processing (OSInitFastCast in Metroid Prime). C's
+    // deferred path drops unused helpers; immediate processing retains them in
+    // either language. Referenced helpers always need their local UND binding.
     let referenced_targets: std::collections::HashSet<&str> = machine_functions
         .iter()
         .flat_map(|function| &function.relocations)
@@ -1452,8 +1454,9 @@ fn compile(
         .inline_asm_symbols
         .iter()
         .filter(|name| {
-            (!config.flags.inline_deferred
-                && config.flags.optimization != mwcc_versions::Optimization::O0)
+            (is_cxx
+                || (!config.flags.inline_deferred
+                    && config.flags.optimization != mwcc_versions::Optimization::O0))
                 || referenced_targets.contains(name.as_str())
         })
         .cloned()

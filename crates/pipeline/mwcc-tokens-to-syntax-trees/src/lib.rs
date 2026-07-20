@@ -1169,8 +1169,32 @@ blr\n\
                 inline_definitions: 4,
                 virtual_destructors: 1,
                 direct_calls: 1,
+                control_flow_labels: 0,
             }
         );
+    }
+
+    #[test]
+    fn counts_control_flow_inside_dropped_in_class_definitions() {
+        let source = r#"
+            class Timer {
+            public:
+                void reset(int value) {
+                    if (value) value = 0;
+                }
+            };
+            int probe() { return 0; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(unit.cxx_inline_ordinal_facts.control_flow_labels, 2);
     }
 
     #[test]

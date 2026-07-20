@@ -11,6 +11,45 @@ use mwcc_tokens::{LocatedToken, Token};
 use crate::items::{type_alignment, type_size};
 use crate::parser::{Parser, StructField, StructLayout};
 
+/// Anonymous-label cost of control flow in a dropped in-class definition.
+/// Keep this syntax-only: build profiles decide later whether this mainline
+/// accounting family applies.
+fn inline_control_flow_labels(tokens: &[Token]) -> usize {
+    let mut bump = 0;
+    let mut condition_pending = false;
+    let mut condition_depth = 0i32;
+    for token in tokens {
+        match token {
+            Token::ParenOpen if condition_pending || condition_depth > 0 => {
+                condition_depth += 1;
+                condition_pending = false;
+            }
+            Token::ParenClose if condition_depth > 0 => condition_depth -= 1,
+            Token::KeywordIf => {
+                bump += 2;
+                condition_pending = true;
+            }
+            Token::KeywordWhile => {
+                bump += 4;
+                condition_pending = true;
+            }
+            Token::KeywordFor => {
+                bump += 5;
+                condition_pending = true;
+            }
+            Token::Identifier(word)
+                if matches!(word.as_str(), "else" | "switch" | "case" | "default") =>
+            {
+                bump += 1;
+            }
+            Token::Identifier(word) if word == "goto" => bump += 1,
+            Token::PipePipe | Token::AmpersandAmpersand if condition_depth > 0 => bump += 1,
+            _ => {}
+        }
+    }
+    bump
+}
+
 /// The C++-only information that a plain C struct layout cannot retain.
 /// Declaration order controls constructor initialization order, while base
 /// names distinguish a base initializer from an identically shaped member.
@@ -779,6 +818,8 @@ impl Parser {
                     }
                     if brace_depth == 1 {
                         if let Some(body_start) = inline_body_start.take() {
+                            self.cxx_inline_ordinal_facts.control_flow_labels +=
+                                inline_control_flow_labels(&self.tokens[body_start..index]);
                             self.cxx_inline_ordinal_facts.direct_calls += self.tokens
                                 [body_start..index]
                                 .windows(2)

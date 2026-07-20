@@ -51,6 +51,17 @@ pub enum FunctionOrdinalAccountingStyle {
     Gc41Ipa,
 }
 
+/// Lowering family for SDK-style 64-bit stopwatch initialization and wait
+/// transactions. These functions exercise paired integer values, volatile
+/// pair spills, and EABI conversion helpers as one inseparable schedule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LongLongTimerStyle {
+    /// GC 1.3 through 2.7 use the measured 2.4.x pair/register schedule.
+    MainlinePair,
+    /// This compiler generation has a different, not-yet-modeled schedule.
+    Unmodeled,
+}
+
 /// Schedule of a leading `*pointer = constant` around a punned frame guard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LeadingFrameGuardStoreStyle {
@@ -679,6 +690,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         FunctionOrdinalAccountingStyle::Mainline
     }
 
+    fn long_long_timer_style(&self) -> LongLongTimerStyle {
+        LongLongTimerStyle::MainlinePair
+    }
+
     fn leading_frame_guard_store_style(&self) -> LeadingFrameGuardStoreStyle {
         LeadingFrameGuardStoreStyle::StoreValueFirstAfterLoad
     }
@@ -974,6 +989,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         0
     }
 
+    fn cxx_inline_control_flow_label_weight(&self) -> u8 {
+        1
+    }
+
     fn cxx_virtual_destructor_label_bump(&self) -> u8 {
         2
     }
@@ -1041,6 +1060,10 @@ impl CodegenProfile for Mainline {}
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn long_long_timer_style(&self) -> LongLongTimerStyle {
+        LongLongTimerStyle::Unmodeled
+    }
+
     fn prototype_parameter_names_consume_labels(&self) -> bool {
         true
     }
@@ -1071,6 +1094,10 @@ impl CodegenProfile for Gc41Build51213 {
 
     fn cxx_inline_definition_label_bump(&self) -> u8 {
         4
+    }
+
+    fn cxx_inline_control_flow_label_weight(&self) -> u8 {
+        0
     }
 
     fn cxx_virtual_destructor_label_bump(&self) -> u8 {
@@ -1111,6 +1138,14 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn long_long_timer_style(&self) -> LongLongTimerStyle {
+        LongLongTimerStyle::Unmodeled
+    }
+
+    fn cxx_inline_control_flow_label_weight(&self) -> u8 {
+        0
+    }
+
     fn prototype_parameter_names_consume_labels(&self) -> bool {
         true
     }
@@ -1226,6 +1261,14 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
 };
 
 impl CodegenProfile for Gc233Build163 {
+    fn long_long_timer_style(&self) -> LongLongTimerStyle {
+        LongLongTimerStyle::Unmodeled
+    }
+
+    fn cxx_inline_control_flow_label_weight(&self) -> u8 {
+        0
+    }
+
     fn frame_convention(&self) -> FrameConvention {
         FrameConvention::LinkageFirst
     }

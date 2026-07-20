@@ -34,6 +34,20 @@ pub(crate) fn apply_deferred_emission_order(
 ) {
     let mut source_order = std::mem::take(functions);
 
+    // Some transactions complete ordinal analysis in source order even though
+    // their code and pools emit in reverse order. Transfer that measured work
+    // only when a later compiled body actually becomes the reversed head; a
+    // one-function unit keeps its ordinary numbering.
+    let deferred_source_prefix: u32 = source_order
+        .iter()
+        .enumerate()
+        .filter(|(index, function)| {
+            function.deferred_source_prefix_bump != 0
+                && source_order[index + 1..].iter().any(|later| !later.is_asm)
+        })
+        .map(|(_, function)| function.deferred_source_prefix_bump)
+        .sum();
+
     // Deferred emission reverses compiled bodies, but a leading source-order
     // run of leaf functions with no anonymous payload was still compiled first.
     // Its post-function bookkeeping therefore advances the ordinal seen by the
@@ -64,9 +78,18 @@ pub(crate) fn apply_deferred_emission_order(
             );
         }
     }
-    let (mut immediate_asm, mut deferred_compiled): (Vec<_>, Vec<_>) =
-        source_order.into_iter().partition(|function| function.is_asm);
+    let (mut immediate_asm, mut deferred_compiled): (Vec<_>, Vec<_>) = source_order
+        .into_iter()
+        .partition(|function| function.is_asm);
     deferred_compiled.reverse();
+    if deferred_source_prefix != 0 {
+        if let Some(head) = deferred_compiled.first_mut() {
+            head.anonymous_label_bump += deferred_source_prefix;
+            // The source-order analysis already bridges these reversed bodies;
+            // MWCC does not insert its ordinary compiled-function gap again.
+            head.post_function_anonymous_bump = Some(0);
+        }
+    }
     immediate_asm.extend(deferred_compiled);
     *functions = immediate_asm;
 }
@@ -114,6 +137,22 @@ mod tests {
         assert_eq!(functions[0].anonymous_label_bump, 4);
         assert_eq!(functions[1].name, "leaf");
         assert_eq!(functions[1].anonymous_label_bump, 0);
+    }
+
+    #[test]
+    fn source_ordinal_work_prefixes_a_later_reversed_head() {
+        let mut source_first = function("source_first", false);
+        source_first.deferred_source_prefix_bump = 9;
+        source_first.anonymous_label_bump = 7;
+        let later = function("later", false);
+        let mut functions = vec![source_first, later];
+
+        apply_deferred_emission_order(&mut functions, 4);
+
+        assert_eq!(functions[0].name, "later");
+        assert_eq!(functions[0].anonymous_label_bump, 9);
+        assert_eq!(functions[0].post_function_anonymous_bump, Some(0));
+        assert_eq!(functions[1].anonymous_label_bump, 7);
     }
 
     #[test]

@@ -25,7 +25,8 @@ use crate::profile::{
     IntCallResultConversionStyle,
     IntegerComparisonValueStyle, IntegerDagStyle, IntegerLoopStyle, IntegerSelectStyle,
     JumpTableBaseStyle, LeadingFrameGuardStoreStyle, LocalDataSymbolOrder, LogicalOrValueStyle,
-    MaterializationCopyStyle, MemCopyRemainderMaskStyle, MemCopyWordScheduleStyle,
+    LongLongTimerStyle, MaterializationCopyStyle, MemCopyRemainderMaskStyle,
+    MemCopyWordScheduleStyle,
     NarrowCompoundShiftStyle, NarrowComputedReturnStyle, NarrowGuardScheduleStyle,
     NarrowStoreConversionStyle, NegativePowerOfTwoMultiplyStyle, PunnedConditionalWritebackStyle,
     PlainLinkageEpilogueStyle, PunnedFloatFrameConvention, PunnedShiftWritebackStyle,
@@ -514,6 +515,9 @@ pub struct Behavior {
     pub folded_float_guard_label_bump: u8,
     /// Post-lowering anonymous-symbol accounting family.
     pub function_ordinal_accounting_style: FunctionOrdinalAccountingStyle,
+    /// Whether this generation uses the measured GC 1.3--2.7 paired stopwatch
+    /// schedule. Unmodeled generations defer instead of emitting known-wrong code.
+    pub long_long_timer_style: LongLongTimerStyle,
     /// Scheduling of a leading pointer store around a punned frame guard.
     pub leading_frame_guard_store_style: LeadingFrameGuardStoreStyle,
     /// Whole-family schedule for the fdlibm-style `frexp` transaction.
@@ -655,6 +659,7 @@ pub struct Behavior {
     /// Version-specific weights applied to parser-recorded C++ inline facts.
     pub cxx_class_definition_label_bump: u8,
     pub cxx_inline_definition_label_bump: u8,
+    pub cxx_inline_control_flow_label_weight: u8,
     pub cxx_virtual_destructor_label_bump: u8,
     pub cxx_inline_ipa_call_label_bump: u8,
     /// Whether initialized `T a[] = ...` objects bypass small-data routing.
@@ -764,6 +769,7 @@ impl Behavior {
                 }
                 (style, _) => style,
             },
+            long_long_timer_style: config.build.profile.long_long_timer_style(),
             leading_frame_guard_store_style: config.build.profile.leading_frame_guard_store_style(),
             frexp_family_style: config.build.profile.frexp_family_style(),
             frexp_deferred_label_bump: if config.flags.inline_deferred {
@@ -930,6 +936,10 @@ impl Behavior {
                 .build
                 .profile
                 .cxx_inline_definition_label_bump(),
+            cxx_inline_control_flow_label_weight: config
+                .build
+                .profile
+                .cxx_inline_control_flow_label_weight(),
             cxx_virtual_destructor_label_bump: config
                 .build
                 .profile

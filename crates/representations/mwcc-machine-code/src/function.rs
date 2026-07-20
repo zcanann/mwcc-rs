@@ -153,6 +153,10 @@ pub struct MachineFunction {
     /// function's unwind `@N` entries. Measured per construct — a non-leaf `if` adds
     /// 2, a `do … while` loop adds 6.
     pub anonymous_label_bump: u32,
+    /// Ordinal work performed in source order before deferred code emission is
+    /// reversed. When a later compiled body becomes the physical head, this
+    /// amount is transferred to that head without changing this body's pool.
+    pub deferred_source_prefix_bump: u32,
     /// Extra `@N` numbers consumed AFTER this function's pooled constants
     /// and before its extab pair (the nested punned-guard's inner block).
     pub post_constant_label_bump: u32,
@@ -249,6 +253,7 @@ impl MachineFunction {
             phantom_externals: Vec::new(),
             has_float_branch: false,
             anonymous_label_bump: 0,
+            deferred_source_prefix_bump: 0,
             post_constant_label_bump: 0,
             post_function_anonymous_bump: None,
             pre_scheduled: false,

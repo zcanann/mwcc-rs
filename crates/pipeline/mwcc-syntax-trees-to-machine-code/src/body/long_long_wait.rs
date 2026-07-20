@@ -7,12 +7,6 @@
 
 use super::*;
 
-#[derive(Clone, Copy)]
-enum ClockRead<'a> {
-    Absolute(u32),
-    Global(&'a str),
-}
-
 struct WaitPlan<'a> {
     clock: ClockRead<'a>,
     time_call: &'a str,
@@ -20,29 +14,6 @@ struct WaitPlan<'a> {
 
 fn variable(expression: &Expression, expected: &str) -> bool {
     matches!(expression, Expression::Variable(name) if name == expected)
-}
-
-fn unsigned_word_clock(expression: &Expression) -> Option<ClockRead<'_>> {
-    let expression = match expression {
-        Expression::Cast {
-            target_type: Type::UnsignedInt,
-            operand,
-        } => operand.as_ref(),
-        other => other,
-    };
-    match expression {
-        Expression::Variable(name) => Some(ClockRead::Global(name)),
-        Expression::Dereference { pointer } => match pointer.as_ref() {
-            Expression::Cast {
-                target_type: Type::Pointer(Pointee::UnsignedInt),
-                operand,
-            } => constant_value(operand)
-                .and_then(|address| u32::try_from(address).ok())
-                .map(ClockRead::Absolute),
-            _ => None,
-        },
-        _ => None,
-    }
 }
 
 fn classify(function: &Function) -> Option<WaitPlan<'_>> {
@@ -192,13 +163,11 @@ impl Generator {
         ) {
             return Ok(false);
         }
-        if let ClockRead::Global(name) = plan.clock {
-            if !matches!(self.globals.get(name), Some(Type::UnsignedInt))
-                || self.behavior.global_addressing != GlobalAddressing::SmallData
+        if self.behavior.long_long_timer_style != LongLongTimerStyle::MainlinePair
+            || !self.supports_unsigned_word_clock(plan.clock)
             {
                 return Ok(false);
             }
-        }
 
         self.output.pre_scheduled = true;
         self.output.has_conversion = true;
@@ -206,6 +175,11 @@ impl Generator {
         // pair-live range, and do/while graph before numbering this function's
         // pooled bias double (measured across the 2.4.x mainline builds).
         self.output.anonymous_label_bump += 7;
+        // Deferred compilation analyzes this source-first transaction before a
+        // later body that may be emitted ahead of it. Its conversion label,
+        // seven internal labels, and one pool slot then prefix that reversed
+        // head's ordinal block while this function keeps its own pool schedule.
+        self.output.deferred_source_prefix_bump = 9;
         self.frame_size = 48;
         self.non_leaf = true;
         self.callee_saved = vec![31, 30];
@@ -221,12 +195,7 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::MoveFromLinkRegister { d: 0 });
-        if let ClockRead::Absolute(address) = plan.clock {
-            let (high, _) = crate::expressions::split_address(address);
-            self.output
-                .instructions
-                .push(Instruction::load_immediate_shifted(3, high));
-        }
+        self.emit_unsigned_word_clock_high(plan.clock, 3);
         if !self.behavior.float_cast_value_store_first {
             self.load_double_constant(2, 0x4330_0000_0000_0000);
         }
@@ -248,24 +217,7 @@ impl Generator {
             a: 1,
             offset: 40,
         });
-        match plan.clock {
-            ClockRead::Absolute(address) => {
-                let (_, low) = crate::expressions::split_address(address);
-                self.output.instructions.push(Instruction::LoadWord {
-                    d: 3,
-                    a: 3,
-                    offset: low,
-                });
-            }
-            ClockRead::Global(name) => {
-                self.record_relocation(RelocationKind::EmbSda21, name);
-                self.output.instructions.push(Instruction::LoadWord {
-                    d: 3,
-                    a: 0,
-                    offset: 0,
-                });
-            }
-        }
+        self.emit_unsigned_word_clock_load(plan.clock, 3);
         self.output.instructions.push(Instruction::StoreWord {
             s: 0,
             a: 1,

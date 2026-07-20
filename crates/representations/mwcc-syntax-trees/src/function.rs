@@ -243,6 +243,9 @@ pub struct CxxInlineOrdinalFacts {
     pub inline_definitions: usize,
     pub virtual_destructors: usize,
     pub direct_calls: usize,
+    /// Control-flow labels inside dropped in-class definitions, expressed in
+    /// the mainline counter's native units (`if` = 2, loop = 4/5, etc.).
+    pub control_flow_labels: usize,
 }
 
 /// A translation unit: file-scope globals (and skipped prototypes) interleaved
