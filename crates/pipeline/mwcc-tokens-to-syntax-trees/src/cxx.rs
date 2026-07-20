@@ -18,7 +18,7 @@ use crate::parser::{Parser, StructField, StructLayout};
 pub(crate) struct ClassLayout {
     pub(crate) bases: Vec<BaseClass>,
     pub(crate) fields: Vec<String>,
-    pub(crate) constructors: Vec<Vec<Type>>,
+    pub(crate) constructors: Vec<ClassParameterTypes>,
     pub(crate) methods: std::collections::HashMap<String, Vec<MemberMethod>>,
     /// The class has a virtual dispatch table pointer. This is layout state,
     /// not merely syntax: a polymorphic primary base already supplies the slot.
@@ -27,7 +27,13 @@ pub(crate) struct ClassLayout {
 
 pub(crate) struct MemberMethod {
     pub(crate) parameters: Vec<Type>,
+    cxx_parameters: Vec<CxxParameterType>,
     pub(crate) is_inline: bool,
+}
+
+pub(crate) struct ClassParameterTypes {
+    pub(crate) parameters: Vec<Type>,
+    pub(crate) cxx_parameters: Vec<CxxParameterType>,
 }
 
 /// A callable class declaration recovered without requiring class layout.
@@ -92,6 +98,7 @@ pub(crate) struct CxxParameterType {
     qualified_name: Option<String>,
     is_wchar: bool,
     is_reference: bool,
+    source_is_aggregate_value: bool,
     pointee_const: bool,
     pointer_const: bool,
 }
@@ -102,6 +109,7 @@ impl CxxParameterType {
         qualified_name: Option<String>,
         is_wchar: bool,
         is_reference: bool,
+        source_is_aggregate_value: bool,
         pointee_const: bool,
         pointer_const: bool,
     ) -> Self {
@@ -110,13 +118,14 @@ impl CxxParameterType {
             qualified_name,
             is_wchar,
             is_reference,
+            source_is_aggregate_value,
             pointee_const,
             pointer_const,
         }
     }
 
     pub(crate) fn plain(source_type: Type) -> Self {
-        Self::parsed(source_type, None, false, false, false, false)
+        Self::parsed(source_type, None, false, false, false, false, false)
     }
 }
 
@@ -495,6 +504,7 @@ impl Parser {
                     let struct_tag = self.last_struct_tag.take();
                     let enum_tag = self.last_enum_tag.take();
                     let is_wchar = self.last_type_was_wchar;
+                    let source_is_aggregate_value = self.last_type_was_aggregate_reference;
                     let qualified_name = enum_tag.or_else(|| {
                         struct_tag.map(|tag| {
                             self.struct_typedefs.get(&tag).cloned().unwrap_or(tag)
@@ -516,6 +526,7 @@ impl Parser {
                         qualified_name,
                         is_wchar,
                         is_reference,
+                        source_is_aggregate_value,
                         pointee_const,
                         pointer_const,
                     ));
@@ -819,7 +830,11 @@ impl Parser {
         }
         let method = candidates[0];
         Ok(Some((
-            self.mangle_member_in_current_namespace(class_name, function, &method.parameters)?,
+            self.mangle_typed_member_in_current_namespace(
+                class_name,
+                function,
+                &method.cxx_parameters,
+            )?,
             method.is_inline,
         )))
     }
@@ -904,6 +919,7 @@ impl Parser {
                 self.advance();
                 continue;
             }
+            let is_explicit = self.eat_word("explicit");
             if self.eat_word("virtual") {
                 if !class.is_polymorphic {
                     // A new vptr is the primary object component. We can place it
@@ -931,6 +947,11 @@ impl Parser {
                 self.skip_class_method_tail()?;
                 continue;
             }
+            if is_explicit {
+                return Err(Diagnostic::error(
+                    "'explicit' is only supported on a class constructor",
+                ));
+            }
             if *self.peek() == Token::Tilde {
                 self.skip_class_member()?;
                 continue;
@@ -946,14 +967,15 @@ impl Parser {
             let attribute_align = self.skip_attributes()?.unwrap_or(1);
             let field_name = self.parse_identifier()?;
             if *self.peek() == Token::ParenOpen {
-                let parameters = self.parse_class_parameter_types()?;
+                let signature = self.parse_class_parameter_types()?;
                 let is_inline = self.skip_class_method_tail()?;
                 class
                     .methods
                     .entry(field_name)
                     .or_default()
                     .push(MemberMethod {
-                        parameters,
+                        parameters: signature.parameters,
+                        cxx_parameters: signature.cxx_parameters,
                         is_inline,
                     });
                 continue;
@@ -1002,28 +1024,55 @@ impl Parser {
         Ok((name, layout, class))
     }
 
-    fn parse_class_parameter_types(&mut self) -> Compilation<Vec<Type>> {
+    fn parse_class_parameter_types(&mut self) -> Compilation<ClassParameterTypes> {
         self.expect(Token::ParenOpen)?;
         let mut parameters = Vec::new();
+        let mut cxx_parameters = Vec::new();
         if *self.peek() == Token::KeywordVoid && *self.peek_at(1) == Token::ParenClose {
             self.advance();
         } else {
             while *self.peek() != Token::ParenClose {
-                let parameter_type = self.parse_type()?;
+                let mut parameter_type = self.parse_type()?;
+                let source_type = parameter_type;
+                let is_wchar = self.last_type_was_wchar;
+                let source_is_aggregate_value = self.last_type_was_aggregate_reference;
                 self.last_array_typedef.take();
-                self.last_struct_tag.take();
-                self.last_enum_tag.take();
+                let struct_tag = self.last_struct_tag.take();
+                let enum_tag = self.last_enum_tag.take();
+                let qualified_name = enum_tag.or_else(|| {
+                    struct_tag.map(|tag| {
+                        self.struct_typedefs.get(&tag).cloned().unwrap_or(tag)
+                    })
+                });
+                let pointee_const = self.last_type_was_const;
+                let pointer_const = self.last_pointer_const;
+                let is_reference = self.eat_keyword(Token::Ampersand);
+                if is_reference {
+                    parameter_type = Type::StructPointer { element_size: 0 };
+                }
                 if matches!(self.peek(), Token::Identifier(_)) {
                     self.advance();
                 }
                 parameters.push(parameter_type);
+                cxx_parameters.push(CxxParameterType::parsed(
+                    source_type,
+                    qualified_name,
+                    is_wchar,
+                    is_reference,
+                    source_is_aggregate_value,
+                    pointee_const,
+                    pointer_const,
+                ));
                 if !self.eat_keyword(Token::Comma) {
                     break;
                 }
             }
         }
         self.expect(Token::ParenClose)?;
-        Ok(parameters)
+        Ok(ClassParameterTypes {
+            parameters,
+            cxx_parameters,
+        })
     }
 
     fn skip_class_method_tail(&mut self) -> Compilation<bool> {
@@ -1137,17 +1186,20 @@ impl Parser {
                     ))
                 })?
                 .constructors;
-            let candidates: Vec<&Vec<Type>> = signatures
+            let candidates: Vec<&ClassParameterTypes> = signatures
                 .iter()
-                .filter(|signature| signature.len() == arguments.len())
+                .filter(|signature| signature.parameters.len() == arguments.len())
                 .collect();
             if candidates.len() != 1 {
                 return Err(Diagnostic::error(format!(
                     "constructor overload resolution for '{base_name}' is ambiguous or unavailable (roadmap)"
                 )));
             }
-            let name =
-                self.mangle_member_in_current_namespace(base_name.as_str(), "__ct", candidates[0])?;
+            let name = self.mangle_typed_member_in_current_namespace(
+                base_name.as_str(),
+                "__ct",
+                &candidates[0].cxx_parameters,
+            )?;
             let mut call_arguments = vec![Expression::Variable("this".to_string())];
             call_arguments.extend(arguments);
             statements.push(Statement::Expression(Expression::Call {
@@ -1297,7 +1349,7 @@ fn encode_type(parameter: &CxxParameterType) -> Compilation<String> {
             code.push('C');
         }
     }
-    let is_pointer = matches!(
+    let is_pointer = !parameter.source_is_aggregate_value && matches!(
         parameter.source_type,
         Type::Pointer(_) | Type::StructPointer { .. }
     );
@@ -1459,6 +1511,7 @@ mod tests {
                 Some("JUtility::TColor".to_string()),
                 false,
                 is_reference,
+                is_reference && matches!(storage_type, Type::Struct { .. }),
                 pointee_const,
                 pointer_const,
             )

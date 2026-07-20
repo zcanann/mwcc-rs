@@ -130,6 +130,7 @@ pub fn parse_located_translation_unit(
         last_struct_tag: None,
         last_enum_tag: None,
         last_type_was_wchar: false,
+        last_type_was_aggregate_reference: false,
         asm_parameters: Vec::new(),
         expression_struct_tag: None,
         typedefs: HashMap::new(),
@@ -432,6 +433,47 @@ mod tests {
                 "value__6ActionF8Creature",
             ]
         );
+    }
+
+    #[test]
+    fn accepts_an_opaque_class_reference_in_a_member_definition() {
+        let source = r#"
+            class Input;
+            namespace support {
+                template <typename T> class Box {
+                    int* pointer;
+                };
+            }
+            class Reader {
+            public:
+                explicit Reader(Input&);
+            private:
+                int value;
+                support::Box<Input> box;
+            };
+            Reader::Reader(Input& input) : value(1) { }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(unit.functions.len(), 1);
+        assert_eq!(unit.functions[0].name, "__ct__6ReaderFR5Input");
+        assert!(matches!(
+            unit.functions[0].parameters.as_slice(),
+            [
+                mwcc_syntax_trees::Parameter { name, .. },
+                mwcc_syntax_trees::Parameter {
+                    parameter_type: mwcc_syntax_trees::Type::StructPointer { element_size: 0 },
+                    ..
+                }
+            ] if name == "this"
+        ));
     }
 
     #[test]

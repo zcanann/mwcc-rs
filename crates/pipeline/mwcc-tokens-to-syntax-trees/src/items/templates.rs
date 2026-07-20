@@ -9,11 +9,120 @@ use super::{type_alignment, type_size};
 use crate::parser::{
     Parser, StructField, StructLayout, StructTemplate, TemplateField, TemplateFieldType,
 };
-use mwcc_syntax_trees::Type;
+use mwcc_syntax_trees::{Pointee, Type};
 use mwcc_tokens::Token;
 use std::collections::HashMap;
 
 impl Parser {
+    /// Parse a direct `[scope::]Template<Argument>` object type from a recovered
+    /// template layout. This complements typedef instantiation: game headers
+    /// commonly place concrete template objects directly in class layouts.
+    pub(crate) fn parse_template_instance_type(&mut self) -> Option<Type> {
+        let mut scan = self.position;
+        let mut components = Vec::new();
+        if let Some(Token::Identifier(component)) = self.tokens.get(scan) {
+            components.push(component.clone());
+            scan += 1;
+            while self.tokens.get(scan) == Some(&Token::Colon)
+                && self.tokens.get(scan + 1) == Some(&Token::Colon)
+            {
+                let Some(Token::Identifier(component)) = self.tokens.get(scan + 2) else {
+                    break;
+                };
+                components.push(component.clone());
+                scan += 3;
+            }
+        }
+        if self.tokens.get(scan) != Some(&Token::Less) {
+            return None;
+        }
+        let template_name = components.last()?;
+        let mut end = scan + 1;
+        let mut depth = 1i32;
+        while depth > 0 {
+            match self.tokens.get(end) {
+                Some(Token::Less) => depth += 1,
+                Some(Token::Greater) => depth -= 1,
+                Some(Token::EndOfFile) | None => return None,
+                _ => {}
+            }
+            end += 1;
+        }
+        let argument = match self.tokens.get(scan + 1) {
+            Some(Token::KeywordInt) => Some(Type::Int),
+            Some(Token::KeywordChar) => Some(Type::Char),
+            Some(Token::KeywordShort) => Some(Type::Short),
+            Some(Token::KeywordUnsigned) => Some(Type::UnsignedInt),
+            Some(Token::KeywordFloat) => Some(Type::Float),
+            Some(Token::Identifier(name)) => self
+                .typedefs
+                .get(name)
+                .copied()
+                .or_else(|| self.struct_value_type(name)),
+            _ => None,
+        };
+        let layout = self.instantiate_struct_template_layout(template_name, argument)?;
+        let tag = format!("{}<...>", components.join("::"));
+        let element_size = layout.size;
+        let element_align = layout.align;
+        self.structs.insert(tag.clone(), layout);
+        self.position = end;
+        self.last_struct_tag = Some(tag);
+        if self.eat_keyword(Token::Star) {
+            if self.eat_keyword(Token::Star) {
+                return Some(Type::Pointer(Pointee::Pointer));
+            }
+            return Some(Type::StructPointer { element_size });
+        }
+        if *self.peek() == Token::Ampersand {
+            self.last_type_was_aggregate_reference = true;
+            return Some(Type::StructPointer { element_size });
+        }
+        Some(Type::Struct {
+            size: element_size,
+            align: element_align,
+        })
+    }
+
+    pub(crate) fn instantiate_struct_template_layout(
+        &self,
+        template_name: &str,
+        argument: Option<Type>,
+    ) -> Option<StructLayout> {
+        let template = self.struct_templates.get(template_name)?;
+        let mut offset = 0u32;
+        let mut max_alignment = 1u32;
+        let mut fields = HashMap::new();
+        for field in &template.fields {
+            let field_type = match field.field_type {
+                TemplateFieldType::Parameter => argument?,
+                TemplateFieldType::Concrete(field_type) => field_type,
+            };
+            let alignment = type_alignment(field_type).max(1);
+            max_alignment = max_alignment.max(alignment);
+            offset = offset.div_ceil(alignment) * alignment;
+            fields.insert(
+                field.name.clone(),
+                StructField {
+                    member_type: field_type,
+                    offset,
+                    struct_tag: None,
+                    array_element: None,
+                    array_bytes: None,
+                    bit_field: None,
+                },
+            );
+            offset += type_size(field_type);
+        }
+        let size = offset.div_ceil(max_alignment) * max_alignment;
+        Some(StructLayout {
+            fields,
+            function_pointer_fields: std::collections::HashSet::new(),
+            size,
+            align: max_alignment as u8,
+        })
+    }
+
     /// A generic primary template (`template <typename T, ...>`), as opposed
     /// to an explicit specialization (`template <>`). Primary definitions do
     /// not emit code or data until instantiated, so recovery may skip them.
@@ -194,6 +303,12 @@ impl Parser {
         if !fields.is_empty() {
             self.struct_templates
                 .insert(name.clone(), StructTemplate { fields });
+        } else {
+            // A one-parameter template may still have only concrete storage
+            // (`rc_ptr<T>` contains a control-block pointer). The fast path
+            // above intentionally looks for parameter-valued fields; fall back
+            // to the mixed-layout scanner instead of discarding that layout.
+            self.capture_mixed_struct_template();
         }
     }
 
@@ -432,47 +547,14 @@ impl Parser {
         if typedef != "typedef" {
             return false;
         }
-        let Some(template) = self.struct_templates.get(template_name) else {
-            return false;
-        };
         let Some(argument) = self.template_argument_type(argument_token) else {
             return false;
         };
-        let mut offset = 0u32;
-        let mut max_alignment = 1u32;
-        let mut fields = HashMap::new();
-        for field in &template.fields {
-            let field_type = match field.field_type {
-                TemplateFieldType::Parameter => argument,
-                TemplateFieldType::Concrete(field_type) => field_type,
-            };
-            let alignment = type_alignment(field_type).max(1);
-            max_alignment = max_alignment.max(alignment);
-            let field_size = type_size(field_type);
-            offset = offset.div_ceil(alignment) * alignment;
-            fields.insert(
-                field.name.clone(),
-                StructField {
-                    member_type: field_type,
-                    offset,
-                    struct_tag: None,
-                    array_element: None,
-                    array_bytes: None,
-                    bit_field: None,
-                },
-            );
-            offset += field_size;
-        }
-        let size = offset.div_ceil(max_alignment) * max_alignment;
-        self.structs.insert(
-            alias.clone(),
-            StructLayout {
-                fields,
-                function_pointer_fields: std::collections::HashSet::new(),
-                size,
-                align: max_alignment as u8,
-            },
-        );
+        let Some(layout) = self.instantiate_struct_template_layout(template_name, Some(argument))
+        else {
+            return false;
+        };
+        self.structs.insert(alias.clone(), layout);
         self.struct_typedefs.insert(alias.clone(), alias.clone());
         true
     }

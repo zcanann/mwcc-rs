@@ -1399,10 +1399,13 @@ impl Parser {
                     element_size: layout.size,
                 };
                 for signature in &class.constructors {
-                    let mangled =
-                        self.mangle_member_in_current_namespace(&name, "__ct", signature)?;
+                    let mangled = self.mangle_typed_member_in_current_namespace(
+                        &name,
+                        "__ct",
+                        &signature.cxx_parameters,
+                    )?;
                     let mut parameter_types = vec![class_type];
-                    parameter_types.extend(signature.iter().copied());
+                    parameter_types.extend(signature.parameters.iter().copied());
                     prototypes.push((mangled, class_type, parameter_types));
                 }
                 self.struct_typedefs.insert(name.clone(), name.clone());
@@ -2270,6 +2273,8 @@ impl Parser {
                     let mut parameter_type = self.parse_type()?;
                     let cxx_source_type = parameter_type;
                     let cxx_is_wchar = self.last_type_was_wchar;
+                    let cxx_source_is_aggregate_value =
+                        self.last_type_was_aggregate_reference;
                     let cxx_pointee_const = self.last_type_was_const;
                     let cxx_pointer_const = self.last_pointer_const;
                     // An array-typedef (`Mtx m`) or row-pointer-typedef (`MtxPtr m`)
@@ -2389,6 +2394,7 @@ impl Parser {
                             cxx_qualified_name,
                             cxx_is_wchar,
                             is_reference,
+                            cxx_source_is_aggregate_value,
                             cxx_pointee_const,
                             cxx_pointer_const,
                         ));

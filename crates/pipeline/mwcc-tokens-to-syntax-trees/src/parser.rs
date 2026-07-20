@@ -179,6 +179,11 @@ pub(crate) struct Parser {
     /// Whether the most recently parsed scalar base was C++ `wchar_t`. Storage
     /// is unsigned 16-bit on this target, but its ABI mangling code is `w`.
     pub(crate) last_type_was_wchar: bool,
+    /// The most recently parsed type was a named aggregate followed immediately
+    /// by `&`. Its EABI storage is pointer-shaped, but C++ mangling must encode
+    /// the named aggregate itself rather than an extra pointer layer. Kept
+    /// separate so `T*&` remains distinguishable from `T&`.
+    pub(crate) last_type_was_aggregate_reference: bool,
     /// The struct tag of the expression `factor` just returned, so the tag survives
     /// a wrapping `(...)` — `((struct S *)x)->field` resolves through the parens.
     pub(crate) expression_struct_tag: Option<String>,

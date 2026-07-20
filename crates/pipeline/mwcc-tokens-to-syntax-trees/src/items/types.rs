@@ -75,6 +75,7 @@ impl Parser {
         self.last_struct_tag = None;
         self.last_enum_tag = None;
         self.last_type_was_wchar = false;
+        self.last_type_was_aggregate_reference = false;
         self.last_pointer_const = false;
         // The array-typedef marker is only ever set by the LAST parse_type call, so a
         // consumer that `.take()`s right after its own call can never read a stale one.
@@ -121,6 +122,9 @@ impl Parser {
         // identity in `struct_typedefs`. Recognize an arbitrary namespace/class
         // chain before the ordinary one-token typedef path below.
         if self.cplusplus {
+            if let Some(instance_type) = self.parse_template_instance_type() {
+                return Ok(instance_type);
+            }
             let mut scan = self.position;
             let mut components = Vec::new();
             if let Some(Token::Identifier(first)) = self.tokens.get(scan) {
@@ -167,6 +171,15 @@ impl Parser {
                         }
                         return Ok(Type::StructPointer { element_size });
                     }
+                    if *self.peek() == Token::Ampersand {
+                        let element_size = self
+                            .structs
+                            .get(&layout_key)
+                            .map_or(0, |layout| layout.size);
+                        self.last_struct_tag = Some(layout_key);
+                        self.last_type_was_aggregate_reference = true;
+                        return Ok(Type::StructPointer { element_size });
+                    }
                     return match self.struct_value_type(&layout_key) {
                         Some(struct_type) => {
                             self.last_struct_tag = Some(layout_key);
@@ -182,7 +195,7 @@ impl Parser {
         if *self.peek() == Token::KeywordStruct {
             self.advance();
             let tag = self.parse_identifier()?;
-            if *self.peek() != Token::Star {
+            if !matches!(self.peek(), Token::Star | Token::Ampersand) {
                 // A struct *value*: a known layout becomes a sized struct value
                 // (a frame-resident local); an opaque/unknown struct still defers.
                 return match self.struct_value_type(&tag) {
@@ -195,9 +208,13 @@ impl Parser {
                     ))),
                 };
             }
-            self.advance();
             let element_size = self.structs.get(&tag).map_or(0, |layout| layout.size);
             self.last_struct_tag = Some(tag);
+            if *self.peek() == Token::Ampersand {
+                self.last_type_was_aggregate_reference = true;
+                return Ok(Type::StructPointer { element_size });
+            }
+            self.advance();
             if *self.peek() == Token::Star {
                 // `S**` — a pointer to a struct pointer: a word-classed
                 // pointer whose element is itself a pointer.
@@ -212,7 +229,7 @@ impl Parser {
         if matches!(self.peek(), Token::Identifier(word) if word == "union") {
             self.advance();
             let tag = self.parse_identifier()?;
-            if *self.peek() != Token::Star {
+            if !matches!(self.peek(), Token::Star | Token::Ampersand) {
                 return match self.struct_value_type(&tag) {
                     Some(union_type) => {
                         self.last_struct_tag = Some(tag);
@@ -223,9 +240,13 @@ impl Parser {
                     )),
                 };
             }
-            self.advance();
             let element_size = self.structs.get(&tag).map_or(0, |layout| layout.size);
             self.last_struct_tag = Some(tag);
+            if *self.peek() == Token::Ampersand {
+                self.last_type_was_aggregate_reference = true;
+                return Ok(Type::StructPointer { element_size });
+            }
+            self.advance();
             if *self.peek() == Token::Star {
                 // `S**` — a pointer to a struct pointer: a word-classed
                 // pointer whose element is itself a pointer.
@@ -279,7 +300,7 @@ impl Parser {
             if !cxx_fundamental {
                 if let Some(tag) = self.struct_typedefs.get(name).cloned() {
                     self.advance();
-                    if *self.peek() != Token::Star {
+                    if !matches!(self.peek(), Token::Star | Token::Ampersand) {
                         return match self.struct_value_type(&tag) {
                             Some(struct_type) => {
                                 self.last_struct_tag = Some(tag);
@@ -290,9 +311,13 @@ impl Parser {
                             ))),
                         };
                     }
-                    self.advance();
                     let element_size = self.structs.get(&tag).map_or(0, |layout| layout.size);
                     self.last_struct_tag = Some(tag);
+                    if *self.peek() == Token::Ampersand {
+                        self.last_type_was_aggregate_reference = true;
+                        return Ok(Type::StructPointer { element_size });
+                    }
+                    self.advance();
                     if *self.peek() == Token::Star {
                         self.advance();
                         return Ok(Type::Pointer(Pointee::Pointer));
