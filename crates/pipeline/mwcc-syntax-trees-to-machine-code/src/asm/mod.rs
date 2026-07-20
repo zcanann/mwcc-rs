@@ -101,10 +101,10 @@ pub(crate) fn assemble_asm_function(
                         }
                     }
                 }
-                // A `b func` whose target is not a local label is a tail branch to
-                // an external function: record its `R_PPC_REL24` relocation (the word
-                // itself assembled to the `48 00 00 00` offset-0 placeholder).
-                if line.mnemonic == "b" {
+                // A `b func` / `bl func` whose target is not a local label is a tail branch or
+                // call to an external function: record its `R_PPC_REL24` relocation (the word
+                // itself is assembled as an offset-0 placeholder).
+                if matches!(line.mnemonic.as_str(), "b" | "bl") {
                     if let Some(AsmOperand::Label(name)) = line.operands.first() {
                         if !labels.contains_key(name.as_str()) {
                             relocations.push(Relocation {

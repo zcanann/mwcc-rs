@@ -351,6 +351,14 @@ pub(super) fn assemble_line(
             let (a, s, immediate) = rri_u(mnemonic, operands)?;
             Instruction::OrImmediateShifted { a, s, immediate }
         }
+        "xori" => {
+            let (a, s, immediate) = rri_u(mnemonic, operands)?;
+            Instruction::XorImmediate { a, s, immediate }
+        }
+        "xoris" => {
+            let (a, s, immediate) = rri_u(mnemonic, operands)?;
+            Instruction::XorImmediateShifted { a, s, immediate }
+        }
 
         // Integer loads/stores: `op rT, <disp>(rA)`.
         "lwz" => {
@@ -508,6 +516,19 @@ pub(super) fn assemble_line(
             let [s] = gprs(mnemonic, operands)?;
             Instruction::MoveToMsr { s }
         }
+        // Dedicated spellings for the save/restore registers are assembler aliases for SPR
+        // 26/27. Keep them as structured SPR moves so encoding and register-use analysis share
+        // the same representation as an explicit `mtspr`/`mfspr`.
+        "mfsrr0" | "mfsrr1" => {
+            let [d] = gprs(mnemonic, operands)?;
+            let spr = if mnemonic == "mfsrr0" { 26 } else { 27 };
+            Instruction::MoveFromSpr { d, spr }
+        }
+        "mtsrr0" | "mtsrr1" => {
+            let [s] = gprs(mnemonic, operands)?;
+            let spr = if mnemonic == "mtsrr0" { 26 } else { 27 };
+            Instruction::MoveToSpr { spr, s }
+        }
         "isync" => {
             expect_operand_count(mnemonic, operands, 0)?;
             Instruction::InstructionSynchronize
@@ -647,6 +668,28 @@ pub(super) fn assemble_line(
                     return Err(Diagnostic::error(format!(
                         "inline-asm '{mnemonic}' expected a label operand"
                     )))
+                }
+            }
+        }
+        // Direct call to an external symbol. A local-label `bl` needs a position-resolved linked
+        // branch variant; no measured source uses it yet, so keep that distinct shape deferred.
+        "bl" => {
+            expect_operand_count(mnemonic, operands, 1)?;
+            match &operands[0] {
+                AsmOperand::Label(name) if !labels.contains_key(name.as_str()) => {
+                    Instruction::BranchAndLink {
+                        target: name.clone(),
+                    }
+                }
+                AsmOperand::Label(name) => {
+                    return Err(Diagnostic::error(format!(
+                        "inline-asm local linked branch to '{name}' is not supported yet (roadmap)"
+                    )))
+                }
+                _ => {
+                    return Err(Diagnostic::error(
+                        "inline-asm 'bl' expected a label operand",
+                    ))
                 }
             }
         }

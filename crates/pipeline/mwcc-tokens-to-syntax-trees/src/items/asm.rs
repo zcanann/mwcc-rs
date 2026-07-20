@@ -388,6 +388,14 @@ impl Parser {
             // Parenthesized symbolic displacement arithmetic, used by the TRK runtime:
             // `(ProcessorState_PPC.Extended1.exceptionID + 2)(r2)`.
             Token::ParenOpen => {
+                // The same surface syntax also wraps ordinary constant expressions in asm
+                // immediates (`ori r3,r4,(1 << (31 - 16))`). Reuse the C constant folder; the
+                // closing parenthesis naturally terminates its expression grammar.
+                if matches!(self.peek(), Token::IntegerLiteral(_) | Token::Minus) {
+                    let value = self.parse_integer_constant()?;
+                    self.expect(Token::ParenClose)?;
+                    return Ok(AsmOperand::Immediate(value));
+                }
                 let root = match self.advance() {
                     Token::Identifier(root) => root,
                     other => {

@@ -272,6 +272,7 @@ mod tests {
                 nofralloc
                 lwz r3, State.registers.values[2](r2)
                 stw r3, (State.registers.values[1] + 2)(r2)
+                ori r3, r4, (1 << (31 - 16))
                 blr
             }
         "#;
@@ -295,6 +296,11 @@ mod tests {
             mwcc_syntax_trees::AsmItem::Instruction(instruction)
                 if instruction.operands[1]
                     == mwcc_syntax_trees::AsmOperand::Memory { displacement: 10, base: 2 }
+        ));
+        assert!(matches!(
+            &body[3],
+            mwcc_syntax_trees::AsmItem::Instruction(instruction)
+                if instruction.operands[2] == mwcc_syntax_trees::AsmOperand::Immediate(32768)
         ));
     }
 
