@@ -1249,7 +1249,16 @@ impl Generator {
             BinaryOperator::BitOr if fits_unsigned_16(constant) => Immediate::Or,
             BinaryOperator::BitXor if fits_unsigned_16(constant) => Immediate::Xor,
             BinaryOperator::BitAnd if rlwinm_mask(constant).is_some() => {
-                let (begin, end) = rlwinm_mask(constant).unwrap();
+                let (mut begin, end) = rlwinm_mask(constant).unwrap();
+                // An unsigned narrow memory load already has zeroes above its
+                // declared width. mwcc reflects that known range in the folded
+                // mask (`ushort & ~1` -> rlwinm 0,16,30), instead of retaining
+                // irrelevant high bits (`0,30`).
+                if let Some((_, _, member_type)) = as_member(variable) {
+                    if matches!(member_type, Type::UnsignedChar | Type::UnsignedShort) {
+                        begin = begin.max(32 - member_type.width());
+                    }
+                }
                 Immediate::Mask(begin, end)
             }
             BinaryOperator::ShiftLeft if (1..=31).contains(&constant) => {

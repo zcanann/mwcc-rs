@@ -541,7 +541,11 @@ impl Generator {
             // placed — otherwise a value that needs a temporary (a magic-number divide)
             // could pick it and clobber the store address.
             let restore = address != GENERAL_SCRATCH && self.reserved.insert(address);
-            let source = self.place_store_value(value, pointee)?;
+            let source = if self.try_emit_aliasing_member_field_merge(base, value)? {
+                GENERAL_SCRATCH
+            } else {
+                self.place_store_value(value, pointee)?
+            };
             if restore {
                 self.reserved.remove(&address);
             }
@@ -1135,5 +1139,59 @@ impl Generator {
         self.narrow_truncation_context = saved_truncation_context;
         evaluated?;
         Ok(GENERAL_SCRATCH)
+    }
+
+    /// A masked merge stored back through one of its source objects evaluates
+    /// the non-aliasing base field first. That frees its object-pointer register
+    /// for the aliased field's short-lived load, then `rlwimi` writes the merge
+    /// in place. The generic two-load merge uses the opposite load order for
+    /// non-aliasing values (the copysign family), so the store owns this alias
+    /// distinction.
+    fn try_emit_aliasing_member_field_merge(
+        &mut self,
+        target_base: &Expression,
+        value: &Expression,
+    ) -> Compilation<bool> {
+        let Expression::Binary {
+            operator: BinaryOperator::BitOr,
+            left,
+            right,
+        } = value
+        else {
+            return Ok(false);
+        };
+        let (Some((insert_load, insert_mask)), Some((base_load, base_mask))) =
+            (as_masked_load(left), as_masked_load(right))
+        else {
+            return Ok(false);
+        };
+        if insert_mask & base_mask != 0 || insert_mask | base_mask != u32::MAX {
+            return Ok(false);
+        }
+        let Expression::Member {
+            base: insert_base, ..
+        } = insert_load
+        else {
+            return Ok(false);
+        };
+        if !structurally_equal(insert_base, target_base) {
+            return Ok(false);
+        }
+        let Some((begin, end)) = mask_to_run(insert_mask) else {
+            return Ok(false);
+        };
+        self.evaluate_general(base_load, GENERAL_SCRATCH)?;
+        let insert = self.fresh_virtual_general_avoiding(vec![GENERAL_SCRATCH]);
+        self.evaluate_general(insert_load, insert)?;
+        self.output
+            .instructions
+            .push(Instruction::RotateAndMaskInsert {
+                a: GENERAL_SCRATCH,
+                s: insert,
+                shift: 0,
+                begin,
+                end,
+            });
+        Ok(true)
     }
 }

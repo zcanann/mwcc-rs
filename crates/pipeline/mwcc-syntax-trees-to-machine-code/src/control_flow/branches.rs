@@ -1476,9 +1476,48 @@ impl Generator {
         let narrow = self
             .leaf_info(condition)
             .ok()
-            .filter(|&(leaf_register, width, _)| leaf_register == register && width < 32);
+            .filter(|&(leaf_register, width, _)| leaf_register == register && width < 32)
+            .or_else(|| match condition {
+                Expression::Call { name, .. } => self
+                    .call_return_types
+                    .get(name)
+                    .filter(|return_type| {
+                        return_type.width() < 32
+                            && !matches!(
+                                return_type,
+                                mwcc_syntax_trees::Type::Float
+                                    | mwcc_syntax_trees::Type::Double
+                            )
+                    })
+                    .map(|return_type| {
+                        (register, return_type.width(), self.signed_of(*return_type))
+                    }),
+                _ => None,
+            });
         if let Some((_, width, narrow_signed)) = narrow {
-            self.emit_widen_record(GENERAL_SCRATCH, register, width, narrow_signed);
+            if matches!(condition, Expression::Call { .. })
+                && self.behavior.narrow_call_zero_test_style
+                    == mwcc_versions::NarrowCallZeroTestStyle::SeparateCompare
+            {
+                self.emit_widen(GENERAL_SCRATCH, register, width, narrow_signed);
+                if narrow_signed {
+                    self.output
+                        .instructions
+                        .push(Instruction::CompareWordImmediate {
+                            a: GENERAL_SCRATCH,
+                            immediate: 0,
+                        });
+                } else {
+                    self.output.instructions.push(
+                        Instruction::CompareLogicalWordImmediate {
+                            a: GENERAL_SCRATCH,
+                            immediate: 0,
+                        },
+                    );
+                }
+            } else {
+                self.emit_widen_record(GENERAL_SCRATCH, register, width, narrow_signed);
+            }
         } else if matches!(
             as_member(condition),
             Some((_, _, mwcc_syntax_trees::Type::Char))

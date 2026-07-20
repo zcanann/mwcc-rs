@@ -169,6 +169,26 @@ impl Generator {
             right,
         } = expression
         {
+            // A fitting AND mask performs the return truncation itself. Read a
+            // narrow operand raw and emit the fused `clrlwi`/`rlwinm` directly
+            // into the result (`bool f(S *s) { return s->flags & 1; }`), rather
+            // than extending the load and appending a redundant second truncate.
+            // This is the mask sibling of the arithmetic truncation propagation
+            // below; keeping it here makes the return consumer own the context.
+            let fitting_and_mask = if *operator == BinaryOperator::BitAnd {
+                constant_value(right)
+                    .is_some_and(|mask| mask >= 0 && (mask as u64) <= ((1_u64 << width) - 1))
+                    && self.contains_narrow_leaf(left)
+            } else {
+                false
+            };
+            if fitting_and_mask {
+                let saved = self.narrow_truncation_context;
+                self.narrow_truncation_context = true;
+                let evaluated = self.evaluate_general(expression, result);
+                self.narrow_truncation_context = saved;
+                return evaluated;
+            }
             // BitAnd and ShiftLeft are excluded: mwcc folds their constant into a single
             // `rlwinm`/`clrlwi` that also performs the return-width truncation, so the
             // separate trailing widen this path emits would be redundant. The remaining

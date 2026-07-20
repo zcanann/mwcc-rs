@@ -4,6 +4,7 @@
 
 mod combine;
 mod bitmask_call_chain;
+mod call_condition_live_in_branches;
 mod computed_between_calls;
 mod conditional;
 mod conditional_member_callback;
@@ -17,6 +18,7 @@ mod fixed_rmw_split_word;
 mod fixed_rmw_word;
 mod fixed_rmw_legacy;
 mod fixed_rmw_recognize;
+mod frame_call_then_branch;
 mod frame_convention;
 mod later_call_arguments;
 mod global_swap;

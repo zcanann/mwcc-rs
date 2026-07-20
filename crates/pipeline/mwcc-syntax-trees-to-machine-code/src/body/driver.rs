@@ -2115,6 +2115,13 @@ impl Generator {
         if self.try_compound_literal_call(function)? {
             return Ok(());
         }
+        // `int out=0; read(&out); if(out) use(saved); else use(saved);` combines
+        // an address-taken local with a parameter that survives the read call.
+        // Its owner composes the frame slot and callee-saved allocation before
+        // the ordinary frame path claims the function.
+        if self.try_frame_call_then_branch(function)? {
+            return Ok(());
+        }
         if self.try_frame_resident(function)? {
             return Ok(());
         }
@@ -2287,6 +2294,9 @@ impl Generator {
             return Ok(());
         }
         if self.try_member_parameter_two_constant_fill(function)? {
+            return Ok(());
+        }
+        if self.try_member_copy_then_call(function)? {
             return Ok(());
         }
         if self.try_narrow_member_initialization(function)? {
