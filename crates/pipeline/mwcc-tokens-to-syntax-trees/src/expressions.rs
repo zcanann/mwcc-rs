@@ -515,6 +515,16 @@ impl Parser {
             Token::FloatLiteral(value) => Expression::FloatLiteral(value),
             // A string literal (the raw bytes) — pooled and loaded by address.
             Token::StringLiteral(bytes) => Expression::StringLiteral(bytes),
+            // C++ boolean literals are integral constant expressions with the
+            // normalized values one and zero. The lexer deliberately keeps
+            // them as identifiers so C mode may still use either spelling as
+            // an ordinary name.
+            Token::Identifier(name) if self.cplusplus && name == "true" => {
+                Expression::IntegerLiteral(1)
+            }
+            Token::Identifier(name) if self.cplusplus && name == "false" => {
+                Expression::IntegerLiteral(0)
+            }
             // A qualified static-member call has no implicit `this`, but its
             // declaration supplies the overload signature used by MWCC mangling.
             Token::Identifier(scope)

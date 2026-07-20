@@ -433,6 +433,25 @@ mod tests {
     }
 
     #[test]
+    fn folds_cxx_boolean_literals_in_global_initializers() {
+        let source = r#"
+            bool enabled = true;
+            bool disabled = false;
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.globals.len(), 2);
+        assert_eq!(unit.globals[0].initializer, Some(vec![1]));
+        assert_eq!(unit.globals[1].initializer, Some(vec![0]));
+    }
+
+    #[test]
     fn resolves_a_virtual_member_to_its_measured_vtable_slot() {
         let source = r#"
             struct Stream {
