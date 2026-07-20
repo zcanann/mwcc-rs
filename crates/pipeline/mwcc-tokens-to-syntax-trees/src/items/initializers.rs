@@ -301,6 +301,16 @@ impl Parser {
         Ok(bytes)
     }
 
+    /// Allocate the zero-filled object image shared by braced and brace-elided
+    /// struct initializers.
+    fn empty_struct_image(&self, tag: &str) -> Compilation<Vec<u8>> {
+        let layout = self
+            .structs
+            .get(tag)
+            .ok_or_else(|| Diagnostic::error(format!("struct '{tag}' is not declared")))?;
+        Ok(vec![0u8; layout.size as usize])
+    }
+
     /// One BRACED struct value for layout `tag`, written into a fresh byte image.
     /// `base_offset` positions the value inside the enclosing data object so
     /// ADDRESS elements (`__read_console`, `(char*)&(&__files[0])->field`) record
@@ -313,18 +323,26 @@ impl Parser {
         base_offset: u32,
         relocations: &mut Vec<(u32, String, i32)>,
     ) -> Compilation<Vec<u8>> {
-        let struct_size = {
-            let layout = self
-                .structs
-                .get(tag)
-                .ok_or_else(|| Diagnostic::error(format!("struct '{tag}' is not declared")))?;
-            layout.size
-        };
-        let mut bytes = vec![0u8; struct_size as usize];
+        let mut bytes = self.empty_struct_image(tag)?;
         self.expect(Token::BraceOpen)?;
         self.fill_struct_fields(tag, &mut bytes, 0, base_offset, relocations)?;
         self.eat_keyword(Token::Comma);
         self.expect(Token::BraceClose)?;
+        Ok(bytes)
+    }
+
+    /// One brace-elided struct value inside an enclosing aggregate. C's flat
+    /// aggregate rules assign exactly one struct's fields from the shared value
+    /// list, so [`Self::fill_struct_fields`] also owns the separator after the
+    /// final field. The caller must not consume another comma for this form.
+    fn parse_unbraced_struct_relocated(
+        &mut self,
+        tag: &str,
+        base_offset: u32,
+        relocations: &mut Vec<(u32, String, i32)>,
+    ) -> Compilation<Vec<u8>> {
+        let mut bytes = self.empty_struct_image(tag)?;
+        self.fill_struct_fields(tag, &mut bytes, 0, base_offset, relocations)?;
         Ok(bytes)
     }
 
@@ -747,9 +765,9 @@ impl Parser {
         Ok(None)
     }
 
-    /// Parse a `{ s0, s1, ... }` array of struct values for the layout `tag`, each
-    /// element parsed by [`Self::parse_one_struct`] and concatenated (the array stride
-    /// is the struct size, which each element's image already fills).
+    /// Parse a `{ s0, s1, ... }` array of struct values for the layout `tag`.
+    /// Elements may have their own braces or use C/C++ aggregate brace elision;
+    /// each completed image supplies the array stride.
     pub(crate) fn parse_struct_array_initializer(
         &mut self,
         tag: &str,
@@ -758,9 +776,21 @@ impl Parser {
         self.expect(Token::BraceOpen)?;
         let mut bytes = Vec::new();
         while *self.peek() != Token::BraceClose {
-            let element = self.parse_one_struct_relocated(tag, bytes.len() as u32, relocations)?;
+            let element_braced = *self.peek() == Token::BraceOpen;
+            let element = if element_braced {
+                self.parse_one_struct_relocated(tag, bytes.len() as u32, relocations)?
+            } else {
+                self.parse_unbraced_struct_relocated(
+                    tag,
+                    bytes.len() as u32,
+                    relocations,
+                )?
+            };
             bytes.extend(element);
-            if !self.eat_keyword(Token::Comma) {
+            // A flat element's final field already consumed its separator from
+            // the enclosing list. A braced element cannot consume the comma
+            // outside its own closing brace.
+            if element_braced && !self.eat_keyword(Token::Comma) {
                 break;
             }
         }

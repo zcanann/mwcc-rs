@@ -1642,6 +1642,42 @@ mod tests {
     }
 
     #[test]
+    fn serializes_brace_elided_struct_array_elements() {
+        let source = r#"
+            typedef struct Pair {
+                unsigned char offset;
+                unsigned char size;
+            } Pair;
+            typedef struct Asset {
+                unsigned id;
+                unsigned char characters[3];
+                Pair positions[2];
+            } Asset;
+            Asset assets[2] = {
+                1, {'A', 'B'}, {},
+                2, {'C'}, {{3, 4}, {5, 6}}
+            };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(
+            unit.globals[0].data_bytes.as_deref(),
+            Some(
+                &[
+                    0, 0, 0, 1, b'A', b'B', 0, 0, 0, 0, 0, 0, // first Asset
+                    0, 0, 0, 2, b'C', 0, 0, 3, 4, 5, 6, 0, // second Asset
+                ][..]
+            )
+        );
+    }
+
+    #[test]
     fn resolves_a_virtual_member_to_its_measured_vtable_slot() {
         let source = r#"
             struct Stream {
