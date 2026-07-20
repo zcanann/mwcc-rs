@@ -2077,6 +2077,11 @@ impl Generator {
         if self.try_list_search_loop(function)? {
             return Ok(());
         }
+        // SDK callback queues insert one intrusive node into a priority-sorted doubly linked
+        // list. The empty-tail and predecessor repairs form one scheduled control-flow owner.
+        if self.try_sorted_intrusive_insert(function)? {
+            return Ok(());
+        }
         // `T y; if (c) y = A; else y = B; return y;` — both arms assign the returned
         // local, so the whole body is the select `return (c) ? A : B`.
         if self.try_conditional_assign(function)? {
