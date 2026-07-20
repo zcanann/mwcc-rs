@@ -485,6 +485,18 @@ def representative_audit(
     counts = Counter(observation["status"] for observation in direct.values())
     complete = len(direct) == len(selected)
     manifest = manifest or {}
+    execution_requested = set(manifest.get("configuration_ids", selection))
+    execution_selected = universe & execution_requested
+    execution_direct = {
+        identity: observations[identity]
+        for identity in execution_selected
+        if identity in observations
+    }
+    version_coverage = {
+        version: observations[identity]["status"] if identity in observations else "UNTESTED"
+        for version, identity in manifest.get("version_coverage", {}).items()
+        if identity in universe
+    }
     declared_population = manifest.get("population_size")
     population_matches = declared_population is None or declared_population == len(universe)
     selection_members_present = len(selected) == len(selection)
@@ -503,7 +515,12 @@ def representative_audit(
         "observed": len(direct),
         "complete": complete,
         "statuses": {status: counts[status] for status in STATUSES if status != "UNTESTED"},
-        "runtime": runtime_summary(direct.values()),
+        "execution_requested": len(execution_requested),
+        "execution_selected": len(execution_selected),
+        "execution_observed": len(execution_direct),
+        "version_coverage": version_coverage,
+        "version_sentinels": len(manifest.get("version_sentinel_configuration_ids", [])),
+        "runtime": runtime_summary(execution_direct.values()),
         "estimate": None,
     }
     if complete and selected and design_valid:
@@ -696,6 +713,12 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
             f"design {'valid' if audit['design_valid'] else 'INVALID'})"
         )
         runtime = audit["runtime"]
+        if audit["version_coverage"]:
+            covered = sum(status != "UNTESTED" for status in audit["version_coverage"].values())
+            print(
+                f"audit compiler-version coverage: {covered}/{len(audit['version_coverage'])} "
+                f"observed ({audit['version_sentinels']} out-of-sample sentinels)"
+            )
         if runtime["measured"]:
             print(
                 f"audit execution cost: {runtime['total_seconds']:.1f}s aggregate for "
@@ -885,10 +908,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         audit_manifest = None
         if args.audit_selection is not None:
             audit_manifest = load_selection_manifest(args.audit_selection)
+            sample_ids = audit_manifest.get(
+                "sample_configuration_ids", audit_manifest["configuration_ids"]
+            )
             report["representative_audit"] = representative_audit(
                 rows,
                 observations,
-                set(audit_manifest["configuration_ids"]),
+                set(sample_ids),
                 audit_manifest,
             )
         if args.frontier_selection is not None:
@@ -904,7 +930,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             delta_report = delta(observations, baseline, universe)
             report["delta"] = delta_report
             if audit_manifest is not None:
-                audit_ids = universe & set(audit_manifest["configuration_ids"])
+                audit_ids = universe & set(
+                    audit_manifest.get(
+                        "sample_configuration_ids", audit_manifest["configuration_ids"]
+                    )
+                )
                 report["representative_audit"]["delta"] = delta(
                     observations, baseline, audit_ids
                 )

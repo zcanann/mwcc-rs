@@ -389,7 +389,20 @@ class AuditSelectionTests(unittest.TestCase):
         first = build_audit(rows, 7, "seed", "0")
         second = build_audit(list(reversed(rows)), 7, "seed", "0")
         self.assertEqual(first["configuration_ids"], second["configuration_ids"])
-        self.assertEqual(len(first["configuration_ids"]), 7)
+        self.assertEqual(first["sample_configuration_ids"], second["sample_configuration_ids"])
+        self.assertEqual(len(first["sample_configuration_ids"]), 7)
+
+    def test_fixed_audit_adds_rare_version_sentinel_outside_sample(self):
+        rows = [row(source=f"src/{index}.c") for index in range(20)]
+        rare = row(source="src/rare.c", mw_version="GC/1.1")
+        rows.append(rare)
+        audit = build_audit(rows, 1, "seed", "0")
+        if rare["configuration_id"] not in audit["sample_configuration_ids"]:
+            self.assertIn(rare["configuration_id"], audit["configuration_ids"])
+            self.assertIn(
+                rare["configuration_id"], audit["version_sentinel_configuration_ids"]
+            )
+        self.assertEqual(set(audit["version_coverage"]), {"GC/1.1", "GC/2.6"})
 
 
 class FrontierTests(unittest.TestCase):

@@ -38,17 +38,39 @@ def audit_rank(identity: str, seed: str, epoch: str) -> bytes:
 
 def build_audit(rows: List[Dict[str, Any]], size: int, seed: str, epoch: str) -> Dict[str, Any]:
     identities = sorted({row["configuration_id"] for row in rows})
-    selected = sorted(identities, key=lambda identity: audit_rank(identity, seed, epoch))[
+    sample = sorted(identities, key=lambda identity: audit_rank(identity, seed, epoch))[
         : min(size, len(identities))
     ]
+    rows_by_version: Dict[str, List[str]] = {}
+    for row in rows:
+        rows_by_version.setdefault(row["mw_version"], []).append(row["configuration_id"])
+    sample_set = set(sample)
+    version_coverage: Dict[str, str] = {}
+    sentinels: List[str] = []
+    for version, version_identities in sorted(rows_by_version.items()):
+        represented = sorted(sample_set & set(version_identities))
+        if represented:
+            version_coverage[version] = represented[0]
+            continue
+        sentinel = min(
+            set(version_identities),
+            key=lambda identity: audit_rank(identity, f"{seed}\0VERSION\0{version}", epoch),
+        )
+        version_coverage[version] = sentinel
+        sentinels.append(sentinel)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "simple_random_sample_without_replacement",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "seed": seed,
         "epoch": epoch,
         "population_size": len(identities),
-        "configuration_ids": selected,
+        # Execution is the statistically representative sample plus only the
+        # sentinels needed to exercise compiler identities missed by chance.
+        "configuration_ids": sample + sentinels,
+        "sample_configuration_ids": sample,
+        "version_coverage": version_coverage,
+        "version_sentinel_configuration_ids": sentinels,
     }
 
 
@@ -80,8 +102,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"parity audit: {error}")
         return 2
     print(
-        f"representative audit: {len(audit['configuration_ids'])}/{audit['population_size']} "
-        f"configurations -> {args.output}"
+        f"representative audit: {len(audit['sample_configuration_ids'])}/"
+        f"{audit['population_size']} sample configurations + "
+        f"{len(audit['version_sentinel_configuration_ids'])} version sentinels -> {args.output}"
     )
     return 0
 
