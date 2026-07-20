@@ -32,6 +32,7 @@ mod store_return_schedule;
 mod switch_assignment_call_tail;
 mod switch_call_dispatcher;
 mod tail_call;
+mod variadic;
 
 pub(crate) use callee_saved::{
     summarize_queue_pop, summarize_queue_service, QueuePopSummary, QueueServiceSummary,

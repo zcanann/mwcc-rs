@@ -96,6 +96,19 @@ pub enum ShiftMaskFusionStyle {
     Fused,
 }
 
+/// How a narrow call result is tested against zero in control flow.
+///
+/// GC/1.3.2 measurements across `-O0` through `-O4` put the peephole boundary
+/// between O1 and O2: O0/O1 preserve the explicit width conversion and compare,
+/// while O2+ fuse them into a record-form conversion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NarrowCallZeroTestStyle {
+    /// `clrlwi r0,r3,24; cmplwi r0,0; bne ...`.
+    SeparateCompare,
+    /// `clrlwi. r0,r3,24; bne ...`.
+    RecordConversion,
+}
+
 /// A named codegen decision that diverges from the mainline for some builds. The
 /// set is closed (an enum) so every divergence has a stable identity that can be
 /// listed, explained, and asserted against in tests. Each variant names the
@@ -517,6 +530,8 @@ pub struct Behavior {
     pub global_wide_multiply_style: GlobalWideMultiplyStyle,
     /// Optimization-level policy for explicit shift/mask peephole fusion.
     pub shift_mask_fusion_style: ShiftMaskFusionStyle,
+    /// Optimization-level peephole for a narrow call result tested against zero.
+    pub narrow_call_zero_test_style: NarrowCallZeroTestStyle,
     /// Allocation and scheduling for float DAGs shared by two return arms.
     pub shared_float_dag_style: SharedFloatDagStyle,
     /// In a float `if`-condition against a pool constant, whether the loaded value
@@ -748,6 +763,14 @@ impl Behavior {
                 ShiftMaskFusionStyle::Separate
             } else {
                 ShiftMaskFusionStyle::Fused
+            },
+            narrow_call_zero_test_style: match config.flags.optimization {
+                Optimization::O0 | Optimization::O1 => {
+                    NarrowCallZeroTestStyle::SeparateCompare
+                }
+                Optimization::O2 | Optimization::O3 | Optimization::O4 => {
+                    NarrowCallZeroTestStyle::RecordConversion
+                }
             },
             shared_float_dag_style: config.build.profile.shared_float_dag_style(),
             float_compare_value_before_const: config
@@ -1156,34 +1179,49 @@ mod tests {
                 Optimization::O0,
                 PointerWalkerScheduleStyle::DirectAddressDuplicateLoad,
                 false,
+                NarrowCallZeroTestStyle::SeparateCompare,
             ),
             (
                 Optimization::O1,
                 PointerWalkerScheduleStyle::ScratchAddressDuplicateLoad,
                 false,
+                NarrowCallZeroTestStyle::SeparateCompare,
             ),
             (
                 Optimization::O2,
                 PointerWalkerScheduleStyle::ReusedConditionLoad,
                 false,
+                NarrowCallZeroTestStyle::RecordConversion,
             ),
             (
                 Optimization::O3,
                 PointerWalkerScheduleStyle::ReusedConditionLoad,
                 false,
+                NarrowCallZeroTestStyle::RecordConversion,
             ),
             (
                 Optimization::O4,
                 PointerWalkerScheduleStyle::LatencyInterleaved,
                 true,
+                NarrowCallZeroTestStyle::RecordConversion,
             ),
         ];
-        for (optimization, style, schedule_latency_slots) in expected {
+        for (
+            optimization,
+            style,
+            schedule_latency_slots,
+            narrow_call_zero_test_style,
+        ) in expected
+        {
             let mut config = CompilerConfig::new(build::GC_2_6);
             config.flags.optimization = optimization;
             let behavior = Behavior::resolve(&config);
             assert_eq!(behavior.pointer_walker_schedule_style, style);
             assert_eq!(behavior.schedule_latency_slots, schedule_latency_slots);
+            assert_eq!(
+                behavior.narrow_call_zero_test_style,
+                narrow_call_zero_test_style
+            );
         }
     }
 

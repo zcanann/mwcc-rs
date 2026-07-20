@@ -1232,6 +1232,39 @@ impl Generator {
                     .ok()
                     .filter(|&(register, width, _)| register == left_register && width < 32)
                     .map(|(_, width, narrow_signed)| (width, narrow_signed))
+                    // A direct call returns in r3, but the EABI does not promise
+                    // that the high bits of a narrow result are clean. Treat its
+                    // declared return width exactly like a narrow leaf before a
+                    // comparison (`u8 status(); status() == 0` -> clrlwi/cmplwi).
+                    // This belongs to condition operand typing, not to any one
+                    // callee-saved CFG owner.
+                    .or_else(|| match left.as_ref() {
+                        Expression::Call { name, .. } => self
+                            .call_return_types
+                            .get(name)
+                            .filter(|return_type| {
+                                return_type.width() < 32
+                                    && !matches!(
+                                        return_type,
+                                        mwcc_syntax_trees::Type::Float
+                                            | mwcc_syntax_trees::Type::Double
+                                    )
+                            })
+                            .map(|return_type| {
+                                (return_type.width(), self.signed_of(*return_type))
+                            }),
+                        Expression::VirtualCall { return_type, .. }
+                            if return_type.width() < 32
+                                && !matches!(
+                                    return_type,
+                                    mwcc_syntax_trees::Type::Float
+                                        | mwcc_syntax_trees::Type::Double
+                                ) =>
+                        {
+                            Some((return_type.width(), self.signed_of(*return_type)))
+                        }
+                        _ => None,
+                    })
                     .or_else(|| {
                         matches!(as_member(left), Some((_, _, mwcc_syntax_trees::Type::Char)))
                             .then_some((8, true))
@@ -1262,12 +1295,41 @@ impl Generator {
                     }
                     (None, true) => {
                         if let Some((width, narrow_signed)) = left_extend {
-                            self.emit_widen_record(
-                                GENERAL_SCRATCH,
-                                left_register,
-                                width,
-                                narrow_signed,
-                            );
+                            if matches!(
+                                left.as_ref(),
+                                Expression::Call { .. } | Expression::VirtualCall { .. }
+                            ) && self.behavior.narrow_call_zero_test_style
+                                == mwcc_versions::NarrowCallZeroTestStyle::SeparateCompare
+                            {
+                                self.emit_widen(
+                                    GENERAL_SCRATCH,
+                                    left_register,
+                                    width,
+                                    narrow_signed,
+                                );
+                                if signed {
+                                    self.output.instructions.push(
+                                        Instruction::CompareWordImmediate {
+                                            a: GENERAL_SCRATCH,
+                                            immediate: 0,
+                                        },
+                                    );
+                                } else {
+                                    self.output.instructions.push(
+                                        Instruction::CompareLogicalWordImmediate {
+                                            a: GENERAL_SCRATCH,
+                                            immediate: 0,
+                                        },
+                                    );
+                                }
+                            } else {
+                                self.emit_widen_record(
+                                    GENERAL_SCRATCH,
+                                    left_register,
+                                    width,
+                                    narrow_signed,
+                                );
+                            }
                         } else if signed {
                             self.output
                                 .instructions

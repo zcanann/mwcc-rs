@@ -1255,8 +1255,13 @@ impl Generator {
         if self.try_writeback_norm(function)? {
             return Ok(());
         }
-        // A VARIADIC definition only a capture may claim — the general path
-        // cannot emit the register-save prologue byte-exactly.
+        // Even an empty variadic definition receives the EABI parameter-save
+        // area. Its self-contained owner runs before the broader variadic gate.
+        if self.try_empty_variadic_definition(function)? {
+            return Ok(());
+        }
+        // A non-empty VARIADIC definition only a capture may claim — composing
+        // the parameter-save area with arbitrary local/body frames remains open.
         if self.variadic_definition {
             return Err(Diagnostic::error("a variadic function definition is not supported yet (the variadic-register save prologue)"));
         }
@@ -2920,6 +2925,13 @@ impl Generator {
             if self.try_callee_saved_two_call_combine(function)? {
                 return Ok(());
             }
+            // `if (status() == 0) { object->field = ...; call(); }` — the
+            // condition's call clobbers a live-in used only by the selected arm.
+            // The semantic owner emits a virtual survivor and lets the shared
+            // allocator choose its callee-saved home.
+            if self.try_call_condition_live_in_if(function)? {
+                return Ok(());
+            }
             // Byte-exact-or-defer: a value (parameter or register local) read after a
             // call is read from a register the call clobbered. mwcc preserves it in a
             // callee-saved register (r31…) — multi-value/local cases are the next
@@ -2962,7 +2974,10 @@ impl Generator {
                 return Ok(());
             }
             if reads_value_across_call(function) {
-                return Err(Diagnostic::error("a value live across a call needs the callee-saved register allocator (roadmap)"));
+                return Err(Diagnostic::error(format!(
+                    "a value live across a call needs the callee-saved register allocator (roadmap; function '{}')",
+                    function.name
+                )));
             }
             lr_store_index = Some(self.emit_plain_nonleaf_prologue());
         }
