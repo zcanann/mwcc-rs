@@ -177,12 +177,13 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
             continue;
         }
         // Character literal: one byte (`'c'`, `'\n'`) or a Metrowerks-style
-        // multi-character tag (`'fp00'`). mwcc packs up to four source bytes
-        // big-endian into the `int` value, matching the target byte order.
+        // multi-character tag (`'fp00'`, `'ABCDEFGH'`). mwcc packs up to eight
+        // source bytes big-endian; five through eight bytes form a 64-bit value
+        // used by Pikmin 2's member-ID enums.
         if character == '\'' {
             let token_start = position;
             position += 1;
-            let mut value = 0u32;
+            let mut value = 0u64;
             let mut count = 0u8;
             loop {
                 let byte = match peek(bytes, position) {
@@ -220,14 +221,14 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
                     }
                 };
                 count += 1;
-                if count > 4 {
+                if count > 8 {
                     return Err(Diagnostic::error(
-                        "character literal contains more than four bytes",
+                        "character literal contains more than eight bytes",
                     ));
                 }
-                value = (value << 8) | u32::from(byte);
+                value = (value << 8) | u64::from(byte);
             }
-            push_token!(Token::IntegerLiteral(i64::from(value)), token_start);
+            push_token!(Token::IntegerLiteral(value as i64), token_start);
             continue;
         }
         // identifier or keyword
@@ -464,6 +465,14 @@ mod tests {
     fn multi_character_constants_pack_source_bytes_big_endian() {
         let tokens = tokenize_bytes(b"int tag = 'fp00';").unwrap();
         assert!(tokens.contains(&Token::IntegerLiteral(0x6670_3030)));
+    }
+
+    #[test]
+    fn long_multi_character_constants_pack_as_64_bit_values() {
+        let tokens =
+            tokenize_bytes(b"long long a = 'ABCDE'; long long b = 'ABCDEFGH';").unwrap();
+        assert!(tokens.contains(&Token::IntegerLiteral(0x41_4243_4445)));
+        assert!(tokens.contains(&Token::IntegerLiteral(0x4142_4344_4546_4748)));
     }
 
     #[test]
