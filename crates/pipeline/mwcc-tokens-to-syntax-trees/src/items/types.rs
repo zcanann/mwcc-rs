@@ -587,6 +587,17 @@ impl Parser {
         // far); an ordinary member or a different-typed bit-field closes it.
         let mut bit_unit: Option<(Type, u32, u8)> = None;
         while *self.peek() != Token::BraceClose {
+            // Static C++ members occupy no object storage. Their callable/data
+            // declaration semantics are recovered separately by the C++ class
+            // scanner; the C-compatible layout pass only needs to advance over
+            // the complete declaration without discarding the ordinary fields
+            // already laid out around it.
+            if self.cplusplus
+                && matches!(self.peek(), Token::Identifier(word) if word == "static")
+            {
+                self.skip_class_member()?;
+                continue;
+            }
             // An inline struct definition as a member: `struct [Tag] { … } [name];`. An
             // ANONYMOUS one with no member name promotes (flattens) its fields into this
             // struct — C anonymous-struct semantics, and how the game-state structs wrap

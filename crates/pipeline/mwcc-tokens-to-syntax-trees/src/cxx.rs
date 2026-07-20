@@ -1481,7 +1481,7 @@ impl Parser {
         )))
     }
 
-    fn skip_class_member(&mut self) -> Compilation<()> {
+    pub(crate) fn skip_class_member(&mut self) -> Compilation<()> {
         let mut parens = 0usize;
         while *self.peek() != Token::EndOfFile {
             match self.advance() {

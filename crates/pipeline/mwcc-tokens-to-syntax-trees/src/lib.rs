@@ -1474,6 +1474,30 @@ mod tests {
     }
 
     #[test]
+    fn retains_struct_layout_across_static_cxx_method_declarations() {
+        let source = r#"
+            struct Slice {
+                char* text;
+                unsigned size;
+                static Slice create(const char* text, unsigned size);
+            };
+            unsigned length(Slice* slice) { return slice->size; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 4, .. })
+        ));
+    }
+
+    #[test]
     fn resolves_a_virtual_member_to_its_measured_vtable_slot() {
         let source = r#"
             struct Stream {
