@@ -281,11 +281,6 @@ fn compile(
     config: mwcc_versions::CompilerConfig,
     artifacts: Option<&str>,
 ) -> Compilation<Vec<u8>> {
-    if config.flags.debug_info {
-        return Err(Diagnostic::error(
-            "CodeWarrior debug-info emission requested by '-sym on' is not implemented (roadmap)",
-        ));
-    }
     let located_tokens = mwcc_source_to_tokens::tokenize_bytes_located(source)?;
     let tokens: Vec<mwcc_tokens::Token> = located_tokens
         .iter()
@@ -1359,6 +1354,59 @@ fn compile(
         Vec::new()
     };
 
+    let code_alignment = config
+        .flags
+        .function_alignment
+        .unwrap_or(u32::from(config.build.code_alignment));
+    let object_format = mwcc_machine_code_to_object::ObjectFormat {
+        comment: mwcc_machine_code_to_object::CommentFormat {
+            marker: config.build.comment_marker,
+            version: config.build.comment_version,
+            pooling_enabled: config.flags.pooling_enabled,
+        },
+        emb_sda21_offset: config.build.emb_sda21_offset,
+        code_alignment,
+        sdata2_writable: config.build.sdata2_writable,
+        function_symbol_order: if config.flags.ipa_file {
+            // Whole-file IPA registers the optimized function before the
+            // external target discovered while lowering its body.
+            mwcc_machine_code_to_object::FunctionSymbolOrder::FunctionFirst
+        } else if config.build.function_symbol_before_references {
+            if config.flags.inline_deferred {
+                mwcc_machine_code_to_object::FunctionSymbolOrder::LegacyDeferred
+            } else {
+                mwcc_machine_code_to_object::FunctionSymbolOrder::FunctionFirst
+            }
+        } else if config.flags.inline_deferred {
+            mwcc_machine_code_to_object::FunctionSymbolOrder::Deferred
+        } else {
+            mwcc_machine_code_to_object::FunctionSymbolOrder::ReferencesFirst
+        },
+        local_data_symbols_in_declaration_order: behavior.local_data_symbol_order
+            == mwcc_versions::LocalDataSymbolOrder::DeclarationOrder,
+        small_zero_statics_in_declaration_order: behavior.small_zero_data_layout_style
+            == mwcc_versions::SmallZeroDataLayoutStyle::LegacyStaticDeclarationOrderFirst,
+        rodata_anchor_before_data_symbols: behavior.read_only_section_anchor_order
+            == mwcc_versions::ReadOnlySectionAnchorOrder::BeforeDataObjects,
+        rodata_anchor_comment_flags: behavior.read_only_section_anchor_comment_flags,
+        data_relocations_use_section_anchors: behavior.data_section_relocation_style
+            == mwcc_versions::DataSectionRelocationStyle::SectionAnchor,
+        data_anchor_comment_flags: behavior.data_section_anchor_comment_flags,
+        initial_anonymous_counter: config.build.initial_anonymous_counter,
+        post_leaf_function_anonymous_bump: config.build.post_leaf_function_anonymous_bump,
+        post_framed_function_anonymous_bump: config.build.post_framed_function_anonymous_bump,
+    };
+    let debug = if config.flags.debug_info {
+        Some(mwcc_syntax_trees_to_debug_info::lower_debug_info(
+            &unit,
+            &machine_functions,
+            source_name,
+            config.build,
+            code_alignment,
+        )?)
+    } else {
+        None
+    };
     let object = mwcc_machine_code_to_object::assemble_object(
         &machine_functions,
         &defined_globals,
@@ -1366,49 +1414,10 @@ fn compile(
         &forward_declared_statics,
         &early_undefined_externals,
         source_name,
-        mwcc_machine_code_to_object::ObjectFormat {
-            comment: mwcc_machine_code_to_object::CommentFormat {
-                marker: config.build.comment_marker,
-                version: config.build.comment_version,
-                pooling_enabled: config.flags.pooling_enabled,
-            },
-            emb_sda21_offset: config.build.emb_sda21_offset,
-            code_alignment: config
-                .flags
-                .function_alignment
-                .unwrap_or(u32::from(config.build.code_alignment)),
-            sdata2_writable: config.build.sdata2_writable,
-            function_symbol_order: if config.flags.ipa_file {
-                // Whole-file IPA registers the optimized function before the
-                // external target discovered while lowering its body.
-                mwcc_machine_code_to_object::FunctionSymbolOrder::FunctionFirst
-            } else if config.build.function_symbol_before_references {
-                if config.flags.inline_deferred {
-                    mwcc_machine_code_to_object::FunctionSymbolOrder::LegacyDeferred
-                } else {
-                    mwcc_machine_code_to_object::FunctionSymbolOrder::FunctionFirst
-                }
-            } else if config.flags.inline_deferred {
-                mwcc_machine_code_to_object::FunctionSymbolOrder::Deferred
-            } else {
-                mwcc_machine_code_to_object::FunctionSymbolOrder::ReferencesFirst
-            },
-            local_data_symbols_in_declaration_order: behavior.local_data_symbol_order
-                == mwcc_versions::LocalDataSymbolOrder::DeclarationOrder,
-            small_zero_statics_in_declaration_order: behavior.small_zero_data_layout_style
-                == mwcc_versions::SmallZeroDataLayoutStyle::LegacyStaticDeclarationOrderFirst,
-            rodata_anchor_before_data_symbols: behavior.read_only_section_anchor_order
-                == mwcc_versions::ReadOnlySectionAnchorOrder::BeforeDataObjects,
-            rodata_anchor_comment_flags: behavior.read_only_section_anchor_comment_flags,
-            data_relocations_use_section_anchors: behavior.data_section_relocation_style
-                == mwcc_versions::DataSectionRelocationStyle::SectionAnchor,
-            data_anchor_comment_flags: behavior.data_section_anchor_comment_flags,
-            initial_anonymous_counter: config.build.initial_anonymous_counter,
-            post_leaf_function_anonymous_bump: config.build.post_leaf_function_anonymous_bump,
-            post_framed_function_anonymous_bump: config.build.post_framed_function_anonymous_bump,
-        },
+        object_format,
         small_data,
         config.flags.emit_mwcats,
+        debug,
     );
 
     if let Some(directory) = artifacts {

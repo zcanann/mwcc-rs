@@ -1,0 +1,16 @@
+[package]
+name = "mwcc-syntax-trees-to-debug-info"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mwcc-core.workspace = true
+mwcc-dwarf1.workspace = true
+mwcc-machine-code.workspace = true
+mwcc-object.workspace = true
+mwcc-syntax-trees.workspace = true
+mwcc-versions.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"

@@ -19,6 +19,7 @@ mwcc-source-to-tokens.workspace = true
 mwcc-tokens-to-syntax-trees.workspace = true
 mwcc-syntax-trees-to-machine-code.workspace = true
 mwcc-machine-code-to-object.workspace = true
+mwcc-syntax-trees-to-debug-info.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

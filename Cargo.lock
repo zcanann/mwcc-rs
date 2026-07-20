@@ -11,6 +11,7 @@ dependencies = [
  "mwcc-machine-code-to-object",
  "mwcc-source-to-tokens",
  "mwcc-syntax-trees",
+ "mwcc-syntax-trees-to-debug-info",
  "mwcc-syntax-trees-to-machine-code",
  "mwcc-tokens",
  "mwcc-tokens-to-syntax-trees",
@@ -67,6 +68,18 @@ dependencies = [
 [[package]]
 name = "mwcc-syntax-trees"
 version = "0.0.1"
+
+[[package]]
+name = "mwcc-syntax-trees-to-debug-info"
+version = "0.0.1"
+dependencies = [
+ "mwcc-core",
+ "mwcc-dwarf1",
+ "mwcc-machine-code",
+ "mwcc-object",
+ "mwcc-syntax-trees",
+ "mwcc-versions",
+]
 
 [[package]]
 name = "mwcc-syntax-trees-to-machine-code"

@@ -9,8 +9,8 @@ mod debug;
 mod line;
 
 pub use debug::{
-    Attribute, AttributeName, AttributeValue, DebugEntry, DebugEntryId, DebugInfo,
-    FundamentalType, Tag,
+    Attribute, AttributeName, AttributeValue, Block, BlockRelocation, DebugEntry, DebugEntryId,
+    DebugInfo, EncodedDebugInfo, FundamentalType, Tag,
 };
 pub use line::{LineRecord, LineTable};
 

@@ -19,6 +19,7 @@ members = [
     "crates/pipeline/mwcc-tokens-to-syntax-trees",
     "crates/pipeline/mwcc-syntax-trees-to-machine-code",
     "crates/pipeline/mwcc-machine-code-to-object",
+    "crates/pipeline/mwcc-syntax-trees-to-debug-info",
 
     # binaries
     "apps/mwcc",
@@ -46,6 +47,7 @@ mwcc-source-to-tokens = { path = "crates/pipeline/mwcc-source-to-tokens" }
 mwcc-tokens-to-syntax-trees = { path = "crates/pipeline/mwcc-tokens-to-syntax-trees" }
 mwcc-syntax-trees-to-machine-code = { path = "crates/pipeline/mwcc-syntax-trees-to-machine-code" }
 mwcc-machine-code-to-object = { path = "crates/pipeline/mwcc-machine-code-to-object" }
+mwcc-syntax-trees-to-debug-info = { path = "crates/pipeline/mwcc-syntax-trees-to-debug-info" }
 
 [profile.release]
 opt-level = 3

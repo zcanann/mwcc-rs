@@ -8,6 +8,16 @@
 //! and the entry point; the assembly lives in [`writer`].
 
 mod writer;
+mod debug;
+mod function_layout;
+
+pub use debug::{
+    DebugLayout, DebugRelocation, DebugRelocationKind, DebugRelocationTarget, DebugSection,
+    DebugSections, DebugSymbol,
+};
+pub use function_layout::{
+    layout_function_placements, layout_functions, FunctionLayout, FunctionPlacement,
+};
 
 /// The compiler-specific header fields of Metrowerks' `.comment` section.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,6 +114,8 @@ pub struct ObjectInput<'a> {
     pub early_undefined_externals: &'a [String],
     /// Optional capture pin for interleaved LOCAL data/function symbols.
     pub local_symbol_order: &'a [String],
+    /// Optional CodeWarrior DWARF 1 payload and its object-container metadata.
+    pub debug: Option<DebugSections>,
 }
 
 /// A file-scope variable defined in this object: its name, byte size, natural

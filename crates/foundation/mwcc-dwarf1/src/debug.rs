@@ -43,6 +43,7 @@ pub enum AttributeValue {
     Address(Address),
     Reference(DebugEntryId),
     Block2(Vec<u8>),
+    RelocatableBlock2(Block),
     Block4(Vec<u8>),
     Data2(u16),
     Data4(u32),
@@ -58,7 +59,7 @@ impl AttributeValue {
         match self {
             Self::Address(_) => 0x1,
             Self::Reference(_) => 0x2,
-            Self::Block2(_) => 0x3,
+            Self::Block2(_) | Self::RelocatableBlock2(_) => 0x3,
             Self::Block4(_) => 0x4,
             Self::Data2(_) => 0x5,
             Self::Data4(_) | Self::Data4Address(_) => 0x6,
@@ -66,6 +67,20 @@ impl AttributeValue {
             Self::String(_) => 0x8,
         }
     }
+}
+
+/// A location-expression block with relocatable four-byte operands. Relocation
+/// offsets are relative to the first byte after the block's length field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Block {
+    pub bytes: Vec<u8>,
+    pub relocations: Vec<BlockRelocation>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockRelocation {
+    pub offset: u32,
+    pub address: Address,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,11 +105,23 @@ pub struct DebugInfo {
     pub terminal_records: Vec<Vec<u8>>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EncodedDebugInfo {
+    pub section: EncodedSection,
+    pub entry_offsets: Vec<(DebugEntryId, u32)>,
+}
+
 impl DebugInfo {
     pub fn encode(&self) -> EncodedSection {
+        self.encode_with_offsets().section
+    }
+
+    pub fn encode_with_offsets(&self) -> EncodedDebugInfo {
         let mut section = EncodedSection::default();
+        let mut entry_offsets = Vec::with_capacity(self.entries.len());
         for entry in &self.entries {
             let start = section.bytes.len();
+            entry_offsets.push((entry.id, start as u32));
             push_u32(&mut section.bytes, 0);
             push_u16(&mut section.bytes, entry.tag as u16);
             for attribute in &entry.attributes {
@@ -110,7 +137,10 @@ impl DebugInfo {
         for record in &self.terminal_records {
             section.bytes.extend_from_slice(record);
         }
-        section
+        EncodedDebugInfo {
+            section,
+            entry_offsets,
+        }
     }
 }
 
@@ -123,6 +153,18 @@ fn encode_value(section: &mut EncodedSection, value: &AttributeValue) {
         AttributeValue::Block2(bytes) => {
             push_u16(&mut section.bytes, bytes.len() as u16);
             section.bytes.extend_from_slice(bytes);
+        }
+        AttributeValue::RelocatableBlock2(block) => {
+            push_u16(&mut section.bytes, block.bytes.len() as u16);
+            let block_start = section.bytes.len() as u32;
+            section.bytes.extend_from_slice(&block.bytes);
+            for relocation in &block.relocations {
+                section.relocations.push(crate::Relocation {
+                    offset: block_start + relocation.offset,
+                    target: relocation.address.target.clone(),
+                    addend: relocation.address.addend,
+                });
+            }
         }
         AttributeValue::Block4(bytes) => {
             push_u32(&mut section.bytes, bytes.len() as u32);

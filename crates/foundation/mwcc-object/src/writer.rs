@@ -8,7 +8,10 @@
 //! Float/stack-frame functions add `.sdata2` / `extab` / `extabindex` sections,
 //! pooled across all functions in the unit.
 
-use crate::{CommentFormat, DataObject, FunctionSymbolOrder, ObjectInput, RelocationTarget};
+use crate::{
+    layout_functions, CommentFormat, DataObject, DebugRelocationTarget, FunctionSymbolOrder,
+    ObjectInput, RelocationTarget,
+};
 use std::collections::HashMap;
 
 /// Metrowerks' private section type for `.mwcats.text` (readelf renders it as
@@ -100,6 +103,7 @@ struct Section {
 
 pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let functions = &input.functions;
+    let debug = input.debug.as_ref();
     assert!(input.object_format.code_alignment.is_power_of_two());
 
     // Track each function's aligned byte offset and unpadded size for its symbol,
@@ -110,28 +114,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // inline) lays out AFTER the next non-deferred function — mwcc's deferred
     // materialization queue (measured: ww alloc's dealloc_var after
     // dealloc_fixed, __pool_free after free). Symbols keep source position.
-    let layout_order: Vec<usize> = {
-        let mut order = Vec::with_capacity(functions.len());
-        let mut pending: Vec<usize> = Vec::new();
-        for (index, function) in functions.iter().enumerate() {
-            if function.text_deferred {
-                pending.push(index);
-            } else {
-                order.push(index);
-                order.append(&mut pending);
-            }
-        }
-        order.append(&mut pending);
-        order
-    };
-    let mut function_offset: Vec<u32> = vec![0; functions.len()];
-    let mut function_size: Vec<u32> = vec![0; functions.len()];
+    let function_layout = layout_functions(functions, input.object_format.code_alignment);
+    let layout_order = function_layout.order;
+    let function_offset = function_layout.offsets;
+    let function_size = function_layout.sizes;
     for &index in &layout_order {
         while text.len() % input.object_format.code_alignment as usize != 0 {
             text.push(0);
         }
-        function_offset[index] = text.len() as u32;
-        function_size[index] = functions[index].text.len() as u32;
         text.extend_from_slice(functions[index].text);
     }
 
@@ -758,6 +748,16 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_functions {
         order.push(text_section);
     }
+    if debug.is_some_and(|debug| debug.layout.before_data()) {
+        order.push(".line");
+        if debug.unwrap().layout.interleaved_relocations() {
+            order.push(".rela.line");
+        }
+        order.push(".debug");
+        if debug.unwrap().layout.interleaved_relocations() {
+            order.push(".rela.debug");
+        }
+    }
     if has_frame {
         order.push("extab");
         order.push("extabindex");
@@ -791,11 +791,27 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_constants || has_const_sdata2 {
         order.push(".sdata2");
     }
+    if debug.is_some_and(|debug| !debug.layout.before_data()) {
+        order.push(".line");
+        if debug.unwrap().layout.interleaved_relocations() {
+            order.push(".rela.line");
+        }
+        order.push(".debug");
+        if debug.unwrap().layout.interleaved_relocations() {
+            order.push(".rela.debug");
+        }
+    }
     if has_mwcats {
         order.push(&mwcats_section);
     }
     if has_text_relocations {
         order.push(&rela_text_section);
+    }
+    if debug.is_some_and(|debug| {
+        debug.layout.before_data() && !debug.layout.interleaved_relocations()
+    }) {
+        order.push(".rela.line");
+        order.push(".rela.debug");
     }
     if has_frame {
         order.push(".relaextabindex");
@@ -842,13 +858,24 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_sdata2_relocs {
         order.push(".rela.sdata2");
     }
+    if debug.is_some_and(|debug| {
+        !debug.layout.before_data() && !debug.layout.interleaved_relocations()
+    }) {
+        order.push(".rela.line");
+        order.push(".rela.debug");
+    }
     if has_mwcats {
         order.push(&rela_mwcats_section);
+    }
+    if debug.is_some_and(|debug| debug.layout.comment_before_symbols()) {
+        order.push(".comment");
     }
     order.push(".symtab");
     order.push(".strtab");
     order.push(".shstrtab");
-    order.push(".comment");
+    if !debug.is_some_and(|debug| debug.layout.comment_before_symbols()) {
+        order.push(".comment");
+    }
     // Section index of a name (NULL is 0, so the list is offset by one).
     let index_of = |name: &str| order.iter().position(|entry| *entry == name).unwrap() as u32 + 1;
 
@@ -857,23 +884,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     //    grouped by function (constants then unwind), then the GLOBAL run — each
     //    function's not-yet-seen externals followed by the function symbol, in
     //    source order. The first GLOBAL is `sh_info` for `.symtab`.
-    let content_sections: Vec<&str> = [
-        text_section,
-        "extab",
-        "extabindex",
-        ".ctors",
-        ".dtors",
-        ".rodata",
-        ".data",
-        ".bss",
-        ".sdata",
-        ".sbss",
-        ".sdata2",
-        &mwcats_section,
-    ]
-    .into_iter()
-    .filter(|name| order.contains(name))
-    .collect();
+    let content_sections: Vec<&str> = order
+        .iter()
+        .copied()
+        .filter(|name| {
+            !name.starts_with(".rela")
+                && !matches!(*name, ".symtab" | ".strtab" | ".shstrtab" | ".comment")
+        })
+        .collect();
     // The `.comment` trailer carries one record per symbol *after* the null and
     // FILE entries, holding that symbol's alignment (0 for an undefined external).
     // Values are collected here in symbol-emission order.
@@ -894,6 +912,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         }
         let base = match name {
             ".sdata2" | ".sdata" | ".sbss" | ".data" | ".bss" | ".rodata" => 8,
+            ".line" => 1,
+            ".debug" => 4,
             _ => 4,
         };
         base.max(section_max_align.get(name).copied().unwrap_or(0))
@@ -910,9 +930,29 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         0,
         SHN_ABS,
     );
+    let mut section_symbols: std::collections::HashMap<&str, u32> =
+        std::collections::HashMap::new();
     for name in &content_sections {
+        section_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
         write_symbol(&mut symtab, 0, 0, 0, STT_SECTION, 0, index_of(name) as u16);
         comment_values.push((section_align(name), 0));
+    }
+    let mut debug_symbols: std::collections::HashMap<&str, u32> =
+        std::collections::HashMap::new();
+    if let Some(debug) = debug {
+        for symbol in debug.symbols.iter().filter(|symbol| !symbol.is_global) {
+            debug_symbols.insert(symbol.name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
+            write_symbol(
+                &mut symtab,
+                strtab.add(&symbol.name),
+                symbol.offset,
+                symbol.size,
+                STB_LOCAL_OBJECT,
+                0,
+                index_of(symbol.section.name()) as u16,
+            );
+            comment_values.push((symbol.alignment, 0));
+        }
     }
     // `static inline` asm helpers (e.g. OSFastCast.h) — a local undefined symbol
     // each, in declaration order, right after the section symbols. `info = 0` is
@@ -2322,6 +2362,21 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             comment_values.push((data_aligns[object.name], flags));
         }
     }
+    if let Some(debug) = debug {
+        for symbol in debug.symbols.iter().filter(|symbol| symbol.is_global) {
+            debug_symbols.insert(symbol.name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
+            write_symbol(
+                &mut symtab,
+                strtab.add(&symbol.name),
+                symbol.offset,
+                symbol.size,
+                STB_GLOBAL_OBJECT,
+                0,
+                index_of(symbol.section.name()) as u16,
+            );
+            comment_values.push((symbol.alignment, 0));
+        }
+    }
     // The `.comment` trailer is now fully determined by the symbol alignments.
     let comment = comment_record(input.object_format.comment, &comment_values);
 
@@ -2536,6 +2591,40 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         }
     }
 
+    let mut rela_line = Vec::new();
+    let mut rela_debug = Vec::new();
+    if let Some(debug) = debug {
+        let resolve = |target: &DebugRelocationTarget| -> u32 {
+            match target {
+                DebugRelocationTarget::Section(name) => section_symbols[name.as_str()],
+                DebugRelocationTarget::Symbol(name) => *debug_symbols
+                    .get(name.as_str())
+                    .or_else(|| local_data_symbols.get(name.as_str()))
+                    .or_else(|| local_function_symbols.get(name.as_str()))
+                    .or_else(|| global_symbols.get(name.as_str()))
+                    .unwrap_or_else(|| panic!("unresolved debug relocation target '{name}'")),
+            }
+        };
+        for relocation in &debug.line_relocations {
+            write_rela(
+                &mut rela_line,
+                relocation.offset,
+                resolve(&relocation.target),
+                relocation.kind.elf_type(),
+                relocation.addend as u32,
+            );
+        }
+        for relocation in &debug.debug_relocations {
+            write_rela(
+                &mut rela_debug,
+                relocation.offset,
+                resolve(&relocation.target),
+                relocation.kind.elf_type(),
+                relocation.addend as u32,
+            );
+        }
+    }
+
     // 4. Content payloads. One `.mwcats` record per function: `(0x02000000 | its
     //    text size, &function)`. The unwind header is a deterministic function of
     //    the saved-register shape; each `extabindex` entry is (function, function
@@ -2623,6 +2712,47 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             text.to_vec(),
             0,
         );
+    }
+    if debug.is_some_and(|debug| debug.layout.before_data()) {
+        let debug = debug.unwrap();
+        push(".line", SHT_PROGBITS, 0, 0, 0, 1, 1, debug.line.clone(), 0);
+        if debug.layout.interleaved_relocations() {
+            push(
+                ".rela.line",
+                SHT_RELA,
+                0,
+                symtab_section,
+                index_of(".line"),
+                4,
+                12,
+                rela_line.clone(),
+                0,
+            );
+        }
+        push(
+            ".debug",
+            SHT_PROGBITS,
+            0,
+            0,
+            0,
+            4,
+            1,
+            debug.debug.clone(),
+            0,
+        );
+        if debug.layout.interleaved_relocations() {
+            push(
+                ".rela.debug",
+                SHT_RELA,
+                0,
+                symtab_section,
+                index_of(".debug"),
+                4,
+                12,
+                rela_debug.clone(),
+                0,
+            );
+        }
     }
     if has_frame {
         push("extab", SHT_PROGBITS, SHF_ALLOC, 0, 0, 4, 0, extab, 0);
@@ -2738,6 +2868,47 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             0,
         );
     }
+    if debug.is_some_and(|debug| !debug.layout.before_data()) {
+        let debug = debug.unwrap();
+        push(".line", SHT_PROGBITS, 0, 0, 0, 1, 1, debug.line.clone(), 0);
+        if debug.layout.interleaved_relocations() {
+            push(
+                ".rela.line",
+                SHT_RELA,
+                0,
+                symtab_section,
+                index_of(".line"),
+                4,
+                12,
+                rela_line.clone(),
+                0,
+            );
+        }
+        push(
+            ".debug",
+            SHT_PROGBITS,
+            0,
+            0,
+            0,
+            4,
+            1,
+            debug.debug.clone(),
+            0,
+        );
+        if debug.layout.interleaved_relocations() {
+            push(
+                ".rela.debug",
+                SHT_RELA,
+                0,
+                symtab_section,
+                index_of(".debug"),
+                4,
+                12,
+                rela_debug.clone(),
+                0,
+            );
+        }
+    }
     if has_mwcats {
         push(
             &mwcats_section,
@@ -2761,6 +2932,32 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             4,
             12,
             rela_text,
+            0,
+        );
+    }
+    if debug.is_some_and(|debug| {
+        debug.layout.before_data() && !debug.layout.interleaved_relocations()
+    }) {
+        push(
+            ".rela.line",
+            SHT_RELA,
+            0,
+            symtab_section,
+            index_of(".line"),
+            4,
+            12,
+            rela_line.clone(),
+            0,
+        );
+        push(
+            ".rela.debug",
+            SHT_RELA,
+            0,
+            symtab_section,
+            index_of(".debug"),
+            4,
+            12,
+            rela_debug.clone(),
             0,
         );
     }
@@ -2845,6 +3042,32 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             0,
         );
     }
+    if debug.is_some_and(|debug| {
+        !debug.layout.before_data() && !debug.layout.interleaved_relocations()
+    }) {
+        push(
+            ".rela.line",
+            SHT_RELA,
+            0,
+            symtab_section,
+            index_of(".line"),
+            4,
+            12,
+            rela_line,
+            0,
+        );
+        push(
+            ".rela.debug",
+            SHT_RELA,
+            0,
+            symtab_section,
+            index_of(".debug"),
+            4,
+            12,
+            rela_debug,
+            0,
+        );
+    }
     if has_mwcats {
         push(
             &rela_mwcats_section,
@@ -2857,6 +3080,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             rela_mwcats,
             0,
         );
+    }
+    if debug.is_some_and(|debug| debug.layout.comment_before_symbols()) {
+        push(".comment", SHT_PROGBITS, 0, 0, 0, 1, 1, comment.clone(), 0);
     }
     push(
         ".symtab",
@@ -2872,7 +3098,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // Metrowerks stamps string tables with sh_entsize = 1.
     push(".strtab", SHT_STRTAB, 0, 0, 0, 1, 1, strtab.bytes, 0);
     push(".shstrtab", SHT_STRTAB, 0, 0, 0, 1, 1, shstrtab.bytes, 0);
-    push(".comment", SHT_PROGBITS, 0, 0, 0, 1, 1, comment.to_vec(), 0);
+    if !debug.is_some_and(|debug| debug.layout.comment_before_symbols()) {
+        push(".comment", SHT_PROGBITS, 0, 0, 0, 1, 1, comment, 0);
+    }
 
     // 7. File offsets — sections pack contiguously (all word-aligned sections have
     //    word-aligned sizes); the section-header table is padded to 8.

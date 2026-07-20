@@ -13,6 +13,7 @@ use mwcc_object::{
 /// A data-section `ADDR32` relocation (re-exported so callers can build a
 /// `DefinedGlobal`'s relocations without depending on `mwcc-object` directly).
 pub use mwcc_object::{CommentFormat, DataRelocation, FunctionSymbolOrder, ObjectFormat};
+pub use mwcc_object::DebugSections;
 
 /// A file-scope variable *defined* in this unit (placed in a data section), in
 /// declaration order. The caller decides which globals qualify (non-`extern`,
@@ -69,6 +70,7 @@ pub fn assemble_object(
     object_format: ObjectFormat,
     small_data: bool,
     emit_mwcats: bool,
+    debug: Option<DebugSections>,
 ) -> Vec<u8> {
     // The encoded text is owned here so the borrowed `FunctionObject` can point at
     // it for the lifetime of the call.
@@ -221,5 +223,6 @@ pub fn assemble_object(
         forward_declared_statics,
         early_undefined_externals,
         local_symbol_order,
+        debug,
     })
 }
