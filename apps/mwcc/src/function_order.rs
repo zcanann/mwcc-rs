@@ -7,6 +7,22 @@
 
 use mwcc_machine_code::MachineFunction;
 
+/// Whether every earlier call site consumed a terminal implicitly-materialized
+/// inline. A surviving relocation proves the out-of-line copy is still needed.
+pub(crate) fn terminal_implicit_inline_is_consumed(
+    name: &str,
+    lowered_callers: &[MachineFunction],
+) -> bool {
+    !lowered_callers.iter().any(|function| {
+        function.relocations.iter().any(|relocation| {
+            matches!(
+                &relocation.target,
+                mwcc_machine_code::RelocationTarget::External(target) if target == name
+            )
+        })
+    })
+}
+
 /// Apply `-inline …,deferred` emission order.
 ///
 /// Hand-written asm is assembled immediately, forming a leading stream in its
@@ -50,5 +66,19 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["asm_a", "asm_b", "last", "middle", "first"]
         );
+    }
+
+    #[test]
+    fn consumed_terminal_inline_has_no_surviving_call() {
+        let callers = vec![function("caller", false)];
+        assert!(terminal_implicit_inline_is_consumed("helper", &callers));
+
+        let mut caller = function("caller", false);
+        caller.relocations.push(mwcc_machine_code::Relocation {
+            instruction_index: 0,
+            kind: mwcc_machine_code::RelocationKind::Rel24,
+            target: mwcc_machine_code::RelocationTarget::External("helper".to_string()),
+        });
+        assert!(!terminal_implicit_inline_is_consumed("helper", &[caller]));
     }
 }

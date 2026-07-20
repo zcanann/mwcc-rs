@@ -256,6 +256,11 @@ pub struct TranslationUnit {
     /// declaration): calls bind the surviving UND ghost; the local FUNC symbol
     /// trails its own static locals.
     pub implicitly_materialized: Vec<String>,
+    /// Inline definitions parsed as out-of-line candidates because an earlier
+    /// call site could not yet see their body. Deferred inlining may consume
+    /// every call and remove the candidate later; unlike
+    /// `implicitly_materialized`, this includes prototyped static inlines.
+    pub materialized_inline_candidates: Vec<String>,
     /// PLAIN-inline materializations — weak FUNC symbols carrying the
     /// weak-OBJECT 0x0d comment flag (not declspec-weak's 0x0e).
     pub weak_materialized: Vec<String>,

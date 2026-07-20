@@ -234,6 +234,10 @@ pub(crate) struct Parser {
     /// implicit-declaration shape): their call relocations bind the surviving
     /// UNDEFINED global ghost, and their local symbols order differently.
     pub(crate) implicitly_materialized: Vec<String>,
+    /// Every inline definition parsed as a materialization candidate, including
+    /// prototyped static inlines. TU orchestration uses this to model deferred
+    /// inlining without confusing them with implicit-declaration ghosts.
+    pub(crate) materialized_inline_candidates: Vec<String>,
     /// PLAIN-inline materializations (WEAK globals with the 0x0d comment flag).
     pub(crate) weak_materialized: Vec<String>,
     /// Names declared `__declspec(weak)` — their definitions emit WEAK symbols.

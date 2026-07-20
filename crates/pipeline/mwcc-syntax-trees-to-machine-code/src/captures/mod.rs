@@ -499,6 +499,8 @@ mod trg_tanf;
 mod uart_close;
 mod uart_write;
 mod uc1_read;
+mod uc_sun_read;
+mod uc_sun_write;
 mod uc1_write;
 mod uc2_read;
 mod uc2_write;
@@ -513,6 +515,7 @@ mod ucg_init_bfbb;
 mod ucg_write_bfbb;
 mod ucg_write_p2;
 mod ucg_write_str;
+mod uart_read_family;
 mod wc_fwide;
 mod wc_fwide_mel;
 mod wc_fwide_p2;
@@ -1187,6 +1190,8 @@ impl Generator {
             || self.try_mem_memcmp_mp4(function)?
             || self.try_sldx_pik(function)?
             || self.try_uc1_read(function)?
+            || self.try_uc_sun_read(function)?
+            || self.try_uc_sun_write(function)?
             || self.try_uc1_write(function)?
             || self.try_uc2_read(function)?
             || self.try_uc2_write(function)?

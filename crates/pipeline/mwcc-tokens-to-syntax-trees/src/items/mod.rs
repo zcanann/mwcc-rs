@@ -841,6 +841,9 @@ impl Parser {
             skipped_inline_functions: self.skipped_inline_functions,
             static_local_prebumps: std::mem::take(&mut self.static_local_prebumps),
             implicitly_materialized: std::mem::take(&mut self.implicitly_materialized),
+            materialized_inline_candidates: std::mem::take(
+                &mut self.materialized_inline_candidates,
+            ),
             weak_materialized: std::mem::take(&mut self.weak_materialized),
             section_prototypes: std::mem::take(&mut self.section_prototype_order),
             skipped_inline_names: std::mem::take(&mut self.skipped_inline_names),
@@ -2487,6 +2490,7 @@ impl Parser {
                         "an inline function definition is skipped (inlined at call sites)",
                     ));
                 }
+                self.materialized_inline_candidates.push(name.clone());
                 if is_static {
                     // Implicit-declaration materialization (no prototype): the call
                     // relocations bind the surviving UND ghost, and the local FUNC

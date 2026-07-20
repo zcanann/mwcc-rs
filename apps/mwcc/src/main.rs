@@ -367,7 +367,23 @@ fn compile(
     let diagnose_syntax_tree = std::env::var_os("MWCC_DIAGNOSTIC_SYNTAX_TREE").is_some();
     let mut machine_functions: Vec<mwcc_machine_code::MachineFunction> =
         Vec::with_capacity(unit.functions.len());
-    for function in &unit.functions {
+    for (function_index, function) in unit.functions.iter().enumerate() {
+        // With deferred inlining, a terminal helper that was only parsed as an
+        // implicit materialization disappears when every earlier call site
+        // consumed it. Keep it whenever even one Rel24 call survives.
+        if config.flags.inline_deferred
+            && function_index + 1 == unit.functions.len()
+            && unit
+                .materialized_inline_candidates
+                .iter()
+                .any(|name| name == &function.name)
+            && function_order::terminal_implicit_inline_is_consumed(
+                &function.name,
+                &machine_functions,
+            )
+        {
+            continue;
+        }
         if diagnose_syntax_tree {
             eprintln!("{function:#?}");
         }

@@ -94,6 +94,7 @@ pub fn parse_located_translation_unit(
         static_local_prebumps: std::collections::HashMap::new(),
         counted_enum_positions: std::collections::HashSet::new(),
         implicitly_materialized: Vec::new(),
+        materialized_inline_candidates: Vec::new(),
         weak_materialized: Vec::new(),
         weak_functions: std::collections::HashSet::new(),
         static_functions: std::collections::HashSet::new(),
