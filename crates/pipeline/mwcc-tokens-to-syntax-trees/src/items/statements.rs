@@ -285,11 +285,41 @@ impl Parser {
             Token::KeywordFor => {
                 self.advance();
                 self.expect(Token::ParenOpen)?;
-                let initializer = (*self.peek() != Token::Semicolon)
-                    .then(|| self.comma_expression())
-                    .transpose()?
-                    .map(lower_discarded_post_step);
-                self.expect(Token::Semicolon)?;
+                let rename_depth = self.block_renames.len();
+                let initializer = if self.peek_is_type() {
+                    let mut declaration_effects = Vec::new();
+                    self.parse_block_declaration(
+                        local_names,
+                        block_locals,
+                        &mut declaration_effects,
+                    )?;
+                    let mut effects = declaration_effects.into_iter().map(|statement| {
+                        let Statement::Assign { name, value } = statement else {
+                            return Err(Diagnostic::error(
+                                "a for-init declaration produced an unsupported side effect",
+                            ));
+                        };
+                        Ok(Expression::Assign {
+                            target: Box::new(Expression::Variable(name)),
+                            value: Box::new(value),
+                        })
+                    });
+                    let mut initializer = effects.next().transpose()?;
+                    for effect in effects {
+                        initializer = Some(Expression::Comma {
+                            left: Box::new(initializer.expect("a prior effect exists")),
+                            right: Box::new(effect?),
+                        });
+                    }
+                    initializer
+                } else {
+                    let initializer = (*self.peek() != Token::Semicolon)
+                        .then(|| self.comma_expression())
+                        .transpose()?
+                        .map(lower_discarded_post_step);
+                    self.expect(Token::Semicolon)?;
+                    initializer
+                };
                 let condition = (*self.peek() != Token::Semicolon)
                     .then(|| self.expression())
                     .transpose()?;
@@ -300,6 +330,7 @@ impl Parser {
                     .map(lower_discarded_post_step);
                 self.expect(Token::ParenClose)?;
                 let body = self.parse_block_or_statement(local_names, block_locals)?;
+                self.block_renames.truncate(rename_depth);
                 Ok(Statement::Loop {
                     kind: LoopKind::For,
                     initializer,

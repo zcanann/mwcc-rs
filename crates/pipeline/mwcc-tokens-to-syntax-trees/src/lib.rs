@@ -507,6 +507,37 @@ mod tests {
     }
 
     #[test]
+    fn lowers_a_for_init_declaration_through_block_declaration_rules() {
+        let source = r#"
+            typedef unsigned int u32;
+            int count(void) {
+                int sum = 0;
+                for (u32 i = 0; i < 3; i++) {
+                    sum += i;
+                }
+                return sum;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(unit.functions[0]
+            .statements
+            .iter()
+            .any(|statement| matches!(statement, mwcc_syntax_trees::Statement::Loop {
+                kind: mwcc_syntax_trees::LoopKind::For,
+                initializer: Some(mwcc_syntax_trees::Expression::Assign { .. }),
+                ..
+            })));
+    }
+
+    #[test]
     fn resolves_a_declared_static_cxx_member_call() {
         let source = r#"
             struct System { static void halt(char*, int, char*); };
