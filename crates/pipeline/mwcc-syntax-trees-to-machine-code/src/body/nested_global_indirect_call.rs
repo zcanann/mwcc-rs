@@ -13,6 +13,13 @@ struct NestedGlobalDispatch<'a> {
     global_member_offset: u32,
     callback_member_offset: i16,
     selector: i16,
+    narrow_argument: NarrowArgument,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NarrowArgument {
+    Address,
+    Null,
 }
 
 fn variable(expression: &Expression, name: &str) -> bool {
@@ -75,10 +82,16 @@ fn classify(function: &Function) -> Option<NestedGlobalDispatch<'_>> {
         Expression::IntegerLiteral(value) => i16::try_from(*value).ok()?,
         _ => return None,
     };
+    let narrow_argument = if address_of_variable(narrow_address_use, &narrow_address.name) {
+        NarrowArgument::Address
+    } else if null_pointer(narrow_address_use) {
+        NarrowArgument::Null
+    } else {
+        return None;
+    };
     if !variable(aggregate_use, &aggregate.name)
         || !null_pointer(null)
         || !variable(context_use, &context.name)
-        || !address_of_variable(narrow_address_use, &narrow_address.name)
         || !variable(item_use, &item.name)
         || !variable(priority_use, &priority.name)
         || !variable(argument0_use, &argument0.name)
@@ -118,6 +131,7 @@ fn classify(function: &Function) -> Option<NestedGlobalDispatch<'_>> {
         global_member_offset: *global_member_offset,
         callback_member_offset,
         selector,
+        narrow_argument,
     })
 }
 
@@ -144,6 +158,11 @@ impl Generator {
             {
                 return Ok(false);
             }
+        }
+
+        if plan.narrow_argument == NarrowArgument::Null {
+            self.emit_null_narrow_argument_dispatch(&plan);
+            return Ok(true);
         }
 
         let (member_high, member_low) = split_address(plan.global_member_offset);
@@ -314,5 +333,138 @@ impl Generator {
             .push(Instruction::BranchToCountRegisterAndLink);
         self.emit_epilogue_and_return();
         Ok(true)
+    }
+
+
+    /// The null fifth-argument sibling needs only the incoming priority in a
+    /// callee-saved home. Its other colliding inputs can be permuted after the
+    /// three-word aggregate has been loaded, producing the compact one-save
+    /// schedule used by the Animal Crossing effect constructors.
+    fn emit_null_narrow_argument_dispatch(&mut self, plan: &NestedGlobalDispatch<'_>) {
+        let (member_high, member_low) = split_address(plan.global_member_offset);
+        self.output.pre_scheduled = true;
+        self.frame_size = 48;
+        self.non_leaf = true;
+        self.callee_saved = vec![31];
+        self.epilogue_lr_before_gprs = true;
+
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -48,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.emit_address_high(5, plan.global);
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 52,
+        });
+        self.record_relocation(RelocationKind::Addr16Lo, plan.global);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 5,
+            a: 5,
+            immediate: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::AddImmediateShifted {
+                d: 11,
+                a: 5,
+                immediate: member_high,
+            });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 31,
+            a: 1,
+            offset: 44,
+        });
+        self.output
+            .instructions
+            .push(Instruction::move_register(31, 4));
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 4,
+            a: 1,
+            immediate: 16,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 5,
+            a: 0,
+            immediate: 0,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 10,
+            a: 3,
+            offset: 0,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 12,
+            a: 3,
+            offset: 4,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 3,
+            offset: 8,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 3,
+            a: 0,
+            immediate: plan.selector,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 10,
+            a: 1,
+            offset: 16,
+        });
+        self.output
+            .instructions
+            .push(Instruction::move_register(10, 8));
+        self.output
+            .instructions
+            .push(Instruction::move_register(8, 7));
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 7,
+            a: 0,
+            immediate: 0,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 12,
+            a: 1,
+            offset: 20,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 24,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 9,
+            a: 1,
+            offset: 8,
+        });
+        self.output
+            .instructions
+            .push(Instruction::move_register(9, 31));
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 11,
+            a: 11,
+            offset: member_low,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 12,
+            a: 11,
+            offset: plan.callback_member_offset,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToCountRegister { s: 12 });
+        self.output
+            .instructions
+            .push(Instruction::BranchToCountRegisterAndLink);
+        self.emit_epilogue_and_return();
     }
 }
