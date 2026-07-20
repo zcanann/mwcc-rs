@@ -11,6 +11,7 @@ import unittest
 
 from parity_audit import build_audit
 from parity_dashboard import (
+    authoritative_result,
     code_component_result,
     code_result,
     failure_reason,
@@ -121,6 +122,20 @@ class IdentityTests(unittest.TestCase):
 
 
 class DashboardTests(unittest.TestCase):
+    def test_exact_output_against_original_object_earns_credit_with_synthetic_input(self):
+        observation = {
+            "status": "BYTE",
+            "evidence": {
+                "oracle_direct": "RUNNABLE",
+                "comparison_input": "SYNTHETIC",
+                "reference_object": "DIRECT",
+            },
+        }
+        self.assertEqual(authoritative_result(observation), "BYTE")
+
+        observation["status"] = "DEFER"
+        self.assertEqual(authoritative_result(observation), "UNKNOWN")
+
     def test_runtime_summary_reports_cost_distribution_and_missing_count(self):
         report = runtime_summary(
             [

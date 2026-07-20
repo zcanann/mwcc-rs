@@ -137,6 +137,7 @@ if direct_reference_output="$(
     ${all_flags[@]+"${all_flags[@]}"} -c "$src" -o "$dir/ref.o" 2>&1
 )"; then
   oracle_direct="RUNNABLE"
+  cp "$dir/ref.o" "$dir/ref.direct.o"
   if direct_preprocess_output="$(
     cd "$project" && "$wibo" "$sjis" "$compiler" \
       ${all_flags[@]+"${all_flags[@]}"} -E "$src" -o "$dir/ours/$source_name" 2>&1
@@ -284,24 +285,30 @@ if [[ ! -s "$dir/ctx.i" ]]; then
   : > "$dir/ctx.i"
 fi
 
-# 3a. Reference object from the real compiler (from the self-contained context).
-if ! reference_output="$(
-  cd "$dir" && "$wibo" "$sjis" "$compiler" \
-    ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$ctx_name" -o ref.o 2>&1
-)"; then
-  if [[ ${#missing_dependencies[@]} -gt 0 ]]; then
-    echo "MISSING_DEPENDENCY  $src — ${missing_dependencies[0]}"
-    exit 0
+# 3a. Preserve the original-TU reference object whenever real MWCC produced
+#     one. The synthetic context is only an input bridge for our compiler; it
+#     must not silently replace authoritative parity evidence.
+if [[ "$oracle_direct" == "RUNNABLE" ]]; then
+  cp "$dir/ref.direct.o" "$dir/ref.o"
+else
+  if ! reference_output="$(
+    cd "$dir" && "$wibo" "$sjis" "$compiler" \
+      ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$ctx_name" -o ref.o 2>&1
+  )"; then
+    if [[ ${#missing_dependencies[@]} -gt 0 ]]; then
+      echo "MISSING_DEPENDENCY  $src — ${missing_dependencies[0]}"
+      exit 0
+    fi
+    if grep -q 'Unknown option' <<<"$reference_output"; then
+      invalid_detail="$(grep -m1 'Unknown option' <<<"$reference_output" | sed 's/^[#[:space:]]*//')"
+      echo "INVALID_CONFIGURATION  $src — $invalid_detail"
+      exit 0
+    fi
+    printf '%s\n' "$reference_output" >&2
+    exit 1
   fi
-  if grep -q 'Unknown option' <<<"$reference_output"; then
-    invalid_detail="$(grep -m1 'Unknown option' <<<"$reference_output" | sed 's/^[#[:space:]]*//')"
-    echo "INVALID_CONFIGURATION  $src — $invalid_detail"
-    exit 0
-  fi
-  printf '%s\n' "$reference_output" >&2
-  exit 1
+  [[ -f "$dir/ref.o" ]] || { echo "real mwcc rejected $ctx_name"; exit 1; }
 fi
-[[ -f "$dir/ref.o" ]] || { echo "real mwcc rejected $ctx_name"; exit 1; }
 cp "$dir/ctx.i" "$dir/ours/$ctx_name"
 fi
 
@@ -312,6 +319,11 @@ if [[ $direct_ready -eq 1 ]]; then
   echo "PARITY_META comparison_input=DIRECT"
 else
   echo "PARITY_META comparison_input=SYNTHETIC"
+fi
+if [[ "$oracle_direct" == "RUNNABLE" ]]; then
+  echo "PARITY_META reference_object=DIRECT"
+else
+  echo "PARITY_META reference_object=SYNTHETIC"
 fi
 if ! "$ours" --build "$build" ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$dir/ours/$ctx_name" -o "$dir/our.o" 2>"$dir/oerr"; then
   defer_detail="$(sed 's/^mwcc: //' "$dir/oerr" | head -1)"
