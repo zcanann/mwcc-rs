@@ -23,6 +23,42 @@ fn advance_layout_offset(offset: u32, size: u32) -> Compilation<u32> {
         .ok_or_else(|| Diagnostic::error("aggregate layout exceeds the 32-bit address space"))
 }
 
+fn merged_attribute_alignment(before: Option<u16>, after: Option<u16>) -> u32 {
+    u32::from(before.unwrap_or(1).max(after.unwrap_or(1)))
+}
+
+fn place_bit_field(
+    bit_unit: &mut Option<(Type, u32, u8)>,
+    offset: &mut u32,
+    alignment_max: &mut u32,
+    field_type: Type,
+    width: u8,
+    requested_alignment: u32,
+) -> Compilation<(u32, u8)> {
+    let unit_bits = (type_size(field_type) * 8) as u8;
+    if width == 0 || width > unit_bits {
+        return Err(Diagnostic::error("an unsupported bit-field width (roadmap)"));
+    }
+    if let Some((unit_type, unit_offset, bits_used)) = *bit_unit {
+        if unit_type == field_type && bits_used + width <= unit_bits {
+            *bit_unit = Some((field_type, unit_offset, bits_used + width));
+            return Ok((unit_offset, bits_used));
+        }
+        // A new storage-unit type closes the previous unit at the bytes its
+        // bits actually occupied. MWCC does not pad a partially used `u16`
+        // unit to two bytes before a following `u8` field.
+        *offset = unit_offset + u32::from(bits_used).div_ceil(8);
+    }
+    let alignment = type_alignment(field_type)
+        .max(1)
+        .max(requested_alignment);
+    let unit_offset = align_layout_offset(*offset, alignment)?;
+    *offset = advance_layout_offset(unit_offset, type_size(field_type))?;
+    *alignment_max = (*alignment_max).max(alignment);
+    *bit_unit = Some((field_type, unit_offset, width));
+    Ok((unit_offset, 0))
+}
+
 impl Parser {
     pub(crate) fn parse_type(&mut self) -> Compilation<Type> {
         let parsed = self.parse_type_base()?;
@@ -755,9 +791,6 @@ impl Parser {
                 }
                 let attr_align = self.skip_attributes()?;
                 let element_size = type_size(element);
-                let alignment = type_alignment(element)
-                    .max(1)
-                    .max(u32::from(attr_align.unwrap_or(1)));
                 loop {
                     let field_name = self.parse_identifier()?;
                     let mut count = u32::from(base_len);
@@ -767,6 +800,10 @@ impl Parser {
                         self.expect(Token::BracketClose)?;
                         count = count.saturating_mul(extra);
                     }
+                    let trailing_attr_align = self.skip_attributes()?;
+                    let alignment = type_alignment(element).max(1).max(
+                        merged_attribute_alignment(attr_align, trailing_attr_align),
+                    );
                     if let Some((_, unit_offset, bits_used)) = bit_unit.take() {
                         // mwcc TRIMS the container to the bytes its bits use
                         // (measured: 4 bits -> next byte member at +1; 9-12 bits
@@ -878,33 +915,17 @@ impl Parser {
                 if *self.peek() == Token::Colon {
                     self.advance();
                     let width = self.parse_integer_constant()? as u8;
-                    let unit_bits = (type_size(field_type) * 8) as u8;
                     if width == 0 {
                         bit_unit = None;
-                    } else if width > unit_bits {
-                        return Err(Diagnostic::error(
-                            "an unsupported anonymous bit-field width (roadmap)",
-                        ));
                     } else {
-                        match bit_unit {
-                            Some((unit_type, unit_offset, bits_used))
-                                if unit_type == field_type && bits_used + width <= unit_bits =>
-                            {
-                                bit_unit = Some((field_type, unit_offset, bits_used + width));
-                            }
-                            Some((unit_type, ..)) if unit_type != field_type => {
-                                return Err(Diagnostic::error("a struct mixing adjacent bit-field types is not supported yet (roadmap)"));
-                            }
-                            _ => {
-                                let alignment = type_alignment(field_type)
-                                    .max(1)
-                                    .max(u32::from(attr_align.unwrap_or(1)));
-                                let unit_offset = align_layout_offset(offset, alignment)?;
-                                offset = unit_offset + type_size(field_type);
-                                alignment_max = alignment_max.max(alignment);
-                                bit_unit = Some((field_type, unit_offset, width));
-                            }
-                        }
+                        place_bit_field(
+                            &mut bit_unit,
+                            &mut offset,
+                            &mut alignment_max,
+                            field_type,
+                            width,
+                            u32::from(attr_align.unwrap_or(1)),
+                        )?;
                     }
                     if !self.eat_keyword(Token::Comma) {
                         break;
@@ -918,33 +939,14 @@ impl Parser {
                 // CodeWarrior's irregular packing and defer; member access defers too.)
                 if self.eat_keyword(Token::Colon) {
                     let width = self.parse_integer_constant()? as u8;
-                    let unit_bits = (type_size(field_type) * 8) as u8;
-                    if width == 0 || width > unit_bits {
-                        return Err(Diagnostic::error(
-                            "an unsupported bit-field width (roadmap)",
-                        ));
-                    }
-                    let (unit_offset, bit_offset) = match bit_unit {
-                        Some((unit_type, unit_offset, bits_used))
-                            if unit_type == field_type && bits_used + width <= unit_bits =>
-                        {
-                            bit_unit = Some((field_type, unit_offset, bits_used + width));
-                            (unit_offset, bits_used)
-                        }
-                        Some((unit_type, ..)) if unit_type != field_type => {
-                            return Err(Diagnostic::error("a struct mixing adjacent bit-field types is not supported yet (roadmap)"));
-                        }
-                        _ => {
-                            let alignment = type_alignment(field_type)
-                                .max(1)
-                                .max(u32::from(attr_align.unwrap_or(1)));
-                            let unit_offset = align_layout_offset(offset, alignment)?;
-                            offset = unit_offset + type_size(field_type);
-                            alignment_max = alignment_max.max(alignment);
-                            bit_unit = Some((field_type, unit_offset, width));
-                            (unit_offset, 0)
-                        }
-                    };
+                    let (unit_offset, bit_offset) = place_bit_field(
+                        &mut bit_unit,
+                        &mut offset,
+                        &mut alignment_max,
+                        field_type,
+                        width,
+                        u32::from(attr_align.unwrap_or(1)),
+                    )?;
                     layout.fields.insert(
                         field_name,
                         StructField {
@@ -1001,12 +1003,16 @@ impl Parser {
                     }
                     size = total * element_size;
                 }
+                // GCC/CodeWarrior also accepts the attribute on the declarator,
+                // after its name or array dimensions. It aligns this member and
+                // the containing aggregate without changing the member's size.
+                let trailing_attr_align = self.skip_attributes()?;
                 // Natural alignment: to the element's alignment (a struct value to its
                 // own alignment, every other type to its size — for an array, that
                 // element's).
                 let alignment = type_alignment(field_type)
                     .max(1)
-                    .max(u32::from(attr_align.unwrap_or(1)));
+                    .max(merged_attribute_alignment(attr_align, trailing_attr_align));
                 alignment_max = alignment_max.max(alignment);
                 offset = align_layout_offset(offset, alignment)?;
                 layout.fields.insert(

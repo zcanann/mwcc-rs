@@ -673,6 +673,73 @@ mod tests {
     }
 
     #[test]
+    fn honors_alignment_attributes_after_member_declarators() {
+        let source = r#"
+            typedef struct {
+                unsigned char head;
+                int value __attribute__((aligned(32)));
+                unsigned char tail;
+                unsigned char data[7] __attribute__((aligned(16)));
+                int end;
+            } Layout;
+            Layout global;
+            int read_value(Layout* value) { return value->value; }
+            int read_end(Layout* value) { return value->end; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.globals[0].declared_type,
+            mwcc_syntax_trees::Type::Struct { size: 64, align: 32 }
+        ));
+        assert!(matches!(
+            unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 32, .. })
+        ));
+        assert!(matches!(
+            unit.functions[1].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 56, .. })
+        ));
+    }
+
+    #[test]
+    fn lays_out_adjacent_bit_fields_with_different_storage_types() {
+        let source = r#"
+            typedef struct {
+                unsigned short year : 12;
+                unsigned short month : 4;
+                unsigned char day : 5;
+                unsigned char day_pad : 3;
+                unsigned char hour : 5;
+                unsigned char hour_pad : 3;
+                unsigned char quarter : 4;
+                unsigned char active : 1;
+                unsigned char final_pad : 3;
+                unsigned char end;
+            } MixedBits;
+            unsigned char read_end(MixedBits* value) { return value->end; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 5, .. })
+        ));
+    }
+
+    #[test]
     fn resolves_a_virtual_member_to_its_measured_vtable_slot() {
         let source = r#"
             struct Stream {
