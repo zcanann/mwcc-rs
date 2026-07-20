@@ -891,9 +891,16 @@ impl Parser {
             self.function_sources.len(),
             "every parsed function must retain one source-provenance slot"
         );
+        let aggregate_definitions = self
+            .structs
+            .iter()
+            .map(|(name, layout)| (name.clone(), layout.source_definition(name.clone())))
+            .collect();
         Ok(TranslationUnit {
             globals,
             functions,
+            aggregate_definitions,
+            global_aggregate_tags: std::mem::take(&mut self.global_structs),
             prototypes,
             named_prototype_parameters: self.named_prototype_parameters,
             inline_asm_symbols: std::mem::take(&mut self.inline_asm_symbols),

@@ -66,6 +66,40 @@ impl StructLayout {
                 .collect()
         }
     }
+
+    pub(crate) fn source_definition(
+        &self,
+        name: String,
+    ) -> mwcc_syntax_trees::AggregateDefinition {
+        let members = self
+            .fields_in_declaration_order()
+            .into_iter()
+            .map(|(member_name, field)| {
+                let element_size = match field.member_type {
+                    Type::Struct { size, .. } => size,
+                    Type::Pointer(_) | Type::StructPointer { .. } => 4,
+                    other => u32::from(other.width()) / 8,
+                };
+                mwcc_syntax_trees::AggregateMember {
+                    name: member_name.clone(),
+                    declared_type: field.member_type,
+                    offset: field.offset,
+                    aggregate_tag: field.struct_tag.clone(),
+                    array_length: field
+                        .array_bytes
+                        .map(|bytes| bytes / element_size.max(1)),
+                    bit_field: field.bit_field,
+                }
+            })
+            .collect();
+        mwcc_syntax_trees::AggregateDefinition {
+            name,
+            byte_size: self.size,
+            alignment: self.align,
+            is_union: self.is_union,
+            members,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

@@ -2,11 +2,13 @@
 //! before any semantic analysis or lowering. `lib.rs` only re-exports the
 //! representation modules.
 
+mod aggregate;
 mod expression;
 mod function;
 mod operators;
 mod types;
 
+pub use aggregate::{AggregateDefinition, AggregateMember};
 pub use expression::{ConditionalOrigin, Expression};
 pub use function::{
     ArmBody, AsmInstruction, AsmItem, AsmOperand, AsmRelocSuffix, CxxInlineOrdinalFacts, Function,

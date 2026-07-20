@@ -700,6 +700,69 @@ mod tests {
     }
 
     #[test]
+    fn retains_source_aggregate_graph_for_debug_lowering() {
+        let source = r#"
+            typedef unsigned char u8;
+            typedef short s16;
+            typedef struct animation_s {
+                u8* flag_table;
+                s16* data_table;
+                s16* key_table;
+                s16* fixed_table;
+                s16 pad;
+                s16 frames;
+            } Animation;
+            u8 flags[] = { 0, 1 };
+            Animation animation = { flags, 0, 0, 0, -1, 11 };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            3,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(unit.global_aggregate_tags["animation"], "animation_s");
+        let aggregate = &unit.aggregate_definitions["animation_s"];
+        assert_eq!(aggregate.byte_size, 20);
+        assert_eq!(
+            aggregate
+                .members
+                .iter()
+                .map(|member| (member.name.as_str(), member.declared_type, member.offset))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    "flag_table",
+                    mwcc_syntax_trees::Type::Pointer(
+                        mwcc_syntax_trees::Pointee::UnsignedChar,
+                    ),
+                    0,
+                ),
+                (
+                    "data_table",
+                    mwcc_syntax_trees::Type::Pointer(mwcc_syntax_trees::Pointee::Short),
+                    4,
+                ),
+                (
+                    "key_table",
+                    mwcc_syntax_trees::Type::Pointer(mwcc_syntax_trees::Pointee::Short),
+                    8,
+                ),
+                (
+                    "fixed_table",
+                    mwcc_syntax_trees::Type::Pointer(mwcc_syntax_trees::Pointee::Short),
+                    12,
+                ),
+                ("pad", mwcc_syntax_trees::Type::Short, 16),
+                ("frames", mwcc_syntax_trees::Type::Short, 18),
+            ]
+        );
+    }
+
+    #[test]
     fn lowers_a_for_init_declaration_through_block_declaration_rules() {
         let source = r#"
             typedef unsigned int u32;

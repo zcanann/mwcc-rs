@@ -248,6 +248,15 @@ pub struct CxxInlineOrdinalFacts {
 pub struct TranslationUnit {
     pub globals: Vec<GlobalDeclaration>,
     pub functions: Vec<Function>,
+    /// Named aggregate declarations keyed by their parser identity. Executable
+    /// lowering uses the compact resolved [`Type`]; debug lowering follows this
+    /// graph to recover source names, member order, and member types.
+    pub aggregate_definitions:
+        std::collections::HashMap<String, crate::AggregateDefinition>,
+    /// Aggregate identity for globals whose compact type is a struct value or
+    /// pointer. Kept separately so ordinary codegen does not carry debug-only
+    /// declaration names through every expression.
+    pub global_aggregate_tags: std::collections::HashMap<String, String>,
     /// Function prototypes (`type name(params);`) by name, return type, and
     /// parameter types, so a call to an externally-defined function knows its
     /// result type (e.g. a `double`-returning math routine) and its parameter
