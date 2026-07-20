@@ -304,11 +304,20 @@ pub(crate) fn normalize_constructor_declarators(
 }
 
 impl Parser {
+    fn named_namespace_scopes(&self) -> Vec<&str> {
+        self.namespace_stack
+            .iter()
+            .map(String::as_str)
+            .filter(|scope| !scope.is_empty())
+            .collect()
+    }
+
     fn free_cxx_source_name(&self, function: &str) -> String {
-        if self.namespace_stack.is_empty() {
+        let scopes = self.named_namespace_scopes();
+        if scopes.is_empty() {
             function.to_string()
         } else {
-            format!("{}::{function}", self.namespace_stack.join("::"))
+            format!("{}::{function}", scopes.join("::"))
         }
     }
 
@@ -401,10 +410,11 @@ impl Parser {
     }
 
     pub(crate) fn qualify_cxx_class_name(&self, class: &str) -> String {
-        if self.namespace_stack.is_empty() {
+        let scopes = self.named_namespace_scopes();
+        if scopes.is_empty() {
             class.to_string()
         } else {
-            format!("{}::{class}", self.namespace_stack.join("::"))
+            format!("{}::{class}", scopes.join("::"))
         }
     }
 
@@ -954,7 +964,7 @@ impl Parser {
         function: &str,
         explicit_parameters: &[Type],
     ) -> Compilation<String> {
-        let mut scopes: Vec<&str> = self.namespace_stack.iter().map(String::as_str).collect();
+        let mut scopes = self.named_namespace_scopes();
         scopes.push(class);
         mangle_qualified_member_function(&scopes, function, explicit_parameters)
     }
@@ -967,7 +977,7 @@ impl Parser {
         function: &str,
         explicit_parameters: &[CxxParameterType],
     ) -> Compilation<String> {
-        let mut scopes: Vec<&str> = self.namespace_stack.iter().map(String::as_str).collect();
+        let mut scopes = self.named_namespace_scopes();
         scopes.extend(class.split("::"));
         mangle_qualified_member_function_typed(&scopes, function, explicit_parameters)
     }
@@ -978,7 +988,7 @@ impl Parser {
         function: &str,
         explicit_parameters: &[CxxParameterType],
     ) -> Compilation<String> {
-        let mut scopes: Vec<&str> = self.namespace_stack.iter().map(String::as_str).collect();
+        let mut scopes = self.named_namespace_scopes();
         scopes.extend(class.split("::"));
         mangle_qualified_member_function_cv_typed(
             &scopes,
@@ -998,10 +1008,10 @@ impl Parser {
         variadic: bool,
     ) -> Compilation<String> {
         let arguments = encode_function_arguments(explicit_parameters, variadic)?;
-        if self.namespace_stack.is_empty() {
+        let scopes = self.named_namespace_scopes();
+        if scopes.is_empty() {
             Ok(format!("{function}__F{arguments}"))
         } else {
-            let scopes: Vec<&str> = self.namespace_stack.iter().map(String::as_str).collect();
             let qualified_scope = encode_qualified_scope(&scopes)?;
             Ok(format!("{function}__{qualified_scope}F{arguments}"))
         }
@@ -1028,7 +1038,7 @@ impl Parser {
         class: &str,
         member: &str,
     ) -> Compilation<String> {
-        let mut scopes: Vec<&str> = self.namespace_stack.iter().map(String::as_str).collect();
+        let mut scopes = self.named_namespace_scopes();
         scopes.extend(class.split("::"));
         mangle_qualified_data_member(&scopes, member)
     }

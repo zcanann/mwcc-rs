@@ -706,6 +706,37 @@ mod tests {
     }
 
     #[test]
+    fn treats_anonymous_namespace_as_a_transparent_declaration_scope() {
+        let source = r#"
+            namespace {
+                enum Mode { Off, On };
+                int choose(int value) { return value; }
+            }
+            int wrapper(int value) { return choose(value); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            ["choose__Fi", "wrapper__Fi"]
+        );
+        assert!(matches!(
+            unit.functions[1].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Call { name, .. }) if name == "choose__Fi"
+        ));
+    }
+
+    #[test]
     fn records_cxx_inline_ordinal_facts_without_assigning_version_weights() {
         let source = r#"
             class Id {

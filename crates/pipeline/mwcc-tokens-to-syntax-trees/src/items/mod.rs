@@ -595,14 +595,30 @@ impl Parser {
             // CodeWarrior's nested `Qn` encoding, while the existing top-level item
             // parser can continue consuming the declarations inside the wrapper.
             if self.cplusplus && self.eat_word("namespace") {
-                let namespace = self.parse_identifier()?;
-                self.expect(Token::BraceOpen)?;
-                let qualified = if self.namespace_stack.is_empty() {
-                    namespace.clone()
+                // An anonymous namespace has internal linkage but no ABI scope
+                // spelling in this compiler family. Retain an empty stack entry
+                // solely so its closing brace is paired as a declaration scope.
+                let namespace = if *self.peek() == Token::BraceOpen {
+                    String::new()
                 } else {
-                    format!("{}::{namespace}", self.namespace_stack.join("::"))
+                    self.parse_identifier()?
                 };
-                self.cxx_namespaces.insert(qualified);
+                self.expect(Token::BraceOpen)?;
+                if !namespace.is_empty() {
+                    let named_parent = self
+                        .namespace_stack
+                        .iter()
+                        .filter(|scope| !scope.is_empty())
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("::");
+                    let qualified = if named_parent.is_empty() {
+                        namespace.clone()
+                    } else {
+                        format!("{named_parent}::{namespace}")
+                    };
+                    self.cxx_namespaces.insert(qualified);
+                }
                 self.namespace_stack.push(namespace);
                 continue;
             }
