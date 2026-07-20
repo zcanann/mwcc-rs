@@ -3,6 +3,7 @@
 //! Split by family (fire 547); behavior-identical.
 
 mod combine;
+mod bitmask_call_chain;
 mod computed_between_calls;
 mod conditional;
 mod context_callback_handler;

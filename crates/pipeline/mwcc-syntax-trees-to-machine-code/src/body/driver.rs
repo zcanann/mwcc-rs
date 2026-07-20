@@ -2766,6 +2766,11 @@ impl Generator {
             if self.try_callee_saved_memory_local(function)? {
                 return Ok(());
             }
+            // `flags = state->dirty; if (flags & A) callA(); ...; state->dirty = 0;` — one
+            // memory-loaded bitmask retained in r31 across a chain of conditional SDK calls.
+            if self.try_callee_saved_bitmask_call_chain(function)? {
+                return Ok(());
+            }
             // `F t = gf; if (!t) return; t();` — a guarded call through a global fn-pointer.
             if self.try_guarded_global_pointer_call(function)? {
                 return Ok(());
