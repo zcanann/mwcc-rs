@@ -2168,6 +2168,11 @@ impl Generator {
         if self.try_computed_local_stored_returned(function)? {
             return Ok(());
         }
+        // An SDK flush primitive writes a header to a fixed port, emits a modulo-scheduled
+        // eight-word zero-fill loop, then marks the owning global structure flushed.
+        if self.try_fixed_port_zero_fill(function)? {
+            return Ok(());
+        }
         if self.try_value_tracking(function)? {
             return Ok(());
         }
