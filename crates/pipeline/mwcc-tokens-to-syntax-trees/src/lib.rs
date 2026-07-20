@@ -780,6 +780,31 @@ mod tests {
     }
 
     #[test]
+    fn resolves_sizeof_through_pointer_and_array_members() {
+        let source = r#"
+            typedef struct Holder {
+                int* values;
+                char bytes[8];
+            } Holder;
+            int sizes(Holder* holder) {
+                return sizeof(*holder->values) + sizeof(holder->bytes[0]);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::IntegerLiteral(5))
+        ));
+    }
+
+    #[test]
     fn resolves_a_virtual_member_to_its_measured_vtable_slot() {
         let source = r#"
             struct Stream {

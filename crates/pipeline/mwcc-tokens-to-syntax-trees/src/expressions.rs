@@ -150,6 +150,85 @@ pub(crate) fn truncate_to_integer(value: i64, integer_type: Type) -> i64 {
 }
 
 impl Parser {
+    fn sizeof_type_bytes(value_type: Type) -> u32 {
+        match value_type {
+            Type::Struct { size, .. } => size,
+            Type::Pointer(_) | Type::StructPointer { .. } => 4,
+            other => other.width() as u32 / 8,
+        }
+    }
+
+    /// Resolve an expression's byte size without evaluating it. `sizeof` needs
+    /// this small type query to follow pointer provenance through members and
+    /// array decay, where a variable-only lookup loses the pointee type.
+    fn sizeof_expression_bytes(&self, expression: &Expression) -> Option<u32> {
+        match expression {
+            // A local shadows a same-named global. Arrays report their complete
+            // storage here; subscripting is handled by pointed_element_bytes.
+            Expression::Variable(name) => self
+                .variable_array_bytes
+                .get(name)
+                .copied()
+                .or_else(|| {
+                    self.variable_types
+                        .get(name)
+                        .map(|value_type| Self::sizeof_type_bytes(*value_type))
+                })
+                .or_else(|| self.global_sizes.get(name).map(|&(total, _)| total)),
+            Expression::Member { member_type, .. } => {
+                Some(Self::sizeof_type_bytes(*member_type))
+            }
+            // A bare array member reports the whole member, while a subscript
+            // through it asks pointed_element_bytes for one element.
+            Expression::MemberAddress { .. } => {
+                self.last_member_array_bytes.map(u32::from)
+            }
+            Expression::Cast { target_type, .. } => {
+                Some(Self::sizeof_type_bytes(*target_type))
+            }
+            Expression::Dereference { pointer } | Expression::Index { base: pointer, .. } => {
+                self.pointed_element_bytes(pointer)
+            }
+            _ => None,
+        }
+    }
+
+    fn pointed_element_bytes(&self, pointer: &Expression) -> Option<u32> {
+        match pointer {
+            Expression::Variable(name) if self.variable_array_bytes.contains_key(name) => self
+                .variable_types
+                .get(name)
+                .map(|element| Self::sizeof_type_bytes(*element)),
+            Expression::Variable(name) if self.variable_types.contains_key(name) => {
+                match self.variable_types.get(name) {
+                    Some(Type::Pointer(pointee)) => {
+                        Some(Self::sizeof_type_bytes(pointee.element()))
+                    }
+                    Some(Type::StructPointer { element_size }) => Some(*element_size),
+                    _ => None,
+                }
+            }
+            Expression::Variable(name) => self
+                .global_sizes
+                .get(name)
+                .and_then(|&(_, array_element)| array_element),
+            Expression::Member { member_type, .. }
+            | Expression::Cast {
+                target_type: member_type,
+                ..
+            } => match member_type {
+                Type::Pointer(pointee) => Some(Self::sizeof_type_bytes(pointee.element())),
+                Type::StructPointer { element_size } => Some(*element_size),
+                _ => None,
+            },
+            Expression::MemberAddress { element, .. } => {
+                Some(Self::sizeof_type_bytes(element.element()))
+            }
+            Expression::AddressOf { operand } => self.sizeof_expression_bytes(operand),
+            _ => None,
+        }
+    }
+
     /// Resolve a bare name through the active block-scope shadow renames
     /// (innermost wins); names with no active shadow pass through.
     pub(crate) fn resolve_block_rename(&self, name: String) -> String {
@@ -440,65 +519,7 @@ impl Parser {
             } else {
                 self.factor()?
             };
-            // The byte size of a type: a struct uses its laid-out size, a pointer is 4, a scalar is
-            // its width/8.
-            let size_of = |value_type: Type| -> u32 {
-                match value_type {
-                    Type::Struct { size, .. } => size as u32,
-                    Type::Pointer(_) | Type::StructPointer { .. } => 4,
-                    other => other.width() as u32 / 8,
-                }
-            };
-            let bytes = match &operand {
-                // A local (parameter/scalar/array) shadows a global of the same name, so consult the
-                // per-function maps first, then the file-scope `global_sizes` (total byte size).
-                Expression::Variable(name) => self
-                    .variable_array_bytes
-                    .get(name)
-                    .copied()
-                    .or_else(|| {
-                        self.variable_types
-                            .get(name)
-                            .map(|variable_type| size_of(*variable_type))
-                    })
-                    .or_else(|| self.global_sizes.get(name).map(|&(total, _)| total)),
-                Expression::Member { member_type, .. } => Some(size_of(*member_type)),
-                // An array member decayed to its address — the side channel holds
-                // the array's TOTAL byte size (`sizeof(f.char_set)` = 32, not 4).
-                Expression::MemberAddress { .. } => {
-                    self.last_member_array_bytes.map(|bytes| bytes as u32)
-                }
-                Expression::Cast { target_type, .. } => Some(size_of(*target_type)),
-                // `*p` / `a[i]`: the size of the pointed-to element. For an ARRAY base the element
-                // type is in variable_types (local) or global_sizes (file-scope); for a POINTER base
-                // it is the pointee.
-                Expression::Dereference { pointer } | Expression::Index { base: pointer, .. } => {
-                    match pointer.as_ref() {
-                        Expression::Variable(name)
-                            if self.variable_array_bytes.contains_key(name) =>
-                        {
-                            self.variable_types
-                                .get(name)
-                                .map(|element_type| size_of(*element_type))
-                        }
-                        Expression::Variable(name) if self.variable_types.contains_key(name) => {
-                            match self.variable_types.get(name) {
-                                Some(Type::Pointer(pointee)) => Some(size_of(pointee.element())),
-                                Some(Type::StructPointer { element_size }) => {
-                                    Some(*element_size as u32)
-                                }
-                                _ => None,
-                            }
-                        }
-                        Expression::Variable(name) => self
-                            .global_sizes
-                            .get(name)
-                            .and_then(|&(_, array_element)| array_element),
-                        _ => None,
-                    }
-                }
-                _ => None,
-            };
+            let bytes = self.sizeof_expression_bytes(&operand);
             if let Some(bytes) = bytes {
                 return Ok(Expression::IntegerLiteral(bytes as i64));
             }
