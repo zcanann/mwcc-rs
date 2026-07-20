@@ -3580,6 +3580,13 @@ impl Parser {
     }
 
     pub(crate) fn peek_is_type(&self) -> bool {
+        if self.cplusplus
+            && matches!(self.peek(), Token::Identifier(name) if self.struct_typedefs.contains_key(name))
+            && *self.peek_at(1) == Token::Colon
+            && *self.peek_at(2) == Token::Colon
+        {
+            return false;
+        }
         self.token_starts_type(self.peek())
     }
 

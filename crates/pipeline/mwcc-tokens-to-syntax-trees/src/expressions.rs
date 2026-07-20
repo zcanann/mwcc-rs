@@ -732,7 +732,11 @@ impl Parser {
         // `base.field`, left-associative. The struct tag is threaded through the
         // chain so `a->b->c` resolves each `->` in the right struct layout.
         let mut struct_tag = match &expression {
-            Expression::Variable(name) => self.variable_structs.get(name).cloned(),
+            Expression::Variable(name) => self
+                .variable_structs
+                .get(name)
+                .or_else(|| self.global_structs.get(name))
+                .cloned(),
             // `((struct S *)x)->field`: the tag came from the cast's target type — from
             // this factor's own cast, or (via the parens) the inner factor's recorded
             // `expression_struct_tag`.
@@ -907,6 +911,36 @@ impl Parser {
                             "member '{field}' on a non-struct-pointer base: {expression:?}"
                         ))
                     })?;
+                    if *self.peek() == Token::ParenOpen {
+                        // A non-virtual instance method is a direct call with
+                        // the object pointer prepended as the implicit `this`.
+                        // Virtual declarations are deliberately absent from the
+                        // recovered method map and continue to defer below.
+                        let mut arguments = Vec::new();
+                        self.advance();
+                        if *self.peek() != Token::ParenClose {
+                            loop {
+                                arguments.push(self.expression()?);
+                                if *self.peek() == Token::Comma {
+                                    self.advance();
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                        self.expect(Token::ParenClose)?;
+                        let Some(name) =
+                            self.resolve_instance_member_call(&tag, &field, arguments.len())?
+                        else {
+                            return Err(Diagnostic::error(format!(
+                                "C++ member call '{tag}::{field}' is virtual, inline, or unavailable (roadmap)"
+                            )));
+                        };
+                        arguments.insert(0, expression);
+                        expression = Expression::Call { name, arguments };
+                        struct_tag = None;
+                        continue;
+                    }
                     let layout = self.structs.get(&tag).ok_or_else(|| {
                         Diagnostic::error(format!("struct '{tag}' is not declared"))
                     })?;

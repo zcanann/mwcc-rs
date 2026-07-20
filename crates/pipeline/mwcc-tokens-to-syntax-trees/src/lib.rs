@@ -113,6 +113,7 @@ pub fn parse_located_translation_unit(
         inline_template_members: std::collections::HashSet::new(),
         inline_cxx_members: std::collections::HashSet::new(),
         cxx_static_methods: HashMap::new(),
+        cxx_instance_methods: HashMap::new(),
         template_aliases: HashMap::new(),
         variable_structs: HashMap::new(),
         function_return_structs: HashMap::new(),
@@ -341,6 +342,31 @@ mod tests {
             [mwcc_syntax_trees::Statement::Expression(
                 mwcc_syntax_trees::Expression::Call { name, arguments }
             )] if name == "halt__6SystemFPciPc" && arguments.len() == 3
+        ));
+    }
+
+    #[test]
+    fn resolves_a_variadic_member_call_through_a_global_class_pointer() {
+        let source = r#"
+            struct Stream { void print(char*, ...); };
+            extern Stream* sysCon;
+            void caller(char* text) { sysCon->print("%s", text); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.prototypes[0].0, "print__6StreamFPce");
+        assert!(unit.variadic_definitions.contains("print__6StreamFPce"));
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Call { name, arguments }
+            )] if name == "print__6StreamFPce" && arguments.len() == 3
         ));
     }
 

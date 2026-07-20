@@ -30,6 +30,16 @@ pub(crate) struct MemberMethod {
     pub(crate) is_inline: bool,
 }
 
+/// A callable class declaration recovered without requiring class layout.
+/// The ready-mangled name keeps overload selection independent of expression
+/// type inference; fixed arity plus the variadic bit is enough to reject
+/// ambiguous calls safely.
+pub(crate) struct RecoveredCxxMethod {
+    pub(crate) mangled: String,
+    pub(crate) fixed_parameter_count: usize,
+    pub(crate) variadic: bool,
+}
+
 pub(crate) struct BaseClass {
     pub(crate) name: String,
 }
@@ -154,10 +164,17 @@ impl Parser {
         if !is_aggregate {
             return Vec::new();
         }
-        let Some(Token::Identifier(class)) = self.tokens.get(start + 1) else {
+        let Some(Token::Identifier(source_class)) = self.tokens.get(start + 1) else {
             return Vec::new();
         };
-        let class = self.qualify_cxx_class_name(class);
+        let source_class = source_class.clone();
+        let class = self.qualify_cxx_class_name(&source_class);
+        // In C++, the class tag is also an ordinary type name. Preserve that
+        // fact even when layout recovery later rejects the body, so pointers to
+        // the class retain their semantic tag.
+        self.struct_typedefs
+            .entry(source_class)
+            .or_insert_with(|| class.clone());
         let mut index = start + 2;
         while !matches!(
             self.tokens.get(index),
@@ -170,15 +187,19 @@ impl Parser {
         }
 
         index += 1;
+        let body_start = index;
         let mut prototypes = Vec::new();
         let mut brace_depth = 1i32;
         let mut paren_depth = 0i32;
         let mut explicitly_inline = false;
         let mut member_name: Option<String> = None;
         while let Some(token) = self.tokens.get(index) {
-            let is_static_member = brace_depth == 1
+            let begins_member = brace_depth == 1
                 && paren_depth == 0
-                && matches!(token, Token::Identifier(word) if word == "static");
+                && (index == body_start
+                    || matches!(self.tokens.get(index.wrapping_sub(1)), Some(Token::Semicolon | Token::BraceClose))
+                    || (matches!(self.tokens.get(index.wrapping_sub(1)), Some(Token::Colon))
+                        && matches!(self.tokens.get(index.wrapping_sub(2)), Some(Token::Identifier(access)) if matches!(access.as_str(), "public" | "private" | "protected"))));
             if brace_depth == 1 && paren_depth == 0 {
                 if matches!(token, Token::Identifier(word) if word == "inline" || word == "__inline")
                 {
@@ -229,8 +250,8 @@ impl Parser {
                 Token::EndOfFile => return prototypes,
                 _ => {}
             }
-            if is_static_member {
-                if let Some(prototype) = self.capture_static_cxx_method(index, &class) {
+            if begins_member {
+                if let Some(prototype) = self.capture_cxx_method(index, &class) {
                     prototypes.push(prototype);
                 }
             }
@@ -239,12 +260,13 @@ impl Parser {
         prototypes
     }
 
-    /// Speculatively reuse the ordinary type/declarator parser on a single
-    /// `static Return member(params);` declaration. The main cursor and its
-    /// transient type side channels are restored regardless of success.
-    fn capture_static_cxx_method(
+    /// Speculatively reuse the ordinary type/declarator parser on one class
+    /// method declaration. The main cursor and transient type side channels are
+    /// restored regardless of success; fields, constructors, definitions, and
+    /// unsupported reference-valued signatures simply produce no result.
+    fn capture_cxx_method(
         &mut self,
-        static_index: usize,
+        declaration_index: usize,
         class: &str,
     ) -> Option<(String, Type, Vec<Type>)> {
         let saved_position = self.position;
@@ -254,14 +276,67 @@ impl Parser {
         let saved_pointer_const = self.last_pointer_const;
         let saved_volatile = self.last_type_was_volatile;
 
-        self.position = static_index + 1;
-        let recovered = (|| -> Compilation<(String, Type, Vec<Type>)> {
+        self.position = declaration_index;
+        let recovered = (|| -> Compilation<(String, Type, Vec<Type>, bool, bool, bool)> {
+            let mut is_static = false;
+            let mut is_virtual = false;
+            let mut is_inline = false;
+            while let Token::Identifier(qualifier) = self.peek() {
+                match qualifier.as_str() {
+                    "static" => is_static = true,
+                    "virtual" => is_virtual = true,
+                    "inline" | "__inline" => is_inline = true,
+                    _ => break,
+                }
+                self.advance();
+            }
             let return_type = self.parse_type()?;
             self.last_struct_tag.take();
             self.last_array_typedef.take();
             let member = self.parse_identifier()?;
-            let parameters = self.parse_class_parameter_types()?;
-            Ok((member, return_type, parameters))
+            self.expect(Token::ParenOpen)?;
+            let mut parameters = Vec::new();
+            let mut variadic = false;
+            if *self.peek() == Token::KeywordVoid && *self.peek_at(1) == Token::ParenClose {
+                self.advance();
+            } else {
+                while *self.peek() != Token::ParenClose {
+                    if matches!(
+                        self.tokens.get(self.position..self.position + 3),
+                        Some([Token::Dot, Token::Dot, Token::Dot])
+                    ) {
+                        self.position += 3;
+                        variadic = true;
+                        break;
+                    }
+                    let parameter_type = self.parse_type()?;
+                    self.last_struct_tag.take();
+                    self.last_array_typedef.take();
+                    if matches!(self.peek(), Token::Identifier(_)) {
+                        self.advance();
+                    }
+                    parameters.push(parameter_type);
+                    if !self.eat_keyword(Token::Comma) {
+                        break;
+                    }
+                }
+            }
+            self.expect(Token::ParenClose)?;
+            while matches!(self.peek(), Token::Identifier(word) if matches!(word.as_str(), "const" | "override" | "final"))
+            {
+                self.advance();
+            }
+            if *self.peek() != Token::Semicolon {
+                return Err(Diagnostic::error("not a class method declaration"));
+            }
+            Ok((
+                member,
+                return_type,
+                parameters,
+                variadic,
+                is_static,
+                is_virtual || is_inline,
+            ))
         })();
 
         self.position = saved_position;
@@ -271,17 +346,45 @@ impl Parser {
         self.last_pointer_const = saved_pointer_const;
         self.last_type_was_volatile = saved_volatile;
 
-        if let Ok((member, return_type, parameters)) = recovered {
-            let overloads = self
-                .cxx_static_methods
-                .entry((class.to_string(), member.clone()))
-                .or_default();
-            if !overloads.contains(&parameters) {
-                overloads.push(parameters.clone());
-            }
+        if let Ok((member, return_type, parameters, variadic, is_static, skip_direct_call)) =
+            recovered
+        {
             let scopes: Vec<&str> = class.split("::").collect();
-            let mangled = mangle_qualified_member_function(&scopes, &member, &parameters).ok()?;
-            return Some((mangled, return_type, parameters));
+            let mangled = mangle_qualified_member_function_variadic(
+                &scopes,
+                &member,
+                &parameters,
+                variadic,
+            )
+            .ok()?;
+            let method = RecoveredCxxMethod {
+                mangled: mangled.clone(),
+                fixed_parameter_count: parameters.len(),
+                variadic,
+            };
+            let prototype_parameters = if is_static {
+                self.cxx_static_methods
+                    .entry((class.to_string(), member))
+                    .or_default()
+                    .push(method);
+                parameters
+            } else if !skip_direct_call {
+                self.cxx_instance_methods
+                    .entry((class.to_string(), member))
+                    .or_default()
+                    .push(method);
+                let mut prototype_parameters = vec![Type::StructPointer {
+                    element_size: self.structs.get(class).map_or(0, |layout| layout.size),
+                }];
+                prototype_parameters.extend(parameters);
+                prototype_parameters
+            } else {
+                return None;
+            };
+            if variadic {
+                self.variadic_definitions.insert(mangled.clone());
+            }
+            return Some((mangled, return_type, prototype_parameters));
         }
         None
     }
@@ -294,21 +397,59 @@ impl Parser {
         member: &str,
         argument_count: usize,
     ) -> Compilation<String> {
-        let class = self.qualify_cxx_class_name(class);
-        let candidates: Vec<&Vec<Type>> = self
+        let source_class = class;
+        let class = self.qualify_cxx_class_name(source_class);
+        let candidates: Vec<&RecoveredCxxMethod> = self
             .cxx_static_methods
             .get(&(class.clone(), member.to_string()))
+            .or_else(|| {
+                self.cxx_static_methods
+                    .get(&(source_class.to_string(), member.to_string()))
+            })
             .into_iter()
             .flatten()
-            .filter(|parameters| parameters.len() == argument_count)
+            .filter(|method| {
+                method.fixed_parameter_count == argument_count
+                    || (method.variadic && argument_count >= method.fixed_parameter_count)
+            })
             .collect();
         if candidates.len() != 1 {
             return Err(Diagnostic::error(format!(
                 "static C++ member call '{class}::{member}' is ambiguous or unavailable (roadmap)"
             )));
         }
-        let scopes: Vec<&str> = class.split("::").collect();
-        mangle_qualified_member_function(&scopes, member, candidates[0])
+        Ok(candidates[0].mangled.clone())
+    }
+
+    pub(crate) fn resolve_instance_member_call(
+        &self,
+        class: &str,
+        member: &str,
+        argument_count: usize,
+    ) -> Compilation<Option<String>> {
+        let source_class = class;
+        let class = self.qualify_cxx_class_name(source_class);
+        let candidates: Vec<&RecoveredCxxMethod> = self
+            .cxx_instance_methods
+            .get(&(class.clone(), member.to_string()))
+            .or_else(|| {
+                self.cxx_instance_methods
+                    .get(&(source_class.to_string(), member.to_string()))
+            })
+            .into_iter()
+            .flatten()
+            .filter(|method| {
+                method.fixed_parameter_count == argument_count
+                    || (method.variadic && argument_count >= method.fixed_parameter_count)
+            })
+            .collect();
+        match candidates.as_slice() {
+            [] => Ok(None),
+            [method] => Ok(Some(method.mangled.clone())),
+            _ => Err(Diagnostic::error(format!(
+                "C++ member call '{class}::{member}' is ambiguous (roadmap)"
+            ))),
+        }
     }
 
     /// Mangle a member declared in the active namespace scope. Class layouts
@@ -742,10 +883,19 @@ pub(crate) fn mangle_qualified_member_function(
     function: &str,
     explicit_parameters: &[Type],
 ) -> Compilation<String> {
+    mangle_qualified_member_function_variadic(scopes, function, explicit_parameters, false)
+}
+
+fn mangle_qualified_member_function_variadic(
+    scopes: &[&str],
+    function: &str,
+    explicit_parameters: &[Type],
+    variadic: bool,
+) -> Compilation<String> {
     if scopes.is_empty() || scopes.iter().any(|scope| scope.is_empty()) || function.is_empty() {
         return Err(Diagnostic::error("an empty C++ member name is invalid"));
     }
-    let arguments = if explicit_parameters.is_empty() {
+    let mut arguments = if explicit_parameters.is_empty() && !variadic {
         "v".to_string()
     } else {
         explicit_parameters
@@ -755,6 +905,9 @@ pub(crate) fn mangle_qualified_member_function(
             .collect::<Compilation<Vec<_>>>()?
             .concat()
     };
+    if variadic {
+        arguments.push('e');
+    }
     let qualified_scope = if scopes.len() == 1 {
         format!("{}{}", scopes[0].len(), scopes[0])
     } else {

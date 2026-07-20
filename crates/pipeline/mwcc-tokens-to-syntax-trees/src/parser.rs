@@ -75,7 +75,12 @@ pub(crate) struct Parser {
     /// Static class-member overloads recovered from aggregate declarations,
     /// keyed by fully-qualified `(class, member)` name. Calls carry no implicit
     /// `this`, but still require CodeWarrior member-function mangling.
-    pub(crate) cxx_static_methods: HashMap<(String, String), Vec<Vec<Type>>>,
+    pub(crate) cxx_static_methods:
+        HashMap<(String, String), Vec<crate::cxx::RecoveredCxxMethod>>,
+    /// Non-virtual, non-inline instance methods recovered from skipped class
+    /// bodies. These support direct `object->member(args)` calls without layout.
+    pub(crate) cxx_instance_methods:
+        HashMap<(String, String), Vec<crate::cxx::RecoveredCxxMethod>>,
     /// Concrete template typedef alias -> primary template name. This is kept
     /// separately from layout aliases because nested/multi-argument templates
     /// may be opaque for layout while still carrying inline-member semantics.
