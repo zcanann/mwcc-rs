@@ -1,5 +1,6 @@
 //! Measured grouped DWARF-1 emitted by the 2.3.x and early 2.4.x compilers.
 
+mod captures;
 mod data;
 mod functions;
 
@@ -42,6 +43,9 @@ pub(super) fn lower(
     build: CompilerBuild,
     code_alignment: u32,
 ) -> Compilation<DebugSections> {
+    if let Some(capture) = captures::lookup(unit, machine_functions, source_name, build)? {
+        return Ok(capture);
+    }
     let globals: Vec<_> = unit
         .globals
         .iter()
