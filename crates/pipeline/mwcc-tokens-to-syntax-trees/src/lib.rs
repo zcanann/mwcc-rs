@@ -141,6 +141,8 @@ pub fn parse_located_translation_unit(
         function_pointer_typedefs: std::collections::HashSet::new(),
         last_type_was_const: false,
         last_pointer_const: false,
+        last_cxx_pointer_depth: 0,
+        last_cxx_pointer_base: None,
         last_type_was_volatile: false,
         inline_asm_symbols: Vec::new(),
         plain_inline_asm_helpers: Vec::new(),
@@ -1580,6 +1582,24 @@ mod tests {
         .unwrap();
         assert_eq!(unit.functions.len(), 1);
         assert_eq!(unit.functions[0].name, "value__Fi");
+    }
+
+    #[test]
+    fn retains_double_pointer_identity_in_cxx_function_mangling() {
+        let source = r#"
+            char* xStrTok(char* string, const char* control, char** nextoken) {
+                return string;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.functions[0].name, "xStrTok__FPcPCcPPc");
     }
 
     #[test]

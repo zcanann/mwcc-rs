@@ -2337,6 +2337,8 @@ impl Parser {
                         self.last_type_was_aggregate_reference;
                     let cxx_pointee_const = self.last_type_was_const;
                     let cxx_pointer_const = self.last_pointer_const;
+                    let cxx_pointer_depth = self.last_cxx_pointer_depth;
+                    let cxx_pointer_base = self.last_cxx_pointer_base;
                     // An array-typedef (`Mtx m`) or row-pointer-typedef (`MtxPtr m`)
                     // parameter: the type already decayed to the element pointer;
                     // keep `(element, inner)` to record the row stride under the
@@ -2457,7 +2459,7 @@ impl Parser {
                             cxx_source_is_aggregate_value,
                             cxx_pointee_const,
                             cxx_pointer_const,
-                        ));
+                        ).with_pointer_shape(cxx_pointer_depth, cxx_pointer_base));
                     }
                     if *self.peek() == Token::Comma {
                         self.advance();

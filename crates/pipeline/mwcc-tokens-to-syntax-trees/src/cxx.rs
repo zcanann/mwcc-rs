@@ -109,9 +109,10 @@ pub(crate) struct CxxParameterType {
     qualified_name: Option<String>,
     is_wchar: bool,
     is_reference: bool,
-    source_is_aggregate_value: bool,
     pointee_const: bool,
     pointer_const: bool,
+    pointer_depth: u8,
+    pointer_base: Option<Type>,
 }
 
 impl CxxParameterType {
@@ -129,10 +130,26 @@ impl CxxParameterType {
             qualified_name,
             is_wchar,
             is_reference,
-            source_is_aggregate_value,
             pointee_const,
             pointer_const,
+            pointer_depth: u8::from(
+                !source_is_aggregate_value
+                    && matches!(source_type, Type::Pointer(_) | Type::StructPointer { .. }),
+            ),
+            pointer_base: None,
         }
+    }
+
+    pub(crate) fn with_pointer_shape(
+        mut self,
+        pointer_depth: u8,
+        pointer_base: Option<Type>,
+    ) -> Self {
+        if pointer_depth != 0 {
+            self.pointer_depth = pointer_depth;
+            self.pointer_base = pointer_base;
+        }
+        self
     }
 
     pub(crate) fn plain(source_type: Type) -> Self {
@@ -657,6 +674,8 @@ impl Parser {
         let saved_array_typedef = self.last_array_typedef;
         let saved_type_const = self.last_type_was_const;
         let saved_pointer_const = self.last_pointer_const;
+        let saved_cxx_pointer_depth = self.last_cxx_pointer_depth;
+        let saved_cxx_pointer_base = self.last_cxx_pointer_base;
         let saved_volatile = self.last_type_was_volatile;
 
         self.position = declaration_index;
@@ -740,6 +759,8 @@ impl Parser {
                     self.last_array_typedef.take();
                     let pointee_const = self.last_type_was_const;
                     let pointer_const = self.last_pointer_const;
+                    let pointer_depth = self.last_cxx_pointer_depth;
+                    let pointer_base = self.last_cxx_pointer_base;
                     let is_reference = self.eat_keyword(Token::Ampersand);
                     let cxx_storage_type = parameter_type;
                     if is_reference {
@@ -756,7 +777,7 @@ impl Parser {
                         source_is_aggregate_value,
                         pointee_const,
                         pointer_const,
-                    ));
+                    ).with_pointer_shape(pointer_depth, pointer_base));
                     parameters.push(parameter_type);
                     if !self.eat_keyword(Token::Comma) {
                         break;
@@ -796,6 +817,8 @@ impl Parser {
         self.last_array_typedef = saved_array_typedef;
         self.last_type_was_const = saved_type_const;
         self.last_pointer_const = saved_pointer_const;
+        self.last_cxx_pointer_depth = saved_cxx_pointer_depth;
+        self.last_cxx_pointer_base = saved_cxx_pointer_base;
         self.last_type_was_volatile = saved_volatile;
 
         if let Ok((
@@ -1351,6 +1374,8 @@ impl Parser {
                 });
                 let pointee_const = self.last_type_was_const;
                 let pointer_const = self.last_pointer_const;
+                let pointer_depth = self.last_cxx_pointer_depth;
+                let pointer_base = self.last_cxx_pointer_base;
                 let is_reference = self.eat_keyword(Token::Ampersand);
                 if is_reference {
                     parameter_type = Type::StructPointer { element_size: 0 };
@@ -1367,7 +1392,7 @@ impl Parser {
                     source_is_aggregate_value,
                     pointee_const,
                     pointer_const,
-                ));
+                ).with_pointer_shape(pointer_depth, pointer_base));
                 if !self.eat_keyword(Token::Comma) {
                     break;
                 }
@@ -1672,11 +1697,8 @@ fn encode_type(parameter: &CxxParameterType) -> Compilation<String> {
             code.push('C');
         }
     }
-    let is_pointer = !parameter.source_is_aggregate_value && matches!(
-        parameter.source_type,
-        Type::Pointer(_) | Type::StructPointer { .. }
-    );
-    if is_pointer {
+    let is_pointer = parameter.pointer_depth != 0;
+    for _ in 0..parameter.pointer_depth {
         code.push('P');
     }
     // Leading const binds the referred object or a pointer's pointee. Top-level
@@ -1692,7 +1714,8 @@ fn encode_type(parameter: &CxxParameterType) -> Compilation<String> {
         code.push_str(&encode_qualified_type_name(name)?);
         return Ok(code);
     }
-    let base = match parameter.source_type {
+    let encoded_source = parameter.pointer_base.unwrap_or(parameter.source_type);
+    let base = match encoded_source {
         Type::Int => "i".to_string(),
         Type::UnsignedInt => "Ui".to_string(),
         Type::Char => "c".to_string(),
@@ -1703,11 +1726,22 @@ fn encode_type(parameter: &CxxParameterType) -> Compilation<String> {
         Type::Double => "d".to_string(),
         Type::LongLong => "x".to_string(),
         Type::UnsignedLongLong => "Ux".to_string(),
-        Type::Pointer(pointee) => encode_pointee(pointee)?.to_string(),
-        Type::Void => {
+        Type::Pointer(pointee) if parameter.pointer_base.is_none() => {
+            encode_pointee(pointee)?.to_string()
+        }
+        Type::Pointer(_) => {
             return Err(Diagnostic::error(
-                "a named void C++ parameter is not supported",
+                "a nested C++ pointer base is not supported yet (roadmap)",
             ))
+        }
+        Type::Void => {
+            if is_pointer {
+                "v".to_string()
+            } else {
+                return Err(Diagnostic::error(
+                    "a named void C++ parameter is not supported",
+                ));
+            }
         }
         Type::StructPointer { .. } | Type::Struct { .. } => {
             return Err(Diagnostic::error(
@@ -1877,6 +1911,32 @@ mod tests {
             .unwrap(),
             "q__1AFRCPCQ28JUtility6TColor"
         );
+    }
+
+    #[test]
+    fn mangles_scalar_pointer_depth_without_widening_the_storage_ir() {
+        let char_pointer_pointer = CxxParameterType::parsed(
+            Type::Pointer(Pointee::Pointer),
+            None,
+            false,
+            false,
+            false,
+            false,
+            false,
+        )
+        .with_pointer_shape(2, Some(Type::Char));
+        let void_pointer = CxxParameterType::parsed(
+            Type::Pointer(Pointee::Int),
+            None,
+            false,
+            false,
+            false,
+            false,
+            false,
+        )
+        .with_pointer_shape(1, Some(Type::Void));
+        assert_eq!(encode_type(&char_pointer_pointer).unwrap(), "PPc");
+        assert_eq!(encode_type(&void_pointer).unwrap(), "Pv");
     }
 
     #[test]

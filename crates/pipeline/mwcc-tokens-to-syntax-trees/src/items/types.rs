@@ -77,6 +77,8 @@ impl Parser {
         self.last_type_was_wchar = false;
         self.last_type_was_aggregate_reference = false;
         self.last_pointer_const = false;
+        self.last_cxx_pointer_depth = 0;
+        self.last_cxx_pointer_base = None;
         // The array-typedef marker is only ever set by the LAST parse_type call, so a
         // consumer that `.take()`s right after its own call can never read a stale one.
         self.last_array_typedef = None;
@@ -489,6 +491,8 @@ impl Parser {
         // `const void*` (pointee-const) — tracked separately in `last_pointer_const`.
         if *self.peek() == Token::Star {
             self.advance();
+            self.last_cxx_pointer_depth = 1;
+            self.last_cxx_pointer_base = Some(base);
             if matches!(self.peek(), Token::Identifier(word) if word == "const") {
                 self.last_pointer_const = true;
             }
@@ -501,6 +505,7 @@ impl Parser {
             // `Pointer` — their `**pp` would need `lbz`/`lha`/`lfs`, so they defer.
             if *self.peek() == Token::Star {
                 self.advance();
+                self.last_cxx_pointer_depth = 2;
                 self.consume_trailing_qualifiers();
                 let inner = match base {
                     Type::Int | Type::UnsignedInt => Pointee::WordPointer,

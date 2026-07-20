@@ -205,6 +205,11 @@ pub(crate) struct Parser {
     /// OBJECT is const (read-only), distinct from a leading `const void* p` where
     /// only the pointee is const. The global path routes the former to `.sdata2`.
     pub(crate) last_pointer_const: bool,
+    /// Source-only C++ declarator identity for the most recent `parse_type`.
+    /// The storage IR intentionally flattens `T**` to a word pointer, but name
+    /// mangling still needs both pointer depth and the innermost scalar type.
+    pub(crate) last_cxx_pointer_depth: u8,
+    pub(crate) last_cxx_pointer_base: Option<Type>,
     /// Set by `skip_type_qualifiers` when the just-parsed type carried `volatile`.
     /// Layout and a simple access ignore it; a value-tracked local guards on it and
     /// defers (a volatile local's access must not be elided/folded).
