@@ -1528,6 +1528,46 @@ mod tests {
     }
 
     #[test]
+    fn serializes_nested_block_static_scalar_and_struct_initializers() {
+        let source = r#"
+            typedef struct Color {
+                unsigned char r, g, b, a;
+            } Color;
+            void initialize(void) {
+                int before = 0;
+                {
+                    static Color light = {90, 90, 45, 255};
+                    static unsigned command = 0 << 24;
+                    static unsigned marker = 1 << 24;
+                }
+                before = 1;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let locals = &unit.functions[0].locals;
+        let light = locals.iter().find(|local| local.name == "light").unwrap();
+        let command = locals
+            .iter()
+            .find(|local| local.name == "command")
+            .unwrap();
+        let marker = locals
+            .iter()
+            .find(|local| local.name == "marker")
+            .unwrap();
+        assert_eq!(light.data_bytes.as_deref(), Some(&[90, 90, 45, 255][..]));
+        assert_eq!(command.data_bytes.as_deref(), Some(&[0, 0, 0, 0][..]));
+        assert_eq!(marker.data_bytes.as_deref(), Some(&[1, 0, 0, 0][..]));
+        assert!(light.is_static && command.is_static && marker.is_static);
+    }
+
+    #[test]
     fn resolves_a_virtual_member_to_its_measured_vtable_slot() {
         let source = r#"
             struct Stream {

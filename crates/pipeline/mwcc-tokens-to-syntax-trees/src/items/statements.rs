@@ -692,17 +692,6 @@ impl Parser {
                     }
                     continue;
                 }
-                block_locals.push(LocalDeclaration {
-                    declared_type,
-                    name: name.clone(),
-                    initializer: None,
-                    array_length: None,
-                    is_static,
-                    data_bytes: None,
-                    data_relocations: Vec::new(),
-                    is_const: false,
-                    row_bytes: None,
-                });
                 local_names.insert(name.clone());
                 // Register the type so `sizeof(s_h)` (fdlibm's __HI/__LO
                 // macros inside e_pow's inner block) resolves at parse time.
@@ -710,10 +699,41 @@ impl Parser {
                 if let Some(tag) = &struct_tag {
                     self.variable_structs.insert(name.clone(), tag.clone());
                 }
-                if *self.peek() == Token::Equals && is_static {
-                    return Err(Diagnostic::error("a scalar static local initializer in a nested block is not supported yet (roadmap)"));
-                }
-                if self.eat_keyword(Token::Equals) {
+                let mut data_bytes = None;
+                let mut data_relocations = Vec::new();
+                let initializer = if is_static && self.eat_keyword(Token::Equals) {
+                    if *self.peek() == Token::BraceOpen
+                        && matches!(declared_type, Type::Struct { .. })
+                        && struct_tag.is_some()
+                    {
+                        data_bytes = Some(self.parse_one_struct_relocated(
+                            struct_tag.as_ref().unwrap(),
+                            0,
+                            &mut data_relocations,
+                        )?);
+                    } else if matches!(
+                        declared_type,
+                        Type::Int
+                            | Type::UnsignedInt
+                            | Type::Char
+                            | Type::UnsignedChar
+                            | Type::Short
+                            | Type::UnsignedShort
+                            | Type::Float
+                            | Type::Double
+                            | Type::LongLong
+                            | Type::UnsignedLongLong
+                    ) {
+                        let value = self.parse_scalar_constant(declared_type)? as u64;
+                        let width = type_size(declared_type) as usize;
+                        data_bytes = Some(value.to_be_bytes()[8 - width..].to_vec());
+                    } else {
+                        return Err(Diagnostic::error(
+                            "this nested static-local initializer needs relocation-aware storage (roadmap)",
+                        ));
+                    }
+                    None
+                } else if self.eat_keyword(Token::Equals) {
                     // A declaration inside a nested block may use the same
                     // braced aggregate syntax as a function-scope local. Keep
                     // it at the declaration's executable position as an
@@ -725,8 +745,25 @@ impl Parser {
                     } else {
                         self.expression()?
                     };
-                    statements.push(Statement::Assign { name, value });
-                }
+                    statements.push(Statement::Assign {
+                        name: name.clone(),
+                        value,
+                    });
+                    None
+                } else {
+                    None
+                };
+                block_locals.push(LocalDeclaration {
+                    declared_type,
+                    name: name.clone(),
+                    initializer,
+                    array_length: None,
+                    is_static,
+                    data_bytes,
+                    data_relocations,
+                    is_const: false,
+                    row_bytes: None,
+                });
                 if !self.eat_keyword(Token::Comma) {
                     break;
                 }
