@@ -38,6 +38,19 @@ pub enum FoldedFloatCompareLinkageStyle {
     CompareFirst,
 }
 
+/// Anonymous-symbol bookkeeping performed after ordinary function lowering.
+/// This is object identity rather than instruction selection, but depends on
+/// the optimized AST shape and therefore belongs beside codegen behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FunctionOrdinalAccountingStyle {
+    /// The 2.4.x generation's ordinary control-flow accounting is sufficient.
+    Mainline,
+    /// GC 4.1's non-IPA optimizer retains additional per-function nodes.
+    Gc41,
+    /// `-ipa file` changes which GC 4.1 nodes are charged before/after pools.
+    Gc41Ipa,
+}
+
 /// Schedule of a leading `*pointer = constant` around a punned frame guard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LeadingFrameGuardStoreStyle {
@@ -652,6 +665,14 @@ pub trait CodegenProfile: core::fmt::Debug {
         2
     }
 
+    fn folded_float_guard_ipa_label_bump(&self) -> u8 {
+        0
+    }
+
+    fn function_ordinal_accounting_style(&self) -> FunctionOrdinalAccountingStyle {
+        FunctionOrdinalAccountingStyle::Mainline
+    }
+
     fn leading_frame_guard_store_style(&self) -> LeadingFrameGuardStoreStyle {
         LeadingFrameGuardStoreStyle::StoreValueFirstAfterLoad
     }
@@ -1023,7 +1044,15 @@ impl CodegenProfile for Gc41Build51213 {
     }
 
     fn folded_float_guard_label_bump(&self) -> u8 {
+        3
+    }
+
+    fn folded_float_guard_ipa_label_bump(&self) -> u8 {
         1
+    }
+
+    fn function_ordinal_accounting_style(&self) -> FunctionOrdinalAccountingStyle {
+        FunctionOrdinalAccountingStyle::Gc41
     }
 
     fn cxx_class_definition_label_bump(&self) -> u8 {

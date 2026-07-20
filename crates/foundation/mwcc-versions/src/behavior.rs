@@ -19,6 +19,7 @@ use crate::profile::{
     ConstantStoreScheduleStyle, FieldMergeStyle, FixedAddressConstantStoreStyle,
     FixedAddressParameterizedRmwStyle, FixedAddressPollAddressStyle, FixedAddressRmwStyle,
     FoldedFloatCompareLinkageStyle, FrameConvention, FrexpFamilyStyle,
+    FunctionOrdinalAccountingStyle,
     DataSectionRelocationStyle, GlobalArrayDecayStoreStyle, GlobalArrayIndexStyle,
     IndexedRmwAssignmentStyle,
     IntCallResultConversionStyle,
@@ -508,6 +509,8 @@ pub struct Behavior {
     /// Anonymous labels retained when a float guard folds to a branchless
     /// comparison value.
     pub folded_float_guard_label_bump: u8,
+    /// Post-lowering anonymous-symbol accounting family.
+    pub function_ordinal_accounting_style: FunctionOrdinalAccountingStyle,
     /// Scheduling of a leading pointer store around a punned frame guard.
     pub leading_frame_guard_store_style: LeadingFrameGuardStoreStyle,
     /// Whole-family schedule for the fdlibm-style `frexp` transaction.
@@ -739,10 +742,21 @@ impl Behavior {
                 .build
                 .profile
                 .folded_float_compare_linkage_style(),
-            folded_float_guard_label_bump: config
-                .build
-                .profile
-                .folded_float_guard_label_bump(),
+            folded_float_guard_label_bump: config.build.profile.folded_float_guard_label_bump()
+                + if config.flags.ipa_file {
+                    config.build.profile.folded_float_guard_ipa_label_bump()
+                } else {
+                    0
+                },
+            function_ordinal_accounting_style: match (
+                config.build.profile.function_ordinal_accounting_style(),
+                config.flags.ipa_file,
+            ) {
+                (FunctionOrdinalAccountingStyle::Gc41, true) => {
+                    FunctionOrdinalAccountingStyle::Gc41Ipa
+                }
+                (style, _) => style,
+            },
             leading_frame_guard_store_style: config.build.profile.leading_frame_guard_store_style(),
             frexp_family_style: config.build.profile.frexp_family_style(),
             frexp_deferred_label_bump: if config.flags.inline_deferred {
@@ -1641,7 +1655,11 @@ mod tests {
         let mainline = Behavior::resolve(&CompilerConfig::new(build::GC_2_7));
         let gc41 = Behavior::resolve(&CompilerConfig::new(build::GC_3_0A3P1));
         assert_eq!(mainline.folded_float_guard_label_bump, 2);
-        assert_eq!(gc41.folded_float_guard_label_bump, 1);
+        assert_eq!(gc41.folded_float_guard_label_bump, 3);
+        assert_eq!(
+            gc41.function_ordinal_accounting_style,
+            FunctionOrdinalAccountingStyle::Gc41
+        );
         assert_eq!(mainline.cxx_inline_definition_label_bump, 0);
         assert_eq!(mainline.cxx_virtual_destructor_label_bump, 2);
         assert_eq!(gc41.cxx_class_definition_label_bump, 1);
@@ -1651,9 +1669,12 @@ mod tests {
 
         let mut ipa_config = CompilerConfig::new(build::GC_3_0A3P1);
         ipa_config.flags.ipa_file = true;
+        let ipa = Behavior::resolve(&ipa_config);
+        assert_eq!(ipa.cxx_inline_ipa_call_label_bump, 1);
+        assert_eq!(ipa.folded_float_guard_label_bump, 4);
         assert_eq!(
-            Behavior::resolve(&ipa_config).cxx_inline_ipa_call_label_bump,
-            1
+            ipa.function_ordinal_accounting_style,
+            FunctionOrdinalAccountingStyle::Gc41Ipa
         );
     }
 

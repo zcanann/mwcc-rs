@@ -31,6 +31,7 @@ mod inline_summaries;
 mod legacy_comparisons;
 mod narrow;
 mod operands;
+mod ordinal_accounting;
 mod placement;
 mod switch;
 mod symbol_order;
@@ -377,6 +378,12 @@ pub fn lower_function(
     generator.normalize_linkage_first_indirect_call_schedule();
     generator.normalize_linkage_first_conversion_frame();
     generator.normalize_scratch_copy_convention();
+
+    ordinal_accounting::apply(
+        function,
+        &mut generator.output,
+        generator.behavior.function_ordinal_accounting_style,
+    );
 
     // A function with a stack frame carries unwind tables. The codegen does not
     // yet save callee registers, so the saved counts are zero today; the FPU flag
