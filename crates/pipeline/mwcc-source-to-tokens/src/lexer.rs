@@ -307,6 +307,26 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
             push_token!(Token::IntegerLiteral(value), token_start);
             continue;
         }
+        // CodeWarrior accepts the GNU-style binary integer spelling used by
+        // several reference projects (`0b1111`, with the usual U/L suffixes).
+        if character == '0' && matches!(peek(bytes, position + 1), Some(b'b') | Some(b'B')) {
+            let token_start = position;
+            let start = position + 2;
+            position += 2;
+            while matches!(peek(bytes, position), Some(b'0' | b'1')) {
+                position += 1;
+            }
+            if matches!(peek(bytes, position), Some(b'2'..=b'9')) {
+                return Err(Diagnostic::error("malformed binary literal"));
+            }
+            let text = std::str::from_utf8(&bytes[start..position])
+                .expect("the binary scanner accepts only ASCII bytes");
+            let value = u64::from_str_radix(text, 2)
+                .map_err(|_| Diagnostic::error("malformed binary literal"))? as i64;
+            position = consume_integer_suffix(bytes, position);
+            push_token!(Token::IntegerLiteral(value), token_start);
+            continue;
+        }
         // decimal integer or float literal (a leading-dot float `.5` counts:
         // C allows the omitted integer part).
         if character.is_ascii_digit() || (character == '.' && peek(bytes, position + 1).is_some_and(|byte| byte.is_ascii_digit())) {
@@ -473,6 +493,14 @@ mod tests {
             tokenize_bytes(b"long long a = 'ABCDE'; long long b = 'ABCDEFGH';").unwrap();
         assert!(tokens.contains(&Token::IntegerLiteral(0x41_4243_4445)));
         assert!(tokens.contains(&Token::IntegerLiteral(0x4142_4344_4546_4748)));
+    }
+
+    #[test]
+    fn binary_integer_literals_and_suffixes_are_consumed_as_one_token() {
+        let tokens = tokenize_bytes(b"int a = 0b1111; unsigned long b = 0B1010UL;").unwrap();
+        assert!(tokens.contains(&Token::IntegerLiteral(15)));
+        assert!(tokens.contains(&Token::IntegerLiteral(10)));
+        assert!(!tokens.contains(&Token::Identifier("b1111".to_string())));
     }
 
     #[test]
