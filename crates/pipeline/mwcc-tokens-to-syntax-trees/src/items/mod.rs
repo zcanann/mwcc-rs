@@ -887,6 +887,22 @@ impl Parser {
                 attribute_alignment: None,
             });
         }
+        let referenced_functions: std::collections::HashSet<&str> = globals
+            .iter()
+            .flat_map(|global| {
+                global
+                    .data_relocations
+                    .iter()
+                    .map(|(_, target, _)| target.as_str())
+            })
+            .collect();
+        for function in std::mem::take(&mut self.cxx_inline_materializations) {
+            if referenced_functions.contains(function.name.as_str()) {
+                self.weak_materialized.push(function.name.clone());
+                functions.push(function);
+                self.function_sources.push(None);
+            }
+        }
         debug_assert_eq!(
             functions.len(),
             self.function_sources.len(),
@@ -2817,6 +2833,16 @@ impl Parser {
 
                             if !globals.iter().any(|global| global.name == vtable) {
                                 let table_size = 8 + class.virtual_slots.max(1) * 4;
+                                let mut data_relocations =
+                                    vec![(8, function.name.clone(), 0)];
+                                data_relocations.extend(
+                                    class
+                                        .virtual_definitions
+                                        .iter()
+                                        .map(|(offset, name)| {
+                                            (u32::from(*offset), name.clone(), 0)
+                                        }),
+                                );
                                 globals.push(GlobalDeclaration {
                                     declared_type: Type::Struct {
                                         size: table_size as u32,
@@ -2837,7 +2863,7 @@ impl Parser {
                                     is_const: false,
                                     address_initializer: None,
                                     data_bytes: Some(vec![0; table_size]),
-                                    data_relocations: vec![(8, function.name.clone(), 0)],
+                                    data_relocations,
                                     section: None,
                                     attribute_alignment: None,
                                 });

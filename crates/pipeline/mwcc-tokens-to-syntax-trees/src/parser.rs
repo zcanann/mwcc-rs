@@ -162,6 +162,10 @@ pub(crate) struct Parser {
     /// C++ aggregate body. A later out-of-class definition inherits that
     /// declaration's inline semantics even when it does not repeat `inline`.
     pub(crate) inline_cxx_members: std::collections::HashSet<(String, String)>,
+    /// Simple in-class virtual bodies whose symbols are referenced by an
+    /// emitted vtable. They are appended after ordinary definitions so
+    /// deferred-inlining order places their weak out-of-line copies first.
+    pub(crate) cxx_inline_materializations: Vec<mwcc_syntax_trees::Function>,
     /// Static class-member overloads recovered from aggregate declarations,
     /// keyed by fully-qualified `(class, member)` name. Calls carry no implicit
     /// `this`, but still require CodeWarrior member-function mangling.

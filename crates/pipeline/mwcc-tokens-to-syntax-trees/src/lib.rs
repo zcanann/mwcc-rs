@@ -138,6 +138,7 @@ pub fn parse_located_translation_unit_with_enum_min(
         inline_template_members: std::collections::HashSet::new(),
         empty_nested_template_types: std::collections::HashSet::new(),
         inline_cxx_members: std::collections::HashSet::new(),
+        cxx_inline_materializations: Vec::new(),
         cxx_static_methods: HashMap::new(),
         cxx_free_functions: HashMap::new(),
         cxx_instance_methods: HashMap::new(),
@@ -1983,6 +1984,36 @@ blr\n\
             3,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn materializes_a_vtable_referenced_constant_inline_virtual() {
+        let source = r#"
+            class Reader {
+            public:
+                virtual ~Reader();
+                virtual bool ready(void) const { return false; }
+            };
+            Reader::~Reader() {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let inline = unit
+            .functions
+            .iter()
+            .find(|function| function.name == "ready__6ReaderCFv")
+            .unwrap_or_else(|| panic!("{unit:#?}"));
+        assert!(inline.is_weak);
+        assert!(matches!(
+            inline.return_expression,
+            Some(mwcc_syntax_trees::Expression::IntegerLiteral(0))
+        ));
     }
 
     #[test]

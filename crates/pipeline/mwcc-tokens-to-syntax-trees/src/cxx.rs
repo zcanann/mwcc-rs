@@ -5,7 +5,7 @@
 //! use CodeWarrior's own mangling rather than the Itanium ABI.
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{Expression, Pointee, Statement, Type};
+use mwcc_syntax_trees::{Expression, Function, Parameter, Pointee, Statement, Type};
 use mwcc_tokens::{LocatedToken, Token};
 
 use crate::items::{type_alignment, type_size};
@@ -69,6 +69,9 @@ pub(crate) struct ClassLayout {
     /// Number of primary-table callable slots introduced by this class. The
     /// two ABI header words are not included.
     pub(crate) virtual_slots: usize,
+    /// Non-pure virtual function definitions keyed by their byte offset in the
+    /// primary vtable (including the two ABI header words).
+    pub(crate) virtual_definitions: Vec<(u16, String)>,
     /// Whether the class declares a virtual destructor. Its out-of-line
     /// definition is a key function and owns the primary vtable in the subset
     /// currently materialized by the frontend.
@@ -1154,22 +1157,35 @@ impl Parser {
                 .cloned();
             let is_virtual = is_virtual || inherited_virtual.is_some();
             if is_virtual {
-                let table = self.cxx_dispatch_tables.get_mut(class)?;
-                if inherited_virtual.is_none() {
-                    let slot_offset = table.next_slot_offset;
-                    table.next_slot_offset = table.next_slot_offset.checked_add(4)?;
-                    table
-                        .methods
-                        .entry(member)
-                        .or_default()
-                        .push(RecoveredCxxVirtualMethod {
-                            return_type,
-                            parameters: parameters.clone(),
-                            fixed_parameter_count: parameters.len(),
-                            variadic,
-                            vptr_offset: 0,
-                            slot_offset,
-                        });
+                {
+                    let table = self.cxx_dispatch_tables.get_mut(class)?;
+                    if inherited_virtual.is_none() {
+                        let slot_offset = table.next_slot_offset;
+                        table.next_slot_offset = table.next_slot_offset.checked_add(4)?;
+                        table
+                            .methods
+                            .entry(member.clone())
+                            .or_default()
+                            .push(RecoveredCxxVirtualMethod {
+                                return_type,
+                                parameters: parameters.clone(),
+                                fixed_parameter_count: parameters.len(),
+                                variadic,
+                                vptr_offset: 0,
+                                slot_offset,
+                            });
+                    }
+                }
+                if is_inline {
+                    self.capture_constant_virtual_inline(
+                        declaration_index,
+                        class,
+                        &member,
+                        return_type,
+                        &cxx_parameters,
+                        variadic,
+                        is_const_member,
+                    );
                 }
                 // A virtual call never references the out-of-line member symbol
                 // directly. Recording the slot is the complete result.
@@ -1224,6 +1240,87 @@ impl Parser {
             return Some(Some((mangled, return_type, prototype_parameters)));
         }
         None
+    }
+
+    /// Retain the common vtable-owned inline leaf (`virtual bool f() const {
+    /// return false; }`) as a weak out-of-line function. The vtable relocation,
+    /// checked when the translation unit closes, decides whether the candidate
+    /// is actually emitted.
+    fn capture_constant_virtual_inline(
+        &mut self,
+        declaration_index: usize,
+        class: &str,
+        member: &str,
+        return_type: Type,
+        parameters: &[CxxParameterType],
+        variadic: bool,
+        is_const_member: bool,
+    ) {
+        let Some(body_open) = (declaration_index..self.tokens.len())
+            .find(|&index| self.tokens[index] == Token::BraceOpen)
+        else {
+            return;
+        };
+        let value = match self.tokens.get(body_open + 1..body_open + 5) {
+            Some([
+                Token::KeywordReturn,
+                Token::Identifier(value),
+                Token::Semicolon,
+                Token::BraceClose,
+            ]) if value == "false" => 0,
+            Some([
+                Token::KeywordReturn,
+                Token::Identifier(value),
+                Token::Semicolon,
+                Token::BraceClose,
+            ]) if value == "true" => 1,
+            Some([
+                Token::KeywordReturn,
+                Token::IntegerLiteral(value),
+                Token::Semicolon,
+                Token::BraceClose,
+            ]) => *value,
+            _ => return,
+        };
+        let scopes: Vec<&str> = class.split("::").collect();
+        let mangled = if is_const_member && !variadic {
+            mangle_qualified_member_function_cv_typed(&scopes, member, parameters, true)
+        } else {
+            mangle_qualified_member_function_variadic_typed(
+                &scopes, member, parameters, variadic,
+            )
+        };
+        let Ok(mangled) = mangled else {
+            return;
+        };
+        if self
+            .cxx_inline_materializations
+            .iter()
+            .any(|function| function.name == mangled)
+        {
+            return;
+        }
+        self.cxx_inline_materializations.push(Function {
+            return_type,
+            name: mangled,
+            is_static: false,
+            is_weak: true,
+            parameters: vec![Parameter {
+                parameter_type: Type::StructPointer {
+                    element_size: self.structs.get(class).map_or(0, |layout| layout.size),
+                },
+                name: "this".to_string(),
+            }],
+            locals: Vec::new(),
+            statements: Vec::new(),
+            guards: Vec::new(),
+            return_expression: Some(Expression::IntegerLiteral(value)),
+            section: None,
+            asm_body: None,
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        });
     }
 
     /// Resolve `Class::member(args)` using recovered static declarations.
@@ -1704,6 +1801,17 @@ impl Parser {
             let field_name = self.parse_identifier()?;
             if *self.peek() == Token::ParenOpen {
                 let signature = self.parse_class_parameter_types()?;
+                let mut tail = self.position;
+                let mut is_const_member = false;
+                while matches!(self.tokens.get(tail), Some(Token::Identifier(word))
+                    if matches!(word.as_str(), "const" | "override" | "final"))
+                {
+                    is_const_member |=
+                        matches!(self.tokens.get(tail), Some(Token::Identifier(word)) if word == "const");
+                    tail += 1;
+                }
+                let is_pure = self.tokens.get(tail) == Some(&Token::Equals)
+                    && self.tokens.get(tail + 1) == Some(&Token::IntegerLiteral(0));
                 let is_inline = self.skip_class_method_tail()?;
                 let virtual_dispatch = if is_virtual {
                     let slot_offset = 8usize
@@ -1718,6 +1826,26 @@ impl Parser {
                         Diagnostic::error("C++ primary vptr offset overflow")
                     })?;
                     class.virtual_slots += 1;
+                    if !is_pure {
+                        let qualified = self.qualify_cxx_class_name(&name);
+                        let scopes: Vec<&str> = qualified.split("::").collect();
+                        let mangled = if is_const_member {
+                            mangle_qualified_member_function_cv_typed(
+                                &scopes,
+                                &field_name,
+                                &signature.cxx_parameters,
+                                true,
+                            )?
+                        } else {
+                            mangle_qualified_member_function_variadic_typed(
+                                &scopes,
+                                &field_name,
+                                &signature.cxx_parameters,
+                                false,
+                            )?
+                        };
+                        class.virtual_definitions.push((slot_offset, mangled));
+                    }
                     Some(VirtualDispatch {
                         vptr_offset,
                         slot_offset,
