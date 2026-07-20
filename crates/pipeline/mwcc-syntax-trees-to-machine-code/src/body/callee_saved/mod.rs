@@ -27,6 +27,7 @@ mod guarded_initialization;
 mod guarded_bitmask_call_sequence;
 mod guarded_pointer_call;
 mod indirect_call_schedule;
+mod indexed_call_store_return;
 mod queue_initialization;
 mod queue_interrupt;
 mod queue_post;

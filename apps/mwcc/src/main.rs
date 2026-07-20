@@ -304,14 +304,15 @@ fn compile(
         .map(|located| located.token.clone())
         .collect();
     let behavior = mwcc_versions::Behavior::resolve(&config);
+    let is_cxx = matches!(
+        std::path::Path::new(source_name)
+            .extension()
+            .and_then(|extension| extension.to_str()),
+        Some("cpp" | "cp" | "cxx" | "cc")
+    );
     let unit = mwcc_tokens_to_syntax_trees::parse_located_translation_unit_with_enum_min(
         located_tokens,
-        matches!(
-            std::path::Path::new(source_name)
-                .extension()
-                .and_then(|extension| extension.to_str()),
-            Some("cpp" | "cp" | "cxx" | "cc")
-        ),
+        is_cxx,
         config.char_is_signed(),
         behavior.plain_inline_localstatic_base,
         behavior.skipped_static_inline_label_base,
@@ -1413,20 +1414,23 @@ fn compile(
             .collect()
     };
 
-    // A plain-`inline` asm helper (OSFastCast's `inline __OSf32tos16`) is materialized
-    // by mwcc as a GLOBAL UND symbol from the dropped compilation — present in the object
-    // even when nothing references it. Captures declare these via `phantom_externals`; the
-    // general codegen path does not emit them. If the TU carries one and NO function
-    // declared a phantom, the object's symbol table would be incomplete — so DEFER rather
-    // than emit a structurally-wrong object (byte-exact-or-defer; measured: src/gx/GXStubs.c).
-    if !unit.plain_inline_asm_helpers.is_empty()
+    // C's plain-`inline` asm helpers (OSFastCast's `inline __OSf32tos16`) are
+    // materialized as unused GLOBAL UND symbols ahead of the first function's
+    // references. In C++ the same inline definitions disappear completely.
+    // Captures may already pin a measured phantom list; otherwise the parsed
+    // declaration order is the single source of truth for the general path.
+    if !is_cxx
+        && !unit.plain_inline_asm_helpers.is_empty()
         && machine_functions
             .iter()
             .all(|function| function.phantom_externals.is_empty())
     {
-        return Err(Diagnostic::error(
-            "TU carries plain-`inline` asm helpers (OSFastCast/etc.) whose GLOBAL UND symbols the general path does not emit — deferring (roadmap)",
-        ));
+        let Some(first) = machine_functions.first_mut() else {
+            return Err(Diagnostic::error(
+                "a functionless C translation unit with plain-inline asm helpers needs a unit-level external-symbol run (roadmap)",
+            ));
+        };
+        first.phantom_externals = unit.plain_inline_asm_helpers.clone();
     }
 
     // Optimized immediate inline processing retains every skipped static-inline
