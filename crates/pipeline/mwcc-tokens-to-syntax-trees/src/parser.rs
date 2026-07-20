@@ -180,6 +180,17 @@ pub(crate) struct Parser {
     /// bodies. These support direct `object->member(args)` calls without layout.
     pub(crate) cxx_instance_methods:
         HashMap<(String, String), Vec<crate::cxx::RecoveredCxxMethod>>,
+    /// In-class member templates whose body is a zero-runtime-argument
+    /// forwarding call, keyed by `(class, member)` and naming the free helper
+    /// template they invoke.  This is declaration recovery, not a general
+    /// template instantiator: a call is lowered only when a matching concrete
+    /// helper specialization has also been recovered.
+    pub(crate) cxx_member_template_forwarders: HashMap<(String, String), String>,
+    /// Concrete helper-template specializations recovered as direct instance
+    /// method calls: helper -> `(template argument, owner class, member)`.
+    /// A vector preserves ambiguity instead of allowing source order to choose.
+    pub(crate) cxx_template_forwarder_specializations:
+        HashMap<String, Vec<(Type, String, String)>>,
     /// Recovered primary virtual tables, including inherited entries. Keeping
     /// ABI slot state separate from object layout lets calls through opaque
     /// header-only class declarations resolve without pretending their fields

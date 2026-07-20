@@ -1079,6 +1079,8 @@ impl Parser {
                         .structs
                         .get(&tag)
                         .is_some_and(|layout| layout.function_pointer_fields.contains(&field));
+                    let explicit_template_argument =
+                        self.try_explicit_member_template_argument();
                     if *self.peek() == Token::ParenOpen && !is_function_pointer_field {
                         // A non-virtual instance method is a direct call with
                         // the object pointer prepended as the implicit `this`.
@@ -1097,13 +1099,35 @@ impl Parser {
                             }
                         }
                         self.expect(Token::ParenClose)?;
-                        if let Some(name) =
-                            self.resolve_instance_member_call(&tag, &field, arguments.len())?
-                        {
+                        let direct_call = match explicit_template_argument {
+                            Some(template_argument) => {
+                                self.resolve_member_template_forwarder(
+                                    &tag,
+                                    &field,
+                                    template_argument,
+                                    arguments.len(),
+                                )
+                            }
+                            None => self.resolve_instance_member_call(
+                                &tag,
+                                &field,
+                                arguments.len(),
+                            ),
+                        }?;
+                        if let Some(name) = direct_call {
                             arguments.insert(0, expression);
                             expression = Expression::Call { name, arguments };
-                        } else if let Some(dispatch) =
-                            self.resolve_virtual_member_call(&tag, &field, arguments.len())?
+                        } else if let Some(dispatch) = explicit_template_argument
+                            .is_none()
+                            .then(|| {
+                                self.resolve_virtual_member_call(
+                                    &tag,
+                                    &field,
+                                    arguments.len(),
+                                )
+                            })
+                            .transpose()?
+                            .flatten()
                         {
                             expression = Expression::VirtualCall {
                                 object: Box::new(expression),
@@ -1114,8 +1138,13 @@ impl Parser {
                                 arguments,
                             };
                         } else {
+                            let kind = if explicit_template_argument.is_some() {
+                                "member-template"
+                            } else {
+                                "member"
+                            };
                             return Err(Diagnostic::error(format!(
-                                "C++ member call '{tag}::{field}' is inline or unavailable (roadmap)"
+                                "C++ {kind} call '{tag}::{field}' is inline or unavailable (roadmap)"
                             )));
                         }
                         struct_tag = None;

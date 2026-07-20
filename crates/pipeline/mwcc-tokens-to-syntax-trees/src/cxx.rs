@@ -864,6 +864,7 @@ impl Parser {
                 self.capture_nested_cxx_enum(index, &class);
             }
             if begins_member {
+                self.capture_cxx_member_template_forwarder(index, &class);
                 let starts_virtual = matches!(self.tokens.get(index), Some(Token::Identifier(word)) if word == "virtual");
                 match self.capture_cxx_method(index, &class) {
                     Some(Some(prototype)) => prototypes.push(prototype),

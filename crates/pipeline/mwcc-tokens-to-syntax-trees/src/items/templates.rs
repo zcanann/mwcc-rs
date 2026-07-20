@@ -164,7 +164,7 @@ impl Parser {
         ))
     }
 
-    fn template_argument_at(&self, start: usize) -> Option<(Option<Type>, usize)> {
+    pub(crate) fn template_argument_at(&self, start: usize) -> Option<(Option<Type>, usize)> {
         if let Some((instance, _, end)) = self.parse_template_instance_at(start) {
             return Some((Some(instance), end));
         }
@@ -774,7 +774,7 @@ impl Parser {
         }
     }
 
-    fn template_argument_type(&self, token: &Token) -> Option<Type> {
+    pub(crate) fn template_argument_type(&self, token: &Token) -> Option<Type> {
         match token {
             Token::KeywordInt => Some(Type::Int),
             Token::KeywordChar => Some(Type::Char),

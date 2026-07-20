@@ -7,6 +7,7 @@
 mod asm;
 mod initializers;
 mod statements;
+mod template_calls;
 mod templates;
 mod types;
 
@@ -653,6 +654,7 @@ impl Parser {
             // definition. Preserve the prefix long enough for inline-template
             // recovery to classify unused member definitions, then let the
             // ordinary item parser handle the concrete item that follows it.
+            self.capture_explicit_template_forwarder_specialization();
             let skippable_inline_member = self.item_is_skippable_inline_member_definition();
             let explicit_specialization = !skippable_inline_member
                 && self.consume_explicit_specialization_prefix();
