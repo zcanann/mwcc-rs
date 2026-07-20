@@ -5,6 +5,7 @@
 
 use crate::profile::{
     CodegenProfile, Gc132Build81, Gc13Build53, Gc20Patch1, Gc41Build51213, Mainline,
+    MainlineEarlyAggregateLoads,
     Wii43Build145, GC233_BUILD159_PATCH1, GC233_BUILD163,
 };
 
@@ -208,7 +209,7 @@ pub const GC_2_5: CompilerBuild = CompilerBuild {
     initial_anonymous_counter: 5,
     post_leaf_function_anonymous_bump: 4,
     post_framed_function_anonymous_bump: 4,
-    profile: &Mainline,
+    profile: &MainlineEarlyAggregateLoads,
 };
 
 /// GC/2.6 — mwcceppc 2.4.7 build 107.
@@ -226,7 +227,7 @@ pub const GC_2_6: CompilerBuild = CompilerBuild {
     initial_anonymous_counter: 5,
     post_leaf_function_anonymous_bump: 4,
     post_framed_function_anonymous_bump: 4,
-    profile: &Mainline,
+    profile: &MainlineEarlyAggregateLoads,
 };
 
 /// GC/2.7 — mwcceppc 2.4.7 build 108.
@@ -244,7 +245,7 @@ pub const GC_2_7: CompilerBuild = CompilerBuild {
     initial_anonymous_counter: 5,
     post_leaf_function_anonymous_bump: 4,
     post_framed_function_anonymous_bump: 4,
-    profile: &Mainline,
+    profile: &MainlineEarlyAggregateLoads,
 };
 
 /// GC/3.0a3 — mwcceppc 4.1 build 51213. Its object conventions include a newer

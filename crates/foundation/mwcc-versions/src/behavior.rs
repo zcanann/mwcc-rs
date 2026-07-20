@@ -26,7 +26,7 @@ use crate::profile::{
     IntegerComparisonValueStyle, IntegerDagStyle, IntegerLoopStyle, IntegerSelectStyle,
     JumpTableBaseStyle, LeadingFrameGuardStoreStyle, LocalDataSymbolOrder, LogicalOrValueStyle,
     LongLongTimerStyle, MaterializationCopyStyle, MemCopyRemainderMaskStyle,
-    MemCopyWordScheduleStyle,
+    MemCopyWordScheduleStyle, NestedGlobalDispatchSchedule,
     NarrowCompoundShiftStyle, NarrowComputedReturnStyle, NarrowGuardScheduleStyle,
     NarrowStoreConversionStyle, NegativePowerOfTwoMultiplyStyle, PunnedConditionalWritebackStyle,
     PlainLinkageEpilogueStyle, PunnedFloatFrameConvention, PunnedShiftWritebackStyle,
@@ -518,6 +518,9 @@ pub struct Behavior {
     /// Whether this generation uses the measured GC 1.3--2.7 paired stopwatch
     /// schedule. Unmodeled generations defer instead of emitting known-wrong code.
     pub long_long_timer_style: LongLongTimerStyle,
+    /// Issue order for the three loads that copy an aggregate into an indirect call's argument
+    /// area while independent linkage and argument setup is available.
+    pub nested_global_dispatch_schedule: NestedGlobalDispatchSchedule,
     /// Scheduling of a leading pointer store around a punned frame guard.
     pub leading_frame_guard_store_style: LeadingFrameGuardStoreStyle,
     /// Whole-family schedule for the fdlibm-style `frexp` transaction.
@@ -770,6 +773,10 @@ impl Behavior {
                 (style, _) => style,
             },
             long_long_timer_style: config.build.profile.long_long_timer_style(),
+            nested_global_dispatch_schedule: config
+                .build
+                .profile
+                .nested_global_dispatch_schedule(),
             leading_frame_guard_store_style: config.build.profile.leading_frame_guard_store_style(),
             frexp_family_style: config.build.profile.frexp_family_style(),
             frexp_deferred_label_bump: if config.flags.inline_deferred {

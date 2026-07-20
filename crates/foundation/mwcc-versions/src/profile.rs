@@ -62,6 +62,15 @@ pub enum LongLongTimerStyle {
     Unmodeled,
 }
 
+/// Issue order for a nested-global callback whose outgoing arguments include a copied aggregate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NestedGlobalDispatchSchedule {
+    /// Copy the three aggregate words together after linkage and argument-home setup.
+    SequentialAggregateCopy,
+    /// Issue each aggregate load in an earlier independent scheduler slot.
+    EarlyAggregateLoads,
+}
+
 /// Schedule of a leading `*pointer = constant` around a punned frame guard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LeadingFrameGuardStoreStyle {
@@ -694,6 +703,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         LongLongTimerStyle::MainlinePair
     }
 
+    fn nested_global_dispatch_schedule(&self) -> NestedGlobalDispatchSchedule {
+        NestedGlobalDispatchSchedule::SequentialAggregateCopy
+    }
+
     fn leading_frame_guard_store_style(&self) -> LeadingFrameGuardStoreStyle {
         LeadingFrameGuardStoreStyle::StoreValueFirstAfterLoad
     }
@@ -1051,6 +1064,16 @@ pub trait CodegenProfile: core::fmt::Debug {
 #[derive(Debug)]
 pub struct Mainline;
 impl CodegenProfile for Mainline {}
+
+/// GC/2.5 through GC/2.7 share an aggregate-copy issue order that differs from build 92 while
+/// retaining every other mainline policy.
+#[derive(Debug)]
+pub struct MainlineEarlyAggregateLoads;
+impl CodegenProfile for MainlineEarlyAggregateLoads {
+    fn nested_global_dispatch_schedule(&self) -> NestedGlobalDispatchSchedule {
+        NestedGlobalDispatchSchedule::EarlyAggregateLoads
+    }
+}
 
 /// GC/3.0a3 — mwcceppc 4.1 build 51213. Differential characterization shows
 /// a substantial optimizer transition from the 2.4.7 generation. This profile

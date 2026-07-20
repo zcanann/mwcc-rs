@@ -25,6 +25,7 @@ mod long_long_support;
 mod long_long_wait;
 mod loops;
 mod member_store_fill;
+mod nested_global_indirect_call;
 mod passes;
 mod punned_ladder_policy;
 mod punned_select;
@@ -59,5 +60,5 @@ pub(crate) use mwcc_target::Eabi;
 pub(crate) use mwcc_versions::{
     FrameConvention, GlobalAddressing, IntegerComparisonValueStyle, NarrowComputedReturnStyle,
     LongLongTimerStyle, PlainLinkageEpilogueStyle, PointerWalkerScheduleStyle, RaiseFamilyStyle,
-    WideConstantAddSchedule,
+    NestedGlobalDispatchSchedule, WideConstantAddSchedule,
 };
