@@ -35,11 +35,22 @@ class TextRelocation:
 def run_objdump(objdump: Path, *arguments: str) -> str:
     result = subprocess.run(
         [str(objdump), *arguments],
-        check=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
+    if result.returncode != 0:
+        # Data-only translation units legitimately have no .text section.
+        # Binutils reports that absence as an error for both `-s -j .text` and
+        # `-r -j .text`; semantically the requested bytes/relocations are empty.
+        if ".text" in arguments and "not found" in result.stderr:
+            return result.stdout
+        raise subprocess.CalledProcessError(
+            result.returncode,
+            [str(objdump), *arguments],
+            output=result.stdout,
+            stderr=result.stderr,
+        )
     return result.stdout
 
 

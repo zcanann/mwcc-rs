@@ -1,16 +1,30 @@
 #!/usr/bin/env python3
 
 import unittest
+from unittest.mock import patch
+import subprocess
+from pathlib import Path
 
 from object_code_metrics import (
     TextRelocation,
     parse_section_bytes,
     parse_text_relocations,
+    run_objdump,
     statuses,
 )
 
 
 class ObjectCodeMetricsTests(unittest.TestCase):
+    @patch("object_code_metrics.subprocess.run")
+    def test_missing_text_section_is_empty_not_a_metric_failure(self, run):
+        run.return_value = subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="data.o: file format elf32-powerpc\n",
+            stderr="objdump: section '.text' mentioned in a -j option, but not found\n",
+        )
+        self.assertEqual(run_objdump(Path("objdump"), "-s", "-j", ".text", "data.o"), run.return_value.stdout)
+
     def test_parses_text_without_ascii_column(self):
         output = """
 Contents of section .text:
