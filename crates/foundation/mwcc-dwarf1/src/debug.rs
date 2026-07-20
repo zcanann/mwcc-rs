@@ -8,11 +8,14 @@ pub struct DebugEntryId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u16)]
 pub enum Tag {
+    ArrayType = 0x0001,
     FormalParameter = 0x0005,
     GlobalSubroutine = 0x0006,
     GlobalVariable = 0x0007,
     LocalVariable = 0x000c,
+    Member = 0x000d,
     CompileUnit = 0x0011,
+    StructureType = 0x0013,
 }
 
 /// The high bits of a DWARF 1 attribute code. The low nibble is its form.
@@ -23,6 +26,11 @@ pub enum AttributeName {
     Location = 0x0020,
     Name = 0x0030,
     FundamentalType = 0x0050,
+    ModifiedFundamentalType = 0x0060,
+    UserDefinedType = 0x0070,
+    ModifiedUserDefinedType = 0x0080,
+    SubscriptData = 0x00a0,
+    ByteSize = 0x00b0,
     StatementList = 0x0100,
     LowPc = 0x0110,
     HighPc = 0x0120,
@@ -34,7 +42,21 @@ pub enum AttributeName {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u16)]
 pub enum FundamentalType {
+    Boolean = 0x0000,
+    Char = 0x0001,
+    SignedChar = 0x0002,
+    UnsignedChar = 0x0003,
+    SignedShort = 0x0005,
+    UnsignedShort = 0x0006,
     SignedInteger = 0x0007,
+    UnsignedInteger = 0x0009,
+    SignedLong = 0x000a,
+    UnsignedLong = 0x000c,
+    Pointer = 0x000d,
+    Float = 0x000e,
+    Double = 0x000f,
+    Void = 0x0014,
+    SignedLongLong = 0x8008,
 }
 
 /// An attribute value. Its variant determines the DWARF 1 form nibble.
@@ -96,13 +118,21 @@ pub struct DebugEntry {
     pub attributes: Vec<Attribute>,
 }
 
+/// One record in physical `.debug` order. Null records terminate child DIE
+/// lists and therefore may occur between ordinary entries, not just at the end
+/// of a compilation unit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DebugRecord {
+    Entry(DebugEntry),
+    Raw(Vec<u8>),
+}
+
 /// An ordered DWARF 1 DIE stream. Tree terminators are represented explicitly
 /// as their raw byte lengths because CodeWarrior uses several distinct terminal
 /// records whose exact semantic distinction still needs broader measurements.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DebugInfo {
-    pub entries: Vec<DebugEntry>,
-    pub terminal_records: Vec<Vec<u8>>,
+    pub records: Vec<DebugRecord>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -118,8 +148,14 @@ impl DebugInfo {
 
     pub fn encode_with_offsets(&self) -> EncodedDebugInfo {
         let mut section = EncodedSection::default();
-        let mut entry_offsets = Vec::with_capacity(self.entries.len());
-        for entry in &self.entries {
+        let mut entry_offsets = Vec::new();
+        for record in &self.records {
+            let DebugRecord::Entry(entry) = record else {
+                if let DebugRecord::Raw(bytes) = record {
+                    section.bytes.extend_from_slice(bytes);
+                }
+                continue;
+            };
             let start = section.bytes.len();
             entry_offsets.push((entry.id, start as u32));
             push_u32(&mut section.bytes, 0);
@@ -133,9 +169,6 @@ impl DebugInfo {
             }
             let byte_len = (section.bytes.len() - start) as u32;
             section.bytes[start..start + 4].copy_from_slice(&byte_len.to_be_bytes());
-        }
-        for record in &self.terminal_records {
-            section.bytes.extend_from_slice(record);
         }
         EncodedDebugInfo {
             section,
@@ -190,7 +223,7 @@ mod tests {
     fn encodes_measured_codewarrior_compile_unit() {
         let end = DebugEntryId(1);
         let encoded = DebugInfo {
-            entries: vec![DebugEntry {
+            records: vec![DebugRecord::Entry(DebugEntry {
                 id: DebugEntryId(0),
                 tag: Tag::CompileUnit,
                 attributes: vec![
@@ -223,8 +256,7 @@ mod tests {
                         value: AttributeValue::Data4Address(Address::external(".line")),
                     },
                 ],
-            }],
-            terminal_records: Vec::new(),
+            })],
         }
         .encode();
 
@@ -268,5 +300,27 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn preserves_interleaved_null_records_and_entry_offsets() {
+        let second = DebugEntryId(2);
+        let encoded = DebugInfo {
+            records: vec![
+                DebugRecord::Raw(vec![0, 0, 0, 4]),
+                DebugRecord::Entry(DebugEntry {
+                    id: second,
+                    tag: Tag::Member,
+                    attributes: vec![Attribute {
+                        name: AttributeName::Name,
+                        value: AttributeValue::String("field".into()),
+                    }],
+                }),
+            ],
+        }
+        .encode_with_offsets();
+
+        assert_eq!(&encoded.section.bytes[..4], &[0, 0, 0, 4]);
+        assert_eq!(encoded.entry_offsets, [(second, 4)]);
     }
 }

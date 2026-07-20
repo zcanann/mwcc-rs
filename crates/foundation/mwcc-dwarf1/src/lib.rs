@@ -10,7 +10,7 @@ mod line;
 
 pub use debug::{
     Attribute, AttributeName, AttributeValue, Block, BlockRelocation, DebugEntry, DebugEntryId,
-    DebugInfo, EncodedDebugInfo, FundamentalType, Tag,
+    DebugInfo, DebugRecord, EncodedDebugInfo, FundamentalType, Tag,
 };
 pub use line::{LineRecord, LineTable};
 

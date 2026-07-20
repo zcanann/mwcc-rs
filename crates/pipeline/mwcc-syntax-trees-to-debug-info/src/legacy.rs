@@ -4,7 +4,7 @@ use super::convert_relocations;
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_dwarf1::{
     Address, Attribute, AttributeName, AttributeValue, Block, BlockRelocation, DebugEntry,
-    DebugEntryId, DebugInfo, FundamentalType, LineRecord, LineTable, Tag,
+    DebugEntryId, DebugInfo, DebugRecord, FundamentalType, LineRecord, LineTable, Tag,
 };
 use mwcc_machine_code::MachineFunction;
 use mwcc_object::{
@@ -230,10 +230,9 @@ pub(super) fn lower(
         ],
         MeasuredShape::ConstantFunctions => vec![vec![0, 0, 0, 4], vec![0, 0, 0, 4]],
     };
-    let mut debug_model = DebugInfo {
-        entries,
-        terminal_records,
-    };
+    let mut records: Vec<_> = entries.into_iter().map(DebugRecord::Entry).collect();
+    records.extend(terminal_records.into_iter().map(DebugRecord::Raw));
+    let mut debug_model = DebugInfo { records };
     // MWCC aligns the logical end of `.debug` with a final null record whose
     // declared length includes the required zero fill. It is absent when the
     // structural terminators already end on a four-byte boundary.
@@ -243,9 +242,18 @@ pub(super) fn lower(
         let record_len = 4 + padding;
         let mut record = vec![0, 0, 0, record_len as u8];
         record.resize(record_len, 0);
-        debug_model.terminal_records.push(record);
+        debug_model.records.push(DebugRecord::Raw(record));
     }
-    let terminal_len: usize = debug_model.terminal_records.iter().map(Vec::len).sum();
+    let terminal_len: usize = debug_model
+        .records
+        .iter()
+        .rev()
+        .take_while(|record| matches!(record, DebugRecord::Raw(_)))
+        .map(|record| match record {
+            DebugRecord::Raw(bytes) => bytes.len(),
+            DebugRecord::Entry(_) => 0,
+        })
+        .sum();
     let encoded = debug_model.encode_with_offsets();
     let entries_end = encoded
         .section
