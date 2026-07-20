@@ -109,6 +109,7 @@ name = "mwcc-tokens-to-syntax-trees"
 version = "0.0.1"
 dependencies = [
  "mwcc-core",
+ "mwcc-source-to-tokens",
  "mwcc-syntax-trees",
  "mwcc-tokens",
 ]

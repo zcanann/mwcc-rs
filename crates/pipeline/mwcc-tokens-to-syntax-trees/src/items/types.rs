@@ -293,10 +293,11 @@ impl Parser {
                 }
             },
             other => {
+                let token_index = self.position.saturating_sub(1);
                 return Err(Diagnostic::error(format!(
-                    "expected a type, found {other} at token {}",
-                    self.position.saturating_sub(1)
-                )))
+                    "expected a type, found {other} at {}",
+                    self.diagnostic_position(token_index)
+                )));
             }
         };
         // East-const/volatile: a qualifier may TRAIL the base type (`float const`, the

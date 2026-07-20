@@ -110,6 +110,9 @@ pub fn parse_located_translation_unit(
         structs: HashMap::new(),
         cxx_classes: HashMap::new(),
         struct_templates: HashMap::new(),
+        inline_template_members: std::collections::HashSet::new(),
+        inline_cxx_members: std::collections::HashSet::new(),
+        template_aliases: HashMap::new(),
         variable_structs: HashMap::new(),
         function_return_structs: HashMap::new(),
         fixed_address_globals: HashMap::new(),
@@ -183,5 +186,156 @@ mod tests {
                 body_end_line: 4,
             })]
         );
+    }
+
+    #[test]
+    fn skips_unused_template_member_specializations_as_inline_materializations() {
+        let source = r#"
+            template <int N, typename T>
+            struct Table { T get(int) const { return 0.0f; } };
+            float Table<8, float>::get(int value) const { return 1.0f; }
+            int compiled(void) { return 3; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(
+            unit.functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            ["compiled"]
+        );
+        assert!(unit.skipped_inline_names.contains("get"));
+    }
+
+    #[test]
+    fn does_not_skip_an_emitting_template_member_specialization() {
+        let source = r#"
+            template <int N, typename T>
+            struct Table { T get(int) const; };
+            float Table<8, float>::get(int value) const { return 1.0f; }
+            int compiled(void) { return 3; }
+        "#;
+        let error = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap_err();
+        assert!(error.message.contains("expected ParenOpen, found Less"));
+    }
+
+    #[test]
+    fn skips_primary_templates_with_default_arguments() {
+        let source = r#"
+            template <typename T, typename Pointer = T*>
+            struct Iterator { typedef Pointer pointer; };
+            int compiled(void) { return 3; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.functions.len(), 1);
+        assert_eq!(unit.functions[0].name, "compiled");
+    }
+
+    #[test]
+    fn resolves_template_aliases_for_inline_specialization_recovery() {
+        let source = r#"
+            template <typename T>
+            struct Table { int get(void) { return 0; } };
+            typedef Table<int> IntTable;
+            template <> int IntTable::get(void) { return 1; }
+            int compiled(void) { return 3; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.functions.len(), 1);
+        assert_eq!(unit.functions[0].name, "compiled");
+        assert!(unit.skipped_inline_names.contains("get"));
+    }
+
+    #[test]
+    fn inherits_inline_from_a_skipped_class_member_declaration() {
+        let source = r#"
+            namespace N {
+            struct C { inline int dropped(int); };
+            int C::dropped(int value) { return value; }
+            }
+            int compiled(void) { return 3; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(
+            unit.functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            ["compiled"]
+        );
+        assert!(unit.skipped_inline_names.contains("dropped"));
+    }
+
+    #[test]
+    fn does_not_skip_an_ordinary_out_of_class_member_definition() {
+        let source = r#"
+            struct C { int emitted(int); };
+            int C::emitted(int value) { return value; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.functions.len(), 1);
+        assert!(unit.functions[0].name.contains("emitted"));
+    }
+
+    #[test]
+    fn does_not_classify_explicit_specializations_as_skippable_primary_templates() {
+        let source = r#"
+            template <typename T> int value(void) { return 1; }
+            template <> int value<int>(void) { return 2; }
+            int compiled(void) { return 3; }
+        "#;
+        let error = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap_err();
+        assert!(error
+            .message
+            .contains("expected a type, found Identifier(\"template\")"));
     }
 }

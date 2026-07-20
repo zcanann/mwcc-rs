@@ -611,12 +611,24 @@ impl Parser {
                 continue;
             }
             let start = self.position;
+            // Inline is declaration state, not layout state. Capture it before
+            // either the C++ layout parser succeeds or recovery skips a class.
+            self.capture_cxx_inline_members();
             let functions_before = functions.len();
             let globals_before = globals.len();
             let bump_before_item = self.skipped_inline_functions;
-            if let Err(error) =
+            let skippable_inline_member = self.item_is_skippable_inline_member_definition();
+            let item_result = if skippable_inline_member {
+                // Route definitions whose inherited inline status was proven by
+                // declaration recovery through the same dropped-inline accounting
+                // as definitions carrying a written `inline` keyword.
+                Err(Diagnostic::error(
+                    "deferred unused C++ inline member materialization",
+                ))
+            } else {
                 self.parse_top_level_item(&mut globals, &mut functions, &mut prototypes)
-            {
+            };
+            if let Err(error) = item_result {
                 if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() {
                     eprintln!(
                         "skipped top-level item at token {start} ({:?}): {error}",
@@ -2578,6 +2590,9 @@ impl Parser {
     /// whole-object DIFF), so it must instead DEFER the unit like a function we
     /// cannot compile. Pure lookahead — consumes nothing.
     pub(crate) fn item_is_initialized_definition(&self) -> bool {
+        if self.item_is_primary_template_declaration() {
+            return false;
+        }
         let mut index = self.position;
         let (mut brace, mut paren, mut bracket) = (0i32, 0i32, 0i32);
         while let Some(token) = self.tokens.get(index) {
@@ -2618,6 +2633,9 @@ impl Parser {
     /// a `.bss`/`.sbss`/`.comm` symbol for such a tentative definition, so SKIPPING it on a parse
     /// failure would drop the symbol — a silent whole-object DIFF. Defer instead. Pure lookahead.
     pub(crate) fn item_is_uninitialized_definition(&self) -> bool {
+        if self.item_is_skippable_inline_member_definition() {
+            return false;
+        }
         // Must start with a scalar type keyword: a struct/union/enum, a typedef alias, or an
         // `extern`-led declaration emits no tentative data symbol, so those stay skippable.
         if !matches!(
@@ -2666,7 +2684,7 @@ impl Parser {
         let mut index = self.position;
         let mut paren_depth = 0i32;
         let mut saw_parameter_list = false;
-        let mut saw_inline = false;
+        let mut saw_inline = self.item_is_skippable_inline_member_definition();
         let mut saw_static = false;
         while let Some(token) = self.tokens.get(index) {
             match token {
@@ -2761,8 +2779,10 @@ impl Parser {
         // A function template definition does not itself emit a function body;
         // code appears only for an instantiated specialization. Recovery may
         // therefore skip an unused template just like an inline header helper.
-        if matches!(self.tokens.get(self.position), Some(Token::Identifier(word)) if word == "template")
-        {
+        if self.item_is_primary_template_declaration() {
+            return false;
+        }
+        if self.item_is_skippable_inline_member_definition() {
             return false;
         }
         let mut index = self.position;

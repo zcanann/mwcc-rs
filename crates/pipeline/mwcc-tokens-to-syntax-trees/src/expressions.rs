@@ -697,10 +697,11 @@ impl Parser {
                 }
             }
             other => {
+                let token_index = self.position.saturating_sub(1);
                 return Err(Diagnostic::error(format!(
-                    "expected an expression, found {other} at token {}",
-                    self.position.saturating_sub(1)
-                )))
+                    "expected an expression, found {other} at {}",
+                    self.diagnostic_position(token_index)
+                )));
             }
         };
         // postfix subscript `base[index]` and member access `base->field` /

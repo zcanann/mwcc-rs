@@ -125,6 +125,107 @@ pub(crate) fn normalize_constructor_declarators(
 }
 
 impl Parser {
+    pub(crate) fn qualify_cxx_class_name(&self, class: &str) -> String {
+        if self.namespace_stack.is_empty() {
+            class.to_string()
+        } else {
+            format!("{}::{class}", self.namespace_stack.join("::"))
+        }
+    }
+
+    /// Recover inline semantics from a C++ aggregate that the layout parser
+    /// cannot yet consume. Methods defined in a class body are implicitly
+    /// inline; declarations carrying `inline` remain inline when their later
+    /// out-of-class definition omits the keyword.
+    ///
+    /// This deliberately records only names and never layout. It is used solely
+    /// to decide whether an otherwise unparseable, unused definition may be
+    /// dropped; calls to such skipped names still defer rather than invent code.
+    pub(crate) fn capture_cxx_inline_members(&mut self) {
+        if !self.cplusplus {
+            return;
+        }
+        let start = self.position;
+        let is_aggregate = matches!(self.tokens.get(start), Some(Token::KeywordStruct))
+            || matches!(self.tokens.get(start), Some(Token::Identifier(word)) if word == "class");
+        if !is_aggregate {
+            return;
+        }
+        let Some(Token::Identifier(class)) = self.tokens.get(start + 1) else {
+            return;
+        };
+        let class = self.qualify_cxx_class_name(class);
+        let mut index = start + 2;
+        while !matches!(
+            self.tokens.get(index),
+            Some(Token::BraceOpen | Token::Semicolon | Token::EndOfFile) | None
+        ) {
+            index += 1;
+        }
+        if self.tokens.get(index) != Some(&Token::BraceOpen) {
+            return;
+        }
+
+        index += 1;
+        let mut brace_depth = 1i32;
+        let mut paren_depth = 0i32;
+        let mut explicitly_inline = false;
+        let mut member_name: Option<String> = None;
+        while let Some(token) = self.tokens.get(index) {
+            if brace_depth == 1 && paren_depth == 0 {
+                if matches!(token, Token::Identifier(word) if word == "inline" || word == "__inline")
+                {
+                    explicitly_inline = true;
+                }
+                if token == &Token::ParenOpen {
+                    member_name = index
+                        .checked_sub(1)
+                        .and_then(|previous| self.tokens.get(previous))
+                        .and_then(|previous| match previous {
+                            Token::Identifier(name) => Some(name.clone()),
+                            _ => None,
+                        });
+                }
+            }
+            match token {
+                Token::ParenOpen if brace_depth == 1 => paren_depth += 1,
+                Token::ParenClose if brace_depth == 1 && paren_depth > 0 => paren_depth -= 1,
+                Token::BraceOpen => {
+                    // A brace following a class-scope parameter list is the
+                    // method body, hence implicitly inline.
+                    if brace_depth == 1 && paren_depth == 0 {
+                        if let Some(member) = member_name.take() {
+                            self.inline_cxx_members.insert((class.clone(), member));
+                        }
+                    }
+                    brace_depth += 1;
+                }
+                Token::BraceClose => {
+                    brace_depth -= 1;
+                    if brace_depth == 0 {
+                        return;
+                    }
+                    if brace_depth == 1 {
+                        explicitly_inline = false;
+                        member_name = None;
+                    }
+                }
+                Token::Semicolon if brace_depth == 1 && paren_depth == 0 => {
+                    if explicitly_inline {
+                        if let Some(member) = member_name.take() {
+                            self.inline_cxx_members.insert((class.clone(), member));
+                        }
+                    }
+                    explicitly_inline = false;
+                    member_name = None;
+                }
+                Token::EndOfFile => return,
+                _ => {}
+            }
+            index += 1;
+        }
+    }
+
     /// Mangle a member declared in the active namespace scope. Class layouts
     /// remain keyed by their local source name; namespace qualification is an
     /// ABI concern applied only at symbol boundaries.

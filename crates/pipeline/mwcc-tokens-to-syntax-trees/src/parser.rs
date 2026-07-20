@@ -64,6 +64,18 @@ pub(crate) struct Parser {
     /// Single-parameter C++ struct templates whose instance fields can be laid
     /// out when a concrete typedef such as `Vector3<float>` is encountered.
     pub(crate) struct_templates: HashMap<String, StructTemplate>,
+    /// `(template class, member)` pairs defined inside a template body. An
+    /// out-of-class concrete specialization of one of these remains inline and
+    /// emits no code unless used; a merely declared member's specialization does.
+    pub(crate) inline_template_members: std::collections::HashSet<(String, String)>,
+    /// Fully-qualified `(class, member)` pairs declared `inline` in a skipped
+    /// C++ aggregate body. A later out-of-class definition inherits that
+    /// declaration's inline semantics even when it does not repeat `inline`.
+    pub(crate) inline_cxx_members: std::collections::HashSet<(String, String)>,
+    /// Concrete template typedef alias -> primary template name. This is kept
+    /// separately from layout aliases because nested/multi-argument templates
+    /// may be opaque for layout while still carrying inline-member semantics.
+    pub(crate) template_aliases: HashMap<String, String>,
     /// In-scope variables that are struct pointers, mapped to their struct tag,
     /// so `variable->field` resolves to the right layout.
     pub(crate) variable_structs: HashMap<String, String>,
@@ -261,6 +273,17 @@ impl Parser {
     pub(crate) fn current_location(&self) -> SourceLocation {
         self.locations[self.position]
     }
+    pub(crate) fn diagnostic_position(&self, token_index: usize) -> String {
+        let location = self.locations[token_index.min(self.locations.len() - 1)];
+        if location.line == 0 {
+            format!("token {token_index}")
+        } else {
+            format!(
+                "token {token_index} (line {}, column {})",
+                location.line, location.column
+            )
+        }
+    }
     /// If the next two tokens are an arithmetic/bitwise operator followed by `=`
     /// (a compound assignment like `+=`), return the operator. The operator and
     /// `=` are NOT consumed.
@@ -303,9 +326,9 @@ impl Parser {
                 );
             }
             Err(Diagnostic::error(format!(
-                "expected {expected}, found {} at token {}",
+                "expected {expected}, found {} at {}",
                 self.peek(),
-                self.position
+                self.diagnostic_position(self.position)
             )))
         }
     }
