@@ -6,14 +6,15 @@ use super::*;
 impl Generator {
     /// A string literal in expression position: intern it into the function's pooled
     /// `@N` strings (deduplicated by bytes), then load that object's address. Under
-    /// small-data addressing this is `addi d,0,0` + an `R_PPC_EMB_SDA21` relocation to
-    /// a placeholder `@@strN` name, which the unit's string resolver rewrites to the
-    /// real `@N`.
+    /// small-data addressing this is `addi d,0,0` + an `R_PPC_EMB_SDA21` relocation;
+    /// absolute addressing uses the ordinary `lis`/`addi` address pair. Both paths
+    /// target a placeholder `@@strN` name, which the unit's string resolver rewrites
+    /// to the real `@N`.
     pub(crate) fn emit_string_literal(&mut self, bytes: &[u8], destination: u8) -> Compilation<()> {
+        let index = self.intern_string_literal(bytes);
+        let placeholder = format!("@@str{index}");
         match self.behavior.global_addressing {
             GlobalAddressing::SmallData => {
-                let index = self.intern_string_literal(bytes);
-                let placeholder = format!("@@str{index}");
                 // A string within the small-data threshold (≤ 8 bytes incl. the NUL) lands in
                 // `.sdata` and is reached with a single SDA21 `li`; a larger one lands in `.data`
                 // (the writer routes by size) and is reached with ADDR16 `lis`/`addi` (`@ha`/`@l`),
@@ -41,9 +42,11 @@ impl Generator {
                 // function that also has a jump table).
                 Ok(())
             }
-            GlobalAddressing::Absolute => Err(Diagnostic::error(
-                "a string literal under absolute addressing is not supported yet (roadmap)",
-            )),
+            GlobalAddressing::Absolute => {
+                self.emit_address_high(destination, &placeholder);
+                self.emit_address_low(destination, &placeholder);
+                Ok(())
+            }
         }
     }
 
