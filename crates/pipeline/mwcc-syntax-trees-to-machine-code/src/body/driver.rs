@@ -2122,6 +2122,12 @@ impl Generator {
         if self.try_conditional_reassign_return(function)? {
             return Ok(());
         }
+        // Two bitfield updates through a global-state alias, followed by a command/data pair on a
+        // fixed port and a narrow dirty-flag clear. This must precede local folding: the alias is
+        // what identifies the shared state word and its retained load schedule.
+        if self.try_fixed_port_bitfield_update(function)? {
+            return Ok(());
+        }
         // A function's value-tracked locals are folded into its stores and trailing return,
         // then recompiled — `int x = a; gi = x; x = b; gj = x;` becomes `gi = a; gj = b;`,
         // and `int x = a; gi = x; return x;` becomes `gi = a; return a;`. The store paths
