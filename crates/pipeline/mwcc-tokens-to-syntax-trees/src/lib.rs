@@ -590,7 +590,7 @@ mod tests {
     }
 
     #[test]
-    fn reserves_a_vptr_before_fields_declared_ahead_of_virtual_methods() {
+    fn inserts_a_vptr_at_the_first_virtual_declaration() {
         let source = r#"
             class Id {
                 unsigned short value;
@@ -609,6 +609,31 @@ mod tests {
         )
         .unwrap();
 
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Store {
+                target: mwcc_syntax_trees::Expression::Member { offset: 0, .. },
+                ..
+            }]
+        ));
+
+        let source = r#"
+            class Id {
+            public:
+                virtual ~Id() {}
+                unsigned short value;
+                void set(int);
+            };
+            void Id::set(int input) { value = input; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
         assert!(matches!(
             unit.functions[0].statements.as_slice(),
             [mwcc_syntax_trees::Statement::Store {

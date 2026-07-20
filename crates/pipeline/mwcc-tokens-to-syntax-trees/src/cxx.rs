@@ -856,8 +856,10 @@ impl Parser {
 
     /// Parse one class definition and recover its object layout.
     /// Method declarations do not occupy storage and are skipped after recording
-    /// constructor signatures. A single non-virtual base is laid out first;
-    /// simple polymorphic classes reserve their implicit vptr at offset zero.
+    /// constructor signatures. A single non-virtual base is laid out first.
+    /// CodeWarrior inserts a class's own vptr at the declaration position of
+    /// its first virtual member, so fields written before `virtual` remain at
+    /// the object prefix rather than being shifted.
     pub(crate) fn parse_class_definition(
         &mut self,
     ) -> Compilation<(String, StructLayout, ClassLayout)> {
@@ -924,37 +926,6 @@ impl Parser {
             }
         }
 
-        let declares_virtual = {
-            let mut scan = self.position + 1;
-            let mut depth = 1i32;
-            let mut found = false;
-            while depth > 0 {
-                match self.tokens.get(scan) {
-                    Some(Token::BraceOpen) => depth += 1,
-                    Some(Token::BraceClose) => depth -= 1,
-                    Some(Token::Identifier(word)) if depth == 1 && word == "virtual" => {
-                        found = true;
-                        break;
-                    }
-                    Some(Token::EndOfFile) | None => break,
-                    _ => {}
-                }
-                scan += 1;
-            }
-            found
-        };
-        if declares_virtual && !class.is_polymorphic {
-            if class.bases.is_empty() {
-                offset = 4;
-                max_align = 4;
-                class.is_polymorphic = true;
-            } else {
-                return Err(Diagnostic::error(
-                    "a polymorphic class with a non-polymorphic base is not supported yet (roadmap)",
-                ));
-            }
-        }
-
         self.expect(Token::BraceOpen)?;
         while *self.peek() != Token::BraceClose {
             if matches!(self.peek(), Token::Identifier(word)
@@ -968,15 +939,12 @@ impl Parser {
             let is_explicit = self.eat_word("explicit");
             if self.eat_word("virtual") {
                 if !class.is_polymorphic {
-                    // A new vptr is the primary object component. We can place it
-                    // exactly while no base data has already occupied the prefix.
-                    // Polymorphic derivation reuses the primary base's vptr above.
-                    if offset != 0 {
-                        return Err(Diagnostic::error(
-                            "a polymorphic class with a non-polymorphic base is not supported yet (roadmap)",
-                        ));
-                    }
-                    offset = 4;
+                    // Unlike modern Itanium-style layouts, this ABI inserts the
+                    // vptr where the first virtual declaration appears. A class
+                    // beginning with data therefore keeps that data at offset 0
+                    // and receives an aligned vptr after it. Polymorphic bases
+                    // already supply the primary vptr and skip this path.
+                    offset = offset.div_ceil(4) * 4 + 4;
                     max_align = max_align.max(4);
                     class.is_polymorphic = true;
                 }
