@@ -505,6 +505,9 @@ pub struct Behavior {
     /// Placement of a bare float comparison relative to non-leaf linkage when a
     /// following CR operation folds equality.
     pub folded_float_compare_linkage_style: FoldedFloatCompareLinkageStyle,
+    /// Anonymous labels retained when a float guard folds to a branchless
+    /// comparison value.
+    pub folded_float_guard_label_bump: u8,
     /// Scheduling of a leading pointer store around a punned frame guard.
     pub leading_frame_guard_store_style: LeadingFrameGuardStoreStyle,
     /// Whole-family schedule for the fdlibm-style `frexp` transaction.
@@ -731,6 +734,10 @@ impl Behavior {
                 .build
                 .profile
                 .folded_float_compare_linkage_style(),
+            folded_float_guard_label_bump: config
+                .build
+                .profile
+                .folded_float_guard_label_bump(),
             leading_frame_guard_store_style: config.build.profile.leading_frame_guard_store_style(),
             frexp_family_style: config.build.profile.frexp_family_style(),
             frexp_deferred_label_bump: if config.flags.inline_deferred {
@@ -1605,6 +1612,14 @@ mod tests {
             assert!(ipa.tail_call_optimization);
             assert_eq!(ipa.trig_dispatcher_ipa_label_bump, 4);
         }
+    }
+
+    #[test]
+    fn gc41_coalesces_one_folded_float_guard_label() {
+        let mainline = Behavior::resolve(&CompilerConfig::new(build::GC_2_7));
+        let gc41 = Behavior::resolve(&CompilerConfig::new(build::GC_3_0A3P1));
+        assert_eq!(mainline.folded_float_guard_label_bump, 2);
+        assert_eq!(gc41.folded_float_guard_label_bump, 1);
     }
 
     #[test]

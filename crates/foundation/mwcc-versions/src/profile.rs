@@ -644,6 +644,14 @@ pub trait CodegenProfile: core::fmt::Debug {
         FoldedFloatCompareLinkageStyle::LinkRegisterFirst
     }
 
+    /// Anonymous labels retained when a source float guard folds to a
+    /// branchless comparison value. The 2.4.x optimizer retains both branch
+    /// labels; later profiles override this when their control-flow pass
+    /// coalesces one of them.
+    fn folded_float_guard_label_bump(&self) -> u8 {
+        2
+    }
+
     fn leading_frame_guard_store_style(&self) -> LeadingFrameGuardStoreStyle {
         LeadingFrameGuardStoreStyle::StoreValueFirstAfterLoad
     }
@@ -992,6 +1000,10 @@ impl CodegenProfile for Gc41Build51213 {
     }
 
     fn deferred_call_dispatcher_labels_per_case(&self) -> u8 {
+        1
+    }
+
+    fn folded_float_guard_label_bump(&self) -> u8 {
         1
     }
 

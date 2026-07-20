@@ -247,10 +247,10 @@ pub const GC_2_7: CompilerBuild = CompilerBuild {
     profile: &Mainline,
 };
 
-/// GC/3.0a3 — mwcceppc 4.1 build 51213. Initial measurements retain the
-/// GC/2.7 object conventions, with a newer `.comment` identity and a substantial
-/// optimizer transition. Kept experimental while its dedicated profile is
-/// characterized from differential canaries.
+/// GC/3.0a3 — mwcceppc 4.1 build 51213. Its object conventions include a newer
+/// `.comment` identity and a one-ordinal post-function step, alongside a
+/// substantial optimizer transition. Kept experimental while its dedicated
+/// profile is characterized from differential canaries.
 pub const GC_3_0A3: CompilerBuild = CompilerBuild {
     label: "GC/3.0a3",
     product: "CodeWarrior for GameCube 3.0 alpha 3",
@@ -263,8 +263,8 @@ pub const GC_3_0A3: CompilerBuild = CompilerBuild {
     sdata2_writable: true,
     function_symbol_before_references: true,
     initial_anonymous_counter: 5,
-    post_leaf_function_anonymous_bump: 4,
-    post_framed_function_anonymous_bump: 4,
+    post_leaf_function_anonymous_bump: 1,
+    post_framed_function_anonymous_bump: 1,
     profile: &Gc41Build51213,
 };
 
@@ -392,6 +392,8 @@ mod tests {
             assert_eq!(build.comment_marker, 0x0e);
             assert_eq!(build.comment_version, (4, 0, 0));
             assert_eq!(build.initial_anonymous_counter, 5);
+            assert_eq!(build.post_leaf_function_anonymous_bump, 1);
+            assert_eq!(build.post_framed_function_anonymous_bump, 1);
         }
     }
 
