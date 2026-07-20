@@ -23,6 +23,20 @@ impl Generator {
     /// single-local / leaf paths should handle it instead, so those stay
     /// byte-identical. Returns `true` once it has emitted the whole body.
     pub(crate) fn try_value_tracking(&mut self, function: &Function) -> Compilation<bool> {
+        // Copy propagation owns straight-line statements. Structured control flow has its own
+        // lowering passes, which must see the original branch-local declarations and assignments.
+        // In particular, a function with two locals declared inside one switch arm is not a
+        // "multiple straight-line locals" case merely because the parser hoists declarations into
+        // Function::locals. Decline it here instead of turning the switch itself into a misleading
+        // "stores or calls" value-tracking diagnostic.
+        if function.statements.iter().any(|statement| {
+            matches!(
+                statement,
+                Statement::Switch { .. } | Statement::If { .. } | Statement::Loop { .. }
+            )
+        }) {
+            return Ok(false);
+        }
         // The clean in-place accumulator (`int t = a+b; t = t+c; return t;`) is one
         // mwcc keeps in the result register and mutates in place — the substitution
         // model below would reassociate it and disagree, so intercept it first.
