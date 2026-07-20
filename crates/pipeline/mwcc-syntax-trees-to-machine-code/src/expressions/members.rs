@@ -3,12 +3,24 @@
 #[allow(unused_imports)]
 use super::*;
 
-fn member_displacement(offset: u32) -> Compilation<i16> {
-    i16::try_from(offset)
-        .map_err(|_| Diagnostic::error("struct member offset out of range (roadmap)"))
-}
-
 impl Generator {
+    /// Split an arbitrary 32-bit member offset into MWCC's address adjustment
+    /// and signed D-form displacement. Small offsets remain a single load/store;
+    /// larger offsets use `addis base,base,ha(offset)` before the access.
+    fn emit_member_base_adjustment(&mut self, base: u8, offset: u32) -> i16 {
+        let (high_adjusted, low) = split_address(offset);
+        if high_adjusted != 0 {
+            self.output
+                .instructions
+                .push(Instruction::AddImmediateShifted {
+                    d: base,
+                    a: base,
+                    immediate: high_adjusted,
+                });
+        }
+        low
+    }
+
     pub(crate) fn emit_member_load(
         &mut self,
         base: &Expression,
@@ -80,13 +92,13 @@ impl Generator {
             {
                 let pointee = pointee_of_type(member_type)
                     .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
-                let displacement = member_displacement(offset)?;
                 // A FLOAT/double member loads into an FPR, so the pointer must go to a GPR base —
                 // reusing the FPR destination's NUMBER would address through the matching GPR
                 // (`f1`↔`r1`/sp). Integer members share the destination GPR as both base and result.
                 if matches!(pointee, Pointee::Float | Pointee::Double) {
                     let base = self.lowest_free_general()?;
                     self.emit_global_load_value(name, base)?;
+                    let displacement = self.emit_member_base_adjustment(base, offset);
                     self.output.instructions.push(displacement_load(
                         pointee,
                         destination,
@@ -95,6 +107,7 @@ impl Generator {
                     )?);
                 } else {
                     self.emit_global_load_value(name, destination)?;
+                    let displacement = self.emit_member_base_adjustment(destination, offset);
                     self.output.instructions.push(displacement_load(
                         pointee,
                         destination,
@@ -133,7 +146,7 @@ impl Generator {
                         return Ok(());
                     }
                     self.emit_global_array_base(name, size as u32, destination)?;
-                    let displacement = member_displacement(offset)?;
+                    let displacement = self.emit_member_base_adjustment(destination, offset);
                     self.output.instructions.push(displacement_load(
                         pointee,
                         destination,
@@ -171,7 +184,7 @@ impl Generator {
             return Err(Diagnostic::error("a member load through a call base needs the call-return epilogue schedule (roadmap)"));
         }
         let address = self.member_base_register(base)?;
-        let displacement = member_displacement(offset)?;
+        let displacement = self.emit_member_base_adjustment(address, offset);
         self.output.instructions.push(displacement_load(
             pointee,
             destination,
@@ -244,7 +257,7 @@ impl Generator {
                 a: array_register,
                 b: GENERAL_SCRATCH,
             });
-            let displacement = member_displacement(offset)?;
+            let displacement = self.emit_member_base_adjustment(array_register, offset);
             self.output.instructions.push(displacement_load(
                 pointee,
                 destination,
@@ -307,7 +320,7 @@ impl Generator {
             offset,
             destination,
         )? {
-            let displacement = member_displacement(offset)?;
+            let displacement = self.emit_member_base_adjustment(destination, offset);
             self.output.instructions.push(displacement_load(
                 pointee,
                 destination,
@@ -366,7 +379,7 @@ impl Generator {
                 a: destination,
                 b: GENERAL_SCRATCH,
             });
-            let displacement = member_displacement(offset)?;
+            let displacement = self.emit_member_base_adjustment(destination, offset);
             self.output.instructions.push(displacement_load(
                 pointee,
                 destination,
@@ -446,7 +459,9 @@ impl Generator {
             } else {
                 self.general_register_of_leaf(value)?
             };
-            let displacement = member_displacement(offset)?;
+            let displacement = i16::try_from(offset).map_err(|_| {
+                Diagnostic::error("struct-array member store offset out of range (roadmap)")
+            })?;
             self.output.instructions.push(displacement_store(
                 pointee,
                 source,
@@ -492,7 +507,9 @@ impl Generator {
                 a: index_register,
                 b: GENERAL_SCRATCH,
             });
-            let displacement = member_displacement(offset)?;
+            let displacement = i16::try_from(offset).map_err(|_| {
+                Diagnostic::error("struct-array member store offset out of range (roadmap)")
+            })?;
             self.output.instructions.push(displacement_store(
                 pointee,
                 source,
@@ -515,7 +532,7 @@ impl Generator {
                 ..
             } => {
                 let register = self.member_base_register(inner)?;
-                let displacement = member_displacement(*offset)?;
+                let displacement = self.emit_member_base_adjustment(register, *offset);
                 self.output.instructions.push(Instruction::LoadWord {
                     d: register,
                     a: register,
@@ -611,7 +628,7 @@ impl Generator {
                     a: address,
                     b: scaled,
                 });
-                let displacement = member_displacement(*offset)?;
+                let displacement = self.emit_member_base_adjustment(address, *offset);
                 self.output.instructions.push(displacement_load(
                     *element,
                     destination,
@@ -1161,14 +1178,14 @@ impl Generator {
         }
         self.emit_global_array_base(name, size, destination)?;
         if offset != 0 {
-            let offset = i16::try_from(offset).map_err(|_| {
-                Diagnostic::error("global struct member address offset out of range (roadmap)")
-            })?;
-            self.output.instructions.push(Instruction::AddImmediate {
-                d: destination,
-                a: destination,
-                immediate: offset,
-            });
+            let low = self.emit_member_base_adjustment(destination, offset);
+            if low != 0 {
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: destination,
+                    a: destination,
+                    immediate: low,
+                });
+            }
         }
         Ok(())
     }
