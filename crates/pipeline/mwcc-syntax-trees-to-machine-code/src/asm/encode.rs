@@ -480,6 +480,13 @@ pub(super) fn assemble_line(
             let [s] = gprs(mnemonic, operands)?;
             Instruction::MoveToCountRegister { s }
         }
+        "mfctr" => {
+            let [d] = gprs(mnemonic, operands)?;
+            // `mfctr rD` is the dedicated assembler spelling of `mfspr rD,9`.
+            // The generic SPR instruction retains the exact encoding without
+            // introducing a second IR form used only by verbatim asm bodies.
+            Instruction::MoveFromSpr { d, spr: 9 }
+        }
 
         // Special-purpose / machine-state register moves + the synchronization and
         // interrupt-return system ops — the OS-kernel inline-asm vocabulary
@@ -528,9 +535,10 @@ pub(super) fn assemble_line(
         // Dedicated architecture spellings are aliases for fixed SPR numbers.
         // Keeping them as structured SPR moves shares encoding and register-use
         // semantics with the explicit `mfspr`/`mtspr` forms.
-        "mfpvr" | "mfdar" | "mfdsisr" | "mfdec" | "mfsdr1" | "mfear" => {
+        "mfxer" | "mfpvr" | "mfdar" | "mfdsisr" | "mfdec" | "mfsdr1" | "mfear" => {
             let [d] = gprs(mnemonic, operands)?;
             let spr = match mnemonic {
+                "mfxer" => 1,
                 "mfpvr" => 287,
                 "mfdar" => 19,
                 "mfdsisr" => 18,
@@ -595,9 +603,10 @@ pub(super) fn assemble_line(
                 s,
             }
         }
-        "mtdar" | "mtdsisr" | "mtdec" | "mtsdr1" | "mtear" => {
+        "mtxer" | "mtdar" | "mtdsisr" | "mtdec" | "mtsdr1" | "mtear" => {
             let [s] = gprs(mnemonic, operands)?;
             let spr = match mnemonic {
+                "mtxer" => 1,
                 "mtdar" => 19,
                 "mtdsisr" => 18,
                 "mtdec" => 22,
@@ -721,6 +730,10 @@ pub(super) fn assemble_line(
         "mfcr" => {
             let [d] = gprs(mnemonic, operands)?;
             Instruction::MoveFromConditionRegister { d }
+        }
+        "mtcr" => {
+            let [s] = gprs(mnemonic, operands)?;
+            Instruction::MoveToConditionRegisterFields { mask: 0xff, s }
         }
         "mffs" => {
             let [d] = fprs(mnemonic, operands)?;
@@ -969,6 +982,18 @@ mod tests {
     #[test]
     fn assembles_privileged_spr_aliases() {
         assert_eq!(
+            assemble("mfctr", vec![AsmOperand::Gpr(0)]).unwrap(),
+            Instruction::MoveFromSpr { d: 0, spr: 9 }
+        );
+        assert_eq!(
+            assemble("mfxer", vec![AsmOperand::Gpr(31)]).unwrap(),
+            Instruction::MoveFromSpr { d: 31, spr: 1 }
+        );
+        assert_eq!(
+            assemble("mtxer", vec![AsmOperand::Gpr(4)]).unwrap(),
+            Instruction::MoveToSpr { spr: 1, s: 4 }
+        );
+        assert_eq!(
             assemble(
                 "mfdbatl",
                 vec![AsmOperand::Gpr(25), AsmOperand::Immediate(0)]
@@ -995,6 +1020,14 @@ mod tests {
         assert_eq!(
             assemble("mtsdr1", vec![AsmOperand::Gpr(22)]).unwrap(),
             Instruction::MoveToSpr { spr: 25, s: 22 }
+        );
+    }
+
+    #[test]
+    fn assembles_condition_register_aliases() {
+        assert_eq!(
+            assemble("mtcr", vec![AsmOperand::Gpr(4)]).unwrap(),
+            Instruction::MoveToConditionRegisterFields { mask: 0xff, s: 4 }
         );
     }
 
