@@ -294,14 +294,37 @@ if ! "$ours" --build "$build" ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$d
   defer_detail="$(sed 's/^mwcc: //' "$dir/oerr" | head -1)"
   echo "DEFER  $src — $defer_detail"
   # Full-object parity still fails when debug emission is absent. For compiler-
-  # core visibility, retry only this capability boundary with a final `-sym off`
-  # and compare `.text` plus its relocations against the real debug-enabled
-  # object. This is a non-credit projection, never a BYTE result.
+  # core visibility, retry BOTH compilers with a final `-sym off`. Comparing our
+  # projection to the debug-enabled reference object creates a false anonymous-
+  # ordinal difference because MWCC debug bookkeeping advances the @N stream.
+  # This same-flags projection is diagnostic only and never earns whole-object
+  # BYTE credit.
   if [[ "$defer_detail" == debug-info:* ]]; then
-    if "$ours" --build "$build" ${compiler_flags[@]+"${compiler_flags[@]}"} -sym off \
+    reference_projected=0
+    if [[ $direct_ready -eq 1 ]]; then
+      if (
+        cd "$project" && "$wibo" "$sjis" "$compiler" \
+          ${all_flags[@]+"${all_flags[@]}"} -sym off -c "$src" \
+          -o "$dir/reference.projected.o"
+      ) >"$dir/reference.projected.log" 2>&1; then
+        reference_projected=1
+      fi
+    else
+      if (
+        cd "$dir" && "$wibo" "$sjis" "$compiler" \
+          ${compiler_flags[@]+"${compiler_flags[@]}"} -sym off -c "$ctx_name" \
+          -o reference.projected.o
+      ) >"$dir/reference.projected.log" 2>&1; then
+        reference_projected=1
+      fi
+    fi
+    if [[ $reference_projected -eq 0 ]]; then
+      projected_detail="$(sed 's/^mwcc: //' "$dir/reference.projected.log" | head -1)"
+      echo "CODE DEFER — reference -sym off projection failed: $projected_detail"
+    elif "$ours" --build "$build" ${compiler_flags[@]+"${compiler_flags[@]}"} -sym off \
         -c "$dir/ours/$ctx_name" -o "$dir/projected.o" 2>"$dir/projected.err"; then
-      python3 "$code_metrics" "$objdump" "$dir/ref.o" "$dir/projected.o" \
-        --context "the -sym off projection"
+      python3 "$code_metrics" "$objdump" "$dir/reference.projected.o" "$dir/projected.o" \
+        --context "the same-flags -sym off projection"
     else
       projected_detail="$(sed 's/^mwcc: //' "$dir/projected.err" | head -1)"
       echo "CODE DEFER — $projected_detail"
