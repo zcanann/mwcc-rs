@@ -722,7 +722,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // 1. The ordered section-name list (index 0 is the implicit NULL section). The
     //    unwind tables sit right after `.text`, then the `.sdata2` constant pool;
     //    their `.rela` and everything downstream key off this order, by name. A
-    //    data-only unit (no functions) omits `.text` and the `.mwcats` machinery.
+    //    A data-only unit normally omits `.text` and the `.mwcats` machinery.
+    //    Debug info may still name `.text` as its empty CU/line-table range; in
+    //    that case MWCC retains a zero-sized `.text` section and section symbol.
     let has_functions = !functions.is_empty();
     // mwcc catalogs only COMPILER-GENERATED functions in `.mwcats.text`; hand-written
     // inline-`asm` functions are excluded. An object whose only functions are asm has
@@ -744,8 +746,21 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mwcats_section: String = format!(".mwcats{text_section}");
     let rela_text_section: String = format!(".rela{text_section}");
     let rela_mwcats_section: String = format!(".rela{mwcats_section}");
+    let has_text = has_functions
+        || debug.is_some_and(|debug| {
+            debug
+                .line_relocations
+                .iter()
+                .chain(&debug.debug_relocations)
+                .any(|relocation| {
+                    matches!(
+                        &relocation.target,
+                        DebugRelocationTarget::Section(name) if name == text_section
+                    )
+                })
+        });
     let mut order: Vec<&str> = Vec::new();
-    if has_functions {
+    if has_text {
         order.push(text_section);
     }
     if debug.is_some_and(|debug| debug.layout.before_data()) {
@@ -2721,7 +2736,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             size,
         });
     };
-    if has_functions {
+    if has_text {
         push(
             text_section,
             SHT_PROGBITS,

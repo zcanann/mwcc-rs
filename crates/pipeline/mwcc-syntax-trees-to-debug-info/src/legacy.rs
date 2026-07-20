@@ -1,5 +1,7 @@
 //! Measured grouped DWARF-1 emitted by the 2.3.x and early 2.4.x compilers.
 
+mod data;
+
 use super::convert_relocations;
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_dwarf1::{
@@ -12,7 +14,6 @@ use mwcc_object::{
 };
 use mwcc_syntax_trees::{Expression, Function, TranslationUnit, Type};
 use mwcc_versions::CompilerBuild;
-use std::collections::HashMap;
 
 const COMPILE_UNIT: DebugEntryId = DebugEntryId(0);
 const PARAMETER_END: DebugEntryId = DebugEntryId(u32::MAX - 2);
@@ -27,6 +28,9 @@ enum MeasuredShape {
     /// Exported leaf functions whose optimized bodies are constant returns.
     /// Parameters are absent from the DIE stream because none remain live.
     ConstantFunctions,
+    /// A functionless translation unit containing supported scalar, array, and
+    /// aggregate data declarations.
+    DataOnly,
 }
 
 pub(super) fn lower(
@@ -134,6 +138,12 @@ pub(super) fn lower(
         ],
     });
 
+    if shape == MeasuredShape::DataOnly {
+        let mut records: Vec<_> = entries.into_iter().map(DebugRecord::Entry).collect();
+        records.extend(data::records(unit, &globals, first_global_id)?);
+        return finish(line, records, DebugLayout::AfterDataGrouped);
+    }
+
     for (index, global) in globals.iter().enumerate() {
         let next = if index + 1 < globals.len() {
             DebugEntryId(first_global_id.0 + index as u32 + 1)
@@ -222,16 +232,30 @@ pub(super) fn lower(
         }
     }
 
-    let terminal_records = match shape {
-        MeasuredShape::BasicParameter => vec![
-            vec![0, 0, 0, 4],
-            vec![0, 0, 0, 4],
-            vec![0, 0, 0, 4],
-        ],
-        MeasuredShape::ConstantFunctions => vec![vec![0, 0, 0, 4], vec![0, 0, 0, 4]],
-    };
     let mut records: Vec<_> = entries.into_iter().map(DebugRecord::Entry).collect();
-    records.extend(terminal_records.into_iter().map(DebugRecord::Raw));
+    match shape {
+        MeasuredShape::BasicParameter => records.extend([
+            DebugRecord::Marker(PARAMETER_END),
+            DebugRecord::Raw(vec![0, 0, 0, 4]),
+            DebugRecord::Marker(FUNCTION_END),
+            DebugRecord::Raw(vec![0, 0, 0, 4]),
+            DebugRecord::Raw(vec![0, 0, 0, 4]),
+        ]),
+        MeasuredShape::ConstantFunctions => records.extend([
+            DebugRecord::Marker(FUNCTION_END),
+            DebugRecord::Raw(vec![0, 0, 0, 4]),
+            DebugRecord::Raw(vec![0, 0, 0, 4]),
+        ]),
+        MeasuredShape::DataOnly => unreachable!("data-only units return before function records"),
+    }
+    finish(line, records, DebugLayout::BeforeDataGrouped)
+}
+
+fn finish(
+    line: mwcc_dwarf1::EncodedSection,
+    records: Vec<DebugRecord>,
+    layout: DebugLayout,
+) -> Compilation<DebugSections> {
     let mut debug_model = DebugInfo { records };
     // MWCC aligns the logical end of `.debug` with a final null record whose
     // declared length includes the required zero fill. It is absent when the
@@ -244,37 +268,12 @@ pub(super) fn lower(
         record.resize(record_len, 0);
         debug_model.records.push(DebugRecord::Raw(record));
     }
-    let terminal_len: usize = debug_model
-        .records
-        .iter()
-        .rev()
-        .take_while(|record| matches!(record, DebugRecord::Raw(_)))
-        .map(|record| match record {
-            DebugRecord::Raw(bytes) => bytes.len(),
-            DebugRecord::Entry(_) => 0,
-        })
-        .sum();
+    debug_model.records.push(DebugRecord::Marker(UNIT_END));
     let encoded = debug_model.encode_with_offsets();
-    let entries_end = encoded
-        .section
-        .bytes
-        .len()
-        .checked_sub(terminal_len)
-        .expect("the measured legacy terminal records have fixed sizes") as u32;
-    let mut offsets: HashMap<DebugEntryId, u32> = encoded.entry_offsets.into_iter().collect();
-    match shape {
-        MeasuredShape::BasicParameter => {
-            offsets.insert(PARAMETER_END, entries_end);
-            offsets.insert(FUNCTION_END, entries_end + 4);
-        }
-        MeasuredShape::ConstantFunctions => {
-            offsets.insert(FUNCTION_END, entries_end);
-        }
-    }
-    offsets.insert(UNIT_END, encoded.section.bytes.len() as u32);
+    let offsets = encoded.entry_offsets.into_iter().collect();
 
     Ok(DebugSections {
-        layout: DebugLayout::BeforeDataGrouped,
+        layout,
         line: line.bytes,
         debug: encoded.section.bytes,
         line_relocations: convert_relocations(line.relocations, &offsets, false),
@@ -305,6 +304,10 @@ fn classify_shape(
         && unit.functions.iter().all(is_exported_constant_int_function);
     if constant_functions {
         return Ok(MeasuredShape::ConstantFunctions);
+    }
+
+    if unit.functions.is_empty() && machine_functions.is_empty() && !globals.is_empty() {
+        return Ok(MeasuredShape::DataOnly);
     }
 
     Err(Diagnostic::error(
