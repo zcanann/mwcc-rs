@@ -245,6 +245,8 @@ impl Parser {
                 "defer_codegen off" => self.defer_codegen = false,
                 "force_active on" => self.force_active = true,
                 "force_active off" | "force_active reset" => self.force_active = false,
+                "peephole off" => self.peephole_disabled = true,
+                "peephole on" | "peephole reset" => self.peephole_disabled = false,
                 _ => {}
             }
             self.advance();
@@ -796,6 +798,7 @@ impl Parser {
                 is_static: true,
                 is_weak: false,
                 text_deferred: false,
+                peephole_disabled: false,
                 parameters: Vec::new(),
                 locals: Vec::new(),
                 statements,
@@ -3707,6 +3710,7 @@ impl Parser {
             is_static,
             is_weak: false,
             text_deferred: false,
+            peephole_disabled: self.peephole_disabled,
             parameters,
             locals,
             statements,

@@ -139,6 +139,7 @@ impl Parser {
             }));
         Ok(Some(Function {
             text_deferred: false,
+            peephole_disabled: self.peephole_disabled,
             return_type,
             name,
             is_static,

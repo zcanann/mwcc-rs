@@ -39,31 +39,23 @@ impl Generator {
             _ => return Ok(false),
         };
         // Exactly one local: a pointer initialized to a global (function-pointer) array's address.
+        // Older runtime sources spell the same initialization in a `for` header instead of the
+        // declaration, so the table is resolved after the loop shape is known below.
         let [local] = function.locals.as_slice() else {
             return Ok(false);
         };
         if local.array_length.is_some() || local.is_static {
             return Ok(false);
         }
-        // The table is a global function-pointer array (often an unsized `extern T[]`, so it is not
-        // in `global_array_sizes`); its address is taken with an ADDR16 relocation regardless. Only
-        // a global symbol qualifies — a local/parameter name would not carry the relocation.
-        let Some(Expression::Variable(table)) = &local.initializer else {
-            return Ok(false);
-        };
-        if self.locations.contains_key(table.as_str()) {
-            return Ok(false);
-        }
-        let table = table.clone();
 
         // The first statement is the walk loop; the rest are the trailing calls (and, for an `int`
         // function, a `return 0`).
         let Some((
             Statement::Loop {
-                kind: LoopKind::While,
-                initializer: None,
+                kind,
+                initializer,
                 condition: Some(condition),
-                step: None,
+                step,
                 body,
             },
             trailing,
@@ -71,7 +63,52 @@ impl Generator {
         else {
             return Ok(false);
         };
-        // The condition is `*p != 0` — the table entry loaded and tested against null.
+        // Normalize the two source spellings:
+        //
+        //   T *p = table; while (*p != 0) { (**p)(); p++; }
+        //   T *p; for (p = table; *p; p++) { (*p)(); }
+        //
+        // The second is emitted by the older C++ runtime with peephole-disabled label branches.
+        let for_header_form = *kind == LoopKind::For;
+        // Only the peephole-disabled, linkage-first `for` schedule has been characterized. An
+        // optimized form removes the redundant source labels and schedules its table address into
+        // the linkage stores differently, so leave that form in the failure pool until it has an
+        // explicit schedule owner.
+        if for_header_form
+            && (!function.peephole_disabled
+                || self.behavior.frame_convention != FrameConvention::LinkageFirst)
+        {
+            return Ok(false);
+        }
+        let table = match (kind, &local.initializer, initializer) {
+            (LoopKind::While, Some(Expression::Variable(table)), None) if step.is_none() => {
+                table.clone()
+            }
+            (
+                LoopKind::For,
+                None,
+                Some(Expression::Assign {
+                    target,
+                    value,
+                }),
+            ) if matches!(target.as_ref(), Expression::Variable(name) if name == &local.name)
+                && matches!(value.as_ref(), Expression::Variable(_)) =>
+            {
+                let Expression::Variable(table) = value.as_ref() else {
+                    unreachable!()
+                };
+                table.clone()
+            }
+            _ => return Ok(false),
+        };
+        // The table is a global function-pointer array (often an unsized `extern T[]`, so it is not
+        // in `global_array_sizes`); its address is taken with an ADDR16 relocation regardless. Only
+        // a global symbol qualifies — a local/parameter name would not carry the relocation.
+        if self.locations.contains_key(table.as_str()) {
+            return Ok(false);
+        }
+        // The condition is `*p != 0` or its truth-test shorthand `*p` — the table entry loaded and
+        // tested against null.
         let walks_local = |expression: &Expression| {
             matches!(expression,
             Expression::Dereference { pointer } if matches!(pointer.as_ref(), Expression::Variable(name) if *name == local.name))
@@ -82,30 +119,57 @@ impl Generator {
                 left,
                 right,
             } if walks_local(left) && matches!(right.as_ref(), Expression::IntegerLiteral(0)) => {}
+            expression if walks_local(expression) => {}
             _ => return Ok(false),
         }
-        // The body is exactly `(**p)(); p++;` — an indirect call through the current entry, then the
-        // pointer step. `(**p)()` peels to CallThrough { Dereference(p) }; `p++` in statement
-        // position is lowered by the parser to the assignment `p = p + 1`.
-        let [Statement::Expression(Expression::CallThrough { target, arguments }), step_statement] =
-            body.as_slice()
-        else {
-            return Ok(false);
+        // The call is represented either as CallThrough(Dereference(p)) for `(**p)()` or as a
+        // named call to the pointer local for `(*p)()`. Both consume the r12 value loaded by the
+        // condition. The pointer update lives in the while body or the for-loop step field.
+        let (call_statement, step_expression) = if for_header_form {
+            let [call] = body.as_slice() else {
+                return Ok(false);
+            };
+            let Some(step) = step else {
+                return Ok(false);
+            };
+            (call, step)
+        } else {
+            let [call, Statement::Assign { name, value }] = body.as_slice() else {
+                return Ok(false);
+            };
+            if name != &local.name {
+                return Ok(false);
+            }
+            (call, value)
         };
-        if !arguments.is_empty() || !walks_local(target) {
+        let call_matches = match call_statement {
+            Statement::Expression(Expression::CallThrough { target, arguments }) => {
+                arguments.is_empty() && walks_local(target)
+            }
+            Statement::Expression(Expression::Call { name, arguments }) => {
+                arguments.is_empty() && name == &local.name
+            }
+            _ => false,
+        };
+        if !call_matches {
             return Ok(false);
         }
-        match step_statement {
-            Statement::Assign {
-                name,
-                value:
-                    Expression::Binary {
+        match step_expression {
+            Expression::Assign { target, value }
+                if for_header_form
+                    && matches!(target.as_ref(), Expression::Variable(name) if name == &local.name)
+                    && matches!(value.as_ref(), Expression::Binary {
                         operator: BinaryOperator::Add,
                         left,
                         right,
-                    },
-            } if *name == local.name
-                && matches!(left.as_ref(), Expression::Variable(other) if *other == local.name)
+                    } if matches!(left.as_ref(), Expression::Variable(other) if other == &local.name)
+                        && matches!(right.as_ref(), Expression::IntegerLiteral(1))) => {}
+            Expression::Binary {
+                operator: BinaryOperator::Add,
+                left,
+                right,
+            } if !for_header_form
+                && matches!(left.as_ref(), Expression::Variable(other) if other == &local.name)
                 && matches!(right.as_ref(), Expression::IntegerLiteral(1)) => {}
             _ => return Ok(false),
         }
@@ -158,11 +222,13 @@ impl Generator {
         self.non_leaf = true;
         self.frame_size = 16;
         self.callee_saved = vec![WALKER];
-        self.output.anonymous_label_bump = 5;
+        self.output.anonymous_label_bump = if for_header_form { 6 } else { 5 };
         // This recognizer owns the complete function schedule for every optimization level.
         self.output.pre_scheduled = true;
 
         let style = self.behavior.pointer_walker_schedule_style;
+        let legacy_for_schedule = for_header_form
+            && self.behavior.frame_convention == FrameConvention::LinkageFirst;
         let direct_address = style == PointerWalkerScheduleStyle::DirectAddressDuplicateLoad;
         let duplicate_entry_load = matches!(
             style,
@@ -173,27 +239,50 @@ impl Generator {
 
         // O0..O3 retain the canonical linkage saves before table materialization. O4 moves `lis`
         // into the mflr latency slot and the dependent scratch `addi` between the two saves.
-        self.output
-            .instructions
-            .push(Instruction::StoreWordWithUpdate {
-                s: 1,
-                a: 1,
-                offset: -16,
-            });
-        self.output
-            .instructions
-            .push(Instruction::MoveFromLinkRegister { d: 0 });
-        if !interleave_linkage {
+        if legacy_for_schedule {
+            self.output
+                .instructions
+                .push(Instruction::MoveFromLinkRegister { d: 0 });
             self.output.instructions.push(Instruction::StoreWord {
                 s: 0,
                 a: 1,
-                offset: 20,
+                offset: 4,
             });
+            self.output
+                .instructions
+                .push(Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -16,
+                });
             self.output.instructions.push(Instruction::StoreWord {
                 s: WALKER,
                 a: 1,
                 offset: 12,
             });
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -16,
+                });
+            self.output
+                .instructions
+                .push(Instruction::MoveFromLinkRegister { d: 0 });
+            if !interleave_linkage {
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: 0,
+                    a: 1,
+                    offset: 20,
+                });
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: WALKER,
+                    a: 1,
+                    offset: 12,
+                });
+            }
         }
         self.record_relocation(RelocationKind::Addr16Ha, &table);
         self.output
@@ -203,7 +292,7 @@ impl Generator {
                 a: 0,
                 immediate: 0,
             });
-        if interleave_linkage {
+        if interleave_linkage && !legacy_for_schedule {
             self.output.instructions.push(Instruction::StoreWord {
                 s: 0,
                 a: 1,
@@ -212,18 +301,18 @@ impl Generator {
         }
         self.record_relocation(RelocationKind::Addr16Lo, &table);
         self.output.instructions.push(Instruction::AddImmediate {
-            d: if direct_address { WALKER } else { 0 },
+            d: if direct_address && !legacy_for_schedule { WALKER } else { 0 },
             a: 3,
             immediate: 0,
         });
-        if interleave_linkage {
+        if interleave_linkage && !legacy_for_schedule {
             self.output.instructions.push(Instruction::StoreWord {
                 s: WALKER,
                 a: 1,
                 offset: 12,
             });
         }
-        if !direct_address {
+        if !direct_address || legacy_for_schedule {
             self.output.instructions.push(Instruction::Or {
                 a: WALKER,
                 s: 0,
@@ -233,24 +322,43 @@ impl Generator {
 
         // At O0/O1 the source-level body and condition each load `*walker`. O2+ eliminates the body
         // load and reuses the condition's r12 value as the next indirect callee.
+        if legacy_for_schedule {
+            let next = self.output.instructions.len() + 1;
+            self.output
+                .instructions
+                .push(Instruction::Branch { target: next });
+            let next = self.output.instructions.len() + 1;
+            self.output
+                .instructions
+                .push(Instruction::Branch { target: next });
+        }
         let skip_to_condition = self.output.instructions.len();
         self.output
             .instructions
             .push(Instruction::Branch { target: 0 });
         let body_top = self.output.instructions.len();
-        if duplicate_entry_load {
+        if duplicate_entry_load && !legacy_for_schedule {
             self.output.instructions.push(Instruction::LoadWord {
                 d: 12,
                 a: WALKER,
                 offset: 0,
             });
         }
-        self.output
-            .instructions
-            .push(Instruction::MoveToCountRegister { s: 12 });
-        self.output
-            .instructions
-            .push(Instruction::BranchToCountRegisterAndLink);
+        if legacy_for_schedule {
+            self.output
+                .instructions
+                .push(Instruction::MoveToLinkRegister { s: 12 });
+            self.output
+                .instructions
+                .push(Instruction::BranchToLinkRegisterAndLink);
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::MoveToCountRegister { s: 12 });
+            self.output
+                .instructions
+                .push(Instruction::BranchToCountRegisterAndLink);
+        }
         self.output.instructions.push(Instruction::AddImmediate {
             d: WALKER,
             a: WALKER,
@@ -260,7 +368,7 @@ impl Generator {
         if let Instruction::Branch { target } = &mut self.output.instructions[skip_to_condition] {
             *target = condition_top;
         }
-        let condition_register = if duplicate_entry_load { 0 } else { 12 };
+        let condition_register = if duplicate_entry_load && !legacy_for_schedule { 0 } else { 12 };
         self.output.instructions.push(Instruction::LoadWord {
             d: condition_register,
             a: WALKER,
@@ -293,7 +401,7 @@ impl Generator {
                 });
             }
         }
-        if interleave_linkage {
+        if interleave_linkage || legacy_for_schedule {
             self.output.instructions.push(Instruction::LoadWord {
                 d: 0,
                 a: 1,
@@ -312,21 +420,32 @@ impl Generator {
             a: 1,
             offset: self.frame_size - 4,
         });
-        if !interleave_linkage {
+        if !interleave_linkage && !legacy_for_schedule {
             self.output.instructions.push(Instruction::LoadWord {
                 d: 0,
                 a: 1,
                 offset: self.frame_size + 4,
             });
         }
-        self.output
-            .instructions
-            .push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: 1,
-            a: 1,
-            immediate: self.frame_size,
-        });
+        if legacy_for_schedule {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: self.frame_size,
+            });
+            self.output
+                .instructions
+                .push(Instruction::MoveToLinkRegister { s: 0 });
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::MoveToLinkRegister { s: 0 });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: self.frame_size,
+            });
+        }
         self.output
             .instructions
             .push(Instruction::BranchToLinkRegister);

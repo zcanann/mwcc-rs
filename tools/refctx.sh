@@ -139,8 +139,15 @@ if direct_reference_output="$(
   )"; then
     # MWCC emits no preprocessed file for an empty translation unit.
     [[ -f "$dir/ours/$source_name" ]] || : > "$dir/ours/$source_name"
-    direct_ready=1
-    ctx_name="$source_name"
+    # `-E` drops `#pragma peephole`, but it changes the emitted control-flow graph. Route those
+    # sources through the sentinel-preserving self-contained path below so both compilers see the
+    # same pragma state. The direct reference object above remains the authoritative compile.
+    if grep -Eq '^[[:space:]]*#pragma[[:space:]]+peephole[[:space:]]+(on|off|reset)' "$project/$src"; then
+      direct_ready=0
+    else
+      direct_ready=1
+      ctx_name="$source_name"
+    fi
   fi
 fi
 
@@ -232,6 +239,9 @@ sed -E \
   -e 's/^[[:space:]]*#pragma[[:space:]]+cplusplus[[:space:]]+on[[:space:]]*$/extern int __mwcc_refctx_pragma_cplusplus_on;/' \
   -e 's/^[[:space:]]*#pragma[[:space:]]+cplusplus[[:space:]]+off[[:space:]]*$/extern int __mwcc_refctx_pragma_cplusplus_off;/' \
   -e 's/^[[:space:]]*#pragma[[:space:]]+cplusplus[[:space:]]+reset[[:space:]]*$/extern int __mwcc_refctx_pragma_cplusplus_reset;/' \
+  -e 's/^[[:space:]]*#pragma[[:space:]]+peephole[[:space:]]+on[[:space:]]*$/extern int __mwcc_refctx_pragma_peephole_on;/' \
+  -e 's/^[[:space:]]*#pragma[[:space:]]+peephole[[:space:]]+off[[:space:]]*$/extern int __mwcc_refctx_pragma_peephole_off;/' \
+  -e 's/^[[:space:]]*#pragma[[:space:]]+peephole[[:space:]]+reset[[:space:]]*$/extern int __mwcc_refctx_pragma_peephole_reset;/' \
   "$dir/$ctx_name" > "$dir/$preprocess_name"
 ( cd "$dir" && "$wibo" "$sjis" "$compiler" ${compiler_flags[@]+"${compiler_flags[@]}"} -E "$preprocess_name" -o ctx.marked.i ) 2>/dev/null
 sed -E \
@@ -240,6 +250,9 @@ sed -E \
   -e 's/^[[:space:]]*extern int __mwcc_refctx_pragma_cplusplus_on;[[:space:]]*$/#pragma cplusplus on/' \
   -e 's/^[[:space:]]*extern int __mwcc_refctx_pragma_cplusplus_off;[[:space:]]*$/#pragma cplusplus off/' \
   -e 's/^[[:space:]]*extern int __mwcc_refctx_pragma_cplusplus_reset;[[:space:]]*$/#pragma cplusplus reset/' \
+  -e 's/^[[:space:]]*extern int __mwcc_refctx_pragma_peephole_on;[[:space:]]*$/#pragma peephole on/' \
+  -e 's/^[[:space:]]*extern int __mwcc_refctx_pragma_peephole_off;[[:space:]]*$/#pragma peephole off/' \
+  -e 's/^[[:space:]]*extern int __mwcc_refctx_pragma_peephole_reset;[[:space:]]*$/#pragma peephole reset/' \
   "$dir/ctx.marked.i" > "$dir/ctx.i"
 if [[ ! -s "$dir/ctx.i" ]]; then
   # An effectively EMPTY TU (sunshine's exponentialsf.c is a single

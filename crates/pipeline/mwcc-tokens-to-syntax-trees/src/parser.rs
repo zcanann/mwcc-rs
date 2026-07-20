@@ -271,6 +271,8 @@ pub(crate) struct Parser {
     /// in the link even if unreferenced, carrying a `.comment` attribute (0x00080000)
     /// — animal_crossing's runtime.c wraps its register save/restore in it.
     pub(crate) force_active: bool,
+    /// `#pragma peephole off`/`on`/`reset` state for the following definitions.
+    pub(crate) peephole_disabled: bool,
     /// Parsed single-return inline bodies: name -> (parameter names, body) —
     /// substituted at call sites with pure arguments (mwcc -inline auto).
     pub(crate) inline_bodies:

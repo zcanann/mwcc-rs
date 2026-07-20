@@ -289,6 +289,7 @@ mod tests {
             asm_body: None,
             force_active: false,
             text_deferred: false,
+            peephole_disabled: false,
         }
     }
 

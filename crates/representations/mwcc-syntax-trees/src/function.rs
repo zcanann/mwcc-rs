@@ -342,6 +342,10 @@ pub struct Function {
     /// the source position (measured: ww alloc's dealloc_var/__pool_free).
     /// AFTER `section` in declaration order — the ast_hash strip excludes it.
     pub text_deferred: bool,
+    /// Defined while `#pragma peephole off` is active. Most lowering is unaffected, but control-flow
+    /// owners may need to preserve otherwise redundant source edges (the legacy constructor-table
+    /// `for` loop is the first measured case). Kept after `section` for capture-hash stability.
+    pub peephole_disabled: bool,
 }
 
 /// One line of an inline-`asm` body: either a label definition (`name:`) or an

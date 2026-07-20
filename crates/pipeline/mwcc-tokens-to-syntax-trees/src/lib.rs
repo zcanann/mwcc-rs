@@ -108,6 +108,7 @@ pub fn parse_located_translation_unit(
         namespace_stack: Vec::new(),
         current_member_scope: None,
         force_active: false,
+        peephole_disabled: false,
         structs: HashMap::new(),
         cxx_classes: HashMap::new(),
         struct_templates: HashMap::new(),
@@ -157,6 +158,26 @@ pub fn parse_located_translation_unit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn records_peephole_pragma_scope_on_functions() {
+        let source = r#"
+            #pragma peephole off
+            void preserved(void) {}
+            #pragma peephole reset
+            void optimized(void) {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(unit.functions[0].peephole_disabled);
+        assert!(!unit.functions[1].peephole_disabled);
+    }
 
     #[test]
     fn retains_function_source_boundaries() {

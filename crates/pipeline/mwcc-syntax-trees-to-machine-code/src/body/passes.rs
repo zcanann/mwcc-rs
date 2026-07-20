@@ -498,6 +498,7 @@ pub(crate) fn substitute_const_float_globals(
         is_static: function.is_static,
         is_weak: function.is_weak,
         text_deferred: function.text_deferred,
+        peephole_disabled: function.peephole_disabled,
         parameters: function.parameters.clone(),
         locals: function
             .locals
@@ -670,6 +671,7 @@ pub(crate) fn inline_frame_feeding_locals(
             is_static: function.is_static,
             is_weak: function.is_weak,
             text_deferred: function.text_deferred,
+            peephole_disabled: function.peephole_disabled,
             parameters: function.parameters.clone(),
             locals: Vec::new(),
             statements: function
@@ -761,6 +763,7 @@ pub(crate) fn normalize_leading_local_assigns(function: &Function) -> Option<Fun
         is_static: function.is_static,
         is_weak: function.is_weak,
         text_deferred: function.text_deferred,
+        peephole_disabled: function.peephole_disabled,
         parameters: function.parameters.clone(),
         locals,
         statements: rest.to_vec(),
@@ -820,6 +823,7 @@ pub(crate) fn inline_return_only_locals(function: &Function) -> Option<Function>
         is_static: function.is_static,
         is_weak: function.is_weak,
         text_deferred: function.text_deferred,
+        peephole_disabled: function.peephole_disabled,
         parameters: function.parameters.clone(),
         locals: Vec::new(),
         statements: function.statements.clone(),
@@ -906,6 +910,7 @@ pub(crate) fn inline_switch_scrutinee_locals(function: &Function) -> Option<Func
         is_static: function.is_static,
         is_weak: function.is_weak,
         text_deferred: function.text_deferred,
+        peephole_disabled: function.peephole_disabled,
         parameters: function.parameters.clone(),
         locals: Vec::new(),
         statements: vec![Statement::Switch {
@@ -1173,6 +1178,7 @@ pub(crate) fn inline_store_bearing_locals(function: &Function) -> Option<Functio
         is_static: function.is_static,
         is_weak: function.is_weak,
         text_deferred: function.text_deferred,
+        peephole_disabled: function.peephole_disabled,
         parameters: function.parameters.clone(),
         locals: Vec::new(),
         statements: new_statements,
@@ -1291,6 +1297,7 @@ pub(crate) fn inline_single_call_result(function: &Function) -> Option<Function>
         is_static: function.is_static,
         is_weak: function.is_weak,
         text_deferred: function.text_deferred,
+        peephole_disabled: function.peephole_disabled,
         parameters: function.parameters.clone(),
         locals: Vec::new(),
         statements,

@@ -114,7 +114,7 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
                 let directive = line.trim().trim_start_matches('#').trim();
                 if let Some(rest) = directive.strip_prefix("pragma ") {
                     let rest = rest.trim();
-                    if matches!(rest, "cplusplus on" | "cplusplus off" | "cplusplus reset" | "push" | "pop" | "defer_codegen on" | "defer_codegen off" | "force_active on" | "force_active off" | "force_active reset") {
+                    if matches!(rest, "cplusplus on" | "cplusplus off" | "cplusplus reset" | "push" | "pop" | "defer_codegen on" | "defer_codegen off" | "force_active on" | "force_active off" | "force_active reset" | "peephole on" | "peephole off" | "peephole reset") {
                         push_token!(Token::Pragma(rest.to_string()), line_start);
                     }
                 }

@@ -535,6 +535,7 @@ impl Generator {
             is_static: function.is_static,
             is_weak: function.is_weak,
             text_deferred: false,
+            peephole_disabled: function.peephole_disabled,
             parameters: function.parameters.clone(),
             locals: synthetic_locals,
             statements: Vec::new(),
