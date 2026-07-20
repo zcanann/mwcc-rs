@@ -1871,19 +1871,24 @@ impl Parser {
             // ordinary identifiers: the ELF symbol is CodeWarrior-mangled and
             // the ABI carries an implicit `this` parameter in r3.
             let member_scope = if *self.peek() == Token::Colon && *self.peek_at(1) == Token::Colon {
-                let scope = name;
-                self.advance();
-                self.advance();
-                name = self.parse_identifier()?;
-                if *self.peek() == Token::Colon && *self.peek_at(1) == Token::Colon {
-                    return Err(Diagnostic::error(
-                        "a multiply-qualified C++ function is not supported yet (roadmap)",
-                    ));
+                let mut scopes = Vec::new();
+                loop {
+                    scopes.push(name);
+                    self.advance();
+                    self.advance();
+                    name = self.parse_identifier()?;
+                    if *self.peek() != Token::Colon || *self.peek_at(1) != Token::Colon {
+                        break;
+                    }
                 }
-                Some(scope)
+                Some(scopes.join("::"))
             } else {
                 None
             };
+            let member_layout_scope = member_scope
+                .as_deref()
+                .and_then(|scope| scope.rsplit("::").next())
+                .map(str::to_string);
             // A `__attribute__((aligned(n)))` immediately AFTER the declarator name
             // (`T x ATTRIBUTE_ALIGN(n);` — the scalar form). Consuming it here makes the
             // following token the real `;`/`[`/`=`, so the global-variable branch below is
@@ -2407,6 +2412,13 @@ impl Parser {
                 }
             }
             self.expect(Token::ParenClose)?;
+            if member_scope.is_some() {
+                while matches!(self.peek(), Token::Identifier(word)
+                    if matches!(word.as_str(), "const" | "volatile" | "override" | "final"))
+                {
+                    self.advance();
+                }
+            }
 
             // Keep this source fact before C++ member lowering inserts the
             // implicit `this` parameter. Later 4.x compilers charge one
@@ -2417,7 +2429,7 @@ impl Parser {
                 .filter(|parameter| !parameter.name.is_empty())
                 .count();
 
-            let constructor_scope = member_scope
+            let constructor_scope = member_layout_scope
                 .as_ref()
                 .filter(|scope| scope.as_str() == name.as_str())
                 .cloned();
@@ -2442,7 +2454,10 @@ impl Parser {
                     0,
                     Parameter {
                         parameter_type: Type::StructPointer {
-                            element_size: self.structs.get(scope).map_or(0, |layout| layout.size),
+                            element_size: member_layout_scope
+                                .as_deref()
+                                .and_then(|layout_scope| self.structs.get(layout_scope))
+                                .map_or(0, |layout| layout.size),
                         },
                         name: "this".to_string(),
                     },
@@ -2566,7 +2581,7 @@ impl Parser {
             }
             let previous_member_scope = self.current_member_scope.clone();
             let previous_this_struct = self.variable_structs.get("this").cloned();
-            if let Some(scope) = &member_scope {
+            if let Some(scope) = &member_layout_scope {
                 self.current_member_scope = Some(scope.clone());
                 self.variable_structs
                     .insert("this".to_string(), scope.clone());

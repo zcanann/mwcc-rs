@@ -785,7 +785,7 @@ impl Parser {
         explicit_parameters: &[CxxParameterType],
     ) -> Compilation<String> {
         let mut scopes: Vec<&str> = self.namespace_stack.iter().map(String::as_str).collect();
-        scopes.push(class);
+        scopes.extend(class.split("::"));
         mangle_qualified_member_function_typed(&scopes, function, explicit_parameters)
     }
 
@@ -798,7 +798,7 @@ impl Parser {
         member: &str,
     ) -> Compilation<String> {
         let mut scopes: Vec<&str> = self.namespace_stack.iter().map(String::as_str).collect();
-        scopes.push(class);
+        scopes.extend(class.split("::"));
         mangle_qualified_data_member(&scopes, member)
     }
 

@@ -538,6 +538,30 @@ mod tests {
     }
 
     #[test]
+    fn mangles_a_multiply_qualified_member_definition() {
+        let source = r#"
+            class Outer;
+            class Inner {
+            public:
+                int read() const;
+            private:
+                int value;
+            };
+            int Outer::Inner::read() const { return value; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(unit.functions[0].name, "read__Q25Outer5InnerFv");
+    }
+
+    #[test]
     fn resolves_a_declared_static_cxx_member_call() {
         let source = r#"
             struct System { static void halt(char*, int, char*); };
