@@ -208,6 +208,16 @@ impl Parser {
             if components.len() >= 2 {
                 let qualified = components.join("::");
                 let local = components.last().unwrap().clone();
+                if let Some(storage) = self
+                    .enum_types
+                    .get(&qualified)
+                    .or_else(|| self.enum_types.get(&local))
+                    .copied()
+                {
+                    self.position = scan;
+                    self.last_enum_tag = Some(qualified);
+                    return Ok(storage);
+                }
                 let layout_key = if self.structs.contains_key(&qualified) {
                     qualified.clone()
                 } else {
@@ -682,7 +692,7 @@ impl Parser {
     ///
     /// A function-pointer data member also contains top-level parentheses, so
     /// remember its `(*name)` declarator and leave it to the ordinary field path.
-    fn cxx_struct_member_is_method(&self) -> bool {
+    pub(crate) fn cxx_struct_member_is_method(&self) -> bool {
         if !self.cplusplus {
             return false;
         }

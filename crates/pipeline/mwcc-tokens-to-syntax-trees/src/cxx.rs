@@ -796,6 +796,8 @@ impl Parser {
             let nested_class = begins_member
                 && (matches!(token, Token::Identifier(word) if word == "class")
                     || token == &Token::KeywordStruct);
+            let nested_enum = begins_member
+                && matches!(token, Token::Identifier(word) if word == "enum");
             match token {
                 Token::ParenOpen if brace_depth == 1 => paren_depth += 1,
                 Token::ParenClose if brace_depth == 1 && paren_depth > 0 => paren_depth -= 1,
@@ -855,6 +857,9 @@ impl Parser {
             if nested_class {
                 self.capture_nested_cxx_class_layout(index, &class);
             }
+            if nested_enum {
+                self.capture_nested_cxx_enum(index, &class);
+            }
             if begins_member {
                 let starts_virtual = matches!(self.tokens.get(index), Some(Token::Identifier(word)) if word == "virtual");
                 match self.capture_cxx_method(index, &class) {
@@ -902,6 +907,40 @@ impl Parser {
                 eprintln!("nested-class layout recovery failed in '{outer}': {error}");
             }
             Err(_) => {}
+        }
+
+        self.position = saved_position;
+        self.last_struct_tag = saved_struct_tag;
+        self.last_enum_tag = saved_enum_tag;
+        self.last_type_was_wchar = saved_wchar;
+        self.last_array_typedef = saved_array_typedef;
+        self.last_type_was_const = saved_type_const;
+        self.last_pointer_const = saved_pointer_const;
+        self.last_cxx_pointer_depth = saved_cxx_pointer_depth;
+        self.last_cxx_pointer_base = saved_cxx_pointer_base;
+        self.last_type_was_volatile = saved_volatile;
+    }
+
+    /// Register a nested enum independently of the enclosing class's layout.
+    /// Qualified method signatures can then retain `Outer::Enum` even when an
+    /// unrelated field prevents the outer aggregate from being laid out.
+    fn capture_nested_cxx_enum(&mut self, declaration_index: usize, outer: &str) {
+        let saved_position = self.position;
+        let saved_struct_tag = self.last_struct_tag.clone();
+        let saved_enum_tag = self.last_enum_tag.clone();
+        let saved_wchar = self.last_type_was_wchar;
+        let saved_array_typedef = self.last_array_typedef;
+        let saved_type_const = self.last_type_was_const;
+        let saved_pointer_const = self.last_pointer_const;
+        let saved_cxx_pointer_depth = self.last_cxx_pointer_depth;
+        let saved_cxx_pointer_base = self.last_cxx_pointer_base;
+        let saved_volatile = self.last_type_was_volatile;
+
+        self.position = declaration_index;
+        if let Ok(storage) = self.parse_type() {
+            if let Some(name) = self.last_enum_tag.clone() {
+                self.enum_types.insert(format!("{outer}::{name}"), storage);
+            }
         }
 
         self.position = saved_position;
@@ -1029,6 +1068,7 @@ impl Parser {
                     if matches!(self.peek(), Token::Identifier(_)) {
                         self.advance();
                     }
+                    self.skip_cxx_default_argument()?;
                     cxx_parameters.push(
                         CxxParameterType::parsed(
                             cxx_storage_type,
@@ -1617,7 +1657,32 @@ impl Parser {
                 continue;
             }
 
-            let field_type = self.parse_type()?;
+            let declaration_start = self.position;
+            let field_type = match self.parse_type() {
+                Ok(field_type) => field_type,
+                Err(error) if !is_virtual => {
+                    // An incomplete class cannot yet be parsed as a by-value
+                    // return type (`Vector normalized() const`), but such a
+                    // declaration contributes no storage. Declaration capture
+                    // handles callable semantics independently; layout recovery
+                    // only needs to distinguish this from an unsupported field.
+                    self.position = declaration_start;
+                    if self.cxx_struct_member_is_method() {
+                        self.skip_class_member()?;
+                        continue;
+                    }
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            };
+            if matches!(self.tokens.get(declaration_start), Some(Token::Identifier(word)) if word == "enum")
+                && self.eat_keyword(Token::Semicolon)
+            {
+                // A nested enum definition introduces a type and enumerators,
+                // but the declaration itself occupies no object storage. Its
+                // body was consumed and registered by `parse_type` above.
+                continue;
+            }
             if self.last_array_typedef.take().is_some() {
                 return Err(Diagnostic::error(
                     "an array-typedef class member is not supported yet (roadmap)",
@@ -1625,6 +1690,17 @@ impl Parser {
             }
             let struct_tag = self.last_struct_tag.take();
             let attribute_align = self.skip_attributes()?.unwrap_or(1);
+            // Operator overload declarators are methods regardless of the
+            // punctuation following `operator` (`[]`, `=`, `+=`, ...). Their
+            // bodies and signatures do not contribute storage, so layout
+            // recovery can skip them even when their return type is a
+            // reference. Ordinary reference-returning methods continue through
+            // the method path below after consuming the source-only `&`.
+            self.eat_keyword(Token::Ampersand);
+            if self.eat_word("operator") {
+                self.skip_class_member()?;
+                continue;
+            }
             let field_name = self.parse_identifier()?;
             if *self.peek() == Token::ParenOpen {
                 let signature = self.parse_class_parameter_types()?;
@@ -1740,6 +1816,7 @@ impl Parser {
                 if matches!(self.peek(), Token::Identifier(_)) {
                     self.advance();
                 }
+                self.skip_cxx_default_argument()?;
                 parameters.push(parameter_type);
                 cxx_parameters.push(
                     CxxParameterType::parsed(
@@ -1764,6 +1841,40 @@ impl Parser {
             parameters,
             cxx_parameters,
         })
+    }
+
+    /// Skip a parameter's default initializer while preserving the comma or
+    /// closing parenthesis that terminates the parameter. Nested calls, array
+    /// literals, and braced aggregate values may contain their own commas.
+    fn skip_cxx_default_argument(&mut self) -> Compilation<()> {
+        if !self.eat_keyword(Token::Equals) {
+            return Ok(());
+        }
+        let mut parens = 0usize;
+        let mut brackets = 0usize;
+        let mut braces = 0usize;
+        loop {
+            match self.peek() {
+                Token::Comma | Token::ParenClose
+                    if parens == 0 && brackets == 0 && braces == 0 =>
+                {
+                    return Ok(());
+                }
+                Token::ParenOpen => parens += 1,
+                Token::ParenClose => parens = parens.saturating_sub(1),
+                Token::BracketOpen => brackets += 1,
+                Token::BracketClose => brackets = brackets.saturating_sub(1),
+                Token::BraceOpen => braces += 1,
+                Token::BraceClose => braces = braces.saturating_sub(1),
+                Token::EndOfFile => {
+                    return Err(Diagnostic::error(
+                        "unterminated C++ default parameter initializer",
+                    ));
+                }
+                _ => {}
+            }
+            self.advance();
+        }
     }
 
     fn skip_class_method_tail(&mut self) -> Compilation<bool> {

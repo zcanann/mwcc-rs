@@ -1929,6 +1929,63 @@ blr\n\
     }
 
     #[test]
+    fn retains_class_layout_across_reference_returning_subscript_operators() {
+        let source = r#"
+            class Vector {
+            public:
+                enum Kind { First, Second };
+                Vector normalized() const { return *this; }
+                bool is_equal(const Vector& other, float epsilon = 0.00001f) const;
+                float& operator[](int index) { return (&x)[index]; }
+                const float& operator[](int index) const { return (&x)[index]; }
+            protected:
+                float x;
+                float y;
+                float z;
+                Kind kind;
+            };
+            class Holder { Vector vector; };
+            Holder make(void) {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(
+            unit.functions[0].return_type,
+            mwcc_syntax_trees::Type::Struct { size: 16, align: 4 }
+        );
+    }
+
+    #[test]
+    fn retains_qualified_nested_enum_identity_without_outer_layout() {
+        let source = r#"
+            class Particle {
+            public:
+                enum Mode { Initial, Continuous };
+            private:
+                Missing value;
+            };
+            class Reader {
+            public:
+                virtual Particle::Mode mode(void) const = 0;
+            };
+        "#;
+        parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn initializes_the_first_declared_union_member_deterministically() {
         let source = r#"
             typedef struct {
