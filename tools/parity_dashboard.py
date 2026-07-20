@@ -27,7 +27,11 @@ STATUSES = (
 
 
 def normalize_reason(reason: str) -> str:
-    reason = re.sub(r"/[^ ]+/refctx\.[^/ ]+/(?:ours/)?ctx(?:\.cpp|\.c)?", "<context>", reason)
+    reason = re.sub(
+        r"/(?:[^/\s]+/)*refctx\.[^/\s]+/(?:ours/)?[^/\s:'\")]+",
+        "<context>",
+        reason,
+    )
     reason = re.sub(r'Identifier\("[^"]+"\)', "Identifier(…)", reason)
     reason = re.sub(r"member '[^']+' on a non-struct-pointer base", "member access on a non-struct-pointer base", reason)
     reason = re.sub(r"struct '[^']+' is not declared", "struct is not declared", reason)

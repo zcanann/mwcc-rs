@@ -15,6 +15,7 @@ from parity_dashboard import (
     code_component_result,
     code_result,
     failure_reason,
+    normalize_reason,
     representative_audit,
     runtime_summary,
     snapshot,
@@ -54,6 +55,14 @@ def row(**overrides):
 
 
 class IdentityTests(unittest.TestCase):
+    def test_reason_normalization_accepts_preserved_source_basenames(self):
+        self.assertEqual(
+            normalize_reason(
+                "failed at /tmp/refctx.A1b2C3/ours/__ppc_eabi_init.cpp:17"
+            ),
+            "failed at <context>:17",
+        )
+
     def test_refctx_metadata_is_machine_readable_without_hiding_verdict(self):
         output = (
             "PARITY_META oracle_direct=RUNNABLE\n"

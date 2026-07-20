@@ -66,14 +66,12 @@ if [[ ! -f "$compiler" ]]; then
   exit 0
 fi
 dir="$(mktemp -d "${TMPDIR:-/tmp}/refctx.XXXXXX")"
-# The input suffix selects mwcceppc's language. Flattening every TU to `ctx.c`
-# silently forced `.cpp`/`.cp` reference sources into C mode, producing false
-# HARNESS failures before our compiler ran. Both sides use the same synthetic
-# basename so the FILE symbol remains byte-identical too.
-case "$src" in
-  *.cpp|*.cp|*.cxx|*.cc) ctx_name="ctx.cpp";;
-  *)                     ctx_name="ctx.c";;
-esac
+# The suffix selects mwcceppc's language and the basename becomes the ELF FILE
+# symbol. Preserve the authoritative source basename in the self-contained
+# fallback too: a generic `ctx.cpp` made otherwise-identical direct objects look
+# different solely because their FILE symbols disagreed.
+source_name="${src##*/}"
+ctx_name="$source_name"
 # Only ever remove the mktemp scratch dir — guard against a clobbered $dir so the
 # cleanup can never delete a real tree (a stray loop variable once aliased $dir).
 if [[ "${REFCTX_KEEP:-0}" == 1 ]]; then
@@ -128,7 +126,6 @@ done
 # include order, macro state, and include guards that decompctx cannot model.
 # Keep the original basename on our preprocessed copy so FILE symbols match.
 mkdir -p "$dir/ours"
-source_name="${src##*/}"
 direct_ready=0
 oracle_direct="REJECTED"
 direct_reference_output=""
