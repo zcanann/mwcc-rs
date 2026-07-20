@@ -1498,6 +1498,36 @@ mod tests {
     }
 
     #[test]
+    fn initializes_the_first_declared_union_member_deterministically() {
+        let source = r#"
+            typedef struct {
+                unsigned char color[3];
+                char pad;
+            } Color;
+            typedef union {
+                Color value;
+                long long force_alignment[1];
+            } ColorUnion;
+            typedef struct {
+                ColorUnion entries[1];
+            } Material;
+            static Material material = { { { {{1, 2, 3}, 0} } } };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(
+            &unit.globals[0].data_bytes.as_ref().unwrap()[..4],
+            &[1, 2, 3, 0]
+        );
+    }
+
+    #[test]
     fn resolves_a_virtual_member_to_its_measured_vtable_slot() {
         let source = r#"
             struct Stream {

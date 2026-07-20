@@ -348,9 +348,13 @@ impl Parser {
             .structs
             .get(tag)
             .ok_or_else(|| Diagnostic::error(format!("struct '{tag}' is not declared")))?;
-        let mut ordered: Vec<_> = layout
-            .fields
-            .values()
+        let mut fields = layout.fields_in_declaration_order();
+        if layout.is_union {
+            fields.truncate(1);
+        }
+        let ordered: Vec<_> = fields
+            .into_iter()
+            .map(|(_, field)| field)
             .map(|field| {
                 (
                     field.offset,
@@ -362,9 +366,6 @@ impl Parser {
                 )
             })
             .collect();
-        ordered.sort_by_key(|(offset, _, _, _, _, bit_field)| {
-            (*offset, bit_field.map_or(0, |(bit, _)| bit))
-        });
         Ok(ordered)
     }
 
@@ -391,6 +392,44 @@ impl Parser {
             if let Some((bit_offset, width)) = bit_field {
                 let value = self.parse_scalar_constant(Type::UnsignedInt)?;
                 pack_bit_field(image, field_base, bit_offset, width, value as u64);
+            } else if let (
+                Some(nested),
+                Type::Struct {
+                    size: element_size,
+                    ..
+                },
+                Some(total),
+            ) = (nested_tag.as_ref(), member_type, array_bytes)
+            {
+                let nested = nested.clone();
+                let count = (total / element_size.max(1)).max(1);
+                let array_braced = self.eat_keyword(Token::BraceOpen);
+                for index in 0..count {
+                    if *self.peek() == Token::BraceClose {
+                        break;
+                    }
+                    let element_braced = self.eat_keyword(Token::BraceOpen);
+                    let relative = index * element_size;
+                    self.fill_struct_fields(
+                        &nested,
+                        image,
+                        field_base + relative as usize,
+                        absolute_field + relative,
+                        relocations,
+                    )?;
+                    self.eat_keyword(Token::Comma);
+                    if element_braced {
+                        self.expect(Token::BraceClose)?;
+                    }
+                    if !self.eat_keyword(Token::Comma) {
+                        break;
+                    }
+                }
+                if array_braced {
+                    self.expect(Token::BraceClose)?;
+                    self.eat_keyword(Token::Comma);
+                }
+                continue;
             } else if let (Some(nested), Type::Struct { .. }) = (nested_tag.as_ref(), member_type) {
                 // Only a struct VALUE field descends — a struct POINTER carries
                 // the tag too (for member resolution) but is a 4-byte address.

@@ -639,7 +639,7 @@ impl Parser {
                         self.structs.insert(tag.clone(), inner);
                         alignment_max = alignment_max.max(inner_align);
                         offset = align_layout_offset(offset, inner_align)?;
-                        layout.fields.insert(
+                        layout.insert_field(
                             name,
                             StructField {
                                 member_type: Type::Struct {
@@ -669,7 +669,7 @@ impl Parser {
                         self.structs.insert(synthetic.clone(), inner);
                         alignment_max = alignment_max.max(inner_align);
                         offset = align_layout_offset(offset, inner_align)?;
-                        layout.fields.insert(
+                        layout.insert_field(
                             name,
                             StructField {
                                 member_type: Type::Struct {
@@ -688,8 +688,8 @@ impl Parser {
                     (None, None) => {
                         alignment_max = alignment_max.max(inner_align);
                         offset = align_layout_offset(offset, inner_align)?;
-                        for (field_name, field) in &inner.fields {
-                            layout.fields.insert(
+                        for (field_name, field) in inner.fields_in_declaration_order() {
+                            layout.insert_field(
                                 field_name.clone(),
                                 StructField {
                                     member_type: field.member_type,
@@ -756,7 +756,7 @@ impl Parser {
                         self.structs.insert(variant_tag.clone(), inner);
                         alignment_max = alignment_max.max(inner_align);
                         offset = align_layout_offset(offset, inner_align)?;
-                        layout.fields.insert(
+                        layout.insert_field(
                             name,
                             StructField {
                                 member_type: Type::Struct {
@@ -780,8 +780,8 @@ impl Parser {
                     (None, None) => {
                         alignment_max = alignment_max.max(inner_align);
                         offset = align_layout_offset(offset, inner_align)?;
-                        for (field_name, field) in &inner.fields {
-                            layout.fields.insert(
+                        for (field_name, field) in inner.fields_in_declaration_order() {
+                            layout.insert_field(
                                 field_name.clone(),
                                 StructField {
                                     member_type: field.member_type,
@@ -824,7 +824,7 @@ impl Parser {
                     self.advance(); // `;`
                     offset = align_layout_offset(offset, 4)?;
                     alignment_max = alignment_max.max(4);
-                    layout.fields.insert(
+                    layout.insert_field(
                         field_name,
                         StructField {
                             member_type: Type::Pointer(pointee_of(element)?),
@@ -861,7 +861,7 @@ impl Parser {
                     }
                     alignment_max = alignment_max.max(alignment);
                     offset = align_layout_offset(offset, alignment)?;
-                    layout.fields.insert(
+                    layout.insert_field(
                         field_name,
                         StructField {
                             member_type: element,
@@ -938,7 +938,7 @@ impl Parser {
                     let alignment = 4u32;
                     alignment_max = alignment_max.max(alignment);
                     offset = align_layout_offset(offset, alignment)?;
-                    layout.fields.insert(
+                    layout.insert_field(
                         pointer_name.clone(),
                         StructField {
                             member_type: Type::StructPointer { element_size: 0 },
@@ -996,7 +996,7 @@ impl Parser {
                         width,
                         u32::from(attr_align.unwrap_or(1)),
                     )?;
-                    layout.fields.insert(
+                    layout.insert_field(
                         field_name,
                         StructField {
                             member_type: field_type,
@@ -1064,7 +1064,7 @@ impl Parser {
                     .max(merged_attribute_alignment(attr_align, trailing_attr_align));
                 alignment_max = alignment_max.max(alignment);
                 offset = align_layout_offset(offset, alignment)?;
-                layout.fields.insert(
+                layout.insert_field(
                     field_name.clone(),
                     StructField {
                         member_type: field_type,
@@ -1101,6 +1101,7 @@ impl Parser {
     pub(crate) fn parse_union_body(&mut self) -> Compilation<StructLayout> {
         self.expect(Token::BraceOpen)?;
         let mut layout = StructLayout::default();
+        layout.is_union = true;
         let mut max_size: u32 = 0;
         let mut max_align: u32 = 1;
         while *self.peek() != Token::BraceClose {
@@ -1130,7 +1131,7 @@ impl Parser {
                     let name = self.parse_identifier()?;
                     let variant_tag = tag.unwrap_or_else(|| format!("@anon{}", self.structs.len()));
                     self.structs.insert(variant_tag.clone(), inner);
-                    layout.fields.insert(
+                    layout.insert_field(
                         name,
                         StructField {
                             member_type: Type::Struct {
@@ -1145,8 +1146,8 @@ impl Parser {
                         },
                     );
                 } else {
-                    for (field_name, field) in &inner.fields {
-                        layout.fields.insert(
+                    for (field_name, field) in inner.fields_in_declaration_order() {
+                        layout.insert_field(
                             field_name.clone(),
                             StructField {
                                 member_type: field.member_type,
@@ -1217,7 +1218,7 @@ impl Parser {
             let align = type_alignment(storage_type)
                 .max(1)
                 .max(u32::from(attr_align.unwrap_or(1)));
-            layout.fields.insert(
+            layout.insert_field(
                 name,
                 StructField {
                     member_type: storage_type,

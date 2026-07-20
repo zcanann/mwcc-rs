@@ -1251,8 +1251,8 @@ impl Parser {
                 let base_align = (base.align as u32).max(1);
                 offset = offset.div_ceil(base_align) * base_align;
                 let base_offset = offset;
-                for (field_name, field) in &base.fields {
-                    layout.fields.insert(
+                for (field_name, field) in base.fields_in_declaration_order() {
+                    layout.insert_field(
                         field_name.clone(),
                         StructField {
                             member_type: field.member_type,
@@ -1382,7 +1382,7 @@ impl Parser {
                 .max(u32::from(attribute_align))
                 .max(1);
             offset = offset.div_ceil(align) * align;
-            layout.fields.insert(
+            layout.insert_field(
                 field_name.clone(),
                 StructField {
                     member_type: field_type,

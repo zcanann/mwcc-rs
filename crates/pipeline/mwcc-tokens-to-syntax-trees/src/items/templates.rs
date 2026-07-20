@@ -134,7 +134,13 @@ impl Parser {
         }
         let size = offset.div_ceil(max_alignment) * max_alignment;
         Some(StructLayout {
+            field_order: template
+                .fields
+                .iter()
+                .map(|field| field.name.clone())
+                .collect(),
             fields,
+            is_union: false,
             function_pointer_fields: std::collections::HashSet::new(),
             size,
             align: max_alignment as u8,

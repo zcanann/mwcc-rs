@@ -28,6 +28,11 @@ pub(crate) struct StructField {
 #[derive(Default)]
 pub(crate) struct StructLayout {
     pub(crate) fields: HashMap<String, StructField>,
+    /// Source declaration order. Offsets alone cannot order overlapping union
+    /// members, and hash-map iteration must never decide which member a plain
+    /// union initializer targets.
+    pub(crate) field_order: Vec<String>,
+    pub(crate) is_union: bool,
     /// Data members whose stored word is a callable function pointer. This is
     /// declaration identity rather than layout, but keeping it beside the
     /// resolved fields lets postfix parsing distinguish `s->callback()` from a
@@ -39,6 +44,28 @@ pub(crate) struct StructLayout {
     /// The struct's alignment (the max member alignment) — a struct value's stack
     /// slot is aligned to this, not to its size.
     pub(crate) align: u8,
+}
+
+impl StructLayout {
+    pub(crate) fn insert_field(&mut self, name: String, field: StructField) {
+        if !self.fields.contains_key(&name) {
+            self.field_order.push(name.clone());
+        }
+        self.fields.insert(name, field);
+    }
+
+    pub(crate) fn fields_in_declaration_order(&self) -> Vec<(&String, &StructField)> {
+        if self.field_order.is_empty() {
+            let mut fields: Vec<_> = self.fields.iter().collect();
+            fields.sort_by_key(|(name, field)| (field.offset, name.as_str()));
+            fields
+        } else {
+            self.field_order
+                .iter()
+                .filter_map(|name| self.fields.get_key_value(name))
+                .collect()
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
