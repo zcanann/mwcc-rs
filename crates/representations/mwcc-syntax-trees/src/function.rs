@@ -18,6 +18,9 @@ pub struct LocalDeclaration {
     pub declared_type: Type,
     pub name: String,
     pub initializer: Option<Expression>,
+    /// Volatile automatic objects must remain frame-resident so every source
+    /// read and write becomes a memory access instead of value propagation.
+    pub is_volatile: bool,
     /// Declared array length `[N]` for a local array (`int buf[N];`), whose storage
     /// is a frame slot of `N * sizeof(element)` bytes; `None` for a scalar. The
     /// `declared_type` is the element type.

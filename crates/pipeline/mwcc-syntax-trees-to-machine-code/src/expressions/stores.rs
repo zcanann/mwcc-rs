@@ -54,6 +54,40 @@ impl Generator {
             Expression::IndexedUpdateValue { value } => (value.as_ref(), true),
             value => (value, false),
         };
+        // A volatile automatic assignment is an observable store to its frame
+        // slot. The parser marks volatile locals as frame-resident, so this path
+        // also prevents the ordinary value tracker from substituting the last
+        // assigned value for a later read.
+        if let Expression::Variable(name) = target {
+            if let Some(slot) = self.frame_slots.get(name).copied() {
+                if slot.is_array {
+                    return Err(Diagnostic::error(
+                        "assignment to a whole frame array is not supported",
+                    ));
+                }
+                let pointee = match (slot.class, slot.size) {
+                    (ValueClass::General, 1) => Pointee::UnsignedChar,
+                    (ValueClass::General, 2) => Pointee::UnsignedShort,
+                    (ValueClass::General, 4) => Pointee::UnsignedInt,
+                    (ValueClass::Float, 4) => Pointee::Float,
+                    (ValueClass::Float, 8) => Pointee::Double,
+                    _ => {
+                        return Err(Diagnostic::error(
+                            "this volatile frame-slot type is not supported yet (roadmap)",
+                        ))
+                    }
+                };
+                let source = self.place_store_value(value, pointee)?;
+                self.output.instructions.push(displacement_store(
+                    pointee,
+                    source,
+                    1,
+                    slot.offset,
+                )?);
+                self.written_slots.insert(slot.offset);
+                return Ok(());
+            }
+        }
         // `*(T *)0xADDR = v` — a constant-address store (memory-mapped registers, the GX FIFO).
         // mwcc materializes the address base before the value (`lis base, hi`), keeping the base
         // GPR clear of the value's inputs, then stores `st value, lo(base)`. Mirrors the absolute

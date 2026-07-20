@@ -476,11 +476,7 @@ impl Parser {
         };
         {
             let declared_type = self.parse_type()?;
-            if self.last_type_was_volatile {
-                return Err(Diagnostic::error(
-                    "a volatile local is not supported yet (roadmap)",
-                ));
-            }
+            let is_volatile = self.last_type_was_volatile;
             // An array-typedef local (`Mtx proj;`) is exactly the flat local array
             // `f32 proj[12];` — reuse that machinery (frame codegen still defers
             // it; task #19). Extra brackets/stars/initializers are unmeasured.
@@ -509,6 +505,7 @@ impl Parser {
                         declared_type: element,
                         name: name.clone(),
                         initializer: None,
+                        is_volatile,
                         array_length: Some(total),
                         is_static: false,
                         data_bytes: None,
@@ -603,6 +600,7 @@ impl Parser {
                             declared_type,
                             name: name.clone(),
                             initializer: None,
+                            is_volatile,
                             array_length: Some(length),
                             is_static: false,
                             data_bytes,
@@ -684,6 +682,7 @@ impl Parser {
                         declared_type,
                         name: name.clone(),
                         initializer: None,
+                        is_volatile,
                         array_length: Some(length),
                         is_static: true,
                         data_bytes: Some(bytes),
@@ -763,6 +762,7 @@ impl Parser {
                     declared_type,
                     name: name.clone(),
                     initializer,
+                    is_volatile,
                     array_length: None,
                     is_static,
                     data_bytes,

@@ -2778,6 +2778,13 @@ pub(crate) fn collect_address_taken(function: &Function) -> HashSet<String> {
         .chain(function.locals.iter().map(|local| local.name.as_str()))
         .collect();
     names.retain(|name| local_names.contains(name.as_str()));
+    names.extend(
+        function
+            .locals
+            .iter()
+            .filter(|local| local.is_volatile && !local.is_static)
+            .map(|local| local.name.clone()),
+    );
     names
 }
 

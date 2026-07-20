@@ -193,6 +193,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn retains_volatile_automatic_storage() {
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(
+                "int reload(int value) { volatile int current; current = value; return current; }",
+            )
+            .unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(unit.functions[0].locals[0].is_volatile);
+    }
+
+    #[test]
     fn parses_cpp_named_static_cast_as_an_ordinary_conversion() {
         let unit = parse_translation_unit(
             mwcc_source_to_tokens::tokenize("float convert(unsigned value) { return static_cast<float>(value); }").unwrap(),

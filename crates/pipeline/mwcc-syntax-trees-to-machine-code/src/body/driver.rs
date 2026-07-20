@@ -3675,6 +3675,9 @@ impl Generator {
             Statement::Expression(_) => Err(Diagnostic::error(
                 "only a call may be a bare statement (roadmap)",
             )),
+            Statement::Assign { name, value } if self.frame_slots.contains_key(name) => {
+                self.emit_store(&Expression::Variable(name.clone()), value)
+            }
             // Reassignment is handled by value tracking; reaching here means it was
             // mixed with stores/calls, which that path defers.
             Statement::Assign { .. } => Err(Diagnostic::error(

@@ -3424,14 +3424,7 @@ impl Parser {
                 break;
             }
             let declared_type = self.parse_type()?;
-            // A volatile local's accesses must not be elided or folded (the straight-
-            // line/value-tracking paths would, e.g. `volatile int x = 5; return x;` ->
-            // `li r3,5` instead of mwcc's store-then-load). Defer until that is modeled.
-            if self.last_type_was_volatile {
-                return Err(Diagnostic::error(
-                    "a volatile local is not supported yet (roadmap)",
-                ));
-            }
+            let is_volatile = self.last_type_was_volatile;
             // An array-typedef local (`Mtx proj;`) is exactly the flat local array
             // `f32 proj[12];` — reuse that machinery (frame codegen still defers it;
             // task #19). Extra brackets/stars/initializers are unmeasured.
@@ -3451,6 +3444,7 @@ impl Parser {
                         declared_type: element,
                         name: name.clone(),
                         initializer: None,
+                        is_volatile,
                         array_length: Some(total),
                         is_static: false,
                         data_bytes: None,
@@ -3505,6 +3499,7 @@ impl Parser {
                         declared_type: Type::Pointer(Pointee::Pointer),
                         name,
                         initializer,
+                        is_volatile,
                         array_length: None,
                         is_static: false,
                         data_bytes: None,
@@ -3773,6 +3768,7 @@ impl Parser {
                     declared_type,
                     name,
                     initializer,
+                    is_volatile,
                     array_length,
                     is_static,
                     data_bytes,
