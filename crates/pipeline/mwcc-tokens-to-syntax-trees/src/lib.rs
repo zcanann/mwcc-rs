@@ -761,6 +761,25 @@ mod tests {
     }
 
     #[test]
+    fn does_not_mistake_function_type_declarations_for_kr_definitions() {
+        let source = r#"
+            typedef int (save_check_proc)(void);
+            int old_style_declaration(left, right);
+            int answer(void) { return 42; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.functions.len(), 1);
+        assert_eq!(unit.functions[0].name, "answer");
+    }
+
+    #[test]
     fn resolves_a_virtual_member_to_its_measured_vtable_slot() {
         let source = r#"
             struct Stream {

@@ -2883,6 +2883,15 @@ impl Parser {
         let mut index = self.position;
         while let Some(token) = self.tokens.get(index) {
             match token {
+                // A typedef or dropped inline declaration never owns emitted
+                // function text. In particular, `typedef int (F)(void);`
+                // otherwise resembles the identifier-only parameter list of a
+                // K&R definition and can make recovery defer an unrelated TU.
+                Token::Identifier(word)
+                    if word == "typedef" || word == "inline" || word == "__inline" =>
+                {
+                    return false
+                }
                 Token::ParenOpen => break,
                 Token::Semicolon | Token::BraceOpen | Token::EndOfFile => return false,
                 _ => index += 1,
@@ -2908,6 +2917,17 @@ impl Parser {
                 _ => return false,
             }
             index += 1;
+        }
+
+        // An immediate semicolon is an old-style declaration (`int f(a,b);`),
+        // and another `(` is a parenthesized function typedef/declarator
+        // (`typedef int (F)(void);`). A K&R definition has one or more parameter
+        // declarations between its identifier list and body.
+        if matches!(
+            self.tokens.get(index),
+            Some(Token::Semicolon | Token::ParenOpen)
+        ) {
+            return false;
         }
 
         let mut saw_parameter_declaration = false;
