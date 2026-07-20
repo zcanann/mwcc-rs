@@ -23,7 +23,13 @@ from parity_dashboard import (
 from parity_frontier import build_frontier
 from parity_identity import configuration_id
 from parity_loop import parse_args as parse_loop_args
-from reference_parity import harness_fingerprint, result_cache_name, stable_sample
+from reference_parity import (
+    harness_fingerprint,
+    parity_metadata,
+    result_cache_name,
+    stable_sample,
+    verdict_line,
+)
 
 
 def row(**overrides):
@@ -47,6 +53,18 @@ def row(**overrides):
 
 
 class IdentityTests(unittest.TestCase):
+    def test_refctx_metadata_is_machine_readable_without_hiding_verdict(self):
+        output = (
+            "PARITY_META oracle_direct=RUNNABLE\n"
+            "PARITY_META comparison_input=DIRECT\n"
+            "BYTE src/test.c — exact"
+        )
+        self.assertEqual(
+            parity_metadata(output),
+            {"oracle_direct": "RUNNABLE", "comparison_input": "DIRECT"},
+        )
+        self.assertEqual(verdict_line(output), "BYTE src/test.c — exact")
+
     def test_harness_fingerprint_covers_every_row_classification_input(self):
         names = (
             "refctx.sh",
@@ -297,6 +315,50 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(estimate["emitted_exact"], 1)
         self.assertEqual(estimate["emitted_wrong"], 1)
         self.assertEqual(estimate["emitted_wrong_proportion"], 0.5)
+
+    def test_only_direct_original_tu_comparisons_earn_parity_credit(self):
+        rows = [row(source=f"src/{index}.c") for index in range(5)]
+        observations = {
+            rows[0]["configuration_id"]: {
+                "status": "BYTE",
+                "evidence": {"oracle_direct": "RUNNABLE", "comparison_input": "DIRECT"},
+            },
+            rows[1]["configuration_id"]: {
+                "status": "BYTE",
+                "evidence": {
+                    "oracle_direct": "REJECTED",
+                    "comparison_input": "SYNTHETIC",
+                },
+            },
+            rows[2]["configuration_id"]: {
+                "status": "DEFER",
+                "evidence": {"oracle_direct": "RUNNABLE", "comparison_input": "DIRECT"},
+            },
+            rows[3]["configuration_id"]: {
+                "status": "DEFER",
+                "evidence": {
+                    "oracle_direct": "RUNNABLE",
+                    "comparison_input": "SYNTHETIC",
+                },
+            },
+            rows[4]["configuration_id"]: {
+                "status": "MISSING_DEPENDENCY",
+                "evidence": {"oracle_direct": "REJECTED"},
+            },
+        }
+        estimate = representative_audit(
+            rows, observations, {item["configuration_id"] for item in rows}
+        )["estimate"]
+        self.assertTrue(estimate["authoritative_provenance"])
+        self.assertEqual(estimate["successes"], 1)
+        self.assertEqual(estimate["known_nonparity"], 1)
+        self.assertEqual(estimate["measurement_unknown"], 3)
+        self.assertEqual(estimate["non_authoritative_unknown"], 2)
+        self.assertEqual(estimate["oracle_runnable"], 3)
+        self.assertEqual(estimate["oracle_runnable_unknown"], 1)
+        self.assertEqual(estimate["oracle_runnable_confirmed_proportion"], 1 / 3)
+        self.assertEqual(estimate["oracle_runnable_identification_high"], 2 / 3)
+        self.assertEqual(estimate["emitted_objects"], 1)
 
     def test_code_diagnostic_has_its_own_measured_denominator(self):
         rows = [row(source=f"src/{index}.c") for index in range(4)]

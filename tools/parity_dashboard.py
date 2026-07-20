@@ -436,6 +436,7 @@ def substantive_source_estimate(
     rows: List[Dict[str, Any]],
     selected: set[str],
     observations: Dict[str, Dict[str, Any]],
+    authoritative: bool = False,
 ) -> Dict[str, Any]:
     """Measure the fixed sample without whitespace-only source placeholders."""
 
@@ -445,11 +446,14 @@ def substantive_source_estimate(
         for identity in selected
         if row_by_identity[identity].get("source_has_non_whitespace", True)
     }
-    counts = Counter(observations[identity]["status"] for identity in substantive)
-    unknown = (
-        counts["HARNESS"]
-        + counts["MISSING_DEPENDENCY"]
-        + counts["INVALID_CONFIGURATION"]
+    counts = Counter(
+        authoritative_result(observations[identity])
+        if authoritative
+        else observations[identity]["status"]
+        for identity in substantive
+    )
+    unknown = len(substantive) - (
+        counts["BYTE"] + counts["DIFF"] + counts["DEFER"] + counts["UNSUPPORTED_BUILD"]
     )
     resolved = len(substantive) - unknown
     low, high = wilson_interval(counts["BYTE"], resolved)
@@ -471,6 +475,27 @@ def substantive_source_estimate(
         "substantive_source_resolved_interval_low": low,
         "substantive_source_resolved_interval_high": high,
     }
+
+
+def observation_evidence(observation: Dict[str, Any]) -> Dict[str, str]:
+    evidence = observation.get("evidence")
+    return evidence if isinstance(evidence, dict) else {}
+
+
+def authoritative_result(observation: Dict[str, Any]) -> str:
+    """Credit only comparisons against the original TU's real-MWCC object."""
+
+    status = observation["status"]
+    if status == "UNSUPPORTED_BUILD":
+        return status
+    evidence = observation_evidence(observation)
+    if (
+        evidence.get("oracle_direct") == "RUNNABLE"
+        and evidence.get("comparison_input") == "DIRECT"
+        and status in ("BYTE", "DIFF", "DEFER")
+    ):
+        return status
+    return "UNKNOWN"
 
 
 def representative_audit(
@@ -524,19 +549,46 @@ def representative_audit(
         "estimate": None,
     }
     if complete and selected and design_valid:
-        successes = counts["BYTE"]
-        known_nonparity = counts["DIFF"] + counts["DEFER"] + counts["UNSUPPORTED_BUILD"]
-        unknown = (
-            counts["HARNESS"]
-            + counts["MISSING_DEPENDENCY"]
-            + counts["INVALID_CONFIGURATION"]
+        provenance_complete = all(
+            observation["status"] == "UNSUPPORTED_BUILD"
+            or "oracle_direct" in observation_evidence(observation)
+            for observation in direct.values()
         )
+        result["provenance_complete"] = provenance_complete
+        credited_counts = (
+            Counter(authoritative_result(observation) for observation in direct.values())
+            if provenance_complete
+            else counts
+        )
+        successes = credited_counts["BYTE"]
+        known_nonparity = (
+            credited_counts["DIFF"]
+            + credited_counts["DEFER"]
+            + credited_counts["UNSUPPORTED_BUILD"]
+        )
+        unknown = len(selected) - successes - known_nonparity
         resolved = len(selected) - unknown
         resolved_low, resolved_high = wilson_interval(successes, resolved)
-        supported_runnable = successes + counts["DIFF"] + counts["DEFER"]
+        supported_runnable = (
+            successes + credited_counts["DIFF"] + credited_counts["DEFER"]
+        )
         supported_low, supported_high = wilson_interval(successes, supported_runnable)
-        emitted = successes + counts["DIFF"]
+        emitted = successes + credited_counts["DIFF"]
         emitted_exact_low, emitted_exact_high = wilson_interval(successes, emitted)
+        confirmed_low, confirmed_high = wilson_interval(successes, len(selected))
+        identification_upper_successes = successes + unknown
+        identification_upper_low, identification_upper_high = wilson_interval(
+            identification_upper_successes, len(selected)
+        )
+        oracle_runnable = sum(
+            observation_evidence(observation).get("oracle_direct") == "RUNNABLE"
+            for observation in direct.values()
+        )
+        oracle_runnable_unknown = sum(
+            observation_evidence(observation).get("oracle_direct") == "RUNNABLE"
+            and authoritative_result(observation) == "UNKNOWN"
+            for observation in direct.values()
+        )
         code_results = Counter(
             code_status
             for observation in direct.values()
@@ -562,9 +614,36 @@ def representative_audit(
             "harness_unknown": counts["HARNESS"],
             "missing_dependency_unknown": counts["MISSING_DEPENDENCY"],
             "invalid_configuration_unknown": counts["INVALID_CONFIGURATION"],
+            "non_authoritative_unknown": max(
+                0,
+                unknown
+                - counts["HARNESS"]
+                - counts["MISSING_DEPENDENCY"]
+                - counts["INVALID_CONFIGURATION"],
+            ),
             "confirmed_proportion": successes / len(selected),
+            "confirmed_confidence": 0.95,
+            "confirmed_interval_low": confirmed_low,
+            "confirmed_interval_high": confirmed_high,
             "identification_interval_low": successes / len(selected),
             "identification_interval_high": (successes + unknown) / len(selected),
+            "identification_upper_interval_low": identification_upper_low,
+            "identification_upper_interval_high": identification_upper_high,
+            "authoritative_provenance": provenance_complete,
+            "oracle_runnable": oracle_runnable if provenance_complete else None,
+            "oracle_runnable_unknown": (
+                oracle_runnable_unknown if provenance_complete else None
+            ),
+            "oracle_runnable_confirmed_proportion": (
+                successes / oracle_runnable
+                if provenance_complete and oracle_runnable
+                else None
+            ),
+            "oracle_runnable_identification_high": (
+                (successes + oracle_runnable_unknown) / oracle_runnable
+                if provenance_complete and oracle_runnable
+                else None
+            ),
             "resolved_outcomes": resolved,
             "resolved_proportion": successes / resolved if resolved else None,
             "resolved_confidence": 0.95,
@@ -584,9 +663,11 @@ def representative_audit(
             # how many were exact versus silently wrong.
             "emitted_objects": emitted,
             "emitted_exact": successes,
-            "emitted_wrong": counts["DIFF"],
+            "emitted_wrong": credited_counts["DIFF"],
             "emitted_exact_proportion": successes / emitted if emitted else None,
-            "emitted_wrong_proportion": counts["DIFF"] / emitted if emitted else None,
+            "emitted_wrong_proportion": (
+                credited_counts["DIFF"] / emitted if emitted else None
+            ),
             "emitted_exact_confidence": 0.95,
             "emitted_exact_interval_low": emitted_exact_low,
             "emitted_exact_interval_high": emitted_exact_high,
@@ -610,7 +691,9 @@ def representative_audit(
             # Whitespace-only source placeholders can produce exact trivial
             # objects. They remain in the goal metric, while this conditional
             # view makes their contribution explicit.
-            **substantive_source_estimate(rows, selected, direct),
+            **substantive_source_estimate(
+                rows, selected, direct, authoritative=provenance_complete
+            ),
         }
     return result
 
@@ -732,10 +815,16 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
             )
         estimate = audit["estimate"]
         if estimate is not None:
+            credit_label = (
+                "authoritative direct-TU byte parity"
+                if estimate["authoritative_provenance"]
+                else "confirmed byte parity in representative audit (legacy provenance)"
+            )
             print(
-                f"confirmed byte parity in representative audit: "
-                f"{estimate['successes']}/{estimate['total']} = "
-                f"{estimate['confirmed_proportion']:.1%}"
+                f"{credit_label}: {estimate['successes']}/{estimate['total']} = "
+                f"{estimate['confirmed_proportion']:.1%}; sample 95% CI "
+                f"{estimate['confirmed_interval_low']:.1%}.."
+                f"{estimate['confirmed_interval_high']:.1%}"
             )
             if estimate["substantive_source_total"]:
                 print(
@@ -763,12 +852,23 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
                 f"measurement-unknown: {estimate['measurement_unknown']}/{estimate['total']} "
                 f"(harness {estimate['harness_unknown']}, "
                 f"missing dependency {estimate['missing_dependency_unknown']}, "
-                f"invalid configuration {estimate['invalid_configuration_unknown']}); "
+                f"invalid configuration {estimate['invalid_configuration_unknown']}, "
+                f"non-authoritative comparison {estimate['non_authoritative_unknown']}); "
                 f"sample parity bounds "
                 f"{estimate['identification_interval_low']:.1%}.."
                 f"{estimate['identification_interval_high']:.1%}"
             )
-            if estimate["resolved_outcomes"]:
+            if estimate["authoritative_provenance"] and estimate["oracle_runnable"]:
+                print(
+                    "real-MWCC-runnable stratum: "
+                    f"{estimate['oracle_runnable']} sampled rows; confirmed parity "
+                    f"{estimate['oracle_runnable_confirmed_proportion']:.1%}; "
+                    "identification bounds "
+                    f"{estimate['oracle_runnable_confirmed_proportion']:.1%}.."
+                    f"{estimate['oracle_runnable_identification_high']:.1%} "
+                    f"({estimate['oracle_runnable_unknown']} pipeline-unknown)"
+                )
+            elif estimate["resolved_outcomes"]:
                 print(
                     f"resolved-outcome parity: "
                     f"{estimate['successes']}/{estimate['resolved_outcomes']} = "
@@ -776,7 +876,10 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
                     f"{estimate['resolved_interval_low']:.1%}.."
                     f"{estimate['resolved_interval_high']:.1%}"
                 )
-            if estimate["supported_runnable_outcomes"]:
+            if (
+                not estimate["authoritative_provenance"]
+                and estimate["supported_runnable_outcomes"]
+            ):
                 print(
                     f"supported+runnable parity: "
                     f"{estimate['successes']}/{estimate['supported_runnable_outcomes']} = "

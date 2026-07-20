@@ -61,6 +61,7 @@ if [[ -z "${MWCC_REFERENCE_COMPILER:-}" && ! -f "$compiler" ]]; then
   done
 fi
 if [[ ! -f "$compiler" ]]; then
+  echo "PARITY_META oracle_direct=REFERENCE_COMPILER_MISSING"
   echo "MISSING_DEPENDENCY  $src — reference compiler $build not found"
   exit 0
 fi
@@ -129,11 +130,13 @@ done
 mkdir -p "$dir/ours"
 source_name="${src##*/}"
 direct_ready=0
+oracle_direct="REJECTED"
 direct_reference_output=""
 if direct_reference_output="$(
   cd "$project" && "$wibo" "$sjis" "$compiler" \
     ${all_flags[@]+"${all_flags[@]}"} -c "$src" -o "$dir/ref.o" 2>&1
 )"; then
+  oracle_direct="RUNNABLE"
   if direct_preprocess_output="$(
     cd "$project" && "$wibo" "$sjis" "$compiler" \
       ${all_flags[@]+"${all_flags[@]}"} -E "$src" -o "$dir/ours/$source_name" 2>&1
@@ -151,6 +154,7 @@ if direct_reference_output="$(
     fi
   fi
 fi
+echo "PARITY_META oracle_direct=$oracle_direct"
 
 if [[ $direct_ready -eq 0 ]]; then
 if [[ -n "${REFCTX_INCLUDES:-}" ]]; then
@@ -304,6 +308,11 @@ fi
 # 3b. Our object. Preserve that synthetic basename so our FILE symbol matches.
 #     Pass the same flags the real compiler got — our mwcc models the ones it knows
 #     and ignores the rest.
+if [[ $direct_ready -eq 1 ]]; then
+  echo "PARITY_META comparison_input=DIRECT"
+else
+  echo "PARITY_META comparison_input=SYNTHETIC"
+fi
 if ! "$ours" --build "$build" ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$dir/ours/$ctx_name" -o "$dir/our.o" 2>"$dir/oerr"; then
   defer_detail="$(sed 's/^mwcc: //' "$dir/oerr" | head -1)"
   echo "DEFER  $src — $defer_detail"

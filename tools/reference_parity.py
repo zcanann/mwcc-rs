@@ -183,7 +183,24 @@ def verdict_line(output: str) -> str:
     for line in output.splitlines():
         if line.startswith(("BYTE", "DIFF", "DEFER")):
             return line
-    return output.splitlines()[0] if output.splitlines() else ""
+    return next(
+        (line for line in output.splitlines() if not line.startswith("PARITY_META ")),
+        "",
+    )
+
+
+def parity_metadata(output: str) -> Dict[str, str]:
+    """Extract machine-readable evidence provenance from refctx output."""
+
+    metadata: Dict[str, str] = {}
+    for line in output.splitlines():
+        if not line.startswith("PARITY_META "):
+            continue
+        for field in line.removeprefix("PARITY_META ").split():
+            key, separator, value = field.partition("=")
+            if separator and key and value:
+                metadata[key] = value
+    return metadata
 
 
 def classify(output: str, returncode: int) -> str:
@@ -351,6 +368,7 @@ def main() -> int:
                     "matching": row["matching"],
                     "source_sha256": row.get("source_sha256"),
                     "output": detail,
+                    "evidence": parity_metadata(detail),
                 }
                 cache_output.write(json.dumps(record, sort_keys=True) + "\n")
                 cache_output.flush()
