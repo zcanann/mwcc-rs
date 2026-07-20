@@ -1,6 +1,7 @@
 //! If-statement and guard codegen. Split from the former single guards_ifs.rs
 //! (fire 614) into cohesive submodules; behavior-identical.
 
+mod call_return_chain;
 mod early_return;
 mod guard_block;
 mod guard_sequence;

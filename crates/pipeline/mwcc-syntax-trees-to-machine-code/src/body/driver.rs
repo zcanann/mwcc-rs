@@ -2451,6 +2451,12 @@ impl Generator {
         if self.try_emit_busy_wait(function)? {
             return Ok(());
         }
+        // A byte-table search loop with one call per candidate, followed by a
+        // constant call/return guard chain. The cursor and index occupy r31/r30
+        // across every call and all exits share one epilogue.
+        if self.try_counted_table_search_with_call_guards(function)? {
+            return Ok(());
+        }
         // A counted call loop (`for (i = 0; i < N; i++) g(i);`): counter in the r31
         // home, bottom-tested backward branch.
         if self.try_counted_call_loop(function)? {
@@ -2725,6 +2731,11 @@ impl Generator {
         let mut lr_store_index: Option<usize> = None;
         if function_makes_call(function) {
             if !function.guards.is_empty() {
+                // `if (call()) return C; ... return D;` — a sequence of
+                // call-tested constant exits sharing one LR-only epilogue.
+                if self.try_call_condition_return_chain(function)? {
+                    return Ok(());
+                }
                 // `if (b) return call(); return DEFAULT;` — a guarded early return
                 // whose value is a call (no callee-saved register needed).
                 if self.try_guarded_call_return(function)? {

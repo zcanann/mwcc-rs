@@ -8,6 +8,7 @@ mod counters;
 mod fill_copy;
 pub(crate) mod policy;
 mod poll_search;
+mod search_guard_chain;
 mod walker;
 
 /// Signedness of a byte pointer's element. Plain `char *` has already been
