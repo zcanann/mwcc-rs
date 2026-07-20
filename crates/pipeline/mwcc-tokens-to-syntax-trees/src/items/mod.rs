@@ -796,6 +796,7 @@ impl Parser {
                     // substitution (mwcc -inline auto inlines it); anything
                     // else keeps only the NAME — a later call to it defers
                     // (a bl to the undefined local would be wrong bytes).
+                    self.try_record_inline_delete_forwarder();
                     self.try_record_inline_body();
                     if let Some(name) = self.skipped_function_name() {
                         self.skipped_inline_names.insert(name);
@@ -2820,7 +2821,10 @@ impl Parser {
                                             right: Box::new(Expression::IntegerLiteral(0)),
                                         },
                                         then_body: vec![Statement::Expression(Expression::Call {
-                                            name: "__dl__FPv".to_string(),
+                                            name: self
+                                                .cxx_delete_forwarder
+                                                .clone()
+                                                .unwrap_or_else(|| "__dl__FPv".to_string()),
                                             arguments: vec![Expression::Variable("this".to_string())],
                                         })],
                                         else_body: Vec::new(),

@@ -1323,6 +1323,63 @@ impl Parser {
         });
     }
 
+    /// Recognize `inline void operator delete(void* p) { Owner::Free(p); }`.
+    /// Deleting destructors are synthesized after this definition is dropped,
+    /// so retain the verified forwarding callee for that ABI-generated call.
+    pub(crate) fn try_record_inline_delete_forwarder(&mut self) {
+        let mut index = self.position;
+        while matches!(self.tokens.get(index), Some(Token::Identifier(word))
+            if matches!(word.as_str(), "inline" | "__inline" | "static"))
+        {
+            index += 1;
+        }
+        if self.tokens.get(index) != Some(&Token::KeywordVoid)
+            || !matches!(self.tokens.get(index + 1), Some(Token::Identifier(word)) if word == "operator")
+            || !matches!(self.tokens.get(index + 2), Some(Token::Identifier(word)) if word == "delete")
+            || self.tokens.get(index + 3) != Some(&Token::ParenOpen)
+        {
+            return;
+        }
+        index += 4;
+        let Some(parameter_close) = (index..self.tokens.len())
+            .find(|&candidate| self.tokens[candidate] == Token::ParenClose)
+        else {
+            return;
+        };
+        let Some(parameter) = self.tokens[index..parameter_close]
+            .iter()
+            .rev()
+            .find_map(|token| match token {
+                Token::Identifier(name)
+                    if !matches!(name.as_str(), "void" | "const" | "volatile") => Some(name.as_str()),
+                _ => None,
+            })
+        else {
+            return;
+        };
+        let body = parameter_close + 1;
+        let Some([
+            Token::BraceOpen,
+            Token::Identifier(class),
+            Token::Colon,
+            Token::Colon,
+            Token::Identifier(member),
+            Token::ParenOpen,
+            Token::Identifier(argument),
+            Token::ParenClose,
+            Token::Semicolon,
+            Token::BraceClose,
+        ]) = self.tokens.get(body..body + 10)
+        else {
+            return;
+        };
+        if argument == parameter {
+            if let Ok(callee) = self.resolve_static_member_call(class, member, 1) {
+                self.cxx_delete_forwarder = Some(callee);
+            }
+        }
+    }
+
     /// Resolve `Class::member(args)` using recovered static declarations.
     /// Arity is sufficient only when it selects one overload; ambiguity defers.
     pub(crate) fn resolve_static_member_call(

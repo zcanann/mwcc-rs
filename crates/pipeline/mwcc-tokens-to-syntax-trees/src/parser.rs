@@ -399,6 +399,9 @@ pub(crate) struct Parser {
     /// substituted at call sites with pure arguments (mwcc -inline auto).
     pub(crate) inline_bodies:
         std::collections::HashMap<String, (Vec<String>, mwcc_syntax_trees::Expression)>,
+    /// Direct callee of a translation-unit inline scalar `operator delete`
+    /// wrapper. Compiler-generated deleting destructors inline this body.
+    pub(crate) cxx_delete_forwarder: Option<String>,
     /// `typedef`-declared struct aliases (`typedef struct _FILE {…} FILE;`) mapped
     /// to their struct tag, so `FILE *p` resolves to the right layout.
     pub(crate) struct_typedefs: HashMap<String, String>,

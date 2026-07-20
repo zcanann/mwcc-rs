@@ -124,6 +124,7 @@ pub fn parse_located_translation_unit_with_enum_min(
         section_prototype_order: Vec::new(),
         skipped_inline_names: std::collections::HashSet::new(),
         inline_bodies: std::collections::HashMap::new(),
+        cxx_delete_forwarder: None,
         default_cplusplus: cplusplus,
         cplusplus,
         cplusplus_stack: Vec::new(),
@@ -1197,6 +1198,48 @@ blr\n\
             vtable.data_relocations,
             vec![(8, "__dt__6BinderFv".to_string(), 0)]
         );
+    }
+
+    #[test]
+    fn inlines_a_scalar_delete_forwarder_into_a_virtual_destructor() {
+        let source = r#"
+            class Memory {
+            public:
+                static void Free(const void* pointer);
+            };
+            inline void operator delete(void* pointer) { Memory::Free(pointer); }
+            class Binder {
+            public:
+                virtual ~Binder();
+            };
+            Binder::~Binder() {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let destructor = unit
+            .functions
+            .iter()
+            .find(|function| function.name == "__dt__6BinderFv")
+            .unwrap();
+        let mwcc_syntax_trees::Statement::If { then_body, .. } = &destructor.statements[0]
+        else {
+            panic!("expected the synthesized destructor guard");
+        };
+        let mwcc_syntax_trees::Statement::If { then_body, .. } = &then_body[1] else {
+            panic!("expected the deleting guard");
+        };
+        assert!(matches!(
+            &then_body[0],
+            mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Call { name, .. }
+            ) if name == "Free__6MemoryFPCv"
+        ));
     }
 
     #[test]
