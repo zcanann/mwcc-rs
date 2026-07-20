@@ -421,6 +421,11 @@ fn compile(
             }
         }
     }
+    mwcc_syntax_trees_to_machine_code::apply_unit_ordinal_accounting(
+        &unit.functions,
+        &mut machine_functions,
+        config,
+    );
     // MWCC_DUMP_FIXTURES=<dir>: serialize every lowered function's register
     // structure (per-instruction define/use operands via the vreg machine
     // description) — the FIT CORPUS for the keystone allocator (#20). Each

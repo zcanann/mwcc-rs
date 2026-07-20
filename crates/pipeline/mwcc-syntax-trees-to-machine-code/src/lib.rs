@@ -40,6 +40,22 @@ mod value_tracking;
 use generator::Generator;
 pub use inline_summaries::InlineSummaries;
 
+/// Apply optimizer bookkeeping that is observable only after every function in
+/// the translation unit is known. File IPA can move labels from later functions
+/// ahead of the first pool constant, so this cannot be modeled honestly inside
+/// [`lower_function`].
+pub fn apply_unit_ordinal_accounting(
+    functions: &[Function],
+    machine_functions: &mut [MachineFunction],
+    config: CompilerConfig,
+) {
+    ordinal_accounting::apply_unit(
+        functions,
+        machine_functions,
+        Behavior::resolve(&config).function_ordinal_accounting_style,
+    );
+}
+
 /// Lower a parsed function to machine code for the given compiler configuration.
 /// `call_return_types` maps callable names (prototypes and definitions) to their
 /// return type, so a call's result type is known (e.g. a `double`-returning math

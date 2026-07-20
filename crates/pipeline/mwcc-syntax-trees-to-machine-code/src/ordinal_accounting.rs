@@ -6,7 +6,9 @@
 //! ordinal block here.
 
 use mwcc_machine_code::MachineFunction;
-use mwcc_syntax_trees::{Expression, Function, Statement, Type};
+use mwcc_syntax_trees::{
+    BinaryOperator, Expression, Function, Statement, Type, UnaryOperator,
+};
 use mwcc_versions::FunctionOrdinalAccountingStyle;
 
 pub(crate) fn apply(
@@ -20,6 +22,50 @@ pub(crate) fn apply(
         FunctionOrdinalAccountingStyle::Gc41Ipa => gc41_hidden_labels(function, true),
     };
     output.post_constant_label_bump += hidden;
+}
+
+pub(crate) fn apply_unit(
+    functions: &[Function],
+    machine_functions: &mut [MachineFunction],
+    style: FunctionOrdinalAccountingStyle,
+) {
+    if style != FunctionOrdinalAccountingStyle::Gc41Ipa || machine_functions.is_empty() {
+        return;
+    }
+
+    let mut saw_float_guard_pool = false;
+    let mut unit_front_bump = 0u32;
+    for function in functions {
+        let Some(machine) = machine_functions
+            .iter_mut()
+            .find(|machine| machine.name == function.name)
+        else {
+            continue;
+        };
+        let has_float_guard_pool = function
+            .guards
+            .iter()
+            .any(|guard| is_float_comparison(&guard.condition))
+            && !machine.constants.is_empty();
+        if has_float_guard_pool {
+            if saw_float_guard_pool {
+                // Later pool-bearing float guards are analyzed before pool
+                // allocation (+7 at unit front), while three of their four
+                // local guard labels coalesce into that unit analysis block.
+                unit_front_bump += 7;
+                machine.anonymous_label_bump = machine.anonymous_label_bump.saturating_sub(3);
+            }
+            saw_float_guard_pool = true;
+        }
+        if function
+            .guards
+            .iter()
+            .any(|guard| is_negated_call_short_circuit(&guard.condition))
+        {
+            unit_front_bump += 16;
+        }
+    }
+    machine_functions[0].anonymous_label_bump += unit_front_bump;
 }
 
 fn gc41_hidden_labels(function: &Function, ipa_file: bool) -> u32 {
@@ -70,6 +116,25 @@ fn is_float_value(expression: &Expression) -> bool {
         }
         _ => false,
     }
+}
+
+fn is_negated_call_short_circuit(expression: &Expression) -> bool {
+    let Expression::Binary {
+        operator: BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr,
+        left,
+        right,
+    } = expression
+    else {
+        return false;
+    };
+    is_negated_call(left) && is_negated_call(right)
+}
+
+fn is_negated_call(expression: &Expression) -> bool {
+    matches!(expression, Expression::Unary {
+        operator: UnaryOperator::LogicalNot,
+        operand,
+    } if matches!(operand.as_ref(), Expression::Call { .. }))
 }
 
 #[cfg(test)]
@@ -126,5 +191,67 @@ mod tests {
         function.return_expression = Some(Expression::IntegerLiteral(0));
         assert_eq!(gc41_hidden_labels(&function, false), 4);
         assert_eq!(gc41_hidden_labels(&function, true), 0);
+    }
+
+    #[test]
+    fn gc41_ipa_accounts_later_float_pool_and_short_circuit_at_unit_front() {
+        let mut ground = function();
+        ground.name = "ground".to_string();
+        ground.guards.push(GuardedReturn {
+            condition: Expression::Binary {
+                operator: BinaryOperator::GreaterEqual,
+                left: Box::new(Expression::Variable("value".to_string())),
+                right: Box::new(Expression::FloatLiteral(0.5)),
+            },
+            value: Expression::IntegerLiteral(1),
+        });
+        ground.return_expression = Some(Expression::IntegerLiteral(0));
+
+        let mut roof = ground.clone();
+        roof.name = "roof".to_string();
+
+        let mut wall = function();
+        wall.name = "wall".to_string();
+        let call = |name: &str| Expression::Unary {
+            operator: UnaryOperator::LogicalNot,
+            operand: Box::new(Expression::Call {
+                name: name.to_string(),
+                arguments: Vec::new(),
+            }),
+        };
+        wall.guards.push(GuardedReturn {
+            condition: Expression::Binary {
+                operator: BinaryOperator::LogicalAnd,
+                left: Box::new(call("ground")),
+                right: Box::new(call("roof")),
+            },
+            value: Expression::IntegerLiteral(1),
+        });
+        wall.return_expression = Some(Expression::IntegerLiteral(0));
+
+        let mut machines = vec![
+            MachineFunction::new("ground"),
+            MachineFunction::new("roof"),
+            MachineFunction::new("wall"),
+        ];
+        let pool = |bits| mwcc_machine_code::PoolConstant {
+            bits,
+            byte_width: 4,
+            static_slot: false,
+            image: false,
+            force_new: false,
+        };
+        machines[0].constants.push(pool(0x3f00_0000));
+        machines[0].anonymous_label_bump = 4;
+        machines[1].constants.push(pool(0xbf4c_cccd));
+        machines[1].anonymous_label_bump = 4;
+
+        apply_unit(
+            &[ground, roof, wall],
+            &mut machines,
+            FunctionOrdinalAccountingStyle::Gc41Ipa,
+        );
+        assert_eq!(machines[0].anonymous_label_bump, 27);
+        assert_eq!(machines[1].anonymous_label_bump, 1);
     }
 }
