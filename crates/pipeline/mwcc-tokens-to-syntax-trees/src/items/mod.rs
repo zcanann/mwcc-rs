@@ -586,6 +586,7 @@ impl Parser {
     }
 
     pub(crate) fn translation_unit(&mut self) -> Compilation<TranslationUnit> {
+        let source_is_empty = self.tokens.iter().all(|token| *token == Token::EndOfFile);
         // Walk the top level in source order: struct definitions register layouts,
         // `type name;` lines are globals, `type name(params);` are prototypes, and
         // `type name(params) { ... }` are function definitions. Each definition is
@@ -897,6 +898,7 @@ impl Parser {
             .map(|(name, layout)| (name.clone(), layout.source_definition(name.clone())))
             .collect();
         Ok(TranslationUnit {
+            source_is_empty,
             globals,
             functions,
             aggregate_definitions,

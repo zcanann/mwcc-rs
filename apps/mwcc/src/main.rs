@@ -1511,13 +1511,13 @@ fn compile(
         post_framed_function_anonymous_bump: config.build.post_framed_function_anonymous_bump,
     };
     let debug = if config.flags.debug_info {
-        Some(mwcc_syntax_trees_to_debug_info::lower_debug_info(
+        mwcc_syntax_trees_to_debug_info::lower_debug_info(
             &unit,
             &machine_functions,
             source_name,
             config.build,
             code_alignment,
-        )?)
+        )?
     } else {
         None
     };

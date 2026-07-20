@@ -24,7 +24,10 @@ pub fn lower_debug_info(
     source_name: &str,
     build: CompilerBuild,
     code_alignment: u32,
-) -> Compilation<DebugSections> {
+) -> Compilation<Option<DebugSections>> {
+    if unit.source_is_empty {
+        return Ok(None);
+    }
     let fragmented_generation = build.version.0 >= 4;
     // Functionless data units retain the same monolithic DWARF-1 DIE stream in
     // the later generations. Their container layout moved after ordinary data,
@@ -38,7 +41,7 @@ pub fn lower_debug_info(
         ));
     }
 
-    legacy::lower(unit, machine_functions, source_name, build, code_alignment)
+    legacy::lower(unit, machine_functions, source_name, build, code_alignment).map(Some)
 }
 
 fn convert_relocations(

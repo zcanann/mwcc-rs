@@ -193,6 +193,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn distinguishes_a_lexically_empty_translation_unit() {
+        let empty = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize("// comment only\n").unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let typedef_only = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize("typedef int Word;\n").unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(empty.source_is_empty);
+        assert!(!typedef_only.source_is_empty);
+    }
+
+    #[test]
     fn enum_min_uses_value_range_for_typedef_and_struct_members() {
         let source = b"\
             typedef enum Kind { Zero = 0, Five = 5 } Kind;\n\
