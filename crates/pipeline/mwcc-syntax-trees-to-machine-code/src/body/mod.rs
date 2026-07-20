@@ -25,6 +25,7 @@ mod passes;
 mod punned_ladder_policy;
 mod punned_select;
 mod punned_writeback;
+mod queue_callback_fold;
 mod sorted_intrusive_insert;
 mod store_fill;
 mod store_return_schedule;

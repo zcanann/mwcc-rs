@@ -201,6 +201,10 @@ impl Instruction {
                 let field = ((spr as u32 & 0x1F) << 5) | ((spr as u32 >> 5) & 0x1F);
                 (31 << 26) | ((d as u32) << 21) | (field << 11) | (339 << 1)
             }
+            Instruction::MoveFromTimeBase { d, tbr } => {
+                let field = ((tbr as u32 & 0x1F) << 5) | ((tbr as u32 >> 5) & 0x1F);
+                (31 << 26) | ((d as u32) << 21) | (field << 11) | (371 << 1)
+            }
             Instruction::MoveToSpr { spr, s } => {
                 let field = ((spr as u32 & 0x1F) << 5) | ((spr as u32 >> 5) & 0x1F);
                 (31 << 26) | ((s as u32) << 21) | (field << 11) | (467 << 1)

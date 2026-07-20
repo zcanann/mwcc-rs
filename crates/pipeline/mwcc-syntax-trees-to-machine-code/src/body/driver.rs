@@ -2082,6 +2082,11 @@ impl Generator {
         if self.try_sorted_intrusive_insert(function)? {
             return Ok(());
         }
+        // A callback queue folds the logical-not of every indirect result, then one direct
+        // synchronization result, into a saved accumulator before returning its boolean inverse.
+        if self.try_queue_callback_fold(function)? {
+            return Ok(());
+        }
         // `T y; if (c) y = A; else y = B; return y;` — both arms assign the returned
         // local, so the whole body is the select `return (c) ? A : B`.
         if self.try_conditional_assign(function)? {

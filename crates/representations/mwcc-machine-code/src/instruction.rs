@@ -332,8 +332,9 @@ pub enum Instruction {
     BranchToCountRegisterAndLink,
     /// `mfspr rD, SPR` — move from a special-purpose register (the SPR number
     /// carries the raw value; the split-field encoding is applied at encode time).
-    /// `mftb rD` is this with `spr = 268` (TBL).
     MoveFromSpr { d: u8, spr: u16 },
+    /// `mftb rD, TBR` — move from a time-base register (XO 371, distinct from `mfspr`).
+    MoveFromTimeBase { d: u8, tbr: u16 },
     /// `mtspr SPR, rS` — move to a special-purpose register.
     MoveToSpr { spr: u16, s: u8 },
     /// `mfmsr rD` — move from the machine-state register.

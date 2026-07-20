@@ -482,12 +482,23 @@ pub(super) fn assemble_line(
             Instruction::MoveToSpr { spr, s }
         }
         "mftb" => {
-            let [d] = gprs(mnemonic, operands)?;
-            Instruction::MoveFromSpr { d, spr: 268 }
+            if !matches!(operands.len(), 1 | 2) {
+                return Err(Diagnostic::error(format!(
+                    "inline-asm '{mnemonic}' expected 1 or 2 operand(s), found {}",
+                    operands.len()
+                )));
+            }
+            let d = gpr(mnemonic, &operands[0])?;
+            let spr = if operands.len() == 2 {
+                special_register(mnemonic, &operands[1])?
+            } else {
+                268
+            };
+            Instruction::MoveFromTimeBase { d, tbr: spr }
         }
         "mftbu" => {
             let [d] = gprs(mnemonic, operands)?;
-            Instruction::MoveFromSpr { d, spr: 269 }
+            Instruction::MoveFromTimeBase { d, tbr: 269 }
         }
         "mfmsr" => {
             let [d] = gprs(mnemonic, operands)?;
