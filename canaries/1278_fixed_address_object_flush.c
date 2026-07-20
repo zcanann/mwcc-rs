@@ -14,7 +14,7 @@ typedef union FixedObjectPipe {
 } FixedObjectPipe;
 
 extern FixedObjectState* const state;
-volatile FixedObjectPipe PORT : (0xCC008000);
+volatile FixedObjectPipe PORT : ((unsigned)((void*)((unsigned)0xCC008000)));
 
 void fixed_address_object_flush(void) {
     PORT.u8 = 0x61;

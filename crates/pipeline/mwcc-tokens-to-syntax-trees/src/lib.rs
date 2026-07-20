@@ -183,7 +183,7 @@ mod tests {
     fn retains_fixed_address_object_origin_after_expression_desugaring() {
         let source = r#"
             typedef union Pipe { unsigned char u8; unsigned u32; } Pipe;
-            volatile Pipe PORT : (0xCC008000);
+            volatile Pipe PORT : ((unsigned)((void*)((unsigned)0xCC008000)));
             void write(void) { PORT.u8 = 0x61; }
         "#;
         let unit = parse_translation_unit(
@@ -206,6 +206,27 @@ mod tests {
                 ..
             }] if matches!(base.as_ref(), mwcc_syntax_trees::Expression::Cast { .. })
         ));
+    }
+
+    #[test]
+    fn parses_asm_qualifier_after_return_type() {
+        let source = r#"
+            static void asm reset(register int code) {
+                nofralloc
+                blr
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.functions[0].name, "reset");
+        assert!(unit.functions[0].is_static);
+        assert!(unit.functions[0].asm_body.is_some());
     }
 
     #[test]

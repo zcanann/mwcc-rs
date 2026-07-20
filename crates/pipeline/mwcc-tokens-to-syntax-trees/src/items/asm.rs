@@ -8,8 +8,9 @@ use mwcc_syntax_trees::{AsmInstruction, AsmItem, AsmOperand, AsmRelocSuffix, Fun
 use mwcc_tokens::Token;
 
 impl Parser {
-    /// Parse a Metrowerks inline-`asm` function: the `asm` qualifier has been
-    /// peeked (storage qualifiers already consumed). The C signature is scanned
+    /// Parse a Metrowerks inline-`asm` function. Storage qualifiers are already consumed;
+    /// `asm_after_return_type` selects between `asm void f()` and `void asm f()`.
+    /// The remainder of the C signature is scanned
     /// loosely — asm codegen names fixed registers, so only the function NAME and
     /// a `void` return matter; parameter types are consumed and discarded. Returns
     /// `None` for a bodyless prototype (`asm void f(void);`).
@@ -17,12 +18,19 @@ impl Parser {
         &mut self,
         is_static: bool,
         is_weak: bool,
+        asm_after_return_type: bool,
     ) -> Compilation<Option<Function>> {
-        self.expect(Token::Asm)?;
+        let mut return_type = if asm_after_return_type {
+            let return_type = self.parse_type()?;
+            self.expect(Token::Asm)?;
+            return_type
+        } else {
+            self.expect(Token::Asm)?;
+            Type::Void
+        };
         // The return type and name precede `(`; the last identifier is the name. A
         // `static`/`extern` qualifier may follow `asm` (mwcc allows `asm static void
         // f()`), so recognize it here too rather than only in the pre-`asm` loop.
-        let mut return_type = Type::Void;
         let mut name = String::new();
         let mut is_static = is_static;
         loop {

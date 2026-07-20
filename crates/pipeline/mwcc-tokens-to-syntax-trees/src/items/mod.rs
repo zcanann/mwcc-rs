@@ -1410,14 +1410,34 @@ impl Parser {
                 return Ok(());
             }
             // A Metrowerks inline-`asm` function DEFINITION: `[static] asm <ret>
-            // name(params) { <instructions> }`. Its body is assembled verbatim (no C
+            // name(params) { <instructions> }` or `[static] <ret> asm name(params)`.
+            // Its body is assembled verbatim (no C
             // codegen), so it is parsed by its own path. A bodyless `asm` prototype
             // yields no definition. An `inline` asm function is NOT handled here — it
             // is a skipped inline helper (recorded as a local-UND symbol by the
             // error-recovery path), never emitted. (The `static`/`__declspec(weak)`
             // qualifiers already ran.)
             if *self.peek() == Token::Asm && !is_inline {
-                if let Some(function) = self.parse_asm_function(is_static, is_weak)? {
+                if let Some(function) = self.parse_asm_function(is_static, is_weak, false)? {
+                    functions.push(function);
+                }
+                return Ok(());
+            }
+            let asm_follows_return_type = !is_inline
+                && self.tokens[self.position..]
+                    .iter()
+                    .take_while(|token| {
+                        !matches!(
+                            token,
+                            Token::ParenOpen
+                                | Token::Semicolon
+                                | Token::BraceOpen
+                                | Token::EndOfFile
+                        )
+                    })
+                    .any(|token| *token == Token::Asm);
+            if asm_follows_return_type {
+                if let Some(function) = self.parse_asm_function(is_static, is_weak, true)? {
                     functions.push(function);
                 }
                 return Ok(());
@@ -1719,6 +1739,10 @@ impl Parser {
                 return Ok(());
             }
             let return_type = self.parse_type()?;
+            // Keep the declared aggregate identity before parsing attributes, placement
+            // expressions, or initializers: each may contain a cast whose own parse_type call
+            // overwrites `last_struct_tag` (notably `T hw : (u32)(void*)ADDRESS`).
+            let declared_struct_tag = self.last_struct_tag.clone();
             // An array-typedef type (`Mtx g;`): parse_type returned the DECAYED pointer
             // (right for a function's return type) and left `(element, total, inner)`
             // in the marker — the GLOBAL branch below declares the real array object
@@ -1729,7 +1753,7 @@ impl Parser {
             // can record it for `get()->field` resolution. A struct-VALUE return is not recorded
             // (its `get().field` needs the unmodeled struct-return ABI and stays deferred).
             let return_struct_tag = if matches!(return_type, Type::StructPointer { .. }) {
-                self.last_struct_tag.clone()
+                declared_struct_tag.clone()
             } else {
                 None
             };
@@ -1920,7 +1944,7 @@ impl Parser {
                     self.fixed_address_arrays
                         .insert(name.clone(), (address, return_type));
                 } else {
-                    let tag = self.last_struct_tag.clone();
+                    let tag = declared_struct_tag.clone();
                     // An aggregate casts to a struct pointer (member access via the const-address
                     // member path); a scalar casts to a pointer of its own pointee (direct load/store).
                     // An unsupported scalar type is not recorded — it defers.
@@ -1973,7 +1997,7 @@ impl Parser {
                 // tag `parse_type` stashed, so `gp->field` / `g.field` / `arr[i].field`
                 // resolve the member layout. Codegen handles the struct-pointer base
                 // and defers the value/array bases (no miscompile).
-                let global_struct_tag = self.last_struct_tag.clone();
+                let global_struct_tag = declared_struct_tag.clone();
                 if let Some(tag) = &global_struct_tag {
                     self.global_structs.insert(name.clone(), tag.clone());
                 }
