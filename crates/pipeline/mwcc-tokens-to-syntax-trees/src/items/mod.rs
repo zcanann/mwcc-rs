@@ -839,6 +839,7 @@ impl Parser {
             globals,
             functions,
             prototypes,
+            named_prototype_parameters: self.named_prototype_parameters,
             inline_asm_symbols: std::mem::take(&mut self.inline_asm_symbols),
             plain_inline_asm_helpers: std::mem::take(&mut self.plain_inline_asm_helpers),
             skipped_inline_functions: self.skipped_inline_functions,
@@ -2401,6 +2402,15 @@ impl Parser {
             }
             self.expect(Token::ParenClose)?;
 
+            // Keep this source fact before C++ member lowering inserts the
+            // implicit `this` parameter. Later 4.x compilers charge one
+            // anonymous ordinal for each name written on a prototype, even
+            // though the callable type only retains parameter types.
+            let source_named_parameter_count = parameters
+                .iter()
+                .filter(|parameter| !parameter.name.is_empty())
+                .count();
+
             let constructor_scope = member_scope
                 .as_ref()
                 .filter(|scope| scope.as_str() == name.as_str())
@@ -2435,6 +2445,7 @@ impl Parser {
 
             if *self.peek() == Token::Semicolon {
                 self.advance(); // a prototype — record its return + parameter types, keep looking
+                self.named_prototype_parameters += source_named_parameter_count;
                 let parameter_types = parameters
                     .iter()
                     .map(|parameter| parameter.parameter_type)

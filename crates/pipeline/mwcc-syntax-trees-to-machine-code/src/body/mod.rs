@@ -30,6 +30,7 @@ mod sorted_intrusive_insert;
 mod store_fill;
 mod store_return_schedule;
 mod switch_assignment_call_tail;
+mod switch_call_dispatcher;
 mod tail_call;
 
 pub(crate) use callee_saved::{

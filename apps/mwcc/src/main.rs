@@ -86,13 +86,20 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                 }
             }
             // `-str reuse,readonly` pools string literals in read-only data.
-            // Treat each occurrence as the complete mode so the last flag wins.
+            // A later `-str reuse` only restates the pooling policy; it does not
+            // cancel a standalone `-rostr` (the GC 3.0 project lines use both).
             "-str" => {
                 index += 1;
-                invocation.flags.string_literals_read_only = arguments
+                if arguments
                     .get(index)
-                    .is_some_and(|value| value.split(',').any(|part| part == "readonly"));
+                    .is_some_and(|value| value.split(',').any(|part| part == "readonly"))
+                {
+                    invocation.flags.string_literals_read_only = true;
+                }
             }
+            // Modern command lines spell the same read-only string-pool mode
+            // as the standalone `-rostr` switch.
+            "-rostr" => invocation.flags.string_literals_read_only = true,
             // `-pool off` disables compiler pooling and is stamped into the
             // object's `.comment` header. Accept `on` so the last flag wins.
             "-pool" => {
@@ -498,6 +505,19 @@ fn compile(
     let read_only_small_data =
         config.flags.read_only_global_addressing == mwcc_versions::GlobalAddressing::SmallData;
     let mut static_local_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
+    let unit_declaration_bump = unit.skipped_inline_functions
+        + if config
+            .build
+            .profile
+            .prototype_parameter_names_consume_labels()
+        {
+            unit.named_prototype_parameters
+        } else {
+            0
+        };
+    // Static-local positional samples currently track skipped-inline cost.
+    // Prototype-name provenance is unit-wide but not yet sampled at each local
+    // declaration, so do not fold it into this separate adjustment channel.
     let total_inline_bump = unit.skipped_inline_functions as i64;
     for (function_index, function) in machine_functions.iter().enumerate() {
         for local in &function.static_locals {
@@ -540,14 +560,13 @@ fn compile(
             });
         }
     }
-    if let Some(first) = machine_functions.first_mut() {
-        // The parser accumulates the measured PER-BODY label bump directly.
-        first.anonymous_label_bump += unit.skipped_inline_functions as u32;
-    }
     // Deferred inlining has its own translation-unit emission schedule. Keep the
     // policy isolated from lowering and object layout: both consume its result.
     if config.flags.inline_deferred {
-        function_order::apply_deferred_emission_order(&mut machine_functions);
+        function_order::apply_deferred_emission_order(
+            &mut machine_functions,
+            config.build.post_leaf_function_anonymous_bump,
+        );
     }
     // `#pragma defer_codegen on` defers the covered functions the same way:
     // they emit LAST, in REVERSE definition order (measured: melee mem_funcs,
@@ -563,6 +582,12 @@ fn compile(
         deferred.reverse();
         machine_functions = kept;
         machine_functions.extend(deferred);
+    }
+    if let Some(first) = machine_functions.first_mut() {
+        // File-scope declarations advance the unit-wide ordinal stream before
+        // the first EMITTED compiled body. Attach after emission scheduling so
+        // deferred reverse order does not strand the provenance on the tail.
+        first.anonymous_label_bump += unit_declaration_bump as u32;
     }
     // File-scope variables defined here (not `extern`/`static`). A writable global
     // lands in `.sdata` (initialized) or `.sbss` (zero); a `const` one is read-only
@@ -1048,6 +1073,7 @@ fn compile(
     let mut numbered_constant: std::collections::HashSet<(u64, u8)> =
         std::collections::HashSet::new();
     let mut function_string_objects: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
+    let mut packed_string_base_counter = 0u32;
     let mut file_string_renames: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     for (function_index, machine_function) in machine_functions.iter_mut().enumerate() {
@@ -1075,7 +1101,38 @@ fn compile(
         // pool entry) are recorded by name so the writer emits their symbols at the FRONT of this
         // function's `@N` block, interleaved per-function with its constants/unwind entries.
         let mut new_string_names: Vec<String> = Vec::new();
-        let mut resolved: Vec<String> = machine_function
+        let mut resolved: Vec<String> = if machine_function.packed_string_literals {
+            let name = format!("@stringBase{packed_string_base_counter}");
+            packed_string_base_counter += 1;
+            let mut object_bytes = Vec::new();
+            let mut names = Vec::with_capacity(machine_function.string_literals.len());
+            for bytes in &machine_function.string_literals {
+                names.push(name.clone());
+                object_bytes.extend_from_slice(bytes);
+                object_bytes.push(0);
+            }
+            new_string_names.push(name.clone());
+            function_string_objects.push(mwcc_machine_code_to_object::DefinedGlobal {
+                section: None,
+                anonymous_adjust: 0,
+                static_local_owner: None,
+                is_weak: false,
+                non_static_functions_before: 0,
+                functions_before: 0,
+                name,
+                size: object_bytes.len() as u32,
+                alignment: 4,
+                initial_bytes: Some(object_bytes),
+                is_const: config.flags.string_literals_read_only,
+                force_full_data_section: config.flags.string_literals_read_only
+                    && !read_only_small_data,
+                is_static: true,
+                is_explicit_zero: false,
+                relocations: Vec::new(),
+            });
+            names
+        } else {
+            machine_function
             .string_literals
             .iter()
             .map(|bytes| {
@@ -1110,7 +1167,8 @@ fn compile(
                 });
                 name
             })
-            .collect();
+            .collect()
+        };
         machine_function.new_string_count = new_string_names.len() as u32;
         machine_function.new_string_names = new_string_names;
         // Then the function's constants (deduped across the unit, with the same
@@ -1474,13 +1532,16 @@ mod tests {
         let read_only = parse_invocation(&["-str".into(), "reuse,readonly".into()]);
         assert!(read_only.flags.string_literals_read_only);
 
-        let last_wins = parse_invocation(&[
+        let restated_pooling = parse_invocation(&[
             "-str".into(),
             "reuse,readonly".into(),
             "-str".into(),
             "reuse".into(),
         ]);
-        assert!(!last_wins.flags.string_literals_read_only);
+        assert!(restated_pooling.flags.string_literals_read_only);
+
+        let modern = parse_invocation(&["-rostr".into(), "-str".into(), "reuse".into()]);
+        assert!(modern.flags.string_literals_read_only);
     }
 
     #[test]

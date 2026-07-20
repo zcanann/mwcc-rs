@@ -222,6 +222,10 @@ pub(crate) struct Parser {
     /// Anonymous-label cost accumulated while mwcc compiles and then drops
     /// inline definitions; the base and body-label weights are generation-aware.
     pub(crate) skipped_inline_functions: usize,
+    /// Source-written parameter names seen on prototypes. Kept independently
+    /// from their types because later optimizer generations charge anonymous
+    /// symbol ordinals for the names.
+    pub(crate) named_prototype_parameters: usize,
     /// Per static-local NAME, the skipped-inline bump total at its DECLARATION
     /// point — a static numbers off the anonymous counter AS OF that position
     /// (measured: mp4 uart's initialized$4 inside the FIRST inline vs pikmin's

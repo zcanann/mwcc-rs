@@ -28,8 +28,42 @@ pub(crate) fn terminal_implicit_inline_is_consumed(
 /// Hand-written asm is assembled immediately, forming a leading stream in its
 /// original relative order. Compiler-generated functions follow in reverse
 /// source order. An all-asm translation unit therefore remains unchanged.
-pub(crate) fn apply_deferred_emission_order(functions: &mut Vec<MachineFunction>) {
-    let source_order = std::mem::take(functions);
+pub(crate) fn apply_deferred_emission_order(
+    functions: &mut Vec<MachineFunction>,
+    post_leaf_anonymous_bump: u8,
+) {
+    let mut source_order = std::mem::take(functions);
+
+    // Deferred emission reverses compiled bodies, but a leading source-order
+    // run of leaf functions with no anonymous payload was still compiled first.
+    // Its post-function bookkeeping therefore advances the ordinal seen by the
+    // first later body that owns a pool object or jump table. Carry only this
+    // fully characterized prefix; once a function owns anonymous state, a
+    // general absolute-ordinal plan is required rather than guessing its cost.
+    let mut transparent_prefix = Some(0u32);
+    for function in &mut source_order {
+        let owns_anonymous_state = function.frame.is_some()
+            || function.has_conversion
+            || function.has_float_branch
+            || function.anonymous_label_bump != 0
+            || !function.string_literals.is_empty()
+            || !function.constants.is_empty()
+            || !function.jump_tables.is_empty()
+            || !function.anonymous_rodata.is_empty()
+            || !function.static_locals.is_empty();
+        if owns_anonymous_state {
+            if let Some(prefix) = transparent_prefix {
+                function.anonymous_label_bump += prefix;
+            }
+            transparent_prefix = None;
+        } else if let Some(prefix) = &mut transparent_prefix {
+            *prefix += u32::from(
+                function
+                    .post_function_anonymous_bump
+                    .unwrap_or(post_leaf_anonymous_bump),
+            );
+        }
+    }
     let (mut immediate_asm, mut deferred_compiled): (Vec<_>, Vec<_>) =
         source_order.into_iter().partition(|function| function.is_asm);
     deferred_compiled.reverse();
@@ -57,7 +91,7 @@ mod tests {
             function("last", false),
         ];
 
-        apply_deferred_emission_order(&mut functions);
+        apply_deferred_emission_order(&mut functions, 4);
 
         assert_eq!(
             functions
@@ -66,6 +100,20 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["asm_a", "asm_b", "last", "middle", "first"]
         );
+    }
+
+    #[test]
+    fn transparent_source_leaf_advances_first_anonymous_owner() {
+        let mut owner = function("owner", false);
+        owner.string_literals.push(b"owned".to_vec());
+        let mut functions = vec![function("leaf", false), owner];
+
+        apply_deferred_emission_order(&mut functions, 4);
+
+        assert_eq!(functions[0].name, "owner");
+        assert_eq!(functions[0].anonymous_label_bump, 4);
+        assert_eq!(functions[1].name, "leaf");
+        assert_eq!(functions[1].anonymous_label_bump, 0);
     }
 
     #[test]

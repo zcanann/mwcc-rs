@@ -34,6 +34,150 @@ enum Target {
 }
 
 impl Generator {
+    /// Emit a dense dispatcher whose arms all have the semantic form
+    /// `result = callee(forwarded)`, then join at the statement immediately
+    /// following the switch. Case bodies retain source order; table entries map
+    /// values to those bodies and gaps to the join.
+    pub(crate) fn emit_assignment_call_jump_table(
+        &mut self,
+        scrutinee_register: u8,
+        arms: &[(i64, String)],
+        forwarded_register: u8,
+        result_register: u8,
+    ) -> Compilation<()> {
+        if arms.is_empty() {
+            return Err(Diagnostic::error("an empty call dispatcher is not supported"));
+        }
+        let mut by_value = std::collections::HashMap::new();
+        let mut min = i64::MAX;
+        let mut max = i64::MIN;
+        for (source_index, (value, _)) in arms.iter().enumerate() {
+            if by_value.insert(*value, source_index).is_some() {
+                return Err(Diagnostic::error("duplicate switch case values"));
+            }
+            min = min.min(*value);
+            max = max.max(*value);
+        }
+        let subtract = min < 0 || min >= 3;
+        let bound = if subtract { max - min } else { max };
+        let negated_base = -min;
+        if bound < 0
+            || bound > u16::MAX as i64
+            || (subtract && !(i16::MIN as i64..=i16::MAX as i64).contains(&negated_base))
+        {
+            return Err(Diagnostic::error(
+                "switch jump-table index/base out of immediate range (roadmap)",
+            ));
+        }
+
+        let (index_register, table_register) = if subtract {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 0,
+                a: scrutinee_register,
+                immediate: negated_base as i16,
+            });
+            (0, 3)
+        } else {
+            (scrutinee_register, 3)
+        };
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate {
+                a: index_register,
+                immediate: bound as u16,
+            });
+        let out_of_range = self.output.instructions.len();
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalForward {
+                options: BGT.0,
+                condition_bit: BGT.1,
+                target: 0,
+            });
+        self.record_target(RelocationKind::Addr16Ha, RelocationTarget::JumpTable);
+        self.output
+            .instructions
+            .push(Instruction::AddImmediateShifted {
+                d: table_register,
+                a: 0,
+                immediate: 0,
+            });
+        self.output
+            .instructions
+            .push(Instruction::ShiftLeftImmediate {
+                a: 0,
+                s: index_register,
+                shift: 2,
+            });
+        self.record_target(RelocationKind::Addr16Lo, RelocationTarget::JumpTable);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 3,
+            a: table_register,
+            immediate: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::LoadWordIndexed { d: 3, a: 3, b: 0 });
+        self.output
+            .instructions
+            .push(Instruction::MoveToCountRegister { s: 3 });
+        self.output
+            .instructions
+            .push(Instruction::BranchToCountRegister);
+
+        let mut body_offsets = vec![0u32; arms.len()];
+        let mut joins = Vec::with_capacity(arms.len().saturating_sub(1));
+        for (source_index, (_, callee)) in arms.iter().enumerate() {
+            body_offsets[source_index] = self.output.instructions.len() as u32 * 4;
+            self.output
+                .instructions
+                .push(Instruction::move_register(3, forwarded_register));
+            self.record_relocation(RelocationKind::Rel24, callee);
+            self.output.instructions.push(Instruction::BranchAndLink {
+                target: callee.clone(),
+            });
+            self.output
+                .instructions
+                .push(Instruction::move_register(result_register, 3));
+            if source_index + 1 != arms.len() {
+                let branch = self.output.instructions.len();
+                self.output.instructions.push(Instruction::Branch { target: 0 });
+                joins.push(branch);
+            }
+        }
+        let join = self.output.instructions.len();
+        if let Instruction::BranchConditionalForward { target, .. } =
+            &mut self.output.instructions[out_of_range]
+        {
+            *target = join;
+        }
+        for branch in joins {
+            if let Instruction::Branch { target } = &mut self.output.instructions[branch] {
+                *target = join;
+            }
+        }
+        let default_offset = join as u32 * 4;
+        let entries = (0..=bound)
+            .map(|index| {
+                let value = if subtract { min + index } else { index };
+                by_value
+                    .get(&value)
+                    .map_or(default_offset, |&source_index| body_offsets[source_index])
+            })
+            .collect();
+        self.output.jump_tables.push(JumpTable {
+            entries,
+            // The dispatch and join consume three labels in addition to one
+            // label per source arm. GC 4.1's deferred inliner retains one more
+            // hidden label for every arm (measured on GC/3.0a3p1).
+            anonymous_offset: arms.len() as u32
+                + 3
+                + arms.len() as u32
+                    * u32::from(self.behavior.deferred_call_dispatcher_labels_per_case),
+        });
+        Ok(())
+    }
+
     /// Emit the whole body of a function whose body is a single `switch`, as the
     /// comparison tree followed by the case bodies and the default. Defers (never
     /// miscompiles) any shape outside the supported subset.

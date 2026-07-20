@@ -79,6 +79,10 @@ pub struct MachineFunction {
     /// NUL), in first-use order. The unit resolver pools these into anonymous `@N`
     /// `.sdata` objects and rewrites the placeholder `@@strN` relocations.
     pub string_literals: Vec<Vec<u8>>,
+    /// Pack this function's literals into one NUL-separated `@stringBaseN`
+    /// object. Later absolute-addressing compilers use one base relocation plus
+    /// interior offsets instead of one anonymous object per literal.
+    pub packed_string_literals: bool,
     /// The count of NEW (non-reused) strings this function contributes to the unit's
     /// anonymous-`@N` pool — set by the unit's string resolver. The object writer
     /// advances its per-function `@N` counter by this at the FRONT of the function's
@@ -226,6 +230,7 @@ impl MachineFunction {
             relocations: Vec::new(),
             constants: Vec::new(),
             string_literals: Vec::new(),
+            packed_string_literals: false,
             new_string_count: 0,
             string_number_after_constants: None,
             string_number_after_rodata: None,

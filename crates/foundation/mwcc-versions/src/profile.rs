@@ -580,6 +580,19 @@ pub enum IntCallResultConversionStyle {
 /// 2.4.x mainline (mwcceppc build 81 through 2.4.7 build 108); a build that
 /// diverges implements this trait and overrides just the differing methods.
 pub trait CodegenProfile: core::fmt::Debug {
+    /// Whether source-written names on function prototypes consume anonymous
+    /// symbol ordinals. Measured on mwcceppc 4.1 build 51213; older generations
+    /// discard the names without advancing the unit's ordinal stream.
+    fn prototype_parameter_names_consume_labels(&self) -> bool {
+        false
+    }
+
+    /// Extra hidden label retained per call-dispatch switch arm by deferred
+    /// inlining. This is separate from the ordinary case-body label.
+    fn deferred_call_dispatcher_labels_per_case(&self) -> u8 {
+        0
+    }
+
     /// Whether plain `char` (no `signed`/`unsigned` qualifier) is signed. The one
     /// knob distinguishing GC build 53 from 81+; it cascades through read/operand
     /// extension, `>>`/`/`/`%` strength reduction, comparison folding, and the
@@ -958,6 +971,14 @@ impl CodegenProfile for Mainline {}
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn prototype_parameter_names_consume_labels(&self) -> bool {
+        true
+    }
+
+    fn deferred_call_dispatcher_labels_per_case(&self) -> u8 {
+        1
+    }
+
     fn fixed_address_parameterized_rmw_style(&self) -> FixedAddressParameterizedRmwStyle {
         FixedAddressParameterizedRmwStyle::Modern4x
     }

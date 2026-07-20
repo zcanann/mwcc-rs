@@ -466,6 +466,9 @@ impl Quirk {
 /// selection — codegen reads a plain field, never a trait object or a flag.
 #[derive(Debug, Clone, Copy)]
 pub struct Behavior {
+    /// Hidden deferred-inlining labels retained per call-dispatch switch arm.
+    /// Zero for ordinary compilation and for unmeasured compiler generations.
+    pub deferred_call_dispatcher_labels_per_case: u8,
     /// Whether plain `char` is signed. Cascades through read/operand extension,
     /// `>>`/`/`/`%` strength reduction, comparison folding, and the int->float bias.
     pub char_is_signed: bool,
@@ -685,6 +688,14 @@ impl Behavior {
     /// profile and the flags into one flat set of values.
     pub fn resolve(config: &CompilerConfig) -> Self {
         Behavior {
+            deferred_call_dispatcher_labels_per_case: if config.flags.inline_deferred {
+                config
+                    .build
+                    .profile
+                    .deferred_call_dispatcher_labels_per_case()
+            } else {
+                0
+            },
             char_is_signed: config.char_is_signed(),
             float_cast_value_store_first: config.build.profile.float_cast_value_store_first(),
             legacy_float_cast_schedule: config.build.profile.legacy_float_cast_schedule(),

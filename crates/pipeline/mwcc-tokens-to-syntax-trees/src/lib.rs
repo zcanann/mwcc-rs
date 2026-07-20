@@ -91,6 +91,7 @@ pub fn parse_located_translation_unit(
         defer_codegen: false,
         deferred_function_names: Vec::new(),
         skipped_inline_functions: 0,
+        named_prototype_parameters: 0,
         static_local_prebumps: std::collections::HashMap::new(),
         counted_enum_positions: std::collections::HashSet::new(),
         implicitly_materialized: Vec::new(),
