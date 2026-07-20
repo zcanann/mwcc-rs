@@ -30,6 +30,7 @@ from reference_parity import (
     harness_fingerprint,
     parity_metadata,
     result_cache_name,
+    selection_is_probability_sample,
     stable_sample,
     verdict_line,
 )
@@ -141,6 +142,19 @@ class IdentityTests(unittest.TestCase):
         first = [item["configuration_id"] for item in stable_sample(rows, 5, "seed")]
         second = [item["configuration_id"] for item in stable_sample(list(reversed(rows)), 5, "seed")]
         self.assertEqual(first, second)
+
+    def test_probability_sample_manifest_is_distinguished_from_work_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            audit = Path(directory) / "audit.json"
+            audit.write_text(
+                '{"kind":"simple_random_sample_without_replacement",'
+                '"sample_configuration_ids":[]}',
+                encoding="utf-8",
+            )
+            work = Path(directory) / "work.json"
+            work.write_text('{"configuration_ids":[]}', encoding="utf-8")
+            self.assertTrue(selection_is_probability_sample(audit))
+            self.assertFalse(selection_is_probability_sample(work))
 
 
 class DashboardTests(unittest.TestCase):

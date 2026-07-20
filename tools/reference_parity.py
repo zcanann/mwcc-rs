@@ -102,6 +102,20 @@ def load_selection(path: Path) -> set[str]:
     return set(document)
 
 
+def selection_is_probability_sample(path: Path) -> bool:
+    """Identify audit manifests whose membership must not be post-filtered."""
+
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(document, dict)
+        and document.get("kind") == "simple_random_sample_without_replacement"
+        and isinstance(document.get("sample_configuration_ids"), list)
+    )
+
+
 def stable_sample(rows: List[Dict[str, Any]], size: int, seed: str) -> List[Dict[str, Any]]:
     if size <= 0 or size >= len(rows):
         return rows
@@ -292,6 +306,17 @@ def main() -> int:
         return 2
     if args.selection is not None and args.sample_size:
         print("--selection and --sample-size are mutually exclusive", file=sys.stderr)
+        return 2
+    if (
+        args.selection is not None
+        and args.matching_only
+        and selection_is_probability_sample(args.selection)
+    ):
+        print(
+            "--matching-only cannot post-filter a probability-sample selection; "
+            "run the fixed audit without it",
+            file=sys.stderr,
+        )
         return 2
     script_dir = Path(__file__).resolve().parent
     root = script_dir.parent
