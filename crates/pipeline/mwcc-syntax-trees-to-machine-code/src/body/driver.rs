@@ -2766,6 +2766,11 @@ impl Generator {
             if self.try_callee_saved_memory_local(function)? {
                 return Ok(());
             }
+            // A guarded dirty-bit dispatcher, flush test, and fixed-width port writes. Three
+            // parameters plus the dirty word survive calls in a linkage-first r28..r31 frame.
+            if self.try_guarded_bitmask_call_sequence(function)? {
+                return Ok(());
+            }
             // `flags = state->dirty; if (flags & A) callA(); ...; state->dirty = 0;` — one
             // memory-loaded bitmask retained in r31 across a chain of conditional SDK calls.
             if self.try_callee_saved_bitmask_call_chain(function)? {

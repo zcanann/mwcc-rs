@@ -19,6 +19,7 @@ mod frame_convention;
 mod later_call_arguments;
 mod global_swap;
 mod guarded_initialization;
+mod guarded_bitmask_call_sequence;
 mod guarded_pointer_call;
 mod indirect_call_schedule;
 mod queue_initialization;

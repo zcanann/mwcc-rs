@@ -3,13 +3,13 @@
 #[allow(unused_imports)]
 use super::*;
 
-struct BitCall<'a> {
-    mask: u32,
-    callee: &'a str,
+pub(super) struct BitCall<'a> {
+    pub(super) mask: u32,
+    pub(super) callee: &'a str,
 }
 
 /// Convert a nonzero contiguous bit mask to the PowerPC `rlwinm.` mask bounds.
-fn rotate_mask_bounds(mask: u32) -> Option<(u8, u8)> {
+pub(super) fn rotate_mask_bounds(mask: u32) -> Option<(u8, u8)> {
     if mask == 0 {
         return None;
     }
@@ -23,6 +23,45 @@ fn rotate_mask_bounds(mask: u32) -> Option<(u8, u8)> {
         (1u32 << width) - 1
     };
     (normalized == expected).then_some(((31 - high) as u8, (31 - low) as u8))
+}
+
+pub(super) fn recognize_bit_calls<'a>(
+    statements: &'a [Statement],
+    mask_name: &str,
+) -> Option<Vec<BitCall<'a>>> {
+    if statements.is_empty() {
+        return None;
+    }
+    let mut calls = Vec::with_capacity(statements.len());
+    for statement in statements {
+        let Statement::If {
+            condition:
+                Expression::Binary {
+                    operator: BinaryOperator::BitAnd,
+                    left,
+                    right,
+                },
+            then_body,
+            else_body,
+        } = statement
+        else {
+            return None;
+        };
+        let [Statement::Expression(Expression::Call { name, arguments })] = then_body.as_slice()
+        else {
+            return None;
+        };
+        let mask = constant_value(right).and_then(|value| u32::try_from(value).ok())?;
+        if !matches!(left.as_ref(), Expression::Variable(name) if name == mask_name)
+            || !else_body.is_empty()
+            || !arguments.is_empty()
+            || rotate_mask_bounds(mask).is_none()
+        {
+            return None;
+        }
+        calls.push(BitCall { mask, callee: name });
+    }
+    Some(calls)
 }
 
 impl Generator {
@@ -104,38 +143,9 @@ impl Generator {
             return Ok(false);
         }
 
-        let mut calls = Vec::with_capacity(conditional_statements.len());
-        for statement in conditional_statements {
-            let Statement::If {
-                condition:
-                    Expression::Binary {
-                        operator: BinaryOperator::BitAnd,
-                        left,
-                        right,
-                    },
-                then_body,
-                else_body,
-            } = statement
-            else {
-                return Ok(false);
-            };
-            let [Statement::Expression(Expression::Call { name, arguments })] = then_body.as_slice()
-            else {
-                return Ok(false);
-            };
-            let Some(mask) = constant_value(right).and_then(|value| u32::try_from(value).ok())
-            else {
-                return Ok(false);
-            };
-            if !matches!(left.as_ref(), Expression::Variable(name) if name == &local.name)
-                || !else_body.is_empty()
-                || !arguments.is_empty()
-                || rotate_mask_bounds(mask).is_none()
-            {
-                return Ok(false);
-            }
-            calls.push(BitCall { mask, callee: name });
-        }
+        let Some(calls) = recognize_bit_calls(conditional_statements, &local.name) else {
+            return Ok(false);
+        };
 
         const SAVED_MASK: u8 = 31;
         self.non_leaf = true;
@@ -174,47 +184,7 @@ impl Generator {
             offset: initializer_displacement,
         });
 
-        for call in calls {
-            let (begin, end) = rotate_mask_bounds(call.mask).expect("gated contiguous mask");
-            if call.mask == 1 {
-                self.output
-                    .instructions
-                    .push(Instruction::ClearLeftImmediateRecord {
-                        a: 0,
-                        s: SAVED_MASK,
-                        clear: 31,
-                    });
-            } else {
-                self.output
-                    .instructions
-                    .push(Instruction::RotateAndMaskRecord {
-                        a: 0,
-                        s: SAVED_MASK,
-                        shift: 0,
-                        begin,
-                        end,
-                    });
-            }
-            let skip = self.output.instructions.len();
-            self.output
-                .instructions
-                .push(Instruction::BranchConditionalForward {
-                    options: 12,
-                    condition_bit: 2,
-                    target: 0,
-                });
-            self.record_relocation(RelocationKind::Rel24, call.callee);
-            self.output.instructions.push(Instruction::BranchAndLink {
-                target: call.callee.to_string(),
-            });
-            let after_call = self.output.instructions.len();
-            let Instruction::BranchConditionalForward { target, .. } =
-                &mut self.output.instructions[skip]
-            else {
-                unreachable!()
-            };
-            *target = after_call;
-        }
+        self.emit_saved_bit_calls(&calls, SAVED_MASK);
 
         self.emit_store(
             match trailing {
@@ -245,6 +215,50 @@ impl Generator {
             .instructions
             .push(Instruction::BranchToLinkRegister);
         Ok(true)
+    }
+
+    pub(super) fn emit_saved_bit_calls(&mut self, calls: &[BitCall<'_>], saved_mask: u8) {
+        for call in calls {
+            let (begin, end) = rotate_mask_bounds(call.mask).expect("gated contiguous mask");
+            if call.mask == 1 {
+                self.output
+                    .instructions
+                    .push(Instruction::ClearLeftImmediateRecord {
+                        a: 0,
+                        s: saved_mask,
+                        clear: 31,
+                    });
+            } else {
+                self.output
+                    .instructions
+                    .push(Instruction::RotateAndMaskRecord {
+                        a: 0,
+                        s: saved_mask,
+                        shift: 0,
+                        begin,
+                        end,
+                    });
+            }
+            let skip = self.output.instructions.len();
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalForward {
+                    options: 12,
+                    condition_bit: 2,
+                    target: 0,
+                });
+            self.record_relocation(RelocationKind::Rel24, call.callee);
+            self.output.instructions.push(Instruction::BranchAndLink {
+                target: call.callee.to_string(),
+            });
+            let after_call = self.output.instructions.len();
+            let Instruction::BranchConditionalForward { target, .. } =
+                &mut self.output.instructions[skip]
+            else {
+                unreachable!()
+            };
+            *target = after_call;
+        }
     }
 }
 
