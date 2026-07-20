@@ -490,6 +490,46 @@ mod tests {
     }
 
     #[test]
+    fn preserves_fixed_address_struct_pointer_indirection() {
+        let source = r#"
+            typedef struct Context { int state; } Context;
+            Context* CURRENT : 0x800000D4;
+            Context* get(void) { return (Context*)CURRENT; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.fixed_address_objects.get("CURRENT"), Some(&0x800000D4));
+        assert!(matches!(
+            unit.functions[0].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Cast {
+                target_type: mwcc_syntax_trees::Type::StructPointer { element_size: 4 },
+                operand,
+            }) if matches!(
+                operand.as_ref(),
+                mwcc_syntax_trees::Expression::Dereference { pointer }
+                    if matches!(
+                        pointer.as_ref(),
+                        mwcc_syntax_trees::Expression::Cast {
+                            target_type: mwcc_syntax_trees::Type::Pointer(
+                                mwcc_syntax_trees::Pointee::Pointer
+                            ),
+                            operand,
+                        } if matches!(
+                            operand.as_ref(),
+                            mwcc_syntax_trees::Expression::IntegerLiteral(0x800000D4)
+                        )
+                    )
+            )
+        ));
+    }
+
+    #[test]
     fn parses_asm_qualifier_after_return_type() {
         let source = r#"
             static void asm reset(register int code) {

@@ -2055,11 +2055,17 @@ impl Parser {
                         .insert(name.clone(), (address, return_type));
                 } else {
                     let tag = declared_struct_tag.clone();
-                    // An aggregate casts to a struct pointer (member access via the const-address
-                    // member path); a scalar casts to a pointer of its own pointee (direct load/store).
+                    // The placement address names the STORAGE occupied by the declared object.
+                    // A struct pointer therefore needs pointer-to-pointer indirection: the address
+                    // holds a pointer word; it is not itself the pointed-to struct. An aggregate
+                    // value casts directly to a struct pointer (member access via the const-address
+                    // member path), while a scalar casts to a pointer of its own pointee.
                     // An unsupported scalar type is not recorded — it defers.
-                    let cast_target = match &tag {
-                        Some(tag) => {
+                    let cast_target = match (return_type, &tag) {
+                        (Type::StructPointer { .. }, _) => {
+                            Some(Type::Pointer(Pointee::Pointer))
+                        }
+                        (_, Some(tag)) => {
                             let size = self
                                 .structs
                                 .get(tag)
@@ -2067,7 +2073,7 @@ impl Parser {
                                 .unwrap_or_else(|| type_size(return_type));
                             Some(Type::StructPointer { element_size: size })
                         }
-                        None => pointee_of(return_type).ok().map(Type::Pointer),
+                        (_, None) => pointee_of(return_type).ok().map(Type::Pointer),
                     };
                     if let Some(cast_target) = cast_target {
                         self.fixed_address_globals
