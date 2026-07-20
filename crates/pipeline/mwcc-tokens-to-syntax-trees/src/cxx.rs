@@ -748,6 +748,8 @@ impl Parser {
             if begins_member {
                 member_declaration_start = index;
             }
+            let nested_class =
+                begins_member && matches!(token, Token::Identifier(word) if word == "class");
             match token {
                 Token::ParenOpen if brace_depth == 1 => paren_depth += 1,
                 Token::ParenClose if brace_depth == 1 && paren_depth > 0 => paren_depth -= 1,
@@ -802,6 +804,9 @@ impl Parser {
                 Token::EndOfFile => return prototypes,
                 _ => {}
             }
+            if nested_class {
+                self.capture_nested_cxx_class_layout(index, &class);
+            }
             if begins_member {
                 let starts_virtual = matches!(self.tokens.get(index), Some(Token::Identifier(word)) if word == "virtual");
                 match self.capture_cxx_method(index, &class) {
@@ -819,6 +824,48 @@ impl Parser {
             index += 1;
         }
         prototypes
+    }
+
+    /// Recover a directly nested class even when the enclosing class is too
+    /// large for the ordinary layout parser. Out-of-class definitions retain
+    /// the full `Outer::Inner` scope, so registering that qualified layout lets
+    /// unqualified fields in their bodies lower to `this->field` normally.
+    fn capture_nested_cxx_class_layout(&mut self, declaration_index: usize, outer: &str) {
+        let saved_position = self.position;
+        let saved_struct_tag = self.last_struct_tag.clone();
+        let saved_enum_tag = self.last_enum_tag.clone();
+        let saved_wchar = self.last_type_was_wchar;
+        let saved_array_typedef = self.last_array_typedef;
+        let saved_type_const = self.last_type_was_const;
+        let saved_pointer_const = self.last_pointer_const;
+        let saved_cxx_pointer_depth = self.last_cxx_pointer_depth;
+        let saved_cxx_pointer_base = self.last_cxx_pointer_base;
+        let saved_volatile = self.last_type_was_volatile;
+
+        self.position = declaration_index;
+        match self.parse_class_definition() {
+            Ok((nested, layout, class)) => {
+                let qualified = format!("{outer}::{nested}");
+                self.struct_typedefs.insert(nested, qualified.clone());
+                self.structs.insert(qualified.clone(), layout);
+                self.cxx_classes.insert(qualified, class);
+            }
+            Err(error) if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() => {
+                eprintln!("nested-class layout recovery failed in '{outer}': {error}");
+            }
+            Err(_) => {}
+        }
+
+        self.position = saved_position;
+        self.last_struct_tag = saved_struct_tag;
+        self.last_enum_tag = saved_enum_tag;
+        self.last_type_was_wchar = saved_wchar;
+        self.last_array_typedef = saved_array_typedef;
+        self.last_type_was_const = saved_type_const;
+        self.last_pointer_const = saved_pointer_const;
+        self.last_cxx_pointer_depth = saved_cxx_pointer_depth;
+        self.last_cxx_pointer_base = saved_cxx_pointer_base;
+        self.last_type_was_volatile = saved_volatile;
     }
 
     /// Speculatively reuse the ordinary type/declarator parser on one class
@@ -1592,6 +1639,48 @@ impl Parser {
         }
         if self.eat_keyword(Token::Semicolon) {
             return Ok(false);
+        }
+        if self.eat_keyword(Token::Colon) {
+            // An in-class constructor may carry a member/base initializer
+            // list before its body: `C() : x(0), y(1) {}`. Layout recovery
+            // needs only the declarations, so consume each designator and its
+            // balanced initializer without parsing the initializer values.
+            loop {
+                let mut saw_designator = false;
+                while !matches!(self.peek(), Token::ParenOpen | Token::BraceOpen | Token::EndOfFile)
+                {
+                    if *self.peek() == Token::Comma {
+                        return Err(Diagnostic::error(
+                            "constructor initializer is missing its value",
+                        ));
+                    }
+                    saw_designator = true;
+                    self.advance();
+                }
+                match self.peek() {
+                    Token::ParenOpen => {
+                        self.skip_balanced(Token::ParenOpen, Token::ParenClose)?;
+                    }
+                    Token::BraceOpen if saw_designator => {
+                        self.skip_balanced(Token::BraceOpen, Token::BraceClose)?;
+                    }
+                    _ => {
+                        return Err(Diagnostic::error(
+                            "unterminated C++ constructor initializer list",
+                        ));
+                    }
+                }
+                if self.eat_keyword(Token::Comma) {
+                    continue;
+                }
+                if *self.peek() == Token::BraceOpen {
+                    self.skip_balanced(Token::BraceOpen, Token::BraceClose)?;
+                    return Ok(true);
+                }
+                return Err(Diagnostic::error(
+                    "constructor initializer list must be followed by a body",
+                ));
+            }
         }
         if *self.peek() == Token::BraceOpen {
             self.skip_balanced(Token::BraceOpen, Token::BraceClose)?;

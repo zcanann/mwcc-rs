@@ -1964,10 +1964,13 @@ impl Parser {
                 .filter(|scope| self.cxx_namespaces.contains(scope.as_str()))
                 .cloned();
             let member_scope = qualified_scope.filter(|_| namespace_scope.is_none());
-            let member_layout_scope = member_scope
-                .as_deref()
-                .and_then(|scope| scope.rsplit("::").next())
-                .map(str::to_string);
+            let member_layout_scope = member_scope.as_deref().map(|scope| {
+                if self.structs.contains_key(scope) {
+                    scope.to_string()
+                } else {
+                    scope.rsplit("::").next().unwrap_or(scope).to_string()
+                }
+            });
             // A `__attribute__((aligned(n)))` immediately AFTER the declarator name
             // (`T x ATTRIBUTE_ALIGN(n);` — the scalar form). Consuming it here makes the
             // following token the real `;`/`[`/`=`, so the global-variable branch below is

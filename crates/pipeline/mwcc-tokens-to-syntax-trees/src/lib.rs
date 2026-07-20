@@ -230,6 +230,65 @@ mod tests {
     }
 
     #[test]
+    fn recovers_nested_class_layout_for_out_of_class_member_bodies() {
+        let source = r#"
+            class Outer {
+            public:
+                class Inner {
+                public:
+                    Inner() : wide(0), ratio(0.0f) {}
+                    bool initialize();
+                private:
+                    long long wide;
+                    float ratio;
+                };
+            };
+            bool Outer::Inner::initialize() {
+                wide = 3;
+                ratio = 1.0f;
+                return true;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            unit.functions[0].parameters.as_slice(),
+            [mwcc_syntax_trees::Parameter {
+                parameter_type: mwcc_syntax_trees::Type::StructPointer { element_size: 16 },
+                ..
+            }]
+        ));
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [
+                mwcc_syntax_trees::Statement::Store {
+                    target: mwcc_syntax_trees::Expression::Member {
+                        offset: 0,
+                        member_type: mwcc_syntax_trees::Type::LongLong,
+                        ..
+                    },
+                    ..
+                },
+                mwcc_syntax_trees::Statement::Store {
+                    target: mwcc_syntax_trees::Expression::Member {
+                        offset: 8,
+                        member_type: mwcc_syntax_trees::Type::Float,
+                        ..
+                    },
+                    ..
+                }
+            ]
+        ));
+    }
+
+    #[test]
     fn distinguishes_a_lexically_empty_translation_unit() {
         let empty = parse_translation_unit(
             mwcc_source_to_tokens::tokenize("// comment only\n").unwrap(),
