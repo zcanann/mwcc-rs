@@ -20,6 +20,7 @@ mod if_else;
 mod indirect_call;
 mod ladders;
 mod legacy_constant_store;
+mod leading_store_guard;
 mod long_long_initialize;
 mod long_long_support;
 mod long_long_wait;
@@ -49,7 +50,9 @@ pub(crate) use passes::*;
 
 pub(crate) use crate::analysis::*;
 pub(crate) use crate::expressions::pointer_stride;
-pub(crate) use crate::expressions::{displacement_store, pointee_of_type};
+pub(crate) use crate::expressions::{
+    const_address_pointer, displacement_store, pointee_of_type, split_address,
+};
 pub(crate) use crate::generator::*;
 pub(crate) use long_long_support::{unsigned_word_clock, ClockRead};
 pub(crate) use mwcc_core::{Compilation, Diagnostic};
@@ -60,7 +63,8 @@ pub(crate) use mwcc_syntax_trees::{
 };
 pub(crate) use mwcc_target::Eabi;
 pub(crate) use mwcc_versions::{
-    FrameConvention, GlobalAddressing, IntegerComparisonValueStyle, NarrowComputedReturnStyle,
-    LongLongTimerStyle, PlainLinkageEpilogueStyle, PointerWalkerScheduleStyle, RaiseFamilyStyle,
-    NestedGlobalDispatchSchedule, WideConstantAddSchedule,
+    FixedAddressConstantStoreStyle, FrameConvention, GlobalAddressing,
+    IntegerComparisonValueStyle, LongLongTimerStyle, NarrowComputedReturnStyle,
+    NestedGlobalDispatchSchedule, PlainLinkageEpilogueStyle, PointerWalkerScheduleStyle,
+    RaiseFamilyStyle, WideConstantAddSchedule,
 };

@@ -3060,6 +3060,12 @@ impl Generator {
             lr_store_index = Some(self.emit_plain_nonleaf_prologue());
         }
 
+        // A shared-value member-store run followed by a fixed-address pointer
+        // clear has a measured cross-statement owner.
+        if self.try_leading_store_guard(function)? {
+            return Ok(());
+        }
+
         // A leading store (or store run) before a trailing `if` needs mwcc's cross-statement
         // scheduler: it hoists the if's condition test as early as possible — into the leading
         // store's value-materialize latency gap (`li r0,1; cmpwi; stw r0,g; beqlr; …`) or to the
