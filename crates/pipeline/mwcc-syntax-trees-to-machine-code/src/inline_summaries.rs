@@ -47,6 +47,15 @@ pub(crate) struct FixedSizeCopySummary {
     pub(crate) byte_count: i16,
 }
 
+/// An empty deleting destructor whose only lifetime action is destroying one
+/// non-virtual base. Under file IPA, GC 4.1 may inline this wrapper into a
+/// derived destructor while retaining the wrapper's null guard.
+#[derive(Clone, Debug)]
+pub(crate) struct SingleBaseDestructorSummary {
+    pub(crate) callee: String,
+    pub(crate) adjustment: u32,
+}
+
 /// A NULL-terminated function-pointer table walker eligible for whole-file
 /// inlining. The loop body is summarized to its only externally visible input:
 /// the table symbol whose entries it invokes.
@@ -80,6 +89,7 @@ pub struct InlineSummaries {
     unoptimized_local_selects: HashMap<String, UnoptimizedLocalSelectSummary>,
     byte_appends: HashMap<String, ByteAppendSummary>,
     fixed_size_copies: HashMap<String, FixedSizeCopySummary>,
+    single_base_destructors: HashMap<String, SingleBaseDestructorSummary>,
     ipa_elided_functions: HashSet<String>,
 }
 
@@ -122,6 +132,11 @@ impl InlineSummaries {
             if let Some(summary) = summarize_fixed_size_copy(function) {
                 summaries
                     .fixed_size_copies
+                    .insert(function.name.clone(), summary);
+            }
+            if let Some(summary) = summarize_single_base_destructor(function) {
+                summaries
+                    .single_base_destructors
                     .insert(function.name.clone(), summary);
             }
             if let Some(summary) = summarize_call_wrapper(function, false) {
@@ -203,6 +218,13 @@ impl InlineSummaries {
         self.fixed_size_copies.get(name)
     }
 
+    pub(crate) fn single_base_destructor(
+        &self,
+        name: &str,
+    ) -> Option<&SingleBaseDestructorSummary> {
+        self.single_base_destructors.get(name)
+    }
+
     pub(crate) fn pointer_walker(&self, name: &str) -> Option<&PointerWalkerSummary> {
         self.pointer_walkers.get(name)
     }
@@ -257,6 +279,75 @@ impl InlineSummaries {
 
 fn variable(expression: &Expression, name: &str) -> bool {
     matches!(expression, Expression::Variable(found) if found == name)
+}
+
+fn summarize_single_base_destructor(function: &Function) -> Option<SingleBaseDestructorSummary> {
+    if !function.name.starts_with("__dt__")
+        || !matches!(function.return_type, Type::StructPointer { .. })
+        || function.parameters.len() != 2
+        || function.parameters[0].name != "this"
+        || function.parameters[1].name != "__destroy"
+        || !matches!(function.parameters[0].parameter_type, Type::StructPointer { .. })
+        || function.parameters[1].parameter_type != Type::Short
+        || !function.locals.is_empty()
+        || !function.guards.is_empty()
+        || !function
+            .return_expression
+            .as_ref()
+            .is_some_and(|expression| variable(expression, "this"))
+    {
+        return None;
+    }
+    let [Statement::If {
+        condition,
+        then_body,
+        else_body,
+    }] = function.statements.as_slice()
+    else {
+        return None;
+    };
+    if !variable(condition, "this") || !else_body.is_empty() {
+        return None;
+    }
+    let [base_call, delete_guard] = then_body.as_slice() else {
+        return None;
+    };
+    let Statement::Expression(Expression::Call { name, arguments }) = base_call else {
+        return None;
+    };
+    let [object, Expression::IntegerLiteral(0)] = arguments.as_slice() else {
+        return None;
+    };
+    let adjustment = match object {
+        Expression::Variable(name) if name == "this" => 0,
+        Expression::MemberAddress { base, offset, .. }
+            if variable(base, "this") => *offset,
+        _ => return None,
+    };
+    let Statement::If {
+        condition:
+            Expression::Binary {
+                operator: BinaryOperator::Greater,
+                left,
+                right,
+            },
+        then_body: delete_body,
+        else_body: delete_else,
+    } = delete_guard
+    else {
+        return None;
+    };
+    if !variable(left, "__destroy")
+        || constant_value(right) != Some(0)
+        || delete_body.len() != 1
+        || !delete_else.is_empty()
+    {
+        return None;
+    }
+    Some(SingleBaseDestructorSummary {
+        callee: name.clone(),
+        adjustment,
+    })
 }
 
 fn struct_member(expression: &Expression, base: &str) -> Option<(i16, Type)> {
@@ -746,6 +837,57 @@ mod tests {
         let copy = summaries.fixed_size_copy("copy_record").unwrap();
         assert_eq!(copy.callee, "copy_bytes");
         assert_eq!(copy.byte_count, 12);
+    }
+
+    #[test]
+    fn single_base_destructor_requires_the_complete_empty_wrapper_shape() {
+        let base_call = Statement::Expression(Expression::Call {
+            name: "__dt__4BaseFv".into(),
+            arguments: vec![
+                Expression::Variable("this".into()),
+                Expression::IntegerLiteral(0),
+            ],
+        });
+        let delete_guard = Statement::If {
+            condition: Expression::Binary {
+                operator: BinaryOperator::Greater,
+                left: Box::new(Expression::Variable("__destroy".into())),
+                right: Box::new(Expression::IntegerLiteral(0)),
+            },
+            then_body: vec![Statement::Expression(Expression::Call {
+                name: "__dl__FPv".into(),
+                arguments: vec![Expression::Variable("this".into())],
+            })],
+            else_body: Vec::new(),
+        };
+        let mut destructor = wrapper(
+            "__dt__7DerivedFv",
+            false,
+            vec![Statement::If {
+                condition: Expression::Variable("this".into()),
+                then_body: vec![base_call, delete_guard],
+                else_body: Vec::new(),
+            }],
+        );
+        destructor.return_type = Type::StructPointer { element_size: 8 };
+        destructor.parameters = vec![
+            Parameter {
+                parameter_type: Type::StructPointer { element_size: 8 },
+                name: "this".into(),
+            },
+            Parameter {
+                parameter_type: Type::Short,
+                name: "__destroy".into(),
+            },
+        ];
+        destructor.return_expression = Some(Expression::Variable("this".into()));
+
+        let summaries = InlineSummaries::analyze(&[destructor]);
+        let summary = summaries
+            .single_base_destructor("__dt__7DerivedFv")
+            .expect("the exact empty wrapper should be summarized");
+        assert_eq!(summary.callee, "__dt__4BaseFv");
+        assert_eq!(summary.adjustment, 0);
     }
 
     #[test]

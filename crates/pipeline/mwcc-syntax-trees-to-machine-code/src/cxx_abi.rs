@@ -5,6 +5,7 @@
 //! recognition and fixed ABI skeleton here prevents that state from leaking
 //! into the ordinary C control-flow and register-allocation owners.
 
+use crate::InlineSummaries;
 use mwcc_machine_code::{
     FrameInfo, Instruction, MachineFunction, Relocation, RelocationKind, RelocationTarget,
 };
@@ -528,6 +529,7 @@ impl ConstructorTail {
 /// supplies the two saved homes and the measured predecrement-frame schedule.
 pub(crate) fn lower_composed_destructor(
     function: &Function,
+    inline_summaries: &InlineSummaries,
     config: CompilerConfig,
 ) -> Option<MachineFunction> {
     if Behavior::resolve(&config).frame_convention != FrameConvention::Predecrement
@@ -631,6 +633,36 @@ pub(crate) fn lower_composed_destructor(
     let mut relocations = Vec::new();
     let mut referenced_functions = Vec::new();
     for (index, (callee, adjustment)) in base_calls.iter().enumerate() {
+        let inlined_base = (config.flags.ipa_file && base_calls.len() == 1 && *adjustment == 0)
+            .then(|| inline_summaries.single_base_destructor(callee))
+            .flatten()
+            .filter(|summary| summary.adjustment == 0);
+        if let Some(summary) = inlined_base {
+            let skip_branch = output.instructions.len();
+            output.instructions.push(Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 0,
+            });
+            output.instructions.push(Instruction::load_immediate(4, 0));
+            let instruction_index = output.instructions.len();
+            output.instructions.push(Instruction::BranchAndLink {
+                target: summary.callee.clone(),
+            });
+            relocations.push(Relocation {
+                instruction_index,
+                kind: RelocationKind::Rel24,
+                target: RelocationTarget::External(summary.callee.clone()),
+            });
+            referenced_functions.push(summary.callee.clone());
+            let after_call = output.instructions.len();
+            if let Instruction::BranchConditionalForward { target, .. } =
+                &mut output.instructions[skip_branch]
+            {
+                *target = after_call;
+            }
+            continue;
+        }
         if index == 0 {
             output
                 .instructions
