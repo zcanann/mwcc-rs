@@ -345,8 +345,34 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("measurement-unknown attribution", rendered)
         self.assertIn("resolved exact 2/3", rendered)
         self.assertIn("emitted-object quality (conditional, not feature coverage)", rendered)
+        self.assertIn("top sampled compiler blockers", rendered)
+        self.assertIn("1x ", rendered)
         self.assertIn("audit execution cost", rendered)
         self.assertIn("summed 10.0s", rendered)
+
+    def test_representative_audit_keeps_sample_diagnostics_separate(self):
+        rows = [
+            row(project="alpha", source="src/exact.c"),
+            row(project="alpha", source="src/deferred.c"),
+            row(project="beta", source="src/missing.c"),
+        ]
+        observations = {
+            rows[0]["configuration_id"]: {"status": "BYTE"},
+            rows[1]["configuration_id"]: {
+                "status": "DEFER",
+                "output": "DEFER deferred.c — loop codegen is not implemented yet",
+            },
+            rows[2]["configuration_id"]: {
+                "status": "MISSING_DEPENDENCY",
+                "output": "MISSING_DEPENDENCY missing.c — generated.inc",
+            },
+        }
+        selected = {rows[0]["configuration_id"], rows[1]["configuration_id"]}
+        report = representative_audit(rows, observations, selected)
+        self.assertEqual([item["name"] for item in report["by_project"]], ["alpha"])
+        self.assertEqual(report["by_project"][0]["total"], 2)
+        self.assertEqual(report["blockers"][0]["status"], "DEFER")
+        self.assertNotIn("generated.inc", report["blockers"][0]["reason"])
 
     def test_exact_output_against_original_object_earns_credit_with_synthetic_input(self):
         observation = {

@@ -566,6 +566,11 @@ def representative_audit(
 ) -> Dict[str, Any]:
     universe = {row["configuration_id"] for row in rows if row["source_exists"]}
     selected = universe & selection
+    selected_rows = [
+        row
+        for row in rows
+        if row["source_exists"] and row["configuration_id"] in selected
+    ]
     direct = {identity: observations[identity] for identity in selected if identity in observations}
     counts = Counter(observation["status"] for observation in direct.values())
     complete = len(direct) == len(selected)
@@ -612,6 +617,11 @@ def representative_audit(
         "observed": len(direct),
         "complete": complete,
         "statuses": {status: counts[status] for status in STATUSES if status != "UNTESTED"},
+        # Keep sample-local diagnostics separate from the accumulated evidence
+        # breakdown on the root snapshot. The latter contains opportunistic
+        # observations and must not be read as a representative distribution.
+        "by_project": breakdown(selected_rows, direct, set(), "project"),
+        "blockers": blocker_breakdown(selected_rows, direct, set()),
         "execution_requested": len(execution_requested),
         "execution_selected": len(execution_selected),
         "execution_observed": len(execution_direct),
@@ -943,6 +953,30 @@ def print_brief(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]]) 
             f"{len(audit['version_coverage'])}; project/version/language cells "
             f"{audit['breadth_coverage_observed']}/{audit['breadth_coverage_cells']}"
         )
+        compiler_blockers = [
+            blocker
+            for blocker in audit.get("blockers", [])
+            if blocker["status"] in ("DIFF", "DEFER", "UNSUPPORTED_BUILD")
+        ]
+        if compiler_blockers:
+            summary = "; ".join(
+                f"{blocker['count']}x {blocker['reason']}"
+                for blocker in compiler_blockers[:5]
+            )
+            print(f"top sampled compiler blockers — {summary}")
+        audit_delta = audit.get("delta")
+        if audit_delta is not None:
+            transitions = ", ".join(
+                f"{name} {count}"
+                for name, count in audit_delta["transitions"].items()
+            )
+            print(
+                "fixed-audit movement — "
+                f"+{audit_delta['byte_gained']} exact / "
+                f"-{audit_delta['byte_lost']} exact across "
+                f"{audit_delta['common_observations']}/{audit['selected']} common sample rows"
+                f"{'; ' + transitions if transitions else ''}"
+            )
         runtime = audit["runtime"]
         if runtime["measured"]:
             print(
