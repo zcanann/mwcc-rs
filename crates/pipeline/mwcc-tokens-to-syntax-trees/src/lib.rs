@@ -3720,6 +3720,33 @@ blr\n\
     }
 
     #[test]
+    fn long_source_spelling_survives_word_sized_storage_lowering() {
+        let source = r#"
+            unsigned hash(const char* text, unsigned long size) { return size; }
+            long signed_value(long value) { return value; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(unit.functions[0].name, "hash__FPCcUl");
+        assert_eq!(unit.functions[1].name, "signed_value__Fl");
+        assert_eq!(
+            unit.functions[0].parameters[1].parameter_type,
+            mwcc_syntax_trees::Type::UnsignedInt
+        );
+        assert_eq!(
+            unit.functions[1].parameters[0].parameter_type,
+            mwcc_syntax_trees::Type::Int
+        );
+    }
+
+    #[test]
     fn resolves_exact_cxx_overloads_from_dereferenced_argument_types() {
         let source = r#"
             int lower(char value) { return value; }

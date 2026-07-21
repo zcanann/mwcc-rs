@@ -3311,10 +3311,17 @@ fn encode_type(parameter: &CxxParameterType) -> Compilation<String> {
         return Ok(code);
     }
     let encoded_source = parameter.pointer_base.unwrap_or(parameter.source_type);
-    let base = if parameter.source_fundamental == Some(SourceFundamentalType::PlainChar) {
-        "c".to_string()
-    } else {
-        match encoded_source {
+    let source_spelling = match parameter.source_fundamental {
+        Some(SourceFundamentalType::PlainChar) => Some("c"),
+        Some(SourceFundamentalType::SignedLong) => Some("l"),
+        Some(SourceFundamentalType::UnsignedLong) => Some("Ul"),
+        _ => None,
+    };
+    if let Some(spelling) = source_spelling {
+        code.push_str(spelling);
+        return Ok(code);
+    }
+    let base = match encoded_source {
         Type::Int => "i".to_string(),
         Type::UnsignedInt => "Ui".to_string(),
         Type::Char => "c".to_string(),
@@ -3338,7 +3345,6 @@ fn encode_type(parameter: &CxxParameterType) -> Compilation<String> {
             return Err(Diagnostic::error(
                 "a struct-valued C++ member parameter needs qualified type mangling (roadmap)",
             ))
-        }
         }
     };
     code.push_str(&base);
