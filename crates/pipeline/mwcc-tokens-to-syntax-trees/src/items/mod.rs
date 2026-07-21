@@ -921,9 +921,46 @@ impl Parser {
             .iter()
             .map(|(name, layout)| (name.clone(), layout.source_definition(name.clone())))
             .collect();
+        let cxx_abi_classes = self
+            .cxx_class_declaration_order
+            .iter()
+            .filter_map(|name| self.cxx_classes.get(name).map(|class| (name, class)))
+            .map(|(name, class)| {
+                let encoded_name = crate::cxx::encode_qualified_scope(
+                    &name.split("::").collect::<Vec<_>>(),
+                )?;
+                let mut table_offset = 0u32;
+                let vtable_components = class
+                    .vtable_components
+                    .iter()
+                    .map(|component| {
+                        let abi = mwcc_syntax_trees::CxxAbiVtableComponent {
+                            table_offset,
+                            object_offset: component.object_offset,
+                        };
+                        table_offset += 8 + component.virtual_slots.max(1) as u32 * 4;
+                        abi
+                    })
+                    .collect();
+                Ok(mwcc_syntax_trees::CxxAbiClass {
+                    source_name: name.clone(),
+                    encoded_name,
+                    bases: class
+                        .bases
+                        .iter()
+                        .map(|base| mwcc_syntax_trees::CxxAbiBase {
+                            name: base.name.clone(),
+                            offset: base.offset,
+                        })
+                        .collect(),
+                    vtable_components,
+                })
+            })
+            .collect::<Compilation<Vec<_>>>()?;
         Ok(TranslationUnit {
             globals,
             functions,
+            cxx_abi_classes,
             cxx_class_declaration_order: std::mem::take(
                 &mut self.cxx_class_declaration_order,
             ),
@@ -1532,6 +1569,9 @@ impl Parser {
                 }
                 self.struct_typedefs.insert(name.clone(), name.clone());
                 self.structs.insert(name.clone(), layout);
+                if !self.cxx_classes.contains_key(&name) {
+                    self.cxx_class_declaration_order.push(name.clone());
+                }
                 self.cxx_classes.insert(name, class);
                 return Ok(());
             }

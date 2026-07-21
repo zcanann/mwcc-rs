@@ -6,6 +6,7 @@
 //! report for inspecting how a translation unit becomes bytes.
 
 mod cxx_analysis_residues;
+mod cxx_rtti_names;
 mod function_order;
 mod reference_analysis;
 
@@ -105,6 +106,16 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                 if arguments.get(index).map(String::as_str) == Some("off") {
                     invocation.flags.cpp_exceptions = false;
                 }
+            }
+            // RTTI is a last-wins C++ ABI policy, independent of exception
+            // tables. Project build lines commonly spell both off and on.
+            "-RTTI" => {
+                index += 1;
+                invocation.flags.rtti = match arguments.get(index).map(String::as_str) {
+                    Some("on") => true,
+                    Some("off") => false,
+                    _ => invocation.flags.rtti,
+                };
             }
             // `-pragma "cats off"` suppresses the Code Address Table section.
             // Accept `on` as well so the last command-line pragma wins, as in mwcc.
@@ -354,7 +365,10 @@ fn global_alignments(
     unoptimized: bool,
 ) -> GlobalAlignments {
     let layout = match struct_alignment {
-        Some(alignment) => alignment.max(4),
+        // A struct object uses the alignment established by its layout. This is
+        // not necessarily word alignment: packed/byte-only aggregates and
+        // compiler-generated C++ type-name records can legitimately align 1.
+        Some(alignment) => alignment,
         None if is_array => element_size.max(4),
         None => element_size,
     }
@@ -391,7 +405,7 @@ fn compile(
             Some("cpp" | "cp" | "cxx" | "cc")
         ),
     };
-    let unit = mwcc_tokens_to_syntax_trees::parse_located_translation_unit_with_enum_min(
+    let mut unit = mwcc_tokens_to_syntax_trees::parse_located_translation_unit_with_enum_min(
         located_tokens,
         is_cxx,
         config.char_is_signed(),
@@ -399,6 +413,9 @@ fn compile(
         behavior.skipped_static_inline_label_base,
         config.flags.enum_storage == mwcc_versions::EnumStorage::Minimum,
     )?;
+    if is_cxx && config.flags.rtti {
+        mwcc_tokens_to_syntax_trees::materialize_cxx_rtti(&mut unit);
+    }
     // Every callable's return type (prototypes + this unit's definitions) so a
     // call's result type is known during lowering.
     let call_return_types: std::collections::HashMap<String, mwcc_syntax_trees::Type> = unit
@@ -1550,6 +1567,9 @@ fn compile(
             }
         }
     }
+    if config.flags.rtti {
+        cxx_rtti_names::resolve(&mut defined_globals, counter);
+    }
     defined_globals.extend(function_string_objects);
     defined_globals.extend(static_local_globals);
 
@@ -1813,6 +1833,13 @@ mod tests {
                 comment: 4,
             }
         );
+        assert_eq!(
+            global_alignments(14, Some(1), false, 1, false),
+            GlobalAlignments {
+                layout: 1,
+                comment: 1,
+            }
+        );
     }
 
     #[test]
@@ -1823,6 +1850,20 @@ mod tests {
         let integer =
             parse_invocation(&["-enum".into(), "min".into(), "-enum".into(), "int".into()]);
         assert_eq!(integer.flags.enum_storage, EnumStorage::Int);
+    }
+
+    #[test]
+    fn command_line_rtti_is_last_wins() {
+        let enabled = parse_invocation(&["-RTTI".into(), "on".into()]);
+        assert!(enabled.flags.rtti);
+
+        let disabled = parse_invocation(&[
+            "-RTTI".into(),
+            "on".into(),
+            "-RTTI".into(),
+            "off".into(),
+        ]);
+        assert!(!disabled.flags.rtti);
     }
 
     #[test]

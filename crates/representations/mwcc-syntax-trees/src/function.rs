@@ -261,6 +261,9 @@ pub struct TranslationUnit {
     /// vtable helpers use this order even when their owning destructors are
     /// defined in a different order later in the file.
     pub cxx_class_declaration_order: Vec<String>,
+    /// C++ ABI-only class relationships retained after parsing. Executable
+    /// lowering does not need these, but unit-level products such as RTTI do.
+    pub cxx_abi_classes: Vec<CxxAbiClass>,
     /// Named aggregate declarations keyed by their parser identity. Executable
     /// lowering uses the compact resolved [`Type`]; debug lowering follows this
     /// graph to recover source names, member order, and member types.
@@ -346,6 +349,29 @@ pub struct TranslationUnit {
     /// Physical source boundaries for parsed function definitions, aligned with
     /// `functions`. Compiler-synthesized functions have no physical source.
     pub function_sources: Vec<Option<FunctionSource>>,
+}
+
+/// Source class identity and non-virtual inheritance needed by C++ ABI data.
+/// This deliberately excludes fields and methods, which belong to parsing and
+/// executable lowering rather than RTTI/vtable materialization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CxxAbiClass {
+    pub source_name: String,
+    pub encoded_name: String,
+    pub bases: Vec<CxxAbiBase>,
+    pub vtable_components: Vec<CxxAbiVtableComponent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CxxAbiBase {
+    pub name: String,
+    pub offset: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CxxAbiVtableComponent {
+    pub table_offset: u32,
+    pub object_offset: u32,
 }
 
 /// Source coordinates needed for DWARF line programs. This stays on the

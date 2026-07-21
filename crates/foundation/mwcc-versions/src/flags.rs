@@ -71,6 +71,9 @@ pub struct Flags {
     /// suppresses the `extab`/`extabindex` unwind tables entirely (the stack frame
     /// itself is unchanged).
     pub cpp_exceptions: bool,
+    /// `-RTTI on` emits CodeWarrior type handles and inheritance tables and
+    /// installs those handles in every owned vtable component.
+    pub rtti: bool,
     /// `-pragma "cats off"` disables Code Address Table emission. The functions
     /// remain in `.text`, but the `.mwcats.text` catalog and its relocations are
     /// absent from the object.
@@ -111,6 +114,7 @@ impl Default for Flags {
             enum_storage: EnumStorage::Int,
             inline_deferred: false,
             cpp_exceptions: true,
+            rtti: false,
             emit_mwcats: true,
             string_literals_read_only: false,
             pooling_enabled: true,

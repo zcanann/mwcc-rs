@@ -3086,7 +3086,7 @@ fn encode_function_arguments(
     Ok(arguments)
 }
 
-fn encode_qualified_scope(scopes: &[&str]) -> Compilation<String> {
+pub(crate) fn encode_qualified_scope(scopes: &[&str]) -> Compilation<String> {
     if scopes.is_empty() || scopes.iter().any(|scope| scope.is_empty()) {
         return Err(Diagnostic::error("an empty qualified C++ scope is invalid"));
     }

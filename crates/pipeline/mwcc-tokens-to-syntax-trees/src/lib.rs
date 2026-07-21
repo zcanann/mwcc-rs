@@ -10,11 +10,14 @@ use mwcc_tokens::{LocatedToken, SourceLocation, Token};
 use std::collections::HashMap;
 
 mod cxx;
+mod cxx_rtti;
 mod expressions;
 mod items;
 mod parser;
 
 use parser::Parser;
+
+pub use cxx_rtti::materialize as materialize_cxx_rtti;
 
 pub(crate) const CXX_POINTEE_CONST_MARKER: &str = "__mwcc_cxx_pointee_const";
 

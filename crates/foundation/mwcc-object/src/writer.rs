@@ -2027,16 +2027,31 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 }
                 global_symbols.insert(target, (symtab.len() / SYMBOL_SIZE) as u32);
                 if let Some(&offset) = data_offsets.get(target) {
+                    let target_object = input
+                        .data_objects
+                        .iter()
+                        .find(|candidate| candidate.name == target)
+                        .expect("a defined data target has an owning object");
+                    let binding = if target_object.is_weak {
+                        STB_WEAK_OBJECT
+                    } else {
+                        STB_GLOBAL_OBJECT
+                    };
                     write_symbol(
                         &mut symtab,
                         strtab.add(target),
                         offset,
                         data_sizes[target],
-                        STB_GLOBAL_OBJECT,
+                        binding,
                         0,
                         index_of(data_section[target]) as u16,
                     );
-                    comment_values.push((data_aligns[target], 0));
+                    let flags = if target_object.is_weak {
+                        0x0d00_0000
+                    } else {
+                        0
+                    };
+                    comment_values.push((data_aligns[target], flags));
                 } else if let Some(function_index) = functions
                     .iter()
                     .position(|function| !function.is_static && function.name == target)
@@ -2107,7 +2122,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             let object = $object;
             // An ANONYMOUS object (the synthesized `.ctors` sinit reference)
             // lays out and relocates but has NO symbol or .comment record.
-            if !object.name.is_empty() {
+            if !object.name.is_empty() && !global_symbols.contains_key(object.name) {
                 global_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
                 let section = index_of(data_section[object.name]) as u16;
                 let binding = if object.is_weak { STB_WEAK_OBJECT } else { STB_GLOBAL_OBJECT };

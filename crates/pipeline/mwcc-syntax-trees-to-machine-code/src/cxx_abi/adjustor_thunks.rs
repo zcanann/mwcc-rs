@@ -54,6 +54,10 @@ pub(crate) fn lower_vtable_adjustor_thunks(
 
     let mut output = Vec::new();
     for (_, destructor, mut thunks) in groups {
+        // RTTI materialization gives vtable data relocations their own ABI
+        // order. Recover physical base order before applying the independent
+        // code-thunk schedule below.
+        thunks.sort_by_key(|(_, offset)| *offset);
         // MWCC emits the first non-primary component first, then unwinds the
         // remaining component requests as a stack. For a four-component group
         // this is the measured 20, 104, 88 adjustment order.
