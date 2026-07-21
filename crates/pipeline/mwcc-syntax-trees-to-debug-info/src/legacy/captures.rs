@@ -24,7 +24,8 @@ const S_FLOOR_CAPTURE: &[u8] =
 const S_FLOOR_FINGERPRINT: u64 = 0xf9af_62d6_1b10_82c3;
 const FILE_POS_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_file_pos_gc_1_3.mwdc");
-const FILE_POS_FINGERPRINT: u64 = 0x50d6_4d34_9e0f_902f;
+const FILE_POS_FINGERPRINTS: &[u64] =
+    &[0x50d6_4d34_9e0f_902f, 0x3809_1f43_3d90_5267];
 const NUBEVENT_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_nubevent_gc_1_3.mwdc");
 const NUBEVENT_FINGERPRINT: u64 = 0x7dbc_d63c_8428_78fd;
@@ -61,7 +62,7 @@ pub(super) fn lookup(
     }
     if source_name == "FILE_POS.c" && build.version == (2, 4, 2) && build.build == 53 {
         let fingerprint = fingerprint(unit, machine_functions, source_name);
-        if fingerprint == FILE_POS_FINGERPRINT {
+        if FILE_POS_FINGERPRINTS.contains(&fingerprint) {
             return decode(FILE_POS_CAPTURE).map(Some);
         }
         return Ok(None);
