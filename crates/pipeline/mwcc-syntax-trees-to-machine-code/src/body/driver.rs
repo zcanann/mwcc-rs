@@ -2596,6 +2596,12 @@ impl Generator {
         if self.try_counted_table_search_with_call_guards(function)? {
             return Ok(());
         }
+        // A fixed-count walk over a global object array which reuses each
+        // element address across a run of calls. Both the element cursor and
+        // integer counter are allocator-owned loop-carried survivors.
+        if self.try_indexed_call_sequence_loop(function)? {
+            return Ok(());
+        }
         // A counted call loop (`for (i = 0; i < N; i++) g(i);`): counter in the r31
         // home, bottom-tested backward branch.
         if self.try_counted_call_loop(function)? {
