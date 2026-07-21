@@ -1945,8 +1945,12 @@ impl Generator {
                     if let Statement::Store { target, value } = statement {
                         if constant_value(value).is_some()
                             && matches!(target, Expression::Variable(name) if self.globals.contains_key(name.as_str()))
+                            && self.global_constant_store_return_plan(function).is_none()
                         {
-                            return Err(Diagnostic::error("a global constant store scheduled around a const/global return is not modeled (roadmap)"));
+                            return Err(Diagnostic::error(format!(
+                                "a global constant store scheduled around a const/global return is not modeled (roadmap; function '{}')",
+                                function.name
+                            )));
                         }
                     }
                 }
@@ -3225,7 +3229,11 @@ impl Generator {
         // Body statements (stores, calls) run first.
         let statements_start = self.output.instructions.len();
         let statement_count = function.statements.len();
-        for (index, statement) in function.statements.iter().enumerate() {
+        let scheduled_global_store_return = self.global_constant_store_return_plan(function);
+        let statement_end = scheduled_global_store_return
+            .as_ref()
+            .map_or(statement_count, |plan| plan.statement_start);
+        for (index, statement) in function.statements[..statement_end].iter().enumerate() {
             // A trailing `if (c) { body }` in a leaf void function: the false path
             // is the function exit, so it is a conditional return, then the body,
             // then the normal `blr`. (Non-leaf needs a forward branch to the
@@ -3379,6 +3387,12 @@ impl Generator {
         // Hoist a leading register move from the body's statements (a call's argument
         // setup) into the prologue's mflr->LR-store slot.
         self.hoist_leading_arg_moves(lr_store_index);
+
+        if let Some(plan) = scheduled_global_store_return {
+            self.emit_global_constant_store_return_plan(plan)?;
+            self.emit_epilogue_and_return();
+            return Ok(());
+        }
 
         // A `void` function ends after its statements.
         if function.return_type == Type::Void {

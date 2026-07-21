@@ -23,26 +23,39 @@ pub(crate) fn reads_value_across_call(function: &Function) -> bool {
     // return expression. `prior_call` becomes true once a strictly-earlier item
     // performed a call — after which any register-resident read is clobbered.
     let mut prior_call = false;
+    let mut defined_after_last_call: HashSet<&str> = HashSet::new();
     for local in &function.locals {
         if let Some(initializer) = &local.initializer {
-            if expression_reads_across_call(initializer, prior_call, &registers) {
+            let mut unsafe_registers = registers.clone();
+            unsafe_registers.retain(|name| !defined_after_last_call.contains(name));
+            if expression_reads_across_call(initializer, prior_call, &unsafe_registers) {
                 return true;
             }
             if expression_has_call(initializer) {
                 prior_call = true;
+                defined_after_last_call.clear();
             }
+            defined_after_last_call.insert(local.name.as_str());
         }
     }
     for statement in &function.statements {
-        if statement_reads_across_call(statement, prior_call, &registers) {
+        let mut unsafe_registers = registers.clone();
+        unsafe_registers.retain(|name| !defined_after_last_call.contains(name));
+        if statement_reads_across_call(statement, prior_call, &unsafe_registers) {
             return true;
         }
         if statement_has_call(statement) {
             prior_call = true;
+            defined_after_last_call.clear();
+        }
+        if let Statement::Assign { name, .. } = statement {
+            defined_after_last_call.insert(name.as_str());
         }
     }
     if let Some(value) = &function.return_expression {
-        if expression_reads_across_call(value, prior_call, &registers) {
+        let mut unsafe_registers = registers;
+        unsafe_registers.retain(|name| !defined_after_last_call.contains(name));
+        if expression_reads_across_call(value, prior_call, &unsafe_registers) {
             return true;
         }
     }
@@ -622,12 +635,19 @@ fn sequence_reads_across_call(
     mut prior_call: bool,
     registers: &HashSet<&str>,
 ) -> bool {
+    let mut defined_after_last_call: HashSet<&str> = HashSet::new();
     for statement in statements {
-        if statement_reads_across_call(statement, prior_call, registers) {
+        let mut unsafe_registers = registers.clone();
+        unsafe_registers.retain(|name| !defined_after_last_call.contains(name));
+        if statement_reads_across_call(statement, prior_call, &unsafe_registers) {
             return true;
         }
         if statement_has_call(statement) {
             prior_call = true;
+            defined_after_last_call.clear();
+        }
+        if let Statement::Assign { name, .. } = statement {
+            defined_after_last_call.insert(name.as_str());
         }
     }
     false
@@ -1803,6 +1823,49 @@ mod tests {
         // c + a*b: c (1) lighter than a*b (2); the multiply is evaluated first.
         let product = mul(var("a"), var("b"));
         assert!(register_need(&product) > register_need(&var("c")));
+    }
+
+    #[test]
+    fn a_call_result_definition_is_not_mistaken_for_a_cross_call_survivor() {
+        let call = || Expression::Call {
+            name: "produce".into(),
+            arguments: Vec::new(),
+        };
+        let registers = HashSet::from(["result"]);
+        let assigned_then_read = [
+            Statement::Assign {
+                name: "result".into(),
+                value: call(),
+            },
+            Statement::If {
+                condition: var("result"),
+                then_body: Vec::new(),
+                else_body: Vec::new(),
+            },
+        ];
+        assert!(!sequence_reads_across_call(
+            &assigned_then_read,
+            false,
+            &registers
+        ));
+
+        let clobbered_before_read = [
+            Statement::Assign {
+                name: "result".into(),
+                value: call(),
+            },
+            Statement::Expression(call()),
+            Statement::If {
+                condition: var("result"),
+                then_body: Vec::new(),
+                else_body: Vec::new(),
+            },
+        ];
+        assert!(sequence_reads_across_call(
+            &clobbered_before_read,
+            false,
+            &registers
+        ));
     }
 }
 

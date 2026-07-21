@@ -7,7 +7,98 @@
 
 use super::*;
 
+pub(super) struct GlobalConstantStoreReturnPlan {
+    pub(super) statement_start: usize,
+    stores: Vec<(String, Pointee)>,
+    stored: i16,
+    returned: i16,
+}
+
 impl Generator {
+    /// Recognize a terminal run of integer-global stores sharing one small
+    /// constant, followed by a small constant return. MWCC materializes the
+    /// shared store value once. The linkage-first pipeline uses the final
+    /// store's latency slot for the independent return value; the predecrement
+    /// pipeline hoists that value before the whole store run.
+    pub(super) fn global_constant_store_return_plan(
+        &self,
+        function: &Function,
+    ) -> Option<GlobalConstantStoreReturnPlan> {
+        if !matches!(function.return_type, Type::Int | Type::UnsignedInt) {
+            return None;
+        }
+        let returned = function
+            .return_expression
+            .as_ref()
+            .and_then(constant_value)
+            .and_then(|value| i16::try_from(value).ok())?;
+        let mut statement_start = function.statements.len();
+        let mut stores = Vec::new();
+        let mut shared_constant = None;
+        while let Some(Statement::Store {
+            target: Expression::Variable(global),
+            value,
+        }) = statement_start
+            .checked_sub(1)
+            .and_then(|index| function.statements.get(index))
+        {
+            let stored = constant_value(value).and_then(|value| i16::try_from(value).ok())?;
+            if shared_constant.is_some_and(|shared| shared != stored) {
+                return None;
+            }
+            let pointee = self
+                .globals
+                .get(global.as_str())
+                .copied()
+                .and_then(pointee_of_type)?;
+            if matches!(pointee, Pointee::Float | Pointee::Double) {
+                return None;
+            }
+            shared_constant = Some(stored);
+            stores.push((global.clone(), pointee));
+            statement_start -= 1;
+        }
+        if stores.is_empty() {
+            return None;
+        }
+        stores.reverse();
+        Some(GlobalConstantStoreReturnPlan {
+            statement_start,
+            stores,
+            stored: shared_constant.expect("a nonempty store run has a constant"),
+            returned,
+        })
+    }
+
+    pub(super) fn emit_global_constant_store_return_plan(
+        &mut self,
+        plan: GlobalConstantStoreReturnPlan,
+    ) -> Compilation<()> {
+        self.load_integer_constant(GENERAL_SCRATCH, i64::from(plan.stored));
+        let result_instruction = Instruction::AddImmediate {
+            d: Eabi::general_result().number,
+            a: 0,
+            immediate: plan.returned,
+        };
+        if self.behavior.frame_convention == FrameConvention::Predecrement {
+            self.output.instructions.push(result_instruction);
+            for (global, pointee) in &plan.stores {
+                self.emit_global_store(global, *pointee, GENERAL_SCRATCH)?;
+            }
+        } else {
+            let (final_store, preceding_stores) = plan
+                .stores
+                .split_last()
+                .expect("a store-return plan has at least one store");
+            for (global, pointee) in preceding_stores {
+                self.emit_global_store(global, *pointee, GENERAL_SCRATCH)?;
+            }
+            self.output.instructions.push(result_instruction);
+            self.emit_global_store(&final_store.0, final_store.1, GENERAL_SCRATCH)?;
+        }
+        Ok(())
+    }
+
     /// `g = enter(); if (g == 0) { a(); b(); } return g = leave();`.
     ///
     /// This is one cross-statement region: legacy 2.3.3 keeps the absolute
