@@ -13,6 +13,9 @@ use crate::Type;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceFundamentalType {
     Boolean,
+    /// Source-written plain `char`. Its executable signedness is a compiler
+    /// option, but its C++ ABI and debug identity remain `char` either way.
+    PlainChar,
     SignedChar,
     UnsignedChar,
     SignedShort,

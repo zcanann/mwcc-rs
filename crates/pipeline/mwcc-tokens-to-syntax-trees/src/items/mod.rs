@@ -2483,6 +2483,7 @@ impl Parser {
                     let cxx_pointer_const = self.last_pointer_const;
                     let cxx_pointer_depth = self.last_cxx_pointer_depth;
                     let cxx_pointer_base = self.last_cxx_pointer_base;
+                    let cxx_source_fundamental = self.last_source_fundamental.take();
                     let cxx_function_type = self.last_cxx_function_type.take();
                     // An array-typedef (`Mtx m`) or row-pointer-typedef (`MtxPtr m`)
                     // parameter: the type already decayed to the element pointer;
@@ -2524,6 +2525,7 @@ impl Parser {
                         cxx_pointee_const,
                         cxx_pointer_const,
                     )
+                    .with_source_fundamental(cxx_source_fundamental)
                     .with_pointer_shape(cxx_pointer_depth, cxx_pointer_base)
                     .with_function_type(cxx_function_type.clone());
                     // A function-pointer parameter `RET (*name)(params)` is a 4-byte
@@ -2599,6 +2601,7 @@ impl Parser {
                                 cxx_pointee_const,
                                 cxx_pointer_const,
                             )
+                            .with_source_fundamental(cxx_source_fundamental)
                             .with_pointer_shape(cxx_pointer_depth, cxx_pointer_base)
                             .with_function_type(cxx_function_type),
                         );

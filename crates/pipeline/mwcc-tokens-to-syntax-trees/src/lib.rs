@@ -3697,6 +3697,29 @@ blr\n\
     }
 
     #[test]
+    fn unsigned_plain_char_keeps_plain_char_cxx_abi_identity() {
+        let source = r#"
+            unsigned hash(const char* text) { return *text; }
+            unsigned explicit_hash(const unsigned char* text) { return *text; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(unit.functions[0].name, "hash__FPCc");
+        assert_eq!(unit.functions[1].name, "explicit_hash__FPCUc");
+        assert_eq!(
+            unit.functions[0].parameters[0].parameter_type,
+            mwcc_syntax_trees::Type::Pointer(mwcc_syntax_trees::Pointee::UnsignedChar)
+        );
+    }
+
+    #[test]
     fn resolves_exact_cxx_overloads_from_dereferenced_argument_types() {
         let source = r#"
             int lower(char value) { return value; }

@@ -557,6 +557,7 @@ impl Parser {
             // mainline/1.3.2+, UNSIGNED on GC/1.3 (build 53) and `-char unsigned`
             // (no `extsb` on read). `signed char`/`unsigned char` below are explicit.
             Token::KeywordChar => {
+                source_override = Some(SourceFundamentalType::PlainChar);
                 if self.char_is_signed {
                     Type::Char
                 } else {

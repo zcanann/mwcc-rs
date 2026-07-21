@@ -394,6 +394,7 @@ pub(super) fn member_type_attribute(
 fn source_fundamental_type(source: SourceFundamentalType) -> Compilation<FundamentalType> {
     Ok(match source {
         SourceFundamentalType::Boolean => FundamentalType::Boolean,
+        SourceFundamentalType::PlainChar => FundamentalType::Char,
         SourceFundamentalType::SignedChar => FundamentalType::SignedChar,
         SourceFundamentalType::UnsignedChar => FundamentalType::UnsignedChar,
         SourceFundamentalType::SignedShort => FundamentalType::SignedShort,

@@ -5,7 +5,9 @@
 //! use CodeWarrior's own mangling rather than the Itanium ABI.
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_syntax_trees::{Expression, Function, Parameter, Pointee, Statement, Type};
+use mwcc_syntax_trees::{
+    Expression, Function, Parameter, Pointee, SourceFundamentalType, Statement, Type,
+};
 use mwcc_tokens::{LocatedToken, Token};
 
 use crate::cxx_analysis_facts::{
@@ -151,6 +153,7 @@ pub(crate) enum ImplicitMemberCall {
 #[derive(Clone)]
 pub(crate) struct CxxParameterType {
     source_type: Type,
+    source_fundamental: Option<SourceFundamentalType>,
     qualified_name: Option<String>,
     is_wchar: bool,
     is_reference: bool,
@@ -201,6 +204,7 @@ impl CxxParameterType {
     ) -> Self {
         Self {
             source_type,
+            source_fundamental: None,
             qualified_name,
             is_wchar,
             is_reference,
@@ -224,6 +228,14 @@ impl CxxParameterType {
             self.pointer_depth = pointer_depth;
             self.pointer_base = pointer_base;
         }
+        self
+    }
+
+    pub(crate) fn with_source_fundamental(
+        mut self,
+        source_fundamental: Option<SourceFundamentalType>,
+    ) -> Self {
+        self.source_fundamental = source_fundamental;
         self
     }
 
@@ -458,6 +470,7 @@ impl Parser {
             self.last_type_was_const,
             self.last_pointer_const,
         )
+        .with_source_fundamental(self.last_source_fundamental.take())
         .with_pointer_shape(self.last_cxx_pointer_depth, self.last_cxx_pointer_base)
         .with_function_type(self.last_cxx_function_type.take())
     }
@@ -3298,7 +3311,10 @@ fn encode_type(parameter: &CxxParameterType) -> Compilation<String> {
         return Ok(code);
     }
     let encoded_source = parameter.pointer_base.unwrap_or(parameter.source_type);
-    let base = match encoded_source {
+    let base = if parameter.source_fundamental == Some(SourceFundamentalType::PlainChar) {
+        "c".to_string()
+    } else {
+        match encoded_source {
         Type::Int => "i".to_string(),
         Type::UnsignedInt => "Ui".to_string(),
         Type::Char => "c".to_string(),
@@ -3322,6 +3338,7 @@ fn encode_type(parameter: &CxxParameterType) -> Compilation<String> {
             return Err(Diagnostic::error(
                 "a struct-valued C++ member parameter needs qualified type mangling (roadmap)",
             ))
+        }
         }
     };
     code.push_str(&base);
