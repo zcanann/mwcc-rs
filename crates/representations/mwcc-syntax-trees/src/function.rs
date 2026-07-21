@@ -388,6 +388,10 @@ pub struct CxxAbiVtableComponent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionSource {
     pub body_start_line: u32,
+    /// Physical source lines for local declarations, aligned with the
+    /// function's local list. Block-hoisted or synthesized locals have no
+    /// single declaration coordinate.
+    pub local_lines: Vec<Option<u32>>,
     /// Source lines for top-level executable statements, in statement order.
     /// The parser only records a coordinate when one source statement maps to
     /// one retained [`Statement`]; complex blocks remain deliberately absent

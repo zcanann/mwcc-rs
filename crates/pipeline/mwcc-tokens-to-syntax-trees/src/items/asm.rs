@@ -15,13 +15,15 @@ impl Parser {
     /// The remainder of the C signature is scanned
     /// loosely — asm codegen names fixed registers, so only the function NAME and
     /// a `void` return matter; parameter types are consumed and discarded. Returns
-    /// `None` for a bodyless prototype (`asm void f(void);`).
+    /// Returns the parsed name alongside `None` for a bodyless prototype
+    /// (`asm void f(void);`).  The caller still needs that name to retain
+    /// declaration attributes and symbol-table ordering.
     pub(crate) fn parse_asm_function(
         &mut self,
         is_static: bool,
         is_weak: bool,
         asm_after_return_type: bool,
-    ) -> Compilation<Option<Function>> {
+    ) -> Compilation<(String, Option<Function>)> {
         let mut return_type = if asm_after_return_type {
             let return_type = self.parse_type()?;
             self.expect(Token::Asm)?;
@@ -151,7 +153,7 @@ impl Parser {
         // A bodyless prototype ends here; there is nothing to define.
         if *self.peek() == Token::Semicolon {
             self.advance();
-            return Ok(None);
+            return Ok((name, None));
         }
         let body_start_line = self.current_location().line;
         self.expect(Token::BraceOpen)?;
@@ -169,27 +171,31 @@ impl Parser {
         self.function_sources
             .push(Some(mwcc_syntax_trees::FunctionSource {
                 body_start_line,
+                local_lines: Vec::new(),
                 statement_lines: Vec::new(),
                 terminal_return_line: None,
                 body_end_line,
             }));
-        Ok(Some(Function {
-            text_deferred: false,
-            peephole_disabled: self.peephole_disabled,
-            return_type,
-            name,
-            is_static,
-            is_weak,
-            parameters: source_parameters,
-            locals: Vec::new(),
-            statements: Vec::new(),
-            guards: Vec::new(),
-            return_expression: None,
-            section: None,
-            preceded_by_asm: false,
-            asm_body: Some(asm_body),
-            force_active: self.force_active,
-        }))
+        Ok((
+            name.clone(),
+            Some(Function {
+                text_deferred: false,
+                peephole_disabled: self.peephole_disabled,
+                return_type,
+                name,
+                is_static,
+                is_weak,
+                parameters: source_parameters,
+                locals: Vec::new(),
+                statements: Vec::new(),
+                guards: Vec::new(),
+                return_expression: None,
+                section: None,
+                preceded_by_asm: false,
+                asm_body: Some(asm_body),
+                force_active: self.force_active,
+            }),
+        ))
     }
 
     fn asm_parameter_type(&self, aggregate_tag: Option<&str>, is_pointer: bool) -> Type {

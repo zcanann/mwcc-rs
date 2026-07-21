@@ -613,6 +613,26 @@ mod tests {
     }
 
     #[test]
+    fn retains_section_attributes_on_asm_prototypes() {
+        let source = r#"
+            __declspec(section ".init") asm void early(void);
+            __declspec(section ".init") void asm later(void* address);
+            void body(void) {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.section_prototypes, ["early", "later"]);
+        assert_eq!(unit.prototypes.len(), 0);
+        assert_eq!(unit.functions.len(), 1);
+    }
+
+    #[test]
     fn resolves_nested_asm_struct_displacements() {
         let source = r#"
             typedef struct Words { unsigned int values[4]; } Words;
@@ -821,6 +841,7 @@ mod tests {
             unit.function_sources,
             [Some(mwcc_syntax_trees::FunctionSource {
                 body_start_line: 2,
+                local_lines: Vec::new(),
                 statement_lines: Vec::new(),
                 terminal_return_line: Some(3),
                 body_end_line: 4,

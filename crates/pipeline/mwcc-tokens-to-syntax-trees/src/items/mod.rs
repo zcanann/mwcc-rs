@@ -1586,11 +1586,20 @@ impl Parser {
             // error-recovery path), never emitted. (The `static`/`__declspec(weak)`
             // qualifiers already ran.)
             if *self.peek() == Token::Asm && !is_inline {
-                if let Some(mut function) = self.parse_asm_function(is_static, is_weak, false)? {
+                let (name, function) = self.parse_asm_function(is_static, is_weak, false)?;
+                if let Some(mut function) = function {
                     function.section = declspec_section
                         .clone()
                         .or_else(|| self.section_functions.get(&function.name).cloned());
                     functions.push(function);
+                } else if let Some(section) = &declspec_section {
+                    if self
+                        .section_functions
+                        .insert(name.clone(), section.clone())
+                        .is_none()
+                    {
+                        self.section_prototype_order.push(name);
+                    }
                 }
                 return Ok(());
             }
@@ -1608,11 +1617,20 @@ impl Parser {
                     })
                     .any(|token| *token == Token::Asm);
             if asm_follows_return_type {
-                if let Some(mut function) = self.parse_asm_function(is_static, is_weak, true)? {
+                let (name, function) = self.parse_asm_function(is_static, is_weak, true)?;
+                if let Some(mut function) = function {
                     function.section = declspec_section
                         .clone()
                         .or_else(|| self.section_functions.get(&function.name).cloned());
                     functions.push(function);
+                } else if let Some(section) = &declspec_section {
+                    if self
+                        .section_functions
+                        .insert(name.clone(), section.clone())
+                        .is_none()
+                    {
+                        self.section_prototype_order.push(name);
+                    }
                 }
                 return Ok(());
             }
@@ -3579,6 +3597,7 @@ impl Parser {
         // statement that begins with a type keyword is a local declaration;
         // `return` ends the body.
         let mut locals = Vec::new();
+        let mut local_lines = Vec::new();
         // Function-scope typedefs temporarily participate in expression parsing, then are restored
         // when this body closes. Keeping the restoration here prevents a local alias from leaking
         // into a later function in the translation unit.
@@ -3628,6 +3647,7 @@ impl Parser {
                 ));
                 continue;
             }
+            let declaration_line = self.current_location().line;
             let mut is_static = false;
             while let Token::Identifier(word) = self.peek() {
                 match word.as_str() {
@@ -3671,6 +3691,7 @@ impl Parser {
                         is_const: false,
                         row_bytes: (_inner > 1).then(|| _inner * (element.width() as u16 / 8)),
                     });
+                    local_lines.push(Some(declaration_line));
                     self.variable_types.insert(name.clone(), element);
                     self.variable_array_bytes
                         .insert(name.clone(), element.width() as u32 / 8 * total as u32);
@@ -3729,6 +3750,7 @@ impl Parser {
                         is_const: false,
                         row_bytes: None,
                     });
+                    local_lines.push(Some(declaration_line));
                     if self.eat_keyword(Token::Comma) {
                         continue;
                     }
@@ -4000,6 +4022,7 @@ impl Parser {
                     row_bytes: (inner_elements > 1)
                         .then(|| inner_elements * (declared_type.width() as u16 / 8)),
                 });
+                local_lines.push(Some(declaration_line));
                 if *self.peek() == Token::Comma {
                     self.advance();
                 } else {
@@ -4283,10 +4306,12 @@ impl Parser {
         }
 
         let mut locals = locals;
+        local_lines.extend(std::iter::repeat(None).take(block_locals.len()));
         locals.extend(block_locals);
         self.function_sources
             .push(Some(mwcc_syntax_trees::FunctionSource {
                 body_start_line,
+                local_lines,
                 statement_lines,
                 terminal_return_line,
                 body_end_line,

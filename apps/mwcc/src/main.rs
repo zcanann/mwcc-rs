@@ -1682,6 +1682,9 @@ fn compile(
     // Captures may already pin a measured phantom list; otherwise the parsed
     // declaration order is the single source of truth for the general path.
     if !is_cxx
+        && behavior.retain_unused_c_inline_asm_symbols
+        && !config.flags.inline_deferred
+        && config.flags.optimization != mwcc_versions::Optimization::O0
         && !unit.plain_inline_asm_helpers.is_empty()
         && machine_functions
             .iter()

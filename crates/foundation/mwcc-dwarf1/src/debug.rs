@@ -16,6 +16,7 @@ pub enum Tag {
     Member = 0x000d,
     CompileUnit = 0x0011,
     StructureType = 0x0013,
+    LocalSubroutine = 0x0014,
     UnionType = 0x0017,
 }
 

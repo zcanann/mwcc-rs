@@ -13,6 +13,7 @@ mod conditional;
 mod conditional_member_callback;
 mod context_callback_handler;
 mod critical_globals;
+mod fixed_address_copy_barrier;
 mod fixed_read;
 mod fixed_rmw;
 mod fixed_rmw_inline_tail;

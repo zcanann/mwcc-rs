@@ -1166,6 +1166,12 @@ impl Generator {
         if self.try_captures(function)? {
             return Ok(());
         }
+        // SDK vector installers retain one fixed destination across a copy,
+        // cache flush, ordering barrier, and instruction-cache invalidate.  The
+        // destination and the symbol-range operands share one measured schedule.
+        if self.try_fixed_address_copy_barrier(function)? {
+            return Ok(());
+        }
         if self.try_guarded_virtual_forwarder(function)? {
             return Ok(());
         }

@@ -4,6 +4,7 @@ mod captures;
 mod data;
 mod functions;
 mod simple_void_functions;
+mod vector_installers;
 
 use super::convert_relocations;
 use mwcc_core::{Compilation, Diagnostic};
@@ -41,6 +42,9 @@ enum MeasuredShape {
     /// Void functions that are empty or contain one measured direct-call
     /// action, with optimized parameter locations and statement line rows.
     SimpleVoidFunctions,
+    /// A local no-frame exception vector followed by the exported cache-aware
+    /// vector installer that copies it to a fixed address.
+    VectorInstaller,
 }
 
 pub(super) fn lower(
@@ -119,6 +123,12 @@ pub(super) fn lower(
         }
     } else if shape == MeasuredShape::SimpleVoidFunctions {
         line_records.extend(simple_void_functions::line_records(
+            &source_functions,
+            machine_functions,
+            &layout,
+        )?);
+    } else if shape == MeasuredShape::VectorInstaller {
+        line_records.extend(vector_installers::line_records(
             &source_functions,
             machine_functions,
             &layout,
@@ -252,6 +262,19 @@ pub(super) fn lower(
         return finish(line, records, DebugLayout::BeforeDataGrouped);
     }
 
+    if shape == MeasuredShape::VectorInstaller {
+        let mut records: Vec<_> = entries.into_iter().map(DebugRecord::Entry).collect();
+        records.extend(vector_installers::records(
+            &source_functions
+                .iter()
+                .map(|(function, _)| *function)
+                .collect::<Vec<_>>(),
+            &layout,
+            first_function_id,
+        )?);
+        return finish(line, records, DebugLayout::BeforeDataGrouped);
+    }
+
     for (index, global) in globals.iter().enumerate() {
         let next = if index + 1 < globals.len() {
             DebugEntryId(first_global_id.0 + index as u32 + 1)
@@ -363,6 +386,9 @@ pub(super) fn lower(
         }
         MeasuredShape::SimpleVoidFunctions => {
             unreachable!("simple void-function units return before legacy function records")
+        }
+        MeasuredShape::VectorInstaller => {
+            unreachable!("vector-installer units return before legacy function records")
         }
     }
     finish(line, records, DebugLayout::BeforeDataGrouped)
@@ -483,6 +509,13 @@ fn classify_shape(
 
     if globals.is_empty() && simple_void_functions::matches(unit, machine_functions) {
         return Ok(MeasuredShape::SimpleVoidFunctions);
+    }
+
+    if globals.is_empty()
+        && build.version == (2, 3, 3)
+        && vector_installers::matches(unit, machine_functions)
+    {
+        return Ok(MeasuredShape::VectorInstaller);
     }
 
     Err(Diagnostic::error(

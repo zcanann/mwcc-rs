@@ -318,7 +318,6 @@ mod osm_initqueue;
 mod osm_jam;
 mod osm_receive;
 mod osm_send;
-mod osy_initsc;
 mod osy_resetsw;
 mod p2_eexp;
 mod p2_elog;
@@ -1019,7 +1018,6 @@ impl Generator {
             || self.try_cck_checkex(function)?
             || self.try_cck_check(function)?
             || self.try_osy_resetsw(function)?
-            || self.try_osy_initsc(function)?
             || self.try_ose_init(function)?
             || self.try_ose_wait(function)?
             || self.try_ose_trywait(function)?

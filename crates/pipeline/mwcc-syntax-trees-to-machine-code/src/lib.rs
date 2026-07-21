@@ -332,14 +332,19 @@ pub fn lower_function(
             .collect(),
         descending_allocation_top: None,
         skipped_inline_names: skipped_inline_names.clone(),
-        // C++ allocation operators are compiler-known runtime entry points even
-        // when the preprocessed source does not retain an explicit declaration.
-        // Treat them as prototyped so their undefined symbols are created in
-        // the declaration/reference run, as real mwcc does.
+        // Allocation operators and the standard block-copy intrinsic are
+        // compiler-known runtime entry points even when the preprocessed source
+        // does not retain an explicit declaration. Treat them as prototyped so
+        // their undefined symbols are created in the declaration/reference run,
+        // as real mwcc does.
         prototyped_names: prototyped_names
             .iter()
             .cloned()
-            .chain(["__nw__FUl".to_owned(), "__nwa__FUl".to_owned()])
+            .chain([
+                "__nw__FUl".to_owned(),
+                "__nwa__FUl".to_owned(),
+                "memcpy".to_owned(),
+            ])
             .collect(),
         weak_materialized_names: weak_materialized_names.clone(),
         call_parameter_types: call_parameter_types.clone(),
