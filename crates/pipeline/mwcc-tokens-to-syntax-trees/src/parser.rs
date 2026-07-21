@@ -242,6 +242,12 @@ pub(crate) struct Parser {
     /// header-only class declarations resolve without pretending their fields
     /// were parsed.
     pub(crate) cxx_dispatch_tables: HashMap<String, crate::cxx::RecoveredCxxDispatchTable>,
+    /// Classes known from their declarations to have a virtual destructor.
+    /// Kept separate from recoverable layout so implicit derived declarations
+    /// remain observable even when a large header's object layout defers.
+    pub(crate) cxx_virtual_destructor_classes: std::collections::HashSet<String>,
+    /// Nested-class token positions already visited by RTTI syntax accounting.
+    pub(crate) counted_nested_virtual_positions: std::collections::HashSet<usize>,
     /// Virtual slots declared by primary class templates whose zero-offset
     /// vptr is provable without instantiating a concrete object layout.
     pub(crate) cxx_template_virtual_methods:

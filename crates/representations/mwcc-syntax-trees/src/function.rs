@@ -249,6 +249,10 @@ pub struct CxxInlineOrdinalFacts {
     /// class-analysis walk whose weights differ from executable functions.
     pub virtual_method_declarations: usize,
     pub virtual_destructor_declarations: usize,
+    /// Virtual destructor declarations in a class whose primary base already
+    /// has a virtual destructor. Non-IPA class analysis emits additional
+    /// deleting-destructor work for this inheritance edge.
+    pub inherited_virtual_destructor_declarations: usize,
     pub direct_calls: usize,
     /// Control-flow labels inside dropped in-class definitions, expressed in
     /// the mainline counter's native units (`if` = 2, loop = 4/5, etc.).

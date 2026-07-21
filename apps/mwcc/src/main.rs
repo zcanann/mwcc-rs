@@ -1594,6 +1594,8 @@ fn compile(
             cxx_rtti_names::AnalysisWeights {
                 virtual_method: behavior.cxx_rtti_virtual_method_label_weight,
                 virtual_destructor: behavior.cxx_rtti_virtual_destructor_label_weight,
+                inherited_virtual_destructor: behavior
+                    .cxx_rtti_inherited_virtual_destructor_label_bump,
                 initial_virtual_discount: behavior.cxx_rtti_initial_virtual_label_discount,
             },
             analysis_counter_floor,

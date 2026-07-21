@@ -1037,6 +1037,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         6
     }
 
+    fn cxx_rtti_inherited_virtual_destructor_label_bump(&self, _whole_file: bool) -> u8 {
+        2
+    }
+
     fn cxx_rtti_initial_virtual_label_discount(&self, _whole_file: bool) -> u8 {
         4
     }
@@ -1170,6 +1174,10 @@ impl CodegenProfile for Gc41Build51213 {
         if whole_file { 7 } else { 9 }
     }
 
+    fn cxx_rtti_inherited_virtual_destructor_label_bump(&self, whole_file: bool) -> u8 {
+        if whole_file { 0 } else { 4 }
+    }
+
     fn fixed_address_parameterized_rmw_style(&self) -> FixedAddressParameterizedRmwStyle {
         FixedAddressParameterizedRmwStyle::Modern4x
     }
@@ -1206,6 +1214,10 @@ impl CodegenProfile for Wii43Build145 {
 
     fn cxx_rtti_virtual_destructor_label_weight(&self, whole_file: bool) -> u8 {
         if whole_file { 7 } else { 9 }
+    }
+
+    fn cxx_rtti_inherited_virtual_destructor_label_bump(&self, whole_file: bool) -> u8 {
+        if whole_file { 0 } else { 4 }
     }
 
     fn cxx_rtti_inline_definition_label_bump(&self) -> u8 {

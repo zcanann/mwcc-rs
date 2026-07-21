@@ -8,62 +8,12 @@ use mwcc_core::{Compilation, Diagnostic};
 use mwcc_syntax_trees::{Expression, Function, Parameter, Pointee, Statement, Type};
 use mwcc_tokens::{LocatedToken, Token};
 
+use crate::cxx_analysis_facts::{
+    function_declaration_virtuality, inline_control_flow_labels,
+    nested_explicit_virtual_declarations,
+};
 use crate::items::{pointee_of, type_alignment, type_size};
 use crate::parser::{Parser, StructField, StructLayout};
-
-/// Anonymous-label cost of control flow in a dropped in-class definition.
-/// Keep this syntax-only: build profiles decide later whether this mainline
-/// accounting family applies.
-fn inline_control_flow_labels(tokens: &[Token]) -> usize {
-    let mut bump = 0;
-    let mut condition_pending = false;
-    let mut condition_depth = 0i32;
-    for token in tokens {
-        match token {
-            Token::ParenOpen if condition_pending || condition_depth > 0 => {
-                condition_depth += 1;
-                condition_pending = false;
-            }
-            Token::ParenClose if condition_depth > 0 => condition_depth -= 1,
-            Token::KeywordIf => {
-                bump += 2;
-                condition_pending = true;
-            }
-            Token::KeywordWhile => {
-                bump += 4;
-                condition_pending = true;
-            }
-            Token::KeywordFor => {
-                bump += 5;
-                condition_pending = true;
-            }
-            Token::Identifier(word)
-                if matches!(word.as_str(), "else" | "switch" | "case" | "default") =>
-            {
-                bump += 1;
-            }
-            Token::Identifier(word) if word == "goto" => bump += 1,
-            Token::PipePipe | Token::AmpersandAmpersand if condition_depth > 0 => bump += 1,
-            _ => {}
-        }
-    }
-    bump
-}
-
-/// Classify one top-level class member for RTTI analysis accounting. This is a
-/// syntax fact and deliberately does not require recoverable object layout.
-fn virtual_declaration_is_destructor(tokens: &[Token], start: usize) -> Option<bool> {
-    let end = tokens[start..]
-        .iter()
-        .position(|token| matches!(token, Token::Semicolon | Token::BraceOpen))?
-        + start;
-    let declaration = &tokens[start..end];
-    let is_virtual = declaration
-        .iter()
-        .any(|token| matches!(token, Token::Identifier(word) if word == "virtual"));
-    let is_function = declaration.iter().any(|token| token == &Token::ParenOpen);
-    (is_virtual && is_function).then(|| declaration.iter().any(|token| token == &Token::Tilde))
-}
 
 /// The C++-only information that a plain C struct layout cannot retain.
 /// Declaration order controls constructor initialization order, while base
@@ -856,6 +806,7 @@ impl Parser {
         // Secondary-base calls and inherited virtual dispatch still defer.
         let header = &self.tokens[start + 2..index];
         let mut dispatch = RecoveredCxxDispatchTable::default();
+        let mut inherits_virtual_destructor = false;
         if let Some(colon) = header.iter().position(|token| *token == Token::Colon) {
             let inheritance = &header[colon + 1..];
             let multiple = inheritance.iter().any(|token| token == &Token::Comma);
@@ -874,6 +825,10 @@ impl Parser {
                 let qualified_base = self
                     .resolve_scoped_cxx_class_name(base)
                     .unwrap_or_else(|| self.qualify_cxx_class_name(base));
+                inherits_virtual_destructor = self
+                    .cxx_virtual_destructor_classes
+                    .contains(&qualified_base)
+                    || self.cxx_virtual_destructor_classes.contains(base);
                 if !virtual_base {
                     self.cxx_primary_bases
                         .insert(class.clone(), qualified_base.clone());
@@ -935,14 +890,25 @@ impl Parser {
                     if matches!(access.as_str(), "public" | "private" | "protected"))
                     && self.tokens.get(index + 1) == Some(&Token::Colon);
                 if !is_access_label {
-                    if let Some(is_destructor) =
-                        virtual_declaration_is_destructor(&self.tokens, index)
+                    if let Some((explicitly_virtual, is_destructor)) =
+                        function_declaration_virtuality(&self.tokens, index)
                     {
-                        if is_destructor {
-                            self.cxx_inline_ordinal_facts
-                                .virtual_destructor_declarations += 1;
-                        } else {
-                            self.cxx_inline_ordinal_facts.virtual_method_declarations += 1;
+                        let is_virtual = explicitly_virtual
+                            || (is_destructor && inherits_virtual_destructor);
+                        if is_virtual {
+                            if is_destructor {
+                                self.cxx_inline_ordinal_facts
+                                    .virtual_destructor_declarations += 1;
+                                if inherits_virtual_destructor {
+                                    self.cxx_inline_ordinal_facts
+                                        .inherited_virtual_destructor_declarations += 1;
+                                }
+                                self.cxx_virtual_destructor_classes
+                                    .insert(class.clone());
+                            } else {
+                                self.cxx_inline_ordinal_facts
+                                    .virtual_method_declarations += 1;
+                            }
                         }
                     }
                 }
@@ -1014,6 +980,14 @@ impl Parser {
                 _ => {}
             }
             if nested_class {
+                let nested = nested_explicit_virtual_declarations(
+                    &self.tokens,
+                    index,
+                    &mut self.counted_nested_virtual_positions,
+                );
+                self.cxx_inline_ordinal_facts.virtual_method_declarations += nested.0;
+                self.cxx_inline_ordinal_facts
+                    .virtual_destructor_declarations += nested.1;
                 self.capture_nested_cxx_class_layout(index, &class);
             }
             if nested_enum {
@@ -1482,6 +1456,7 @@ impl Parser {
             is_const_member,
         )) = recovered
         {
+            let explicitly_virtual = is_virtual;
             let inherited_virtual = self
                 .cxx_dispatch_tables
                 .get(class)
@@ -1492,6 +1467,9 @@ impl Parser {
                     })
                 })
                 .cloned();
+            if !explicitly_virtual && inherited_virtual.is_some() {
+                self.cxx_inline_ordinal_facts.virtual_method_declarations += 1;
+            }
             let is_virtual = is_virtual || inherited_virtual.is_some();
             if is_virtual {
                 {

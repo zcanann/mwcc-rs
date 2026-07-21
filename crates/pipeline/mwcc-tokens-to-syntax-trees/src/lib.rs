@@ -10,6 +10,7 @@ use mwcc_tokens::{LocatedToken, SourceLocation, Token};
 use std::collections::HashMap;
 
 mod cxx;
+mod cxx_analysis_facts;
 mod cxx_rtti;
 mod expressions;
 mod items;
@@ -168,6 +169,8 @@ pub fn parse_located_translation_unit_with_enum_min(
         cxx_member_template_forwarders: HashMap::new(),
         cxx_template_forwarder_specializations: HashMap::new(),
         cxx_dispatch_tables: HashMap::new(),
+        cxx_virtual_destructor_classes: std::collections::HashSet::new(),
+        counted_nested_virtual_positions: std::collections::HashSet::new(),
         cxx_template_virtual_methods: HashMap::new(),
         incomplete_cxx_dispatch: std::collections::HashSet::new(),
         template_aliases: HashMap::new(),
@@ -1659,9 +1662,100 @@ blr\n\
                 virtual_destructors: 1,
                 virtual_method_declarations: 0,
                 virtual_destructor_declarations: 1,
+                inherited_virtual_destructor_declarations: 0,
                 direct_calls: 1,
                 control_flow_labels: 0,
             }
+        );
+    }
+
+    #[test]
+    fn rtti_analysis_counts_implicit_overrides_and_nested_classes() {
+        let override_source = r#"
+            class Base {
+            public:
+                virtual int value();
+            };
+            class Derived : public Base {
+            public:
+                int value();
+            };
+            int Base::value() { return 1; }
+            int Derived::value() { return 2; }
+        "#;
+        let override_unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(override_source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(
+            override_unit
+                .cxx_inline_ordinal_facts
+                .virtual_method_declarations,
+            2
+        );
+
+        let nested_source = r#"
+            class Outer {
+            public:
+                class Nested {
+                public:
+                    virtual int value();
+                };
+            };
+            int Outer::Nested::value() { return 1; }
+        "#;
+        let nested_unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(nested_source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(
+            nested_unit
+                .cxx_inline_ordinal_facts
+                .virtual_method_declarations,
+            1
+        );
+    }
+
+    #[test]
+    fn rtti_analysis_distinguishes_inherited_virtual_destructors() {
+        let source = r#"
+            class Base {
+            public:
+                virtual ~Base();
+            };
+            class Derived : public Base {
+            public:
+                ~Derived();
+            };
+            Base::~Base() {}
+            Derived::~Derived() {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.cxx_inline_ordinal_facts
+                .virtual_destructor_declarations,
+            2
+        );
+        assert_eq!(
+            unit.cxx_inline_ordinal_facts
+                .inherited_virtual_destructor_declarations,
+            1
         );
     }
 

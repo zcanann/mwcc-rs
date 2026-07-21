@@ -672,6 +672,7 @@ pub struct Behavior {
     pub cxx_inline_ipa_call_label_bump: u8,
     pub cxx_rtti_virtual_method_label_weight: u8,
     pub cxx_rtti_virtual_destructor_label_weight: u8,
+    pub cxx_rtti_inherited_virtual_destructor_label_bump: u8,
     pub cxx_rtti_initial_virtual_label_discount: u8,
     pub cxx_rtti_inline_definition_label_bump: u8,
     /// Whether initialized `T a[] = ...` objects bypass small-data routing.
@@ -958,6 +959,12 @@ impl Behavior {
                 .build
                 .profile
                 .cxx_rtti_virtual_destructor_label_weight(
+                    config.flags.whole_file_optimization_enabled(),
+                ),
+            cxx_rtti_inherited_virtual_destructor_label_bump: config
+                .build
+                .profile
+                .cxx_rtti_inherited_virtual_destructor_label_bump(
                     config.flags.whole_file_optimization_enabled(),
                 ),
             cxx_rtti_initial_virtual_label_discount: config
@@ -1689,9 +1696,14 @@ mod tests {
         assert_eq!(gc41.cxx_inline_ipa_call_label_bump, 0);
         assert_eq!(mainline.cxx_rtti_virtual_method_label_weight, 4);
         assert_eq!(mainline.cxx_rtti_virtual_destructor_label_weight, 6);
+        assert_eq!(
+            mainline.cxx_rtti_inherited_virtual_destructor_label_bump,
+            2
+        );
         assert_eq!(mainline.cxx_rtti_initial_virtual_label_discount, 4);
         assert_eq!(gc41.cxx_rtti_virtual_method_label_weight, 5);
         assert_eq!(gc41.cxx_rtti_virtual_destructor_label_weight, 9);
+        assert_eq!(gc41.cxx_rtti_inherited_virtual_destructor_label_bump, 4);
         assert_eq!(mainline.call_dispatcher_hidden_label_bump, 0);
         assert_eq!(gc41.call_dispatcher_hidden_label_bump, 3);
 
@@ -1718,6 +1730,7 @@ mod tests {
         assert_eq!(ipa.cxx_inline_ipa_call_label_bump, 1);
         assert_eq!(ipa.cxx_rtti_virtual_method_label_weight, 4);
         assert_eq!(ipa.cxx_rtti_virtual_destructor_label_weight, 7);
+        assert_eq!(ipa.cxx_rtti_inherited_virtual_destructor_label_bump, 0);
         assert_eq!(ipa.folded_float_guard_label_bump, 4);
         assert_eq!(
             ipa.function_ordinal_accounting_style,
