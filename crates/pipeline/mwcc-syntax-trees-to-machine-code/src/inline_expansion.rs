@@ -277,7 +277,7 @@ impl InlineBodySet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mwcc_syntax_trees::{BinaryOperator, Parameter, Type};
+    use mwcc_syntax_trees::{BinaryOperator, Parameter, Pointee, Type};
 
     fn function(name: &str, parameters: Vec<Parameter>, statements: Vec<Statement>) -> Function {
         Function {
@@ -365,6 +365,57 @@ mod tests {
                 value: Expression::Variable(name), ..
             } if name == "data"
         ));
+    }
+
+    #[test]
+    fn expands_a_stable_adjusted_this_argument() {
+        let member = || Expression::Member {
+            base: Box::new(Expression::Variable("this".into())),
+            offset: 4,
+            member_type: Type::UnsignedInt,
+            index_stride: None,
+        };
+        let setter = function(
+            "enable",
+            vec![Parameter {
+                parameter_type: Type::StructPointer { element_size: 8 },
+                name: "this".into(),
+            }],
+            vec![Statement::Store {
+                target: member(),
+                value: Expression::Binary {
+                    operator: BinaryOperator::BitOr,
+                    left: Box::new(member()),
+                    right: Box::new(Expression::IntegerLiteral(2)),
+                },
+            }],
+        );
+        let caller = function(
+            "caller",
+            vec![Parameter {
+                parameter_type: Type::StructPointer { element_size: 112 },
+                name: "this".into(),
+            }],
+            vec![Statement::Expression(Expression::Call {
+                name: "enable".into(),
+                arguments: vec![Expression::MemberAddress {
+                    base: Box::new(Expression::Variable("this".into())),
+                    offset: 104,
+                    element: Pointee::UnsignedChar,
+                    index_stride: None,
+                }],
+            })],
+        );
+
+        let expanded = InlineBodySet::analyze(&[setter])
+            .expand_calls(&caller)
+            .expect("an adjusted stable object pointer should compose");
+        assert!(matches!(expanded.statements.as_slice(), [
+            Statement::Store {
+                target: Expression::Member { base, offset: 4, .. },
+                ..
+            }
+        ] if matches!(base.as_ref(), Expression::MemberAddress { offset: 104, .. })));
     }
 
     #[test]

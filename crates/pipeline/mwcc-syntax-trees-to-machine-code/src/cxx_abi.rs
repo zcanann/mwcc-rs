@@ -8,7 +8,7 @@
 use mwcc_machine_code::{
     FrameInfo, Instruction, MachineFunction, Relocation, RelocationKind, RelocationTarget,
 };
-use mwcc_syntax_trees::{Expression, Function, GlobalDeclaration, Statement, Type};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Function, GlobalDeclaration, Statement, Type};
 use mwcc_versions::{Behavior, CompilerConfig, FrameConvention};
 
 /// Lower a constructor composed from non-virtual base calls, a complete vtable
@@ -64,19 +64,22 @@ pub(crate) fn lower_composed_constructor(
     if vptrs.iter().any(|(name, _, _)| name != vtable) {
         return None;
     }
-    let tail_actions: Vec<ConstructorTail> = function.statements[vptr_end..]
-        .iter()
-        .map(|statement| {
-            parse_call_valued_member_store(statement)
-                .or_else(|| {
-                    parse_adjusted_call_statement(statement)
-                        .map(|(callee, adjustment)| ConstructorTail::Call(callee, adjustment))
-                })
-        })
-        .collect::<Option<_>>()?;
-    if tail_actions.is_empty() {
+    let tail_statements = &function.statements[vptr_end..];
+    let tail_actions = parse_constructor_tail_actions(tail_statements)?;
+    if tail_actions.is_empty()
+        || tail_actions[..tail_actions.len() - 1]
+            .iter()
+            .any(|action| matches!(action, ConstructorTail::BitOr { .. }))
+    {
         return None;
     }
+    let merged_bit_or = match tail_actions.as_slice() {
+        [ConstructorTail::BitOr {
+            target_offset,
+            mask,
+        }] => Some((*target_offset, *mask)),
+        _ => None,
+    };
 
     let mut output = MachineFunction::new(function.name.clone());
     let mut relocations = Vec::new();
@@ -119,91 +122,186 @@ pub(crate) fn lower_composed_constructor(
         symbol_order.push(callee.clone());
     }
 
-    let vtable_register = u8::try_from(vptrs.len() + 2).ok()?;
-    let vtable_hi = output.instructions.len();
-    output
-        .instructions
-        .push(Instruction::load_immediate_shifted(vtable_register, 0));
-    // MWCC fills the address-materialization latency with the first trailing
-    // call's adjusted `this` value.
-    emit_adjusted_this(&mut output.instructions, tail_actions[0].adjustment())?;
-    let vtable_lo = output.instructions.len();
-    output.instructions.push(Instruction::AddImmediate {
-        d: vtable_register,
-        a: vtable_register,
-        immediate: 0,
-    });
-    relocations.extend([
-        Relocation {
-            instruction_index: vtable_hi,
-            kind: RelocationKind::Addr16Ha,
-            target: RelocationTarget::External(vtable.clone()),
-        },
-        Relocation {
-            instruction_index: vtable_lo,
-            kind: RelocationKind::Addr16Lo,
-            target: RelocationTarget::External(vtable.clone()),
-        },
-    ]);
-    symbol_order.push(vtable.clone());
-
-    let mut vptr_registers = vec![vtable_register];
-    for (index, (_, addend, _)) in vptrs.iter().enumerate().skip(1) {
-        let register = if vtable_register - index as u8 == 3 {
-            0
-        } else {
-            vtable_register - index as u8
-        };
-        let immediate = i16::try_from(*addend).ok()?;
-        output.instructions.push(Instruction::AddImmediate {
-            d: register,
-            a: vtable_register,
-            immediate,
-        });
-        vptr_registers.push(register);
-        if index == 1 {
-            output.instructions.push(Instruction::StoreWord {
-                s: vptr_registers[0],
-                a: 31,
-                offset: i16::try_from(vptrs[0].2).ok()?,
-            });
+    if let Some((member_offset, mask)) = merged_bit_or {
+        // GC 4.1 keeps the merged read/modify/write value in r0 while it builds
+        // a four-component complete vtable group in r7..r4. The two source
+        // setters become one load/OR/store, with independent address work
+        // filling the load and `lis` latency slots.
+        if vptrs.len() != 4 {
+            return None;
         }
-    }
-    for (index, (_, _, object_offset)) in vptrs.iter().enumerate().skip(1) {
-        output.instructions.push(Instruction::StoreWord {
-            s: vptr_registers[index],
+        output.instructions.push(Instruction::LoadWord {
+            d: 0,
             a: 31,
-            offset: i16::try_from(*object_offset).ok()?,
+            offset: i16::try_from(member_offset).ok()?,
         });
-    }
+        let vtable_register = 7;
+        let vtable_hi = output.instructions.len();
+        output
+            .instructions
+            .push(Instruction::load_immediate_shifted(vtable_register, 0));
+        let vtable_lo = output.instructions.len();
+        output.instructions.push(Instruction::AddImmediate {
+            d: vtable_register,
+            a: vtable_register,
+            immediate: 0,
+        });
+        output.instructions.push(Instruction::Or { a: 3, s: 31, b: 31 });
+        relocations.extend([
+            Relocation {
+                instruction_index: vtable_hi,
+                kind: RelocationKind::Addr16Ha,
+                target: RelocationTarget::External(vtable.clone()),
+            },
+            Relocation {
+                instruction_index: vtable_lo,
+                kind: RelocationKind::Addr16Lo,
+                target: RelocationTarget::External(vtable.clone()),
+            },
+        ]);
+        symbol_order.push(vtable.clone());
 
-    for (index, action) in tail_actions.iter().enumerate() {
-        if index != 0 {
-            emit_adjusted_this(&mut output.instructions, action.adjustment())?;
+        let mut vptr_registers = vec![vtable_register];
+        for (index, (_, addend, _)) in vptrs.iter().enumerate().skip(1) {
+            let register = vtable_register - index as u8;
+            output.instructions.push(Instruction::AddImmediate {
+                d: register,
+                a: vtable_register,
+                immediate: i16::try_from(*addend).ok()?,
+            });
+            vptr_registers.push(register);
+            if index == 1 {
+                output.instructions.push(Instruction::OrImmediate {
+                    a: 0,
+                    s: 0,
+                    immediate: mask,
+                });
+            }
         }
-        let callee = action.callee();
-        let instruction_index = output.instructions.len();
-        output.instructions.push(Instruction::BranchAndLink {
-            target: callee.to_string(),
-        });
-        relocations.push(Relocation {
-            instruction_index,
-            kind: RelocationKind::Rel24,
-            target: RelocationTarget::External(callee.to_string()),
-        });
-        if let ConstructorTail::StoreCall { target_offset, .. } = action {
+        for (index, (_, _, object_offset)) in vptrs.iter().enumerate() {
             output.instructions.push(Instruction::StoreWord {
-                s: 3,
+                s: vptr_registers[index],
                 a: 31,
-                offset: i16::try_from(*target_offset).ok()?,
+                offset: i16::try_from(*object_offset).ok()?,
             });
         }
-        referenced_functions.push(callee.to_string());
-        symbol_order.push(callee.to_string());
+        output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 31,
+            offset: i16::try_from(member_offset).ok()?,
+        });
+    } else {
+        let vtable_register = u8::try_from(vptrs.len() + 2).ok()?;
+        let vtable_hi = output.instructions.len();
+        output
+            .instructions
+            .push(Instruction::load_immediate_shifted(vtable_register, 0));
+        // MWCC fills the address-materialization latency with the first trailing
+        // call's adjusted `this` value.
+        emit_adjusted_this(&mut output.instructions, tail_actions[0].adjustment()?)?;
+        let vtable_lo = output.instructions.len();
+        output.instructions.push(Instruction::AddImmediate {
+            d: vtable_register,
+            a: vtable_register,
+            immediate: 0,
+        });
+        relocations.extend([
+            Relocation {
+                instruction_index: vtable_hi,
+                kind: RelocationKind::Addr16Ha,
+                target: RelocationTarget::External(vtable.clone()),
+            },
+            Relocation {
+                instruction_index: vtable_lo,
+                kind: RelocationKind::Addr16Lo,
+                target: RelocationTarget::External(vtable.clone()),
+            },
+        ]);
+        symbol_order.push(vtable.clone());
+
+        let mut vptr_registers = vec![vtable_register];
+        for (index, (_, addend, _)) in vptrs.iter().enumerate().skip(1) {
+            let register = if vtable_register - index as u8 == 3 {
+                0
+            } else {
+                vtable_register - index as u8
+            };
+            let immediate = i16::try_from(*addend).ok()?;
+            output.instructions.push(Instruction::AddImmediate {
+                d: register,
+                a: vtable_register,
+                immediate,
+            });
+            vptr_registers.push(register);
+            if index == 1 {
+                output.instructions.push(Instruction::StoreWord {
+                    s: vptr_registers[0],
+                    a: 31,
+                    offset: i16::try_from(vptrs[0].2).ok()?,
+                });
+            }
+        }
+        for (index, (_, _, object_offset)) in vptrs.iter().enumerate().skip(1) {
+            output.instructions.push(Instruction::StoreWord {
+                s: vptr_registers[index],
+                a: 31,
+                offset: i16::try_from(*object_offset).ok()?,
+            });
+        }
+
+        for (index, action) in tail_actions.iter().enumerate() {
+            if let ConstructorTail::BitOr {
+                target_offset,
+                mask,
+            } = action
+            {
+                output.instructions.push(Instruction::LoadWord {
+                    d: 0,
+                    a: 31,
+                    offset: i16::try_from(*target_offset).ok()?,
+                });
+                output.instructions.push(Instruction::Or { a: 3, s: 31, b: 31 });
+                output.instructions.push(Instruction::OrImmediate {
+                    a: 0,
+                    s: 0,
+                    immediate: *mask,
+                });
+                output.instructions.push(Instruction::StoreWord {
+                    s: 0,
+                    a: 31,
+                    offset: i16::try_from(*target_offset).ok()?,
+                });
+                continue;
+            }
+            if index != 0 {
+                emit_adjusted_this(&mut output.instructions, action.adjustment()?)?;
+            }
+            let callee = action.callee();
+            let instruction_index = output.instructions.len();
+            output.instructions.push(Instruction::BranchAndLink {
+                target: callee.to_string(),
+            });
+            relocations.push(Relocation {
+                instruction_index,
+                kind: RelocationKind::Rel24,
+                target: RelocationTarget::External(callee.to_string()),
+            });
+            if let ConstructorTail::StoreCall { target_offset, .. } = action {
+                output.instructions.push(Instruction::StoreWord {
+                    s: 3,
+                    a: 31,
+                    offset: i16::try_from(*target_offset).ok()?,
+                });
+            }
+            referenced_functions.push(callee.to_string());
+            symbol_order.push(callee.to_string());
+        }
+        if !matches!(tail_actions.last(), Some(ConstructorTail::BitOr { .. })) {
+            output.instructions.push(Instruction::Or { a: 3, s: 31, b: 31 });
+        }
     }
 
     output.instructions.extend([
-        Instruction::Or { a: 3, s: 31, b: 31 },
         Instruction::LoadWord {
             d: 31,
             a: 1,
@@ -332,6 +430,70 @@ fn parse_call_valued_member_store(statement: &Statement) -> Option<ConstructorTa
     })
 }
 
+/// Parse the measured constructor-tail subset and merge adjacent bit setters
+/// on the same complete-object member. Keeping calls and updates as typed
+/// actions lets scheduling depend on semantics rather than callee names.
+fn parse_constructor_tail_actions(statements: &[Statement]) -> Option<Vec<ConstructorTail>> {
+    let mut actions = Vec::new();
+    for statement in statements {
+        if let Some(action) = parse_call_valued_member_store(statement) {
+            actions.push(action);
+            continue;
+        }
+        if let Some((callee, adjustment)) = parse_adjusted_call_statement(statement) {
+            actions.push(ConstructorTail::Call(callee, adjustment));
+            continue;
+        }
+        let (target_offset, mask) = parse_member_bit_or(statement)?;
+        if let Some(ConstructorTail::BitOr {
+            target_offset: previous_offset,
+            mask: previous_mask,
+        }) = actions.last_mut()
+        {
+            if *previous_offset != target_offset {
+                return None;
+            }
+            *previous_mask |= mask;
+        } else {
+            actions.push(ConstructorTail::BitOr {
+                target_offset,
+                mask,
+            });
+        }
+    }
+    Some(actions)
+}
+
+fn parse_member_bit_or(statement: &Statement) -> Option<(u32, u16)> {
+    let Statement::Store { target, value } = statement else {
+        return None;
+    };
+    let offset = complete_object_member_offset(target)?;
+    let Expression::Binary {
+        operator: BinaryOperator::BitOr,
+        left,
+        right,
+    } = value
+    else {
+        return None;
+    };
+    if complete_object_member_offset(left)? != offset {
+        return None;
+    }
+    let Expression::IntegerLiteral(value) = right.as_ref() else {
+        return None;
+    };
+    let immediate = u16::try_from(*value).ok()?;
+    (immediate != 0).then_some((offset, immediate))
+}
+
+fn complete_object_member_offset(expression: &Expression) -> Option<u32> {
+    let Expression::Member { base, offset, .. } = expression else {
+        return None;
+    };
+    this_adjustment(base)?.checked_add(*offset)
+}
+
 enum ConstructorTail {
     Call(String, u32),
     StoreCall {
@@ -339,18 +501,24 @@ enum ConstructorTail {
         callee: String,
         adjustment: u32,
     },
+    BitOr {
+        target_offset: u32,
+        mask: u16,
+    },
 }
 
 impl ConstructorTail {
     fn callee(&self) -> &str {
         match self {
             Self::Call(callee, _) | Self::StoreCall { callee, .. } => callee,
+            Self::BitOr { .. } => unreachable!("a bit update has no callee"),
         }
     }
 
-    fn adjustment(&self) -> u32 {
+    fn adjustment(&self) -> Option<u32> {
         match self {
-            Self::Call(_, adjustment) | Self::StoreCall { adjustment, .. } => *adjustment,
+            Self::Call(_, adjustment) | Self::StoreCall { adjustment, .. } => Some(*adjustment),
+            Self::BitOr { .. } => None,
         }
     }
 }

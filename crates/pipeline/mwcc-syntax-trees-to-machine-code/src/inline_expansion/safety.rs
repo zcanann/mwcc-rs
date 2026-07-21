@@ -39,6 +39,11 @@ fn stable_argument(expression: &Expression, stable_variables: &HashSet<String>) 
     match expression {
         Expression::Variable(name) => stable_variables.contains(name),
         Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) => true,
+        // An inherited non-virtual member call passes `this + base_offset`.
+        // This address calculation is as stable and side-effect-free as its
+        // complete-object base, so retained inline bodies may substitute it
+        // without inventing a temporary or changing evaluation count.
+        Expression::MemberAddress { base, .. } => stable_argument(base, stable_variables),
         _ => false,
     }
 }

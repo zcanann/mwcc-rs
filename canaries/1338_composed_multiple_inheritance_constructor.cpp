@@ -44,6 +44,8 @@ private:
 class GroupPass {
 public:
     virtual ~GroupPass();
+    void EnableWater() { group |= 2; }
+    void EnableNormal() { group |= 1; }
 
 private:
     unsigned int group;
@@ -69,6 +71,18 @@ public:
     virtual ~CameraCheck();
 };
 
+class NormalWaterCameraCheck : public CameraCheck {
+public:
+    NormalWaterCameraCheck();
+    virtual ~NormalWaterCameraCheck();
+};
+
+class ArrowCheck : public ComposedCheck {
+public:
+    ArrowCheck();
+    virtual ~ArrowCheck();
+};
+
 ComposedCheck::ComposedCheck() {
     SetPoly(GetPoly());
     SetGroup(GetGroup());
@@ -76,4 +90,14 @@ ComposedCheck::ComposedCheck() {
 
 CameraCheck::CameraCheck() {
     SetCamera();
+}
+
+NormalWaterCameraCheck::NormalWaterCameraCheck() {
+    EnableWater();
+    EnableNormal();
+}
+
+ArrowCheck::ArrowCheck() {
+    SetCamera();
+    EnableNormal();
 }
