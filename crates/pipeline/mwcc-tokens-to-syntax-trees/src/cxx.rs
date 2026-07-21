@@ -2050,6 +2050,36 @@ impl Parser {
         })
     }
 
+    /// Resolve a placement-construction expression by source class and arity.
+    /// The returned EABI constructor takes the placement address as its first,
+    /// implicit `this` argument and returns that class pointer internally.
+    pub(crate) fn resolve_placement_constructor(
+        &self,
+        class_name: &str,
+        argument_count: usize,
+    ) -> Compilation<String> {
+        let class = self.cxx_classes.get(class_name).ok_or_else(|| {
+            Diagnostic::error(format!(
+                "class layout for placement construction of '{class_name}' was not recovered"
+            ))
+        })?;
+        let candidates: Vec<_> = class
+            .constructors
+            .iter()
+            .filter(|signature| signature.parameters.len() == argument_count)
+            .collect();
+        if candidates.len() != 1 {
+            return Err(Diagnostic::error(format!(
+                "constructor overload resolution for placement construction of '{class_name}' is ambiguous or unavailable (roadmap)"
+            )));
+        }
+        self.mangle_typed_member_in_current_namespace(
+            class_name,
+            "__ct",
+            &candidates[0].cxx_parameters,
+        )
+    }
+
     fn parse_class_parameter_types(&mut self) -> Compilation<ClassParameterTypes> {
         self.expect(Token::ParenOpen)?;
         let mut parameters = Vec::new();

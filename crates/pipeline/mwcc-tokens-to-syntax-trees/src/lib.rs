@@ -2012,6 +2012,28 @@ blr\n\
     }
 
     #[test]
+    fn normalizes_placement_new_to_a_pointer_returning_constructor_call() {
+        let source = r#"
+            void* allocate(int);
+            class Item { public: Item(int); int value; };
+            Item* create(int value) { return new (allocate(16)) Item(value); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Call { name, arguments })
+                if name.starts_with("__ct__4ItemF") && arguments.len() == 2
+        ));
+    }
+
+    #[test]
     fn recovers_wchar_specialization_layout_and_abi_names() {
         let source = r#"
             typedef unsigned int uint;
