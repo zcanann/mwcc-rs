@@ -673,6 +673,7 @@ pub struct Behavior {
     pub cxx_rtti_virtual_method_label_weight: u8,
     pub cxx_rtti_virtual_destructor_label_weight: u8,
     pub cxx_rtti_initial_virtual_label_discount: u8,
+    pub cxx_rtti_inline_definition_label_bump: u8,
     /// Whether initialized `T a[] = ...` objects bypass small-data routing.
     pub inferred_array_uses_full_data_section: bool,
     /// Post-resolution optimization of branches written in `asm` functions.
@@ -965,6 +966,10 @@ impl Behavior {
                 .cxx_rtti_initial_virtual_label_discount(
                     config.flags.whole_file_optimization_enabled(),
                 ),
+            cxx_rtti_inline_definition_label_bump: config
+                .build
+                .profile
+                .cxx_rtti_inline_definition_label_bump(),
             inferred_array_uses_full_data_section: config
                 .build
                 .profile

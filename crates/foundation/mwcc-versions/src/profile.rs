@@ -1041,6 +1041,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         4
     }
 
+    fn cxx_rtti_inline_definition_label_bump(&self) -> u8 {
+        self.cxx_inline_definition_label_bump()
+    }
+
     /// Whether an initialized array whose written length was inferred from `[]`
     /// bypasses the small-data size threshold. Build 163 places writable forms
     /// in `.data` and const forms in `.rodata`; the 2.4.x mainline uses the same
@@ -1202,6 +1206,10 @@ impl CodegenProfile for Wii43Build145 {
 
     fn cxx_rtti_virtual_destructor_label_weight(&self, whole_file: bool) -> u8 {
         if whole_file { 7 } else { 9 }
+    }
+
+    fn cxx_rtti_inline_definition_label_bump(&self) -> u8 {
+        4
     }
 
     fn long_long_timer_style(&self) -> LongLongTimerStyle {
