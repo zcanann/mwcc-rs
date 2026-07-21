@@ -197,6 +197,7 @@ pub fn parse_located_translation_unit_with_enum_min(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mwcc_syntax_trees::Expression;
 
     #[test]
     fn retains_volatile_automatic_storage() {
@@ -218,7 +219,10 @@ mod tests {
     #[test]
     fn parses_cpp_named_static_cast_as_an_ordinary_conversion() {
         let unit = parse_translation_unit(
-            mwcc_source_to_tokens::tokenize("float convert(unsigned value) { return static_cast<float>(value); }").unwrap(),
+            mwcc_source_to_tokens::tokenize(
+                "float convert(unsigned value) { return static_cast<float>(value); }",
+            )
+            .unwrap(),
             true,
             true,
             1,
@@ -427,8 +431,7 @@ mod tests {
             3,
         )
         .unwrap();
-        let mwcc_syntax_trees::Statement::If { then_body, .. } =
-            &unit.functions[0].statements[0]
+        let mwcc_syntax_trees::Statement::If { then_body, .. } = &unit.functions[0].statements[0]
         else {
             panic!("expected the source if-block");
         };
@@ -1088,9 +1091,7 @@ blr\n\
             [
                 (
                     "flag_table",
-                    mwcc_syntax_trees::Type::Pointer(
-                        mwcc_syntax_trees::Pointee::UnsignedChar,
-                    ),
+                    mwcc_syntax_trees::Type::Pointer(mwcc_syntax_trees::Pointee::UnsignedChar,),
                     0,
                 ),
                 (
@@ -1144,11 +1145,14 @@ blr\n\
         assert!(unit.functions[0]
             .statements
             .iter()
-            .any(|statement| matches!(statement, mwcc_syntax_trees::Statement::Loop {
-                kind: mwcc_syntax_trees::LoopKind::For,
-                initializer: Some(mwcc_syntax_trees::Expression::Assign { .. }),
-                ..
-            })));
+            .any(|statement| matches!(
+                statement,
+                mwcc_syntax_trees::Statement::Loop {
+                    kind: mwcc_syntax_trees::LoopKind::For,
+                    initializer: Some(mwcc_syntax_trees::Expression::Assign { .. }),
+                    ..
+                }
+            )));
     }
 
     #[test]
@@ -1365,7 +1369,10 @@ blr\n\
         let destructor = &unit.functions[1];
         assert_eq!(destructor.parameters.len(), 2);
         assert_eq!(destructor.parameters[1].name, "__destroy");
-        assert_eq!(destructor.parameters[1].parameter_type, mwcc_syntax_trees::Type::Short);
+        assert_eq!(
+            destructor.parameters[1].parameter_type,
+            mwcc_syntax_trees::Type::Short
+        );
         let vtable = unit
             .globals
             .iter()
@@ -1405,8 +1412,7 @@ blr\n\
             .iter()
             .find(|function| function.name == "__dt__6BinderFv")
             .unwrap();
-        let mwcc_syntax_trees::Statement::If { then_body, .. } = &destructor.statements[0]
-        else {
+        let mwcc_syntax_trees::Statement::If { then_body, .. } = &destructor.statements[0] else {
             panic!("expected the synthesized destructor guard");
         };
         let mwcc_syntax_trees::Statement::If { then_body, .. } = &then_body[1] else {
@@ -1500,6 +1506,37 @@ blr\n\
             local.data_bytes.as_deref(),
             Some(&[0, 1, 0, 2, 0, 3, 0, 4][..])
         );
+    }
+
+    #[test]
+    fn preserves_multidimensional_member_row_stride_in_address_expression() {
+        let source = r#"
+            typedef unsigned char u8;
+            struct State { u8 prefix[2]; u8 flag[3][16]; };
+            struct State state;
+            u8 *probe(unsigned group) { return &state.flag[group][0]; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let Some(Expression::AddressOf { operand }) = &unit.functions[0].return_expression else {
+            panic!("expected address expression")
+        };
+        let Expression::Index { base: row, .. } = operand.as_ref() else {
+            panic!("expected column index")
+        };
+        let Expression::Index { base: member, .. } = row.as_ref() else {
+            panic!("expected row index")
+        };
+        let Expression::MemberAddress { index_stride, .. } = member.as_ref() else {
+            panic!("expected member-array address")
+        };
+        assert_eq!(*index_stride, Some(16));
     }
 
     #[test]
@@ -1851,7 +1888,10 @@ blr\n\
         .unwrap();
         assert!(matches!(
             unit.globals[0].declared_type,
-            mwcc_syntax_trees::Type::Struct { size: 152, align: 8 }
+            mwcc_syntax_trees::Type::Struct {
+                size: 152,
+                align: 8
+            }
         ));
     }
 
@@ -1936,7 +1976,10 @@ blr\n\
         .unwrap();
         assert!(matches!(
             unit.globals[0].declared_type,
-            mwcc_syntax_trees::Type::Struct { size: 32, align: 32 }
+            mwcc_syntax_trees::Type::Struct {
+                size: 32,
+                align: 32
+            }
         ));
         assert!(matches!(
             unit.globals[1].declared_type,
@@ -2002,7 +2045,10 @@ blr\n\
         .unwrap();
         assert!(matches!(
             unit.globals[0].declared_type,
-            mwcc_syntax_trees::Type::Struct { size: 64, align: 32 }
+            mwcc_syntax_trees::Type::Struct {
+                size: 64,
+                align: 32
+            }
         ));
         assert!(matches!(
             unit.functions[0].return_expression,
@@ -2333,14 +2379,8 @@ blr\n\
         .unwrap();
         let locals = &unit.functions[0].locals;
         let light = locals.iter().find(|local| local.name == "light").unwrap();
-        let command = locals
-            .iter()
-            .find(|local| local.name == "command")
-            .unwrap();
-        let marker = locals
-            .iter()
-            .find(|local| local.name == "marker")
-            .unwrap();
+        let command = locals.iter().find(|local| local.name == "command").unwrap();
+        let marker = locals.iter().find(|local| local.name == "marker").unwrap();
         assert_eq!(light.data_bytes.as_deref(), Some(&[90, 90, 45, 255][..]));
         assert_eq!(command.data_bytes.as_deref(), Some(&[0, 0, 0, 0][..]));
         assert_eq!(marker.data_bytes.as_deref(), Some(&[1, 0, 0, 0][..]));
@@ -2415,9 +2455,7 @@ blr\n\
         assert_eq!(commands.array_length, Some(3));
         assert_eq!(
             commands.data_bytes.as_deref(),
-            Some(&[
-                0xED, 0x00, 0x00, 0x00, 0x00, 0x50, 0x03, 0xC0, 0xDE, 0x01, 0x00, 0x00,
-            ][..])
+            Some(&[0xED, 0x00, 0x00, 0x00, 0x00, 0x50, 0x03, 0xC0, 0xDE, 0x01, 0x00, 0x00,][..])
         );
     }
 
@@ -2687,10 +2725,10 @@ blr\n\
             3,
         )
         .unwrap();
-        assert_eq!(unit.functions[0].return_type, mwcc_syntax_trees::Type::Struct {
-            size: 12,
-            align: 4,
-        });
+        assert_eq!(
+            unit.functions[0].return_type,
+            mwcc_syntax_trees::Type::Struct { size: 12, align: 4 }
+        );
     }
 
     #[test]

@@ -120,8 +120,7 @@ pub(crate) struct RecoveredCxxVirtualMethod {
 /// to lower a call safely.
 #[derive(Clone)]
 pub(crate) struct RecoveredCxxDispatchTable {
-    pub(crate) methods:
-        std::collections::HashMap<String, Vec<RecoveredCxxVirtualMethod>>,
+    pub(crate) methods: std::collections::HashMap<String, Vec<RecoveredCxxVirtualMethod>>,
     pub(crate) next_slot_offset: u16,
 }
 
@@ -185,7 +184,11 @@ impl CxxFunctionType {
         parameters: Vec<CxxParameterType>,
         variadic: bool,
     ) -> Self {
-        Self { return_type, parameters, variadic }
+        Self {
+            return_type,
+            parameters,
+            variadic,
+        }
     }
 }
 
@@ -245,9 +248,7 @@ pub(crate) struct BaseClass {
 /// the top-level parser already understands. The braces are declaration
 /// wrappers rather than C++ scopes, while a single-declaration form retains
 /// `extern` as its storage class.
-pub(crate) fn normalize_linkage_specifications(
-    mut tokens: Vec<LocatedToken>,
-) -> Vec<LocatedToken> {
+pub(crate) fn normalize_linkage_specifications(mut tokens: Vec<LocatedToken>) -> Vec<LocatedToken> {
     let mut index = 0usize;
     while index + 1 < tokens.len() {
         let starts_linkage = matches!(&tokens[index].token, Token::Identifier(word) if word == "extern")
@@ -381,7 +382,9 @@ pub(crate) fn normalize_constructor_declarators(
                     tokens.get(index.wrapping_sub(2)).map(|located| &located.token),
                     Some(Token::Identifier(word)) if word == "namespace"
                 ) && matches!(
-                    tokens.get(index.wrapping_sub(1)).map(|located| &located.token),
+                    tokens
+                        .get(index.wrapping_sub(1))
+                        .map(|located| &located.token),
                     Some(Token::Identifier(_))
                 ));
                 declaration_scopes.push(opens_namespace);
@@ -443,12 +446,9 @@ impl Parser {
         is_reference: bool,
     ) -> CxxParameterType {
         let qualified_name = self.last_enum_tag.take().or_else(|| {
-            self.last_struct_tag.take().map(|tag| {
-                self.struct_typedefs
-                    .get(&tag)
-                    .cloned()
-                    .unwrap_or(tag)
-            })
+            self.last_struct_tag
+                .take()
+                .map(|tag| self.struct_typedefs.get(&tag).cloned().unwrap_or(tag))
         });
         CxxParameterType::parsed(
             source_type,
@@ -659,14 +659,16 @@ impl Parser {
             Expression::FloatLiteral(_) => Some(Type::Float),
             Expression::Cast { target_type, .. } => Some(*target_type),
             Expression::Member { member_type, .. } => Some(*member_type),
-            Expression::Dereference { pointer } | Expression::Index { base: pointer, .. } => match self.cxx_expression_type(pointer)? {
-                Type::Pointer(pointee) => Some(pointee.element()),
-                Type::StructPointer { element_size } => Some(Type::Struct {
-                    size: element_size,
-                    align: 1,
-                }),
-                _ => None,
-            },
+            Expression::Dereference { pointer } | Expression::Index { base: pointer, .. } => {
+                match self.cxx_expression_type(pointer)? {
+                    Type::Pointer(pointee) => Some(pointee.element()),
+                    Type::StructPointer { element_size } => Some(Type::Struct {
+                        size: element_size,
+                        align: 1,
+                    }),
+                    _ => None,
+                }
+            }
             _ => None,
         }
     }
@@ -689,9 +691,7 @@ impl Parser {
     /// This deliberately never infers layout. Calls to skipped inline names still
     /// defer, while a static call is admitted only when one recovered overload
     /// matches its arity.
-    pub(crate) fn capture_cxx_class_declarations(
-        &mut self,
-    ) -> Vec<(String, Type, Vec<Type>)> {
+    pub(crate) fn capture_cxx_class_declarations(&mut self) -> Vec<(String, Type, Vec<Type>)> {
         if !self.cplusplus {
             return Vec::new();
         }
@@ -775,7 +775,10 @@ impl Parser {
             let begins_member = brace_depth == 1
                 && paren_depth == 0
                 && (index == body_start
-                    || matches!(self.tokens.get(index.wrapping_sub(1)), Some(Token::Semicolon | Token::BraceClose))
+                    || matches!(
+                        self.tokens.get(index.wrapping_sub(1)),
+                        Some(Token::Semicolon | Token::BraceClose)
+                    )
                     || (matches!(self.tokens.get(index.wrapping_sub(1)), Some(Token::Colon))
                         && matches!(self.tokens.get(index.wrapping_sub(2)), Some(Token::Identifier(access)) if matches!(access.as_str(), "public" | "private" | "protected"))));
             if brace_depth == 1 && paren_depth == 0 {
@@ -799,8 +802,8 @@ impl Parser {
             let nested_class = begins_member
                 && (matches!(token, Token::Identifier(word) if word == "class")
                     || token == &Token::KeywordStruct);
-            let nested_enum = begins_member
-                && matches!(token, Token::Identifier(word) if word == "enum");
+            let nested_enum =
+                begins_member && matches!(token, Token::Identifier(word) if word == "enum");
             match token {
                 Token::ParenOpen if brace_depth == 1 => paren_depth += 1,
                 Token::ParenClose if brace_depth == 1 && paren_depth > 0 => paren_depth -= 1,
@@ -1151,9 +1154,9 @@ impl Parser {
                 .get(class)
                 .and_then(|table| table.methods.get(&member))
                 .and_then(|methods| {
-                    methods
-                        .iter()
-                        .find(|method| method.parameters == parameters && method.variadic == variadic)
+                    methods.iter().find(|method| {
+                        method.parameters == parameters && method.variadic == variadic
+                    })
                 })
                 .cloned();
             let is_virtual = is_virtual || inherited_virtual.is_some();
@@ -1163,18 +1166,16 @@ impl Parser {
                     if inherited_virtual.is_none() {
                         let slot_offset = table.next_slot_offset;
                         table.next_slot_offset = table.next_slot_offset.checked_add(4)?;
-                        table
-                            .methods
-                            .entry(member.clone())
-                            .or_default()
-                            .push(RecoveredCxxVirtualMethod {
+                        table.methods.entry(member.clone()).or_default().push(
+                            RecoveredCxxVirtualMethod {
                                 return_type,
                                 parameters: parameters.clone(),
                                 fixed_parameter_count: parameters.len(),
                                 variadic,
                                 vptr_offset: 0,
                                 slot_offset,
-                            });
+                            },
+                        );
                     }
                 }
                 if is_inline {
@@ -1194,13 +1195,8 @@ impl Parser {
             }
             let scopes: Vec<&str> = class.split("::").collect();
             let mangled = if is_const_member && !variadic {
-                mangle_qualified_member_function_cv_typed(
-                    &scopes,
-                    &member,
-                    &cxx_parameters,
-                    true,
-                )
-                .ok()?
+                mangle_qualified_member_function_cv_typed(&scopes, &member, &cxx_parameters, true)
+                    .ok()?
             } else {
                 mangle_qualified_member_function_variadic_typed(
                     &scopes,
@@ -1263,33 +1259,22 @@ impl Parser {
             return;
         };
         let value = match self.tokens.get(body_open + 1..body_open + 5) {
-            Some([
-                Token::KeywordReturn,
-                Token::Identifier(value),
-                Token::Semicolon,
-                Token::BraceClose,
-            ]) if value == "false" => 0,
-            Some([
-                Token::KeywordReturn,
-                Token::Identifier(value),
-                Token::Semicolon,
-                Token::BraceClose,
-            ]) if value == "true" => 1,
-            Some([
-                Token::KeywordReturn,
-                Token::IntegerLiteral(value),
-                Token::Semicolon,
-                Token::BraceClose,
-            ]) => *value,
+            Some(
+                [Token::KeywordReturn, Token::Identifier(value), Token::Semicolon, Token::BraceClose],
+            ) if value == "false" => 0,
+            Some(
+                [Token::KeywordReturn, Token::Identifier(value), Token::Semicolon, Token::BraceClose],
+            ) if value == "true" => 1,
+            Some(
+                [Token::KeywordReturn, Token::IntegerLiteral(value), Token::Semicolon, Token::BraceClose],
+            ) => *value,
             _ => return,
         };
         let scopes: Vec<&str> = class.split("::").collect();
         let mangled = if is_const_member && !variadic {
             mangle_qualified_member_function_cv_typed(&scopes, member, parameters, true)
         } else {
-            mangle_qualified_member_function_variadic_typed(
-                &scopes, member, parameters, variadic,
-            )
+            mangle_qualified_member_function_variadic_typed(&scopes, member, parameters, variadic)
         };
         let Ok(mangled) = mangled else {
             return;
@@ -1353,25 +1338,19 @@ impl Parser {
             .rev()
             .find_map(|token| match token {
                 Token::Identifier(name)
-                    if !matches!(name.as_str(), "void" | "const" | "volatile") => Some(name.as_str()),
+                    if !matches!(name.as_str(), "void" | "const" | "volatile") =>
+                {
+                    Some(name.as_str())
+                }
                 _ => None,
             })
         else {
             return;
         };
         let body = parameter_close + 1;
-        let Some([
-            Token::BraceOpen,
-            Token::Identifier(class),
-            Token::Colon,
-            Token::Colon,
-            Token::Identifier(member),
-            Token::ParenOpen,
-            Token::Identifier(argument),
-            Token::ParenClose,
-            Token::Semicolon,
-            Token::BraceClose,
-        ]) = self.tokens.get(body..body + 10)
+        let Some(
+            [Token::BraceOpen, Token::Identifier(class), Token::Colon, Token::Colon, Token::Identifier(member), Token::ParenOpen, Token::Identifier(argument), Token::ParenClose, Token::Semicolon, Token::BraceClose],
+        ) = self.tokens.get(body..body + 10)
         else {
             return;
         };
@@ -1418,20 +1397,16 @@ impl Parser {
     /// inside the aliased template. This is a value construction, not a static
     /// member call. Keeping the query in the C++ declaration registry prevents
     /// expression parsing from guessing based on spelling alone.
-    pub(crate) fn is_empty_nested_type_constructor(
-        &self,
-        outer: &str,
-        nested: &str,
-    ) -> bool {
+    pub(crate) fn is_empty_nested_type_constructor(&self, outer: &str, nested: &str) -> bool {
         let qualified_outer = self.qualify_cxx_class_name(outer);
         let template = self
             .template_aliases
             .get(outer)
             .or_else(|| self.template_aliases.get(&qualified_outer));
-        if self
-            .empty_nested_template_types
-            .contains(&(template.map_or(outer, String::as_str).to_string(), nested.to_string()))
-        {
+        if self.empty_nested_template_types.contains(&(
+            template.map_or(outer, String::as_str).to_string(),
+            nested.to_string(),
+        )) {
             return true;
         }
         let qualified_template = template.map(|name| self.qualify_cxx_class_name(name));
@@ -1452,11 +1427,7 @@ impl Parser {
 
     /// A namespace-qualified empty aggregate construction (`N::empty_tag()`)
     /// is likewise a value expression, not a free-function call.
-    pub(crate) fn is_empty_qualified_type_constructor(
-        &self,
-        scope: &str,
-        name: &str,
-    ) -> bool {
+    pub(crate) fn is_empty_qualified_type_constructor(&self, scope: &str, name: &str) -> bool {
         let qualified = format!("{scope}::{name}");
         self.structs
             .get(&qualified)
@@ -1574,12 +1545,7 @@ impl Parser {
     ) -> Compilation<String> {
         let mut scopes = self.named_namespace_scopes();
         scopes.extend(class.split("::"));
-        mangle_qualified_member_function_cv_typed(
-            &scopes,
-            function,
-            explicit_parameters,
-            true,
-        )
+        mangle_qualified_member_function_cv_typed(&scopes, function, explicit_parameters, true)
     }
 
     /// Mangle a non-member C++ function. A namespace-qualified free function
@@ -1737,6 +1703,7 @@ impl Parser {
                             struct_tag: field.struct_tag.clone(),
                             array_element: field.array_element,
                             array_bytes: field.array_bytes,
+                            array_stride: field.array_stride,
                             bit_field: field.bit_field,
                         },
                     );
@@ -1865,8 +1832,7 @@ impl Parser {
                 while matches!(self.tokens.get(tail), Some(Token::Identifier(word))
                     if matches!(word.as_str(), "const" | "override" | "final"))
                 {
-                    is_const_member |=
-                        matches!(self.tokens.get(tail), Some(Token::Identifier(word)) if word == "const");
+                    is_const_member |= matches!(self.tokens.get(tail), Some(Token::Identifier(word)) if word == "const");
                     tail += 1;
                 }
                 let is_pure = self.tokens.get(tail) == Some(&Token::Equals)
@@ -1881,9 +1847,8 @@ impl Parser {
                         .ok_or_else(|| {
                             Diagnostic::error("C++ primary vtable slot offset overflow")
                         })?;
-                    let vptr_offset = u16::try_from(class.vptr_offset.unwrap_or(0)).map_err(|_| {
-                        Diagnostic::error("C++ primary vptr offset overflow")
-                    })?;
+                    let vptr_offset = u16::try_from(class.vptr_offset.unwrap_or(0))
+                        .map_err(|_| Diagnostic::error("C++ primary vptr offset overflow"))?;
                     class.virtual_slots += 1;
                     if !is_pure {
                         let qualified = self.qualify_cxx_class_name(&name);
@@ -1955,6 +1920,7 @@ impl Parser {
                     struct_tag,
                     array_element: None,
                     array_bytes: None,
+                    array_stride: None,
                     bit_field: None,
                 },
             );
@@ -1987,9 +1953,7 @@ impl Parser {
                 let struct_tag = self.last_struct_tag.take();
                 let enum_tag = self.last_enum_tag.take();
                 let qualified_name = enum_tag.or_else(|| {
-                    struct_tag.map(|tag| {
-                        self.struct_typedefs.get(&tag).cloned().unwrap_or(tag)
-                    })
+                    struct_tag.map(|tag| self.struct_typedefs.get(&tag).cloned().unwrap_or(tag))
                 });
                 let pointee_const = self.last_type_was_const;
                 let pointer_const = self.last_pointer_const;
@@ -2042,9 +2006,7 @@ impl Parser {
         let mut braces = 0usize;
         loop {
             match self.peek() {
-                Token::Comma | Token::ParenClose
-                    if parens == 0 && brackets == 0 && braces == 0 =>
-                {
+                Token::Comma | Token::ParenClose if parens == 0 && brackets == 0 && braces == 0 => {
                     return Ok(());
                 }
                 Token::ParenOpen => parens += 1,
@@ -2083,8 +2045,10 @@ impl Parser {
             // balanced initializer without parsing the initializer values.
             loop {
                 let mut saw_designator = false;
-                while !matches!(self.peek(), Token::ParenOpen | Token::BraceOpen | Token::EndOfFile)
-                {
+                while !matches!(
+                    self.peek(),
+                    Token::ParenOpen | Token::BraceOpen | Token::EndOfFile
+                ) {
                     if *self.peek() == Token::Comma {
                         return Err(Diagnostic::error(
                             "constructor initializer is missing its value",
@@ -2307,12 +2271,11 @@ pub(crate) fn mangle_qualified_member_function(
 
 /// Mangle a static data member. For example, `Game::Creature::enabled`
 /// becomes `enabled__Q24Game8Creature`.
-pub(crate) fn mangle_qualified_data_member(
-    scopes: &[&str],
-    member: &str,
-) -> Compilation<String> {
+pub(crate) fn mangle_qualified_data_member(scopes: &[&str], member: &str) -> Compilation<String> {
     if member.is_empty() {
-        return Err(Diagnostic::error("an empty C++ data-member name is invalid"));
+        return Err(Diagnostic::error(
+            "an empty C++ data-member name is invalid",
+        ));
     }
     let qualified_scope = encode_qualified_scope(scopes)?;
     Ok(format!("{member}__{qualified_scope}"))
@@ -2580,19 +2543,10 @@ mod tests {
             )
         };
         let value = named(Type::Struct { size: 4, align: 4 }, false, false, false);
-        let pointer = named(
-            Type::StructPointer { element_size: 4 },
-            false,
-            true,
-            false,
-        );
+        let pointer = named(Type::StructPointer { element_size: 4 }, false, true, false);
         let reference = named(Type::Struct { size: 4, align: 4 }, true, true, false);
-        let const_pointer_reference = named(
-            Type::StructPointer { element_size: 4 },
-            true,
-            true,
-            true,
-        );
+        let const_pointer_reference =
+            named(Type::StructPointer { element_size: 4 }, true, true, true);
         assert_eq!(
             mangle_qualified_member_function_typed(&["A"], "v", &[value]).unwrap(),
             "v__1AFQ28JUtility6TColor"
@@ -2606,12 +2560,8 @@ mod tests {
             "r__1AFRCQ28JUtility6TColor"
         );
         assert_eq!(
-            mangle_qualified_member_function_typed(
-                &["A"],
-                "q",
-                &[const_pointer_reference],
-            )
-            .unwrap(),
+            mangle_qualified_member_function_typed(&["A"], "q", &[const_pointer_reference],)
+                .unwrap(),
             "q__1AFRCPCQ28JUtility6TColor"
         );
     }

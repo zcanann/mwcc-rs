@@ -12,9 +12,10 @@ use mwcc_syntax_trees::{
 use mwcc_tokens::Token;
 
 fn align_layout_offset(offset: u32, alignment: u32) -> Compilation<u32> {
-    offset.div_ceil(alignment).checked_mul(alignment).ok_or_else(|| {
-        Diagnostic::error("aggregate layout exceeds the 32-bit address space")
-    })
+    offset
+        .div_ceil(alignment)
+        .checked_mul(alignment)
+        .ok_or_else(|| Diagnostic::error("aggregate layout exceeds the 32-bit address space"))
 }
 
 fn advance_layout_offset(offset: u32, size: u32) -> Compilation<u32> {
@@ -84,7 +85,9 @@ fn place_bit_field(
 ) -> Compilation<(u32, u8)> {
     let unit_bits = (type_size(field_type) * 8) as u8;
     if width == 0 || width > unit_bits {
-        return Err(Diagnostic::error("an unsupported bit-field width (roadmap)"));
+        return Err(Diagnostic::error(
+            "an unsupported bit-field width (roadmap)",
+        ));
     }
     if let Some((unit_type, unit_offset, bits_used)) = *bit_unit {
         if unit_type == field_type && bits_used + width <= unit_bits {
@@ -96,9 +99,7 @@ fn place_bit_field(
         // unit to two bytes before a following `u8` field.
         *offset = unit_offset + u32::from(bits_used).div_ceil(8);
     }
-    let alignment = type_alignment(field_type)
-        .max(1)
-        .max(requested_alignment);
+    let alignment = type_alignment(field_type).max(1).max(requested_alignment);
     let unit_offset = align_layout_offset(*offset, alignment)?;
     *offset = advance_layout_offset(unit_offset, type_size(field_type))?;
     *alignment_max = (*alignment_max).max(alignment);
@@ -176,7 +177,9 @@ impl Parser {
             };
             if *self.peek() == Token::Star {
                 self.advance();
-                return Ok(Type::Pointer(scalar_pointee(storage).unwrap_or(Pointee::Int)));
+                return Ok(Type::Pointer(
+                    scalar_pointee(storage).unwrap_or(Pointee::Int),
+                ));
             }
             return Ok(storage);
         }
@@ -782,8 +785,7 @@ impl Parser {
             // scanner; the C-compatible layout pass only needs to advance over
             // the complete declaration without discarding the ordinary fields
             // already laid out around it.
-            if self.cplusplus
-                && matches!(self.peek(), Token::Identifier(word) if word == "static")
+            if self.cplusplus && matches!(self.peek(), Token::Identifier(word) if word == "static")
             {
                 self.skip_class_member()?;
                 self.eat_keyword(Token::Semicolon);
@@ -842,6 +844,7 @@ impl Parser {
                                 struct_tag: Some(tag),
                                 array_element: None,
                                 array_bytes,
+                                array_stride: None,
                                 bit_field: None,
                             },
                         );
@@ -873,6 +876,7 @@ impl Parser {
                                 struct_tag: Some(synthetic),
                                 array_element: None,
                                 array_bytes,
+                                array_stride: None,
                                 bit_field: None,
                             },
                         );
@@ -891,6 +895,7 @@ impl Parser {
                                     struct_tag: field.struct_tag.clone(),
                                     array_element: field.array_element,
                                     array_bytes: field.array_bytes,
+                                    array_stride: field.array_stride,
                                     bit_field: field.bit_field,
                                 },
                             );
@@ -962,6 +967,7 @@ impl Parser {
                                 struct_tag: Some(variant_tag),
                                 array_element: None,
                                 array_bytes: None,
+                                array_stride: None,
                                 bit_field: None,
                             },
                         );
@@ -985,6 +991,7 @@ impl Parser {
                                     struct_tag: field.struct_tag.clone(),
                                     array_element: field.array_element,
                                     array_bytes: field.array_bytes,
+                                    array_stride: field.array_stride,
                                     bit_field: field.bit_field,
                                 },
                             );
@@ -1029,6 +1036,7 @@ impl Parser {
                             struct_tag: None,
                             array_element: None,
                             array_bytes: None,
+                            array_stride: None,
                             bit_field: None,
                         },
                     );
@@ -1047,9 +1055,9 @@ impl Parser {
                         count = count.saturating_mul(extra);
                     }
                     let trailing_attr_align = self.skip_attributes()?;
-                    let alignment = type_alignment(element).max(1).max(
-                        merged_attribute_alignment(attr_align, trailing_attr_align),
-                    );
+                    let alignment = type_alignment(element)
+                        .max(1)
+                        .max(merged_attribute_alignment(attr_align, trailing_attr_align));
                     if let Some((_, unit_offset, bits_used)) = bit_unit.take() {
                         // mwcc TRIMS the container to the bytes its bits use
                         // (measured: 4 bits -> next byte member at +1; 9-12 bits
@@ -1067,11 +1075,11 @@ impl Parser {
                             struct_tag: None,
                             array_element: Some(pointee_of(element)?),
                             array_bytes: Some(count.saturating_mul(element_size)),
+                            array_stride: None,
                             bit_field: None,
                         },
                     );
-                    offset =
-                        advance_layout_offset(offset, count.saturating_mul(element_size))?;
+                    offset = advance_layout_offset(offset, count.saturating_mul(element_size))?;
                     if !self.eat_keyword(Token::Comma) {
                         break;
                     }
@@ -1079,8 +1087,7 @@ impl Parser {
                 self.expect(Token::Semicolon)?;
                 continue;
             }
-            let field_is_function_pointer_typedef =
-                matches!(self.peek(), Token::Identifier(word) if self.function_pointer_typedefs.contains_key(word));
+            let field_is_function_pointer_typedef = matches!(self.peek(), Token::Identifier(word) if self.function_pointer_typedefs.contains_key(word));
             let mut field_type = self.parse_type()?;
             let source_fundamental = self.last_source_fundamental;
             while self.eat_keyword(Token::Star) {
@@ -1146,6 +1153,7 @@ impl Parser {
                             struct_tag: None,
                             array_element: None,
                             array_bytes: None,
+                            array_stride: None,
                             bit_field: None,
                         },
                     );
@@ -1205,6 +1213,7 @@ impl Parser {
                             struct_tag: None,
                             array_element: None,
                             array_bytes: None,
+                            array_stride: None,
                             bit_field: Some((bit_offset, width)),
                         },
                     );
@@ -1223,6 +1232,7 @@ impl Parser {
                 // An array member `type name[N]` occupies `N` elements; its access
                 // yields the array address rather than a loaded value.
                 let mut array_element = None;
+                let mut array_stride = None;
                 let mut is_array = false;
                 let mut size = type_size(field_type);
                 let element_size = size;
@@ -1240,17 +1250,23 @@ impl Parser {
                     ) {
                         array_element = Some(pointee_of(field_type)?);
                     }
-                    // One or more dimensions — `field[N]`, `field[R][C]`, … — occupy the
-                    // product of the (constant-expression) lengths times the element
-                    // size. (Member *access* of a multi-dimensional field still defers in
-                    // codegen; the layout is needed so the rest of the struct registers.)
-                    let mut total: u32 = 1;
+                    // Preserve the first index's byte stride as well as total size:
+                    // `field[R][C]` advances `C * sizeof(element)` for `field[row]`.
+                    let mut dimensions = Vec::new();
                     while *self.peek() == Token::BracketOpen {
                         self.advance();
                         let count = self.parse_integer_constant()? as u32;
                         self.expect(Token::BracketClose)?;
-                        total = total.saturating_mul(count);
+                        dimensions.push(count);
                     }
+                    let total = dimensions.iter().copied().product::<u32>();
+                    array_stride = (dimensions.len() > 1).then(|| {
+                        dimensions[1..]
+                            .iter()
+                            .copied()
+                            .product::<u32>()
+                            .saturating_mul(element_size)
+                    });
                     size = total * element_size;
                 }
                 // GCC/CodeWarrior also accepts the attribute on the declarator,
@@ -1274,6 +1290,7 @@ impl Parser {
                         struct_tag: struct_tag.clone(),
                         array_element,
                         array_bytes: is_array.then_some(size),
+                        array_stride,
                         bit_field: None,
                     },
                 );
@@ -1345,6 +1362,7 @@ impl Parser {
                             struct_tag: Some(variant_tag),
                             array_element: None,
                             array_bytes: None,
+                            array_stride: None,
                             bit_field: None,
                         },
                     );
@@ -1359,6 +1377,7 @@ impl Parser {
                                 struct_tag: field.struct_tag.clone(),
                                 array_element: field.array_element,
                                 array_bytes: field.array_bytes,
+                                array_stride: field.array_stride,
                                 bit_field: field.bit_field,
                             },
                         );
@@ -1390,13 +1409,16 @@ impl Parser {
             }
             // An array member occupies the product of its dimensions; it still
             // starts at offset 0, so it only widens the union.
-            let mut array_element = array_typedef.map(|(element, _, _)| pointee_of(element))
+            let mut array_element = array_typedef
+                .map(|(element, _, _)| pointee_of(element))
                 .transpose()?;
+            let mut array_stride = array_typedef.and_then(|(element, total, inner)| {
+                (total != 0 && inner != total)
+                    .then(|| u32::from(inner).saturating_mul(type_size(element)))
+            });
             let mut is_array = array_typedef.is_some_and(|(_, total, _)| total != 0);
             let mut size = match array_typedef {
-                Some((element, total, _)) if total != 0 => {
-                    u32::from(total) * type_size(element)
-                }
+                Some((element, total, _)) if total != 0 => u32::from(total) * type_size(element),
                 Some(_) => 4,
                 None => type_size(field_type),
             };
@@ -1405,12 +1427,21 @@ impl Parser {
                 if array_element.is_none() {
                     array_element = Some(pointee_of(field_type)?);
                 }
-                let mut total: u32 = 1;
+                let element_block_size = size;
+                let mut dimensions = Vec::new();
                 while *self.peek() == Token::BracketOpen {
                     self.advance();
-                    total = total.saturating_mul(self.parse_integer_constant()? as u32);
+                    dimensions.push(self.parse_integer_constant()? as u32);
                     self.expect(Token::BracketClose)?;
                 }
+                let total = dimensions.iter().copied().product::<u32>();
+                array_stride = (dimensions.len() > 1).then(|| {
+                    dimensions[1..]
+                        .iter()
+                        .copied()
+                        .product::<u32>()
+                        .saturating_mul(element_block_size)
+                });
                 size = total.saturating_mul(size);
             }
             let storage_type = array_typedef.map_or(field_type, |(element, total, _)| {
@@ -1432,6 +1463,7 @@ impl Parser {
                     struct_tag,
                     array_element,
                     array_bytes: is_array.then_some(size),
+                    array_stride,
                     bit_field: None,
                 },
             );

@@ -17,6 +17,9 @@ pub(crate) struct StructField {
     /// For an array member, the array's TOTAL byte size (dimensions x element
     /// size) — feeds the `sizeof(s.arr)` constant fold. `None` for a scalar.
     pub(crate) array_bytes: Option<u32>,
+    /// Byte stride selected by the first subscript of a multidimensional array
+    /// member. `None` for scalars and one-dimensional arrays.
+    pub(crate) array_stride: Option<u32>,
     /// For a bit-field member, `(bit_offset, width)` — the field occupies `width` bits
     /// starting `bit_offset` bits from the most-significant end of its storage unit
     /// (which begins at byte `offset`). `None` for an ordinary member. Member access
@@ -71,10 +74,7 @@ impl StructLayout {
         }
     }
 
-    pub(crate) fn source_definition(
-        &self,
-        name: String,
-    ) -> mwcc_syntax_trees::AggregateDefinition {
+    pub(crate) fn source_definition(&self, name: String) -> mwcc_syntax_trees::AggregateDefinition {
         let members = self
             .fields_in_declaration_order()
             .into_iter()
@@ -90,9 +90,7 @@ impl StructLayout {
                     source_fundamental: field.source_fundamental,
                     offset: field.offset,
                     aggregate_tag: field.struct_tag.clone(),
-                    array_length: field
-                        .array_bytes
-                        .map(|bytes| bytes / element_size.max(1)),
+                    array_length: field.array_bytes.map(|bytes| bytes / element_size.max(1)),
                     bit_field: field.bit_field,
                 }
             })
@@ -169,17 +167,14 @@ pub(crate) struct Parser {
     /// Static class-member overloads recovered from aggregate declarations,
     /// keyed by fully-qualified `(class, member)` name. Calls carry no implicit
     /// `this`, but still require CodeWarrior member-function mangling.
-    pub(crate) cxx_static_methods:
-        HashMap<(String, String), Vec<crate::cxx::RecoveredCxxMethod>>,
+    pub(crate) cxx_static_methods: HashMap<(String, String), Vec<crate::cxx::RecoveredCxxMethod>>,
     /// Free C++ function overloads recovered from prototypes/definitions,
     /// keyed by their unqualified source name. Calls resolve by arity only when
     /// that selects one ABI symbol unambiguously.
-    pub(crate) cxx_free_functions:
-        HashMap<String, Vec<crate::cxx::RecoveredCxxMethod>>,
+    pub(crate) cxx_free_functions: HashMap<String, Vec<crate::cxx::RecoveredCxxMethod>>,
     /// Non-virtual, non-inline instance methods recovered from skipped class
     /// bodies. These support direct `object->member(args)` calls without layout.
-    pub(crate) cxx_instance_methods:
-        HashMap<(String, String), Vec<crate::cxx::RecoveredCxxMethod>>,
+    pub(crate) cxx_instance_methods: HashMap<(String, String), Vec<crate::cxx::RecoveredCxxMethod>>,
     /// In-class member templates whose body is a zero-runtime-argument
     /// forwarding call, keyed by `(class, member)` and naming the free helper
     /// template they invoke.  This is declaration recovery, not a general
@@ -189,14 +184,12 @@ pub(crate) struct Parser {
     /// Concrete helper-template specializations recovered as direct instance
     /// method calls: helper -> `(template argument, owner class, member)`.
     /// A vector preserves ambiguity instead of allowing source order to choose.
-    pub(crate) cxx_template_forwarder_specializations:
-        HashMap<String, Vec<(Type, String, String)>>,
+    pub(crate) cxx_template_forwarder_specializations: HashMap<String, Vec<(Type, String, String)>>,
     /// Recovered primary virtual tables, including inherited entries. Keeping
     /// ABI slot state separate from object layout lets calls through opaque
     /// header-only class declarations resolve without pretending their fields
     /// were parsed.
-    pub(crate) cxx_dispatch_tables:
-        HashMap<String, crate::cxx::RecoveredCxxDispatchTable>,
+    pub(crate) cxx_dispatch_tables: HashMap<String, crate::cxx::RecoveredCxxDispatchTable>,
     /// Classes whose virtual declaration sequence could not be recovered in
     /// full. No virtual call through one is admitted: an unknown earlier entry
     /// would make every later slot unsafe.
@@ -254,8 +247,7 @@ pub(crate) struct Parser {
     /// Typedef names declared as function pointers, with their declaration-only
     /// C++ ABI signatures. Their executable storage type is still a plain word
     /// pointer; the signature also supplies callable-member identity in C.
-    pub(crate) function_pointer_typedefs:
-        HashMap<String, crate::cxx::CxxFunctionType>,
+    pub(crate) function_pointer_typedefs: HashMap<String, crate::cxx::CxxFunctionType>,
     /// Names of variadic function declarations/definitions (side-set — never in the hashed AST).
     pub(crate) variadic_definitions: std::collections::HashSet<String>,
     /// A float-array element whose initializer did NOT fold to a constant —

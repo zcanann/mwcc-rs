@@ -284,6 +284,7 @@ fn byte_member_offset(expression: &Expression, parameter: &str) -> Option<i16> {
         base,
         offset,
         element: Pointee::UnsignedChar,
+        ..
     } = base.as_ref()
     else {
         return None;

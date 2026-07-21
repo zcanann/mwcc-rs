@@ -284,6 +284,7 @@ impl Generator {
             base,
             offset: 0,
             element,
+            ..
         } = operand
         {
             let register = self.member_base_register(base)?;

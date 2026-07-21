@@ -1256,13 +1256,15 @@ pub(crate) fn structurally_equal(a: &Expression, b: &Expression) -> bool {
                 base: ba,
                 offset: oa,
                 element: ea,
+                index_stride: sa,
             },
             Expression::MemberAddress {
                 base: bb,
                 offset: ob,
                 element: eb,
+                index_stride: sb,
             },
-        ) => oa == ob && ea == eb && structurally_equal(ba, bb),
+        ) => oa == ob && ea == eb && sa == sb && structurally_equal(ba, bb),
         (
             Expression::Call {
                 name: na,

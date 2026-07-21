@@ -12,10 +12,111 @@ use mwcc_syntax_trees::{
     BinaryOperator, Expression, Function, GuardedReturn, Pointee, Statement, Type,
 };
 use mwcc_target::Eabi;
-use mwcc_versions::{FrameConvention, GlobalAddressing, PunnedFloatFrameConvention};
+use mwcc_versions::{FrameConvention, GlobalAddressing, Optimization, PunnedFloatFrameConvention};
 use std::collections::HashSet;
 
 impl Generator {
+    /// Address `&global.member[row][column]` when `member` is a
+    /// multidimensional scalar array. The frontend carries the first index's
+    /// row stride on `MemberAddress`; `-O0` preserves the source address
+    /// transaction as `scale row; lis; addi r0; add; addi member+column`.
+    fn try_emit_unoptimized_multidimensional_member_address(
+        &mut self,
+        operand: &Expression,
+        destination: u8,
+    ) -> Compilation<bool> {
+        if self.behavior.optimization != Optimization::O0 {
+            return Ok(false);
+        }
+        let Expression::Index {
+            base: row_expression,
+            index: column_expression,
+        } = operand
+        else {
+            return Ok(false);
+        };
+        let Expression::Index {
+            base: member_expression,
+            index: row_expression,
+        } = row_expression.as_ref()
+        else {
+            return Ok(false);
+        };
+        let Expression::MemberAddress {
+            base,
+            offset,
+            element,
+            index_stride: Some(row_stride),
+        } = member_expression.as_ref()
+        else {
+            return Ok(false);
+        };
+        let Expression::Variable(global) = base.as_ref() else {
+            return Ok(false);
+        };
+        if !matches!(self.globals.get(global.as_str()), Some(Type::Struct { .. })) {
+            return Ok(false);
+        }
+        let Some(row_register) = leaf_name(row_expression).and_then(|name| self.lookup_general(name))
+        else {
+            return Ok(false);
+        };
+        let Some(column) = constant_value(column_expression) else {
+            return Ok(false);
+        };
+        let displacement = i16::try_from(
+            i64::from(*offset) + column.saturating_mul(i64::from(element.size())),
+        )
+        .map_err(|_| Diagnostic::error("multidimensional member address is out of range"))?;
+
+        let address = self.lowest_free_general()?;
+        let restore_address = self.reserved.insert(address);
+        let scaled = self.lowest_free_general()?;
+        let restore_scaled = self.reserved.insert(scaled);
+        if row_stride.is_power_of_two() {
+            self.output
+                .instructions
+                .push(Instruction::ShiftLeftImmediate {
+                    a: scaled,
+                    s: row_register,
+                    shift: row_stride.trailing_zeros() as u8,
+                });
+        } else {
+            let immediate = i16::try_from(*row_stride).map_err(|_| {
+                Diagnostic::error("multidimensional member stride is not encodable")
+            })?;
+            self.output.instructions.push(Instruction::MultiplyImmediate {
+                d: scaled,
+                a: row_register,
+                immediate,
+            });
+        }
+        self.emit_address_high(address, global);
+        self.record_relocation(RelocationKind::Addr16Lo, global);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: GENERAL_SCRATCH,
+            a: address,
+            immediate: 0,
+        });
+        self.output.instructions.push(Instruction::Add {
+            d: address,
+            a: GENERAL_SCRATCH,
+            b: scaled,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: destination,
+            a: address,
+            immediate: displacement,
+        });
+        if restore_scaled {
+            self.reserved.remove(&scaled);
+        }
+        if restore_address {
+            self.reserved.remove(&address);
+        }
+        Ok(true)
+    }
+
     /// A struct-image local passed by address to ONE call — `GXColor c = {0xFF,…};
     /// g(&c);` (thpmain's spC idiom). mwcc pools the image (<= 4 bytes: one word)
     /// and copies it into the frame slot, the copy scheduled between the argument's
@@ -2408,6 +2509,9 @@ impl Generator {
         operand: &Expression,
         destination: u8,
     ) -> Compilation<()> {
+        if self.try_emit_unoptimized_multidimensional_member_address(operand, destination)? {
+            return Ok(());
+        }
         if let Expression::Variable(name) = operand {
             if let Some(slot) = self.frame_slots.get(name) {
                 let offset = slot.offset;

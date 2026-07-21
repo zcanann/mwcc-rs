@@ -628,6 +628,7 @@ impl Generator {
             base: struct_base,
             offset,
             element,
+            ..
         } = base
         {
             let address = self.member_base_register(struct_base)?;

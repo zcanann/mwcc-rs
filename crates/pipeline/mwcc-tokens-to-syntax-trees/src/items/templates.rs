@@ -193,14 +193,20 @@ impl Parser {
             let (field_type, field_size, natural_alignment) = match field.field_type {
                 TemplateFieldType::Parameter => {
                     let field_type = argument?;
-                    (field_type, type_size(field_type), type_alignment(field_type))
+                    (
+                        field_type,
+                        type_size(field_type),
+                        type_alignment(field_type),
+                    )
                 }
                 TemplateFieldType::ParameterByteArray => {
                     (Type::UnsignedChar, type_size(argument?), 1)
                 }
-                TemplateFieldType::Concrete(field_type) => {
-                    (field_type, type_size(field_type), type_alignment(field_type))
-                }
+                TemplateFieldType::Concrete(field_type) => (
+                    field_type,
+                    type_size(field_type),
+                    type_alignment(field_type),
+                ),
             };
             let alignment = natural_alignment.max(1).max(field.alignment);
             max_alignment = max_alignment.max(alignment);
@@ -214,6 +220,7 @@ impl Parser {
                     struct_tag: None,
                     array_element: None,
                     array_bytes: None,
+                    array_stride: None,
                     bit_field: None,
                 },
             );
@@ -441,7 +448,9 @@ impl Parser {
         let mut parameter = None;
         while angle_depth > 0 {
             match self.tokens.get(cursor) {
-                Some(Token::Identifier(kind)) if parameter.is_none() && matches!(kind.as_str(), "typename" | "class") => {
+                Some(Token::Identifier(kind))
+                    if parameter.is_none() && matches!(kind.as_str(), "typename" | "class") =>
+                {
                     if let Some(Token::Identifier(name)) = self.tokens.get(cursor + 1) {
                         parameter = Some(name.clone());
                     }
@@ -464,7 +473,10 @@ impl Parser {
         };
         let name = name.clone();
         cursor += 2;
-        while !matches!(self.tokens.get(cursor), Some(Token::BraceOpen | Token::EndOfFile) | None) {
+        while !matches!(
+            self.tokens.get(cursor),
+            Some(Token::BraceOpen | Token::EndOfFile) | None
+        ) {
             cursor += 1;
         }
         if self.tokens.get(cursor) != Some(&Token::BraceOpen) {
@@ -498,7 +510,8 @@ impl Parser {
             }
         }
         if !fields.is_empty() {
-            self.struct_templates.insert(name, StructTemplate { fields });
+            self.struct_templates
+                .insert(name, StructTemplate { fields });
         }
     }
 
@@ -508,7 +521,8 @@ impl Parser {
         parameter: &str,
     ) -> Option<(Vec<TemplateField>, usize)> {
         let mut cursor = start;
-        while matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if matches!(word.as_str(), "const" | "volatile" | "mutable")) {
+        while matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if matches!(word.as_str(), "const" | "volatile" | "mutable"))
+        {
             cursor += 1;
         }
         if matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if word == "static") {
@@ -516,34 +530,31 @@ impl Parser {
         }
         let (mut field_type, type_tokens) = match self.tokens.get(cursor)? {
             Token::Identifier(name) if name == parameter => (TemplateFieldType::Parameter, 1),
-            Token::KeywordUnsigned
-                if self.tokens.get(cursor + 1) == Some(&Token::KeywordChar) =>
-            {
+            Token::KeywordUnsigned if self.tokens.get(cursor + 1) == Some(&Token::KeywordChar) => {
                 (TemplateFieldType::Concrete(Type::UnsignedChar), 2)
             }
-            Token::Identifier(_) if self.tokens.get(cursor + 1) == Some(&Token::Star) => {
-                (
-                    TemplateFieldType::Concrete(Type::Pointer(
-                        mwcc_syntax_trees::Pointee::Int,
-                    )),
-                    1,
-                )
-            }
+            Token::Identifier(_) if self.tokens.get(cursor + 1) == Some(&Token::Star) => (
+                TemplateFieldType::Concrete(Type::Pointer(mwcc_syntax_trees::Pointee::Int)),
+                1,
+            ),
             token => (
                 TemplateFieldType::Concrete(self.template_argument_type(token)?),
                 1,
             ),
         };
         cursor += type_tokens;
-        while matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if matches!(word.as_str(), "const" | "volatile")) {
+        while matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if matches!(word.as_str(), "const" | "volatile"))
+        {
             cursor += 1;
         }
         if self.tokens.get(cursor) == Some(&Token::Star) {
-            field_type = TemplateFieldType::Concrete(Type::Pointer(mwcc_syntax_trees::Pointee::Int));
+            field_type =
+                TemplateFieldType::Concrete(Type::Pointer(mwcc_syntax_trees::Pointee::Int));
             while self.tokens.get(cursor) == Some(&Token::Star) {
                 cursor += 1;
             }
-            while matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if matches!(word.as_str(), "const" | "volatile")) {
+            while matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if matches!(word.as_str(), "const" | "volatile"))
+            {
                 cursor += 1;
             }
         }
@@ -573,17 +584,21 @@ impl Parser {
                 fields.last_mut().unwrap().field_type = TemplateFieldType::ParameterByteArray;
                 cursor += 6;
             }
-            if matches!(self.tokens.get(cursor), Some(Token::Identifier(attribute)) if attribute == "__attribute__") {
+            if matches!(self.tokens.get(cursor), Some(Token::Identifier(attribute)) if attribute == "__attribute__")
+            {
                 let end = (cursor..self.tokens.len()).find(|&index| {
                     matches!(self.tokens[index], Token::Semicolon | Token::EndOfFile)
                 })?;
-                let alignment = self.tokens[cursor..end].windows(3).find_map(|tokens| {
-                    match tokens {
+                let alignment = self.tokens[cursor..end].windows(3).find_map(
+                    |tokens| match tokens {
                         [Token::Identifier(aligned), Token::ParenOpen, Token::IntegerLiteral(value)]
-                            if aligned == "aligned" => u32::try_from(*value).ok(),
+                            if aligned == "aligned" =>
+                        {
+                            u32::try_from(*value).ok()
+                        }
                         _ => None,
-                    }
-                });
+                    },
+                );
                 if let Some(alignment) = alignment {
                     fields.last_mut().unwrap().alignment = alignment;
                 }
@@ -647,11 +662,8 @@ impl Parser {
         while let Some(token) = self.tokens.get(index) {
             if brace_depth == 1 {
                 if token == &Token::KeywordStruct {
-                    if let Some([
-                        Token::Identifier(nested),
-                        Token::BraceOpen,
-                        Token::BraceClose,
-                    ]) = self.tokens.get(index + 1..index + 4)
+                    if let Some([Token::Identifier(nested), Token::BraceOpen, Token::BraceClose]) =
+                        self.tokens.get(index + 1..index + 4)
                     {
                         self.empty_nested_template_types
                             .insert((class_name.clone(), nested.clone()));
@@ -784,9 +796,7 @@ impl Parser {
             Token::Identifier(name) if self.cplusplus && name == "wchar_t" => {
                 Some(Type::UnsignedShort)
             }
-            Token::Identifier(name) if self.cplusplus && name == "bool" => {
-                Some(Type::UnsignedChar)
-            }
+            Token::Identifier(name) if self.cplusplus && name == "bool" => Some(Type::UnsignedChar),
             Token::Identifier(name) => self.typedefs.get(name).copied(),
             _ => None,
         }

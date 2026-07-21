@@ -154,7 +154,10 @@ pub(crate) fn fold_constant_float(expression: &Expression) -> Compilation<f64> {
                 | Type::UnsignedShort
                 | Type::LongLong
                 | Type::UnsignedLongLong
-        ) => fold_constant_expression(operand)? as f64,
+        ) =>
+        {
+            fold_constant_expression(operand)? as f64
+        }
         _ => {
             return Err(Diagnostic::error(
                 "a non-constant float global initializer is not supported yet (roadmap)",
@@ -204,17 +207,11 @@ impl Parser {
                         .map(|value_type| Self::sizeof_type_bytes(*value_type))
                 })
                 .or_else(|| self.global_sizes.get(name).map(|&(total, _)| total)),
-            Expression::Member { member_type, .. } => {
-                Some(Self::sizeof_type_bytes(*member_type))
-            }
+            Expression::Member { member_type, .. } => Some(Self::sizeof_type_bytes(*member_type)),
             // A bare array member reports the whole member, while a subscript
             // through it asks pointed_element_bytes for one element.
-            Expression::MemberAddress { .. } => {
-                self.last_member_array_bytes.map(u32::from)
-            }
-            Expression::Cast { target_type, .. } => {
-                Some(Self::sizeof_type_bytes(*target_type))
-            }
+            Expression::MemberAddress { .. } => self.last_member_array_bytes.map(u32::from),
+            Expression::Cast { target_type, .. } => Some(Self::sizeof_type_bytes(*target_type)),
             Expression::Dereference { pointer } | Expression::Index { base: pointer, .. } => {
                 self.pointed_element_bytes(pointer)
             }
@@ -519,8 +516,7 @@ impl Parser {
         // C-style cast once its destination type is known. Keep the syntax in
         // the parser rather than teaching later lowering stages about two
         // spellings of the same conversion.
-        if self.cplusplus
-            && matches!(self.peek(), Token::Identifier(name) if name == "static_cast")
+        if self.cplusplus && matches!(self.peek(), Token::Identifier(name) if name == "static_cast")
         {
             self.advance();
             self.expect(Token::Less)?;
@@ -692,7 +688,10 @@ impl Parser {
                     self.resolve_implicit_member_call(&name, arguments.len())?
                 {
                     match member_call {
-                        crate::cxx::ImplicitMemberCall::Direct { name: mangled, is_inline } => {
+                        crate::cxx::ImplicitMemberCall::Direct {
+                            name: mangled,
+                            is_inline,
+                        } => {
                             if is_inline {
                                 return Err(Diagnostic::error(format!(
                                     "an inline C++ member call to '{name}' is not lowered yet (roadmap)"
@@ -782,9 +781,7 @@ impl Parser {
                         member_type: member.member_type,
                         index_stride: None,
                     }
-                } else if let Some(mangled) =
-                    self.resolve_implicit_static_data_member(&name)?
-                {
+                } else if let Some(mangled) = self.resolve_implicit_static_data_member(&name)? {
                     Expression::Variable(mangled)
                 } else if let Some(&value) = self.enum_constants.get(&name) {
                     Expression::IntegerLiteral(value)
@@ -1079,8 +1076,7 @@ impl Parser {
                         .structs
                         .get(&tag)
                         .is_some_and(|layout| layout.function_pointer_fields.contains(&field));
-                    let explicit_template_argument =
-                        self.try_explicit_member_template_argument();
+                    let explicit_template_argument = self.try_explicit_member_template_argument();
                     if *self.peek() == Token::ParenOpen && !is_function_pointer_field {
                         // A non-virtual instance method is a direct call with
                         // the object pointer prepended as the implicit `this`.
@@ -1100,19 +1096,15 @@ impl Parser {
                         }
                         self.expect(Token::ParenClose)?;
                         let direct_call = match explicit_template_argument {
-                            Some(template_argument) => {
-                                self.resolve_member_template_forwarder(
-                                    &tag,
-                                    &field,
-                                    template_argument,
-                                    arguments.len(),
-                                )
-                            }
-                            None => self.resolve_instance_member_call(
+                            Some(template_argument) => self.resolve_member_template_forwarder(
                                 &tag,
                                 &field,
+                                template_argument,
                                 arguments.len(),
                             ),
+                            None => {
+                                self.resolve_instance_member_call(&tag, &field, arguments.len())
+                            }
                         }?;
                         if let Some(name) = direct_call {
                             arguments.insert(0, expression);
@@ -1120,11 +1112,7 @@ impl Parser {
                         } else if let Some(dispatch) = explicit_template_argument
                             .is_none()
                             .then(|| {
-                                self.resolve_virtual_member_call(
-                                    &tag,
-                                    &field,
-                                    arguments.len(),
-                                )
+                                self.resolve_virtual_member_call(&tag, &field, arguments.len())
                             })
                             .transpose()?
                             .flatten()
@@ -1159,12 +1147,13 @@ impl Parser {
                     })?;
                     let bit_field = member.bit_field;
                     let signed = member.member_type.is_signed();
-                    let (offset, member_type, next_tag, array_element, array_bytes) = (
+                    let (offset, member_type, next_tag, array_element, array_bytes, array_stride) = (
                         member.offset,
                         member.member_type,
                         member.struct_tag.clone(),
                         member.array_element,
                         member.array_bytes,
+                        member.array_stride,
                     );
                     // `a[i].field`: the index scales by the struct size — recorded so
                     // codegen can emit `a + i*size + offset`.
@@ -1216,7 +1205,7 @@ impl Parser {
                             load_bits - (bit_offset as u32 - byte_start as u32 * 8) - width as u32;
                         let load = Expression::Member {
                             base: Box::new(expression),
-                                offset: offset + u32::from(byte_start),
+                            offset: offset + u32::from(byte_start),
                             member_type: load_type,
                             index_stride,
                         };
@@ -1262,6 +1251,7 @@ impl Parser {
                                 base: Box::new(expression),
                                 offset,
                                 element,
+                                index_stride: array_stride,
                             }
                         }
                         None => Expression::Member {
@@ -1368,10 +1358,12 @@ pub(crate) fn substitute_variables(
             base,
             offset,
             element,
+            index_stride,
         } => Expression::MemberAddress {
             base: Box::new(substitute_variables(base, map)),
             offset: *offset,
             element: *element,
+            index_stride: *index_stride,
         },
         Expression::Conditional {
             condition,

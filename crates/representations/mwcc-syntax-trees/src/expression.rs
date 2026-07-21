@@ -102,6 +102,9 @@ pub enum Expression {
         base: Box<Expression>,
         offset: u32,
         element: Pointee,
+        /// Byte stride for the first index of a multidimensional member array.
+        /// A one-dimensional member uses the scalar `element` size instead.
+        index_stride: Option<u32>,
     },
     /// `target(arguments)` where the callee is an EXPRESSION (a function-
     /// pointer struct member — `file->writeFunc(...)`): an indirect call

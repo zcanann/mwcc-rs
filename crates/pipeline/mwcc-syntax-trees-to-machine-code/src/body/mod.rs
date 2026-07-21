@@ -21,6 +21,7 @@ mod indirect_call;
 mod ladders;
 mod legacy_constant_store;
 mod leading_store_guard;
+mod local_select;
 mod long_long_initialize;
 mod long_long_support;
 mod long_long_wait;

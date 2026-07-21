@@ -484,6 +484,10 @@ impl Quirk {
 /// selection — codegen reads a plain field, never a trait object or a flag.
 #[derive(Debug, Clone, Copy)]
 pub struct Behavior {
+    /// The resolved optimization level. Most emitters consume a narrower policy
+    /// below, but source-local allocation is itself observable at `-O0` and needs
+    /// the actual stage boundary rather than inferring it from an unrelated knob.
+    pub optimization: Optimization,
     /// Hidden labels retained around a call-dispatch jump table, separate from
     /// labels attributed to its individual arms.
     pub call_dispatcher_hidden_label_bump: u8,
@@ -734,6 +738,7 @@ impl Behavior {
     /// profile and the flags into one flat set of values.
     pub fn resolve(config: &CompilerConfig) -> Self {
         Behavior {
+            optimization: config.flags.optimization,
             call_dispatcher_hidden_label_bump: config
                 .build
                 .profile

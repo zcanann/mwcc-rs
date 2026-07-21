@@ -2162,6 +2162,12 @@ impl Generator {
         if self.try_queue_callback_fold(function)? {
             return Ok(());
         }
+        // At -O0, named register locals survive the frontend and occupy descending
+        // callee-saved homes even in a leaf. Keep that source-level allocation
+        // distinct from the optimized conditional-expression family below.
+        if self.try_unoptimized_local_select(function)? {
+            return Ok(());
+        }
         // `T y; if (c) y = A; else y = B; return y;` — both arms assign the returned
         // local, so the whole body is the select `return (c) ? A : B`.
         if self.try_conditional_assign(function)? {
@@ -3747,9 +3753,10 @@ impl Generator {
             )),
             // A general if-statement (non-trailing, non-leaf, or with an else) needs
             // forward branches and basic-block scheduling — deferred for now.
-            Statement::If { .. } => Err(Diagnostic::error(
-                "general if-statement codegen is not implemented yet (roadmap)",
-            )),
+            Statement::If { .. } => Err(Diagnostic::error(format!(
+                "general if-statement codegen is not implemented yet (roadmap; function '{}')",
+                self.output.name
+            ))),
             // An early `return` inside the body needs early-return codegen (blr for
             // a leaf, a forward branch to the shared epilogue otherwise) — the
             // parser now models it, but the codegen is the next piece.

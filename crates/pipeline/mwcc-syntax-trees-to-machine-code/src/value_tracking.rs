@@ -1327,10 +1327,12 @@ pub(crate) fn substitute(
             base,
             offset,
             element,
+            index_stride,
         } => Expression::MemberAddress {
             base: Box::new(substitute(base, values)),
             offset: *offset,
             element: *element,
+            index_stride: *index_stride,
         },
         Expression::Call { name, arguments } => Expression::Call {
             name: name.clone(),

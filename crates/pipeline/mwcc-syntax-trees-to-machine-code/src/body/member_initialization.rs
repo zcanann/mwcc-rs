@@ -42,6 +42,7 @@ fn narrow_member_target(expression: &Expression) -> Option<(&Expression, u32)> {
                     base,
                     offset,
                     element: Pointee::Short | Pointee::UnsignedShort,
+                    ..
                 } => Some((base, *offset)),
                 _ => None,
             }

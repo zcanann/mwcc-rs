@@ -17,6 +17,7 @@ fn indexed_access<'a>(expression: &'a Expression, alias: &str) -> Option<(u32, &
         base,
         offset,
         element: Pointee::UnsignedInt,
+        ..
     } = base.as_ref()
     else {
         return None;
