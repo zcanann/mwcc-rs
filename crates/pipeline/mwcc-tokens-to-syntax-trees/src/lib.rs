@@ -11,6 +11,7 @@ use std::collections::HashMap;
 
 mod cxx;
 mod cxx_analysis_facts;
+mod cxx_new;
 mod cxx_rtti;
 mod expressions;
 mod items;
@@ -2744,6 +2745,50 @@ blr\n\
             &unit.functions[0].return_expression,
             Some(mwcc_syntax_trees::Expression::Call { name, arguments })
                 if name.starts_with("__ct__4ItemF") && arguments.len() == 2
+        ));
+    }
+
+    #[test]
+    fn normalizes_trivial_scalar_new_to_the_eabi_allocator() {
+        let source = r#"
+            void* operator new(unsigned long);
+            int* create() { return new int; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Call { name, arguments })
+                if name == "__nw__FUl"
+                    && matches!(arguments.as_slice(), [mwcc_syntax_trees::Expression::IntegerLiteral(4)])
+        ));
+    }
+
+    #[test]
+    fn normalizes_trivial_array_new_to_the_eabi_array_allocator() {
+        let source = r#"
+            void* operator new[](unsigned long);
+            char* create() { return new char[64]; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Call { name, arguments })
+                if name == "__nwa__FUl"
+                    && matches!(arguments.as_slice(), [mwcc_syntax_trees::Expression::IntegerLiteral(64)])
         ));
     }
 

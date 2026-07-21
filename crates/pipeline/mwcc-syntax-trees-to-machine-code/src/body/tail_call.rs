@@ -57,11 +57,14 @@ impl Generator {
             {
                 return Ok(true);
             }
-            if !self.behavior.tail_call_optimization
+            let allocator_tail_call = self.behavior.terminal_indirect_tail_call
+                && allocator_pointer_return_is_compatible(name, function.return_type);
+            if (!self.behavior.tail_call_optimization && !allocator_tail_call)
                 || self.locations.contains_key(name)
                 || self.globals.contains_key(name)
                 || self.variadic_callees.contains(name)
-                || self.call_return_types.get(name) != Some(&function.return_type)
+                || (self.call_return_types.get(name) != Some(&function.return_type)
+                    && !allocator_pointer_return_is_compatible(name, function.return_type))
             {
                 return Ok(false);
             }
@@ -130,4 +133,11 @@ impl Generator {
             .push(Instruction::BranchToCountRegister);
         Ok(true)
     }
+}
+
+/// The EABI allocators return `void*`, which is ABI-identical to every object
+/// pointer return even though the source-level pointee type differs.
+fn allocator_pointer_return_is_compatible(name: &str, return_type: Type) -> bool {
+    matches!(name, "__nw__FUl" | "__nwa__FUl")
+        && matches!(return_type, Type::Pointer(_) | Type::StructPointer { .. })
 }

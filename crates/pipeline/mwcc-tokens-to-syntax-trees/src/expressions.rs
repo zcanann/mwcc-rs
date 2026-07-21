@@ -617,40 +617,8 @@ impl Parser {
             Token::Identifier(name) if self.cplusplus && name == "false" => {
                 Expression::IntegerLiteral(0)
             }
-            // Placement construction: `new (storage) Class(arguments)`. The
-            // EABI constructor is an internal pointer-returning function whose
-            // first argument is the placement address, so the normalized Call
-            // retains both single evaluation and the expression's pointer value.
             Token::Identifier(name) if self.cplusplus && name == "new" => {
-                if *self.peek() != Token::ParenOpen {
-                    return Err(Diagnostic::error(
-                        "non-placement C++ new is not supported yet (roadmap)",
-                    ));
-                }
-                self.advance();
-                let storage = self.expression()?;
-                self.expect(Token::ParenClose)?;
-                let class_name = self.parse_identifier()?;
-                self.expect(Token::ParenOpen)?;
-                let mut arguments = Vec::new();
-                if *self.peek() != Token::ParenClose {
-                    loop {
-                        arguments.push(self.expression()?);
-                        if !self.eat_keyword(Token::Comma) {
-                            break;
-                        }
-                    }
-                }
-                self.expect(Token::ParenClose)?;
-                let constructor =
-                    self.resolve_placement_constructor(&class_name, arguments.len())?;
-                let mut call_arguments = vec![storage];
-                call_arguments.extend(arguments);
-                self.expression_struct_tag = Some(class_name);
-                Expression::Call {
-                    name: constructor,
-                    arguments: call_arguments,
-                }
+                self.parse_cxx_new_expression()?
             }
             // A qualified static member has no implicit `this`. A following
             // argument list is a call whose declaration supplies overload

@@ -332,7 +332,15 @@ pub fn lower_function(
             .collect(),
         descending_allocation_top: None,
         skipped_inline_names: skipped_inline_names.clone(),
-        prototyped_names: prototyped_names.clone(),
+        // C++ allocation operators are compiler-known runtime entry points even
+        // when the preprocessed source does not retain an explicit declaration.
+        // Treat them as prototyped so their undefined symbols are created in
+        // the declaration/reference run, as real mwcc does.
+        prototyped_names: prototyped_names
+            .iter()
+            .cloned()
+            .chain(["__nw__FUl".to_owned(), "__nwa__FUl".to_owned()])
+            .collect(),
         weak_materialized_names: weak_materialized_names.clone(),
         call_parameter_types: call_parameter_types.clone(),
         inline_bodies: inline_bodies.clone(),
@@ -384,7 +392,10 @@ pub fn lower_function(
         .output
         .symbol_order
         .iter()
-        .filter(|name| generator.call_return_types.contains_key(name.as_str()))
+        .filter(|name| {
+            generator.call_return_types.contains_key(name.as_str())
+                || matches!(name.as_str(), "__nw__FUl" | "__nwa__FUl")
+        })
         .cloned()
         .collect();
     // A call target with no prototype/definition (absent from `call_return_types`) was
@@ -403,7 +414,7 @@ pub fn lower_function(
                 // unprototyped callee is still implicit (mwcc creates its
                 // symbol at the call site; measured: AC file_io's fclose ->
                 // fflush keeps plain [fclose, fflush] order, no hoist).
-                if !prototyped_names.contains(name.as_str()) && seen.insert(name.clone()) {
+                if !generator.prototyped_names.contains(name.as_str()) && seen.insert(name.clone()) {
                     generator
                         .output
                         .implicit_external_callees
