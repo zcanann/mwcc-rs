@@ -82,6 +82,21 @@ pub enum LeadingFrameGuardStoreStyle {
     GuardHighFirstAfterDataUse,
 }
 
+/// Materialization schedule for a null-guarded run of member stores that mixes
+/// integer/pointer zero, floating zero, and incoming register values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuardedMemberInitializationStyle {
+    /// 2.3.3 materializes integer zero at the start, but delays the pooled float
+    /// zero until immediately before its first store and then reuses it.
+    LazyPooledFloat,
+    /// 2.4.x materializes integer zero and pooled float zero before all stores.
+    IntegerThenPooledFloat,
+    /// GC/2.0p1 reloads the pooled float zero immediately before every float store.
+    ReloadFloatPerStore,
+    /// The 4.x compilers load pooled float zero before materializing integer zero.
+    PooledFloatThenInteger,
+}
+
 /// Whole-family lowering of the fdlibm-style `frexp` transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrexpFamilyStyle {
@@ -723,6 +738,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         LeadingFrameGuardStoreStyle::StoreValueFirstAfterLoad
     }
 
+    fn guarded_member_initialization_style(&self) -> GuardedMemberInitializationStyle {
+        GuardedMemberInitializationStyle::IntegerThenPooledFloat
+    }
+
     fn frexp_family_style(&self) -> FrexpFamilyStyle {
         FrexpFamilyStyle::VirtualCompactFrame
     }
@@ -1118,6 +1137,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn guarded_member_initialization_style(&self) -> GuardedMemberInitializationStyle {
+        GuardedMemberInitializationStyle::PooledFloatThenInteger
+    }
+
     fn long_long_timer_style(&self) -> LongLongTimerStyle {
         LongLongTimerStyle::Unmodeled
     }
@@ -1208,6 +1231,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn guarded_member_initialization_style(&self) -> GuardedMemberInitializationStyle {
+        GuardedMemberInitializationStyle::PooledFloatThenInteger
+    }
+
     fn cxx_rtti_virtual_method_label_weight(&self, whole_file: bool) -> u8 {
         if whole_file { 4 } else { 5 }
     }
@@ -1355,6 +1382,10 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
 };
 
 impl CodegenProfile for Gc233Build163 {
+    fn guarded_member_initialization_style(&self) -> GuardedMemberInitializationStyle {
+        GuardedMemberInitializationStyle::LazyPooledFloat
+    }
+
     fn cxx_rtti_virtual_method_label_weight(&self, _whole_file: bool) -> u8 {
         1
     }
@@ -1620,6 +1651,10 @@ impl CodegenProfile for Gc233Build163 {
 #[derive(Debug)]
 pub struct Gc20Patch1;
 impl CodegenProfile for Gc20Patch1 {
+    fn guarded_member_initialization_style(&self) -> GuardedMemberInitializationStyle {
+        GuardedMemberInitializationStyle::ReloadFloatPerStore
+    }
+
     fn float_cast_value_store_first(&self) -> bool {
         true
     }

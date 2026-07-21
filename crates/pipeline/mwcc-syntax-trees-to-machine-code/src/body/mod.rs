@@ -75,6 +75,7 @@ pub(crate) use mwcc_syntax_trees::{
 pub(crate) use mwcc_target::Eabi;
 pub(crate) use mwcc_versions::{
     FixedAddressConstantStoreStyle, FrameConvention, GlobalAddressing,
+    GuardedMemberInitializationStyle,
     IntegerComparisonValueStyle, LongLongTimerStyle, NarrowComputedReturnStyle,
     NestedGlobalDispatchSchedule, PlainLinkageEpilogueStyle, PointerWalkerScheduleStyle,
     RaiseFamilyStyle, WideConstantAddSchedule,

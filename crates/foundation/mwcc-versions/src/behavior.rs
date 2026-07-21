@@ -20,7 +20,8 @@ use crate::profile::{
     FixedAddressConstantStoreStyle, FixedAddressParameterizedRmwStyle,
     FixedAddressPollAddressStyle, FixedAddressRmwStyle, FoldedFloatCompareLinkageStyle,
     FrameConvention, FrexpFamilyStyle, FunctionOrdinalAccountingStyle, GlobalArrayDecayStoreStyle,
-    GlobalArrayIndexStyle, IndexedRmwAssignmentStyle, IntCallResultConversionStyle,
+    GlobalArrayIndexStyle, GuardedMemberInitializationStyle, IndexedRmwAssignmentStyle,
+    IntCallResultConversionStyle,
     IntegerComparisonValueStyle, IntegerDagStyle, IntegerLoopStyle, IntegerSelectStyle,
     JumpTableBaseStyle, LeadingFrameGuardStoreStyle, LocalDataSymbolOrder, LogicalOrValueStyle,
     LongLongTimerStyle, MaterializationCopyStyle, MemCopyRemainderMaskStyle,
@@ -524,6 +525,8 @@ pub struct Behavior {
     pub nested_global_dispatch_schedule: NestedGlobalDispatchSchedule,
     /// Scheduling of a leading pointer store around a punned frame guard.
     pub leading_frame_guard_store_style: LeadingFrameGuardStoreStyle,
+    /// Materialization order for null-guarded constructor-style member stores.
+    pub guarded_member_initialization_style: GuardedMemberInitializationStyle,
     /// Whole-family schedule for the fdlibm-style `frexp` transaction.
     pub frexp_family_style: FrexpFamilyStyle,
     /// Additional anonymous labels retained around `frexp` when deferred
@@ -786,6 +789,10 @@ impl Behavior {
             long_long_timer_style: config.build.profile.long_long_timer_style(),
             nested_global_dispatch_schedule: config.build.profile.nested_global_dispatch_schedule(),
             leading_frame_guard_store_style: config.build.profile.leading_frame_guard_store_style(),
+            guarded_member_initialization_style: config
+                .build
+                .profile
+                .guarded_member_initialization_style(),
             frexp_family_style: config.build.profile.frexp_family_style(),
             frexp_deferred_label_bump: if config.flags.inline_deferred {
                 config.build.profile.frexp_deferred_label_bump()
@@ -1744,5 +1751,32 @@ mod tests {
         assert!(Behavior::resolve(&config).scheduler_enabled);
         config.flags.scheduler_enabled = false;
         assert!(!Behavior::resolve(&config).scheduler_enabled);
+    }
+
+    #[test]
+    fn guarded_member_initialization_tracks_measured_build_families() {
+        let style = |build| {
+            Behavior::resolve(&CompilerConfig::new(build)).guarded_member_initialization_style
+        };
+        assert_eq!(
+            style(build::GC_1_2_5N),
+            GuardedMemberInitializationStyle::LazyPooledFloat
+        );
+        assert_eq!(
+            style(build::GC_1_3_2),
+            GuardedMemberInitializationStyle::IntegerThenPooledFloat
+        );
+        assert_eq!(
+            style(build::GC_2_0P1),
+            GuardedMemberInitializationStyle::ReloadFloatPerStore
+        );
+        assert_eq!(
+            style(build::GC_3_0A3P1),
+            GuardedMemberInitializationStyle::PooledFloatThenInteger
+        );
+        assert_eq!(
+            style(build::WII_1_0),
+            GuardedMemberInitializationStyle::PooledFloatThenInteger
+        );
     }
 }

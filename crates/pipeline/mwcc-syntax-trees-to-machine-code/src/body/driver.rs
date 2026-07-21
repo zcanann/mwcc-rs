@@ -2316,6 +2316,9 @@ impl Generator {
         // it applies, leaving the straight-line paths below byte-identical.
         // A single ordered early-return guard over a value-tracked continuation, where the
         // constant fold does not apply — the real forward-branch form.
+        if self.try_guarded_member_initialization(function)? {
+            return Ok(());
+        }
         if self.try_ordered_early_return_branch(function)? {
             return Ok(());
         }

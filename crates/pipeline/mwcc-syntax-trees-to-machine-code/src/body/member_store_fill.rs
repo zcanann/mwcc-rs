@@ -3,7 +3,228 @@
 #[allow(unused_imports)]
 use super::*;
 
+#[derive(Clone, Copy)]
+enum GuardedMemberStoreSource {
+    General(u8),
+    IntegerZero,
+    FloatZero,
+}
+
+#[derive(Clone, Copy)]
+struct GuardedMemberStore {
+    offset: i16,
+    pointee: Pointee,
+    source: GuardedMemberStoreSource,
+}
+
 impl Generator {
+    /// Lower constructor-style initialization guarded by a null return:
+    /// `if (p == 0) return; p->i = 0; p->q = q; p->f = 0.0f; ...`.
+    ///
+    /// This is deliberately a whole-sequence matcher. The four measured MWCC
+    /// generations disagree about when a shared zero enters f0, and GC/2.0p1
+    /// reloads it for every floating store. Generic per-statement lowering loses
+    /// that scheduling provenance and cannot reproduce any one rule honestly.
+    pub(crate) fn try_guarded_member_initialization(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if function.return_type != Type::Void
+            || function.return_expression.is_some()
+            || !function.locals.is_empty()
+            || !function.guards.is_empty()
+            || function_makes_call(function)
+        {
+            return Ok(false);
+        }
+        let [Statement::If {
+            condition,
+            then_body,
+            else_body,
+        }, tail @ ..] = function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        if tail.len() < 2
+            || !matches!(then_body.as_slice(), [Statement::Return(None)])
+            || !else_body.is_empty()
+        {
+            return Ok(false);
+        }
+
+        let base_name = match condition {
+            Expression::Binary {
+                operator: BinaryOperator::Equal,
+                left,
+                right,
+            } if matches!(right.as_ref(), Expression::IntegerLiteral(0)) => {
+                let Expression::Variable(name) = left.as_ref() else {
+                    return Ok(false);
+                };
+                name
+            }
+            Expression::Binary {
+                operator: BinaryOperator::Equal,
+                left,
+                right,
+            } if matches!(left.as_ref(), Expression::IntegerLiteral(0)) => {
+                let Expression::Variable(name) = right.as_ref() else {
+                    return Ok(false);
+                };
+                name
+            }
+            _ => return Ok(false),
+        };
+        let Some(base_parameter) = function
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name == *base_name)
+        else {
+            return Ok(false);
+        };
+        if !matches!(
+            base_parameter.parameter_type,
+            Type::StructPointer { .. } | Type::Pointer(_)
+        ) {
+            return Ok(false);
+        }
+        let Some(base_register) = self.lookup_general(base_name) else {
+            return Ok(false);
+        };
+
+        let mut stores = Vec::with_capacity(tail.len());
+        let mut has_integer_zero = false;
+        let mut has_float_zero = false;
+        for statement in tail {
+            let Statement::Store {
+                target:
+                    Expression::Member {
+                        base,
+                        offset,
+                        member_type,
+                        index_stride: None,
+                    },
+                value,
+            } = statement
+            else {
+                return Ok(false);
+            };
+            if !matches!(base.as_ref(), Expression::Variable(name) if name == base_name) {
+                return Ok(false);
+            }
+            let Some(pointee) = pointee_of_type(*member_type) else {
+                return Ok(false);
+            };
+            let Ok(offset) = i16::try_from(*offset) else {
+                return Ok(false);
+            };
+            let source = match (pointee, value) {
+                (Pointee::Float, Expression::FloatLiteral(value)) if *value == 0.0 => {
+                    has_float_zero = true;
+                    GuardedMemberStoreSource::FloatZero
+                }
+                (Pointee::Double, _) | (Pointee::Float, _) => return Ok(false),
+                (_, Expression::IntegerLiteral(0)) => {
+                    has_integer_zero = true;
+                    GuardedMemberStoreSource::IntegerZero
+                }
+                (_, Expression::Variable(name)) => {
+                    let Some(register) = self.lookup_general(name) else {
+                        return Ok(false);
+                    };
+                    GuardedMemberStoreSource::General(register)
+                }
+                _ => return Ok(false),
+            };
+            stores.push(GuardedMemberStore {
+                offset,
+                pointee,
+                source,
+            });
+        }
+        // Keep the matcher scoped to the mixed schedule characterized across
+        // all supported builds. Uniform fills belong to their existing paths.
+        if !has_integer_zero || !has_float_zero {
+            return Ok(false);
+        }
+
+        let style = self.behavior.guarded_member_initialization_style;
+        let (options, condition_bit) =
+            if style == GuardedMemberInitializationStyle::PooledFloatThenInteger {
+                // The 4.x optimizer canonicalizes this pointer-null equality as
+                // a signed zero test (`cmpwi`); the older lines retain `cmplwi`.
+                self.output
+                    .instructions
+                    .push(Instruction::CompareWordImmediate {
+                        a: base_register,
+                        immediate: 0,
+                    });
+                (4, 2)
+            } else {
+                self.emit_condition_test(condition)?
+            };
+        // The return edge is folded into `beqlr` only after MWCC has allocated
+        // source-CFG ordinals. The 4.x optimizer retains four slots for this
+        // shape; the older lines retain two. Both precede the pooled zero.
+        self.output.anonymous_label_bump +=
+            if style == GuardedMemberInitializationStyle::PooledFloatThenInteger {
+                4
+            } else {
+                2
+            };
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalToLinkRegister {
+                options: options ^ 8,
+                condition_bit,
+            });
+
+        if matches!(
+            style,
+            GuardedMemberInitializationStyle::IntegerThenPooledFloat
+                | GuardedMemberInitializationStyle::ReloadFloatPerStore
+                | GuardedMemberInitializationStyle::LazyPooledFloat
+        ) {
+            self.load_integer_constant(GENERAL_SCRATCH, 0);
+        }
+        if matches!(
+            style,
+            GuardedMemberInitializationStyle::IntegerThenPooledFloat
+                | GuardedMemberInitializationStyle::PooledFloatThenInteger
+        ) {
+            self.load_float_literal(FLOAT_SCRATCH, 0.0, false);
+        }
+        if style == GuardedMemberInitializationStyle::PooledFloatThenInteger {
+            self.load_integer_constant(GENERAL_SCRATCH, 0);
+        }
+
+        let mut lazy_float_loaded = false;
+        for store in stores {
+            let source = match store.source {
+                GuardedMemberStoreSource::General(register) => register,
+                GuardedMemberStoreSource::IntegerZero => GENERAL_SCRATCH,
+                GuardedMemberStoreSource::FloatZero => {
+                    if style == GuardedMemberInitializationStyle::ReloadFloatPerStore
+                        || (style == GuardedMemberInitializationStyle::LazyPooledFloat
+                            && !lazy_float_loaded)
+                    {
+                        self.load_float_literal(FLOAT_SCRATCH, 0.0, false);
+                        lazy_float_loaded = true;
+                    }
+                    FLOAT_SCRATCH
+                }
+            };
+            self.output.instructions.push(displacement_store(
+                store.pointee,
+                source,
+                base_register,
+                store.offset,
+            )?);
+        }
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     /// Lower `p->a = value; p->b = C1; p->c = C2;` when `p` and `value` are
     /// incoming integer-class parameters. After the first store, mwcc reuses
     /// the dead value register for C1 and puts C2 in r0, materializing both
