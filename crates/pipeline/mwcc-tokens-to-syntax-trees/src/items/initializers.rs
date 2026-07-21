@@ -413,8 +413,7 @@ impl Parser {
             } else if let (
                 Some(nested),
                 Type::Struct {
-                    size: element_size,
-                    ..
+                    size: element_size, ..
                 },
                 Some(total),
             ) = (nested_tag.as_ref(), member_type, array_bytes)
@@ -780,11 +779,7 @@ impl Parser {
             let element = if element_braced {
                 self.parse_one_struct_relocated(tag, bytes.len() as u32, relocations)?
             } else {
-                self.parse_unbraced_struct_relocated(
-                    tag,
-                    bytes.len() as u32,
-                    relocations,
-                )?
+                self.parse_unbraced_struct_relocated(tag, bytes.len() as u32, relocations)?
             };
             bytes.extend(element);
             // A flat element's final field already consumed its separator from

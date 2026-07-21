@@ -47,7 +47,10 @@ impl Parser {
         }
 
         let Some(parameter_open) = (index..self.tokens.len()).find(|&cursor| {
-            matches!(self.tokens[cursor], Token::ParenOpen | Token::Semicolon | Token::BraceOpen)
+            matches!(
+                self.tokens[cursor],
+                Token::ParenOpen | Token::Semicolon | Token::BraceOpen
+            )
         }) else {
             return;
         };
@@ -84,9 +87,9 @@ impl Parser {
             return;
         }
 
-        let Some(body_open) = (parameter_close + 1..self.tokens.len()).find(|&cursor| {
-            matches!(self.tokens[cursor], Token::BraceOpen | Token::Semicolon)
-        }) else {
+        let Some(body_open) = (parameter_close + 1..self.tokens.len())
+            .find(|&cursor| matches!(self.tokens[cursor], Token::BraceOpen | Token::Semicolon))
+        else {
             return;
         };
         if self.tokens[body_open] != Token::BraceOpen
@@ -147,7 +150,10 @@ impl Parser {
         }
 
         let Some(parameter_open) = (start + 3..self.tokens.len()).find(|&cursor| {
-            matches!(self.tokens[cursor], Token::ParenOpen | Token::Semicolon | Token::BraceOpen)
+            matches!(
+                self.tokens[cursor],
+                Token::ParenOpen | Token::Semicolon | Token::BraceOpen
+            )
         }) else {
             return;
         };
@@ -166,9 +172,11 @@ impl Parser {
         while let Some(token) = self.tokens.get(cursor) {
             match token {
                 Token::Less if paren_depth == 1 => {
-                    if let Some(candidate) = self.tokens.get(cursor + 1).and_then(|token| {
-                        self.template_argument_type(token)
-                    }) {
+                    if let Some(candidate) = self
+                        .tokens
+                        .get(cursor + 1)
+                        .and_then(|token| self.template_argument_type(token))
+                    {
                         if self.tokens.get(cursor + 2) == Some(&Token::Greater) {
                             argument = Some(candidate);
                         }
@@ -190,33 +198,23 @@ impl Parser {
         let Some(argument) = argument else {
             return;
         };
-        let Some(body_open) = (parameter_close + 1..self.tokens.len()).find(|&cursor| {
-            matches!(self.tokens[cursor], Token::BraceOpen | Token::Semicolon)
-        }) else {
+        let Some(body_open) = (parameter_close + 1..self.tokens.len())
+            .find(|&cursor| matches!(self.tokens[cursor], Token::BraceOpen | Token::Semicolon))
+        else {
             return;
         };
-        let Some([
-            Token::BraceOpen,
-            Token::KeywordReturn,
-            Token::Identifier(object),
-            Token::Dot | Token::Arrow,
-            Token::Identifier(member),
-            Token::ParenOpen,
-            Token::ParenClose,
-            Token::Semicolon,
-            Token::BraceClose,
-        ]) = self.tokens.get(body_open..body_open + 9)
+        let Some(
+            [Token::BraceOpen, Token::KeywordReturn, Token::Identifier(object), Token::Dot | Token::Arrow, Token::Identifier(member), Token::ParenOpen, Token::ParenClose, Token::Semicolon, Token::BraceClose],
+        ) = self.tokens.get(body_open..body_open + 9)
         else {
             return;
         };
 
         let owner = (parameter_open + 1..parameter_close).find_map(|index| {
             match self.tokens.get(index..index + 3) {
-                Some([
-                    Token::Identifier(owner),
-                    Token::Ampersand,
-                    Token::Identifier(parameter),
-                ]) if parameter == object => Some(self.qualify_cxx_class_name(owner)),
+                Some(
+                    [Token::Identifier(owner), Token::Ampersand, Token::Identifier(parameter)],
+                ) if parameter == object => Some(self.qualify_cxx_class_name(owner)),
                 _ => None,
             }
         });
@@ -291,9 +289,7 @@ impl Parser {
             .into_iter()
             .flatten()
         {
-            if *candidate_argument != argument
-                || (owner != &qualified_class && owner != class)
-            {
+            if *candidate_argument != argument || (owner != &qualified_class && owner != class) {
                 continue;
             }
             if let Some(name) = self.resolve_instance_member_call(class, target_member, 0)? {
@@ -310,5 +306,4 @@ impl Parser {
             ))),
         }
     }
-
 }

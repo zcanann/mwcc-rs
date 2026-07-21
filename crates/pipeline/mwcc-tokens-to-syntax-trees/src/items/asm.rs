@@ -440,9 +440,11 @@ impl Parser {
                 }
                 let root = match self.advance() {
                     Token::Identifier(root) => root,
-                    other => return Err(Diagnostic::error(format!(
+                    other => {
+                        return Err(Diagnostic::error(format!(
                         "expected a struct name in an asm displacement expression, found {other}"
-                    ))),
+                    )))
+                    }
                 };
                 let struct_tag = self
                     .struct_typedefs
@@ -516,9 +518,11 @@ impl Parser {
                         .find(|(name, _, _)| *name == word)
                     {
                         Some(&(_, gpr, _)) => gpr,
-                        None => return Err(Diagnostic::error(format!(
+                        None => {
+                            return Err(Diagnostic::error(format!(
                             "asm memory operand base '{word}' must be a general-purpose register"
-                        ))),
+                        )))
+                        }
                     },
                 },
                 other => {

@@ -656,10 +656,10 @@ impl Parser {
             // ordinary item parser handle the concrete item that follows it.
             self.capture_explicit_template_forwarder_specialization();
             let skippable_inline_member = self.item_is_skippable_inline_member_definition();
-            let explicit_specialization = !skippable_inline_member
-                && self.consume_explicit_specialization_prefix();
-            let explicit_data_specialization = explicit_specialization
-                && self.item_is_explicit_data_specialization();
+            let explicit_specialization =
+                !skippable_inline_member && self.consume_explicit_specialization_prefix();
+            let explicit_data_specialization =
+                explicit_specialization && self.item_is_explicit_data_specialization();
             let start = self.position;
             // Inline is declaration state, not layout state. Capture it before
             // either the C++ layout parser succeeds or recovery skips a class.
@@ -923,9 +923,7 @@ impl Parser {
             functions,
             aggregate_definitions,
             global_aggregate_tags: std::mem::take(&mut self.global_structs),
-            function_parameter_aggregate_tags: std::mem::take(
-                &mut self.function_parameter_structs,
-            ),
+            function_parameter_aggregate_tags: std::mem::take(&mut self.function_parameter_structs),
             prototypes,
             named_prototype_parameters: self.named_prototype_parameters,
             inline_asm_symbols: std::mem::take(&mut self.inline_asm_symbols),
@@ -1512,9 +1510,9 @@ impl Parser {
             // qualifiers already ran.)
             if *self.peek() == Token::Asm && !is_inline {
                 if let Some(mut function) = self.parse_asm_function(is_static, is_weak, false)? {
-                    function.section = declspec_section.clone().or_else(|| {
-                        self.section_functions.get(&function.name).cloned()
-                    });
+                    function.section = declspec_section
+                        .clone()
+                        .or_else(|| self.section_functions.get(&function.name).cloned());
                     functions.push(function);
                 }
                 return Ok(());
@@ -1534,9 +1532,9 @@ impl Parser {
                     .any(|token| *token == Token::Asm);
             if asm_follows_return_type {
                 if let Some(mut function) = self.parse_asm_function(is_static, is_weak, true)? {
-                    function.section = declspec_section.clone().or_else(|| {
-                        self.section_functions.get(&function.name).cloned()
-                    });
+                    function.section = declspec_section
+                        .clone()
+                        .or_else(|| self.section_functions.get(&function.name).cloned());
                     functions.push(function);
                 }
                 return Ok(());
@@ -1671,8 +1669,7 @@ impl Parser {
                     let struct_tag = self.struct_typedefs.get(&existing).cloned();
                     let pointer_tag = self.struct_pointer_typedefs.get(&existing).cloned();
                     let array_entry = self.array_typedefs.get(&existing).cloned();
-                    let function_pointer =
-                        self.function_pointer_typedefs.get(&existing).cloned();
+                    let function_pointer = self.function_pointer_typedefs.get(&existing).cloned();
                     if struct_tag.is_some()
                         || pointer_tag.is_some()
                         || array_entry.is_some()
@@ -1970,21 +1967,22 @@ impl Parser {
             // `Return Class::method(args)`. Keep qualification separate from
             // ordinary identifiers: the ELF symbol is CodeWarrior-mangled and
             // the ABI carries an implicit `this` parameter in r3.
-            let qualified_scope = if *self.peek() == Token::Colon && *self.peek_at(1) == Token::Colon {
-                let mut scopes = Vec::new();
-                loop {
-                    scopes.push(name);
-                    self.advance();
-                    self.advance();
-                    name = self.parse_identifier()?;
-                    if *self.peek() != Token::Colon || *self.peek_at(1) != Token::Colon {
-                        break;
+            let qualified_scope =
+                if *self.peek() == Token::Colon && *self.peek_at(1) == Token::Colon {
+                    let mut scopes = Vec::new();
+                    loop {
+                        scopes.push(name);
+                        self.advance();
+                        self.advance();
+                        name = self.parse_identifier()?;
+                        if *self.peek() != Token::Colon || *self.peek_at(1) != Token::Colon {
+                            break;
+                        }
                     }
-                }
-                Some(scopes.join("::"))
-            } else {
-                None
-            };
+                    Some(scopes.join("::"))
+                } else {
+                    None
+                };
             let namespace_scope = qualified_scope
                 .as_ref()
                 .filter(|scope| self.cxx_namespaces.contains(scope.as_str()))
@@ -2069,9 +2067,7 @@ impl Parser {
                     // member path), while a scalar casts to a pointer of its own pointee.
                     // An unsupported scalar type is not recorded — it defers.
                     let cast_target = match (return_type, &tag) {
-                        (Type::StructPointer { .. }, _) => {
-                            Some(Type::Pointer(Pointee::Pointer))
-                        }
+                        (Type::StructPointer { .. }, _) => Some(Type::Pointer(Pointee::Pointer)),
                         (_, Some(tag)) => {
                             let size = self
                                 .structs
@@ -2394,8 +2390,7 @@ impl Parser {
                     let mut parameter_type = self.parse_type()?;
                     let cxx_source_type = parameter_type;
                     let cxx_is_wchar = self.last_type_was_wchar;
-                    let cxx_source_is_aggregate_value =
-                        self.last_type_was_aggregate_reference;
+                    let cxx_source_is_aggregate_value = self.last_type_was_aggregate_reference;
                     let cxx_pointee_const = self.last_type_was_const;
                     let cxx_pointer_const = self.last_pointer_const;
                     let cxx_pointer_depth = self.last_cxx_pointer_depth;
@@ -2648,11 +2643,8 @@ impl Parser {
                 }
             } else if self.cplusplus && name != "main" && !inherited_c_linkage {
                 let source_name = name.clone();
-                name = self.mangle_typed_free_function(
-                    &source_name,
-                    &cxx_parameters,
-                    is_variadic,
-                )?;
+                name =
+                    self.mangle_typed_free_function(&source_name, &cxx_parameters, is_variadic)?;
                 self.register_free_cxx_function(
                     &source_name,
                     &name,
@@ -2663,7 +2655,8 @@ impl Parser {
                     is_variadic,
                 );
                 if let Some(tag) = &return_struct_tag {
-                    self.function_return_structs.insert(name.clone(), tag.clone());
+                    self.function_return_structs
+                        .insert(name.clone(), tag.clone());
                 }
             }
 
@@ -2836,7 +2829,10 @@ impl Parser {
                         };
                         if destructor_scope.is_some() && class.has_virtual_destructor {
                             function.return_type = Type::StructPointer {
-                                element_size: self.structs.get(scope).map_or(0, |layout| layout.size),
+                                element_size: self
+                                    .structs
+                                    .get(scope)
+                                    .map_or(0, |layout| layout.size),
                             };
                             function.statements = vec![Statement::If {
                                 condition: Expression::Variable("this".to_string()),
@@ -2845,7 +2841,9 @@ impl Parser {
                                     Statement::If {
                                         condition: Expression::Binary {
                                             operator: mwcc_syntax_trees::BinaryOperator::Greater,
-                                            left: Box::new(Expression::Variable("__destroy".to_string())),
+                                            left: Box::new(Expression::Variable(
+                                                "__destroy".to_string(),
+                                            )),
                                             right: Box::new(Expression::IntegerLiteral(0)),
                                         },
                                         then_body: vec![Statement::Expression(Expression::Call {
@@ -2853,7 +2851,9 @@ impl Parser {
                                                 .cxx_delete_forwarder
                                                 .clone()
                                                 .unwrap_or_else(|| "__dl__FPv".to_string()),
-                                            arguments: vec![Expression::Variable("this".to_string())],
+                                            arguments: vec![Expression::Variable(
+                                                "this".to_string(),
+                                            )],
                                         })],
                                         else_body: Vec::new(),
                                     },
@@ -2865,15 +2865,11 @@ impl Parser {
 
                             if !globals.iter().any(|global| global.name == vtable) {
                                 let table_size = 8 + class.virtual_slots.max(1) * 4;
-                                let mut data_relocations =
-                                    vec![(8, function.name.clone(), 0)];
+                                let mut data_relocations = vec![(8, function.name.clone(), 0)];
                                 data_relocations.extend(
-                                    class
-                                        .virtual_definitions
-                                        .iter()
-                                        .map(|(offset, name)| {
-                                            (u32::from(*offset), name.clone(), 0)
-                                        }),
+                                    class.virtual_definitions.iter().map(|(offset, name)| {
+                                        (u32::from(*offset), name.clone(), 0)
+                                    }),
                                 );
                                 globals.push(GlobalDeclaration {
                                     declared_type: Type::Struct {
@@ -2911,8 +2907,7 @@ impl Parser {
             }
             function.is_weak = function_is_weak;
             function.section = declspec_section.clone().or(proto_section);
-            function.preceded_by_asm =
-                functions.iter().any(|earlier| earlier.asm_body.is_some());
+            function.preceded_by_asm = functions.iter().any(|earlier| earlier.asm_body.is_some());
             function.text_deferred = materialize_by_calls;
             functions.push(function);
         }
@@ -3706,33 +3701,34 @@ impl Parser {
                                 data_bytes = Some(bytes);
                                 Some(explicit.unwrap_or(count))
                             } else {
-                            self.expect(Token::BraceOpen)?;
-                            let mut bytes = Vec::new();
-                            let mut count = 0u16;
-                            loop {
-                                if *self.peek() == Token::BraceClose {
-                                    break;
-                                }
-                                // A float-literal element (optionally negated) keeps the direct
-                                // read; any other element is a CONSTANT EXPRESSION — enums,
-                                // shifts, arithmetic (`1 << 4`, `-A`) — parsed and folded.
-                                let is_float = matches!(self.peek(), Token::FloatLiteral(_))
-                                    || (*self.peek() == Token::Minus
-                                        && matches!(self.peek_at(1), Token::FloatLiteral(_)));
-                                if is_float {
-                                    let negative = self.eat_keyword(Token::Minus);
-                                    let Token::FloatLiteral(value) = self.advance().clone() else {
-                                        unreachable!()
-                                    };
-                                    let value = if negative { -value } else { value };
-                                    match declared_type {
+                                self.expect(Token::BraceOpen)?;
+                                let mut bytes = Vec::new();
+                                let mut count = 0u16;
+                                loop {
+                                    if *self.peek() == Token::BraceClose {
+                                        break;
+                                    }
+                                    // A float-literal element (optionally negated) keeps the direct
+                                    // read; any other element is a CONSTANT EXPRESSION — enums,
+                                    // shifts, arithmetic (`1 << 4`, `-A`) — parsed and folded.
+                                    let is_float = matches!(self.peek(), Token::FloatLiteral(_))
+                                        || (*self.peek() == Token::Minus
+                                            && matches!(self.peek_at(1), Token::FloatLiteral(_)));
+                                    if is_float {
+                                        let negative = self.eat_keyword(Token::Minus);
+                                        let Token::FloatLiteral(value) = self.advance().clone()
+                                        else {
+                                            unreachable!()
+                                        };
+                                        let value = if negative { -value } else { value };
+                                        match declared_type {
                                         Type::Float => bytes.extend_from_slice(&(value as f32).to_be_bytes()),
                                         Type::Double => bytes.extend_from_slice(&value.to_be_bytes()),
                                         _ => return Err(Diagnostic::error("a float element in an integer static array is not supported yet (roadmap)")),
                                     }
-                                } else {
-                                    let value = self.parse_integer_constant()?;
-                                    match declared_type {
+                                    } else {
+                                        let value = self.parse_integer_constant()?;
+                                        match declared_type {
                                         Type::Float => bytes.extend_from_slice(&(value as f32).to_be_bytes()),
                                         Type::Double => bytes.extend_from_slice(&(value as f64).to_be_bytes()),
                                         Type::Int | Type::UnsignedInt => bytes.extend_from_slice(&(value as i32).to_be_bytes()),
@@ -3740,15 +3736,15 @@ impl Parser {
                                         Type::Short | Type::UnsignedShort => bytes.extend_from_slice(&(value as i16).to_be_bytes()),
                                         _ => return Err(Diagnostic::error("a static local array initializer element is not supported yet (roadmap)")),
                                     }
+                                    }
+                                    count += 1;
+                                    if !self.eat_keyword(Token::Comma) {
+                                        break;
+                                    }
                                 }
-                                count += 1;
-                                if !self.eat_keyword(Token::Comma) {
-                                    break;
-                                }
-                            }
-                            self.expect(Token::BraceClose)?;
-                            data_bytes = Some(bytes);
-                            Some(explicit.unwrap_or(count))
+                                self.expect(Token::BraceClose)?;
+                                data_bytes = Some(bytes);
+                                Some(explicit.unwrap_or(count))
                             }
                         }
                     } else {
