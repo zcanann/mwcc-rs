@@ -6,9 +6,11 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 import contextlib
 import io
+import os
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 
 from parity_audit import build_audit
@@ -40,6 +42,7 @@ from reference_parity import (
     parity_metadata,
     parse_args as parse_reference_args,
     result_cache_name,
+    run_row,
     selection_is_probability_sample,
     stable_sample,
     verdict_line,
@@ -187,6 +190,41 @@ class IdentityTests(unittest.TestCase):
                 (3, "later", "LATER"),
             ],
         )
+
+    def test_reference_timeout_kills_the_entire_refctx_process_group(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            child_pid = root / "child.pid"
+            refctx = root / "refctx.sh"
+            refctx.write_text(
+                "#!/bin/sh\n"
+                "sleep 60 &\n"
+                'echo "$!" > "$PARITY_TEST_CHILD_PID"\n'
+                "wait\n",
+                encoding="utf-8",
+            )
+            refctx.chmod(0o755)
+            previous = os.environ.get("PARITY_TEST_CHILD_PID")
+            os.environ["PARITY_TEST_CHILD_PID"] = str(child_pid)
+            try:
+                status, detail = run_row(
+                    row(), root, refctx, root / "compiler", 1, False
+                )
+            finally:
+                if previous is None:
+                    os.environ.pop("PARITY_TEST_CHILD_PID", None)
+                else:
+                    os.environ["PARITY_TEST_CHILD_PID"] = previous
+            self.assertEqual((status, detail), ("HARNESS", "timed out after 1s"))
+            pid = int(child_pid.read_text(encoding="utf-8"))
+            for _ in range(20):
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail(f"timed-out refctx child {pid} is still running")
 
     def test_result_cache_name_changes_with_either_tool_input(self):
         baseline = result_cache_name("a" * 64, "b" * 64)

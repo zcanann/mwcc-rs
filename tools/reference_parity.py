@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -285,18 +286,29 @@ def run_row(
     environment["MWCC_BIN"] = str(compiler)
     environment["MWCC_EXPERIMENTAL_BUILDS"] = "1"
     environment["REFCTX_CODE_PROJECTION"] = "1" if code_projection else "0"
+    process = subprocess.Popen(
+        command,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=environment,
+        start_new_session=True,
+    )
     try:
-        result = subprocess.run(
-            command,
-            text=True,
-            capture_output=True,
-            env=environment,
-            timeout=timeout,
-        )
-        output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
-        return classify(output, result.returncode), output
+        stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        # refctx is a shell pipeline. Killing only that shell leaves the actual
+        # compiler running and every timed-out audit row continues consuming a
+        # core. Give each row its own session and terminate the entire process
+        # group before returning the timeout observation.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.communicate()
         return "HARNESS", f"timed out after {timeout}s"
+    output = "\n".join(part.strip() for part in (stdout, stderr) if part.strip())
+    return classify(output, process.returncode), output
 
 
 def bounded_completion_order(rows, executor, observe, jobs):
