@@ -1546,7 +1546,7 @@ blr\n\
                 (8, "value__6ReaderFv".to_string(), 0),
             ]
         );
-        assert_eq!(vtable.functions_before, 0);
+        assert_eq!(vtable.functions_before, 2);
     }
 
     #[test]
@@ -1573,7 +1573,7 @@ blr\n\
             .iter()
             .find(|global| global.name == "__vt__6Reader")
             .unwrap();
-        assert_eq!(vtable.functions_before, 1);
+        assert_eq!(vtable.functions_before, 2);
     }
 
     #[test]

@@ -58,7 +58,12 @@ pub fn materialize(unit: &mut TranslationUnit) {
             continue;
         }
         let rtti = rtti_symbol(class);
+        let mut owner_position = None;
         if let Some(mut vtable) = vtables.remove(&vtable_symbol(class)) {
+            owner_position = Some((
+                vtable.non_static_functions_before,
+                vtable.functions_before,
+            ));
             materialize_vtable_headers(&mut vtable, class, &rtti);
             generated.push(vtable);
         }
@@ -105,14 +110,19 @@ pub fn materialize(unit: &mut TranslationUnit) {
         // order. Store field 1 before field 0 so RTTI handles appear in their
         // measured address order (`name`, then optional base table).
         relocations.push((0, name, 0));
-        generated.push(data_global(
+        let mut handle = data_global(
             rtti,
             vec![0; 8],
             relocations,
             false,
             true,
             4,
-        ));
+        );
+        if let Some((non_static_functions_before, functions_before)) = owner_position {
+            handle.non_static_functions_before = non_static_functions_before;
+            handle.functions_before = functions_before;
+        }
+        generated.push(handle);
     }
 
     let insertion = insertion.min(retained.len());

@@ -912,6 +912,7 @@ impl Parser {
                 self.function_sources.push(None);
             }
         }
+        cxx_vtables::position_after_functions(&mut globals, &functions);
         debug_assert_eq!(
             functions.len(),
             self.function_sources.len(),
@@ -2998,11 +2999,6 @@ impl Parser {
                                     class,
                                     vtable,
                                     Some(&function.name),
-                                    functions
-                                        .iter()
-                                        .filter(|function| !function.is_static)
-                                        .count(),
-                                    functions.len(),
                                 ));
                             }
                         } else if constructor_scope.is_some() {
@@ -3037,11 +3033,6 @@ impl Parser {
                             class,
                             vtable,
                             destructor.as_deref(),
-                            functions
-                                .iter()
-                                .filter(|function| !function.is_static)
-                                .count(),
-                            functions.len(),
                         ));
                     }
                 }

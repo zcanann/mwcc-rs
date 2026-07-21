@@ -3,7 +3,7 @@
 //! Class parsing records slots and ownership; function lowering only decides
 //! when an owner is defined. This module owns the shared object-data shape.
 
-use mwcc_syntax_trees::{GlobalDeclaration, Type};
+use mwcc_syntax_trees::{Function, GlobalDeclaration, Type};
 
 use crate::cxx::ClassLayout;
 
@@ -14,8 +14,6 @@ pub(super) fn global(
     class: &ClassLayout,
     name: String,
     destructor: Option<&str>,
-    non_static_functions_before: usize,
-    functions_before: usize,
 ) -> GlobalDeclaration {
     let table_size: usize = class
         .vtable_components
@@ -53,8 +51,8 @@ pub(super) fn global(
         is_static: false,
         is_volatile: false,
         is_weak: false,
-        non_static_functions_before,
-        functions_before,
+        non_static_functions_before: 0,
+        functions_before: 0,
         array_length: None,
         array_length_inferred: false,
         initializer: None,
@@ -64,5 +62,24 @@ pub(super) fn global(
         data_relocations: relocations,
         section: None,
         attribute_alignment: None,
+    }
+}
+
+/// Compiler-generated vtable groups are emitted after the translation unit's
+/// ordinary function stream, regardless of which key function owns them.
+pub(super) fn position_after_functions(
+    globals: &mut [GlobalDeclaration],
+    functions: &[Function],
+) {
+    let non_static_functions = functions
+        .iter()
+        .filter(|function| !function.is_static)
+        .count();
+    for global in globals
+        .iter_mut()
+        .filter(|global| global.name.starts_with("__vt__"))
+    {
+        global.non_static_functions_before = non_static_functions;
+        global.functions_before = functions.len();
     }
 }
