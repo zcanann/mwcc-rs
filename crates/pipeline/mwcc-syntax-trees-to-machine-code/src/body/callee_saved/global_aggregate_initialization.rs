@@ -17,7 +17,7 @@ fn call_with_global_address(statement: &Statement) -> Option<(&str, &str)> {
     Some((name, global))
 }
 
-fn constant_member_store(statement: &Statement) -> Option<(&str, u16, i16)> {
+fn constant_member_store(statement: &Statement) -> Option<(&str, i16, i16)> {
     let Statement::Store {
         target:
             Expression::Member {
@@ -39,9 +39,142 @@ fn constant_member_store(statement: &Statement) -> Option<(&str, u16, i16)> {
     };
     Some((
         global,
-        u16::try_from(*offset).ok()?,
+        i16::try_from(*offset).ok()?,
         i16::try_from(constant_value(value)?).ok()?,
     ))
+}
+
+struct PredecrementPlan<'a> {
+    global: &'a str,
+    callees: [&'a str; 3],
+    stores: [(i16, i16); 3],
+    return_value: i16,
+}
+
+fn emit_predecrement(generator: &mut Generator, plan: &PredecrementPlan<'_>) {
+    generator.non_leaf = true;
+    generator.frame_size = 16;
+    generator.output.pre_scheduled = true;
+
+    generator
+        .output
+        .instructions
+        .push(Instruction::StoreWordWithUpdate {
+            s: 1,
+            a: 1,
+            offset: -16,
+        });
+    generator
+        .output
+        .instructions
+        .push(Instruction::MoveFromLinkRegister { d: 0 });
+    generator.record_relocation(RelocationKind::Addr16Ha, plan.global);
+    generator
+        .output
+        .instructions
+        .push(Instruction::load_immediate_shifted(3, 0));
+    generator.output.instructions.push(Instruction::StoreWord {
+        s: 0,
+        a: 1,
+        offset: 20,
+    });
+    generator.record_relocation(RelocationKind::Addr16Lo, plan.global);
+    generator.output.instructions.push(Instruction::AddImmediate {
+        d: 3,
+        a: 3,
+        immediate: 0,
+    });
+    generator.record_relocation(RelocationKind::Rel24, plan.callees[0]);
+    generator
+        .output
+        .instructions
+        .push(Instruction::BranchAndLink {
+            target: plan.callees[0].to_string(),
+        });
+
+    generator.record_relocation(RelocationKind::Addr16Ha, plan.global);
+    generator
+        .output
+        .instructions
+        .push(Instruction::load_immediate_shifted(3, 0));
+    generator.record_relocation(RelocationKind::Addr16Lo, plan.global);
+    generator.output.instructions.push(Instruction::AddImmediate {
+        d: 3,
+        a: 3,
+        immediate: 0,
+    });
+    generator.record_relocation(RelocationKind::Rel24, plan.callees[1]);
+    generator
+        .output
+        .instructions
+        .push(Instruction::BranchAndLink {
+            target: plan.callees[1].to_string(),
+        });
+
+    generator.record_relocation(RelocationKind::Addr16Ha, plan.global);
+    generator
+        .output
+        .instructions
+        .push(Instruction::load_immediate_shifted(3, 0));
+    generator
+        .output
+        .instructions
+        .push(Instruction::load_immediate(4, plan.stores[0].1));
+    generator.record_relocation(RelocationKind::Addr16Lo, plan.global);
+    generator.output.instructions.push(Instruction::AddImmediate {
+        d: 3,
+        a: 3,
+        immediate: 0,
+    });
+    generator
+        .output
+        .instructions
+        .push(Instruction::load_immediate(0, plan.stores[2].1));
+    generator.output.instructions.push(Instruction::StoreWord {
+        s: 4,
+        a: 3,
+        offset: plan.stores[0].0,
+    });
+    generator.output.instructions.push(Instruction::StoreWord {
+        s: 4,
+        a: 3,
+        offset: plan.stores[1].0,
+    });
+    generator.output.instructions.push(Instruction::StoreWord {
+        s: 0,
+        a: 3,
+        offset: plan.stores[2].0,
+    });
+    generator.record_relocation(RelocationKind::Rel24, plan.callees[2]);
+    generator
+        .output
+        .instructions
+        .push(Instruction::BranchAndLink {
+            target: plan.callees[2].to_string(),
+        });
+
+    generator.output.instructions.push(Instruction::LoadWord {
+        d: 0,
+        a: 1,
+        offset: 20,
+    });
+    generator
+        .output
+        .instructions
+        .push(Instruction::load_immediate(3, plan.return_value));
+    generator
+        .output
+        .instructions
+        .push(Instruction::MoveToLinkRegister { s: 0 });
+    generator.output.instructions.push(Instruction::AddImmediate {
+        d: 1,
+        a: 1,
+        immediate: 16,
+    });
+    generator
+        .output
+        .instructions
+        .push(Instruction::BranchToLinkRegister);
 }
 
 impl Generator {
@@ -58,8 +191,7 @@ impl Generator {
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
-        if self.behavior.frame_convention != FrameConvention::LinkageFirst
-            || !self.frame_slots.is_empty()
+        if !self.frame_slots.is_empty()
             || !function.parameters.is_empty()
             || !function.locals.is_empty()
             || !function.guards.is_empty()
@@ -108,6 +240,26 @@ impl Generator {
             || !(offset0 < offset1 && offset1 < offset2)
             || !matches!(self.globals.get(global), Some(Type::Struct { size, .. }) if *size > 8)
         {
+            return Ok(false);
+        }
+
+        if self.behavior.frame_convention == FrameConvention::Predecrement {
+            emit_predecrement(
+                self,
+                &PredecrementPlan {
+                    global,
+                    callees: [first_callee, second_callee, final_callee],
+                    stores: [
+                        (offset0, value0),
+                        (offset1, value1),
+                        (offset2, value2),
+                    ],
+                    return_value,
+                },
+            );
+            return Ok(true);
+        }
+        if self.behavior.frame_convention != FrameConvention::LinkageFirst {
             return Ok(false);
         }
 
@@ -170,7 +322,7 @@ impl Generator {
         self.output.instructions.push(Instruction::StoreWord {
             s: 3,
             a: 31,
-            offset: offset0 as i16,
+            offset: offset0,
         });
         self.output
             .instructions
@@ -178,7 +330,7 @@ impl Generator {
         self.output.instructions.push(Instruction::StoreWord {
             s: 3,
             a: 31,
-            offset: offset1 as i16,
+            offset: offset1,
         });
         self.output
             .instructions
@@ -186,7 +338,7 @@ impl Generator {
         self.output.instructions.push(Instruction::StoreWord {
             s: 0,
             a: 31,
-            offset: offset2 as i16,
+            offset: offset2,
         });
         self.record_relocation(RelocationKind::Rel24, final_callee);
         self.output.instructions.push(Instruction::BranchAndLink {

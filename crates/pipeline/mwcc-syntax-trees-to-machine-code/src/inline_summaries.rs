@@ -40,6 +40,13 @@ pub(crate) struct StaticCallWrapperSummary {
     pub(crate) arguments: Vec<Expression>,
 }
 
+/// A two-pointer wrapper whose entire body forwards to a fixed-size byte copy.
+#[derive(Clone, Debug)]
+pub(crate) struct FixedSizeCopySummary {
+    pub(crate) callee: String,
+    pub(crate) byte_count: i16,
+}
+
 /// A NULL-terminated function-pointer table walker eligible for whole-file
 /// inlining. The loop body is summarized to its only externally visible input:
 /// the table symbol whose entries it invokes.
@@ -72,6 +79,7 @@ pub struct InlineSummaries {
     pointer_walkers: HashMap<String, PointerWalkerSummary>,
     unoptimized_local_selects: HashMap<String, UnoptimizedLocalSelectSummary>,
     byte_appends: HashMap<String, ByteAppendSummary>,
+    fixed_size_copies: HashMap<String, FixedSizeCopySummary>,
     ipa_elided_functions: HashSet<String>,
 }
 
@@ -109,6 +117,11 @@ impl InlineSummaries {
             if let Some(summary) = summarize_static_call_wrapper(function) {
                 summaries
                     .static_call_wrappers
+                    .insert(function.name.clone(), summary);
+            }
+            if let Some(summary) = summarize_fixed_size_copy(function) {
+                summaries
+                    .fixed_size_copies
                     .insert(function.name.clone(), summary);
             }
             if let Some(summary) = summarize_call_wrapper(function, false) {
@@ -184,6 +197,10 @@ impl InlineSummaries {
 
     pub(crate) fn static_call_wrapper(&self, name: &str) -> Option<&StaticCallWrapperSummary> {
         self.static_call_wrappers.get(name)
+    }
+
+    pub(crate) fn fixed_size_copy(&self, name: &str) -> Option<&FixedSizeCopySummary> {
+        self.fixed_size_copies.get(name)
     }
 
     pub(crate) fn pointer_walker(&self, name: &str) -> Option<&PointerWalkerSummary> {
@@ -381,6 +398,40 @@ fn is_plain_void_helper(function: &Function) -> bool {
 
 fn summarize_static_call_wrapper(function: &Function) -> Option<StaticCallWrapperSummary> {
     summarize_call_wrapper(function, true)
+}
+
+fn summarize_fixed_size_copy(function: &Function) -> Option<FixedSizeCopySummary> {
+    if function.return_type != Type::Void
+        || function.parameters.len() != 2
+        || !function.locals.is_empty()
+        || !function.guards.is_empty()
+        || function.return_expression.is_some()
+        || !function.parameters.iter().all(|parameter| {
+            matches!(
+                parameter.parameter_type,
+                Type::Pointer(_) | Type::StructPointer { .. }
+            )
+        })
+    {
+        return None;
+    }
+    let [Statement::Expression(Expression::Call { name, arguments })] =
+        function.statements.as_slice()
+    else {
+        return None;
+    };
+    let [Expression::Variable(first), Expression::Variable(second), byte_count] =
+        arguments.as_slice()
+    else {
+        return None;
+    };
+    if first != &function.parameters[0].name || second != &function.parameters[1].name {
+        return None;
+    }
+    Some(FixedSizeCopySummary {
+        callee: name.clone(),
+        byte_count: i16::try_from(constant_value(byte_count)?).ok()?,
+    })
 }
 
 fn summarize_call_wrapper(
@@ -664,6 +715,37 @@ mod tests {
         assert!(near_misses.static_call_wrapper("external").is_none());
         assert!(near_misses.static_call_wrapper("recursive").is_none());
         assert!(near_misses.static_call_wrapper("extra").is_none());
+    }
+
+    #[test]
+    fn fixed_size_copy_requires_two_forwarded_pointer_parameters() {
+        let mut function = wrapper(
+            "copy_record",
+            false,
+            vec![Statement::Expression(Expression::Call {
+                name: "copy_bytes".into(),
+                arguments: vec![
+                    Expression::Variable("destination".into()),
+                    Expression::Variable("source".into()),
+                    Expression::IntegerLiteral(12),
+                ],
+            })],
+        );
+        function.parameters = vec![
+            Parameter {
+                parameter_type: Type::Pointer(Pointee::Char),
+                name: "destination".into(),
+            },
+            Parameter {
+                parameter_type: Type::Pointer(Pointee::Char),
+                name: "source".into(),
+            },
+        ];
+
+        let summaries = InlineSummaries::analyze(&[function]);
+        let copy = summaries.fixed_size_copy("copy_record").unwrap();
+        assert_eq!(copy.callee, "copy_bytes");
+        assert_eq!(copy.byte_count, 12);
     }
 
     #[test]

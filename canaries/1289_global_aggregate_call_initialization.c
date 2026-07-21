@@ -1,6 +1,6 @@
 // A global aggregate whose address stays live across initialization calls and
 // a constant member-store batch. The legacy compiler parks the base in r31.
-// builds: GC/1.1p1
+// builds: GC/1.1p1 GC/1.3
 // flags: -pool off -str readonly -enum min -sdatathreshold 0
 typedef struct Event {
     int kind;
