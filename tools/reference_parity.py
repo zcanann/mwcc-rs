@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -296,6 +296,37 @@ def run_row(
         return "HARNESS", f"timed out after {timeout}s"
 
 
+def bounded_completion_order(rows, executor, observe, jobs):
+    """Yield finished observations while keeping at most ``jobs`` in flight.
+
+    A census can contain tens of thousands of rows. Submitting all of them at
+    once wastes memory, and waiting for inventory order can strand already
+    completed evidence behind one giant TU. Completion-order cache writes make
+    interruption genuinely resumable without changing row classification.
+    """
+
+    indexed = iter(enumerate(rows, 1))
+    pending = {}
+
+    def submit_one() -> bool:
+        try:
+            source_index, row = next(indexed)
+        except StopIteration:
+            return False
+        pending[executor.submit(observe, row)] = (source_index, row)
+        return True
+
+    for _ in range(jobs):
+        if not submit_one():
+            break
+    while pending:
+        finished, _ = wait(pending, return_when=FIRST_COMPLETED)
+        for future in finished:
+            source_index, row = pending.pop(future)
+            yield source_index, row, future.result()
+            submit_one()
+
+
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inventory", type=Path, help="reuse a generated inventory JSON")
@@ -456,11 +487,10 @@ def main() -> int:
     with cache.open("a", encoding="utf-8") as cache_output, ThreadPoolExecutor(
         max_workers=args.jobs
     ) as executor:
-        # executor.map preserves inventory order for deterministic logs while
-        # letting later rows run behind an expensive TU. Results are appended
-        # only by this main thread, so JSONL records cannot interleave.
-        for index, (row, (record, was_cached)) in enumerate(
-            zip(rows, executor.map(observe, rows)), 1
+        # Results are appended only by this main thread, so JSONL records cannot
+        # interleave even though expensive rows complete out of inventory order.
+        for completed, (source_index, row, (record, was_cached)) in enumerate(
+            bounded_completion_order(rows, executor, observe, args.jobs), 1
         ):
             status = record["status"]
             detail = record.get("output", "")
@@ -477,7 +507,7 @@ def main() -> int:
                 code_counts[code_status] += 1
             first_detail = verdict_line(detail)
             print(
-                f'[{index}/{len(rows)}] {status:<17} {row["project"]} '
+                f'[{completed}/{len(rows)}; row {source_index}] {status:<17} {row["project"]} '
                 f'{row["variant"]} {row["mw_version"]} {row["source"]} — {first_detail}'
             )
 

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import contextlib
 import io
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 
 from parity_audit import build_audit
@@ -27,6 +29,7 @@ from parity_frontier import build_frontier
 from parity_identity import configuration_id
 from parity_loop import most_comparable_other_tool, parse_args as parse_loop_args
 from reference_parity import (
+    bounded_completion_order,
     code_verdict,
     harness_fingerprint,
     immutable_compiler_snapshot,
@@ -132,6 +135,30 @@ class IdentityTests(unittest.TestCase):
     def test_reference_runner_parallelism_is_explicit_and_bounded(self):
         self.assertEqual(parse_reference_args([]).jobs, 1)
         self.assertEqual(parse_reference_args(["--jobs", "4"]).jobs, 4)
+
+        release_slow = threading.Event()
+
+        def observe(value):
+            if value == "slow":
+                release_slow.wait()
+            return value.upper()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            observations = bounded_completion_order(
+                ["slow", "fast", "later"], executor, observe, 2
+            )
+            first = next(observations)
+            release_slow.set()
+            completed = [first, *observations]
+        self.assertEqual(first, (2, "fast", "FAST"))
+        self.assertCountEqual(
+            completed,
+            [
+                (1, "slow", "SLOW"),
+                (2, "fast", "FAST"),
+                (3, "later", "LATER"),
+            ],
+        )
 
     def test_result_cache_name_changes_with_either_tool_input(self):
         baseline = result_cache_name("a" * 64, "b" * 64)
