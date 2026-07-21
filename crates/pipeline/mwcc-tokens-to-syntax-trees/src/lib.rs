@@ -1879,6 +1879,30 @@ blr\n\
     }
 
     #[test]
+    fn recovers_nested_template_base_and_parameter_value_layouts() {
+        let source = r#"
+            class Allocator { public: int initial; int delta; };
+            template <typename T, typename Adapter> class Container {
+            public:
+                Adapter allocator;
+                T* head;
+            };
+            template <typename T> class Pool : public Container<T, Allocator> {};
+            class Manager { public: Pool<int> active; int read(); };
+            int Manager::read() { return active.allocator.delta + *active.head; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(unit.functions[0].return_expression.is_some());
+    }
+
+    #[test]
     fn recovers_class_layout_with_function_pointer_constructor_parameters() {
         let source = r#"
             class Tween {

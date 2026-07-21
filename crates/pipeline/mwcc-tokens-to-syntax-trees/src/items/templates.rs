@@ -1,4 +1,4 @@
-//! Layout recovery for skipped single-parameter C++ struct templates.
+//! Symbolic layout recovery for skipped C++ struct and class templates.
 //!
 //! The general C++ parser does not yet compile template definitions. We still
 //! need their concrete instance layout when later non-template functions use a
@@ -8,6 +8,7 @@
 use super::{type_alignment, type_size};
 use crate::parser::{
     Parser, StructField, StructLayout, StructTemplate, TemplateField, TemplateFieldType,
+    TemplateTypePattern,
 };
 use mwcc_syntax_trees::{Pointee, Type};
 use mwcc_tokens::Token;
@@ -29,6 +30,14 @@ fn template_pointer_type(declared: Option<Type>) -> Type {
         Some(Type::Pointer(_) | Type::StructPointer { .. }) => Type::Pointer(Pointee::Pointer),
         Some(Type::Void) | None => Type::StructPointer { element_size: 0 },
     }
+}
+
+#[derive(Clone)]
+struct ResolvedTemplateType {
+    declared: Type,
+    known: bool,
+    tag: Option<String>,
+    layout: Option<StructLayout>,
 }
 
 impl Parser {
@@ -215,34 +224,151 @@ impl Parser {
         template_name: &str,
         argument: Option<Type>,
     ) -> Option<StructLayout> {
+        let arguments = [ResolvedTemplateType {
+            declared: argument.unwrap_or(Type::Void),
+            known: argument.is_some(),
+            tag: None,
+            layout: None,
+        }];
+        self.instantiate_struct_template_layout_with_arguments(template_name, &arguments)
+    }
+
+    fn resolve_template_pattern(
+        &self,
+        pattern: &TemplateTypePattern,
+        arguments: &[ResolvedTemplateType],
+    ) -> Option<ResolvedTemplateType> {
+        match pattern {
+            TemplateTypePattern::Parameter(index) => arguments.get(*index).cloned(),
+            TemplateTypePattern::Named(name) => {
+                let layout = self.structs.get(name)?.clone();
+                Some(ResolvedTemplateType {
+                    declared: Type::Struct {
+                        size: layout.size,
+                        align: layout.align,
+                    },
+                    known: true,
+                    tag: Some(name.clone()),
+                    layout: Some(layout),
+                })
+            }
+            TemplateTypePattern::Instance {
+                name,
+                arguments: patterns,
+            } => {
+                let resolved = patterns
+                    .iter()
+                    .map(|pattern| self.resolve_template_pattern(pattern, arguments))
+                    .collect::<Option<Vec<_>>>()?;
+                let layout =
+                    self.instantiate_struct_template_layout_with_arguments(name, &resolved)?;
+                Some(ResolvedTemplateType {
+                    declared: Type::Struct {
+                        size: layout.size,
+                        align: layout.align,
+                    },
+                    known: true,
+                    tag: Some(format!("{name}<...>")),
+                    layout: Some(layout),
+                })
+            }
+        }
+    }
+
+    fn template_pattern_pointer_identity(
+        &self,
+        pattern: &TemplateTypePattern,
+        arguments: &[ResolvedTemplateType],
+    ) -> (u32, Option<String>) {
+        match pattern {
+            TemplateTypePattern::Parameter(index) => arguments.get(*index).map_or(
+                (0, None),
+                |argument| (type_size(argument.declared), argument.tag.clone()),
+            ),
+            TemplateTypePattern::Named(name) => (
+                self.structs.get(name).map_or(0, |layout| layout.size),
+                Some(name.clone()),
+            ),
+            TemplateTypePattern::Instance { name, .. } => {
+                // Do not instantiate here: a self-pointer (`Node<T>*`) would
+                // recurse forever. The concrete instance layout is registered
+                // by the containing type before any expression dereferences it.
+                (0, Some(format!("{name}<...>")))
+            }
+        }
+    }
+
+    fn instantiate_struct_template_layout_with_arguments(
+        &self,
+        template_name: &str,
+        arguments: &[ResolvedTemplateType],
+    ) -> Option<StructLayout> {
         let template = self.struct_templates.get(template_name)?;
+        if arguments.len() > template.parameters.len() {
+            return None;
+        }
         let mut offset = 0u32;
         let mut max_alignment = 1u32;
         let mut fields = HashMap::new();
+        let mut field_order = Vec::new();
+        let mut function_pointer_fields = std::collections::HashSet::new();
+        if let Some(base_pattern) = &template.base {
+            let base = self.resolve_template_pattern(base_pattern, arguments)?;
+            let base_layout = base.layout?;
+            max_alignment = max_alignment.max(u32::from(base_layout.align));
+            for (name, field) in base_layout.fields_in_declaration_order() {
+                field_order.push(name.clone());
+                fields.insert(name.clone(), field.clone());
+            }
+            function_pointer_fields.extend(base_layout.function_pointer_fields);
+            offset = base_layout.size;
+        }
         for field in &template.fields {
-            let (field_type, field_size, natural_alignment, struct_tag) = match field.field_type {
-                TemplateFieldType::Parameter => {
-                    let field_type = argument?;
+            let (field_type, field_size, natural_alignment, struct_tag) = match &field.field_type {
+                TemplateFieldType::Parameter(index) => {
+                    let resolved = arguments.get(*index)?;
+                    if !resolved.known {
+                        return None;
+                    }
+                    let field_type = resolved.declared;
                     (
                         field_type,
                         type_size(field_type),
                         type_alignment(field_type),
-                        None,
+                        resolved.tag.clone(),
                     )
                 }
-                TemplateFieldType::ParameterByteArray => {
-                    (Type::UnsignedChar, type_size(argument?), 1, None)
+                TemplateFieldType::ParameterByteArray(index) => {
+                    let resolved = arguments.get(*index)?;
+                    if !resolved.known {
+                        return None;
+                    }
+                    (Type::UnsignedChar, type_size(resolved.declared), 1, None)
                 }
-                TemplateFieldType::SelfPointer => (
-                    Type::StructPointer { element_size: 0 },
-                    4,
-                    4,
-                    Some(format!("{template_name}<...>")),
-                ),
+                TemplateFieldType::TemplateValue(pattern) => {
+                    let resolved = self.resolve_template_pattern(pattern, arguments)?;
+                    let field_type = resolved.declared;
+                    (
+                        field_type,
+                        type_size(field_type),
+                        type_alignment(field_type),
+                        resolved.tag,
+                    )
+                }
+                TemplateFieldType::TemplatePointer(pattern) => {
+                    let (element_size, tag) =
+                        self.template_pattern_pointer_identity(pattern, arguments);
+                    (
+                        Type::StructPointer { element_size },
+                        4,
+                        4,
+                        tag,
+                    )
+                }
                 TemplateFieldType::Concrete(field_type) => (
-                    field_type,
-                    type_size(field_type),
-                    type_alignment(field_type),
+                    *field_type,
+                    type_size(*field_type),
+                    type_alignment(*field_type),
                     None,
                 ),
             };
@@ -262,19 +388,16 @@ impl Parser {
                     bit_field: None,
                 },
             );
+            field_order.push(field.name.clone());
             offset += field_size;
         }
         let size = offset.div_ceil(max_alignment) * max_alignment;
         Some(StructLayout {
             source_tag: None,
-            field_order: template
-                .fields
-                .iter()
-                .map(|field| field.name.clone())
-                .collect(),
+            field_order,
             fields,
             is_union: false,
-            function_pointer_fields: std::collections::HashSet::new(),
+            function_pointer_fields,
             size,
             align: max_alignment as u8,
         })
@@ -388,86 +511,56 @@ impl Parser {
     /// current recovery position without advancing the main parser cursor.
     pub(crate) fn capture_skipped_struct_template(&mut self) {
         self.capture_inline_template_members();
-        let start = self.position;
-        let header = self.tokens.get(start..start + 8);
-        let Some(
-            [Token::Identifier(template), Token::Less, Token::Identifier(parameter_kind), Token::Identifier(parameter), Token::Greater, struct_or_class, Token::Identifier(name), Token::BraceOpen],
-        ) = header
-        else {
-            self.capture_mixed_struct_template();
-            return;
-        };
-        let is_struct_or_class = *struct_or_class == Token::KeywordStruct
-            || matches!(struct_or_class, Token::Identifier(word) if word == "class");
-        if template != "template"
-            || !matches!(parameter_kind.as_str(), "typename" | "class")
-            || !is_struct_or_class
-        {
-            return;
-        }
+        self.capture_mixed_struct_template();
+    }
 
-        let mut fields = Vec::new();
-        let mut index = start + 8;
-        let mut brace_depth = 1i32;
-        while let Some(token) = self.tokens.get(index) {
-            match token {
-                Token::BraceOpen => {
-                    brace_depth += 1;
-                    index += 1;
+    fn template_type_pattern_at(
+        &self,
+        start: usize,
+        parameters: &[String],
+    ) -> Option<(TemplateTypePattern, usize)> {
+        let Token::Identifier(first) = self.tokens.get(start)? else {
+            return None;
+        };
+        if let Some(index) = parameters.iter().position(|parameter| parameter == first) {
+            return Some((TemplateTypePattern::Parameter(index), start + 1));
+        }
+        let mut name = first.clone();
+        let mut cursor = start + 1;
+        while self.tokens.get(cursor) == Some(&Token::Colon)
+            && self.tokens.get(cursor + 1) == Some(&Token::Colon)
+        {
+            let Some(Token::Identifier(component)) = self.tokens.get(cursor + 2) else {
+                return None;
+            };
+            name.push_str("::");
+            name.push_str(component);
+            cursor += 3;
+        }
+        if self.tokens.get(cursor) != Some(&Token::Less) {
+            return Some((TemplateTypePattern::Named(name), cursor));
+        }
+        cursor += 1;
+        let mut arguments = Vec::new();
+        loop {
+            let (argument, next) = self.template_type_pattern_at(cursor, parameters)?;
+            arguments.push(argument);
+            cursor = next;
+            while self.tokens.get(cursor) == Some(&Token::Star) {
+                // Nested pointer arguments are word-sized for layout. Their
+                // pointee identity is not needed until a field dereferences one.
+                cursor += 1;
+            }
+            match self.tokens.get(cursor) {
+                Some(Token::Comma) => cursor += 1,
+                Some(Token::Greater) => {
+                    cursor += 1;
+                    break;
                 }
-                Token::BraceClose => {
-                    brace_depth -= 1;
-                    if brace_depth == 0 {
-                        break;
-                    }
-                    index += 1;
-                }
-                Token::Identifier(word) if brace_depth == 1 && word == parameter => {
-                    let mut candidate_fields = Vec::new();
-                    let mut cursor = index + 1;
-                    let mut expect_name = true;
-                    let mut valid = true;
-                    while let Some(candidate) = self.tokens.get(cursor) {
-                        match candidate {
-                            Token::Identifier(field) if expect_name => {
-                                candidate_fields.push(field.clone());
-                                expect_name = false;
-                            }
-                            Token::Comma if !expect_name => expect_name = true,
-                            Token::Semicolon => {
-                                if valid && !expect_name && !candidate_fields.is_empty() {
-                                    fields.extend(candidate_fields.into_iter().map(|name| {
-                                        TemplateField {
-                                            name,
-                                            field_type: TemplateFieldType::Parameter,
-                                            alignment: 1,
-                                        }
-                                    }));
-                                }
-                                cursor += 1;
-                                break;
-                            }
-                            Token::BraceOpen | Token::BraceClose | Token::EndOfFile => break,
-                            _ => valid = false,
-                        }
-                        cursor += 1;
-                    }
-                    index = cursor;
-                }
-                Token::EndOfFile => break,
-                _ => index += 1,
+                _ => return None,
             }
         }
-        if !fields.is_empty() {
-            self.struct_templates
-                .insert(name.clone(), StructTemplate { fields });
-        }
-        // The fast path above recognizes the narrow historical `T field`
-        // subset. Always give the declaration-oriented scanner a chance to
-        // replace it with the complete mixed layout: otherwise a template such
-        // as `Node<T> { Node<T>* next; T value; }` silently loses `next` merely
-        // because at least one parameter-valued field was found.
-        self.capture_mixed_struct_template();
+        Some((TemplateTypePattern::Instance { name, arguments }, cursor))
     }
 
     /// Recover mixed-layout templates with multiple/defaulted parameters. This
@@ -483,14 +576,14 @@ impl Parser {
         }
         let mut cursor = start + 2;
         let mut angle_depth = 1i32;
-        let mut parameter = None;
+        let mut parameters = Vec::new();
         while angle_depth > 0 {
             match self.tokens.get(cursor) {
                 Some(Token::Identifier(kind))
-                    if parameter.is_none() && matches!(kind.as_str(), "typename" | "class") =>
+                    if angle_depth == 1 && matches!(kind.as_str(), "typename" | "class") =>
                 {
                     if let Some(Token::Identifier(name)) = self.tokens.get(cursor + 1) {
-                        parameter = Some(name.clone());
+                        parameters.push(name.clone());
                     }
                 }
                 Some(Token::Less) => angle_depth += 1,
@@ -500,7 +593,9 @@ impl Parser {
             }
             cursor += 1;
         }
-        let Some(parameter) = parameter else { return };
+        if parameters.is_empty() {
+            return;
+        }
         if !matches!(self.tokens.get(cursor), Some(Token::KeywordStruct))
             && !matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if word == "class")
         {
@@ -511,6 +606,18 @@ impl Parser {
         };
         let name = name.clone();
         cursor += 2;
+        let mut base = None;
+        if self.tokens.get(cursor) == Some(&Token::Colon) {
+            cursor += 1;
+            while matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if matches!(word.as_str(), "public" | "private" | "protected" | "virtual"))
+            {
+                cursor += 1;
+            }
+            if let Some((pattern, next)) = self.template_type_pattern_at(cursor, &parameters) {
+                base = Some(pattern);
+                cursor = next;
+            }
+        }
         while !matches!(
             self.tokens.get(cursor),
             Some(Token::BraceOpen | Token::EndOfFile) | None
@@ -536,7 +643,7 @@ impl Parser {
                 Some(Token::EndOfFile) | None => return,
                 _ if depth == 1 => {
                     if let Some((mut declaration, next)) =
-                        self.capture_template_field_declaration(cursor, &parameter, &name)
+                        self.capture_template_field_declaration(cursor, &parameters)
                     {
                         fields.append(&mut declaration);
                         cursor = next;
@@ -547,17 +654,22 @@ impl Parser {
                 _ => cursor += 1,
             }
         }
-        if !fields.is_empty() {
-            self.struct_templates
-                .insert(name, StructTemplate { fields });
+        if !fields.is_empty() || base.is_some() {
+            self.struct_templates.insert(
+                name,
+                StructTemplate {
+                    parameters,
+                    base,
+                    fields,
+                },
+            );
         }
     }
 
     fn capture_template_field_declaration(
         &self,
         start: usize,
-        parameter: &str,
-        template_name: &str,
+        parameters: &[String],
     ) -> Option<(Vec<TemplateField>, usize)> {
         let mut cursor = start;
         while matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if matches!(word.as_str(), "const" | "volatile" | "mutable"))
@@ -568,27 +680,21 @@ impl Parser {
             return None;
         }
         let (mut field_type, type_tokens) = match self.tokens.get(cursor)? {
-            Token::Identifier(name) if name == parameter => (TemplateFieldType::Parameter, 1),
-            Token::Identifier(name)
-                if name == template_name
-                    && self.tokens.get(cursor + 1) == Some(&Token::Less)
-                    && matches!(self.tokens.get(cursor + 2), Some(Token::Identifier(argument)) if argument == parameter)
-                    && self.tokens.get(cursor + 3) == Some(&Token::Greater)
-                    && self.tokens.get(cursor + 4) == Some(&Token::Star) =>
-            {
-                (TemplateFieldType::SelfPointer, 4)
+            Token::Identifier(name) if parameters.iter().any(|parameter| parameter == name) => {
+                let index = parameters.iter().position(|parameter| parameter == name)?;
+                (TemplateFieldType::Parameter(index), 1)
             }
             Token::KeywordUnsigned if self.tokens.get(cursor + 1) == Some(&Token::KeywordChar) => {
                 (TemplateFieldType::Concrete(Type::UnsignedChar), 2)
             }
-            Token::Identifier(_) if self.tokens.get(cursor + 1) == Some(&Token::Star) => (
-                TemplateFieldType::Concrete(Type::Pointer(mwcc_syntax_trees::Pointee::Int)),
-                1,
+            token if self.template_argument_type(token).is_some() => (
+                TemplateFieldType::Concrete(self.template_argument_type(token)?), 1
             ),
-            token => (
-                TemplateFieldType::Concrete(self.template_argument_type(token)?),
-                1,
-            ),
+            Token::Identifier(_) => {
+                let (pattern, next) = self.template_type_pattern_at(cursor, parameters)?;
+                (TemplateFieldType::TemplateValue(pattern), next - cursor)
+            }
+            _ => return None,
         };
         cursor += type_tokens;
         while matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if matches!(word.as_str(), "const" | "volatile"))
@@ -596,10 +702,15 @@ impl Parser {
             cursor += 1;
         }
         if self.tokens.get(cursor) == Some(&Token::Star) {
-            if !matches!(field_type, TemplateFieldType::SelfPointer) {
-                field_type =
-                    TemplateFieldType::Concrete(Type::Pointer(mwcc_syntax_trees::Pointee::Int));
-            }
+            field_type = match field_type {
+                TemplateFieldType::Parameter(index) => {
+                    TemplateFieldType::TemplatePointer(TemplateTypePattern::Parameter(index))
+                }
+                TemplateFieldType::TemplateValue(pattern) => {
+                    TemplateFieldType::TemplatePointer(pattern)
+                }
+                _ => TemplateFieldType::Concrete(Type::Pointer(Pointee::Int)),
+            };
             while self.tokens.get(cursor) == Some(&Token::Star) {
                 cursor += 1;
             }
@@ -615,7 +726,7 @@ impl Parser {
             };
             fields.push(TemplateField {
                 name: name.clone(),
-                field_type,
+                field_type: field_type.clone(),
                 alignment: 1,
             });
             cursor += 1;
@@ -628,10 +739,15 @@ impl Parser {
                         Token::Identifier(sized),
                         Token::ParenClose,
                         Token::BracketClose,
-                    ]) if sizeof == "sizeof" && sized == parameter
+                    ]) if sizeof == "sizeof" && parameters.iter().any(|parameter| parameter == sized)
                 )
             {
-                fields.last_mut().unwrap().field_type = TemplateFieldType::ParameterByteArray;
+                let Some(Token::Identifier(sized)) = self.tokens.get(cursor + 3) else {
+                    return None;
+                };
+                let index = parameters.iter().position(|parameter| parameter == sized)?;
+                fields.last_mut().unwrap().field_type =
+                    TemplateFieldType::ParameterByteArray(index);
                 cursor += 6;
             }
             if matches!(self.tokens.get(cursor), Some(Token::Identifier(attribute)) if attribute == "__attribute__")

@@ -775,6 +775,10 @@ impl Parser {
                     .and_then(|scope| self.structs.get(scope))
                     .and_then(|layout| layout.fields.get(&name))
                 {
+                    // An unqualified data member is rooted at `this`, but its
+                    // own aggregate identity—not a stale tag from an earlier
+                    // expression—must seed a following `.field`/`->field`.
+                    self.expression_struct_tag = member.struct_tag.clone();
                     Expression::Member {
                         base: Box::new(Expression::Variable("this".to_string())),
                         offset: member.offset,

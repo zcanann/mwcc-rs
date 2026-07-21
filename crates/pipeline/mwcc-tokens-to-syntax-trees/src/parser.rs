@@ -8,6 +8,7 @@ use std::collections::HashMap;
 /// One resolved struct member: its type and byte offset within the struct, plus
 /// the struct tag it points to when the member is itself a struct pointer (so
 /// chained access `a->b->c` resolves), or the element type when it is an array.
+#[derive(Clone)]
 pub(crate) struct StructField {
     pub(crate) member_type: Type,
     pub(crate) source_fundamental: Option<SourceFundamentalType>,
@@ -29,7 +30,7 @@ pub(crate) struct StructField {
 
 /// A struct's layout: members by name, plus the total size (for `sizeof`/arrays,
 /// later). Offsets follow natural alignment (the `-align powerpc` default).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct StructLayout {
     /// Source-written aggregate tag. Anonymous typedefs still acquire an
     /// internal key from their alias, but remain unnamed in debug information.
@@ -106,15 +107,23 @@ impl StructLayout {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
+pub(crate) enum TemplateTypePattern {
+    Parameter(usize),
+    Named(String),
+    Instance {
+        name: String,
+        arguments: Vec<TemplateTypePattern>,
+    },
+}
+
+#[derive(Clone)]
 pub(crate) enum TemplateFieldType {
-    Parameter,
-    /// A pointer to the template instance currently being instantiated, such
-    /// as `Node<T>* next`. Its storage is always one word; member chaining
-    /// retains the concrete instance tag.
-    SelfPointer,
+    Parameter(usize),
+    TemplateValue(TemplateTypePattern),
+    TemplatePointer(TemplateTypePattern),
     /// Byte storage whose extent is `sizeof(T)` for the concrete argument.
-    ParameterByteArray,
+    ParameterByteArray(usize),
     Concrete(mwcc_syntax_trees::Type),
 }
 
@@ -128,6 +137,8 @@ pub(crate) struct TemplateField {
 /// bodies and static members are irrelevant; fields retain source order and
 /// either substitute the first type parameter or carry concrete storage.
 pub(crate) struct StructTemplate {
+    pub(crate) parameters: Vec<String>,
+    pub(crate) base: Option<TemplateTypePattern>,
     pub(crate) fields: Vec<TemplateField>,
 }
 
