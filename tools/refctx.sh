@@ -297,18 +297,16 @@ if [[ "$oracle_direct" != "RUNNABLE" && ${#missing_precompiled_headers[@]} -gt 0
     )"; then
       oracle_direct="RUNNABLE"
       cp "$dir/ref.o" "$dir/ref.direct.o"
-      if direct_preprocess_output="$(
-        cd "$project" && "$wibo" "$sjis" "$compiler" -i "$pch_root" \
-          ${all_flags[@]+"${all_flags[@]}"} -pragma "line_prepdump on" \
-          -E "$src" -o "$dir/ours/$source_name" 2>&1
-      )"; then
-        [[ -f "$dir/ours/$source_name" ]] || : > "$dir/ours/$source_name"
-        if ! grep -Eq '^[[:space:]]*#pragma[[:space:]]+peephole[[:space:]]+(on|off|reset)' \
-            "$project/$src"; then
-          direct_ready=1
-          ctx_name="$source_name"
-        fi
-      fi
+      # Keep the direct object as the authoritative oracle, but do NOT use `-E`
+      # through the generated PCH as our compiler input.  MWCC's preprocessed
+      # output contains only tokens written after the PCH include; declarations,
+      # inline definitions, and retained static data restored from the PCH are
+      # absent even though they participate in the direct object.  Comparing that
+      # declaration-free tail against the PCH-backed object is not an A/B test of
+      # equivalent inputs.  Leave `direct_ready` false so the fallback below feeds
+      # mwcc-rs the textual `.pch` expansion already produced by decompctx.  An
+      # exact result is still authoritative because `ref.o` remains direct; a
+      # synthetic-input defer/diff is correctly reported as measurement-unknown.
     fi
   fi
 fi
