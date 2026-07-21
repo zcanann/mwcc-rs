@@ -7,6 +7,7 @@ mod count_register;
 mod counters;
 mod fill_copy;
 mod fixed_port_zero_fill;
+mod guarded_byte_copy;
 pub(crate) mod policy;
 mod poll_search;
 mod search_guard_chain;

@@ -375,6 +375,10 @@ pub(crate) struct Parser {
     /// A later definition may legally omit `static`; C keeps the prior internal
     /// linkage (`static void f(void); void f(void) {}`).
     pub(crate) static_functions: std::collections::HashSet<String>,
+    /// Source names whose prior declaration had C language linkage inside an
+    /// otherwise-C++ translation unit. A later definition outside the linkage
+    /// block inherits that declaration's unmangled linkage.
+    pub(crate) c_linkage_functions: std::collections::HashSet<String>,
     /// A `__declspec(section "…")` seen on a function PROTOTYPE — mwcc applies it to
     /// the later definition (pikmin's `DECL_SECT(".init")` sits on the memcpy proto).
     pub(crate) section_functions: std::collections::HashMap<String, String>,

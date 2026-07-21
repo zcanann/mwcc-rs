@@ -120,6 +120,7 @@ pub fn parse_located_translation_unit_with_enum_min(
         weak_materialized: Vec::new(),
         weak_functions: std::collections::HashSet::new(),
         static_functions: std::collections::HashSet::new(),
+        c_linkage_functions: std::collections::HashSet::new(),
         section_functions: std::collections::HashMap::new(),
         section_prototype_order: Vec::new(),
         skipped_inline_names: std::collections::HashSet::new(),
@@ -1235,6 +1236,7 @@ blr\n\
     fn mangles_free_cpp_functions_and_preserves_c_linkage() {
         let source = r#"
             extern "C" { int c_api(float); }
+            int c_api(float value) { return 1; }
             int cpp_api(float);
             int cpp_api(float value) { return c_api(value); }
             int caller(float value) { return cpp_api(value); }
@@ -1259,14 +1261,14 @@ blr\n\
                 .iter()
                 .map(|function| function.name.as_str())
                 .collect::<Vec<_>>(),
-            ["cpp_api__Ff", "caller__Ff", "used__2IdCFv"]
+            ["c_api", "cpp_api__Ff", "caller__Ff", "used__2IdCFv"]
         );
         assert!(matches!(
-            unit.functions[0].return_expression.as_ref(),
+            unit.functions[1].return_expression.as_ref(),
             Some(mwcc_syntax_trees::Expression::Call { name, .. }) if name == "c_api"
         ));
         assert!(matches!(
-            unit.functions[1].return_expression.as_ref(),
+            unit.functions[2].return_expression.as_ref(),
             Some(mwcc_syntax_trees::Expression::Call { name, .. }) if name == "cpp_api__Ff"
         ));
     }

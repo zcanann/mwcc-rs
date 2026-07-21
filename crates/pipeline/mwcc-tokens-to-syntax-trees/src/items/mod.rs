@@ -2569,6 +2569,10 @@ impl Parser {
             } else {
                 Vec::new()
             };
+            let source_function_name = name.clone();
+            let inherited_c_linkage = self
+                .c_linkage_functions
+                .contains(source_function_name.as_str());
 
             if let Some(scope) = &member_scope {
                 let source_name = if constructor_scope.is_some() {
@@ -2616,27 +2620,33 @@ impl Parser {
                     });
                 }
             } else if let Some(scope) = &namespace_scope {
-                let source_name = name.clone();
-                name = self.mangle_typed_free_function_in_scope(
-                    scope,
-                    &source_name,
-                    &cxx_parameters,
-                    is_variadic,
-                )?;
-                self.register_qualified_free_cxx_function(
-                    scope,
-                    &source_name,
-                    &name,
-                    &parameters
-                        .iter()
-                        .map(|parameter| parameter.parameter_type)
-                        .collect::<Vec<_>>(),
-                    is_variadic,
-                );
-                if let Some(tag) = &return_struct_tag {
-                    self.function_return_structs.insert(name.clone(), tag.clone());
+                if inherited_c_linkage {
+                    // C language linkage suppresses namespace/function
+                    // mangling even when the definition follows the block.
+                } else {
+                    let source_name = name.clone();
+                    name = self.mangle_typed_free_function_in_scope(
+                        scope,
+                        &source_name,
+                        &cxx_parameters,
+                        is_variadic,
+                    )?;
+                    self.register_qualified_free_cxx_function(
+                        scope,
+                        &source_name,
+                        &name,
+                        &parameters
+                            .iter()
+                            .map(|parameter| parameter.parameter_type)
+                            .collect::<Vec<_>>(),
+                        is_variadic,
+                    );
+                    if let Some(tag) = &return_struct_tag {
+                        self.function_return_structs
+                            .insert(name.clone(), tag.clone());
+                    }
                 }
-            } else if self.cplusplus && name != "main" {
+            } else if self.cplusplus && name != "main" && !inherited_c_linkage {
                 let source_name = name.clone();
                 name = self.mangle_typed_free_function(
                     &source_name,
@@ -2660,6 +2670,9 @@ impl Parser {
             if *self.peek() == Token::Semicolon {
                 self.advance(); // a prototype — record its return + parameter types, keep looking
                 self.named_prototype_parameters += source_named_parameter_count;
+                if self.default_cplusplus && !self.cplusplus {
+                    self.c_linkage_functions.insert(source_function_name);
+                }
                 let parameter_types = parameters
                     .iter()
                     .map(|parameter| parameter.parameter_type)

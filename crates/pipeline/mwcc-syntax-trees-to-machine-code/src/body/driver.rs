@@ -1280,6 +1280,9 @@ impl Generator {
         if self.try_pipelined_copy(function)? {
             return Ok(());
         }
+        if self.try_guarded_byte_copy(function)? {
+            return Ok(());
+        }
         if self.try_ctr_loop(function)? {
             return Ok(());
         }
