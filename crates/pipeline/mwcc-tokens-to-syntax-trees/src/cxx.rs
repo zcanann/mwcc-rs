@@ -248,6 +248,7 @@ impl CxxParameterType {
 #[derive(Clone)]
 pub(crate) struct BaseClass {
     pub(crate) name: String,
+    pub(crate) offset: u32,
 }
 
 /// Normalize C++ linkage specifications into the same scoped language pragmas
@@ -2059,7 +2060,7 @@ impl Parser {
 
     /// Parse one class definition and recover its object layout.
     /// Method declarations do not occupy storage and are skipped after recording
-    /// constructor signatures. A single non-virtual base is laid out first.
+    /// constructor signatures. Non-virtual bases are laid out in declaration order.
     /// CodeWarrior inserts a class's own vptr at the declaration position of
     /// its first virtual member, so fields written before `virtual` remain at
     /// the object prefix rather than being shifted.
@@ -2124,7 +2125,10 @@ impl Parser {
                 layout
                     .function_pointer_fields
                     .extend(base.function_pointer_fields.iter().cloned());
-                class.bases.push(BaseClass { name: base_name });
+                class.bases.push(BaseClass {
+                    name: base_name,
+                    offset: base_offset,
+                });
                 class.is_polymorphic |= base_is_polymorphic;
                 if class.vptr_offset.is_none() {
                     class.vptr_offset = base_vptr_offset.map(|offset| base_offset + offset);
@@ -2135,9 +2139,6 @@ impl Parser {
                 if !self.eat_keyword(Token::Comma) {
                     break;
                 }
-                return Err(Diagnostic::error(
-                    "multiple inheritance is not supported yet (roadmap)",
-                ));
             }
         }
 
@@ -2688,53 +2689,49 @@ impl Parser {
         &mut self,
         scope: &str,
     ) -> Compilation<Vec<Statement>> {
-        if !self.eat_keyword(Token::Colon) {
-            return Ok(Vec::new());
-        }
         let class = self.cxx_classes.get(scope).ok_or_else(|| {
             Diagnostic::error(format!(
                 "class layout for constructor '{scope}' was not recovered"
             ))
         })?;
-        let base_names: Vec<String> = class.bases.iter().map(|base| base.name.clone()).collect();
+        let bases = class.bases.clone();
         let field_names = class.fields.clone();
         let mut initializers = std::collections::HashMap::new();
-        loop {
-            let target = self.parse_identifier()?;
-            self.expect(Token::ParenOpen)?;
-            let mut arguments = Vec::new();
-            if *self.peek() != Token::ParenClose {
-                loop {
-                    arguments.push(self.expression()?);
-                    if !self.eat_keyword(Token::Comma) {
-                        break;
+        if self.eat_keyword(Token::Colon) {
+            loop {
+                let target = self.parse_identifier()?;
+                self.expect(Token::ParenOpen)?;
+                let mut arguments = Vec::new();
+                if *self.peek() != Token::ParenClose {
+                    loop {
+                        arguments.push(self.expression()?);
+                        if !self.eat_keyword(Token::Comma) {
+                            break;
+                        }
                     }
                 }
-            }
-            self.expect(Token::ParenClose)?;
-            if initializers.insert(target.clone(), arguments).is_some() {
-                return Err(Diagnostic::error(format!(
-                    "duplicate constructor initializer for '{target}'"
-                )));
-            }
-            if !self.eat_keyword(Token::Comma) {
-                break;
+                self.expect(Token::ParenClose)?;
+                if initializers.insert(target.clone(), arguments).is_some() {
+                    return Err(Diagnostic::error(format!(
+                        "duplicate constructor initializer for '{target}'"
+                    )));
+                }
+                if !self.eat_keyword(Token::Comma) {
+                    break;
+                }
             }
         }
 
         let mut statements = Vec::new();
-        for base_name in base_names {
-            let Some(arguments) = initializers.remove(&base_name) else {
-                return Err(Diagnostic::error(format!(
-                    "implicit base construction for '{base_name}' is not supported yet (roadmap)"
-                )));
-            };
+        for base in bases {
+            let arguments = initializers.remove(&base.name).unwrap_or_default();
             let signatures = &self
                 .cxx_classes
-                .get(&base_name)
+                .get(&base.name)
                 .ok_or_else(|| {
                     Diagnostic::error(format!(
-                        "base class layout for '{base_name}' was not recovered"
+                        "base class layout for '{}' was not recovered",
+                        base.name
                     ))
                 })?
                 .constructors;
@@ -2742,17 +2739,34 @@ impl Parser {
                 .iter()
                 .filter(|signature| signature.parameters.len() == arguments.len())
                 .collect();
+            // A base with no declared constructor is trivially default-
+            // constructed and emits no call. Written arguments still require
+            // an exact declaration.
+            if candidates.is_empty() && arguments.is_empty() {
+                continue;
+            }
             if candidates.len() != 1 {
                 return Err(Diagnostic::error(format!(
-                    "constructor overload resolution for '{base_name}' is ambiguous or unavailable (roadmap)"
+                    "constructor overload resolution for '{}' is ambiguous or unavailable (roadmap)",
+                    base.name
                 )));
             }
             let name = self.mangle_typed_member_in_current_namespace(
-                base_name.as_str(),
+                base.name.as_str(),
                 "__ct",
                 &candidates[0].cxx_parameters,
             )?;
-            let mut call_arguments = vec![Expression::Variable("this".to_string())];
+            let this = if base.offset == 0 {
+                Expression::Variable("this".to_string())
+            } else {
+                Expression::MemberAddress {
+                    base: Box::new(Expression::Variable("this".to_string())),
+                    offset: base.offset,
+                    element: mwcc_syntax_trees::Pointee::UnsignedChar,
+                    index_stride: None,
+                }
+            };
+            let mut call_arguments = vec![this];
             call_arguments.extend(arguments);
             statements.push(Statement::Expression(Expression::Call {
                 name,

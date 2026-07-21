@@ -1768,6 +1768,35 @@ blr\n\
     }
 
     #[test]
+    fn lays_out_multiple_bases_and_synthesizes_adjusted_default_constructor_calls() {
+        let source = r#"
+            struct Primary { Primary(); int first; };
+            struct Secondary { Secondary(); int second; };
+            struct Derived : public Primary, public Secondary { Derived(); };
+            Derived::Derived() {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+        ).unwrap();
+        let function = &unit.functions[0];
+        assert_eq!(function.name, "__ct__7DerivedFv");
+        assert!(matches!(function.statements.as_slice(), [
+            mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Call { name: primary, arguments: primary_arguments }
+            ),
+            mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Call { name: secondary, arguments: secondary_arguments }
+            ),
+        ] if primary == "__ct__7PrimaryFv"
+            && matches!(primary_arguments.as_slice(), [mwcc_syntax_trees::Expression::Variable(this)] if this == "this")
+            && secondary == "__ct__9SecondaryFv"
+            && matches!(secondary_arguments.as_slice(), [mwcc_syntax_trees::Expression::MemberAddress { base, offset: 4, .. }]
+                if matches!(base.as_ref(), mwcc_syntax_trees::Expression::Variable(this) if this == "this"))));
+        assert!(matches!(function.return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Variable(this)) if this == "this"));
+    }
+
+    #[test]
     fn resolves_a_variadic_member_call_through_a_global_class_pointer() {
         let source = r#"
             struct Stream { void print(char*, ...); };

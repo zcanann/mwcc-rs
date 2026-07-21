@@ -2583,11 +2583,11 @@ impl Parser {
                 .filter(|parameter| !parameter.name.is_empty())
                 .count();
 
-            let constructor_scope = member_layout_scope
+            let constructor_scope = member_declaration_scope
                 .as_ref()
                 .filter(|scope| scope.as_str() == name.as_str())
                 .cloned();
-            let destructor_scope = member_layout_scope
+            let destructor_scope = member_declaration_scope
                 .as_ref()
                 .filter(|_| name == "__dt")
                 .cloned();
