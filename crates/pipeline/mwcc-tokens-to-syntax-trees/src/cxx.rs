@@ -2144,6 +2144,11 @@ impl Parser {
 
         self.expect(Token::BraceOpen)?;
         while *self.peek() != Token::BraceClose {
+            // Empty member declarations are valid C++ and commonly survive
+            // preprocessing when feature-gated declarations disappear.
+            if self.eat_keyword(Token::Semicolon) {
+                continue;
+            }
             if matches!(self.peek(), Token::Identifier(word)
                 if matches!(word.as_str(), "public" | "private" | "protected"))
                 && *self.peek_at(1) == Token::Colon

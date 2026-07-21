@@ -1772,7 +1772,7 @@ blr\n\
         let source = r#"
             struct Primary { Primary(); int first; };
             struct Secondary { Secondary(); int second; };
-            struct Derived : public Primary, public Secondary { Derived(); };
+            struct Derived : public Primary, public Secondary { Derived(); ; ; };
             Derived::Derived() {}
         "#;
         let unit = parse_translation_unit(
