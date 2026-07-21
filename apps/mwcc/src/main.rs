@@ -7,6 +7,7 @@
 
 mod cxx_analysis_residues;
 mod function_order;
+mod reference_analysis;
 
 use mwcc_core::{Compilation, Diagnostic};
 use std::path::PathBuf;
@@ -465,10 +466,22 @@ fn compile(
     );
     let inline_bodies =
         mwcc_syntax_trees_to_machine_code::InlineBodySet::analyze(&unit.skipped_inline_definitions);
+    let materialized_inline_names: std::collections::HashSet<String> = unit
+        .materialized_inline_candidates
+        .iter()
+        .cloned()
+        .collect();
+    let referenced_materialized_inlines =
+        reference_analysis::referenced_function_candidates(&unit, &materialized_inline_names);
     // Lower every function definition in source order; they share one object.
     let diagnose_function = std::env::var_os("MWCC_DIAGNOSTIC_FUNCTION").is_some();
     let diagnose_syntax_tree = std::env::var_os("MWCC_DIAGNOSTIC_SYNTAX_TREE").is_some();
     if diagnose_syntax_tree {
+        eprintln!(
+            "materialized-inline-candidates {:#?}",
+            unit.materialized_inline_candidates
+        );
+        eprintln!("referenced-materialized-inlines {referenced_materialized_inlines:#?}");
         eprintln!("skipped-inline-names {:#?}", unit.skipped_inline_names);
         for function in &unit.skipped_inline_definitions {
             eprintln!("skipped-inline {function:#?}");
@@ -483,10 +496,15 @@ fn compile(
         {
             continue;
         }
-        // With deferred inlining, a terminal helper that was only parsed as an
-        // implicit materialization disappears when every earlier call site
-        // consumed it. Keep it whenever even one Rel24 call survives.
-        if config.flags.inline_deferred
+        // The call-count heuristic speculatively materializes a static inline
+        // before later source items are known. A candidate outside the rooted
+        // reference graph never exists in MWCC's object and need not lower.
+        if function.text_deferred && !referenced_materialized_inlines.contains(&function.name) {
+            continue;
+        }
+        // A referenced terminal candidate can still disappear when lowering
+        // consumes every earlier call. Keep it if even one Rel24 survives.
+        if function.text_deferred
             && function_index + 1 == unit.functions.len()
             && unit
                 .materialized_inline_candidates
