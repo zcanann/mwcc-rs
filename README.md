@@ -2,7 +2,12 @@
 
 A byte-exact reimplementation, in Rust, of **Metrowerks CodeWarrior for Embedded PowerPC** (`mwcceppc`) — the compiler that built Nintendo GameCube and Wii games — for use in decompilation.
 
-The goal is narrow and absolute: for a supported translation unit, `mwcc-rs` emits a `.text` that is **identical, byte for byte, to the output of the real compiler**. Not equivalent code. The same code. It currently reproduces **eight GameCube builds** — GC/1.3, 1.3.2, 1.3.2r, 2.0, 2.0p1, 2.5, 2.6, 2.7 (mwcceppc 2.4.2 build 53 through 2.4.7 build 108) — from one code generator parameterized by build.
+The goal is narrow and absolute: for every configured translation unit in
+`reference_projects/*`, `mwcc-rs` must emit the same relocatable object as the
+real compiler, byte for byte. Equivalent code or an exact `.text` section is
+useful diagnostic evidence, but it is not parity. The build registry currently
+contains eight ordinarily selectable GameCube profiles and seven explicitly
+experimental GameCube/Wii identities, all driven by one parameterized compiler.
 
 GC/1.3.2r remains recognized for compatibility, but it is not a required parity gate: it was a hacked Animal Crossing compiler variant that disabled `.rodata` pooling, and the underlying stock GC/1.3.2 bug is now understood without relying on that build.
 
@@ -133,10 +138,11 @@ mwcc -c canaries/02_add.c -o add.o --emit-artifacts ./build
 
 ## Status
 
-**229 canaries byte-exact across eight builds** (GC/1.3, 1.3.2, 1.3.2r, 2.0,
-2.0p1, 2.5, 2.6, 2.7). The compiler reproduces mwcc's `.text`
-instruction-for-instruction across a broad subset of straight-line C with
-branching control flow:
+Canaries are regression probes, not a parity score. Current status comes from
+the denominator-qualified reference-project scorecard described above; a
+failure-biased frontier count must never be reported as overall progress. The
+compiler reproduces MWCC's object format and instruction stream across a broad
+and growing C/C++ subset, including:
 
 - **Multiple builds from one generator.** A cross-build survey (`tools/vdiff.sh`,
   ~320 probed forms) established that mwcceppc builds 53…108 share a single code
