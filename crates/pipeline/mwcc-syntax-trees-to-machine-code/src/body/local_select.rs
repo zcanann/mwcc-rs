@@ -8,14 +8,20 @@
 #[allow(unused_imports)]
 use super::*;
 
+use mwcc_syntax_trees::Parameter;
 use mwcc_versions::Optimization;
 
-struct LocalSelect<'a> {
-    result: &'a LocalDeclaration,
-    derived: &'a LocalDeclaration,
-    condition: &'a Expression,
-    when_true: &'a Expression,
-    when_false: &'a Expression,
+#[derive(Clone, Debug)]
+pub(crate) struct UnoptimizedLocalSelectSummary {
+    pub(crate) parameters: Vec<Parameter>,
+    pub(crate) result_name: String,
+    pub(crate) result_type: Type,
+    pub(crate) derived_name: String,
+    pub(crate) derived_type: Type,
+    pub(crate) derived_initializer: Expression,
+    pub(crate) condition: Expression,
+    pub(crate) when_true: Expression,
+    pub(crate) when_false: Expression,
 }
 
 fn assigned_value<'a>(body: &'a [Statement], result: &str) -> Option<&'a Expression> {
@@ -25,7 +31,9 @@ fn assigned_value<'a>(body: &'a [Statement], result: &str) -> Option<&'a Express
     }
 }
 
-fn classify(function: &Function) -> Option<LocalSelect<'_>> {
+pub(crate) fn summarize_unoptimized_local_select(
+    function: &Function,
+) -> Option<UnoptimizedLocalSelectSummary> {
     if !function.guards.is_empty() || function_makes_call(function) {
         return None;
     }
@@ -63,16 +71,43 @@ fn classify(function: &Function) -> Option<LocalSelect<'_>> {
     };
     let when_true = assigned_value(then_body, &result.name)?;
     let when_false = assigned_value(else_body, &result.name)?;
-    Some(LocalSelect {
-        result,
-        derived,
-        condition,
-        when_true,
-        when_false,
+    Some(UnoptimizedLocalSelectSummary {
+        parameters: function.parameters.clone(),
+        result_name: result.name.clone(),
+        result_type: result.declared_type,
+        derived_name: derived.name.clone(),
+        derived_type: derived.declared_type,
+        derived_initializer: derived.initializer.clone().expect("classified"),
+        condition: condition.clone(),
+        when_true: when_true.clone(),
+        when_false: when_false.clone(),
     })
 }
 
 impl Generator {
+    pub(crate) fn bind_unoptimized_local_select_value(
+        &mut self,
+        name: &str,
+        value_type: Type,
+        register: u8,
+    ) {
+        let pointee = match value_type {
+            Type::Pointer(pointee) => Some(pointee),
+            _ => None,
+        };
+        self.locations.insert(
+            name.to_string(),
+            Location {
+                class: ValueClass::General,
+                register,
+                signed: self.signed_of(value_type),
+                width: value_type.width(),
+                pointee,
+                stride: pointer_stride(value_type),
+            },
+        );
+    }
+
     /// Assign one branch value into a source local's callee-saved home. An
     /// array decay keeps its short-lived address high half in the lowest
     /// volatile and writes the completed pointer into the local home.
@@ -186,6 +221,51 @@ impl Generator {
         }))
     }
 
+    /// Emit only the selector's values and control-flow diamond. The standalone
+    /// helper and a caller that MWCC expands inline deliberately share this
+    /// core, while each owner remains responsible for its own frame and local
+    /// copy chain.
+    pub(crate) fn emit_unoptimized_local_select_core(
+        &mut self,
+        plan: &UnoptimizedLocalSelectSummary,
+        result_home: u8,
+        derived_home: u8,
+    ) -> Compilation<()> {
+        self.bind_unoptimized_local_select_value(&plan.result_name, plan.result_type, result_home);
+        self.bind_unoptimized_local_select_value(
+            &plan.derived_name,
+            plan.derived_type,
+            derived_home,
+        );
+
+        self.evaluate(&plan.derived_initializer, plan.derived_type, derived_home)
+            .map_err(|error| {
+                Diagnostic::error(format!("unoptimized local-select derived value: {error}"))
+            })?;
+        let (options, condition_bit) =
+            match self.emit_unoptimized_masked_condition(&plan.condition)? {
+                Some(branch) => branch,
+                None => self.emit_condition_test(&plan.condition).map_err(|error| {
+                    Diagnostic::error(format!("unoptimized local-select condition: {error}"))
+                })?,
+            };
+        let else_label = self.fresh_label();
+        let join_label = self.fresh_label();
+        self.emit_branch_conditional_to(options, condition_bit, else_label);
+        self.emit_unoptimized_local_select_arm(&plan.when_true, plan.result_type, result_home)
+            .map_err(|error| {
+                Diagnostic::error(format!("unoptimized local-select true arm: {error}"))
+            })?;
+        self.emit_branch_to(join_label);
+        self.bind_label(else_label);
+        self.emit_unoptimized_local_select_arm(&plan.when_false, plan.result_type, result_home)
+            .map_err(|error| {
+                Diagnostic::error(format!("unoptimized local-select false arm: {error}"))
+            })?;
+        self.bind_label(join_label);
+        Ok(())
+    }
+
     /// Emit the measured `-O0` two-local pointer select:
     ///
     /// `T *result; int derived = EXPR; if (COND) result = A; else result = B;
@@ -201,7 +281,7 @@ impl Generator {
         if self.behavior.optimization != Optimization::O0 {
             return Ok(false);
         }
-        let Some(plan) = classify(function) else {
+        let Some(plan) = summarize_unoptimized_local_select(function) else {
             return Ok(false);
         };
 
@@ -222,26 +302,6 @@ impl Generator {
             .collect();
         self.reserved.extend(parameter_homes);
 
-        let bind = |generator: &mut Self, local: &LocalDeclaration, register| {
-            let pointee = match local.declared_type {
-                Type::Pointer(pointee) => Some(pointee),
-                _ => None,
-            };
-            generator.locations.insert(
-                local.name.clone(),
-                Location {
-                    class: ValueClass::General,
-                    register,
-                    signed: generator.signed_of(local.declared_type),
-                    width: local.declared_type.width(),
-                    pointee,
-                    stride: pointer_stride(local.declared_type),
-                },
-            );
-        };
-        bind(self, plan.result, RESULT_HOME);
-        bind(self, plan.derived, DERIVED_HOME);
-
         self.output
             .instructions
             .push(Instruction::StoreWordWithUpdate {
@@ -260,43 +320,7 @@ impl Generator {
             offset: 8,
         });
 
-        self.evaluate(
-            plan.derived.initializer.as_ref().expect("classified"),
-            plan.derived.declared_type,
-            DERIVED_HOME,
-        )
-        .map_err(|error| {
-            Diagnostic::error(format!("unoptimized local-select derived value: {error}"))
-        })?;
-        let (options, condition_bit) =
-            match self.emit_unoptimized_masked_condition(plan.condition)? {
-                Some(branch) => branch,
-                None => self.emit_condition_test(plan.condition).map_err(|error| {
-                    Diagnostic::error(format!("unoptimized local-select condition: {error}"))
-                })?,
-            };
-        let else_label = self.fresh_label();
-        let join_label = self.fresh_label();
-        self.emit_branch_conditional_to(options, condition_bit, else_label);
-        self.emit_unoptimized_local_select_arm(
-            plan.when_true,
-            plan.result.declared_type,
-            RESULT_HOME,
-        )
-        .map_err(|error| {
-            Diagnostic::error(format!("unoptimized local-select true arm: {error}"))
-        })?;
-        self.emit_branch_to(join_label);
-        self.bind_label(else_label);
-        self.emit_unoptimized_local_select_arm(
-            plan.when_false,
-            plan.result.declared_type,
-            RESULT_HOME,
-        )
-        .map_err(|error| {
-            Diagnostic::error(format!("unoptimized local-select false arm: {error}"))
-        })?;
-        self.bind_label(join_label);
+        self.emit_unoptimized_local_select_core(&plan, RESULT_HOME, DERIVED_HOME)?;
         self.output.instructions.push(Instruction::move_register(
             Eabi::general_result().number,
             RESULT_HOME,
@@ -380,9 +404,9 @@ mod tests {
     #[test]
     fn recognizes_two_source_locals_without_using_function_names() {
         let function = sample();
-        let plan = classify(&function).expect("recognized");
-        assert_eq!(plan.result.name, "result");
-        assert_eq!(plan.derived.name, "derived");
+        let plan = summarize_unoptimized_local_select(&function).expect("recognized");
+        assert_eq!(plan.result_name, "result");
+        assert_eq!(plan.derived_name, "derived");
     }
 
     #[test]
@@ -395,6 +419,6 @@ mod tests {
             unreachable!()
         };
         *name = "derived".into();
-        assert!(classify(&function).is_none());
+        assert!(summarize_unoptimized_local_select(&function).is_none());
     }
 }

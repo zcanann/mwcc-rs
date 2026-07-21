@@ -11,8 +11,9 @@ use mwcc_syntax_trees::{BinaryOperator, Expression, Function, LoopKind, Statemen
 use std::collections::{HashMap, HashSet};
 
 use crate::body::{
-    function_calls_any, summarize_queue_pop, summarize_queue_service, QueuePopSummary,
-    QueueServiceSummary,
+    function_calls_any, summarize_queue_pop, summarize_queue_service,
+    summarize_unoptimized_local_select, QueuePopSummary, QueueServiceSummary,
+    UnoptimizedLocalSelectSummary,
 };
 
 #[derive(Clone, Debug)]
@@ -58,6 +59,7 @@ pub struct InlineSummaries {
     static_call_wrappers: HashMap<String, StaticCallWrapperSummary>,
     ipa_call_wrappers: HashMap<String, StaticCallWrapperSummary>,
     pointer_walkers: HashMap<String, PointerWalkerSummary>,
+    unoptimized_local_selects: HashMap<String, UnoptimizedLocalSelectSummary>,
     ipa_elided_functions: HashSet<String>,
 }
 
@@ -98,6 +100,13 @@ impl InlineSummaries {
                 summaries
                     .pointer_walkers
                     .insert(function.name.clone(), summary);
+            }
+            if function.is_static {
+                if let Some(summary) = summarize_unoptimized_local_select(function) {
+                    summaries
+                        .unoptimized_local_selects
+                        .insert(function.name.clone(), summary);
+                }
             }
         }
         // Build 163's label walk gives a summarized service helper three fewer
@@ -154,6 +163,13 @@ impl InlineSummaries {
 
     pub(crate) fn pointer_walker(&self, name: &str) -> Option<&PointerWalkerSummary> {
         self.pointer_walkers.get(name)
+    }
+
+    pub(crate) fn unoptimized_local_select(
+        &self,
+        name: &str,
+    ) -> Option<&UnoptimizedLocalSelectSummary> {
+        self.unoptimized_local_selects.get(name)
     }
 
     pub(crate) fn ipa_pointer_walker_caller(

@@ -2162,6 +2162,13 @@ impl Generator {
         if self.try_queue_callback_fold(function)? {
             return Ok(());
         }
+        // MWCC may retain a small static selector out of line while expanding
+        // it into an O0 caller. Compose the verified helper summary with the
+        // caller's source locals before the ordinary call path treats it as a
+        // genuine non-leaf call.
+        if self.try_inlined_local_select_bit_test(function)? {
+            return Ok(());
+        }
         // At -O0, named register locals survive the frontend and occupy descending
         // callee-saved homes even in a leaf. Keep that source-level allocation
         // distinct from the optimized conditional-expression family below.

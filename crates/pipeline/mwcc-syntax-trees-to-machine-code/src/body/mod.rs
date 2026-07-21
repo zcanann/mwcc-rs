@@ -18,6 +18,7 @@ mod fixed_port_replay_update;
 mod guards_ifs;
 mod if_else;
 mod indirect_call;
+mod inlined_local_select;
 mod ladders;
 mod legacy_constant_store;
 mod leading_store_guard;
@@ -45,6 +46,9 @@ mod variadic;
 
 pub(crate) use callee_saved::{
     summarize_queue_pop, summarize_queue_service, QueuePopSummary, QueueServiceSummary,
+};
+pub(crate) use local_select::{
+    summarize_unoptimized_local_select, UnoptimizedLocalSelectSummary,
 };
 #[allow(unused_imports)]
 pub(crate) use passes::*;

@@ -4,6 +4,74 @@
 use super::*;
 
 impl Generator {
+    /// Emit the EABI helper-call frame used when a dense suffix of GPRs is
+    /// cheaper to save through `_savegpr_N` than with individual stores. The
+    /// matching epilogue is owned by [`Self::emit_restgpr_frame_epilogue`].
+    pub(crate) fn emit_savegpr_frame_prologue(&mut self, first: u8, frame_size: i16) {
+        debug_assert!((14..=31).contains(&first));
+        self.frame_size = frame_size;
+        self.non_leaf = true;
+        self.callee_saved = (first..=31).collect();
+
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -frame_size,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: frame_size + 4,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 11,
+            a: 1,
+            immediate: frame_size,
+        });
+        let helper = format!("_savegpr_{first}");
+        self.record_relocation(RelocationKind::Rel24, &helper);
+        self.output
+            .instructions
+            .push(Instruction::BranchAndLink { target: helper });
+    }
+
+    /// Close a frame opened by [`Self::emit_savegpr_frame_prologue`]. Register
+    /// restoration happens before the LR reload, matching MWCC's helper ABI.
+    pub(crate) fn emit_restgpr_frame_epilogue(&mut self, first: u8) {
+        debug_assert_eq!(self.callee_saved.first().copied(), Some(first));
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 11,
+            a: 1,
+            immediate: self.frame_size,
+        });
+        let helper = format!("_restgpr_{first}");
+        self.record_relocation(RelocationKind::Rel24, &helper);
+        self.output
+            .instructions
+            .push(Instruction::BranchAndLink { target: helper });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: self.frame_size + 4,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: self.frame_size,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
+    }
+
     /// Build 163 materializes values from a collision-resolving or computed
     /// callee-saved home with `addi d,s,0`. The semantic owner supplies the
     /// instruction range and source homes; ordinary forwarding copies remain
