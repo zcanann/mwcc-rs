@@ -568,7 +568,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let pooled_string_count = input
         .data_objects
         .iter()
-        .filter(|object| object.is_static && object.name.starts_with('@'))
+        .filter(|object| {
+            object.is_static
+                && object.name.starts_with('@')
+                && object.preassigned_anonymous_ordinal.is_none()
+        })
         .count() as u32;
     let function_string_total: u32 = functions.iter().map(|function| function.string_count).sum();
     // A FILE-SCOPE pooled string declared BETWEEN functions (`static const
@@ -588,10 +592,17 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         .iter()
         .filter(|object| is_in_stream_file_string(object))
         .count() as u32;
-    let mut counter = u32::from(input.object_format.initial_anonymous_counter)
+    let dense_counter = u32::from(input.object_format.initial_anonymous_counter)
         + pooled_string_count
         - function_string_total
         - in_stream_file_strings;
+    let sparse_counter_floor = input
+        .data_objects
+        .iter()
+        .filter_map(|object| object.preassigned_anonymous_ordinal)
+        .max()
+        .map_or(0, |ordinal| ordinal + 1);
+    let mut counter = dense_counter.max(sparse_counter_floor);
     // The `@N` of a pooled constant a later function reuses is the one the first
     // function got — a deduped reuse consumes no new number, so the reusing
     // function's subsequent unwind `@N` shift down accordingly.

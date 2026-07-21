@@ -5,6 +5,7 @@
 //! do not yet model are ignored. `--emit-artifacts <dir>` writes a per-phase
 //! report for inspecting how a translation unit becomes bytes.
 
+mod cxx_analysis_residues;
 mod function_order;
 
 use mwcc_core::{Compilation, Diagnostic};
@@ -629,17 +630,34 @@ fn compile(
         + cxx_inline_facts.virtual_destructors
             * usize::from(behavior.cxx_virtual_destructor_label_bump)
         + cxx_inline_facts.direct_calls * usize::from(behavior.cxx_inline_ipa_call_label_bump);
-    let unit_declaration_bump = unit.skipped_inline_functions
-        + cxx_inline_bump
-        + if config
-            .build
-            .profile
-            .prototype_parameter_names_consume_labels()
-        {
-            unit.named_prototype_parameters
-        } else {
-            0
-        };
+    let cxx_analysis_residues = is_cxx
+        .then(|| {
+            cxx_analysis_residues::recognize(
+                &unit,
+                &machine_functions,
+                config.build.label,
+                config.flags.optimization,
+            )
+        })
+        .flatten();
+    let unit_declaration_bump = if cxx_analysis_residues.is_some() {
+        // The capture carries the optimizer walk's observable sparse ordinals
+        // directly. Reapplying the aggregate dropped-inline estimate would
+        // charge the same analysis a second time before emitted functions.
+        0
+    } else {
+        unit.skipped_inline_functions
+            + cxx_inline_bump
+            + if config
+                .build
+                .profile
+                .prototype_parameter_names_consume_labels()
+            {
+                unit.named_prototype_parameters
+            } else {
+                0
+            }
+    };
     // Static-local positional samples currently track skipped-inline cost.
     // Prototype-name provenance is unit-wide but not yet sampled at each local
     // declaration, so do not fold it into this separate adjustment channel.
@@ -671,6 +689,7 @@ fn compile(
                 force_full_data_section: local.is_const && !read_only_small_data,
                 is_static: true,
                 is_explicit_zero: false,
+                preassigned_anonymous_ordinal: None,
                 relocations: local
                     .relocations
                     .iter()
@@ -741,7 +760,14 @@ fn compile(
     let has_jump_table = machine_functions
         .iter()
         .any(|function| !function.jump_tables.is_empty());
-    let mut defined_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
+    let analysis_counter_floor = cxx_analysis_residues
+        .as_ref()
+        .map_or(0, |capture| capture.next_anonymous_ordinal);
+    let analysis_upfront_globals = cxx_analysis_residues
+        .as_ref()
+        .map_or(&[][..], |capture| capture.force_upfront_globals);
+    let mut defined_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> =
+        cxx_analysis_residues.map_or_else(Vec::new, |capture| capture.objects);
     // Distinct pooled string literals, by bytes, to their anonymous `@N` name, and
     // the running `@N` counter — deduplicated across the unit (mwcc `-str reuse`).
     let mut string_pool: std::collections::HashMap<Vec<u8>, String> =
@@ -766,8 +792,14 @@ fn compile(
         let clamp_tail = global.is_static
             && global.section.is_none()
             && global.functions_before >= source_function_count;
+        let force_upfront = analysis_upfront_globals.contains(&global.name.as_str());
         let global = &mwcc_syntax_trees::GlobalDeclaration {
-            functions_before: if clamp_tail {
+            non_static_functions_before: if force_upfront {
+                0
+            } else {
+                global.non_static_functions_before
+            },
+            functions_before: if clamp_tail || force_upfront {
                 0
             } else {
                 global.functions_before
@@ -929,6 +961,7 @@ fn compile(
                                         && !read_only_small_data,
                                     is_static: true,
                                     is_explicit_zero: false,
+                                    preassigned_anonymous_ordinal: None,
                                     relocations: Vec::new(),
                                 });
                                 name
@@ -970,6 +1003,7 @@ fn compile(
                 is_static: global.is_static
                     && (global.section.is_some() || global.is_const || static_unit_function_table),
                 is_explicit_zero,
+                preassigned_anonymous_ordinal: None,
                 relocations,
                 section: global.section.clone(),
             });
@@ -1043,6 +1077,7 @@ fn compile(
                     force_full_data_section,
                     is_static: global.is_static,
                     is_explicit_zero: false,
+                    preassigned_anonymous_ordinal: None,
                     relocations: Vec::new(),
                 });
                 continue;
@@ -1077,6 +1112,7 @@ fn compile(
                 force_full_data_section,
                 is_static: global.is_static,
                 is_explicit_zero: false,
+                preassigned_anonymous_ordinal: None,
                 relocations: Vec::new(),
             });
             continue;
@@ -1143,6 +1179,7 @@ fn compile(
             force_full_data_section,
             is_static: global.is_static,
             is_explicit_zero,
+            preassigned_anonymous_ordinal: None,
             relocations: global
                 .data_relocations
                 .iter()
@@ -1183,6 +1220,7 @@ fn compile(
                                                 && !read_only_small_data,
                                             is_static: true,
                                             is_explicit_zero: false,
+                                            preassigned_anonymous_ordinal: None,
                                             relocations: Vec::new(),
                                         },
                                     );
@@ -1208,7 +1246,8 @@ fn compile(
     // `5 + global_strings` and advances per function by [its new strings + its new deduped constants
     // + its unwind entries] plus a fixed +4 gap. A jump table interleaves its own `@N` here in a way
     // not yet modeled, so a unit that mixes a string with a jump table defers wholesale.
-    let mut counter = u32::from(config.build.initial_anonymous_counter) + string_counter;
+    let mut counter = (u32::from(config.build.initial_anonymous_counter) + string_counter)
+        .max(analysis_counter_floor);
     let mut numbered_constant: std::collections::HashSet<(u64, u8)> =
         std::collections::HashSet::new();
     let mut function_string_objects: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
@@ -1268,6 +1307,7 @@ fn compile(
                     && !read_only_small_data,
                 is_static: true,
                 is_explicit_zero: false,
+                preassigned_anonymous_ordinal: None,
                 relocations: Vec::new(),
             });
             names
@@ -1304,6 +1344,7 @@ fn compile(
                             && !read_only_small_data,
                         is_static: true,
                         is_explicit_zero: false,
+                        preassigned_anonymous_ordinal: None,
                         relocations: Vec::new(),
                     });
                     name

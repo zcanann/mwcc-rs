@@ -159,6 +159,9 @@ pub struct DataObject<'a> {
     /// DECLARATION order ahead of the uninitialized ones (which reverse). See the
     /// `.sbss` placement in the writer.
     pub is_explicit_zero: bool,
+    /// Compiler-assigned sparse `@N` identity for a frontend/optimizer data
+    /// temporary. `None` denotes source data or an ordinary pooled literal.
+    pub preassigned_anonymous_ordinal: Option<u32>,
     /// `R_PPC_ADDR32` relocations this object's bytes carry — a pointer global
     /// initialized with the address of another symbol (`int *p = &g;`). Each patches
     /// 4 bytes at `offset` to `target + addend`.

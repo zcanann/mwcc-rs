@@ -60,6 +60,12 @@ pub struct DefinedGlobal {
     /// uninitialized one (`int a;`). Both land in `.sbss`/`.bss`, but the writer lays
     /// the explicit-zero ones in declaration order ahead of the reversed uninitialized run.
     pub is_explicit_zero: bool,
+    /// A compiler-created data temporary whose `@N` identity was assigned by
+    /// frontend/optimizer analysis before ordinary emitted functions. Unlike a
+    /// pooled literal, it does not merely consume one slot from the writer's
+    /// dense front-of-unit counter: the measured ordinal can be sparse and
+    /// therefore also establishes a floor for later anonymous objects.
+    pub preassigned_anonymous_ordinal: Option<u32>,
     /// `ADDR32` data relocations the global's bytes carry (a pointer to a symbol).
     pub relocations: Vec<mwcc_object::DataRelocation>,
     /// Non-static functions defined before this object (source-order symbol interleaving).
@@ -229,6 +235,7 @@ pub fn assemble_object(
             force_full_data_section: global.force_full_data_section,
             is_static: global.is_static,
             is_explicit_zero: global.is_explicit_zero,
+            preassigned_anonymous_ordinal: global.preassigned_anonymous_ordinal,
             relocations: global.relocations.clone(),
             non_static_functions_before: global.non_static_functions_before,
             functions_before: global.functions_before,
