@@ -2023,12 +2023,9 @@ impl Parser {
                 .filter(|scope| self.cxx_namespaces.contains(scope.as_str()))
                 .cloned();
             let member_scope = qualified_scope.filter(|_| namespace_scope.is_none());
-            let member_layout_scope = member_scope.as_deref().map(|scope| {
-                if self.structs.contains_key(scope) {
-                    scope.to_string()
-                } else {
-                    scope.rsplit("::").next().unwrap_or(scope).to_string()
-                }
+            let member_layout_scope = member_scope.as_deref().and_then(|scope| {
+                self.resolve_scoped_cxx_class_name(scope)
+                    .filter(|resolved| self.structs.contains_key(resolved))
             });
             let member_declaration_scope = member_scope.as_deref().map(|scope| {
                 self.resolve_scoped_cxx_class_name(scope)

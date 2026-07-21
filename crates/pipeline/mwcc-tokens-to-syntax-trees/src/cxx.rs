@@ -804,6 +804,7 @@ impl Parser {
         if self.tokens.get(index) != Some(&Token::BraceOpen) {
             return Vec::new();
         }
+        self.capture_cxx_class_layout(start, &class);
         self.cxx_inline_ordinal_facts.class_definitions += 1;
 
         // Seed the primary dispatch table from the one supported base. A base
@@ -970,6 +971,49 @@ impl Parser {
             index += 1;
         }
         prototypes
+    }
+
+    /// Recover a namespace-qualified layout without coupling declaration
+    /// capture to the main top-level parser. The latter historically stores C
+    /// `struct` tags by their terminal spelling; keeping this qualified copy
+    /// prevents sibling namespaces' identically named classes from aliasing.
+    fn capture_cxx_class_layout(&mut self, declaration_index: usize, qualified: &str) {
+        let saved_position = self.position;
+        let saved_struct_tag = self.last_struct_tag.clone();
+        let saved_enum_tag = self.last_enum_tag.clone();
+        let saved_wchar = self.last_type_was_wchar;
+        let saved_array_typedef = self.last_array_typedef;
+        let saved_type_const = self.last_type_was_const;
+        let saved_pointer_const = self.last_pointer_const;
+        let saved_cxx_pointer_depth = self.last_cxx_pointer_depth;
+        let saved_cxx_pointer_base = self.last_cxx_pointer_base;
+        let saved_volatile = self.last_type_was_volatile;
+
+        self.position = declaration_index;
+        match self.parse_class_definition() {
+            Ok((source_name, layout, class)) => {
+                self.struct_typedefs
+                    .entry(source_name)
+                    .or_insert_with(|| qualified.to_owned());
+                self.structs.insert(qualified.to_owned(), layout);
+                self.cxx_classes.insert(qualified.to_owned(), class);
+            }
+            Err(error) if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() => {
+                eprintln!("class layout recovery failed in '{qualified}': {error}");
+            }
+            Err(_) => {}
+        }
+
+        self.position = saved_position;
+        self.last_struct_tag = saved_struct_tag;
+        self.last_enum_tag = saved_enum_tag;
+        self.last_type_was_wchar = saved_wchar;
+        self.last_array_typedef = saved_array_typedef;
+        self.last_type_was_const = saved_type_const;
+        self.last_pointer_const = saved_pointer_const;
+        self.last_cxx_pointer_depth = saved_cxx_pointer_depth;
+        self.last_cxx_pointer_base = saved_cxx_pointer_base;
+        self.last_type_was_volatile = saved_volatile;
     }
 
     /// Recover a directly nested class even when the enclosing class is too
@@ -1773,10 +1817,11 @@ impl Parser {
         &self,
         member: &str,
     ) -> Compilation<Option<String>> {
-        let Some(class) = self.current_member_scope.as_deref() else {
+        let Some(class) = self.current_cxx_member_class.as_deref() else {
             return Ok(None);
         };
-        let mangled = self.mangle_data_member_in_current_namespace(class, member)?;
+        let scopes: Vec<&str> = class.split("::").collect();
+        let mangled = mangle_qualified_data_member(&scopes, member)?;
         Ok(self.global_sizes.contains_key(&mangled).then_some(mangled))
     }
 
@@ -1787,7 +1832,7 @@ impl Parser {
         function: &str,
         argument_count: usize,
     ) -> Compilation<Option<ImplicitMemberCall>> {
-        let Some(class_name) = self.current_member_scope.as_deref() else {
+        let Some(class_name) = self.current_cxx_member_class.as_deref() else {
             return Ok(None);
         };
         let Some(methods) = self
@@ -1811,8 +1856,8 @@ impl Parser {
             return Ok(Some(ImplicitMemberCall::Virtual(dispatch)));
         }
         Ok(Some(ImplicitMemberCall::Direct {
-            name: self.mangle_typed_member_in_current_namespace(
-                class_name,
+            name: mangle_qualified_member_function_typed(
+                &class_name.split("::").collect::<Vec<_>>(),
                 function,
                 &method.cxx_parameters,
             )?,
@@ -1829,7 +1874,8 @@ impl Parser {
     pub(crate) fn parse_class_definition(
         &mut self,
     ) -> Compilation<(String, StructLayout, ClassLayout)> {
-        if !self.eat_word("class") {
+        let class_keyword = self.eat_word("class");
+        if !class_keyword && !self.eat_keyword(Token::KeywordStruct) {
             return Err(Diagnostic::error("expected a C++ class definition"));
         }
         let name = self.parse_identifier()?;
@@ -1850,7 +1896,10 @@ impl Parser {
                         "virtual base-class layout is not supported yet (roadmap)",
                     ));
                 }
-                let base_name = self.parse_identifier()?;
+                let source_base_name = self.parse_identifier()?;
+                let base_name = self
+                    .resolve_scoped_cxx_class_name(&source_base_name)
+                    .unwrap_or(source_base_name);
                 let (base_is_polymorphic, base_vptr_offset, base_virtual_slots) = self
                     .cxx_classes
                     .get(&base_name)

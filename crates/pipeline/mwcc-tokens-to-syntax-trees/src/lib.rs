@@ -1280,6 +1280,41 @@ blr\n\
     }
 
     #[test]
+    fn keeps_duplicate_class_layouts_qualified_across_reopened_namespaces() {
+        let source = r#"
+            namespace First {
+                struct Obj { int first; int read(); };
+            }
+            namespace Second {
+                struct Obj { int padding; int second; int read(); };
+            }
+            namespace First {
+                int Obj::read() { return first; }
+            }
+            namespace Second {
+                int Obj::read() { return second; }
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            unit.functions[0].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Member { offset: 0, .. })
+        ));
+        assert!(matches!(
+            unit.functions[1].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Member { offset: 4, .. })
+        ));
+    }
+
+    #[test]
     fn mangles_free_cpp_functions_and_preserves_c_linkage() {
         let source = r#"
             extern "C" { int c_api(float); }
