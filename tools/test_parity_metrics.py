@@ -25,7 +25,7 @@ from parity_dashboard import (
 )
 from parity_frontier import build_frontier
 from parity_identity import configuration_id
-from parity_loop import parse_args as parse_loop_args
+from parity_loop import most_comparable_other_tool, parse_args as parse_loop_args
 from reference_parity import (
     code_verdict,
     harness_fingerprint,
@@ -142,6 +142,31 @@ class IdentityTests(unittest.TestCase):
                 self.assertEqual(len(fingerprint), 64)
             finally:
                 snapshot_directory.cleanup()
+
+    def test_parity_baseline_prefers_overlap_over_newer_focused_probe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            complete = root / "complete.jsonl"
+            focused = root / "focused.jsonl"
+            complete.write_text(
+                "".join(
+                    f'{{"tool_fingerprint":"complete","configuration_id":"{identity}",'
+                    '"observed_at":"2026-01-01T00:00:00Z"}\n'
+                    for identity in ("a", "b", "c")
+                ),
+                encoding="utf-8",
+            )
+            focused.write_text(
+                '{"tool_fingerprint":"focused","configuration_id":"a",'
+                '"observed_at":"2026-12-01T00:00:00Z"}\n',
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                most_comparable_other_tool(
+                    [complete, focused], "current", {"a", "b", "c"}
+                ),
+                "complete",
+            )
 
     def test_variant_and_progress_do_not_change_compiler_input_identity(self):
         first = row(variant="a", matching=True)

@@ -33,23 +33,46 @@ def result_arguments(paths: List[Path]) -> List[str]:
     return output
 
 
-def newest_other_tool(paths: List[Path], current: str) -> Optional[str]:
-    newest: Optional[tuple[str, str]] = None
+def most_comparable_other_tool(
+    paths: List[Path], current: str, comparison_ids: set[str]
+) -> Optional[str]:
+    """Choose the prior fingerprint with the most comparable observations.
+
+    A newer focused probe must not displace a complete fixed audit as the
+    baseline. Maximize distinct overlap with this invocation's selections,
+    then use recency only to break equal-coverage ties.
+    """
+
+    observations: dict[str, dict[str, str]] = {}
     for path in paths:
         with path.open(encoding="utf-8") as source:
             for line in source:
                 try:
                     record = json.loads(line)
                     tool = record["tool_fingerprint"]
+                    identity = record["configuration_id"]
                     observed_at = record.get("observed_at", "")
                 except (json.JSONDecodeError, KeyError):
                     continue
-                if tool == current:
+                if tool == current or (comparison_ids and identity not in comparison_ids):
                     continue
-                candidate = (observed_at, tool)
-                if newest is None or candidate > newest:
-                    newest = candidate
-    return newest[1] if newest else None
+                by_identity = observations.setdefault(tool, {})
+                by_identity[identity] = max(observed_at, by_identity.get(identity, ""))
+    if not observations:
+        return None
+    return max(
+        observations,
+        key=lambda tool: (
+            len(observations[tool]),
+            max(observations[tool].values(), default=""),
+            tool,
+        ),
+    )
+
+
+def manifest_configuration_ids(path: Path) -> set[str]:
+    document = json.loads(path.read_text(encoding="utf-8"))
+    return set(document.get("configuration_ids", []))
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
@@ -266,7 +289,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         dashboard_command.extend(("--audit-selection", str(audit)))
     if run_frontier:
         dashboard_command.extend(("--frontier-selection", str(frontier)))
-    baseline = newest_other_tool(all_results, fingerprint)
+    comparison_ids: set[str] = set()
+    if run_audit:
+        comparison_ids.update(manifest_configuration_ids(audit))
+    if run_frontier:
+        comparison_ids.update(manifest_configuration_ids(frontier))
+    baseline = most_comparable_other_tool(all_results, fingerprint, comparison_ids)
     if baseline is not None:
         dashboard_command.extend(("--baseline-tool-fingerprint", baseline))
         for path in all_results:
