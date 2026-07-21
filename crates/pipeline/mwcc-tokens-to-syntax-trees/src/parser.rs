@@ -109,6 +109,10 @@ impl StructLayout {
 #[derive(Clone, Copy)]
 pub(crate) enum TemplateFieldType {
     Parameter,
+    /// A pointer to the template instance currently being instantiated, such
+    /// as `Node<T>* next`. Its storage is always one word; member chaining
+    /// retains the concrete instance tag.
+    SelfPointer,
     /// Byte storage whose extent is `sizeof(T)` for the concrete argument.
     ParameterByteArray,
     Concrete(mwcc_syntax_trees::Type),

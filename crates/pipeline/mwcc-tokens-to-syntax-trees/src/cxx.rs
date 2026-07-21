@@ -8,7 +8,7 @@ use mwcc_core::{Compilation, Diagnostic};
 use mwcc_syntax_trees::{Expression, Function, Parameter, Pointee, Statement, Type};
 use mwcc_tokens::{LocatedToken, Token};
 
-use crate::items::{type_alignment, type_size};
+use crate::items::{pointee_of, type_alignment, type_size};
 use crate::parser::{Parser, StructField, StructLayout};
 
 /// Anonymous-label cost of control flow in a dropped in-class definition.
@@ -461,6 +461,29 @@ impl Parser {
         )
         .with_pointer_shape(self.last_cxx_pointer_depth, self.last_cxx_pointer_base)
         .with_function_type(self.last_cxx_function_type.take())
+    }
+
+    /// Consume a function-pointer declarator after its return type:
+    /// `(*name)(parameter-types)`. Both ordinary functions and recovered class
+    /// members use this spelling; keeping its semantic signature parsing here
+    /// prevents the declarator grammars from drifting apart.
+    pub(crate) fn try_cxx_function_pointer_declarator(
+        &mut self,
+        return_type: CxxParameterType,
+    ) -> Compilation<Option<(String, CxxFunctionType)>> {
+        if *self.peek() != Token::ParenOpen || *self.peek_at(1) != Token::Star {
+            return Ok(None);
+        }
+        self.advance(); // `(`
+        self.advance(); // `*`
+        let name = if matches!(self.peek(), Token::Identifier(_)) {
+            self.parse_identifier()?
+        } else {
+            String::new()
+        };
+        self.expect(Token::ParenClose)?;
+        let function_type = self.parse_cxx_function_type(return_type)?;
+        Ok(Some((name, function_type)))
     }
 
     /// Parse the `(parameters)` portion of a function type after its return
@@ -1824,6 +1847,41 @@ impl Parser {
                 self.skip_class_member()?;
                 continue;
             }
+            if let Some((field_name, _callback_type)) = self
+                .try_cxx_function_pointer_declarator(CxxParameterType::plain(field_type))?
+            {
+                if *self.peek() != Token::Semicolon {
+                    return Err(Diagnostic::error(
+                        "a multi-declarator function-pointer class member is not supported yet (roadmap)",
+                    ));
+                }
+                self.advance();
+                let field_type = Type::StructPointer { element_size: 0 };
+                let align = type_alignment(field_type)
+                    .max(u32::from(attribute_align))
+                    .max(1);
+                offset = offset.div_ceil(align) * align;
+                layout.insert_field(
+                    field_name.clone(),
+                    StructField {
+                        member_type: field_type,
+                        source_fundamental: None,
+                        offset,
+                        struct_tag: None,
+                        array_element: None,
+                        array_bytes: None,
+                        array_stride: None,
+                        bit_field: None,
+                    },
+                );
+                layout.function_pointer_fields.insert(field_name.clone());
+                class.fields.push(field_name);
+                offset = offset.checked_add(type_size(field_type)).ok_or_else(|| {
+                    Diagnostic::error("C++ class layout exceeds the 32-bit address space")
+                })?;
+                max_align = max_align.max(align);
+                continue;
+            }
             let field_name = self.parse_identifier()?;
             if *self.peek() == Token::ParenOpen {
                 let signature = self.parse_class_parameter_types()?;
@@ -1896,11 +1954,8 @@ impl Parser {
                     "a C++ bit-field member is not supported yet (roadmap)",
                 ));
             }
-            if matches!(self.peek(), Token::BracketOpen) {
-                return Err(Diagnostic::error(
-                    "a C++ array member is not supported yet (roadmap)",
-                ));
-            }
+            let element_size = type_size(field_type);
+            let array_extent = self.parse_array_declarator_extent(element_size)?;
             if *self.peek() != Token::Semicolon {
                 return Err(Diagnostic::error(
                     "a multi-declarator class member is not supported yet (roadmap)",
@@ -1911,6 +1966,25 @@ impl Parser {
                 .max(u32::from(attribute_align))
                 .max(1);
             offset = offset.div_ceil(align) * align;
+            let (field_size, array_element, array_bytes, array_stride) =
+                if let Some((total_bytes, first_index_stride)) = array_extent {
+                    let element = if matches!(
+                        field_type,
+                        Type::Struct { .. } | Type::Pointer(_) | Type::StructPointer { .. }
+                    ) {
+                        None
+                    } else {
+                        Some(pointee_of(field_type)?)
+                    };
+                    (
+                        total_bytes,
+                        element,
+                        Some(total_bytes),
+                        first_index_stride,
+                    )
+                } else {
+                    (element_size, None, None, None)
+                };
             layout.insert_field(
                 field_name.clone(),
                 StructField {
@@ -1918,14 +1992,16 @@ impl Parser {
                     source_fundamental: None,
                     offset,
                     struct_tag,
-                    array_element: None,
-                    array_bytes: None,
-                    array_stride: None,
+                    array_element,
+                    array_bytes,
+                    array_stride,
                     bit_field: None,
                 },
             );
             class.fields.push(field_name);
-            offset += type_size(field_type);
+            offset = offset.checked_add(field_size).ok_or_else(|| {
+                Diagnostic::error("C++ class layout exceeds the 32-bit address space")
+            })?;
             max_align = max_align.max(align);
         }
         self.expect(Token::BraceClose)?;
@@ -1960,28 +2036,40 @@ impl Parser {
                 let pointer_depth = self.last_cxx_pointer_depth;
                 let pointer_base = self.last_cxx_pointer_base;
                 let function_type = self.last_cxx_function_type.take();
+                let source_identity = CxxParameterType::parsed(
+                    source_type,
+                    qualified_name,
+                    is_wchar,
+                    false,
+                    source_is_aggregate_value,
+                    pointee_const,
+                    pointer_const,
+                )
+                .with_pointer_shape(pointer_depth, pointer_base)
+                .with_function_type(function_type);
                 let is_reference = self.eat_keyword(Token::Ampersand);
                 if is_reference {
                     parameter_type = Type::StructPointer { element_size: 0 };
                 }
-                if matches!(self.peek(), Token::Identifier(_)) {
-                    self.advance();
+                if let Some((_, callback_type)) = self
+                    .try_cxx_function_pointer_declarator(source_identity.clone())?
+                {
+                    parameters.push(Type::StructPointer { element_size: 0 });
+                    cxx_parameters.push(
+                        CxxParameterType::plain(Type::StructPointer { element_size: 0 })
+                            .with_pointer_shape(1, None)
+                            .with_function_type(Some(callback_type)),
+                    );
+                } else {
+                    if matches!(self.peek(), Token::Identifier(_)) {
+                        self.advance();
+                    }
+                    self.skip_cxx_default_argument()?;
+                    parameters.push(parameter_type);
+                    let mut source_identity = source_identity;
+                    source_identity.is_reference = is_reference;
+                    cxx_parameters.push(source_identity);
                 }
-                self.skip_cxx_default_argument()?;
-                parameters.push(parameter_type);
-                cxx_parameters.push(
-                    CxxParameterType::parsed(
-                        source_type,
-                        qualified_name,
-                        is_wchar,
-                        is_reference,
-                        source_is_aggregate_value,
-                        pointee_const,
-                        pointer_const,
-                    )
-                    .with_pointer_shape(pointer_depth, pointer_base)
-                    .with_function_type(function_type),
-                );
                 if !self.eat_keyword(Token::Comma) {
                     break;
                 }

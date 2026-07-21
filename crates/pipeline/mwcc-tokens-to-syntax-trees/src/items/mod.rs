@@ -65,7 +65,7 @@ fn indexed_update_value(target: &Expression, value: Expression) -> Expression {
 
 /// The pointee kind for `<scalar>*`. Pointer-to-pointer and pointer-to-aggregate
 /// are not in the subset yet.
-fn pointee_of(base: Type) -> Compilation<Pointee> {
+pub(crate) fn pointee_of(base: Type) -> Compilation<Pointee> {
     match base {
         Type::Int => Ok(Pointee::Int),
         Type::LongLong => Ok(Pointee::LongLong),
@@ -2427,40 +2427,33 @@ impl Parser {
                         // CodeWarrior name mangling.
                         parameter_type = Type::StructPointer { element_size: 0 };
                     }
+                    let callback_return_type = crate::cxx::CxxParameterType::parsed(
+                        cxx_source_type,
+                        cxx_qualified_name.clone(),
+                        cxx_is_wchar,
+                        is_reference,
+                        cxx_source_is_aggregate_value,
+                        cxx_pointee_const,
+                        cxx_pointer_const,
+                    )
+                    .with_pointer_shape(cxx_pointer_depth, cxx_pointer_base)
+                    .with_function_type(cxx_function_type.clone());
                     // A function-pointer parameter `RET (*name)(params)` is a 4-byte
                     // opaque pointer; consume its declarator and signature.
-                    if *self.peek() == Token::ParenOpen
-                        && self.tokens.get(self.position + 1) == Some(&Token::Star)
+                    if let Some((name, callback_type)) = self
+                        .try_cxx_function_pointer_declarator(callback_return_type)?
                     {
-                        self.advance(); // `(`
-                        self.advance(); // `*`
-                        let name = if matches!(self.peek(), Token::Identifier(_)) {
-                            self.parse_identifier()?
-                        } else {
-                            String::new()
-                        };
-                        self.expect(Token::ParenClose)?;
-                        self.expect(Token::ParenOpen)?;
-                        let mut depth = 1;
-                        while depth > 0 {
-                            match self.advance() {
-                                Token::ParenOpen => depth += 1,
-                                Token::ParenClose => depth -= 1,
-                                Token::EndOfFile => {
-                                    return Err(Diagnostic::error(
-                                        "unterminated function-pointer parameter",
-                                    ))
-                                }
-                                _ => {}
-                            }
-                        }
                         parameters.push(Parameter {
                             parameter_type: Type::StructPointer { element_size: 0 },
                             name,
                         });
-                        cxx_parameters.push(crate::cxx::CxxParameterType::plain(
-                            Type::StructPointer { element_size: 0 },
-                        ));
+                        cxx_parameters.push(
+                            crate::cxx::CxxParameterType::plain(Type::StructPointer {
+                                element_size: 0,
+                            })
+                            .with_pointer_shape(1, None)
+                            .with_function_type(Some(callback_type)),
+                        );
                     } else {
                         // The name is optional (a prototype may write just the type).
                         let name = if matches!(self.peek(), Token::Identifier(_)) {
@@ -4162,7 +4155,7 @@ impl Parser {
         {
             return false;
         }
-        self.token_starts_type(self.peek())
+        self.token_starts_type(self.peek()) || self.peek_is_template_instance_type()
     }
 
     /// Whether the cursor sits on an array-typedef LOCAL declaration (`Mtx proj;`):

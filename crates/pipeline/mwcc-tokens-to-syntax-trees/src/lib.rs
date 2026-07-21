@@ -1828,6 +1828,136 @@ blr\n\
     }
 
     #[test]
+    fn recognizes_pointer_template_instances_as_local_declarations() {
+        let source = r#"
+            template <typename T> struct Box { T value; };
+            struct Item { int value; };
+            int present(Box<Item*>* box) {
+                Box<Item*>* local = box;
+                return local != 0;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let local = &unit.functions[0].locals[0];
+        assert_eq!(local.name, "local");
+        assert_eq!(
+            local.declared_type,
+            mwcc_syntax_trees::Type::StructPointer { element_size: 4 }
+        );
+    }
+
+    #[test]
+    fn recovers_self_pointer_fields_in_template_instances() {
+        let source = r#"
+            template <typename T> class Node {
+            public:
+                Node<T>* next;
+                Node<T>* previous;
+                T data;
+            };
+            int read(Node<int>* node) { return node->next->data; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 8, .. })
+        ));
+    }
+
+    #[test]
+    fn recovers_class_layout_with_function_pointer_constructor_parameters() {
+        let source = r#"
+            class Tween {
+            public:
+                Tween(float (*curve)(float, float), void (*apply)(void*, float*));
+                int active;
+            };
+            int read(Tween* tween) { return tween->active; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.functions.len(), 1);
+        assert!(matches!(
+            unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn recovers_class_array_member_layout_and_indexing() {
+        let source = r#"
+            class Tween {
+            public:
+                float start[4];
+                float grid[2][3];
+                int tail;
+            };
+            float read(Tween* tween, int row, int column) {
+                return tween->start[column] + tween->grid[row][column] + tween->tail;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let expression = unit.functions[0].return_expression.as_ref().unwrap();
+        let rendered = format!("{expression:?}");
+        assert!(rendered.contains("offset: 0"));
+        assert!(rendered.contains("offset: 16"));
+        assert!(rendered.contains("index_stride: Some(12)"));
+        assert!(rendered.contains("offset: 40"));
+    }
+
+    #[test]
+    fn recovers_function_pointer_class_member_layout() {
+        let source = r#"
+            class Handler {
+            public:
+                int active;
+                void (*done)(void*);
+                int tail;
+            };
+            int read(Handler* handler) { return handler->tail; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 8, .. })
+        ));
+    }
+
+    #[test]
     fn recovers_wchar_specialization_layout_and_abi_names() {
         let source = r#"
             typedef unsigned int uint;

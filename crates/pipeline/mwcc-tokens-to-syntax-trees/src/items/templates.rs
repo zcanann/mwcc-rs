@@ -13,6 +13,24 @@ use mwcc_syntax_trees::{Pointee, Type};
 use mwcc_tokens::Token;
 use std::collections::HashMap;
 
+fn template_pointer_type(declared: Option<Type>) -> Type {
+    match declared {
+        Some(Type::Int) => Type::Pointer(Pointee::Int),
+        Some(Type::UnsignedInt) => Type::Pointer(Pointee::UnsignedInt),
+        Some(Type::Char) => Type::Pointer(Pointee::Char),
+        Some(Type::UnsignedChar) => Type::Pointer(Pointee::UnsignedChar),
+        Some(Type::Short) => Type::Pointer(Pointee::Short),
+        Some(Type::UnsignedShort) => Type::Pointer(Pointee::UnsignedShort),
+        Some(Type::Float) => Type::Pointer(Pointee::Float),
+        Some(Type::Double) => Type::Pointer(Pointee::Double),
+        Some(Type::LongLong) => Type::Pointer(Pointee::LongLong),
+        Some(Type::UnsignedLongLong) => Type::Pointer(Pointee::UnsignedLongLong),
+        Some(Type::Struct { size, .. }) => Type::StructPointer { element_size: size },
+        Some(Type::Pointer(_) | Type::StructPointer { .. }) => Type::Pointer(Pointee::Pointer),
+        Some(Type::Void) | None => Type::StructPointer { element_size: 0 },
+    }
+}
+
 impl Parser {
     /// Consume the declaration-scope marker on an explicit specialization.
     ///
@@ -109,6 +127,13 @@ impl Parser {
         })
     }
 
+    /// Whether the current token begins a concrete template instance whose
+    /// layout can be recovered. Declaration lookahead must use the same test as
+    /// `parse_type`; otherwise `Box<T>* value` is misread as `Box < T > ...`.
+    pub(crate) fn peek_is_template_instance_type(&self) -> bool {
+        self.cplusplus && self.parse_template_instance_at(self.position).is_some()
+    }
+
     fn template_argument_start(&self, start: usize) -> Option<usize> {
         let mut scan = start + 1;
         while self.tokens.get(scan) == Some(&Token::Colon)
@@ -169,12 +194,17 @@ impl Parser {
             return Some((Some(instance), end));
         }
         let token = self.tokens.get(start)?;
-        let declared = self.template_argument_type(token).or_else(|| match token {
+        let mut declared = self.template_argument_type(token).or_else(|| match token {
             Token::Identifier(name) => self.struct_value_type(name),
             _ => None,
         });
         if declared.is_some() || matches!(token, Token::Identifier(_)) {
-            Some((declared, start + 1))
+            let mut end = start + 1;
+            while self.tokens.get(end) == Some(&Token::Star) {
+                declared = Some(template_pointer_type(declared));
+                end += 1;
+            }
+            Some((declared, end))
         } else {
             None
         }
@@ -190,22 +220,30 @@ impl Parser {
         let mut max_alignment = 1u32;
         let mut fields = HashMap::new();
         for field in &template.fields {
-            let (field_type, field_size, natural_alignment) = match field.field_type {
+            let (field_type, field_size, natural_alignment, struct_tag) = match field.field_type {
                 TemplateFieldType::Parameter => {
                     let field_type = argument?;
                     (
                         field_type,
                         type_size(field_type),
                         type_alignment(field_type),
+                        None,
                     )
                 }
                 TemplateFieldType::ParameterByteArray => {
-                    (Type::UnsignedChar, type_size(argument?), 1)
+                    (Type::UnsignedChar, type_size(argument?), 1, None)
                 }
+                TemplateFieldType::SelfPointer => (
+                    Type::StructPointer { element_size: 0 },
+                    4,
+                    4,
+                    Some(format!("{template_name}<...>")),
+                ),
                 TemplateFieldType::Concrete(field_type) => (
                     field_type,
                     type_size(field_type),
                     type_alignment(field_type),
+                    None,
                 ),
             };
             let alignment = natural_alignment.max(1).max(field.alignment);
@@ -217,7 +255,7 @@ impl Parser {
                     member_type: field_type,
                     source_fundamental: None,
                     offset,
-                    struct_tag: None,
+                    struct_tag,
                     array_element: None,
                     array_bytes: None,
                     array_stride: None,
@@ -423,13 +461,13 @@ impl Parser {
         if !fields.is_empty() {
             self.struct_templates
                 .insert(name.clone(), StructTemplate { fields });
-        } else {
-            // A one-parameter template may still have only concrete storage
-            // (`rc_ptr<T>` contains a control-block pointer). The fast path
-            // above intentionally looks for parameter-valued fields; fall back
-            // to the mixed-layout scanner instead of discarding that layout.
-            self.capture_mixed_struct_template();
         }
+        // The fast path above recognizes the narrow historical `T field`
+        // subset. Always give the declaration-oriented scanner a chance to
+        // replace it with the complete mixed layout: otherwise a template such
+        // as `Node<T> { Node<T>* next; T value; }` silently loses `next` merely
+        // because at least one parameter-valued field was found.
+        self.capture_mixed_struct_template();
     }
 
     /// Recover mixed-layout templates with multiple/defaulted parameters. This
@@ -498,7 +536,7 @@ impl Parser {
                 Some(Token::EndOfFile) | None => return,
                 _ if depth == 1 => {
                     if let Some((mut declaration, next)) =
-                        self.capture_template_field_declaration(cursor, &parameter)
+                        self.capture_template_field_declaration(cursor, &parameter, &name)
                     {
                         fields.append(&mut declaration);
                         cursor = next;
@@ -519,6 +557,7 @@ impl Parser {
         &self,
         start: usize,
         parameter: &str,
+        template_name: &str,
     ) -> Option<(Vec<TemplateField>, usize)> {
         let mut cursor = start;
         while matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if matches!(word.as_str(), "const" | "volatile" | "mutable"))
@@ -530,6 +569,15 @@ impl Parser {
         }
         let (mut field_type, type_tokens) = match self.tokens.get(cursor)? {
             Token::Identifier(name) if name == parameter => (TemplateFieldType::Parameter, 1),
+            Token::Identifier(name)
+                if name == template_name
+                    && self.tokens.get(cursor + 1) == Some(&Token::Less)
+                    && matches!(self.tokens.get(cursor + 2), Some(Token::Identifier(argument)) if argument == parameter)
+                    && self.tokens.get(cursor + 3) == Some(&Token::Greater)
+                    && self.tokens.get(cursor + 4) == Some(&Token::Star) =>
+            {
+                (TemplateFieldType::SelfPointer, 4)
+            }
             Token::KeywordUnsigned if self.tokens.get(cursor + 1) == Some(&Token::KeywordChar) => {
                 (TemplateFieldType::Concrete(Type::UnsignedChar), 2)
             }
@@ -548,8 +596,10 @@ impl Parser {
             cursor += 1;
         }
         if self.tokens.get(cursor) == Some(&Token::Star) {
-            field_type =
-                TemplateFieldType::Concrete(Type::Pointer(mwcc_syntax_trees::Pointee::Int));
+            if !matches!(field_type, TemplateFieldType::SelfPointer) {
+                field_type =
+                    TemplateFieldType::Concrete(Type::Pointer(mwcc_syntax_trees::Pointee::Int));
+            }
             while self.tokens.get(cursor) == Some(&Token::Star) {
                 cursor += 1;
             }

@@ -108,6 +108,52 @@ fn place_bit_field(
 }
 
 impl Parser {
+    /// Consume one or more constant array dimensions and return the total byte
+    /// extent plus the first-index stride for a multidimensional declaration.
+    /// Keeping the arithmetic here gives C structs, unions, and C++ classes one
+    /// overflow-checked interpretation of `member[A][B]`.
+    pub(crate) fn parse_array_declarator_extent(
+        &mut self,
+        element_size: u32,
+    ) -> Compilation<Option<(u32, Option<u32>)>> {
+        if *self.peek() != Token::BracketOpen {
+            return Ok(None);
+        }
+
+        let mut dimensions = Vec::new();
+        while *self.peek() == Token::BracketOpen {
+            self.advance();
+            let count = u32::try_from(self.parse_integer_constant()?)
+                .map_err(|_| Diagnostic::error("array dimension exceeds 32 bits"))?;
+            self.expect(Token::BracketClose)?;
+            dimensions.push(count);
+        }
+
+        let multiply_dimensions = |dimensions: &[u32]| {
+            dimensions.iter().try_fold(1u32, |total, &dimension| {
+                total.checked_mul(dimension).ok_or_else(|| {
+                    Diagnostic::error("array extent exceeds the 32-bit address space")
+                })
+            })
+        };
+        let total_elements = multiply_dimensions(&dimensions)?;
+        let total_bytes = total_elements.checked_mul(element_size).ok_or_else(|| {
+            Diagnostic::error("array extent exceeds the 32-bit address space")
+        })?;
+        let first_index_stride = if dimensions.len() > 1 {
+            Some(
+                multiply_dimensions(&dimensions[1..])?
+                    .checked_mul(element_size)
+                    .ok_or_else(|| {
+                        Diagnostic::error("array stride exceeds the 32-bit address space")
+                    })?,
+            )
+        } else {
+            None
+        };
+        Ok(Some((total_bytes, first_index_stride)))
+    }
+
     pub(crate) fn parse_type(&mut self) -> Compilation<Type> {
         let parsed = self.parse_type_base()?;
         // A POSTFIX qualifier — east const: `unsigned char const *jp` (metroid
@@ -1252,22 +1298,11 @@ impl Parser {
                     }
                     // Preserve the first index's byte stride as well as total size:
                     // `field[R][C]` advances `C * sizeof(element)` for `field[row]`.
-                    let mut dimensions = Vec::new();
-                    while *self.peek() == Token::BracketOpen {
-                        self.advance();
-                        let count = self.parse_integer_constant()? as u32;
-                        self.expect(Token::BracketClose)?;
-                        dimensions.push(count);
-                    }
-                    let total = dimensions.iter().copied().product::<u32>();
-                    array_stride = (dimensions.len() > 1).then(|| {
-                        dimensions[1..]
-                            .iter()
-                            .copied()
-                            .product::<u32>()
-                            .saturating_mul(element_size)
-                    });
-                    size = total * element_size;
+                    let (total_bytes, first_index_stride) = self
+                        .parse_array_declarator_extent(element_size)?
+                        .expect("the array opener was checked above");
+                    size = total_bytes;
+                    array_stride = first_index_stride;
                 }
                 // GCC/CodeWarrior also accepts the attribute on the declarator,
                 // after its name or array dimensions. It aligns this member and
@@ -1427,22 +1462,11 @@ impl Parser {
                 if array_element.is_none() {
                     array_element = Some(pointee_of(field_type)?);
                 }
-                let element_block_size = size;
-                let mut dimensions = Vec::new();
-                while *self.peek() == Token::BracketOpen {
-                    self.advance();
-                    dimensions.push(self.parse_integer_constant()? as u32);
-                    self.expect(Token::BracketClose)?;
-                }
-                let total = dimensions.iter().copied().product::<u32>();
-                array_stride = (dimensions.len() > 1).then(|| {
-                    dimensions[1..]
-                        .iter()
-                        .copied()
-                        .product::<u32>()
-                        .saturating_mul(element_block_size)
-                });
-                size = total.saturating_mul(size);
+                let (total_bytes, first_index_stride) = self
+                    .parse_array_declarator_extent(size)?
+                    .expect("the array opener was checked above");
+                size = total_bytes;
+                array_stride = first_index_stride;
             }
             let storage_type = array_typedef.map_or(field_type, |(element, total, _)| {
                 if total == 0 {

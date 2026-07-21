@@ -879,6 +879,14 @@ impl Parser {
             }
             other => {
                 let token_index = self.position.saturating_sub(1);
+                if std::env::var_os("MWCC_PARSE_DEBUG").is_some() {
+                    let start = token_index.saturating_sub(8);
+                    let end = (token_index + 9).min(self.tokens.len());
+                    eprintln!(
+                        "parse context at token {token_index}: {:?}",
+                        &self.tokens[start..end]
+                    );
+                }
                 return Err(Diagnostic::error(format!(
                     "expected an expression, found {other} at {}",
                     self.diagnostic_position(token_index)
