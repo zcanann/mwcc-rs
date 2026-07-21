@@ -645,7 +645,143 @@ impl Parser {
     /// current recovery position without advancing the main parser cursor.
     pub(crate) fn capture_skipped_struct_template(&mut self) {
         self.capture_inline_template_members();
+        self.capture_template_virtual_methods();
         self.capture_mixed_struct_template();
+    }
+
+    /// Retain virtual declaration slots for an opaque primary template when
+    /// the ABI position is provable without instantiating its fields: no base,
+    /// and a virtual declaration as the first member means vptr offset zero.
+    /// Dependent parameter spellings need not be resolved because fixed arity
+    /// is used only to reject ambiguous call sites.
+    fn capture_template_virtual_methods(&mut self) {
+        let start = self.position;
+        if !self.item_is_primary_template_declaration() {
+            return;
+        }
+        let mut cursor = start + 1;
+        let mut angles = 0i32;
+        loop {
+            match self.tokens.get(cursor) {
+                Some(Token::Less) => angles += 1,
+                Some(Token::Greater) => {
+                    angles -= 1;
+                    if angles == 0 {
+                        cursor += 1;
+                        break;
+                    }
+                }
+                Some(Token::EndOfFile) | None => return,
+                _ => {}
+            }
+            cursor += 1;
+        }
+        if !matches!(self.tokens.get(cursor), Some(Token::KeywordStruct))
+            && !matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if word == "class")
+        {
+            return;
+        }
+        let Some(Token::Identifier(class_name)) = self.tokens.get(cursor + 1) else {
+            return;
+        };
+        let class_name = class_name.clone();
+        cursor += 2;
+        let header_start = cursor;
+        while !matches!(
+            self.tokens.get(cursor),
+            Some(Token::BraceOpen | Token::EndOfFile) | None
+        ) {
+            cursor += 1;
+        }
+        if self.tokens.get(cursor) != Some(&Token::BraceOpen)
+            || self.tokens[header_start..cursor].contains(&Token::Colon)
+        {
+            return;
+        }
+        cursor += 1;
+        while matches!(self.tokens.get(cursor), Some(Token::Identifier(access))
+            if matches!(access.as_str(), "public" | "private" | "protected"))
+            && self.tokens.get(cursor + 1) == Some(&Token::Colon)
+        {
+            cursor += 2;
+        }
+        if !matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if word == "virtual") {
+            return;
+        }
+
+        let mut depth = 1i32;
+        let mut next_slot = 8u16;
+        while depth > 0 {
+            match self.tokens.get(cursor) {
+                Some(Token::BraceOpen) => {
+                    depth += 1;
+                    cursor += 1;
+                }
+                Some(Token::BraceClose) => {
+                    depth -= 1;
+                    cursor += 1;
+                }
+                Some(Token::Identifier(word)) if depth == 1 && word == "virtual" => {
+                    let mut probe = self.clone();
+                    probe.position = cursor + 1;
+                    let recovered = (|| {
+                        let return_type = probe.parse_type().ok()?;
+                        probe.eat_keyword(Token::Ampersand);
+                        let member = probe.parse_identifier().ok()?;
+                        if !probe.eat_keyword(Token::ParenOpen) {
+                            return None;
+                        }
+                        let parameter_start = probe.position;
+                        let mut scan = parameter_start;
+                        let mut parens = 1i32;
+                        let mut commas = 0usize;
+                        while parens > 0 {
+                            match probe.tokens.get(scan) {
+                                Some(Token::ParenOpen) => parens += 1,
+                                Some(Token::ParenClose) => parens -= 1,
+                                Some(Token::Comma) if parens == 1 => commas += 1,
+                                Some(Token::EndOfFile) | None => return None,
+                                _ => {}
+                            }
+                            scan += 1;
+                        }
+                        let parameter_end = scan - 1;
+                        let empty = parameter_start == parameter_end
+                            || (parameter_end == parameter_start + 1
+                                && probe.tokens.get(parameter_start)
+                                    == Some(&Token::KeywordVoid));
+                        Some((member, return_type, if empty { 0 } else { commas + 1 }))
+                    })();
+                    if let Some((member, return_type, argument_count)) = recovered {
+                        let dispatch = crate::cxx::VirtualDispatch {
+                            vptr_offset: 0,
+                            slot_offset: next_slot,
+                            return_type,
+                            variadic: false,
+                        };
+                        let qualified = self.qualify_cxx_class_name(&class_name);
+                        for owner in std::iter::once(class_name.clone()).chain(
+                            (qualified != class_name).then_some(qualified),
+                        ) {
+                            let methods = self.cxx_template_virtual_methods
+                                .entry((owner, member.clone()))
+                                .or_default();
+                            if !methods.iter().any(|(arity, existing)| {
+                                *arity == argument_count
+                                    && existing.vptr_offset == dispatch.vptr_offset
+                                    && existing.slot_offset == dispatch.slot_offset
+                            }) {
+                                methods.push((argument_count, dispatch));
+                            }
+                        }
+                    }
+                    next_slot = next_slot.saturating_add(4);
+                    cursor += 1;
+                }
+                Some(Token::EndOfFile) | None => return,
+                _ => cursor += 1,
+            }
+        }
     }
 
     fn template_type_pattern_at(

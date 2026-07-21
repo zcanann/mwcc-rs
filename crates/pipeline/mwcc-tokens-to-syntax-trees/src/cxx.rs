@@ -1795,6 +1795,28 @@ impl Parser {
                     || (method.variadic && argument_count >= method.fixed_parameter_count)
             })
             .collect();
+        if candidates.is_empty() {
+            let primary = source_class.split('<').next().unwrap_or(source_class);
+            let qualified_primary = self.qualify_cxx_class_name(primary);
+            let template_candidates: Vec<_> = self
+                .cxx_template_virtual_methods
+                .get(&(qualified_primary, member.to_string()))
+                .or_else(|| {
+                    self.cxx_template_virtual_methods
+                        .get(&(primary.to_string(), member.to_string()))
+                })
+                .into_iter()
+                .flatten()
+                .filter_map(|(arity, dispatch)| (*arity == argument_count).then_some(*dispatch))
+                .collect();
+            return match template_candidates.as_slice() {
+                [] => Ok(None),
+                [dispatch] => Ok(Some(*dispatch)),
+                _ => Err(Diagnostic::error(format!(
+                    "virtual C++ template member call '{primary}::{member}' is ambiguous (roadmap)"
+                ))),
+            };
+        }
         match candidates.as_slice() {
             [] => Ok(None),
             [method] => Ok(Some(VirtualDispatch {

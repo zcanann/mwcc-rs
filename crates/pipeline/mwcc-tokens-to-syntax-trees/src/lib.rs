@@ -153,6 +153,7 @@ pub fn parse_located_translation_unit_with_enum_min(
         cxx_member_template_forwarders: HashMap::new(),
         cxx_template_forwarder_specializations: HashMap::new(),
         cxx_dispatch_tables: HashMap::new(),
+        cxx_template_virtual_methods: HashMap::new(),
         incomplete_cxx_dispatch: std::collections::HashSet::new(),
         template_aliases: HashMap::new(),
         variable_structs: HashMap::new(),
@@ -1939,6 +1940,36 @@ blr\n\
         assert!(matches!(
             unit.functions[0].return_expression,
             Some(Expression::Call { ref name, .. }) if name == "get__3BoxFv"
+        ));
+    }
+
+    #[test]
+    fn resolves_virtual_calls_through_opaque_template_specializations() {
+        let source = r#"
+            namespace api {
+                struct Item;
+                template <typename A>
+                struct Callback { virtual bool invoke(A) = 0; };
+            }
+            int use(api::Callback<api::Item*>* callback, api::Item* item) {
+                return callback->invoke(item);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].return_expression,
+            Some(Expression::VirtualCall {
+                vptr_offset: 0,
+                slot_offset: 8,
+                ..
+            })
         ));
     }
 

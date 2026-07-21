@@ -234,6 +234,10 @@ pub(crate) struct Parser {
     /// header-only class declarations resolve without pretending their fields
     /// were parsed.
     pub(crate) cxx_dispatch_tables: HashMap<String, crate::cxx::RecoveredCxxDispatchTable>,
+    /// Virtual slots declared by primary class templates whose zero-offset
+    /// vptr is provable without instantiating a concrete object layout.
+    pub(crate) cxx_template_virtual_methods:
+        HashMap<(String, String), Vec<(usize, crate::cxx::VirtualDispatch)>>,
     /// Classes whose virtual declaration sequence could not be recovered in
     /// full. No virtual call through one is admitted: an unknown earlier entry
     /// would make every later slot unsafe.
