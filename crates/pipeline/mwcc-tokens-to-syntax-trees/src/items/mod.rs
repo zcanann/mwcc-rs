@@ -4443,7 +4443,8 @@ impl Parser {
                     || self.struct_pointer_typedefs.contains_key(word)
                     || (self.cplusplus
                         && (matches!(word.as_str(), "bool" | "wchar_t")
-                            || self.enum_types.contains_key(word)))
+                            || self.enum_types.contains_key(word)
+                            || self.resolve_scoped_cxx_class_name(word).is_some()))
             }
             _ => false,
         }

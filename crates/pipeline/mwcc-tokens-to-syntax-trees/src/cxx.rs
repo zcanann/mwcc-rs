@@ -744,7 +744,25 @@ impl Parser {
                 || self.structs.contains_key(qualified)
         };
         if let Some(layout_scope) = &self.current_cxx_layout_scope {
+            // C++ injects the class name into its own body before the layout is
+            // complete and registered. Self-referential pointers therefore
+            // resolve against the in-progress lexical scope.
+            if layout_scope.rsplit("::").next() == Some(class) {
+                return Some(layout_scope.clone());
+            }
             let components: Vec<&str> = layout_scope.split("::").collect();
+            for depth in (1..=components.len()).rev() {
+                let qualified = format!("{}::{class}", components[..depth].join("::"));
+                if declared(&qualified) {
+                    return Some(qualified);
+                }
+            }
+        }
+        // An out-of-class member definition retains its lexical class scope.
+        // This covers both the injected class name (`Inner* p` inside
+        // `Outer::Inner::method`) and sibling nested types declared by an owner.
+        if let Some(member_scope) = &self.current_cxx_member_class {
+            let components: Vec<&str> = member_scope.split("::").collect();
             for depth in (1..=components.len()).rev() {
                 let qualified = format!("{}::{class}", components[..depth].join("::"));
                 if declared(&qualified) {

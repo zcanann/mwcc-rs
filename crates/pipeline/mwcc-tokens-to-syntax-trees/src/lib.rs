@@ -3804,6 +3804,33 @@ blr\n\
     }
 
     #[test]
+    fn resolves_injected_nested_class_names_in_out_of_class_members() {
+        let source = r#"
+            struct Outer {
+                struct Inner {
+                    virtual bool same(Inner* other);
+                    void draw();
+                };
+            };
+            void Outer::Inner::draw() {
+                Inner* current = this;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].locals[0].declared_type,
+            mwcc_syntax_trees::Type::StructPointer { .. }
+        ));
+    }
+
+    #[test]
     fn drops_unused_specializations_of_inline_class_template_members() {
         let source = r#"
             namespace J {
