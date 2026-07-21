@@ -1812,6 +1812,11 @@ impl Parser {
                     class.has_virtual_destructor = true;
                 }
                 self.skip_class_member()?;
+                // An in-class destructor definition is commonly followed by an
+                // optional declaration semicolon (`virtual ~T() { };`). The
+                // balanced-body skipper stops at `}`, so consume that separator
+                // before the next member is interpreted as a fresh type.
+                self.eat_keyword(Token::Semicolon);
                 continue;
             }
 

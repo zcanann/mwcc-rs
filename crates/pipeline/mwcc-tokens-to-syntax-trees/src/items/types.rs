@@ -316,6 +316,38 @@ impl Parser {
                 }
             }
         }
+        // An elaborated C++ class specifier (`class Name value`, `class Name* p`)
+        // names the same aggregate type registered by either a prior `class` or
+        // `struct` definition. C++ permits a different class-key at a use site;
+        // layout and member identity therefore share the ordinary struct path.
+        if self.cplusplus && matches!(self.peek(), Token::Identifier(word) if word == "class") {
+            self.advance();
+            let tag = self.parse_identifier()?;
+            if !matches!(self.peek(), Token::Star | Token::Ampersand) {
+                return match self.struct_value_type(&tag) {
+                    Some(class_type) => {
+                        self.last_struct_tag = Some(tag);
+                        Ok(class_type)
+                    }
+                    None => Err(Diagnostic::error(format!(
+                        "class '{tag}' value layout is not declared",
+                    ))),
+                };
+            }
+            let element_size = self.structs.get(&tag).map_or(0, |layout| layout.size);
+            self.last_struct_tag = Some(tag);
+            if *self.peek() == Token::Ampersand {
+                self.advance();
+                self.last_type_was_aggregate_reference = true;
+                return Ok(Type::StructPointer { element_size });
+            }
+            self.advance();
+            if *self.peek() == Token::Star {
+                self.advance();
+                return Ok(Type::Pointer(Pointee::Pointer));
+            }
+            return Ok(Type::StructPointer { element_size });
+        }
         if *self.peek() == Token::KeywordStruct {
             self.advance();
             let tag = self.parse_identifier()?;

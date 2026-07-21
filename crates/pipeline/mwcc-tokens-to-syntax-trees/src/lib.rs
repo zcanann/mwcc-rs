@@ -2034,6 +2034,32 @@ blr\n\
     }
 
     #[test]
+    fn elaborated_class_value_members_retain_their_nested_layout() {
+        let source = r#"
+            struct Vector { struct { float x; float y; float z; } f; };
+            class Owner {
+            public:
+                virtual ~Owner() { };
+                class Vector value;
+                float read();
+            };
+            float Owner::read() { return value.f.z; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 12, .. })
+        ));
+    }
+
+    #[test]
     fn recovers_wchar_specialization_layout_and_abi_names() {
         let source = r#"
             typedef unsigned int uint;
