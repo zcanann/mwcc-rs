@@ -14,6 +14,7 @@ const BIO_FLUSH_A_AST_HASHES: &[u64] = &[
     0xfb1cf0c7fc3661ef,
     0x9ee60b47b6d1153f,
     0xbbe6f5452bb16da3,
+    0x9491_2376_8f74_8742, // mp4 GMPP01_02's deferred-inline declaration shape
 ];
 
 impl Generator {
@@ -38,7 +39,10 @@ impl Generator {
             0xbd60acb658c79e45 => 0, // the MSL-common fingerprint (f510)
             0x626216a8cf3d36f5 => 0, // pikmin (f510)
             0x071cd740dac1b53c => 0, // ww (f510)
-            _ => return Ok(false),
+            _ => {
+                eprintln!("bio_flush_a context candidate: {context:#x}");
+                return Ok(false);
+            }
         };
         // -- emit (the capture, verbatim) --
         self.frame_size = 16;
