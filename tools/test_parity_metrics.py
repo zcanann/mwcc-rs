@@ -186,6 +186,48 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("NOT RUN", rendered)
         self.assertIn("FAILURE-BIASED, NOT A PARITY ESTIMATE", rendered)
 
+    def test_brief_status_exposes_audit_quality_unknowns_and_cost(self):
+        rows = [
+            row(source="src/empty.c", source_has_non_whitespace=False),
+            row(source="src/exact.c"),
+            row(source="src/deferred.c"),
+            row(source="src/harness.c"),
+        ]
+        observations = {
+            rows[0]["configuration_id"]: {
+                "status": "BYTE",
+                "elapsed_seconds": 1.0,
+            },
+            rows[1]["configuration_id"]: {
+                "status": "BYTE",
+                "elapsed_seconds": 2.0,
+            },
+            rows[2]["configuration_id"]: {
+                "status": "DEFER",
+                "elapsed_seconds": 3.0,
+            },
+            rows[3]["configuration_id"]: {
+                "status": "HARNESS",
+                "elapsed_seconds": 4.0,
+            },
+        }
+        report = snapshot({"projects": []}, rows, observations, "fingerprint")
+        report["representative_audit"] = representative_audit(
+            rows,
+            observations,
+            {item["configuration_id"] for item in rows},
+        )
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            print_brief(report, None)
+        rendered = output.getvalue()
+        self.assertIn("substantive-source audit", rendered)
+        self.assertIn("whitespace-only rows excluded 1", rendered)
+        self.assertIn("measurement-unknown attribution", rendered)
+        self.assertIn("emitted-object quality (conditional, not feature coverage)", rendered)
+        self.assertIn("audit execution cost", rendered)
+        self.assertIn("summed 10.0s", rendered)
+
     def test_exact_output_against_original_object_earns_credit_with_synthetic_input(self):
         observation = {
             "status": "BYTE",

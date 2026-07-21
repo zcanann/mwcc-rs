@@ -871,6 +871,29 @@ def print_brief(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]]) 
             f"95% CI on confirmed share {estimate['confirmed_interval_low']:.1%}.."
             f"{estimate['confirmed_interval_high']:.1%}"
         )
+        if estimate["substantive_source_total"]:
+            substantive = (
+                "substantive-source audit — whole-object exact "
+                f"{estimate['substantive_source_successes']}/"
+                f"{estimate['substantive_source_total']} = "
+                f"{estimate['substantive_source_confirmed_proportion']:.1%}; "
+                f"whitespace-only rows excluded {estimate['trivial_source_total']}"
+            )
+            if estimate["substantive_source_resolved_outcomes"]:
+                substantive += (
+                    "; resolved exact "
+                    f"{estimate['substantive_source_successes']}/"
+                    f"{estimate['substantive_source_resolved_outcomes']} = "
+                    f"{estimate['substantive_source_resolved_proportion']:.1%}"
+                )
+            print(substantive)
+        print(
+            "measurement-unknown attribution — "
+            f"harness {estimate['harness_unknown']}; missing dependency "
+            f"{estimate['missing_dependency_unknown']}; invalid configuration "
+            f"{estimate['invalid_configuration_unknown']}; non-authoritative comparison "
+            f"{estimate['non_authoritative_unknown']}"
+        )
         if estimate["oracle_runnable"]:
             print(
                 "real-MWCC-runnable sample stratum — whole-object exact "
@@ -878,6 +901,13 @@ def print_brief(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]]) 
                 f"{estimate['oracle_runnable_confirmed_proportion']:.1%}; "
                 f"pipeline-unknown {estimate['oracle_runnable_unknown']}/"
                 f"{estimate['oracle_runnable']}"
+            )
+        if estimate["emitted_objects"]:
+            print(
+                "emitted-object quality (conditional, not feature coverage) — exact "
+                f"{estimate['emitted_exact']}/{estimate['emitted_objects']} = "
+                f"{estimate['emitted_exact_proportion']:.1%}; wrong "
+                f"{estimate['emitted_wrong']}/{estimate['emitted_objects']}"
             )
         if estimate["code_measured"]:
             print(
@@ -893,6 +923,14 @@ def print_brief(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]]) 
             f"{len(audit['version_coverage'])}; project/version/language cells "
             f"{audit['breadth_coverage_observed']}/{audit['breadth_coverage_cells']}"
         )
+        runtime = audit["runtime"]
+        if runtime["measured"]:
+            print(
+                "audit execution cost — "
+                f"{runtime['measured']} rows timed; summed {runtime['total_seconds']:.1f}s; "
+                f"median {runtime['median_seconds']:.2f}s; p95 {runtime['p95_seconds']:.2f}s; "
+                f"max {runtime['max_seconds']:.2f}s"
+            )
 
     frontier = report.get("work_frontier")
     if frontier is not None:
