@@ -481,8 +481,8 @@ impl Parser {
             // A BLOCK-SCOPED declaration (`f32 guess = ...;` inside an if):
             // hoist the local to the function and keep the initialization as
             // an Assign at its position (it may be conditionally reached).
-            if self.peek_is_type()
-                || self.peek_is_local_array_typedef()
+            if (!self.peek_is_shadowed_member_base()
+                && (self.peek_is_type() || self.peek_is_local_array_typedef()))
                 || matches!(self.peek(), Token::Identifier(word) if word == "static")
             {
                 self.parse_block_declaration(local_names, block_locals, &mut statements)?;

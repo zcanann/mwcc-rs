@@ -2049,6 +2049,7 @@ blr\n\
                 const class Vector& value = consumer->get(0);
                 return value.f.z;
             }
+            void shadowed(Consumer* Consumer) { Consumer->get(0); }
         "#;
         let unit = parse_translation_unit(
             mwcc_source_to_tokens::tokenize(source).unwrap(),
@@ -2065,6 +2066,12 @@ blr\n\
         assert!(matches!(
             unit.functions[1].return_expression,
             Some(mwcc_syntax_trees::Expression::Member { offset: 8, .. })
+        ));
+        assert!(matches!(
+            unit.functions[2].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Call { .. }
+            )]
         ));
     }
 

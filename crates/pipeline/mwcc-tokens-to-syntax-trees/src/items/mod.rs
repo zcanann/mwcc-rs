@@ -2627,6 +2627,7 @@ impl Parser {
                             .iter()
                             .map(|parameter| parameter.parameter_type)
                             .collect::<Vec<_>>(),
+                        &cxx_parameters,
                         is_variadic,
                     );
                     if let Some(tag) = &return_struct_tag {
@@ -2645,6 +2646,7 @@ impl Parser {
                         .iter()
                         .map(|parameter| parameter.parameter_type)
                         .collect::<Vec<_>>(),
+                    &cxx_parameters,
                     is_variadic,
                 );
                 if let Some(tag) = &return_struct_tag {
@@ -3471,7 +3473,9 @@ impl Parser {
                 }
                 self.advance();
             }
-            if !self.peek_is_type() && !self.peek_is_local_array_typedef() {
+            if self.peek_is_shadowed_member_base()
+                || (!self.peek_is_type() && !self.peek_is_local_array_typedef())
+            {
                 break;
             }
             let declared_type = self.parse_type()?;
@@ -3913,8 +3917,8 @@ impl Parser {
                 // the function's outermost block. Reuse the block declaration
                 // parser: it hoists storage to the Function while preserving an
                 // initializer as a positioned assignment.
-                if self.peek_is_type()
-                    || self.peek_is_local_array_typedef()
+                if (!self.peek_is_shadowed_member_base()
+                    && (self.peek_is_type() || self.peek_is_local_array_typedef()))
                     || matches!(self.peek(), Token::Identifier(word) if word == "static")
                 {
                     self.parse_block_declaration(
@@ -4159,6 +4163,15 @@ impl Parser {
             return false;
         }
         self.token_starts_type(self.peek()) || self.peek_is_template_instance_type()
+    }
+
+    /// C++ permits a variable to shadow its class name (`T* T`). At the start
+    /// of a statement, prefer the in-scope object for `T->member` / `T.member`
+    /// over treating the same identifier as the start of a declaration.
+    pub(crate) fn peek_is_shadowed_member_base(&self) -> bool {
+        matches!(self.peek(), Token::Identifier(name)
+            if self.variable_types.contains_key(name)
+                && matches!(self.peek_at(1), Token::Arrow | Token::Dot))
     }
 
     /// Whether the cursor sits on an array-typedef LOCAL declaration (`Mtx proj;`):

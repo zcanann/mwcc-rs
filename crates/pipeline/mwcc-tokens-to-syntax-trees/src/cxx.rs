@@ -102,6 +102,7 @@ pub(crate) struct RecoveredCxxMethod {
     pub(crate) fixed_parameter_count: usize,
     pub(crate) variadic: bool,
     pub(crate) parameters: Vec<Type>,
+    pub(crate) cxx_parameters: Vec<CxxParameterType>,
 }
 
 /// One entry in CodeWarrior's primary virtual table. Slot offsets include the
@@ -561,6 +562,7 @@ impl Parser {
         source_name: &str,
         mangled: &str,
         parameters: &[Type],
+        cxx_parameters: &[CxxParameterType],
         variadic: bool,
     ) {
         let key = self.free_cxx_source_name(source_name);
@@ -571,6 +573,7 @@ impl Parser {
                 fixed_parameter_count: parameters.len(),
                 variadic,
                 parameters: parameters.to_vec(),
+                cxx_parameters: cxx_parameters.to_vec(),
             });
         }
     }
@@ -581,6 +584,7 @@ impl Parser {
         source_name: &str,
         mangled: &str,
         parameters: &[Type],
+        cxx_parameters: &[CxxParameterType],
         variadic: bool,
     ) {
         let key = format!("{scope}::{source_name}");
@@ -591,6 +595,7 @@ impl Parser {
                 fixed_parameter_count: parameters.len(),
                 variadic,
                 parameters: parameters.to_vec(),
+                cxx_parameters: cxx_parameters.to_vec(),
             });
         }
     }
@@ -652,18 +657,27 @@ impl Parser {
         candidates: &[&RecoveredCxxMethod],
         arguments: &[Expression],
     ) -> Compilation<Option<String>> {
-        let Some(argument_types) = arguments
-            .iter()
-            .map(|argument| self.cxx_expression_type(argument))
-            .collect::<Option<Vec<_>>>()
-        else {
-            return Err(Diagnostic::error(format!(
-                "C++ function call '{key}' is ambiguous (roadmap)"
-            )));
-        };
         let exact: Vec<_> = candidates
             .iter()
-            .filter(|method| method.parameters == argument_types)
+            .filter(|method| {
+                arguments.iter().enumerate().all(|(index, argument)| {
+                    let Some(parameter) = method.cxx_parameters.get(index) else {
+                        return method.variadic;
+                    };
+                    if parameter.is_reference {
+                        if let (Some(expected), Some(actual)) = (
+                            parameter.qualified_name.as_deref(),
+                            self.cxx_expression_struct_tag(argument),
+                        ) {
+                            return expected == actual
+                                || expected.rsplit("::").next()
+                                    == actual.rsplit("::").next();
+                        }
+                    }
+                    self.cxx_expression_type(argument)
+                        .is_none_or(|actual| method.parameters[index] == actual)
+                })
+            })
             .collect();
         match exact.as_slice() {
             [method] => Ok(Some(method.mangled.clone())),
@@ -693,6 +707,22 @@ impl Parser {
                     }),
                     _ => None,
                 }
+            }
+            _ => None,
+        }
+    }
+
+    fn cxx_expression_struct_tag<'a>(&'a self, expression: &'a Expression) -> Option<&'a str> {
+        match expression {
+            Expression::Variable(name) => self
+                .variable_structs
+                .get(name)
+                .or_else(|| self.global_structs.get(name))
+                .map(String::as_str),
+            Expression::AddressOf { operand }
+            | Expression::Cast { operand, .. }
+            | Expression::Dereference { pointer: operand } => {
+                self.cxx_expression_struct_tag(operand)
             }
             _ => None,
         }
@@ -1240,6 +1270,7 @@ impl Parser {
                 fixed_parameter_count: parameters.len(),
                 variadic,
                 parameters: parameters.clone(),
+                cxx_parameters: cxx_parameters.clone(),
             };
             let prototype_parameters = if is_static {
                 self.cxx_static_methods
