@@ -766,6 +766,49 @@ impl Parser {
         None
     }
 
+    /// Whether the cursor begins an exactly declared qualified aggregate or
+    /// enum type. The first component alone is insufficient: `Class::member`
+    /// is an expression, while `Class::Nested` or `Namespace::Type` can begin a
+    /// cast/sizeof type-id. Resolve the complete chain to preserve that
+    /// distinction without teaching the general item parser C++ name lookup.
+    pub(crate) fn peek_is_qualified_cxx_type(&self) -> bool {
+        if !self.cplusplus
+            || !matches!(self.peek(), Token::Identifier(_))
+            || *self.peek_at(1) != Token::Colon
+            || *self.peek_at(2) != Token::Colon
+        {
+            return false;
+        }
+        let mut scan = self.position;
+        let mut components = Vec::new();
+        if let Some(Token::Identifier(first)) = self.tokens.get(scan) {
+            components.push(first.clone());
+            scan += 1;
+        }
+        while self.tokens.get(scan) == Some(&Token::Colon)
+            && self.tokens.get(scan + 1) == Some(&Token::Colon)
+        {
+            let Some(Token::Identifier(component)) = self.tokens.get(scan + 2) else {
+                break;
+            };
+            components.push(component.clone());
+            scan += 3;
+        }
+        if self.tokens.get(scan) == Some(&Token::ParenOpen) {
+            // `Qualified::Type()` is value construction. It begins with a
+            // known type name but is an expression at this cursor, not a
+            // declaration or a parenthesized cast type-id.
+            return false;
+        }
+        let qualified = components.join("::");
+        self.resolve_scoped_cxx_class_name(&qualified).is_some()
+            || self.enum_types.contains_key(&qualified)
+            || self
+                .struct_typedefs
+                .values()
+                .any(|mapped| mapped == &qualified)
+    }
+
     /// Recover declaration semantics from a C++ aggregate independently of
     /// layout parsing. Methods defined in a class body are implicitly inline;
     /// declarations carrying `inline` remain inline when a later out-of-class

@@ -4392,11 +4392,11 @@ impl Parser {
 
     pub(crate) fn peek_is_type(&self) -> bool {
         if self.cplusplus
-            && matches!(self.peek(), Token::Identifier(name) if self.struct_typedefs.contains_key(name))
+            && matches!(self.peek(), Token::Identifier(_))
             && *self.peek_at(1) == Token::Colon
             && *self.peek_at(2) == Token::Colon
         {
-            return false;
+            return self.peek_is_qualified_cxx_type();
         }
         self.token_starts_type(self.peek()) || self.peek_is_template_instance_type()
     }

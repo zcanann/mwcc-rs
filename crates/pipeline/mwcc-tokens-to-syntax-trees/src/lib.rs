@@ -334,6 +334,7 @@ mod tests {
                     float radius;
                     float distance;
                 };
+                tri_data tri;
             };
             struct Drive {
                 struct tri_data : Collision::tri_data {
@@ -344,6 +345,9 @@ mod tests {
                 tri_data tri;
             };
             float read_x(Drive* drive) { return drive->tri.x; }
+            void copy_tri(Drive* drive, Collision* collision) {
+                *(Collision::tri_data*)&drive->tri = collision->tri;
+            }
         "#;
         let unit = parse_translation_unit(
             mwcc_source_to_tokens::tokenize(source).unwrap(),
@@ -365,6 +369,13 @@ mod tests {
                 offset: 20,
                 ..
             })
+        ));
+        assert!(matches!(
+            unit.functions[1].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Store {
+                target: mwcc_syntax_trees::Expression::Dereference { pointer },
+                ..
+            }] if matches!(pointer.as_ref(), mwcc_syntax_trees::Expression::Cast { .. })
         ));
     }
 
