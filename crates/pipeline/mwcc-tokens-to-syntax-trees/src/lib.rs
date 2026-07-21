@@ -765,6 +765,7 @@ mod tests {
             unit.function_sources,
             [Some(mwcc_syntax_trees::FunctionSource {
                 body_start_line: 2,
+                statement_lines: Vec::new(),
                 terminal_return_line: Some(3),
                 body_end_line: 4,
             })]

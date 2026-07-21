@@ -23,12 +23,55 @@ pub(super) fn records<'a>(
     first_id: DebugEntryId,
     aggregate_ids: &HashMap<String, DebugEntryId>,
 ) -> Compilation<Vec<DebugRecord>> {
+    let parameter_registers = functions
+        .iter()
+        .map(|function| {
+            function
+                .parameters
+                .iter()
+                .enumerate()
+                .map(|(index, _)| {
+                    u8::try_from(3 + index)
+                        .map(|register| (index, register))
+                        .map_err(|_| {
+                            Diagnostic::error(
+                                "debug-info: too many integer-class formal parameters",
+                            )
+                        })
+                })
+                .collect()
+        })
+        .collect::<Compilation<Vec<_>>>()?;
+    selected_records(
+        unit,
+        functions,
+        layout,
+        first_id,
+        aggregate_ids,
+        &parameter_registers,
+    )
+}
+
+/// Encode functions after liveness/allocation has selected the parameters that
+/// survive into debug information and their physical registers.
+pub(super) fn selected_records<'a>(
+    unit: &'a TranslationUnit,
+    functions: &[&'a Function],
+    layout: &FunctionLayout,
+    first_id: DebugEntryId,
+    aggregate_ids: &HashMap<String, DebugEntryId>,
+    parameter_registers: &[Vec<(usize, u8)>],
+) -> Compilation<Vec<DebugRecord>> {
+    if functions.len() != parameter_registers.len() {
+        return Err(Diagnostic::error(
+            "debug-info: function parameter plans are not aligned",
+        ));
+    }
     let mut next_id = first_id.0;
     let mut plans = Vec::with_capacity(functions.len());
-    for function in functions {
+    for (function, selected) in functions.iter().zip(parameter_registers) {
         let function_id = allocate(&mut next_id);
-        let parameter_ids = function
-            .parameters
+        let parameter_ids = selected
             .iter()
             .map(|_| allocate(&mut next_id))
             .collect::<Vec<_>>();
@@ -79,10 +122,15 @@ pub(super) fn records<'a>(
             attributes,
         }));
 
-        for (parameter_index, parameter) in plan.function.parameters.iter().enumerate() {
+        for (selected_index, (parameter_index, register)) in
+            parameter_registers[index].iter().copied().enumerate()
+        {
+            let parameter = plan.function.parameters.get(parameter_index).ok_or_else(|| {
+                Diagnostic::error("debug-info: selected parameter index is out of range")
+            })?;
             let sibling = plan
                 .parameter_ids
-                .get(parameter_index + 1)
+                .get(selected_index + 1)
                 .copied()
                 .or(plan.parameter_end)
                 .expect("a planned parameter list has an end marker");
@@ -98,11 +146,8 @@ pub(super) fn records<'a>(
                     })
                 })
                 .transpose()?;
-            let register = u8::try_from(3 + parameter_index).map_err(|_| {
-                Diagnostic::error("debug-info: too many integer-class formal parameters")
-            })?;
             records.push(DebugRecord::Entry(DebugEntry {
-                id: plan.parameter_ids[parameter_index],
+                id: plan.parameter_ids[selected_index],
                 tag: Tag::FormalParameter,
                 attributes: vec![
                     attribute(AttributeName::Sibling, AttributeValue::Reference(sibling)),

@@ -169,6 +169,7 @@ impl Parser {
         self.function_sources
             .push(Some(mwcc_syntax_trees::FunctionSource {
                 body_start_line,
+                statement_lines: Vec::new(),
                 terminal_return_line: None,
                 body_end_line,
             }));

@@ -353,9 +353,14 @@ pub struct TranslationUnit {
 /// Source coordinates needed for DWARF line programs. This stays on the
 /// translation unit rather than executable IR so ordinary optimization does not
 /// acquire a dependency on lexer details.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionSource {
     pub body_start_line: u32,
+    /// Source lines for top-level executable statements, in statement order.
+    /// The parser only records a coordinate when one source statement maps to
+    /// one retained [`Statement`]; complex blocks remain deliberately absent
+    /// until their control-flow source map is represented explicitly.
+    pub statement_lines: Vec<u32>,
     pub terminal_return_line: Option<u32>,
     pub body_end_line: u32,
 }

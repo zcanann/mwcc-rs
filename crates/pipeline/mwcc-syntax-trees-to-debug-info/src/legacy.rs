@@ -3,6 +3,7 @@
 mod captures;
 mod data;
 mod functions;
+mod simple_void_functions;
 
 use super::convert_relocations;
 use mwcc_core::{Compilation, Diagnostic};
@@ -34,6 +35,9 @@ enum MeasuredShape {
     /// Aggregate data followed by no-frame inline-asm functions. Each written
     /// asm instruction has an exact source line and emits one machine word.
     VerbatimAsmWithData,
+    /// Void functions that are empty or contain one measured direct-call
+    /// action, with optimized parameter locations and statement line rows.
+    SimpleVoidFunctions,
 }
 
 pub(super) fn lower(
@@ -74,7 +78,7 @@ pub(super) fn lower(
         let source = unit
             .function_sources
             .get(index)
-            .copied()
+            .cloned()
             .flatten()
             .ok_or_else(|| {
                 Diagnostic::error("debug-info: physical source provenance is required")
@@ -110,6 +114,12 @@ pub(super) fn lower(
                 )));
             }
         }
+    } else if shape == MeasuredShape::SimpleVoidFunctions {
+        line_records.extend(simple_void_functions::line_records(
+            &source_functions,
+            machine_functions,
+            &layout,
+        )?);
     } else {
         for (machine_index, (_, source)) in source_functions.iter().enumerate() {
             let terminal_return_line = source.terminal_return_line.ok_or_else(|| {
@@ -156,7 +166,10 @@ pub(super) fn lower(
                 AttributeName::Name,
                 AttributeValue::String(source_name.into()),
             ),
-            attribute(AttributeName::Language, AttributeValue::Data4(1)),
+            attribute(
+                AttributeName::Language,
+                AttributeValue::Data4(if source_name.ends_with(".cpp") { 4 } else { 1 }),
+            ),
             attribute(
                 AttributeName::LowPc,
                 AttributeValue::Address(Address::external(".text")),
@@ -196,6 +209,22 @@ pub(super) fn lower(
             &data.aggregate_ids,
         )?);
         return finish(line, records, DebugLayout::AfterDataGrouped);
+    }
+
+    if shape == MeasuredShape::SimpleVoidFunctions {
+        let mut records: Vec<_> = entries.into_iter().map(DebugRecord::Entry).collect();
+        records.extend(functions::selected_records(
+            unit,
+            &source_functions
+                .iter()
+                .map(|(function, _)| *function)
+                .collect::<Vec<_>>(),
+            &layout,
+            first_function_id,
+            &std::collections::HashMap::new(),
+            &simple_void_functions::parameter_registers(&source_functions)?,
+        )?);
+        return finish(line, records, DebugLayout::BeforeDataGrouped);
     }
 
     for (index, global) in globals.iter().enumerate() {
@@ -304,6 +333,9 @@ pub(super) fn lower(
         MeasuredShape::VerbatimAsmWithData => {
             unreachable!("verbatim asm/data units return before legacy function records")
         }
+        MeasuredShape::SimpleVoidFunctions => {
+            unreachable!("simple void-function units return before legacy function records")
+        }
     }
     finish(line, records, DebugLayout::BeforeDataGrouped)
 }
@@ -408,6 +440,10 @@ fn classify_shape(
         });
     if verbatim_asm_with_data {
         return Ok(MeasuredShape::VerbatimAsmWithData);
+    }
+
+    if globals.is_empty() && simple_void_functions::matches(unit, machine_functions) {
+        return Ok(MeasuredShape::SimpleVoidFunctions);
     }
 
     Err(Diagnostic::error(

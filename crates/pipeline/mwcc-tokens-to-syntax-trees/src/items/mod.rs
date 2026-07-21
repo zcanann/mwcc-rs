@@ -3897,6 +3897,7 @@ impl Parser {
         // positioned Assign statements inside their blocks).
         let mut block_locals: Vec<LocalDeclaration> = Vec::new();
         let mut statements = Vec::new();
+        let mut statement_lines = Vec::new();
         // Zero or more guarded early returns: `if (condition) return value;`. An
         // `if (c) return x; else return y;` terminates the function as a single
         // conditional return (the ternary `c ? x : y`).
@@ -3967,8 +3968,10 @@ impl Parser {
                     )?;
                     continue;
                 }
+                let statement_line = self.current_location().line;
                 let statement = self.parse_simple_statement(&mut local_names, &mut block_locals)?;
                 statements.push(statement);
+                statement_lines.push(statement_line);
             }
 
             while *self.peek() == Token::KeywordIf {
@@ -4152,6 +4155,7 @@ impl Parser {
         self.function_sources
             .push(Some(mwcc_syntax_trees::FunctionSource {
                 body_start_line,
+                statement_lines,
                 terminal_return_line,
                 body_end_line,
             }));
