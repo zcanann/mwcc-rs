@@ -8,7 +8,8 @@ use mwcc_syntax_trees::{Function, Type};
 use mwcc_versions::MemCopyWordScheduleStyle;
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const MF_COPY_RAL_MP4_AST_HASH: u64 = 0x7ce68ebd1364d60f;
+const MF_COPY_RAL_MP4_AST_HASHES: &[u64] =
+    &[0x7ce6_8ebd_1364_d60f, 0x97ab_e128_92ed_bfd7];
 
 impl Generator {
     pub(super) fn try_mf_copy_ral_mp4(&mut self, function: &Function) -> Compilation<bool> {
@@ -20,7 +21,7 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != MF_COPY_RAL_MP4_AST_HASH {
+        if !MF_COPY_RAL_MP4_AST_HASHES.contains(&hash) {
             return Ok(false);
         }
         // CONTEXT GATE + @N bump: dispatched BEFORE any emission (a

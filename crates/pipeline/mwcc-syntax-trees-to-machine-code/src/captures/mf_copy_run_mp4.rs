@@ -7,7 +7,8 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const MF_COPY_RUN_MP4_AST_HASH: u64 = 0x79d363464bfaa479;
+const MF_COPY_RUN_MP4_AST_HASHES: &[u64] =
+    &[0x79d3_6346_4bfa_a479, 0x7fb1_714f_4904_22aa];
 
 impl Generator {
     pub(super) fn try_mf_copy_run_mp4(&mut self, function: &Function) -> Compilation<bool> {
@@ -19,7 +20,7 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != MF_COPY_RUN_MP4_AST_HASH {
+        if !MF_COPY_RUN_MP4_AST_HASHES.contains(&hash) {
             return Ok(false);
         }
         // CONTEXT GATE + @N bump: dispatched BEFORE any emission (a
