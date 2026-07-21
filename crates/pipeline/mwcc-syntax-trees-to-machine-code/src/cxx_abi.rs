@@ -64,11 +64,17 @@ pub(crate) fn lower_composed_constructor(
     if vptrs.iter().any(|(name, _, _)| name != vtable) {
         return None;
     }
-    let tail_stores: Vec<(u32, String, u32)> = function.statements[vptr_end..]
+    let tail_actions: Vec<ConstructorTail> = function.statements[vptr_end..]
         .iter()
-        .map(parse_call_valued_member_store)
+        .map(|statement| {
+            parse_call_valued_member_store(statement)
+                .or_else(|| {
+                    parse_adjusted_call_statement(statement)
+                        .map(|(callee, adjustment)| ConstructorTail::Call(callee, adjustment))
+                })
+        })
         .collect::<Option<_>>()?;
-    if tail_stores.is_empty() {
+    if tail_actions.is_empty() {
         return None;
     }
 
@@ -120,7 +126,7 @@ pub(crate) fn lower_composed_constructor(
         .push(Instruction::load_immediate_shifted(vtable_register, 0));
     // MWCC fills the address-materialization latency with the first trailing
     // call's adjusted `this` value.
-    emit_adjusted_this(&mut output.instructions, tail_stores[0].2)?;
+    emit_adjusted_this(&mut output.instructions, tail_actions[0].adjustment())?;
     let vtable_lo = output.instructions.len();
     output.instructions.push(Instruction::AddImmediate {
         d: vtable_register,
@@ -171,26 +177,29 @@ pub(crate) fn lower_composed_constructor(
         });
     }
 
-    for (index, (target_offset, callee, adjustment)) in tail_stores.iter().enumerate() {
+    for (index, action) in tail_actions.iter().enumerate() {
         if index != 0 {
-            emit_adjusted_this(&mut output.instructions, *adjustment)?;
+            emit_adjusted_this(&mut output.instructions, action.adjustment())?;
         }
+        let callee = action.callee();
         let instruction_index = output.instructions.len();
         output.instructions.push(Instruction::BranchAndLink {
-            target: callee.clone(),
+            target: callee.to_string(),
         });
         relocations.push(Relocation {
             instruction_index,
             kind: RelocationKind::Rel24,
-            target: RelocationTarget::External(callee.clone()),
+            target: RelocationTarget::External(callee.to_string()),
         });
-        output.instructions.push(Instruction::StoreWord {
-            s: 3,
-            a: 31,
-            offset: i16::try_from(*target_offset).ok()?,
-        });
-        referenced_functions.push(callee.clone());
-        symbol_order.push(callee.clone());
+        if let ConstructorTail::StoreCall { target_offset, .. } = action {
+            output.instructions.push(Instruction::StoreWord {
+                s: 3,
+                a: 31,
+                offset: i16::try_from(*target_offset).ok()?,
+            });
+        }
+        referenced_functions.push(callee.to_string());
+        symbol_order.push(callee.to_string());
     }
 
     output.instructions.extend([
@@ -300,7 +309,7 @@ fn parse_vptr_store(statement: &Statement) -> Option<(String, u32, u32)> {
     }
 }
 
-fn parse_call_valued_member_store(statement: &Statement) -> Option<(u32, String, u32)> {
+fn parse_call_valued_member_store(statement: &Statement) -> Option<ConstructorTail> {
     let Statement::Store { target, value } = statement else {
         return None;
     };
@@ -316,7 +325,34 @@ fn parse_call_valued_member_store(statement: &Statement) -> Option<(u32, String,
     let [object] = arguments.as_slice() else {
         return None;
     };
-    Some((*offset, name.clone(), this_adjustment(object)?))
+    Some(ConstructorTail::StoreCall {
+        target_offset: *offset,
+        callee: name.clone(),
+        adjustment: this_adjustment(object)?,
+    })
+}
+
+enum ConstructorTail {
+    Call(String, u32),
+    StoreCall {
+        target_offset: u32,
+        callee: String,
+        adjustment: u32,
+    },
+}
+
+impl ConstructorTail {
+    fn callee(&self) -> &str {
+        match self {
+            Self::Call(callee, _) | Self::StoreCall { callee, .. } => callee,
+        }
+    }
+
+    fn adjustment(&self) -> u32 {
+        match self {
+            Self::Call(_, adjustment) | Self::StoreCall { adjustment, .. } => *adjustment,
+        }
+    }
 }
 
 /// Lower an empty polymorphic constructor whose only compiler-generated action

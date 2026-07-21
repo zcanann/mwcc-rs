@@ -35,6 +35,7 @@ public:
 class PolyPass {
 public:
     virtual ~PolyPass();
+    void SetCamera();
 
 private:
     bool flags[11];
@@ -62,7 +63,17 @@ public:
     virtual ~ComposedCheck();
 };
 
+class CameraCheck : public ComposedCheck {
+public:
+    CameraCheck();
+    virtual ~CameraCheck();
+};
+
 ComposedCheck::ComposedCheck() {
     SetPoly(GetPoly());
     SetGroup(GetGroup());
+}
+
+CameraCheck::CameraCheck() {
+    SetCamera();
 }
