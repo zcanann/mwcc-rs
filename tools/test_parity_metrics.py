@@ -29,6 +29,7 @@ from parity_loop import parse_args as parse_loop_args
 from reference_parity import (
     code_verdict,
     harness_fingerprint,
+    immutable_compiler_snapshot,
     parity_metadata,
     result_cache_name,
     selection_is_probability_sample,
@@ -129,6 +130,18 @@ class IdentityTests(unittest.TestCase):
         baseline = result_cache_name("a" * 64, "b" * 64)
         self.assertNotEqual(baseline, result_cache_name("c" * 64, "b" * 64))
         self.assertNotEqual(baseline, result_cache_name("a" * 64, "d" * 64))
+
+    def test_compiler_snapshot_is_immutable_across_later_rebuilds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "mwcc"
+            source.write_bytes(b"first compiler image")
+            snapshot_directory, snapshot, fingerprint = immutable_compiler_snapshot(source)
+            try:
+                source.write_bytes(b"replacement compiler image")
+                self.assertEqual(snapshot.read_bytes(), b"first compiler image")
+                self.assertEqual(len(fingerprint), 64)
+            finally:
+                snapshot_directory.cleanup()
 
     def test_variant_and_progress_do_not_change_compiler_input_identity(self):
         first = row(variant="a", matching=True)

@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -43,6 +44,27 @@ def result_cache_name(compiler_hash: str, harness_hash: str) -> str:
     """Name a result cache from both independently changing tool inputs."""
 
     return f"{compiler_hash[:16]}-{harness_hash[:16]}.jsonl"
+
+
+def immutable_compiler_snapshot(source: Path) -> Tuple[tempfile.TemporaryDirectory, Path, str]:
+    """Copy one stable compiler image and fingerprint exactly that image.
+
+    A long parity batch must not observe a later `cargo build` replacing the
+    executable between rows. Hash-before/hash-after plus the copied hash also
+    detects replacement during the snapshot itself.
+    """
+
+    directory = tempfile.TemporaryDirectory(prefix="mwcc-parity-compiler-")
+    snapshot = Path(directory.name) / source.name
+    for _ in range(3):
+        before = sha256_file(source)
+        shutil.copy2(source, snapshot)
+        after = sha256_file(source)
+        copied = sha256_file(snapshot)
+        if before == after == copied:
+            return directory, snapshot, copied
+    directory.cleanup()
+    raise RuntimeError(f"compiler changed repeatedly while snapshotting: {source}")
 
 
 def harness_fingerprint(script_dir: Path) -> str:
@@ -351,7 +373,11 @@ def main() -> int:
         print(f"== {len(rows)} selected translation-unit configurations ==")
         return 0
 
-    compiler_hash = sha256_file(compiler)
+    try:
+        compiler_snapshot, compiler, compiler_hash = immutable_compiler_snapshot(compiler)
+    except (OSError, RuntimeError) as error:
+        print(f"compiler snapshot failed: {error}", file=sys.stderr)
+        return 2
     harness_hash = harness_fingerprint(script_dir)
     fingerprint = compiler_hash + ":" + harness_hash
     cache = args.cache

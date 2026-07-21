@@ -82,9 +82,11 @@ inflate that diagnostic. It reports source coverage so files absent from project
 build metadata cannot disappear from the denominator. Results are keyed by stable
 compiler inputs and retained under `target/reference-parity/frontier/`; after a
 compiler change, unresolved work remains in the frontier while observations for
-the new binary are kept separate. Increment `--epoch` to rotate equally ranked
-work. `tools/gate.sh` remains available as an occasional exhaustive regression
-check, but it is intentionally not on this inner loop.
+the new binary are kept separate. Each run executes an immutable copy of the
+fingerprinted compiler, so a concurrent rebuild cannot mix binaries inside one
+cache. Increment `--epoch` to rotate equally ranked work. `tools/gate.sh` remains
+available as an occasional exhaustive regression check, but it is intentionally
+not on this inner loop.
 
 ## Architecture
 
