@@ -59,6 +59,15 @@ pub fn apply_unit_ordinal_accounting(
     );
 }
 
+/// Materialize weak C++ `this`-adjustor functions demanded by secondary
+/// vtable relocation targets. These are unit-level compiler products and have
+/// no source [`Function`] to pass through [`lower_function`].
+pub fn lower_vtable_adjustor_thunks(
+    globals: &[GlobalDeclaration],
+) -> Compilation<Vec<MachineFunction>> {
+    cxx_abi::lower_vtable_adjustor_thunks(globals)
+}
+
 /// Lower a parsed function to machine code for the given compiler configuration.
 /// `call_return_types` maps callable names (prototypes and definitions) to their
 /// return type, so a call's result type is known (e.g. a `double`-returning math

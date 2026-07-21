@@ -5,6 +5,10 @@
 //! recognition and fixed ABI skeleton here prevents that state from leaking
 //! into the ordinary C control-flow and register-allocation owners.
 
+mod adjustor_thunks;
+
+pub(crate) use adjustor_thunks::lower_vtable_adjustor_thunks;
+
 use crate::InlineSummaries;
 use mwcc_machine_code::{
     FrameInfo, Instruction, MachineFunction, Relocation, RelocationKind, RelocationTarget,
