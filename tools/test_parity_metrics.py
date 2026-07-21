@@ -88,6 +88,14 @@ class IdentityTests(unittest.TestCase):
         )
         self.assertEqual(verdict_line(output), "BYTE src/test.c — exact")
 
+    def test_refctx_metadata_keeps_the_last_updated_value(self):
+        output = (
+            "PARITY_META oracle_direct=REJECTED\n"
+            "PARITY_META oracle_direct=RUNNABLE\n"
+            "DEFER src/test.c — parser gap"
+        )
+        self.assertEqual(parity_metadata(output), {"oracle_direct": "RUNNABLE"})
+
     def test_runner_code_layer_requires_explicit_projection_or_exact_object(self):
         self.assertEqual(code_verdict("BYTE src/test.c — exact", "BYTE"), "BYTE")
         self.assertEqual(
@@ -335,6 +343,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("substantive-source audit", rendered)
         self.assertIn("whitespace-only rows excluded 1", rendered)
         self.assertIn("measurement-unknown attribution", rendered)
+        self.assertIn("resolved exact 2/3", rendered)
         self.assertIn("emitted-object quality (conditional, not feature coverage)", rendered)
         self.assertIn("audit execution cost", rendered)
         self.assertIn("summed 10.0s", rendered)

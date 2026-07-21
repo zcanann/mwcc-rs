@@ -175,6 +175,10 @@ if direct_reference_output="$(
     fi
   fi
 fi
+# Emit the direct probe immediately so timeouts and every early harness exit
+# retain provenance. A successful generated-PCH retry emits an updated value
+# later; the machine-readable parser intentionally keeps the last value.
+emit_oracle_meta
 
 if [[ $direct_ready -eq 0 ]]; then
 if [[ -n "${REFCTX_INCLUDES:-}" ]]; then

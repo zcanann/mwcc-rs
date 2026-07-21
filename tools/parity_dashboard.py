@@ -877,6 +877,8 @@ def print_brief(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]]) 
             f"{estimate['confirmed_proportion']:.1%} confirmed lower bound; known nonparity "
             f"{estimate['known_nonparity']}/{estimate['total']}; measurement unknown "
             f"{estimate['measurement_unknown']}/{estimate['total']}; "
+            f"resolved exact {estimate['successes']}/{estimate['resolved_outcomes']} = "
+            f"{estimate['resolved_proportion']:.1%}; "
             f"identification range {estimate['identification_interval_low']:.1%}.."
             f"{estimate['identification_interval_high']:.1%}; "
             f"95% CI on confirmed share {estimate['confirmed_interval_low']:.1%}.."
