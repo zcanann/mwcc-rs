@@ -64,8 +64,9 @@ pub fn apply_unit_ordinal_accounting(
 /// no source [`Function`] to pass through [`lower_function`].
 pub fn lower_vtable_adjustor_thunks(
     globals: &[GlobalDeclaration],
+    class_declaration_order: &[String],
 ) -> Compilation<Vec<MachineFunction>> {
-    cxx_abi::lower_vtable_adjustor_thunks(globals)
+    cxx_abi::lower_vtable_adjustor_thunks(globals, class_declaration_order)
 }
 
 /// Lower a parsed function to machine code for the given compiler configuration.

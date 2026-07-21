@@ -14,8 +14,9 @@ use std::collections::HashSet;
 
 pub(crate) fn lower_vtable_adjustor_thunks(
     globals: &[GlobalDeclaration],
+    class_declaration_order: &[String],
 ) -> Compilation<Vec<MachineFunction>> {
-    let mut groups: Vec<(String, Vec<(String, u32)>)> = Vec::new();
+    let mut groups: Vec<(String, String, Vec<(String, u32)>)> = Vec::new();
     let mut seen = HashSet::new();
     for global in globals {
         for (_, symbol, _) in &global.data_relocations {
@@ -25,10 +26,14 @@ pub(crate) fn lower_vtable_adjustor_thunks(
             if !seen.insert(symbol.clone()) {
                 continue;
             }
-            if let Some((_, thunks)) = groups.iter_mut().find(|(name, _)| name == destructor) {
+            if let Some((_, _, thunks)) = groups
+                .iter_mut()
+                .find(|(_, name, _)| name == destructor)
+            {
                 thunks.push((symbol.clone(), offset));
             } else {
                 groups.push((
+                    global.name.clone(),
                     destructor.to_string(),
                     vec![(symbol.clone(), offset)],
                 ));
@@ -36,8 +41,19 @@ pub(crate) fn lower_vtable_adjustor_thunks(
         }
     }
 
+    let declared_vtables: Vec<_> = class_declaration_order
+        .iter()
+        .map(|class| format!("__vt__{}{}", class.len(), class))
+        .collect();
+    groups.sort_by_key(|(vtable, _, _)| {
+        declared_vtables
+            .iter()
+            .position(|declared| declared == vtable)
+            .unwrap_or(usize::MAX)
+    });
+
     let mut output = Vec::new();
-    for (destructor, mut thunks) in groups {
+    for (_, destructor, mut thunks) in groups {
         // MWCC emits the first non-primary component first, then unwinds the
         // remaining component requests as a stack. For a four-component group
         // this is the measured 20, 104, 88 adjustment order.

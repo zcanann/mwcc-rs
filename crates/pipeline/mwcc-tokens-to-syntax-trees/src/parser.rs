@@ -169,6 +169,10 @@ pub(crate) struct Parser {
     pub(crate) structs: HashMap<String, StructLayout>,
     /// C++-specific base and declaration-order information for class layouts.
     pub(crate) cxx_classes: HashMap<String, crate::cxx::ClassLayout>,
+    /// Fully-qualified C++ class names in first definition order. Late vtable
+    /// ownership follows destructor definitions, but ABI helper emission uses
+    /// this original class declaration order.
+    pub(crate) cxx_class_declaration_order: Vec<String>,
     /// Single-parameter C++ struct templates whose instance fields can be laid
     /// out when a concrete typedef such as `Vector3<float>` is encountered.
     pub(crate) struct_templates: HashMap<String, StructTemplate>,

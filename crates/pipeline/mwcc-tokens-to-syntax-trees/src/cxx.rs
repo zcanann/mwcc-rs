@@ -1154,6 +1154,10 @@ impl Parser {
                     .entry(source_name)
                     .or_insert_with(|| qualified.to_owned());
                 self.structs.insert(qualified.to_owned(), layout);
+                if !self.cxx_classes.contains_key(qualified) {
+                    self.cxx_class_declaration_order
+                        .push(qualified.to_owned());
+                }
                 self.cxx_classes.insert(qualified.to_owned(), class);
             }
             Err(error) if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() => {
@@ -1196,6 +1200,9 @@ impl Parser {
                 let qualified = format!("{outer}::{nested}");
                 self.struct_typedefs.insert(nested, qualified.clone());
                 self.structs.insert(qualified.clone(), layout);
+                if !self.cxx_classes.contains_key(&qualified) {
+                    self.cxx_class_declaration_order.push(qualified.clone());
+                }
                 self.cxx_classes.insert(qualified, class);
             }
             Err(error) if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() => {

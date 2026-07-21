@@ -924,6 +924,9 @@ impl Parser {
         Ok(TranslationUnit {
             globals,
             functions,
+            cxx_class_declaration_order: std::mem::take(
+                &mut self.cxx_class_declaration_order,
+            ),
             aggregate_definitions,
             global_aggregate_tags: std::mem::take(&mut self.global_structs),
             function_parameter_aggregate_tags: std::mem::take(&mut self.function_parameter_structs),

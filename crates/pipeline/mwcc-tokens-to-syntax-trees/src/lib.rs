@@ -148,6 +148,7 @@ pub fn parse_located_translation_unit_with_enum_min(
         peephole_disabled: false,
         structs: HashMap::new(),
         cxx_classes: HashMap::new(),
+        cxx_class_declaration_order: Vec::new(),
         struct_templates: HashMap::new(),
         template_instantiation_stack: std::cell::RefCell::new(Vec::new()),
         inline_template_members: std::collections::HashSet::new(),
@@ -1832,6 +1833,10 @@ blr\n\
         let unit = parse_translation_unit(
             mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
         ).unwrap();
+        assert_eq!(
+            unit.cxx_class_declaration_order,
+            ["Primary", "Secondary", "Derived"]
+        );
         let constructor = &unit.functions[0];
         assert!(matches!(constructor.statements.as_slice(), [
             mwcc_syntax_trees::Statement::Expression(

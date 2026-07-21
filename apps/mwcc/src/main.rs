@@ -554,7 +554,10 @@ fn compile(
         config,
     );
     machine_functions.extend(
-        mwcc_syntax_trees_to_machine_code::lower_vtable_adjustor_thunks(&unit.globals)?,
+        mwcc_syntax_trees_to_machine_code::lower_vtable_adjustor_thunks(
+            &unit.globals,
+            &unit.cxx_class_declaration_order,
+        )?,
     );
     // Mixed code payloads and relocations are modeled below. Debug lowering
     // owns its own section-aware support boundary; mwcats still has only one

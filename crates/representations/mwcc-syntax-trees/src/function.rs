@@ -257,6 +257,10 @@ pub struct CxxInlineOrdinalFacts {
 pub struct TranslationUnit {
     pub globals: Vec<GlobalDeclaration>,
     pub functions: Vec<Function>,
+    /// C++ class definitions in source declaration order. Compiler-generated
+    /// vtable helpers use this order even when their owning destructors are
+    /// defined in a different order later in the file.
+    pub cxx_class_declaration_order: Vec<String>,
     /// Named aggregate declarations keyed by their parser identity. Executable
     /// lowering uses the compact resolved [`Type`]; debug lowering follows this
     /// graph to recover source names, member order, and member types.
