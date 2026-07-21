@@ -76,6 +76,8 @@ pub(crate) struct ClassLayout {
     /// definition is a key function and owns the primary vtable in the subset
     /// currently materialized by the frontend.
     pub(crate) has_virtual_destructor: bool,
+    /// Primary-vtable byte offset of the deleting-destructor entry.
+    pub(crate) virtual_destructor_slot: Option<u16>,
 }
 
 pub(crate) struct MemberMethod {
@@ -1796,6 +1798,16 @@ impl Parser {
             }
             if *self.peek() == Token::Tilde {
                 if is_virtual {
+                    class.virtual_destructor_slot = Some(u16::try_from(
+                        8usize
+                            .checked_add(class.virtual_slots.checked_mul(4).ok_or_else(|| {
+                                Diagnostic::error("C++ virtual destructor slot overflow")
+                            })?)
+                            .ok_or_else(|| {
+                                Diagnostic::error("C++ virtual destructor slot overflow")
+                            })?,
+                    )
+                    .map_err(|_| Diagnostic::error("C++ virtual destructor slot overflow"))?);
                     class.virtual_slots += 1;
                     class.has_virtual_destructor = true;
                 }
@@ -2011,6 +2023,31 @@ impl Parser {
         layout.size = offset.max(1).div_ceil(max_align) * max_align;
         layout.align = max_align as u8;
         Ok((name, layout, class))
+    }
+
+    /// Resolve `delete pointer` for a polymorphic class to the ABI's virtual
+    /// deleting-destructor entry. The caller supplies the implicit `-1` destroy
+    /// flag and null guard when building the normalized statement.
+    pub(crate) fn resolve_virtual_deleting_destructor(
+        &self,
+        class_name: &str,
+    ) -> Compilation<VirtualDispatch> {
+        let class = self.cxx_classes.get(class_name).ok_or_else(|| {
+            Diagnostic::error(format!("class layout for delete target '{class_name}' was not recovered"))
+        })?;
+        let slot_offset = class.virtual_destructor_slot.ok_or_else(|| {
+            Diagnostic::error(format!(
+                "delete of non-polymorphic class '{class_name}' is not supported yet (roadmap)"
+            ))
+        })?;
+        let vptr_offset = u16::try_from(class.vptr_offset.unwrap_or(0))
+            .map_err(|_| Diagnostic::error("C++ primary vptr offset overflow"))?;
+        Ok(VirtualDispatch {
+            vptr_offset,
+            slot_offset,
+            return_type: Type::Void,
+            variadic: false,
+        })
     }
 
     fn parse_class_parameter_types(&mut self) -> Compilation<ClassParameterTypes> {

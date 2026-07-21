@@ -78,6 +78,9 @@ impl Parser {
         if matches!(self.peek(), Token::Identifier(word) if word == "switch") {
             return self.parse_switch(local_names, block_locals);
         }
+        if matches!(self.peek(), Token::Identifier(word) if word == "delete") {
+            return self.parse_delete_statement();
+        }
         let first = self.factor()?;
         // Prefix `++`/`--` desugars to `target = target ± 1` in factor; the
         // POSTFIX form arrives as PostStep and lowers here, where the value
@@ -115,6 +118,43 @@ impl Parser {
             self.expect(Token::Semicolon)?;
             Ok(Statement::Expression(expression))
         }
+    }
+
+    /// Normalize scalar `delete pointer;` into the CodeWarrior EABI operation:
+    /// null-check the object, then call its virtual deleting destructor with
+    /// the compiler-supplied `-1` destruction flag. Array delete and a direct
+    /// non-virtual destructor remain explicit unsupported cases.
+    fn parse_delete_statement(&mut self) -> Compilation<Statement> {
+        self.advance(); // `delete`
+        if *self.peek() == Token::BracketOpen {
+            return Err(Diagnostic::error(
+                "C++ array delete is not supported yet (roadmap)",
+            ));
+        }
+        let object = self.expression()?;
+        self.expect(Token::Semicolon)?;
+        let class_name = match &object {
+            Expression::Variable(name) => self.variable_structs.get(name).cloned(),
+            _ => self.expression_struct_tag.take(),
+        }
+        .ok_or_else(|| Diagnostic::error("the class type of a delete target is not known"))?;
+        let dispatch = self.resolve_virtual_deleting_destructor(&class_name)?;
+        Ok(Statement::If {
+            condition: Expression::Binary {
+                operator: mwcc_syntax_trees::BinaryOperator::NotEqual,
+                left: Box::new(object.clone()),
+                right: Box::new(Expression::IntegerLiteral(0)),
+            },
+            then_body: vec![Statement::Expression(Expression::VirtualCall {
+                object: Box::new(object),
+                vptr_offset: dispatch.vptr_offset,
+                slot_offset: dispatch.slot_offset,
+                return_type: dispatch.return_type,
+                variadic: dispatch.variadic,
+                arguments: vec![Expression::IntegerLiteral(-1)],
+            })],
+            else_body: Vec::new(),
+        })
     }
 
     /// At a `KeywordIf`, whether it is a conditional block/statement (body is a

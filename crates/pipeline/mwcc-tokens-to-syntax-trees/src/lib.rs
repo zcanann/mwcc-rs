@@ -1982,6 +1982,36 @@ blr\n\
     }
 
     #[test]
+    fn normalizes_scalar_delete_to_a_virtual_deleting_destructor_call() {
+        let source = r#"
+            class Item { public: virtual ~Item(); };
+            void destroy(Item* item) { delete item; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let mwcc_syntax_trees::Statement::If { then_body, .. } = &unit.functions[0].statements[0]
+        else {
+            panic!("expected the delete null guard");
+        };
+        assert!(matches!(
+            then_body.as_slice(),
+            [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::VirtualCall {
+                    slot_offset: 8,
+                    arguments,
+                    ..
+                }
+            )] if matches!(arguments.as_slice(), [mwcc_syntax_trees::Expression::IntegerLiteral(-1)])
+        ));
+    }
+
+    #[test]
     fn recovers_wchar_specialization_layout_and_abi_names() {
         let source = r#"
             typedef unsigned int uint;
