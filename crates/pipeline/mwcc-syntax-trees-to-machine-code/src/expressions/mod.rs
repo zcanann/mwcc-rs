@@ -22,6 +22,7 @@ mod strings;
 
 #[allow(unused_imports)]
 pub(crate) use passes::*;
+pub(crate) use members::embedded_member_address_base;
 
 pub(crate) use crate::analysis::*;
 pub(crate) use crate::generator::*;

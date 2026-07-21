@@ -3,6 +3,29 @@
 #[allow(unused_imports)]
 use super::*;
 
+/// Peel the pointer cast introduced by `((Base *)&object.member)->field` and
+/// return the embedded value's original base plus its byte offset. Keeping this
+/// symbolic lets the outer access fold both displacements into one D-form load
+/// or store instead of materializing a temporary address.
+pub(crate) fn embedded_member_address_base(expression: &Expression) -> Option<(&Expression, u32)> {
+    let Expression::Cast { operand, .. } = expression else {
+        return None;
+    };
+    let Expression::AddressOf { operand } = operand.as_ref() else {
+        return None;
+    };
+    let Expression::Member {
+        base,
+        offset,
+        member_type: Type::Struct { .. },
+        index_stride: None,
+    } = operand.as_ref()
+    else {
+        return None;
+    };
+    Some((base, *offset))
+}
+
 impl Generator {
     /// Split an arbitrary 32-bit member offset into MWCC's address adjustment
     /// and signed D-form displacement. Small offsets remain a single load/store;
@@ -29,6 +52,46 @@ impl Generator {
         index_stride: Option<u32>,
         destination: u8,
     ) -> Compilation<()> {
+        if let Some((inner, inner_offset)) = embedded_member_address_base(base) {
+            return self.emit_member_load(
+                inner,
+                inner_offset + offset,
+                member_type,
+                index_stride,
+                destination,
+            );
+        }
+        // `object->pointer_member->field`: materialize the intermediate pointer
+        // in a disposable register. `member_base_register` historically reused
+        // the original base register, which is incorrect when that base has a
+        // longer callee-saved lifetime. A scratch destination also cannot serve
+        // as a D-form base (r0 means literal zero), so select a distinct GPR.
+        if let Expression::Member {
+            base: inner,
+            offset: inner_offset,
+            member_type: inner_type @ (Type::Pointer(_) | Type::StructPointer { .. }),
+            index_stride: None,
+        } = base
+        {
+            let pointer = if destination == GENERAL_SCRATCH
+                || matches!(member_type, Type::Float | Type::Double)
+            {
+                self.lowest_free_general()?
+            } else {
+                destination
+            };
+            self.emit_member_load(inner, *inner_offset, *inner_type, None, pointer)?;
+            let pointee = pointee_of_type(member_type)
+                .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
+            let displacement = self.emit_member_base_adjustment(pointer, offset);
+            self.output.instructions.push(displacement_load(
+                pointee,
+                destination,
+                pointer,
+                displacement,
+            )?);
+            return Ok(());
+        }
         // `a[i].field`: scale the index by the struct size, then load at the field
         // offset — `slwi/mulli r0,i,stride; add a,a,r0; lwz d,offset(a)` (or `lwzx`
         // for a zero offset).

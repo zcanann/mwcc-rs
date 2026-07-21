@@ -78,12 +78,9 @@ impl Generator {
                     }
                 };
                 let source = self.place_store_value(value, pointee)?;
-                self.output.instructions.push(displacement_store(
-                    pointee,
-                    source,
-                    1,
-                    slot.offset,
-                )?);
+                self.output
+                    .instructions
+                    .push(displacement_store(pointee, source, 1, slot.offset)?);
                 self.written_slots.insert(slot.offset);
                 return Ok(());
             }
@@ -252,9 +249,9 @@ impl Generator {
                             } else {
                                 self.record_relocation(RelocationKind::Addr16Lo, name);
                             }
-                            self.output.instructions.push(displacement_store(
-                                pointee, source, base, 0,
-                            )?);
+                            self.output
+                                .instructions
+                                .push(displacement_store(pointee, source, base, 0)?);
                             return Ok(());
                         }
                         // mwcc materializes the address base before the value, so the
@@ -536,6 +533,20 @@ impl Generator {
             let pointee = pointee_of_type(*member_type).ok_or_else(|| {
                 Diagnostic::error("struct member store of this type is not supported yet")
             })?;
+            if let Some((inner, inner_offset)) = embedded_member_address_base(base) {
+                let address = self.member_base_register(inner)?;
+                let source = self.place_store_value(value, pointee)?;
+                let displacement = i16::try_from(inner_offset + *offset).map_err(|_| {
+                    Diagnostic::error("embedded struct member store offset out of range")
+                })?;
+                self.output.instructions.push(displacement_store(
+                    pointee,
+                    source,
+                    address,
+                    displacement,
+                )?);
+                return Ok(());
+            }
             let address = self.member_base_register(base)?;
             // The base register is live for the store, so reserve it while the value is
             // placed — otherwise a value that needs a temporary (a magic-number divide)

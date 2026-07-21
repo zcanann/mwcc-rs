@@ -3071,6 +3071,12 @@ impl Generator {
             if self.try_interrupt_protected_allocator_bump(function)? {
                 return Ok(());
             }
+            // General structured body with values spanning conditional calls:
+            // assign virtual callee-saved homes once, then lower its forward
+            // branches through the ordinary expression/store emitters.
+            if self.try_callee_saved_structured_body(function)? {
+                return Ok(());
+            }
             if reads_value_across_call(function) {
                 return Err(Diagnostic::error(format!(
                     "a value live across a call needs the callee-saved register allocator (roadmap; function '{}')",

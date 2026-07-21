@@ -38,6 +38,7 @@ mod queue_interrupt;
 mod queue_post;
 mod queue_service;
 mod queue_transactions;
+mod structured;
 
 pub(crate) use queue_service::{summarize_queue_service, QueueServiceSummary};
 pub(crate) use queue_transactions::{summarize_queue_pop, QueuePopSummary};
