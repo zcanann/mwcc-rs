@@ -16,25 +16,22 @@ use crate::flags::{GlobalAddressing, Optimization};
 use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
     CoefficientTableRelocationStyle, CommaValuePlacementStyle, ComputedStoreIssueStyle,
-    ConstantStoreScheduleStyle, FieldMergeStyle, FixedAddressConstantStoreStyle,
-    FixedAddressParameterizedRmwStyle, FixedAddressPollAddressStyle, FixedAddressRmwStyle,
-    FoldedFloatCompareLinkageStyle, FrameConvention, FrexpFamilyStyle,
-    FunctionOrdinalAccountingStyle,
-    DataSectionRelocationStyle, GlobalArrayDecayStoreStyle, GlobalArrayIndexStyle,
-    IndexedRmwAssignmentStyle,
-    IntCallResultConversionStyle,
+    ConstantStoreScheduleStyle, DataSectionRelocationStyle, FieldMergeStyle,
+    FixedAddressConstantStoreStyle, FixedAddressParameterizedRmwStyle,
+    FixedAddressPollAddressStyle, FixedAddressRmwStyle, FoldedFloatCompareLinkageStyle,
+    FrameConvention, FrexpFamilyStyle, FunctionOrdinalAccountingStyle, GlobalArrayDecayStoreStyle,
+    GlobalArrayIndexStyle, IndexedRmwAssignmentStyle, IntCallResultConversionStyle,
     IntegerComparisonValueStyle, IntegerDagStyle, IntegerLoopStyle, IntegerSelectStyle,
     JumpTableBaseStyle, LeadingFrameGuardStoreStyle, LocalDataSymbolOrder, LogicalOrValueStyle,
     LongLongTimerStyle, MaterializationCopyStyle, MemCopyRemainderMaskStyle,
-    MemCopyWordScheduleStyle, NestedGlobalDispatchSchedule,
-    NarrowCompoundShiftStyle, NarrowComputedReturnStyle, NarrowGuardScheduleStyle,
-    NarrowStoreConversionStyle, NegativePowerOfTwoMultiplyStyle, PunnedConditionalWritebackStyle,
-    PlainLinkageEpilogueStyle, PunnedFloatFrameConvention, PunnedShiftWritebackStyle,
-    QueueServiceInliningStyle, RaiseFamilyStyle, ReadOnlySectionAnchorOrder,
-    ReturnRegisterStoreStyle, SharedFloatDagStyle, SignedPowerOfTwoDivisionStyle,
-    SmallZeroDataLayoutStyle, StoredGlobalReadStyle, SymbolTraversalStyle, TrigDispatcherStyle,
-    TrigZeroConstantPlacement, VaArgScheduleStyle, ValueTrackedMutationStyle,
-    WideConstantAddSchedule,
+    MemCopyWordScheduleStyle, NarrowCompoundShiftStyle, NarrowComputedReturnStyle,
+    NarrowGuardScheduleStyle, NarrowStoreConversionStyle, NegativePowerOfTwoMultiplyStyle,
+    NestedGlobalDispatchSchedule, PlainLinkageEpilogueStyle, PunnedConditionalWritebackStyle,
+    PunnedFloatFrameConvention, PunnedShiftWritebackStyle, QueueServiceInliningStyle,
+    RaiseFamilyStyle, ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle, SharedFloatDagStyle,
+    SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, StoredGlobalReadStyle,
+    SymbolTraversalStyle, TrigDispatcherStyle, TrigZeroConstantPlacement, VaArgScheduleStyle,
+    ValueTrackedMutationStyle, WideConstantAddSchedule,
 };
 
 /// Why a codegen decision diverges from the GameCube 2.4.x mainline.
@@ -777,10 +774,7 @@ impl Behavior {
                 (style, _) => style,
             },
             long_long_timer_style: config.build.profile.long_long_timer_style(),
-            nested_global_dispatch_schedule: config
-                .build
-                .profile
-                .nested_global_dispatch_schedule(),
+            nested_global_dispatch_schedule: config.build.profile.nested_global_dispatch_schedule(),
             leading_frame_guard_store_style: config.build.profile.leading_frame_guard_store_style(),
             frexp_family_style: config.build.profile.frexp_family_style(),
             frexp_deferred_label_bump: if config.flags.inline_deferred {
@@ -823,9 +817,7 @@ impl Behavior {
                 ShiftMaskFusionStyle::Fused
             },
             narrow_call_zero_test_style: match config.flags.optimization {
-                Optimization::O0 | Optimization::O1 => {
-                    NarrowCallZeroTestStyle::SeparateCompare
-                }
+                Optimization::O0 | Optimization::O1 => NarrowCallZeroTestStyle::SeparateCompare,
                 Optimization::O2 | Optimization::O3 | Optimization::O4 => {
                     NarrowCallZeroTestStyle::RecordConversion
                 }
@@ -837,10 +829,7 @@ impl Behavior {
                 .float_compare_value_before_const(),
             frexp_scale_before_eptr_store: config.build.profile.frexp_scale_before_eptr_store(),
             frame_convention: config.build.profile.frame_convention(),
-            plain_linkage_epilogue_style: config
-                .build
-                .profile
-                .plain_linkage_epilogue_style(),
+            plain_linkage_epilogue_style: config.build.profile.plain_linkage_epilogue_style(),
             emit_leaf_frame_unwind: config.build.profile.emit_leaf_frame_unwind(),
             constant_join_return_precedes_lr_reload: config
                 .build
@@ -873,10 +862,7 @@ impl Behavior {
             return_register_store_style: config.build.profile.return_register_store_style(),
             comma_value_placement_style: config.build.profile.comma_value_placement_style(),
             global_array_index_style: config.build.profile.global_array_index_style(),
-            global_array_decay_store_style: config
-                .build
-                .profile
-                .global_array_decay_store_style(),
+            global_array_decay_store_style: config.build.profile.global_array_decay_store_style(),
             indexed_rmw_assignment_style: config.build.profile.indexed_rmw_assignment_style(),
             stored_global_read_style: config.build.profile.stored_global_read_style(),
             negate_before_zero_equality: config.build.profile.negate_before_zero_equality(),
@@ -895,18 +881,12 @@ impl Behavior {
                 .punned_conditional_writeback_style(),
             punned_shift_writeback_style: config.build.profile.punned_shift_writeback_style(),
             trig_dispatcher_style: config.build.profile.trig_dispatcher_style(),
-            trig_zero_constant_placement: config
-                .build
-                .profile
-                .trig_zero_constant_placement(),
+            trig_zero_constant_placement: config.build.profile.trig_zero_constant_placement(),
             trig_dispatcher_hidden_label_bump: config
                 .build
                 .profile
                 .trig_dispatcher_hidden_label_bump(),
-            trig_dispatcher_ipa_label_bump: config
-                .build
-                .profile
-                .trig_dispatcher_ipa_label_bump(),
+            trig_dispatcher_ipa_label_bump: config.build.profile.trig_dispatcher_ipa_label_bump(),
             materialization_copy_style: config.build.profile.materialization_copy_style(),
             wide_constant_add_schedule: config.build.profile.wide_constant_add_schedule(),
             symbol_traversal_style: config.build.profile.symbol_traversal_style(),
@@ -921,18 +901,12 @@ impl Behavior {
                 .build
                 .profile
                 .read_only_section_anchor_comment_flags(),
-            data_section_relocation_style: config
-                .build
-                .profile
-                .data_section_relocation_style(),
+            data_section_relocation_style: config.build.profile.data_section_relocation_style(),
             data_section_anchor_comment_flags: config
                 .build
                 .profile
                 .data_section_anchor_comment_flags(),
-            materialize_section_prototypes: config
-                .build
-                .profile
-                .materialize_section_prototypes(),
+            materialize_section_prototypes: config.build.profile.materialize_section_prototypes(),
             retain_unused_c_inline_asm_symbols: config
                 .build
                 .profile
@@ -947,10 +921,7 @@ impl Behavior {
                 .build
                 .profile
                 .skipped_static_inline_label_base(),
-            cxx_class_definition_label_bump: config
-                .build
-                .profile
-                .cxx_class_definition_label_bump(),
+            cxx_class_definition_label_bump: config.build.profile.cxx_class_definition_label_bump(),
             cxx_inline_definition_label_bump: config
                 .build
                 .profile
@@ -995,11 +966,9 @@ impl Behavior {
             deferred_inlining: config.flags.inline_deferred,
             use_lmw_stmw: config.flags.use_lmw_stmw,
             scheduler_enabled: config.flags.scheduler_enabled,
-            tail_call_optimization: config.flags.ipa_file,
-            terminal_indirect_tail_call: config
-                .build
-                .profile
-                .terminal_indirect_tail_call(),
+            tail_call_optimization: config.flags.ipa_file
+                && config.flags.optimization != Optimization::O0,
+            terminal_indirect_tail_call: config.build.profile.terminal_indirect_tail_call(),
         }
     }
 
@@ -1144,9 +1113,7 @@ impl Behavior {
         if self.trig_zero_constant_placement == TrigZeroConstantPlacement::Prologue {
             quirks.push(ActiveQuirk::of(Quirk::EagerTrigZeroConstant));
         }
-        if self.trig_dispatcher_hidden_label_bump != 0
-            || self.trig_dispatcher_ipa_label_bump != 0
-        {
+        if self.trig_dispatcher_hidden_label_bump != 0 || self.trig_dispatcher_ipa_label_bump != 0 {
             quirks.push(ActiveQuirk::of(Quirk::LaterTrigDispatcherLabels));
         }
         if self.materialization_copy_style == MaterializationCopyStyle::AddImmediateZero {
@@ -1177,9 +1144,7 @@ impl Behavior {
             quirks.push(ActiveQuirk::of(Quirk::EarlyDataSectionRelocationAnchors));
         }
         if self.materialize_section_prototypes {
-            quirks.push(ActiveQuirk::of(
-                Quirk::LegacyMaterializedSectionPrototypes,
-            ));
+            quirks.push(ActiveQuirk::of(Quirk::LegacyMaterializedSectionPrototypes));
         }
         if self.read_only_section_anchor_order == ReadOnlySectionAnchorOrder::BeforeDataObjects {
             quirks.push(ActiveQuirk::of(Quirk::LegacyEarlyReadOnlySectionAnchor));
@@ -1251,8 +1216,7 @@ impl Behavior {
         if self.va_arg_schedule_style == VaArgScheduleStyle::SerialScratch {
             quirks.push(ActiveQuirk::of(Quirk::LegacySerialVaArgSchedule));
         }
-        if self.plain_linkage_epilogue_style
-            == PlainLinkageEpilogueStyle::StackRestoreBeforeReload
+        if self.plain_linkage_epilogue_style == PlainLinkageEpilogueStyle::StackRestoreBeforeReload
         {
             quirks.push(ActiveQuirk::of(Quirk::Gc11PatchPlainLinkageReload));
         }
@@ -1302,13 +1266,7 @@ mod tests {
                 NarrowCallZeroTestStyle::RecordConversion,
             ),
         ];
-        for (
-            optimization,
-            style,
-            schedule_latency_slots,
-            narrow_call_zero_test_style,
-        ) in expected
-        {
+        for (optimization, style, schedule_latency_slots, narrow_call_zero_test_style) in expected {
             let mut config = CompilerConfig::new(build::GC_2_6);
             config.flags.optimization = optimization;
             let behavior = Behavior::resolve(&config);
@@ -1402,10 +1360,7 @@ mod tests {
         assert_eq!(quirks.len(), 4);
         assert_eq!(quirks[0].quirk, Quirk::UnsignedPlainChar);
         assert_eq!(quirks[0].kind, QuirkKind::Intentional);
-        assert_eq!(
-            quirks[1].quirk,
-            Quirk::EarlyDataSectionRelocationAnchors
-        );
+        assert_eq!(quirks[1].quirk, Quirk::EarlyDataSectionRelocationAnchors);
         assert_eq!(
             behavior.fixed_address_poll_address_style,
             FixedAddressPollAddressStyle::FoldedBankDisplacement

@@ -39,6 +39,14 @@ pub(crate) struct StaticCallWrapperSummary {
     pub(crate) arguments: Vec<Expression>,
 }
 
+/// A NULL-terminated function-pointer table walker eligible for whole-file
+/// inlining. The loop body is summarized to its only externally visible input:
+/// the table symbol whose entries it invokes.
+#[derive(Clone, Debug)]
+pub(crate) struct PointerWalkerSummary {
+    pub(crate) table: String,
+}
+
 /// Verified helper-body facts available while lowering one translation unit.
 #[derive(Clone, Debug, Default)]
 pub struct InlineSummaries {
@@ -48,6 +56,9 @@ pub struct InlineSummaries {
     queue_services: HashMap<String, QueueServiceSummary>,
     queue_services_with_callers: HashSet<String>,
     static_call_wrappers: HashMap<String, StaticCallWrapperSummary>,
+    ipa_call_wrappers: HashMap<String, StaticCallWrapperSummary>,
+    pointer_walkers: HashMap<String, PointerWalkerSummary>,
+    ipa_elided_functions: HashSet<String>,
 }
 
 impl InlineSummaries {
@@ -78,6 +89,16 @@ impl InlineSummaries {
                     .static_call_wrappers
                     .insert(function.name.clone(), summary);
             }
+            if let Some(summary) = summarize_call_wrapper(function, false) {
+                summaries
+                    .ipa_call_wrappers
+                    .insert(function.name.clone(), summary);
+            }
+            if let Some(summary) = summarize_pointer_walker(function) {
+                summaries
+                    .pointer_walkers
+                    .insert(function.name.clone(), summary);
+            }
         }
         // Build 163's label walk gives a summarized service helper three fewer
         // private ordinals when another definition calls it. The helper is an
@@ -90,6 +111,18 @@ impl InlineSummaries {
                 .any(|function| function.name != *name && function_calls_any(function, &singleton))
             {
                 summaries.queue_services_with_callers.insert(name.clone());
+            }
+        }
+        for walker in functions.iter().filter(|function| {
+            function.is_static && summaries.pointer_walkers.contains_key(&function.name)
+        }) {
+            let singleton = HashSet::from([walker.name.clone()]);
+            let callers: Vec<_> = functions
+                .iter()
+                .filter(|function| function_calls_any(function, &singleton))
+                .collect();
+            if callers.len() == 1 && summaries.ipa_pointer_walker_caller(callers[0]).is_some() {
+                summaries.ipa_elided_functions.insert(walker.name.clone());
             }
         }
         summaries
@@ -117,6 +150,46 @@ impl InlineSummaries {
 
     pub(crate) fn static_call_wrapper(&self, name: &str) -> Option<&StaticCallWrapperSummary> {
         self.static_call_wrappers.get(name)
+    }
+
+    pub(crate) fn pointer_walker(&self, name: &str) -> Option<&PointerWalkerSummary> {
+        self.pointer_walkers.get(name)
+    }
+
+    pub(crate) fn ipa_pointer_walker_caller(
+        &self,
+        function: &Function,
+    ) -> Option<(&PointerWalkerSummary, Option<&StaticCallWrapperSummary>)> {
+        if function.return_type != Type::Void
+            || !function.locals.is_empty()
+            || !function.guards.is_empty()
+            || function.return_expression.is_some()
+        {
+            return None;
+        }
+        let calls: Vec<_> = function
+            .statements
+            .iter()
+            .map(|statement| match statement {
+                Statement::Expression(Expression::Call { name, arguments })
+                    if arguments.is_empty() =>
+                {
+                    Some(name.as_str())
+                }
+                _ => None,
+            })
+            .collect::<Option<_>>()?;
+        let walker = self.pointer_walker(calls.first()?)?;
+        let trailing = match calls.as_slice() {
+            [_] => None,
+            [_, wrapper] => Some(self.ipa_call_wrappers.get(*wrapper)?),
+            _ => return None,
+        };
+        Some((walker, trailing))
+    }
+
+    pub fn should_elide_ipa_function(&self, name: &str) -> bool {
+        self.ipa_elided_functions.contains(name)
     }
 }
 
@@ -146,7 +219,17 @@ fn is_plain_void_helper(function: &Function) -> bool {
 }
 
 fn summarize_static_call_wrapper(function: &Function) -> Option<StaticCallWrapperSummary> {
-    if !function.is_static || !is_plain_void_helper(function) || !function.locals.is_empty() {
+    summarize_call_wrapper(function, true)
+}
+
+fn summarize_call_wrapper(
+    function: &Function,
+    require_static: bool,
+) -> Option<StaticCallWrapperSummary> {
+    if (require_static && !function.is_static)
+        || !is_plain_void_helper(function)
+        || !function.locals.is_empty()
+    {
         return None;
     }
     let [Statement::Expression(Expression::Call { name, arguments })] =
@@ -160,6 +243,52 @@ fn summarize_static_call_wrapper(function: &Function) -> Option<StaticCallWrappe
     Some(StaticCallWrapperSummary {
         callee: name.clone(),
         arguments: arguments.clone(),
+    })
+}
+
+fn summarize_pointer_walker(function: &Function) -> Option<PointerWalkerSummary> {
+    if !is_plain_void_helper(function) || !function.parameters.is_empty() {
+        return None;
+    }
+    let [local] = function.locals.as_slice() else {
+        return None;
+    };
+    if local.initializer.is_some() || local.array_length.is_some() || local.is_static {
+        return None;
+    }
+    let [Statement::Loop {
+        kind: LoopKind::For,
+        initializer: Some(Expression::Assign { target, value }),
+        condition: Some(Expression::Dereference { pointer }),
+        step:
+            Some(Expression::Assign {
+                target: step_target,
+                value: step_value,
+            }),
+        body,
+    }] = function.statements.as_slice()
+    else {
+        return None;
+    };
+    if !matches!(target.as_ref(), Expression::Variable(name) if name == &local.name)
+        || !matches!(pointer.as_ref(), Expression::Variable(name) if name == &local.name)
+        || !matches!(step_target.as_ref(), Expression::Variable(name) if name == &local.name)
+        || !matches!(step_value.as_ref(), Expression::Binary {
+            operator: BinaryOperator::Add,
+            left,
+            right,
+        } if matches!(left.as_ref(), Expression::Variable(name) if name == &local.name)
+            && matches!(right.as_ref(), Expression::IntegerLiteral(1)))
+        || !matches!(body.as_slice(), [Statement::Expression(Expression::Call { name, arguments })]
+            if name == &local.name && arguments.is_empty())
+    {
+        return None;
+    }
+    let Expression::Variable(table) = value.as_ref() else {
+        return None;
+    };
+    Some(PointerWalkerSummary {
+        table: table.clone(),
     })
 }
 
@@ -273,6 +402,7 @@ fn summarize_fixed_local_rmw(function: &Function) -> Option<FixedLocalRmwSummary
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mwcc_syntax_trees::{LocalDeclaration, Parameter, Pointee};
 
     fn wrapper(name: &str, is_static: bool, statements: Vec<Statement>) -> Function {
         Function {
@@ -292,6 +422,46 @@ mod tests {
             text_deferred: false,
             peephole_disabled: false,
         }
+    }
+
+    fn pointer_walker(name: &str, is_static: bool, table: &str) -> Function {
+        let local = "entry".to_string();
+        let mut function = wrapper(name, is_static, Vec::new());
+        function.locals.push(LocalDeclaration {
+            declared_type: Type::Pointer(Pointee::Pointer),
+            name: local.clone(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        });
+        function.statements.push(Statement::Loop {
+            kind: LoopKind::For,
+            initializer: Some(Expression::Assign {
+                target: Box::new(Expression::Variable(local.clone())),
+                value: Box::new(Expression::Variable(table.into())),
+            }),
+            condition: Some(Expression::Dereference {
+                pointer: Box::new(Expression::Variable(local.clone())),
+            }),
+            step: Some(Expression::Assign {
+                target: Box::new(Expression::Variable(local.clone())),
+                value: Box::new(Expression::Binary {
+                    operator: BinaryOperator::Add,
+                    left: Box::new(Expression::Variable(local.clone())),
+                    right: Box::new(Expression::IntegerLiteral(1)),
+                }),
+            }),
+            body: vec![Statement::Expression(Expression::Call {
+                name: local,
+                arguments: Vec::new(),
+            })],
+        });
+        function
     }
 
     #[test]
@@ -333,5 +503,70 @@ mod tests {
         assert!(near_misses.static_call_wrapper("external").is_none());
         assert!(near_misses.static_call_wrapper("recursive").is_none());
         assert!(near_misses.static_call_wrapper("extra").is_none());
+    }
+
+    #[test]
+    fn ipa_pointer_walker_composes_verified_callers_and_elides_one_static_callee() {
+        let init_walker = pointer_walker("__init_cpp", false, "_ctors");
+        let init_user = wrapper(
+            "__init_user",
+            false,
+            vec![Statement::Expression(Expression::Call {
+                name: "__init_cpp".into(),
+                arguments: Vec::new(),
+            })],
+        );
+        let fini_walker = pointer_walker("__fini_cpp", true, "_dtors");
+        let mut exit = wrapper(
+            "exit",
+            false,
+            vec![
+                Statement::Expression(Expression::Call {
+                    name: "__fini_cpp".into(),
+                    arguments: Vec::new(),
+                }),
+                Statement::Expression(Expression::Call {
+                    name: "_ExitProcess".into(),
+                    arguments: Vec::new(),
+                }),
+            ],
+        );
+        exit.parameters.push(Parameter {
+            parameter_type: Type::Int,
+            name: "status".into(),
+        });
+        let exit_process = wrapper(
+            "_ExitProcess",
+            false,
+            vec![Statement::Expression(Expression::Call {
+                name: "PPCHalt".into(),
+                arguments: Vec::new(),
+            })],
+        );
+
+        let summaries = InlineSummaries::analyze(&[
+            init_user.clone(),
+            init_walker,
+            fini_walker,
+            exit.clone(),
+            exit_process,
+        ]);
+        assert_eq!(
+            summaries.pointer_walker("__init_cpp").unwrap().table,
+            "_ctors"
+        );
+        assert_eq!(
+            summaries
+                .ipa_pointer_walker_caller(&init_user)
+                .unwrap()
+                .0
+                .table,
+            "_ctors"
+        );
+        let (walker, trailing) = summaries.ipa_pointer_walker_caller(&exit).unwrap();
+        assert_eq!(walker.table, "_dtors");
+        assert_eq!(trailing.unwrap().callee, "PPCHalt");
+        assert!(summaries.should_elide_ipa_function("__fini_cpp"));
+        assert!(!summaries.should_elide_ipa_function("__init_cpp"));
     }
 }

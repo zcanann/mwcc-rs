@@ -6,6 +6,82 @@
 use super::*;
 
 impl Generator {
+    /// Compose a whole-file-IPA caller from a verified pointer-walker callee and
+    /// an optional verified one-call wrapper. The ordinary walker recognizer
+    /// remains the single owner of the emitted schedule.
+    pub(crate) fn try_ipa_inlined_pointer_walker(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if !self.behavior.tail_call_optimization {
+            return Ok(false);
+        }
+        let Some((walker, trailing_wrapper)) =
+            self.inline_summaries.ipa_pointer_walker_caller(function)
+        else {
+            return Ok(false);
+        };
+        let local_name = "__mwcc_ipa_walker".to_string();
+        let loop_statement = Statement::Loop {
+            kind: LoopKind::For,
+            initializer: Some(Expression::Assign {
+                target: Box::new(Expression::Variable(local_name.clone())),
+                value: Box::new(Expression::Variable(walker.table.clone())),
+            }),
+            condition: Some(Expression::Dereference {
+                pointer: Box::new(Expression::Variable(local_name.clone())),
+            }),
+            step: Some(Expression::Assign {
+                target: Box::new(Expression::Variable(local_name.clone())),
+                value: Box::new(Expression::Binary {
+                    operator: BinaryOperator::Add,
+                    left: Box::new(Expression::Variable(local_name.clone())),
+                    right: Box::new(Expression::IntegerLiteral(1)),
+                }),
+            }),
+            body: vec![Statement::Expression(Expression::Call {
+                name: local_name.clone(),
+                arguments: Vec::new(),
+            })],
+        };
+        let mut statements = vec![loop_statement];
+        if let Some(wrapper) = trailing_wrapper {
+            statements.push(Statement::Expression(Expression::Call {
+                name: wrapper.callee.clone(),
+                arguments: wrapper.arguments.clone(),
+            }));
+        }
+        let composed = Function {
+            return_type: Type::Void,
+            name: function.name.clone(),
+            is_static: function.is_static,
+            is_weak: function.is_weak,
+            parameters: Vec::new(),
+            locals: vec![LocalDeclaration {
+                declared_type: Type::Pointer(Pointee::Pointer),
+                name: local_name,
+                initializer: None,
+                is_volatile: false,
+                array_length: None,
+                is_static: false,
+                data_bytes: None,
+                data_relocations: Vec::new(),
+                is_const: false,
+                row_bytes: None,
+            }],
+            statements,
+            guards: Vec::new(),
+            return_expression: None,
+            section: function.section.clone(),
+            preceded_by_asm: function.preceded_by_asm,
+            asm_body: None,
+            force_active: function.force_active,
+            text_deferred: function.text_deferred,
+            peephole_disabled: function.peephole_disabled,
+        };
+        self.try_pointer_walker_call_loop(&composed)
+    }
+
     /// `_prolog`/`_epilog`: a local pointer walks a NULL-terminated global function-pointer table,
     /// calling each entry. `const VoidFunc* p = _ctors; while (*p != 0) { (**p)(); p++; } … return 0;`
     ///
@@ -70,25 +146,16 @@ impl Generator {
         //
         // The second is emitted by the older C++ runtime with peephole-disabled label branches.
         let for_header_form = *kind == LoopKind::For;
-        // The old Runtime `for` spelling belongs to the linkage-first compiler family. Peepholes
-        // select between two measured schedules below: disabled retains redundant label edges;
-        // enabled removes them and interleaves the table address through the linkage stores.
-        if for_header_form && self.behavior.frame_convention != FrameConvention::LinkageFirst {
-            return Ok(false);
-        }
+        // The old Runtime `for` spelling spans both frame families. Linkage-first
+        // builds select between retained source edges and an interleaved address
+        // schedule; later predecrement builds use the canonical r31/CTR walker.
         let table = match (kind, &local.initializer, initializer) {
             (LoopKind::While, Some(Expression::Variable(table)), None) if step.is_none() => {
                 table.clone()
             }
-            (
-                LoopKind::For,
-                None,
-                Some(Expression::Assign {
-                    target,
-                    value,
-                }),
-            ) if matches!(target.as_ref(), Expression::Variable(name) if name == &local.name)
-                && matches!(value.as_ref(), Expression::Variable(_)) =>
+            (LoopKind::For, None, Some(Expression::Assign { target, value }))
+                if matches!(target.as_ref(), Expression::Variable(name) if name == &local.name)
+                    && matches!(value.as_ref(), Expression::Variable(_)) =>
             {
                 let Expression::Variable(table) = value.as_ref() else {
                     unreachable!()
@@ -230,20 +297,28 @@ impl Generator {
         self.output.pre_scheduled = true;
 
         let style = self.behavior.pointer_walker_schedule_style;
-        let legacy_for_schedule = for_header_form
-            && self.behavior.frame_convention == FrameConvention::LinkageFirst;
+        let legacy_for_schedule =
+            for_header_form && self.behavior.frame_convention == FrameConvention::LinkageFirst;
+        let modern_for_schedule = for_header_form
+            && self.behavior.frame_convention == FrameConvention::Predecrement
+            && style == PointerWalkerScheduleStyle::LatencyInterleaved;
+        let signed_for_condition =
+            for_header_form && self.behavior.frame_convention == FrameConvention::Predecrement;
         // A preceding asm definition suppresses the same file-level optimization as
         // explicit `#pragma peephole off`, retaining the source `for` edges.
-        let legacy_for_keeps_edges = legacy_for_schedule
-            && (function.preceded_by_asm || function.peephole_disabled);
+        let legacy_for_keeps_edges =
+            legacy_for_schedule && (function.preceded_by_asm || function.peephole_disabled);
         let optimized_legacy_for_schedule = legacy_for_schedule && !legacy_for_keeps_edges;
-        let direct_address = style == PointerWalkerScheduleStyle::DirectAddressDuplicateLoad;
-        let duplicate_entry_load = matches!(
-            style,
-            PointerWalkerScheduleStyle::DirectAddressDuplicateLoad
-                | PointerWalkerScheduleStyle::ScratchAddressDuplicateLoad
-        );
-        let interleave_linkage = style == PointerWalkerScheduleStyle::LatencyInterleaved;
+        let direct_address =
+            modern_for_schedule || style == PointerWalkerScheduleStyle::DirectAddressDuplicateLoad;
+        let duplicate_entry_load = !modern_for_schedule
+            && matches!(
+                style,
+                PointerWalkerScheduleStyle::DirectAddressDuplicateLoad
+                    | PointerWalkerScheduleStyle::ScratchAddressDuplicateLoad
+            );
+        let interleave_linkage =
+            !modern_for_schedule && style == PointerWalkerScheduleStyle::LatencyInterleaved;
 
         // O0..O3 retain the canonical linkage saves before table materialization. O4 moves `lis`
         // into the mflr latency slot and the dependent scratch `addi` between the two saves.
@@ -300,7 +375,7 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::AddImmediateShifted {
-                d: 3,
+                d: if modern_for_schedule { WALKER } else { 3 },
                 a: 0,
                 immediate: 0,
             });
@@ -320,8 +395,12 @@ impl Generator {
         }
         self.record_relocation(RelocationKind::Addr16Lo, &table);
         self.output.instructions.push(Instruction::AddImmediate {
-            d: if direct_address && !legacy_for_schedule { WALKER } else { 0 },
-            a: 3,
+            d: if direct_address && !legacy_for_schedule {
+                WALKER
+            } else {
+                0
+            },
+            a: if modern_for_schedule { WALKER } else { 3 },
             immediate: 0,
         });
         if optimized_legacy_for_schedule {
@@ -345,7 +424,7 @@ impl Generator {
                 offset: 12,
             });
         }
-        if !direct_address || legacy_for_schedule {
+        if (!direct_address || legacy_for_schedule) && !modern_for_schedule {
             self.output.instructions.push(Instruction::Or {
                 a: WALKER,
                 s: 0,
@@ -401,18 +480,27 @@ impl Generator {
         if let Instruction::Branch { target } = &mut self.output.instructions[skip_to_condition] {
             *target = condition_top;
         }
-        let condition_register = if duplicate_entry_load && !legacy_for_schedule { 0 } else { 12 };
+        let condition_register = if duplicate_entry_load && !legacy_for_schedule {
+            0
+        } else {
+            12
+        };
         self.output.instructions.push(Instruction::LoadWord {
             d: condition_register,
             a: WALKER,
             offset: 0,
         });
-        self.output
-            .instructions
-            .push(Instruction::CompareLogicalWordImmediate {
+        self.output.instructions.push(if signed_for_condition {
+            Instruction::CompareWordImmediate {
                 a: condition_register,
                 immediate: 0,
-            });
+            }
+        } else {
+            Instruction::CompareLogicalWordImmediate {
+                a: condition_register,
+                immediate: 0,
+            }
+        });
         self.output
             .instructions
             .push(Instruction::BranchConditionalForward {
@@ -434,7 +522,7 @@ impl Generator {
                 });
             }
         }
-        if interleave_linkage || legacy_for_schedule {
+        if interleave_linkage || legacy_for_schedule || modern_for_schedule {
             self.output.instructions.push(Instruction::LoadWord {
                 d: 0,
                 a: 1,
@@ -453,7 +541,7 @@ impl Generator {
             a: 1,
             offset: self.frame_size - 4,
         });
-        if !interleave_linkage && !legacy_for_schedule {
+        if !interleave_linkage && !legacy_for_schedule && !modern_for_schedule {
             self.output.instructions.push(Instruction::LoadWord {
                 d: 0,
                 a: 1,

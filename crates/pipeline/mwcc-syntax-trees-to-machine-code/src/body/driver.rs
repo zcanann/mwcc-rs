@@ -210,12 +210,10 @@ impl Generator {
             || !function.guards.is_empty()
             || !function.statements.is_empty()
         {
-            return Err(Diagnostic::error(
-                format!(
-                    "this long long shape is not modeled yet (roadmap; function '{}')",
-                    function.name
-                ),
-            ));
+            return Err(Diagnostic::error(format!(
+                "this long long shape is not modeled yet (roadmap; function '{}')",
+                function.name
+            )));
         }
         let high = Eabi::general_result().number; // r3 — the result HIGH word
         let low = high + 1; //                       r4 — the result LOW word
@@ -1182,6 +1180,12 @@ impl Generator {
             return Ok(());
         }
         if self.try_global_pointer_fallback_getter(function)? {
+            return Ok(());
+        }
+        // Whole-file IPA expansion must claim a verified wrapper before the
+        // ordinary sibling-call pass turns its sole call into an external
+        // branch. The composed walker owns the caller's complete schedule.
+        if self.try_ipa_inlined_pointer_walker(function)? {
             return Ok(());
         }
         if self.try_tail_call(function)? {
@@ -3402,10 +3406,7 @@ impl Generator {
                     } = &guard.condition
                     {
                         if self.try_emit_unsigned_narrow_less_constant(
-                            *operator,
-                            left,
-                            right,
-                            result,
+                            *operator, left, right, result,
                         )? {
                             self.output
                                 .instructions

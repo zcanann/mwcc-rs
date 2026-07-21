@@ -79,17 +79,35 @@ impl Generator {
         // with `bctr` without creating a frame or overwriting LR. This is a
         // default 4.x optimizer behavior, kept separate from the explicit IPA
         // policy used by direct sibling calls.
-        if !self.behavior.terminal_indirect_tail_call
-            || function.return_type != Type::Void
-            || function.return_expression.is_some()
-        {
+        if function.return_type != Type::Void || function.return_expression.is_some() {
             return Ok(false);
         }
         let [Statement::Expression(call)] = function.statements.as_slice() else {
             return Ok(false);
         };
         if let Expression::Call { name, arguments } = call {
-            return self.emit_named_indirect_sibling_call(name, arguments);
+            if self.behavior.terminal_indirect_tail_call
+                && self.emit_named_indirect_sibling_call(name, arguments)?
+            {
+                return Ok(true);
+            }
+            if !self.behavior.tail_call_optimization
+                || self.locations.contains_key(name)
+                || self.globals.contains_key(name)
+                || self.variadic_callees.contains(name)
+                || self.call_return_types.get(name) != Some(&Type::Void)
+            {
+                return Ok(false);
+            }
+            self.emit_arguments(arguments, name)?;
+            self.record_relocation(RelocationKind::Rel24, name);
+            self.output.instructions.push(Instruction::BranchExternal {
+                target: name.clone(),
+            });
+            return Ok(true);
+        }
+        if !self.behavior.terminal_indirect_tail_call {
+            return Ok(false);
         }
         let Expression::CallThrough { target, arguments } = call else {
             return Ok(false);

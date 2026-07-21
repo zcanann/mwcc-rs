@@ -163,12 +163,12 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
             // latency slots with independent address materializations.
             "-schedule" => {
                 index += 1;
-                invocation.flags.scheduler_enabled =
-                    match arguments.get(index).map(String::as_str) {
-                        Some("off") => false,
-                        Some("on") => true,
-                        _ => invocation.flags.scheduler_enabled,
-                    };
+                invocation.flags.scheduler_enabled = match arguments.get(index).map(String::as_str)
+                {
+                    Some("off") => false,
+                    Some("on") => true,
+                    _ => invocation.flags.scheduler_enabled,
+                };
             }
             // `-sym on` emits CodeWarrior `.line` and `.debug` sections. Keep
             // last-wins behavior even while object-level debug emission is a
@@ -190,6 +190,15 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                     Some("off") => false,
                     _ => invocation.flags.ipa_file,
                 };
+            }
+            // `-opt off` is the long spelling used by debug project variants
+            // after an earlier `-O4,p`. It wins in command-line order and
+            // selects the same unoptimized schedules as `-O0`.
+            "-opt" => {
+                index += 1;
+                if arguments.get(index).map(String::as_str) == Some("off") {
+                    invocation.flags.optimization = Optimization::O0;
+                }
             }
             // `-func_align N` overrides the build-default code alignment. The
             // project configurations use byte alignments (currently 4 or 32).
@@ -427,6 +436,13 @@ fn compile(
     let mut machine_functions: Vec<mwcc_machine_code::MachineFunction> =
         Vec::with_capacity(unit.functions.len());
     for (function_index, function) in unit.functions.iter().enumerate() {
+        if config.flags.ipa_file
+            && config.flags.optimization != mwcc_versions::Optimization::O0
+            && function.is_static
+            && inline_summaries.should_elide_ipa_function(&function.name)
+        {
+            continue;
+        }
         // With deferred inlining, a terminal helper that was only parsed as an
         // implicit materialization disappears when every earlier call site
         // consumed it. Keep it whenever even one Rel24 call survives.
@@ -583,8 +599,7 @@ fn compile(
             * usize::from(behavior.cxx_inline_control_flow_label_weight)
         + cxx_inline_facts.virtual_destructors
             * usize::from(behavior.cxx_virtual_destructor_label_bump)
-        + cxx_inline_facts.direct_calls
-            * usize::from(behavior.cxx_inline_ipa_call_label_bump);
+        + cxx_inline_facts.direct_calls * usize::from(behavior.cxx_inline_ipa_call_label_bump);
     let unit_declaration_bump = unit.skipped_inline_functions
         + cxx_inline_bump
         + if config
@@ -1071,8 +1086,7 @@ fn compile(
             // images must therefore remain PROGBITS `.data`, never collapse
             // into NOBITS `.bss`.
             Some(bytes)
-                if bytes.iter().any(|&value| value != 0)
-                    || !global.data_relocations.is_empty() =>
+                if bytes.iter().any(|&value| value != 0) || !global.data_relocations.is_empty() =>
             {
                 (Some(bytes), false)
             }
@@ -1223,41 +1237,41 @@ fn compile(
             names
         } else {
             machine_function
-            .string_literals
-            .iter()
-            .map(|bytes| {
-                if let Some(name) = string_pool.get(bytes) {
-                    return name.clone();
-                }
-                let name = format!("@{number}");
-                number += 1;
-                new_string_names.push(name.clone());
-                string_pool.insert(bytes.clone(), name.clone());
-                let mut object_bytes = bytes.clone();
-                object_bytes.push(0);
-                function_string_objects.push(mwcc_machine_code_to_object::DefinedGlobal {
-                    section: None,
-                    anonymous_adjust: 0,
-                    static_local_owner: None,
-                    is_weak: false,
-                    non_static_functions_before: 0,
-                    functions_before: 0,
-                    name: name.clone(),
-                    size: object_bytes.len() as u32,
-                    alignment: 4,
-                    initial_bytes: Some(object_bytes),
-                    is_const: config.flags.string_literals_read_only
-                        || machine_function.strings_are_const,
-                    force_full_data_section: (config.flags.string_literals_read_only
-                        || machine_function.strings_are_const)
-                        && !read_only_small_data,
-                    is_static: true,
-                    is_explicit_zero: false,
-                    relocations: Vec::new(),
-                });
-                name
-            })
-            .collect()
+                .string_literals
+                .iter()
+                .map(|bytes| {
+                    if let Some(name) = string_pool.get(bytes) {
+                        return name.clone();
+                    }
+                    let name = format!("@{number}");
+                    number += 1;
+                    new_string_names.push(name.clone());
+                    string_pool.insert(bytes.clone(), name.clone());
+                    let mut object_bytes = bytes.clone();
+                    object_bytes.push(0);
+                    function_string_objects.push(mwcc_machine_code_to_object::DefinedGlobal {
+                        section: None,
+                        anonymous_adjust: 0,
+                        static_local_owner: None,
+                        is_weak: false,
+                        non_static_functions_before: 0,
+                        functions_before: 0,
+                        name: name.clone(),
+                        size: object_bytes.len() as u32,
+                        alignment: 4,
+                        initial_bytes: Some(object_bytes),
+                        is_const: config.flags.string_literals_read_only
+                            || machine_function.strings_are_const,
+                        force_full_data_section: (config.flags.string_literals_read_only
+                            || machine_function.strings_are_const)
+                            && !read_only_small_data,
+                        is_static: true,
+                        is_explicit_zero: false,
+                        relocations: Vec::new(),
+                    });
+                    name
+                })
+                .collect()
         };
         machine_function.new_string_count = new_string_names.len() as u32;
         machine_function.new_string_names = new_string_names;
@@ -1546,7 +1560,12 @@ fn compile(
     let early_undefined_externals: Vec<String> = if behavior.materialize_section_prototypes {
         unit.section_prototypes
             .iter()
-            .filter(|name| !unit.functions.iter().any(|function| function.name == **name))
+            .filter(|name| {
+                !unit
+                    .functions
+                    .iter()
+                    .any(|function| function.name == **name)
+            })
             .cloned()
             .collect()
     } else {
@@ -1653,12 +1672,8 @@ mod tests {
         let minimum = parse_invocation(&["-enum".into(), "min".into()]);
         assert_eq!(minimum.flags.enum_storage, EnumStorage::Minimum);
 
-        let integer = parse_invocation(&[
-            "-enum".into(),
-            "min".into(),
-            "-enum".into(),
-            "int".into(),
-        ]);
+        let integer =
+            parse_invocation(&["-enum".into(), "min".into(), "-enum".into(), "int".into()]);
         assert_eq!(integer.flags.enum_storage, EnumStorage::Int);
     }
 
@@ -1761,6 +1776,12 @@ mod tests {
         let last_wins =
             parse_invocation(&["-ipa".into(), "file".into(), "-ipa".into(), "off".into()]);
         assert!(!last_wins.flags.ipa_file);
+    }
+
+    #[test]
+    fn command_line_opt_off_overrides_an_earlier_level() {
+        let parsed = parse_invocation(&["-O4,p".into(), "-opt".into(), "off".into()]);
+        assert_eq!(parsed.flags.optimization, mwcc_versions::Optimization::O0);
     }
 
     #[test]
