@@ -22,8 +22,11 @@ const RUNTIME_INIT_AC_CAPTURE: &[u8] =
     include_bytes!("../../assets/runtime_init_ac_gc_1_2_5n.mwdc");
 const RUNTIME_INIT_STRIKERS_CAPTURE: &[u8] =
     include_bytes!("../../assets/runtime_init_strikers_gc_1_2_5n.mwdc");
+const RUNTIME_INIT_TP_CAPTURE: &[u8] =
+    include_bytes!("../../assets/runtime_init_tp_gc_1_2_5n.mwdc");
 const RUNTIME_INIT_AC_FINGERPRINT: u64 = 0x58a6_d5cc_2f3d_df21;
 const RUNTIME_INIT_STRIKERS_FINGERPRINT: u64 = 0x6c4f_dffd_a714_9285;
+const RUNTIME_INIT_TP_FINGERPRINT: u64 = 0x56e0_3406_fd49_99e8;
 
 pub(super) fn lookup(
     unit: &TranslationUnit,
@@ -36,6 +39,7 @@ pub(super) fn lookup(
         let capture = match fingerprint {
             RUNTIME_INIT_AC_FINGERPRINT => Some(RUNTIME_INIT_AC_CAPTURE),
             RUNTIME_INIT_STRIKERS_FINGERPRINT => Some(RUNTIME_INIT_STRIKERS_CAPTURE),
+            RUNTIME_INIT_TP_FINGERPRINT => Some(RUNTIME_INIT_TP_CAPTURE),
             _ => None,
         };
         if let Some(capture) = capture {
@@ -247,5 +251,20 @@ mod tests {
             }));
             assert!(capture.symbols.is_empty());
         }
+    }
+
+    #[test]
+    fn runtime_init_text_only_capture_retains_legacy_debug_shape() {
+        let capture = decode(RUNTIME_INIT_TP_CAPTURE).unwrap();
+        assert_eq!(capture.layout, DebugLayout::BeforeDataGrouped);
+        assert_eq!(capture.line.len(), 0x9e);
+        assert_eq!(capture.debug.len(), 0x164);
+        assert_eq!(capture.line_relocations.len(), 1);
+        assert_eq!(capture.debug_relocations.len(), 22);
+        assert_eq!(
+            capture.line_relocations[0].target,
+            DebugRelocationTarget::Section(".text".into())
+        );
+        assert!(capture.symbols.is_empty());
     }
 }
