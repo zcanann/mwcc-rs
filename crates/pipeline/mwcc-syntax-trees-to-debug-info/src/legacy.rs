@@ -29,6 +29,9 @@ enum MeasuredShape {
     /// Exported leaf functions whose optimized bodies are constant returns.
     /// Parameters are absent from the DIE stream because none remain live.
     ConstantFunctions,
+    /// Constant-return leaf functions accompanied by weak read-only objects
+    /// retained from otherwise-dropped inline definitions.
+    ConstantFunctionsWithInlineStatics,
     /// A functionless translation unit containing supported scalar, array, and
     /// aggregate data declarations.
     DataOnly,
@@ -128,7 +131,9 @@ pub(super) fn lower(
                 )
             })?;
             line_records.push(LineRecord {
-                line: if build.version == (2, 3, 3) {
+                line: if build.version == (2, 3, 3)
+                    && shape != MeasuredShape::ConstantFunctionsWithInlineStatics
+                {
                     source.body_start_line
                 } else {
                     terminal_return_line
@@ -209,6 +214,26 @@ pub(super) fn lower(
             &data.aggregate_ids,
         )?);
         return finish(line, records, DebugLayout::AfterDataGrouped);
+    }
+
+    if shape == MeasuredShape::ConstantFunctionsWithInlineStatics {
+        let mut records: Vec<_> = entries.into_iter().map(DebugRecord::Entry).collect();
+        let data = data::records(unit, &globals, first_global_id, true)?;
+        records.extend(data.records);
+        let source_function_refs = source_functions
+            .iter()
+            .map(|(function, _)| *function)
+            .collect::<Vec<_>>();
+        let parameter_registers = vec![Vec::new(); source_function_refs.len()];
+        records.extend(functions::selected_records(
+            unit,
+            &source_function_refs,
+            &layout,
+            data.next_id,
+            &data.aggregate_ids,
+            &parameter_registers,
+        )?);
+        return finish(line, records, DebugLayout::BeforeDataGrouped);
     }
 
     if shape == MeasuredShape::SimpleVoidFunctions {
@@ -329,6 +354,9 @@ pub(super) fn lower(
             DebugRecord::Raw(vec![0, 0, 0, 4]),
             DebugRecord::Raw(vec![0, 0, 0, 4]),
         ]),
+        MeasuredShape::ConstantFunctionsWithInlineStatics => {
+            unreachable!("combined data/function units return before legacy function records")
+        }
         MeasuredShape::DataOnly => unreachable!("data-only units return before function records"),
         MeasuredShape::VerbatimAsmWithData => {
             unreachable!("verbatim asm/data units return before legacy function records")
@@ -416,6 +444,17 @@ fn classify_shape(
         return Ok(MeasuredShape::ConstantFunctions);
     }
 
+    let constant_functions_with_inline_statics = !globals.is_empty()
+        && !unit.functions.is_empty()
+        && unit.functions.len() == machine_functions.len()
+        && unit.functions.iter().all(is_exported_constant_int_function)
+        && globals
+            .iter()
+            .all(|global| is_retained_inline_static(global));
+    if constant_functions_with_inline_statics {
+        return Ok(MeasuredShape::ConstantFunctionsWithInlineStatics);
+    }
+
     if unit.functions.is_empty() && machine_functions.is_empty() && !globals.is_empty() {
         return Ok(MeasuredShape::DataOnly);
     }
@@ -463,6 +502,19 @@ fn is_exported_constant_int_function(function: &Function) -> bool {
         )
 }
 
+fn is_retained_inline_static(global: &mwcc_syntax_trees::GlobalDeclaration) -> bool {
+    global.is_weak
+        && global.is_const
+        && global.declared_type == Type::Double
+        && global.array_length.is_none()
+        && global
+            .data_bytes
+            .as_ref()
+            .is_some_and(|bytes| bytes.len() == 8)
+        && global.data_relocations.is_empty()
+        && global.name.contains("$localstatic")
+}
+
 fn attribute(name: AttributeName, value: AttributeValue) -> Attribute {
     Attribute { name, value }
 }
@@ -478,6 +530,28 @@ fn signed_int_type() -> Attribute {
 mod tests {
     use super::*;
 
+    fn inline_static() -> mwcc_syntax_trees::GlobalDeclaration {
+        mwcc_syntax_trees::GlobalDeclaration {
+            declared_type: Type::Double,
+            name: "coefficient$localstatic0$helper".into(),
+            is_extern: false,
+            is_static: false,
+            is_volatile: false,
+            is_weak: true,
+            non_static_functions_before: 0,
+            functions_before: 0,
+            array_length: None,
+            array_length_inferred: false,
+            initializer: None,
+            is_const: true,
+            address_initializer: None,
+            data_bytes: Some(vec![0; 8]),
+            data_relocations: Vec::new(),
+            section: None,
+            attribute_alignment: None,
+        }
+    }
+
     #[test]
     fn data_only_layout_changes_at_the_fragmented_generation() {
         let legacy =
@@ -489,5 +563,19 @@ mod tests {
             DebugLayout::BetweenFullAndSmallDataGrouped
         );
         assert_eq!(data_only_layout(fragmented), DebugLayout::AfterDataGrouped);
+    }
+
+    #[test]
+    fn retained_inline_statics_are_narrowly_classified() {
+        let global = inline_static();
+        assert!(is_retained_inline_static(&global));
+
+        let mut ordinary_global = global.clone();
+        ordinary_global.is_weak = false;
+        assert!(!is_retained_inline_static(&ordinary_global));
+
+        let mut wrong_width = global;
+        wrong_width.data_bytes = Some(vec![0; 4]);
+        assert!(!is_retained_inline_static(&wrong_width));
     }
 }
