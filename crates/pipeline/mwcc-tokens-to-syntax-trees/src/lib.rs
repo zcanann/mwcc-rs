@@ -148,6 +148,7 @@ pub fn parse_located_translation_unit_with_enum_min(
         cplusplus_stack: Vec::new(),
         namespace_stack: Vec::new(),
         cxx_namespaces: std::collections::HashSet::new(),
+        current_cxx_layout_scope: None,
         current_member_scope: None,
         force_active: false,
         peephole_disabled: false,
@@ -321,6 +322,49 @@ mod tests {
                     ..
                 }
             ]
+        ));
+    }
+
+    #[test]
+    fn lays_out_a_nested_class_with_a_qualified_base() {
+        let source = r#"
+            struct Collision {
+                struct tri_data {
+                    unsigned index;
+                    float radius;
+                    float distance;
+                };
+            };
+            struct Drive {
+                struct tri_data : Collision::tri_data {
+                    float x;
+                };
+                unsigned flags;
+                float time;
+                tri_data tri;
+            };
+            float read_x(Drive* drive) { return drive->tri.x; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(unit.aggregate_definitions["Drive"].byte_size, 24);
+        assert_eq!(
+            unit.aggregate_definitions["Drive::tri_data"].byte_size,
+            16
+        );
+        assert!(matches!(
+            unit.functions[0].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Member {
+                offset: 20,
+                ..
+            })
         ));
     }
 

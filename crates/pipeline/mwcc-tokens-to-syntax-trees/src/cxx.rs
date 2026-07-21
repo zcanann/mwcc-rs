@@ -743,6 +743,15 @@ impl Parser {
                 || self.cxx_classes.contains_key(qualified)
                 || self.structs.contains_key(qualified)
         };
+        if let Some(layout_scope) = &self.current_cxx_layout_scope {
+            let components: Vec<&str> = layout_scope.split("::").collect();
+            for depth in (1..=components.len()).rev() {
+                let qualified = format!("{}::{class}", components[..depth].join("::"));
+                if declared(&qualified) {
+                    return Some(qualified);
+                }
+            }
+        }
         let scopes = self.named_namespace_scopes();
         for depth in (0..=scopes.len()).rev() {
             let qualified = if depth == 0 {
@@ -2178,11 +2187,41 @@ impl Parser {
     pub(crate) fn parse_class_definition(
         &mut self,
     ) -> Compilation<(String, StructLayout, ClassLayout)> {
+        self.parse_class_definition_in_scope(None)
+    }
+
+    /// Parse a class layout while retaining the lexical owner of directly
+    /// nested classes. Nested declarations do not occupy storage themselves,
+    /// but their complete layouts may be used by a later value member or as a
+    /// qualified base (`Outer::Inner`). Keeping this recursion inside layout
+    /// parsing means an unsupported nested declaration cannot be mistaken for
+    /// the outer class's first data member.
+    fn parse_class_definition_in_scope(
+        &mut self,
+        enclosing_class: Option<&str>,
+    ) -> Compilation<(String, StructLayout, ClassLayout)> {
         let class_keyword = self.eat_word("class");
         if !class_keyword && !self.eat_keyword(Token::KeywordStruct) {
             return Err(Diagnostic::error("expected a C++ class definition"));
         }
         let name = self.parse_identifier()?;
+        let qualified_name = enclosing_class.map_or_else(
+            || self.qualify_cxx_class_name(&name),
+            |outer| format!("{outer}::{name}"),
+        );
+        let previous_layout_scope = self
+            .current_cxx_layout_scope
+            .replace(qualified_name.clone());
+        let result = self.parse_class_definition_body(name, qualified_name);
+        self.current_cxx_layout_scope = previous_layout_scope;
+        result
+    }
+
+    fn parse_class_definition_body(
+        &mut self,
+        name: String,
+        qualified_name: String,
+    ) -> Compilation<(String, StructLayout, ClassLayout)> {
         let mut class = ClassLayout::default();
         let mut layout = StructLayout::default();
         let mut offset = 0u32;
@@ -2200,7 +2239,7 @@ impl Parser {
                         "virtual base-class layout is not supported yet (roadmap)",
                     ));
                 }
-                let source_base_name = self.parse_identifier()?;
+                let source_base_name = self.parse_cxx_qualified_identifier()?;
                 let base_name = self
                     .resolve_scoped_cxx_class_name(&source_base_name)
                     .unwrap_or(source_base_name);
@@ -2272,6 +2311,25 @@ impl Parser {
 
         self.expect(Token::BraceOpen)?;
         while *self.peek() != Token::BraceClose {
+            let nested_definition = (matches!(self.peek(), Token::KeywordStruct)
+                || matches!(self.peek(), Token::Identifier(word) if word == "class"))
+                && matches!(self.peek_at(1), Token::Identifier(_))
+                && matches!(self.peek_at(2), Token::BraceOpen | Token::Colon);
+            if nested_definition {
+                let (nested_name, nested_layout, nested_class) =
+                    self.parse_class_definition_in_scope(Some(&qualified_name))?;
+                let nested_qualified = format!("{qualified_name}::{nested_name}");
+                self.struct_typedefs
+                    .insert(nested_name, nested_qualified.clone());
+                self.structs
+                    .insert(nested_qualified.clone(), nested_layout);
+                if !self.cxx_classes.contains_key(&nested_qualified) {
+                    self.cxx_class_declaration_order
+                        .push(nested_qualified.clone());
+                }
+                self.cxx_classes.insert(nested_qualified, nested_class);
+                continue;
+            }
             // Empty member declarations are valid C++ and commonly survive
             // preprocessing when feature-gated declarations disappear.
             if self.eat_keyword(Token::Semicolon) {
@@ -2578,6 +2636,22 @@ impl Parser {
         layout.size = offset.max(1).div_ceil(max_align) * max_align;
         layout.align = max_align as u8;
         Ok((name, layout, class))
+    }
+
+    /// Consume an ordinary C++ qualified type name. Base-specifiers need this
+    /// narrower grammar rather than the expression parser: accepting exactly
+    /// `identifier (:: identifier)*` prevents an inheritance colon from being
+    /// confused with a declarator while covering nested class bases used by
+    /// the reference projects.
+    fn parse_cxx_qualified_identifier(&mut self) -> Compilation<String> {
+        let mut name = self.parse_identifier()?;
+        while *self.peek() == Token::Colon && *self.peek_at(1) == Token::Colon {
+            self.advance();
+            self.advance();
+            name.push_str("::");
+            name.push_str(&self.parse_identifier()?);
+        }
+        Ok(name)
     }
 
     /// Resolve `delete pointer` for a polymorphic class to the ABI's virtual

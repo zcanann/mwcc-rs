@@ -461,6 +461,10 @@ pub(crate) struct Parser {
     /// distinguishes `N::free_function()` from `Class::static_method()` when
     /// both use the same surface qualification syntax.
     pub(crate) cxx_namespaces: std::collections::HashSet<String>,
+    /// Lexical class scope used only while recovering one object layout.
+    /// Unqualified nested value types must resolve against their containing
+    /// class before namespace/global names with the same terminal spelling.
+    pub(crate) current_cxx_layout_scope: Option<String>,
     /// Class whose out-of-class member body is currently being parsed. This
     /// drives implicit `this` field access and member-call lookup, and is scoped
     /// to one function body by the top-level parser.
