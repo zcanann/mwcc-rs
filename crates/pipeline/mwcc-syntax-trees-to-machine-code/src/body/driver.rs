@@ -3119,6 +3119,11 @@ impl Generator {
             if self.try_counted_resource_search(function)? {
                 return Ok(());
             }
+            // A bounded byte-buffer append keeps its error, transfer length,
+            // and buffer base in r31..r29 across the conditional copy call.
+            if self.try_bounded_buffer_append(function)? {
+                return Ok(());
+            }
             if reads_value_across_call(function) {
                 return Err(Diagnostic::error(format!(
                     "a value live across a call needs the callee-saved register allocator (roadmap; function '{}')",
