@@ -2175,6 +2175,11 @@ impl Generator {
         if self.try_unoptimized_local_select(function)? {
             return Ok(());
         }
+        // A bounded global-array lookup keeps the null fallback in r0 and
+        // materializes the selected element address into the same candidate.
+        if self.try_range_guarded_array_address(function)? {
+            return Ok(());
+        }
         // `T y; if (c) y = A; else y = B; return y;` — both arms assign the returned
         // local, so the whole body is the select `return (c) ? A : B`.
         if self.try_conditional_assign(function)? {
