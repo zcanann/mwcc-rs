@@ -341,26 +341,27 @@ struct GlobalAlignments {
     comment: u32,
 }
 
-/// Resolve the two alignment domains MWCC assigns to an aggregate. Scalar
-/// arrays are word-aligned in their section, while `.comment` records the
-/// element alignment. Structs use their aggregate alignment in both domains.
+/// Resolve the two alignment domains MWCC assigns to an aggregate. At O0,
+/// scalar arrays are word-aligned in their section while `.comment` retains
+/// the element alignment. Optimized builds record the storage alignment.
 fn global_alignments(
     element_size: u32,
     struct_alignment: Option<u32>,
     is_array: bool,
     requested_alignment: u32,
+    unoptimized: bool,
 ) -> GlobalAlignments {
-    let comment = match struct_alignment {
-        Some(alignment) => alignment.max(4),
-        None => element_size,
-    }
-    .max(requested_alignment);
     let layout = match struct_alignment {
         Some(alignment) => alignment.max(4),
         None if is_array => element_size.max(4),
         None => element_size,
     }
     .max(requested_alignment);
+    let comment = if unoptimized && struct_alignment.is_none() {
+        element_size.max(requested_alignment)
+    } else {
+        layout
+    };
     GlobalAlignments { layout, comment }
 }
 
@@ -1008,6 +1009,7 @@ fn compile(
             struct_alignment,
             global.array_length.is_some(),
             global.attribute_alignment.map_or(1, u32::from),
+            config.flags.optimization == mwcc_versions::Optimization::O0,
         );
         let alignment = alignments.layout;
         let comment_alignment = alignments.comment;
@@ -1707,24 +1709,31 @@ mod tests {
     #[test]
     fn scalar_array_layout_and_comment_alignment_are_independent() {
         assert_eq!(
-            global_alignments(1, None, true, 1),
+            global_alignments(1, None, true, 1, true),
             GlobalAlignments {
                 layout: 4,
                 comment: 1,
             }
         );
         assert_eq!(
-            global_alignments(2, None, true, 1),
+            global_alignments(2, None, true, 1, true),
             GlobalAlignments {
                 layout: 4,
                 comment: 2,
             }
         );
         assert_eq!(
-            global_alignments(1, None, true, 32),
+            global_alignments(1, None, true, 32, true),
             GlobalAlignments {
                 layout: 32,
                 comment: 32,
+            }
+        );
+        assert_eq!(
+            global_alignments(1, None, true, 1, false),
+            GlobalAlignments {
+                layout: 4,
+                comment: 4,
             }
         );
     }
