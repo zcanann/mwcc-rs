@@ -74,6 +74,7 @@ def harness_fingerprint(script_dir: Path) -> str:
     return files_fingerprint(
         (
             script_dir / "refctx.sh",
+            script_dir / "refctx_pch.py",
             script_dir / "reference_parity.py",
             script_dir / "parity_identity.py",
             script_dir / "decompctx_runner.py",

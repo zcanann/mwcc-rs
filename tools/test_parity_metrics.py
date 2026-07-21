@@ -44,6 +44,7 @@ from reference_parity import (
     stable_sample,
     verdict_line,
 )
+from refctx_pch import generated_pch_paths
 
 
 def row(**overrides):
@@ -102,6 +103,7 @@ class IdentityTests(unittest.TestCase):
     def test_harness_fingerprint_covers_every_row_classification_input(self):
         names = (
             "refctx.sh",
+            "refctx_pch.py",
             "reference_parity.py",
             "parity_identity.py",
             "decompctx_runner.py",
@@ -118,6 +120,15 @@ class IdentityTests(unittest.TestCase):
                 path.write_text(f"{original} changed", encoding="utf-8")
                 self.assertNotEqual(harness_fingerprint(root), baseline, name)
                 path.write_text(original, encoding="utf-8")
+
+    def test_generated_pch_paths_are_normalized_and_deduplicated(self):
+        context = (
+            '/* "include/d/dolzel_rel.h" line 4 "d/dolzel_rel.mch" */\n'
+            '/* "include/d/dolzel_rel.h" line 4 "d\\dolzel_rel.mch" */\n'
+            '/* "include/d/dolzel_rel.h" line 5 "not-a-pch.h" */\n'
+            'int declaration;\n'
+        )
+        self.assertEqual(generated_pch_paths(context.splitlines()), ["d/dolzel_rel.mch"])
 
     def test_parity_loop_separates_fast_work_from_periodic_audit(self):
         default = parse_loop_args([])

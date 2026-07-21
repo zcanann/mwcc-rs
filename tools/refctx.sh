@@ -38,6 +38,7 @@ objdump="$FFCC/build/binutils/powerpc-eabi-objdump"
 here="$(cd "$(dirname "$0")/.." && pwd)"
 ours="${MWCC_BIN:-$here/target/release/mwcc}"
 code_metrics="$here/tools/object_code_metrics.py"
+pch_scanner="$here/tools/refctx_pch.py"
 
 project="$(cd "$project" && pwd)"
 # Resolve the real compiler independently from the tools checkout. Some builds
@@ -129,6 +130,9 @@ mkdir -p "$dir/ours"
 direct_ready=0
 oracle_direct="REJECTED"
 direct_reference_output=""
+emit_oracle_meta() {
+  echo "PARITY_META oracle_direct=$oracle_direct"
+}
 if direct_reference_output="$(
   cd "$project" && "$wibo" "$sjis" "$compiler" \
     ${all_flags[@]+"${all_flags[@]}"} -c "$src" -o "$dir/ref.o" 2>&1
@@ -171,7 +175,6 @@ if direct_reference_output="$(
     fi
   fi
 fi
-echo "PARITY_META oracle_direct=$oracle_direct"
 
 if [[ $direct_ready -eq 0 ]]; then
 if [[ -n "${REFCTX_INCLUDES:-}" ]]; then
@@ -226,6 +229,13 @@ mv "$dir/ctx.normalized" "$dir/$ctx_name"
 # harness/compiler error. A basename available elsewhere in the project (MSL's
 # stddef.h roots, for example) is not called an absent dependency here.
 missing_dependencies=()
+missing_precompiled_headers=()
+# decompctx_runner expands a missing generated `.mch` from its textual `.pch`
+# and records the original include in a source marker rather than its warning
+# log. Recover those generated dependencies from the self-contained context.
+while IFS= read -r generated_mch; do
+  [[ -n "$generated_mch" ]] && missing_precompiled_headers+=("$generated_mch")
+done < <(python3 "$pch_scanner" "$dir/$ctx_name")
 while IFS= read -r missing; do
   [[ -n "$missing" ]] || continue
   normalized_missing="${missing//\\//}"
@@ -237,6 +247,7 @@ while IFS= read -r missing; do
   if [[ "$normalized_missing" == *.mch ]]; then
     pch_source="${normalized_missing%.mch}.pch"
     if find "$project" -type f -path "*/$pch_source" -print -quit 2>/dev/null | grep -q .; then
+      missing_precompiled_headers+=("$normalized_missing")
       continue
     fi
   fi
@@ -245,17 +256,73 @@ while IFS= read -r missing; do
   fi
 done < <(sed -n 's/^Failed to locate //p' "$decompctx_log" | sort -u)
 
+# Clean decomp checkouts intentionally omit generated MWCC precompiled headers.
+# An integrated compile can then continue after a missing `.mch` without its
+# declarations and fail later with a misleading syntax/type error. Recreate
+# each required PCH in scratch and retry the authoritative source compile. The
+# source project remains untouched, and the row's exact compiler/flags produce
+# the same input the normal Ninja build would have generated.
+if [[ "$oracle_direct" != "RUNNABLE" && ${#missing_precompiled_headers[@]} -gt 0 ]]; then
+  pch_root="$dir/generated-pch"
+  pch_ready=1
+  for missing_pch in "${missing_precompiled_headers[@]}"; do
+    case "$missing_pch" in
+      /*|*../*|../*) pch_ready=0; break;;
+    esac
+    pch_source="${missing_pch%.mch}.pch"
+    pch_source_path="$(find "$project" -type f -path "*/$pch_source" -print -quit 2>/dev/null)"
+    if [[ -z "$pch_source_path" ]]; then
+      pch_ready=0
+      break
+    fi
+    pch_output_dir="$pch_root/$(dirname "$missing_pch")"
+    mkdir -p "$pch_output_dir"
+    if ! (
+      cd "$project" && "$wibo" "$sjis" "$compiler" \
+        ${all_flags[@]+"${all_flags[@]}"} -lang=c++ -c "$pch_source_path" \
+        -o "$pch_output_dir" -precompile "$(basename "$missing_pch")"
+    ) >"$dir/pch.log" 2>&1; then
+      pch_ready=0
+      break
+    fi
+  done
+  if [[ $pch_ready -eq 1 ]]; then
+    if direct_reference_output="$(
+      cd "$project" && "$wibo" "$sjis" "$compiler" -i "$pch_root" \
+        ${all_flags[@]+"${all_flags[@]}"} -c "$src" -o "$dir/ref.o" 2>&1
+    )"; then
+      oracle_direct="RUNNABLE"
+      cp "$dir/ref.o" "$dir/ref.direct.o"
+      if direct_preprocess_output="$(
+        cd "$project" && "$wibo" "$sjis" "$compiler" -i "$pch_root" \
+          ${all_flags[@]+"${all_flags[@]}"} -pragma "line_prepdump on" \
+          -E "$src" -o "$dir/ours/$source_name" 2>&1
+      )"; then
+        [[ -f "$dir/ours/$source_name" ]] || : > "$dir/ours/$source_name"
+        if ! grep -Eq '^[[:space:]]*#pragma[[:space:]]+peephole[[:space:]]+(on|off|reset)' \
+            "$project/$src"; then
+          direct_ready=1
+          ctx_name="$source_name"
+        fi
+      fi
+    fi
+  fi
+fi
+
+if [[ $direct_ready -eq 0 ]]; then
 # A direct compile gives the authoritative missing-file diagnostic. decompctx
 # may also visit missing includes inside inactive conditionals, so its log alone
 # is insufficient to classify a dependency as required.
 if [[ ${#missing_dependencies[@]} -gt 0 ]] \
   && grep -Eqi 'cannot be opened|can.t be opened|file not found|no such file' \
        <<<"$direct_reference_output"; then
+  emit_oracle_meta
   echo "MISSING_DEPENDENCY  $src — ${missing_dependencies[0]}"
   exit 0
 fi
 if grep -q 'Unknown option' <<<"$direct_reference_output"; then
   invalid_detail="$(grep -m1 'Unknown option' <<<"$direct_reference_output" | sed 's/^[#[:space:]]*//')"
+  emit_oracle_meta
   echo "INVALID_CONFIGURATION  $src — $invalid_detail"
   exit 0
 fi
@@ -314,11 +381,13 @@ else
       ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$ctx_name" -o ref.o 2>&1
   )"; then
     if [[ ${#missing_dependencies[@]} -gt 0 ]]; then
+      emit_oracle_meta
       echo "MISSING_DEPENDENCY  $src — ${missing_dependencies[0]}"
       exit 0
     fi
     if grep -q 'Unknown option' <<<"$reference_output"; then
       invalid_detail="$(grep -m1 'Unknown option' <<<"$reference_output" | sed 's/^[#[:space:]]*//')"
+      emit_oracle_meta
       echo "INVALID_CONFIGURATION  $src — $invalid_detail"
       exit 0
     fi
@@ -329,10 +398,12 @@ else
 fi
 cp "$dir/ctx.i" "$dir/ours/$ctx_name"
 fi
+fi
 
 # 3b. Our object. Preserve that synthetic basename so our FILE symbol matches.
 #     Pass the same flags the real compiler got — our mwcc models the ones it knows
 #     and ignores the rest.
+emit_oracle_meta
 if [[ $direct_ready -eq 1 ]]; then
   echo "PARITY_META comparison_input=DIRECT"
 else
