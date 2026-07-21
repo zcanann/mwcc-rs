@@ -315,6 +315,9 @@ pub struct TranslationUnit {
     /// at codegen (mwcc inlines the body; a `bl` to the undefined local would
     /// be wrong bytes) — checked AFTER the exact-match templates get a claim.
     pub skipped_inline_names: std::collections::HashSet<String>,
+    /// Parsed semantic bodies for skipped inline definitions. They are excluded
+    /// from object emission and exist only for verified interprocedural summaries.
+    pub skipped_inline_definitions: Vec<Function>,
     /// Functions defined under `#pragma defer_codegen on`, in definition order.
     /// mwcc code-generates these LAST, in REVERSE definition order (measured:
     /// melee mem_funcs — its whole .text is reversed). The unit assembly

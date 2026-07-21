@@ -124,6 +124,8 @@ pub fn parse_located_translation_unit_with_enum_min(
         section_functions: std::collections::HashMap::new(),
         section_prototype_order: Vec::new(),
         skipped_inline_names: std::collections::HashSet::new(),
+        skipped_inline_definitions: Vec::new(),
+        recover_skipped_inline_definition: false,
         inline_bodies: std::collections::HashMap::new(),
         cxx_delete_forwarder: None,
         default_cplusplus: cplusplus,
@@ -836,6 +838,32 @@ blr\n\
             ["compiled__Fv"]
         );
         assert!(unit.skipped_inline_names.contains("get"));
+    }
+
+    #[test]
+    fn retains_skipped_inline_definitions_for_semantic_analysis() {
+        let source = r#"
+            static inline int append_one(unsigned char *p, unsigned char v) {
+                if (*p) return 7;
+                *p = v;
+                return 0;
+            }
+            int compiled(unsigned char *p) { return append_one(p, 3); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.functions.len(), 1);
+        assert_eq!(unit.functions[0].name, "compiled");
+        assert!(unit.skipped_inline_names.contains("append_one"));
+        assert_eq!(unit.skipped_inline_definitions.len(), 1);
+        assert_eq!(unit.skipped_inline_definitions[0].name, "append_one");
+        assert_eq!(unit.skipped_inline_definitions[0].statements.len(), 2);
     }
 
     #[test]

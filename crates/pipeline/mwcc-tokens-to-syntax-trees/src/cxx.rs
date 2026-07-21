@@ -53,7 +53,7 @@ fn inline_control_flow_labels(tokens: &[Token]) -> usize {
 /// The C++-only information that a plain C struct layout cannot retain.
 /// Declaration order controls constructor initialization order, while base
 /// names distinguish a base initializer from an identically shaped member.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct ClassLayout {
     pub(crate) bases: Vec<BaseClass>,
     pub(crate) fields: Vec<String>,
@@ -80,6 +80,7 @@ pub(crate) struct ClassLayout {
     pub(crate) virtual_destructor_slot: Option<u16>,
 }
 
+#[derive(Clone)]
 pub(crate) struct MemberMethod {
     pub(crate) parameters: Vec<Type>,
     cxx_parameters: Vec<CxxParameterType>,
@@ -87,6 +88,7 @@ pub(crate) struct MemberMethod {
     virtual_dispatch: Option<VirtualDispatch>,
 }
 
+#[derive(Clone)]
 pub(crate) struct ClassParameterTypes {
     pub(crate) parameters: Vec<Type>,
     pub(crate) cxx_parameters: Vec<CxxParameterType>,
@@ -243,6 +245,7 @@ impl CxxParameterType {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct BaseClass {
     pub(crate) name: String,
 }

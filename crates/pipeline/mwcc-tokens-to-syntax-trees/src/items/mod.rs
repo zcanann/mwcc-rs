@@ -718,6 +718,9 @@ impl Parser {
                 }
                 // A skipped `static inline` function with an inline `asm {}` body
                 // still contributes a local undefined symbol (mwcc cannot inline it).
+                if error.message == "an inline function definition is skipped (inlined at call sites)" {
+                    self.try_recover_skipped_inline_definition();
+                }
                 if let Some((name, is_static)) = self.inline_asm_function_name() {
                     if is_static {
                         self.inline_asm_symbols.push(name);
@@ -938,6 +941,9 @@ impl Parser {
             weak_materialized: std::mem::take(&mut self.weak_materialized),
             section_prototypes: std::mem::take(&mut self.section_prototype_order),
             skipped_inline_names: std::mem::take(&mut self.skipped_inline_names),
+            skipped_inline_definitions: std::mem::take(
+                &mut self.skipped_inline_definitions,
+            ),
             deferred_function_names: std::mem::take(&mut self.deferred_function_names),
             variadic_definitions: std::mem::take(&mut self.variadic_definitions),
             fixed_address_arrays: std::mem::take(&mut self.fixed_address_arrays),
@@ -1023,6 +1029,32 @@ impl Parser {
         self.position = saved;
         if let Some((name, parameters, body)) = recorded {
             self.inline_bodies.insert(name, (parameters, body));
+        }
+    }
+
+    /// Parse one deliberately skipped inline definition on an isolated parser
+    /// clone. The recovered [`Function`] is analysis-only: the main parser still
+    /// performs its existing ordinal accounting and skips past the definition.
+    fn try_recover_skipped_inline_definition(&mut self) {
+        let mut probe = self.clone();
+        probe.recover_skipped_inline_definition = true;
+        let mut globals = Vec::new();
+        let mut functions = Vec::new();
+        let mut prototypes = Vec::new();
+        if probe
+            .parse_top_level_item(&mut globals, &mut functions, &mut prototypes)
+            .is_ok()
+            && globals.is_empty()
+            && functions.len() == 1
+        {
+            let function = functions.pop().expect("length checked");
+            if !self
+                .skipped_inline_definitions
+                .iter()
+                .any(|existing| existing.name == function.name)
+            {
+                self.skipped_inline_definitions.push(function);
+            }
         }
     }
 
@@ -2699,7 +2731,7 @@ impl Parser {
             // inline it: it MATERIALIZES out-of-line as a local function at the
             // definition's source position (measured: AC/ww/sunshine uart).
             let mut materialize_by_calls = false;
-            if is_inline {
+            if is_inline && !self.recover_skipped_inline_definition {
                 // Referenced EARLIER (a prototype, or a call already parsed into a
                 // previous function — uart_8's IMPLICIT-declaration shape) means the
                 // call sites precede the body: mwcc cannot inline and MATERIALIZES.

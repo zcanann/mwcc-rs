@@ -459,11 +459,18 @@ fn compile(
         .iter()
         .map(|(name, _, _)| name.clone())
         .collect();
-    let inline_summaries =
-        mwcc_syntax_trees_to_machine_code::InlineSummaries::analyze(&unit.functions);
+    let inline_summaries = mwcc_syntax_trees_to_machine_code::InlineSummaries::analyze_with_skipped(
+        &unit.functions,
+        &unit.skipped_inline_definitions,
+    );
     // Lower every function definition in source order; they share one object.
     let diagnose_function = std::env::var_os("MWCC_DIAGNOSTIC_FUNCTION").is_some();
     let diagnose_syntax_tree = std::env::var_os("MWCC_DIAGNOSTIC_SYNTAX_TREE").is_some();
+    if diagnose_syntax_tree {
+        for function in &unit.skipped_inline_definitions {
+            eprintln!("skipped-inline {function:#?}");
+        }
+    }
     let mut machine_functions: Vec<mwcc_machine_code::MachineFunction> =
         Vec::with_capacity(unit.functions.len());
     for (function_index, function) in unit.functions.iter().enumerate() {

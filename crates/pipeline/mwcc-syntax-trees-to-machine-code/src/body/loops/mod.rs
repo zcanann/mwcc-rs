@@ -9,6 +9,7 @@ mod fill_copy;
 mod fixed_port_zero_fill;
 mod guarded_byte_copy;
 mod indexed_calls;
+mod inlined_byte_append;
 pub(crate) mod policy;
 mod poll_search;
 mod search_guard_chain;

@@ -127,6 +127,7 @@ pub(crate) enum TemplateFieldType {
     Concrete(mwcc_syntax_trees::Type),
 }
 
+#[derive(Clone)]
 pub(crate) struct TemplateField {
     pub(crate) name: String,
     pub(crate) field_type: TemplateFieldType,
@@ -136,12 +137,14 @@ pub(crate) struct TemplateField {
 /// Recoverable layout information from a skipped C++ class template. Method
 /// bodies and static members are irrelevant; fields retain source order and
 /// either substitute the first type parameter or carry concrete storage.
+#[derive(Clone)]
 pub(crate) struct StructTemplate {
     pub(crate) parameters: Vec<String>,
     pub(crate) base: Option<TemplateTypePattern>,
     pub(crate) fields: Vec<TemplateField>,
 }
 
+#[derive(Clone)]
 pub(crate) struct Parser {
     pub(crate) tokens: Vec<Token>,
     pub(crate) locations: Vec<SourceLocation>,
@@ -394,6 +397,13 @@ pub(crate) struct Parser {
     pub(crate) section_prototype_order: Vec<String>,
     /// Names of SKIPPED inline definitions — a call to one defers the unit.
     pub(crate) skipped_inline_names: std::collections::HashSet<String>,
+    /// Fully parsed bodies of skipped inline definitions. These are never
+    /// emitted, but downstream interprocedural summaries may prove a call-site
+    /// expansion from their semantics instead of inferring it from a name.
+    pub(crate) skipped_inline_definitions: Vec<mwcc_syntax_trees::Function>,
+    /// A speculative parser clone sets this while recovering one skipped inline
+    /// body so the ordinary definition parser does not deliberately reject it.
+    pub(crate) recover_skipped_inline_definition: bool,
     /// `#pragma cplusplus` state: declarations parsed under it mangle their
     /// symbol names (push/pop scope the switch).
     pub(crate) default_cplusplus: bool,

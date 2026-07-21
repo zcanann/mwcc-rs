@@ -1349,6 +1349,9 @@ impl Generator {
         // templates (a whole-function capture has the inline flattened into
         // its body); the general paths must never emit a bl to the undefined
         // local (wrong bytes — mwcc inlines it).
+        if self.try_inlined_byte_append_loop(function)? {
+            return Ok(());
+        }
         if !self.skipped_inline_names.is_empty()
             && function_calls_any(function, &self.skipped_inline_names)
         {

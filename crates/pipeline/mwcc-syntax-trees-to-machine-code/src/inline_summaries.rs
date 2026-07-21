@@ -48,6 +48,17 @@ pub(crate) struct PointerWalkerSummary {
     pub(crate) table: String,
 }
 
+/// A byte append helper that bounds a cursor, stores one byte with post-step,
+/// raises the logical length, and returns success/overflow status.
+#[derive(Clone, Debug)]
+pub(crate) struct ByteAppendSummary {
+    pub(crate) capacity: u16,
+    pub(crate) overflow: i16,
+    pub(crate) length_offset: i16,
+    pub(crate) position_offset: i16,
+    pub(crate) data_offset: i16,
+}
+
 /// Verified helper-body facts available while lowering one translation unit.
 #[derive(Clone, Debug, Default)]
 pub struct InlineSummaries {
@@ -60,6 +71,7 @@ pub struct InlineSummaries {
     ipa_call_wrappers: HashMap<String, StaticCallWrapperSummary>,
     pointer_walkers: HashMap<String, PointerWalkerSummary>,
     unoptimized_local_selects: HashMap<String, UnoptimizedLocalSelectSummary>,
+    byte_appends: HashMap<String, ByteAppendSummary>,
     ipa_elided_functions: HashSet<String>,
 }
 
@@ -68,8 +80,16 @@ impl InlineSummaries {
     /// entire body has the summarized semantics; near misses remain ordinary
     /// calls and cannot accidentally claim an inline-only caller schedule.
     pub fn analyze(functions: &[Function]) -> Self {
+        Self::analyze_with_skipped(functions, &[])
+    }
+
+    /// Analyze emitted definitions together with analysis-only skipped inline
+    /// definitions. The latter can prove call-site expansion semantics but are
+    /// never candidates for object emission or whole-file elision.
+    pub fn analyze_with_skipped(functions: &[Function], skipped: &[Function]) -> Self {
         let mut summaries = Self::default();
-        for function in functions {
+        let definitions: Vec<&Function> = functions.iter().chain(skipped).collect();
+        for function in &definitions {
             if let Some(summary) = summarize_fixed_poll(function) {
                 summaries.fixed_polls.insert(function.name.clone(), summary);
             }
@@ -108,6 +128,11 @@ impl InlineSummaries {
                         .insert(function.name.clone(), summary);
                 }
             }
+            if let Some(summary) = summarize_byte_append(function) {
+                summaries
+                    .byte_appends
+                    .insert(function.name.clone(), summary);
+            }
         }
         // Build 163's label walk gives a summarized service helper three fewer
         // private ordinals when another definition calls it. The helper is an
@@ -115,7 +140,7 @@ impl InlineSummaries {
         // service call out of line.
         for name in summaries.queue_services.keys() {
             let singleton = HashSet::from([name.clone()]);
-            if functions
+            if definitions
                 .iter()
                 .any(|function| function.name != *name && function_calls_any(function, &singleton))
             {
@@ -172,6 +197,10 @@ impl InlineSummaries {
         self.unoptimized_local_selects.get(name)
     }
 
+    pub(crate) fn byte_append(&self, name: &str) -> Option<&ByteAppendSummary> {
+        self.byte_appends.get(name)
+    }
+
     pub(crate) fn ipa_pointer_walker_caller(
         &self,
         function: &Function,
@@ -207,6 +236,122 @@ impl InlineSummaries {
     pub fn should_elide_ipa_function(&self, name: &str) -> bool {
         self.ipa_elided_functions.contains(name)
     }
+}
+
+fn variable(expression: &Expression, name: &str) -> bool {
+    matches!(expression, Expression::Variable(found) if found == name)
+}
+
+fn struct_member(expression: &Expression, base: &str) -> Option<(i16, Type)> {
+    let Expression::Member {
+        base: found,
+        offset,
+        member_type,
+        index_stride: None,
+    } = expression
+    else {
+        return None;
+    };
+    variable(found, base).then_some((i16::try_from(*offset).ok()?, *member_type))
+}
+
+fn summarize_byte_append(function: &Function) -> Option<ByteAppendSummary> {
+    if function.return_type != Type::Int
+        || !function.locals.is_empty()
+        || !function.guards.is_empty()
+        || constant_value(function.return_expression.as_ref()?) != Some(0)
+    {
+        return None;
+    }
+    let [buffer, byte] = function.parameters.as_slice() else {
+        return None;
+    };
+    if !matches!(buffer.parameter_type, Type::StructPointer { .. })
+        || byte.parameter_type != Type::UnsignedChar
+    {
+        return None;
+    }
+    let [Statement::If {
+        condition,
+        then_body,
+        else_body,
+    }, byte_store, length_store] = function.statements.as_slice()
+    else {
+        return None;
+    };
+    if !else_body.is_empty() {
+        return None;
+    }
+    let capacity = match condition {
+        Expression::Binary {
+            operator: BinaryOperator::GreaterEqual,
+            left,
+            right,
+        } => {
+            let (_, member_type) = struct_member(left, &buffer.name)?;
+            if member_type != Type::UnsignedInt {
+                return None;
+            }
+            u16::try_from(constant_value(right)?).ok()?
+        }
+        _ => return None,
+    };
+    let position_offset = match condition {
+        Expression::Binary { left, .. } => struct_member(left, &buffer.name)?.0,
+        _ => unreachable!(),
+    };
+    let [Statement::Return(Some(overflow))] = then_body.as_slice() else {
+        return None;
+    };
+    let overflow = i16::try_from(constant_value(overflow)?).ok()?;
+
+    let Statement::Store {
+        target: Expression::Index { base, index },
+        value,
+    } = byte_store
+    else {
+        return None;
+    };
+    let Expression::MemberAddress {
+        base: data_buffer,
+        offset: data_offset,
+        element: mwcc_syntax_trees::Pointee::UnsignedChar,
+        index_stride: None,
+    } = base.as_ref()
+    else {
+        return None;
+    };
+    if !variable(data_buffer, &buffer.name)
+        || !variable(value, &byte.name)
+        || !matches!(index.as_ref(), Expression::PostStep {
+            target,
+            operator: BinaryOperator::Add,
+        } if struct_member(target, &buffer.name)
+            == Some((position_offset, Type::UnsignedInt)))
+    {
+        return None;
+    }
+    let data_offset = i16::try_from(*data_offset).ok()?;
+
+    let Statement::Store { target, value } = length_store else {
+        return None;
+    };
+    let (length_offset, length_type) = struct_member(target, &buffer.name)?;
+    if length_type != Type::UnsignedInt
+        || !matches!(value, Expression::Binary {
+            operator: BinaryOperator::Add, left, right
+        } if struct_member(left, &buffer.name) == Some((length_offset, Type::UnsignedInt))
+            && constant_value(right) == Some(1))
+    {
+        return None;
+    }
+    Some(ByteAppendSummary {
+        capacity,
+        overflow,
+        length_offset,
+        position_offset,
+        data_offset,
+    })
 }
 
 fn peel_casts(mut expression: &Expression) -> &Expression {
