@@ -245,6 +245,10 @@ pub struct CxxInlineOrdinalFacts {
     pub class_definitions: usize,
     pub inline_definitions: usize,
     pub virtual_destructors: usize,
+    /// Source-declared ordinary virtual members. RTTI names are assigned by a
+    /// class-analysis walk whose weights differ from executable functions.
+    pub virtual_method_declarations: usize,
+    pub virtual_destructor_declarations: usize,
     pub direct_calls: usize,
     /// Control-flow labels inside dropped in-class definitions, expressed in
     /// the mainline counter's native units (`if` = 2, loop = 4/5, etc.).

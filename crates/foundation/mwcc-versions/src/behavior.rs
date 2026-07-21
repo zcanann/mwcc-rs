@@ -670,6 +670,9 @@ pub struct Behavior {
     pub cxx_inline_control_flow_label_weight: u8,
     pub cxx_virtual_destructor_label_bump: u8,
     pub cxx_inline_ipa_call_label_bump: u8,
+    pub cxx_rtti_virtual_method_label_weight: u8,
+    pub cxx_rtti_virtual_destructor_label_weight: u8,
+    pub cxx_rtti_initial_virtual_label_discount: u8,
     /// Whether initialized `T a[] = ...` objects bypass small-data routing.
     pub inferred_array_uses_full_data_section: bool,
     /// Post-resolution optimization of branches written in `asm` functions.
@@ -944,6 +947,24 @@ impl Behavior {
             } else {
                 0
             },
+            cxx_rtti_virtual_method_label_weight: config
+                .build
+                .profile
+                .cxx_rtti_virtual_method_label_weight(
+                    config.flags.whole_file_optimization_enabled(),
+                ),
+            cxx_rtti_virtual_destructor_label_weight: config
+                .build
+                .profile
+                .cxx_rtti_virtual_destructor_label_weight(
+                    config.flags.whole_file_optimization_enabled(),
+                ),
+            cxx_rtti_initial_virtual_label_discount: config
+                .build
+                .profile
+                .cxx_rtti_initial_virtual_label_discount(
+                    config.flags.whole_file_optimization_enabled(),
+                ),
             inferred_array_uses_full_data_section: config
                 .build
                 .profile
@@ -1661,6 +1682,11 @@ mod tests {
         assert_eq!(gc41.cxx_inline_definition_label_bump, 4);
         assert_eq!(gc41.cxx_virtual_destructor_label_bump, 3);
         assert_eq!(gc41.cxx_inline_ipa_call_label_bump, 0);
+        assert_eq!(mainline.cxx_rtti_virtual_method_label_weight, 4);
+        assert_eq!(mainline.cxx_rtti_virtual_destructor_label_weight, 6);
+        assert_eq!(mainline.cxx_rtti_initial_virtual_label_discount, 4);
+        assert_eq!(gc41.cxx_rtti_virtual_method_label_weight, 5);
+        assert_eq!(gc41.cxx_rtti_virtual_destructor_label_weight, 9);
         assert_eq!(mainline.call_dispatcher_hidden_label_bump, 0);
         assert_eq!(gc41.call_dispatcher_hidden_label_bump, 3);
 
@@ -1685,6 +1711,8 @@ mod tests {
         ipa_config.flags.ipa_file = true;
         let ipa = Behavior::resolve(&ipa_config);
         assert_eq!(ipa.cxx_inline_ipa_call_label_bump, 1);
+        assert_eq!(ipa.cxx_rtti_virtual_method_label_weight, 4);
+        assert_eq!(ipa.cxx_rtti_virtual_destructor_label_weight, 7);
         assert_eq!(ipa.folded_float_guard_label_bump, 4);
         assert_eq!(
             ipa.function_ordinal_accounting_style,

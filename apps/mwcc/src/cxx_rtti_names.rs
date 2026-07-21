@@ -7,8 +7,45 @@
 use std::collections::HashMap;
 
 use mwcc_machine_code_to_object::DefinedGlobal;
+use mwcc_syntax_trees::CxxInlineOrdinalFacts;
 
 const PREFIX: &str = "@@cxx_rtti:";
+
+#[derive(Clone, Copy)]
+pub struct AnalysisWeights {
+    pub virtual_method: u8,
+    pub virtual_destructor: u8,
+    pub initial_virtual_discount: u8,
+}
+
+/// Resolve the class-analysis counter independently from executable function
+/// numbering. The first polymorphic declaration shares one profile-specific
+/// baseline block; subsequent declarations pay their full syntax-kind weight.
+pub fn analysis_counter(
+    initial: u8,
+    strings_before: u32,
+    prior_declaration_bump: usize,
+    facts: CxxInlineOrdinalFacts,
+    weights: AnalysisWeights,
+    sparse_floor: u32,
+) -> u32 {
+    let virtual_declarations = facts.virtual_method_declarations
+        + facts.virtual_destructor_declarations;
+    let virtual_bump = (facts.virtual_method_declarations
+        * usize::from(weights.virtual_method)
+        + facts.virtual_destructor_declarations
+            * usize::from(weights.virtual_destructor))
+        .saturating_sub(if virtual_declarations == 0 {
+            0
+        } else {
+            usize::from(weights.initial_virtual_discount)
+        });
+    (u32::from(initial)
+        + strings_before
+        + prior_declaration_bump as u32
+        + virtual_bump as u32)
+        .max(sparse_floor)
+}
 
 pub fn resolve(globals: &mut [DefinedGlobal], mut counter: u32) {
     let mut renames = HashMap::new();
@@ -29,6 +66,36 @@ pub fn resolve(globals: &mut [DefinedGlobal], mut counter: u32) {
             if let Some(name) = renames.get(&relocation.target) {
                 relocation.target = name.clone();
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{analysis_counter, AnalysisWeights};
+    use mwcc_syntax_trees::CxxInlineOrdinalFacts;
+
+    fn facts(methods: usize, destructors: usize) -> CxxInlineOrdinalFacts {
+        CxxInlineOrdinalFacts {
+            virtual_method_declarations: methods,
+            virtual_destructor_declarations: destructors,
+            ..CxxInlineOrdinalFacts::default()
+        }
+    }
+
+    #[test]
+    fn measured_profile_weights_assign_rtti_name_bases() {
+        let cases = [
+            (2, AnalysisWeights { virtual_method: 1, virtual_destructor: 3, initial_virtual_discount: 1 }, [2, 3, 4, 7]),
+            (5, AnalysisWeights { virtual_method: 4, virtual_destructor: 6, initial_virtual_discount: 4 }, [5, 9, 7, 13]),
+            (5, AnalysisWeights { virtual_method: 5, virtual_destructor: 9, initial_virtual_discount: 4 }, [6, 11, 10, 19]),
+            (5, AnalysisWeights { virtual_method: 4, virtual_destructor: 7, initial_virtual_discount: 4 }, [5, 9, 8, 15]),
+        ];
+        for (initial, weights, expected) in cases {
+            assert_eq!(analysis_counter(initial, 0, 0, facts(1, 0), weights, 0), expected[0]);
+            assert_eq!(analysis_counter(initial, 0, 0, facts(2, 0), weights, 0), expected[1]);
+            assert_eq!(analysis_counter(initial, 0, 0, facts(0, 1), weights, 0), expected[2]);
+            assert_eq!(analysis_counter(initial, 0, 0, facts(0, 2), weights, 0), expected[3]);
         }
     }
 }

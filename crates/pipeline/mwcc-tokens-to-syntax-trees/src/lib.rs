@@ -1513,6 +1513,12 @@ blr\n\
                 (12, "second__6ReaderFv".to_string(), 0),
             ]
         );
+        assert_eq!(unit.cxx_inline_ordinal_facts.virtual_method_declarations, 2);
+        assert_eq!(
+            unit.cxx_inline_ordinal_facts
+                .virtual_destructor_declarations,
+            0
+        );
     }
 
     #[test]
@@ -1547,6 +1553,12 @@ blr\n\
             ]
         );
         assert_eq!(vtable.functions_before, 2);
+        assert_eq!(unit.cxx_inline_ordinal_facts.virtual_method_declarations, 1);
+        assert_eq!(
+            unit.cxx_inline_ordinal_facts
+                .virtual_destructor_declarations,
+            1
+        );
     }
 
     #[test]
@@ -1645,6 +1657,8 @@ blr\n\
                 class_definitions: 1,
                 inline_definitions: 4,
                 virtual_destructors: 1,
+                virtual_method_declarations: 0,
+                virtual_destructor_declarations: 1,
                 direct_calls: 1,
                 control_flow_labels: 0,
             }

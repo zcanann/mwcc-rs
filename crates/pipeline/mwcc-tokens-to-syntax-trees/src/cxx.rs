@@ -50,6 +50,21 @@ fn inline_control_flow_labels(tokens: &[Token]) -> usize {
     bump
 }
 
+/// Classify one top-level class member for RTTI analysis accounting. This is a
+/// syntax fact and deliberately does not require recoverable object layout.
+fn virtual_declaration_is_destructor(tokens: &[Token], start: usize) -> Option<bool> {
+    let end = tokens[start..]
+        .iter()
+        .position(|token| matches!(token, Token::Semicolon | Token::BraceOpen))?
+        + start;
+    let declaration = &tokens[start..end];
+    let is_virtual = declaration
+        .iter()
+        .any(|token| matches!(token, Token::Identifier(word) if word == "virtual"));
+    let is_function = declaration.iter().any(|token| token == &Token::ParenOpen);
+    (is_virtual && is_function).then(|| declaration.iter().any(|token| token == &Token::Tilde))
+}
+
 /// The C++-only information that a plain C struct layout cannot retain.
 /// Declaration order controls constructor initialization order, while base
 /// names distinguish a base initializer from an identically shaped member.
@@ -916,6 +931,21 @@ impl Parser {
             }
             if begins_member {
                 member_declaration_start = index;
+                let is_access_label = matches!(token, Token::Identifier(access)
+                    if matches!(access.as_str(), "public" | "private" | "protected"))
+                    && self.tokens.get(index + 1) == Some(&Token::Colon);
+                if !is_access_label {
+                    if let Some(is_destructor) =
+                        virtual_declaration_is_destructor(&self.tokens, index)
+                    {
+                        if is_destructor {
+                            self.cxx_inline_ordinal_facts
+                                .virtual_destructor_declarations += 1;
+                        } else {
+                            self.cxx_inline_ordinal_facts.virtual_method_declarations += 1;
+                        }
+                    }
+                }
             }
             let nested_class = begins_member
                 && (matches!(token, Token::Identifier(word) if word == "class")

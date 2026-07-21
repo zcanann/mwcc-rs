@@ -1026,6 +1026,21 @@ pub trait CodegenProfile: core::fmt::Debug {
         0
     }
 
+    /// Anonymous-ordinal cost of RTTI's class-declaration analysis. The first
+    /// polymorphic declaration shares one baseline block; later declarations
+    /// advance by their kind-specific weight.
+    fn cxx_rtti_virtual_method_label_weight(&self, _whole_file: bool) -> u8 {
+        4
+    }
+
+    fn cxx_rtti_virtual_destructor_label_weight(&self, _whole_file: bool) -> u8 {
+        6
+    }
+
+    fn cxx_rtti_initial_virtual_label_discount(&self, _whole_file: bool) -> u8 {
+        4
+    }
+
     /// Whether an initialized array whose written length was inferred from `[]`
     /// bypasses the small-data size threshold. Build 163 places writable forms
     /// in `.data` and const forms in `.rodata`; the 2.4.x mainline uses the same
@@ -1143,6 +1158,14 @@ impl CodegenProfile for Gc41Build51213 {
         1
     }
 
+    fn cxx_rtti_virtual_method_label_weight(&self, whole_file: bool) -> u8 {
+        if whole_file { 4 } else { 5 }
+    }
+
+    fn cxx_rtti_virtual_destructor_label_weight(&self, whole_file: bool) -> u8 {
+        if whole_file { 7 } else { 9 }
+    }
+
     fn fixed_address_parameterized_rmw_style(&self) -> FixedAddressParameterizedRmwStyle {
         FixedAddressParameterizedRmwStyle::Modern4x
     }
@@ -1173,6 +1196,14 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn cxx_rtti_virtual_method_label_weight(&self, whole_file: bool) -> u8 {
+        if whole_file { 4 } else { 5 }
+    }
+
+    fn cxx_rtti_virtual_destructor_label_weight(&self, whole_file: bool) -> u8 {
+        if whole_file { 7 } else { 9 }
+    }
+
     fn long_long_timer_style(&self) -> LongLongTimerStyle {
         LongLongTimerStyle::Unmodeled
     }
@@ -1304,6 +1335,18 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
 };
 
 impl CodegenProfile for Gc233Build163 {
+    fn cxx_rtti_virtual_method_label_weight(&self, _whole_file: bool) -> u8 {
+        1
+    }
+
+    fn cxx_rtti_virtual_destructor_label_weight(&self, _whole_file: bool) -> u8 {
+        3
+    }
+
+    fn cxx_rtti_initial_virtual_label_discount(&self, _whole_file: bool) -> u8 {
+        1
+    }
+
     fn retain_unused_c_inline_asm_symbols(&self) -> bool {
         false
     }

@@ -692,6 +692,15 @@ fn compile(
             )
         })
         .flatten();
+    let prototype_name_bump = if config
+        .build
+        .profile
+        .prototype_parameter_names_consume_labels()
+    {
+        unit.named_prototype_parameters
+    } else {
+        0
+    };
     let unit_declaration_bump = if cxx_analysis_residues.is_some() {
         // The capture carries the optimizer walk's observable sparse ordinals
         // directly. Reapplying the aggregate dropped-inline estimate would
@@ -700,15 +709,17 @@ fn compile(
     } else {
         unit.skipped_inline_functions
             + cxx_inline_bump
-            + if config
-                .build
-                .profile
-                .prototype_parameter_names_consume_labels()
-            {
-                unit.named_prototype_parameters
-            } else {
-                0
-            }
+            + prototype_name_bump
+    };
+    let cxx_rtti_prior_declaration_bump = if cxx_analysis_residues.is_some() {
+        0
+    } else {
+        unit.skipped_inline_functions
+            + cxx_inline_bump.saturating_sub(
+                cxx_inline_facts.class_definitions
+                    * usize::from(behavior.cxx_class_definition_label_bump),
+            )
+            + prototype_name_bump
     };
     // Static-local positional samples currently track skipped-inline cost.
     // Prototype-name provenance is unit-wide but not yet sampled at each local
@@ -1568,7 +1579,22 @@ fn compile(
         }
     }
     if config.flags.rtti {
-        cxx_rtti_names::resolve(&mut defined_globals, counter);
+        // RTTI helper names are reserved by the class/declaration analysis
+        // walk, before executable function bodies advance the ordinary pool
+        // counter. Keep this timeline independent from function lowering.
+        let rtti_analysis_counter = cxx_rtti_names::analysis_counter(
+            config.build.initial_anonymous_counter,
+            string_counter,
+            cxx_rtti_prior_declaration_bump,
+            cxx_inline_facts,
+            cxx_rtti_names::AnalysisWeights {
+                virtual_method: behavior.cxx_rtti_virtual_method_label_weight,
+                virtual_destructor: behavior.cxx_rtti_virtual_destructor_label_weight,
+                initial_virtual_discount: behavior.cxx_rtti_initial_virtual_label_discount,
+            },
+            analysis_counter_floor,
+        );
+        cxx_rtti_names::resolve(&mut defined_globals, rtti_analysis_counter);
     }
     defined_globals.extend(function_string_objects);
     defined_globals.extend(static_local_globals);
