@@ -1768,6 +1768,26 @@ blr\n\
     }
 
     #[test]
+    fn adjusts_this_for_an_inherited_secondary_base_call() {
+        let source = r#"
+            struct Primary { int first; };
+            struct Secondary { int second; void inspect(); };
+            struct Derived : public Primary, public Secondary { void run(); };
+            void Derived::run() { inspect(); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+        ).unwrap();
+        assert!(matches!(unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Call { name, arguments }
+            )] if name == "inspect__9SecondaryFv"
+                && matches!(arguments.as_slice(), [
+                    mwcc_syntax_trees::Expression::MemberAddress { base, offset: 4, .. }
+                ] if matches!(base.as_ref(), mwcc_syntax_trees::Expression::Variable(this) if this == "this"))));
+    }
+
+    #[test]
     fn lays_out_multiple_bases_and_synthesizes_adjusted_default_constructor_calls() {
         let source = r#"
             struct Primary { Primary(); int first; };

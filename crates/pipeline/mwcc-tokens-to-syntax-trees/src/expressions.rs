@@ -735,6 +735,7 @@ impl Parser {
                         crate::cxx::ImplicitMemberCall::Direct {
                             name: mangled,
                             is_inline,
+                            this_adjustment,
                         } => {
                             if is_inline {
                                 // The declaration pass records in-class bodies as
@@ -744,15 +745,38 @@ impl Parser {
                                 // this non-emitted symbol.
                                 self.skipped_inline_names.insert(mangled.clone());
                             }
-                            arguments.insert(0, Expression::Variable("this".to_string()));
+                            let this = if this_adjustment == 0 {
+                                Expression::Variable("this".to_string())
+                            } else {
+                                Expression::MemberAddress {
+                                    base: Box::new(Expression::Variable("this".to_string())),
+                                    offset: this_adjustment,
+                                    element: mwcc_syntax_trees::Pointee::UnsignedChar,
+                                    index_stride: None,
+                                }
+                            };
+                            arguments.insert(0, this);
                             Expression::Call {
                                 name: mangled,
                                 arguments,
                             }
                         }
-                        crate::cxx::ImplicitMemberCall::Virtual(dispatch) => {
+                        crate::cxx::ImplicitMemberCall::Virtual {
+                            dispatch,
+                            this_adjustment,
+                        } => {
+                            let object = if this_adjustment == 0 {
+                                Expression::Variable("this".to_string())
+                            } else {
+                                Expression::MemberAddress {
+                                    base: Box::new(Expression::Variable("this".to_string())),
+                                    offset: this_adjustment,
+                                    element: mwcc_syntax_trees::Pointee::UnsignedChar,
+                                    index_stride: None,
+                                }
+                            };
                             Expression::VirtualCall {
-                                object: Box::new(Expression::Variable("this".to_string())),
+                                object: Box::new(object),
                                 vptr_offset: dispatch.vptr_offset,
                                 slot_offset: dispatch.slot_offset,
                                 return_type: dispatch.return_type,

@@ -147,8 +147,15 @@ pub(crate) struct VirtualDispatch {
 }
 
 pub(crate) enum ImplicitMemberCall {
-    Direct { name: String, is_inline: bool },
-    Virtual(VirtualDispatch),
+    Direct {
+        name: String,
+        is_inline: bool,
+        this_adjustment: u32,
+    },
+    Virtual {
+        dispatch: VirtualDispatch,
+        this_adjustment: u32,
+    },
 }
 
 /// The C++ ABI identity of one source parameter. The general syntax-tree
@@ -2012,7 +2019,10 @@ impl Parser {
             }
             let method = candidates[0];
             if let Some(dispatch) = method.virtual_dispatch {
-                return Ok(Some(ImplicitMemberCall::Virtual(dispatch)));
+                return Ok(Some(ImplicitMemberCall::Virtual {
+                    dispatch,
+                    this_adjustment: 0,
+                }));
             }
             return Ok(Some(ImplicitMemberCall::Direct {
                 name: mangle_qualified_member_function_typed(
@@ -2021,6 +2031,71 @@ impl Parser {
                     &method.cxx_parameters,
                 )?,
                 is_inline: method.is_inline,
+                this_adjustment: 0,
+            }));
+        }
+
+        // Search every complete non-virtual base subobject in declaration
+        // order. A declaration in a base hides declarations further up that
+        // branch; declarations reached through different base subobjects are
+        // ambiguous, matching ordinary C++ member lookup. Retaining the byte
+        // adjustment here keeps ABI pointer formation out of name mangling.
+        let mut inherited = Vec::new();
+        let mut pending: Vec<(String, u32)> = self
+            .cxx_classes
+            .get(class_name)
+            .into_iter()
+            .flat_map(|class| class.bases.iter().rev())
+            .map(|base| (base.name.clone(), base.offset))
+            .collect();
+        let mut visited = std::collections::HashSet::new();
+        while let Some((owner, this_adjustment)) = pending.pop() {
+            if !visited.insert((owner.clone(), this_adjustment)) {
+                continue;
+            }
+            let Some(class) = self.cxx_classes.get(&owner) else {
+                continue;
+            };
+            if let Some(methods) = class.methods.get(function) {
+                let candidates: Vec<&MemberMethod> = methods
+                    .iter()
+                    .filter(|method| method.parameters.len() == argument_count)
+                    .collect();
+                if candidates.len() != 1 {
+                    return Err(Diagnostic::error(format!(
+                        "member overload resolution for '{owner}::{function}' is ambiguous or unavailable (roadmap)"
+                    )));
+                }
+                inherited.push((owner, candidates[0].clone(), this_adjustment));
+                continue;
+            }
+            for base in class.bases.iter().rev() {
+                let adjustment = this_adjustment.checked_add(base.offset).ok_or_else(|| {
+                    Diagnostic::error("C++ base-subobject adjustment overflow")
+                })?;
+                pending.push((base.name.clone(), adjustment));
+            }
+        }
+        if inherited.len() > 1 {
+            return Err(Diagnostic::error(format!(
+                "member lookup for '{class_name}::{function}' is ambiguous across base subobjects (roadmap)"
+            )));
+        }
+        if let Some((owner, method, this_adjustment)) = inherited.pop() {
+            if let Some(dispatch) = method.virtual_dispatch {
+                return Ok(Some(ImplicitMemberCall::Virtual {
+                    dispatch,
+                    this_adjustment,
+                }));
+            }
+            return Ok(Some(ImplicitMemberCall::Direct {
+                name: mangle_qualified_member_function_typed(
+                    &owner.split("::").collect::<Vec<_>>(),
+                    function,
+                    &method.cxx_parameters,
+                )?,
+                is_inline: method.is_inline,
+                this_adjustment,
             }));
         }
 
@@ -2044,6 +2119,7 @@ impl Parser {
                 [method] => return Ok(Some(ImplicitMemberCall::Direct {
                     name: method.mangled.clone(),
                     is_inline: self.skipped_inline_names.contains(&method.mangled),
+                    this_adjustment: 0,
                 })),
                 [] => {}
                 _ => return Err(Diagnostic::error(format!(
