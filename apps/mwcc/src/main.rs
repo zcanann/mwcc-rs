@@ -335,6 +335,35 @@ fn main() -> ExitCode {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GlobalAlignments {
+    layout: u32,
+    comment: u32,
+}
+
+/// Resolve the two alignment domains MWCC assigns to an aggregate. Scalar
+/// arrays are word-aligned in their section, while `.comment` records the
+/// element alignment. Structs use their aggregate alignment in both domains.
+fn global_alignments(
+    element_size: u32,
+    struct_alignment: Option<u32>,
+    is_array: bool,
+    requested_alignment: u32,
+) -> GlobalAlignments {
+    let comment = match struct_alignment {
+        Some(alignment) => alignment.max(4),
+        None => element_size,
+    }
+    .max(requested_alignment);
+    let layout = match struct_alignment {
+        Some(alignment) => alignment.max(4),
+        None if is_array => element_size.max(4),
+        None => element_size,
+    }
+    .max(requested_alignment);
+    GlobalAlignments { layout, comment }
+}
+
 /// Run the full pipeline, optionally dumping a per-phase artifact report.
 fn compile(
     source: &[u8],
@@ -635,6 +664,7 @@ fn compile(
                 name: local.name.clone(),
                 size: local.size,
                 alignment: local.alignment,
+                comment_alignment: local.alignment,
                 initial_bytes: local.initial_bytes.clone(),
                 is_const: local.is_const,
                 force_full_data_section: local.is_const && !read_only_small_data,
@@ -891,6 +921,7 @@ fn compile(
                                     name: name.clone(),
                                     size: object_bytes.len() as u32,
                                     alignment: 4,
+                                    comment_alignment: 4,
                                     initial_bytes: Some(object_bytes),
                                     is_const: config.flags.string_literals_read_only,
                                     force_full_data_section: config.flags.string_literals_read_only
@@ -925,6 +956,7 @@ fn compile(
                 name: global.name.clone(),
                 size,
                 alignment: 4,
+                comment_alignment: 4,
                 initial_bytes,
                 // A `static const` fn-pointer reference routes to `.sdata2` (read-only)
                 // as a LOCAL; the writable `int *p = &g;` case stays non-const in `.sdata`.
@@ -971,16 +1003,14 @@ fn compile(
         // mwcc aligns a scalar to its element alignment but any *array* object to at
         // least a word (4), so a `char[4]`/`short[2]` is 4-aligned, not 1/2-aligned. A
         // struct takes its own alignment (already the max of its members').
-        let alignment = match struct_alignment {
-            // A struct global is word-aligned at minimum (mwcc records 4 even for an
-            // all-`char` struct whose natural alignment is 1), like an array object.
-            Some(align) => align.max(4),
-            None if global.array_length.is_some() => element_size.max(4),
-            None => element_size,
-        }
-        // An explicit `__attribute__((aligned(n)))` raises the object's alignment (and
-        // thus its section's sh_addralign) — dolphin's ATTRIBUTE_ALIGN(32) DMA buffers.
-        .max(global.attribute_alignment.map_or(1, u32::from));
+        let alignments = global_alignments(
+            element_size,
+            struct_alignment,
+            global.array_length.is_some(),
+            global.attribute_alignment.map_or(1, u32::from),
+        );
+        let alignment = alignments.layout;
+        let comment_alignment = alignments.comment;
         // A struct's constant initializer lists its individual fields, each at its own
         // offset, so it serializes with a 4-byte field stride even though the object is
         // `struct_size`. (Only all-word-field structs are supported; a sub-word field
@@ -1005,6 +1035,7 @@ fn compile(
                     name: global.name.clone(),
                     size,
                     alignment,
+                    comment_alignment,
                     initial_bytes: Some(bytes.clone()),
                     is_const: true,
                     force_full_data_section,
@@ -1038,6 +1069,7 @@ fn compile(
                 name: global.name.clone(),
                 size,
                 alignment,
+                comment_alignment,
                 initial_bytes: Some(initial_bytes),
                 is_const: true,
                 force_full_data_section,
@@ -1103,6 +1135,7 @@ fn compile(
             name: global.name.clone(),
             size,
             alignment,
+            comment_alignment,
             initial_bytes,
             is_const: false,
             force_full_data_section,
@@ -1139,6 +1172,7 @@ fn compile(
                                             name: name.clone(),
                                             size: object_bytes.len() as u32,
                                             alignment: 4,
+                                            comment_alignment: 4,
                                             initial_bytes: Some(object_bytes),
                                             is_const: config.flags.string_literals_read_only,
                                             force_full_data_section: config
@@ -1225,6 +1259,7 @@ fn compile(
                 name,
                 size: object_bytes.len() as u32,
                 alignment: 4,
+                comment_alignment: 4,
                 initial_bytes: Some(object_bytes),
                 is_const: config.flags.string_literals_read_only,
                 force_full_data_section: config.flags.string_literals_read_only
@@ -1258,6 +1293,7 @@ fn compile(
                         name: name.clone(),
                         size: object_bytes.len() as u32,
                         alignment: 4,
+                        comment_alignment: 4,
                         initial_bytes: Some(object_bytes),
                         is_const: config.flags.string_literals_read_only
                             || machine_function.strings_are_const,
@@ -1665,8 +1701,33 @@ fn compile(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_invocation, SourceLanguage};
+    use super::{global_alignments, parse_invocation, GlobalAlignments, SourceLanguage};
     use mwcc_versions::{EnumStorage, GlobalAddressing};
+
+    #[test]
+    fn scalar_array_layout_and_comment_alignment_are_independent() {
+        assert_eq!(
+            global_alignments(1, None, true, 1),
+            GlobalAlignments {
+                layout: 4,
+                comment: 1,
+            }
+        );
+        assert_eq!(
+            global_alignments(2, None, true, 1),
+            GlobalAlignments {
+                layout: 4,
+                comment: 2,
+            }
+        );
+        assert_eq!(
+            global_alignments(1, None, true, 32),
+            GlobalAlignments {
+                layout: 32,
+                comment: 32,
+            }
+        );
+    }
 
     #[test]
     fn command_line_enum_storage_is_last_wins() {

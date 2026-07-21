@@ -229,6 +229,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut data_section: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
     let mut data_offsets: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     let mut data_sizes: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let mut data_layout_aligns: std::collections::HashMap<&str, u32> =
+        std::collections::HashMap::new();
     let mut data_aligns: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     let mut place = |object: &DataObject<'a>, section: &'static str, cursor: &mut u32| {
         let alignment = object.alignment.max(1);
@@ -236,7 +238,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         data_section.insert(object.name, section);
         data_offsets.insert(object.name, *cursor);
         data_sizes.insert(object.name, object.size);
-        data_aligns.insert(object.name, alignment);
+        data_layout_aligns.insert(object.name, alignment);
+        data_aligns.insert(object.name, object.comment_alignment.max(1));
         *cursor += object.size;
     };
     // `.ctors`/`.dtors` (`__declspec(section "…")` constructor/destructor-chain
@@ -947,12 +950,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // mwcc raises a data section's alignment (sh_addralign) to the MAX alignment of the
     // objects it holds: a `__attribute__((aligned(32)))` global makes its `.bss`/`.sdata`
     // 32-aligned rather than the 8-byte default (dolphin DMA buffers). Compute the per-
-    // section max object alignment (data_aligns/data_section are fully populated by now).
+    // section max object alignment (layout alignments/sections are fully populated by now).
     let mut section_max_align: std::collections::HashMap<&str, u32> =
         std::collections::HashMap::new();
     for (name, section) in &data_section {
         let entry = section_max_align.entry(*section).or_insert(0);
-        *entry = (*entry).max(data_aligns[name]);
+        *entry = (*entry).max(data_layout_aligns[name]);
     }
     let section_align = |name: &str| -> u32 {
         if code_sections.contains(&name) {

@@ -10,11 +10,19 @@ use super::*;
 use mwcc_syntax_trees::Parameter;
 use mwcc_versions::Optimization;
 
-struct InlinedBitTest<'a> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AccessOperation {
+    Test,
+    Set,
+    Clear,
+}
+
+struct InlinedAccess<'a> {
     parameter: &'a Parameter,
     pointer: &'a LocalDeclaration,
     index: &'a LocalDeclaration,
     helper: &'a str,
+    operation: AccessOperation,
 }
 
 fn variable_is(expression: &Expression, expected: &str) -> bool {
@@ -41,31 +49,23 @@ fn binary_constant<'a>(
     (*actual == operator && constant_value(right) == Some(constant)).then_some(left)
 }
 
-fn is_canonical_bit_test(expression: &Expression, pointer: &str, index: &str) -> bool {
-    let Expression::Binary {
-        operator: BinaryOperator::BitAnd,
-        left,
-        right,
+fn is_byte_index(expression: &Expression, pointer: &str, index: &str) -> bool {
+    let Expression::Index {
+        base,
+        index: byte_index,
     } = expression
     else {
         return false;
     };
-    let Expression::Index {
-        base,
-        index: byte_index,
-    } = left.as_ref()
-    else {
-        return false;
-    };
-    if !variable_is(base, pointer)
-        || !binary_constant(byte_index, BinaryOperator::Divide, 8)
+    variable_is(base, pointer)
+        && binary_constant(byte_index, BinaryOperator::Divide, 8)
             .is_some_and(|value| variable_is(value, index))
-    {
-        return false;
-    }
+}
+
+fn is_bit_mask(expression: &Expression, index: &str) -> bool {
     // `binary_constant` is unsuitable for this outer shift because its
     // constant is the left operand in `1 << (index % 8)`.
-    matches!(right.as_ref(), Expression::Binary {
+    matches!(expression, Expression::Binary {
         operator: BinaryOperator::ShiftLeft,
         left: one,
         right: amount,
@@ -74,12 +74,55 @@ fn is_canonical_bit_test(expression: &Expression, pointer: &str, index: &str) ->
             .is_some_and(|value| variable_is(value, index)))
 }
 
-fn classify(function: &Function) -> Option<InlinedBitTest<'_>> {
-    if !function.statements.is_empty()
-        || !function.guards.is_empty()
-        || function.asm_body.is_some()
-        || !matches!(function.return_type, Type::Int | Type::UnsignedInt)
-    {
+fn is_canonical_bit_test(expression: &Expression, pointer: &str, index: &str) -> bool {
+    matches!(expression, Expression::Binary {
+        operator: BinaryOperator::BitAnd,
+        left,
+        right,
+    } if is_byte_index(left, pointer, index) && is_bit_mask(right, index))
+}
+
+fn indexed_update_operation(
+    statement: &Statement,
+    pointer: &str,
+    index: &str,
+) -> Option<AccessOperation> {
+    let Statement::Store { target, value } = statement else {
+        return None;
+    };
+    if !is_byte_index(target, pointer, index) {
+        return None;
+    }
+    let Expression::IndexedUpdateValue { value } = value else {
+        return None;
+    };
+    let Expression::Binary {
+        operator,
+        left,
+        right,
+    } = value.as_ref()
+    else {
+        return None;
+    };
+    if !is_byte_index(left, pointer, index) {
+        return None;
+    }
+    match operator {
+        BinaryOperator::BitOr if is_bit_mask(right, index) => Some(AccessOperation::Set),
+        BinaryOperator::BitAnd
+            if matches!(right.as_ref(), Expression::Unary {
+                operator: UnaryOperator::BitNot,
+                operand,
+            } if is_bit_mask(operand, index)) =>
+        {
+            Some(AccessOperation::Clear)
+        }
+        _ => None,
+    }
+}
+
+fn classify(function: &Function) -> Option<InlinedAccess<'_>> {
+    if !function.guards.is_empty() || function.asm_body.is_some() {
         return None;
     }
     let [parameter] = function.parameters.as_slice() else {
@@ -114,15 +157,27 @@ fn classify(function: &Function) -> Option<InlinedBitTest<'_>> {
     {
         return None;
     }
-    let return_expression = function.return_expression.as_ref()?;
-    if !is_canonical_bit_test(return_expression, &pointer.name, &index.name) {
-        return None;
-    }
-    Some(InlinedBitTest {
+    let operation = match (
+        function.return_type,
+        function.statements.as_slice(),
+        function.return_expression.as_ref(),
+    ) {
+        (Type::Int | Type::UnsignedInt, [], Some(value))
+            if is_canonical_bit_test(value, &pointer.name, &index.name) =>
+        {
+            AccessOperation::Test
+        }
+        (Type::Void, [statement], None) => {
+            indexed_update_operation(statement, &pointer.name, &index.name)?
+        }
+        _ => return None,
+    };
+    Some(InlinedAccess {
         parameter,
         pointer,
         index,
         helper: name,
+        operation,
     })
 }
 
@@ -215,9 +270,122 @@ impl Generator {
         });
     }
 
+    /// Emit the read/modify/write sibling of the indexed bit test. Both `|=`
+    /// and `&= ~` share the address, signed modulo, truncation, and store
+    /// schedule; only the combining instruction differs.
+    fn emit_unoptimized_indexed_bit_update(
+        &mut self,
+        pointer: u8,
+        index: u8,
+        operation: AccessOperation,
+    ) {
+        debug_assert!(matches!(
+            operation,
+            AccessOperation::Set | AccessOperation::Clear
+        ));
+        const BYTE_INDEX: u8 = 7;
+        const OLD_BYTE: u8 = 6;
+        const ONE: u8 = 5;
+        const VALUE: u8 = 4;
+
+        self.output
+            .instructions
+            .push(Instruction::ShiftRightAlgebraicImmediate {
+                a: GENERAL_SCRATCH,
+                s: index,
+                shift: 3,
+            });
+        self.output
+            .instructions
+            .push(Instruction::AddToZeroExtended {
+                d: BYTE_INDEX,
+                a: GENERAL_SCRATCH,
+            });
+        self.output
+            .instructions
+            .push(Instruction::LoadByteZeroIndexed {
+                d: OLD_BYTE,
+                a: pointer,
+                b: BYTE_INDEX,
+            });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(ONE, 1));
+        self.output
+            .instructions
+            .push(Instruction::ClearLeftImmediate {
+                a: VALUE,
+                s: index,
+                clear: 16,
+            });
+        self.output
+            .instructions
+            .push(Instruction::ShiftLeftImmediate {
+                a: GENERAL_SCRATCH,
+                s: VALUE,
+                shift: 29,
+            });
+        self.output
+            .instructions
+            .push(Instruction::ShiftRightLogicalImmediate {
+                a: VALUE,
+                s: VALUE,
+                shift: 31,
+            });
+        self.output.instructions.push(Instruction::SubtractFrom {
+            d: GENERAL_SCRATCH,
+            a: VALUE,
+            b: GENERAL_SCRATCH,
+        });
+        self.output.instructions.push(Instruction::RotateAndMask {
+            a: GENERAL_SCRATCH,
+            s: GENERAL_SCRATCH,
+            shift: 3,
+            begin: 0,
+            end: 31,
+        });
+        self.output.instructions.push(Instruction::Add {
+            d: GENERAL_SCRATCH,
+            a: GENERAL_SCRATCH,
+            b: VALUE,
+        });
+        self.output.instructions.push(Instruction::ShiftLeftWord {
+            a: GENERAL_SCRATCH,
+            s: ONE,
+            b: GENERAL_SCRATCH,
+        });
+        self.output.instructions.push(match operation {
+            AccessOperation::Set => Instruction::Or {
+                a: GENERAL_SCRATCH,
+                s: OLD_BYTE,
+                b: GENERAL_SCRATCH,
+            },
+            AccessOperation::Clear => Instruction::AndComplement {
+                a: GENERAL_SCRATCH,
+                s: OLD_BYTE,
+                b: GENERAL_SCRATCH,
+            },
+            AccessOperation::Test => unreachable!(),
+        });
+        self.output
+            .instructions
+            .push(Instruction::ClearLeftImmediate {
+                a: GENERAL_SCRATCH,
+                s: GENERAL_SCRATCH,
+                clear: 24,
+            });
+        self.output
+            .instructions
+            .push(Instruction::StoreByteIndexed {
+                s: GENERAL_SCRATCH,
+                a: pointer,
+                b: BYTE_INDEX,
+            });
+    }
+
     /// Expand a verified static local-select helper into the O0 caller that
     /// narrows the same input to a byte index and returns one selected bit.
-    pub(crate) fn try_inlined_local_select_bit_test(
+    pub(crate) fn try_inlined_local_select_access(
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
@@ -293,7 +461,14 @@ impl Generator {
             INDEX_HOME,
         );
 
-        self.emit_unoptimized_indexed_bit_test(POINTER_HOME, INDEX_HOME);
+        match call.operation {
+            AccessOperation::Test => {
+                self.emit_unoptimized_indexed_bit_test(POINTER_HOME, INDEX_HOME)
+            }
+            operation @ (AccessOperation::Set | AccessOperation::Clear) => {
+                self.emit_unoptimized_indexed_bit_update(POINTER_HOME, INDEX_HOME, operation)
+            }
+        }
         self.emit_restgpr_frame_epilogue(FIRST_SAVED);
         Ok(true)
     }
@@ -318,9 +493,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn recognizes_the_call_narrow_index_bit_test_without_function_names() {
-        let function = Function {
+    fn sample() -> Function {
+        Function {
             return_type: Type::Int,
             name: "caller".into(),
             is_static: false,
@@ -372,10 +546,69 @@ mod tests {
             force_active: false,
             text_deferred: false,
             peephole_disabled: false,
-        };
+        }
+    }
+
+    fn byte_index() -> Expression {
+        Expression::Index {
+            base: Box::new(Expression::Variable("bytes".into())),
+            index: Box::new(Expression::Binary {
+                operator: BinaryOperator::Divide,
+                left: Box::new(Expression::Variable("slot".into())),
+                right: Box::new(Expression::IntegerLiteral(8)),
+            }),
+        }
+    }
+
+    fn bit_mask() -> Expression {
+        Expression::Binary {
+            operator: BinaryOperator::ShiftLeft,
+            left: Box::new(Expression::IntegerLiteral(1)),
+            right: Box::new(Expression::Binary {
+                operator: BinaryOperator::Modulo,
+                left: Box::new(Expression::Variable("slot".into())),
+                right: Box::new(Expression::IntegerLiteral(8)),
+            }),
+        }
+    }
+
+    #[test]
+    fn recognizes_the_call_narrow_index_bit_test_without_function_names() {
+        let function = sample();
         let shape = classify(&function).expect("recognized");
         assert_eq!(shape.helper, "selector");
         assert_eq!(shape.pointer.name, "bytes");
         assert_eq!(shape.index.name, "slot");
+        assert_eq!(shape.operation, AccessOperation::Test);
+    }
+
+    #[test]
+    fn recognizes_set_and_clear_updates_from_their_semantics() {
+        for (operator, right, expected) in [
+            (BinaryOperator::BitOr, bit_mask(), AccessOperation::Set),
+            (
+                BinaryOperator::BitAnd,
+                Expression::Unary {
+                    operator: UnaryOperator::BitNot,
+                    operand: Box::new(bit_mask()),
+                },
+                AccessOperation::Clear,
+            ),
+        ] {
+            let mut function = sample();
+            function.return_type = Type::Void;
+            function.return_expression = None;
+            function.statements = vec![Statement::Store {
+                target: byte_index(),
+                value: Expression::IndexedUpdateValue {
+                    value: Box::new(Expression::Binary {
+                        operator,
+                        left: Box::new(byte_index()),
+                        right: Box::new(right),
+                    }),
+                },
+            }];
+            assert_eq!(classify(&function).expect("recognized").operation, expected);
+        }
     }
 }

@@ -40,7 +40,12 @@ fn constant_uses_absolute_addressing(function: &MachineFunction, constant_index:
 pub struct DefinedGlobal {
     pub name: String,
     pub size: u32,
+    /// Alignment used to lay out the object in its data section.
     pub alignment: u32,
+    /// Alignment recorded for the symbol in CodeWarrior's `.comment` metadata.
+    /// This can be smaller than the storage alignment: scalar arrays are laid
+    /// out at a word boundary, but retain their element alignment here.
+    pub comment_alignment: u32,
     pub initial_bytes: Option<Vec<u8>>,
     /// A `const` global is read-only: the writer routes it to `.sdata2` (≤ 8
     /// bytes) or `.rodata` (larger) rather than `.sdata`/`.sbss`.
@@ -218,6 +223,7 @@ pub fn assemble_object(
             name: &global.name,
             size: global.size,
             alignment: global.alignment,
+            comment_alignment: global.comment_alignment,
             initial_bytes: global.initial_bytes.clone(),
             is_const: global.is_const,
             force_full_data_section: global.force_full_data_section,

@@ -140,7 +140,11 @@ pub struct ObjectInput<'a> {
 pub struct DataObject<'a> {
     pub name: &'a str,
     pub size: u32,
+    /// Alignment used for section layout.
     pub alignment: u32,
+    /// Alignment emitted in this symbol's `.comment` record. CodeWarrior keeps
+    /// an array's element alignment here even when storage is word-aligned.
+    pub comment_alignment: u32,
     pub initial_bytes: Option<Vec<u8>>,
     pub is_const: bool,
     /// Route initialized data to `.data`/`.rodata` even when it is at most eight

@@ -2166,7 +2166,7 @@ impl Generator {
         // it into an O0 caller. Compose the verified helper summary with the
         // caller's source locals before the ordinary call path treats it as a
         // genuine non-leaf call.
-        if self.try_inlined_local_select_bit_test(function)? {
+        if self.try_inlined_local_select_access(function)? {
             return Ok(());
         }
         // At -O0, named register locals survive the frontend and occupy descending
