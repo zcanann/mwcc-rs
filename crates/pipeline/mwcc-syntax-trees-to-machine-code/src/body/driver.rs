@@ -3089,6 +3089,13 @@ impl Generator {
             if self.try_pointer_state_call_loop(function)? {
                 return Ok(());
             }
+            // Counted resource searches keep a status, counter, acquired
+            // object, and two output pointers live across their call chain.
+            // With inline multiple saves, the allocator colors one dense GPR
+            // region and this semantic owner emits the measured loop schedule.
+            if self.try_counted_resource_search(function)? {
+                return Ok(());
+            }
             if reads_value_across_call(function) {
                 return Err(Diagnostic::error(format!(
                     "a value live across a call needs the callee-saved register allocator (roadmap; function '{}')",

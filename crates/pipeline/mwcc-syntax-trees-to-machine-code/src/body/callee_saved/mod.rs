@@ -6,6 +6,7 @@ mod combine;
 mod bitmask_call_chain;
 mod call_condition_live_in_branches;
 mod computed_between_calls;
+mod counted_resource_search;
 mod conditional;
 mod conditional_member_callback;
 mod context_callback_handler;
