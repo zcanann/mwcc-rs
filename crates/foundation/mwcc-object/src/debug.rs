@@ -28,10 +28,10 @@ pub enum DebugLayout {
     /// `.comment` precedes the symbol tables (GC/1.3.2).
     BeforeDataInterleaved,
     /// Ordinary data precedes debug content; each debug section is immediately
-    /// followed by its relocation (GC/3.0a3).
+    /// followed by its relocation.
     AfterDataInterleaved,
     /// Ordinary data precedes debug content while relocations remain grouped
-    /// and `.comment` stays last (Wii/1.0).
+    /// and `.comment` stays last (measured GC/3.0a3 and Wii/1.0 Runtime objects).
     AfterDataGrouped,
 }
 
@@ -84,6 +84,13 @@ pub struct DebugRelocation {
 }
 
 /// A CodeWarrior fragment symbol inside `.line` or `.debug`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DebugSymbolBinding {
+    Local,
+    Global,
+    Weak,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DebugSymbol {
     pub name: String,
@@ -91,7 +98,9 @@ pub struct DebugSymbol {
     pub offset: u32,
     pub size: u32,
     pub alignment: u32,
-    pub is_global: bool,
+    /// Exact per-symbol attribute word stored in MWCC's `.comment` table.
+    pub comment_flags: u32,
+    pub binding: DebugSymbolBinding,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

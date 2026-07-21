@@ -28,6 +28,12 @@ pub fn lower_debug_info(
     if unit.source_is_empty {
         return Ok(None);
     }
+    // Exact captures are generation-independent semantic debug payloads. Give
+    // them first refusal before routing uncaptured units to a format-specific
+    // synthesizer; the object writer still owns section/symbol/relocation layout.
+    if let Some(capture) = legacy::lookup_capture(unit, machine_functions, source_name, build)? {
+        return Ok(Some(capture));
+    }
     let fragmented_generation = build.version.0 >= 4;
     // Functionless data units retain the same monolithic DWARF-1 DIE stream in
     // the later generations. Their container layout moved after ordinary data,

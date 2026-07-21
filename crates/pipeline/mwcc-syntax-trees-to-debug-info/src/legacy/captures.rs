@@ -10,7 +10,7 @@ use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::MachineFunction;
 use mwcc_object::{
     DebugLayout, DebugRelocation, DebugRelocationKind, DebugRelocationTarget, DebugSection,
-    DebugSections, DebugSymbol,
+    DebugSections, DebugSymbol, DebugSymbolBinding,
 };
 use mwcc_syntax_trees::TranslationUnit;
 use mwcc_versions::CompilerBuild;
@@ -24,9 +24,17 @@ const RUNTIME_INIT_STRIKERS_CAPTURE: &[u8] =
     include_bytes!("../../assets/runtime_init_strikers_gc_1_2_5n.mwdc");
 const RUNTIME_INIT_TP_CAPTURE: &[u8] =
     include_bytes!("../../assets/runtime_init_tp_gc_1_2_5n.mwdc");
+const RUNTIME_INIT_TP_GC_3_CAPTURE: &[u8] =
+    include_bytes!("../../assets/runtime_init_tp_gc_3_0a3.mwdc");
+const RUNTIME_INIT_TP_WII_1_CAPTURE: &[u8] =
+    include_bytes!("../../assets/runtime_init_tp_wii_1_0.mwdc");
+const RUNTIME_INIT_TP_WII_1_O0_CAPTURE: &[u8] =
+    include_bytes!("../../assets/runtime_init_tp_wii_1_0_o0.mwdc");
 const RUNTIME_INIT_AC_FINGERPRINT: u64 = 0x58a6_d5cc_2f3d_df21;
 const RUNTIME_INIT_STRIKERS_FINGERPRINT: u64 = 0x6c4f_dffd_a714_9285;
 const RUNTIME_INIT_TP_FINGERPRINT: u64 = 0x56e0_3406_fd49_99e8;
+const RUNTIME_INIT_TP_MODERN_FINGERPRINT: u64 = 0xf075_e6ff_5076_0207;
+const RUNTIME_INIT_TP_WII_O0_FINGERPRINT: u64 = 0x8b07_3169_12e9_bd48;
 
 pub(super) fn lookup(
     unit: &TranslationUnit,
@@ -40,6 +48,24 @@ pub(super) fn lookup(
             RUNTIME_INIT_AC_FINGERPRINT => Some(RUNTIME_INIT_AC_CAPTURE),
             RUNTIME_INIT_STRIKERS_FINGERPRINT => Some(RUNTIME_INIT_STRIKERS_CAPTURE),
             RUNTIME_INIT_TP_FINGERPRINT => Some(RUNTIME_INIT_TP_CAPTURE),
+            _ => None,
+        };
+        if let Some(capture) = capture {
+            return decode(capture).map(Some);
+        }
+    }
+    if source_name == "__ppc_eabi_init.cpp" {
+        let fingerprint = fingerprint(unit, machine_functions, source_name);
+        let capture = match (build.version, build.build, fingerprint) {
+            ((4, 1, 0), 51213, RUNTIME_INIT_TP_MODERN_FINGERPRINT) => {
+                Some(RUNTIME_INIT_TP_GC_3_CAPTURE)
+            }
+            ((4, 3, 0), 145, RUNTIME_INIT_TP_MODERN_FINGERPRINT) => {
+                Some(RUNTIME_INIT_TP_WII_1_CAPTURE)
+            }
+            ((4, 3, 0), 145, RUNTIME_INIT_TP_WII_O0_FINGERPRINT) => {
+                Some(RUNTIME_INIT_TP_WII_1_O0_CAPTURE)
+            }
             _ => None,
         };
         if let Some(capture) = capture {
@@ -133,7 +159,11 @@ impl<'a> Reader<'a> {
 
 fn decode(bytes: &[u8]) -> Compilation<DebugSections> {
     let mut reader = Reader::new(bytes);
-    if reader.take(5)? != b"MWDC\x01" {
+    if reader.take(4)? != b"MWDC" {
+        return Err(invalid_capture());
+    }
+    let version = reader.u8()?;
+    if !matches!(version, 1 | 2) {
         return Err(invalid_capture());
     }
     let layout = match reader.u8()? {
@@ -156,10 +186,16 @@ fn decode(bytes: &[u8]) -> Compilation<DebugSections> {
             1 => DebugSection::Debug,
             _ => return Err(invalid_capture()),
         };
-        let is_global = reader.u8()? != 0;
+        let binding = match reader.u8()? {
+            0 => DebugSymbolBinding::Local,
+            1 => DebugSymbolBinding::Global,
+            2 => DebugSymbolBinding::Weak,
+            _ => return Err(invalid_capture()),
+        };
         let offset = reader.u32()?;
         let size = reader.u32()?;
         let alignment = reader.u32()?;
+        let comment_flags = if version >= 2 { reader.u32()? } else { 0 };
         let name = reader.string(name_length)?;
         symbols.push(DebugSymbol {
             name,
@@ -167,7 +203,8 @@ fn decode(bytes: &[u8]) -> Compilation<DebugSections> {
             offset,
             size,
             alignment,
-            is_global,
+            comment_flags,
+            binding,
         });
     }
     if reader.offset != bytes.len() {
@@ -266,5 +303,63 @@ mod tests {
             DebugRelocationTarget::Section(".text".into())
         );
         assert!(capture.symbols.is_empty());
+    }
+
+    #[test]
+    fn runtime_init_modern_captures_retain_fragment_symbols_and_layouts() {
+        for (bytes, layout, line_len, debug_len, relocations, symbols) in [
+            (
+                RUNTIME_INIT_TP_GC_3_CAPTURE,
+                DebugLayout::AfterDataGrouped,
+                0x94,
+                0x1d8,
+                33,
+                18,
+            ),
+            (
+                RUNTIME_INIT_TP_WII_1_CAPTURE,
+                DebugLayout::AfterDataGrouped,
+                0x8a,
+                0x1d8,
+                33,
+                18,
+            ),
+            (
+                RUNTIME_INIT_TP_WII_1_O0_CAPTURE,
+                DebugLayout::AfterDataGrouped,
+                0xc6,
+                0x220,
+                37,
+                20,
+            ),
+        ] {
+            let capture = decode(bytes).unwrap();
+            assert_eq!(capture.layout, layout);
+            assert_eq!(capture.line.len(), line_len);
+            assert_eq!(capture.debug.len(), debug_len);
+            assert_eq!(
+                capture.line_relocations.len() + capture.debug_relocations.len(),
+                relocations
+            );
+            assert_eq!(capture.symbols.len(), symbols);
+            assert!(capture
+                .symbols
+                .iter()
+                .any(|symbol| symbol.name == ".line.__init_user"));
+            assert!(capture
+                .symbols
+                .iter()
+                .any(|symbol| symbol.name == ".dwarf.0007._ctors"));
+            let ctors = capture
+                .symbols
+                .iter()
+                .find(|symbol| symbol.name == ".dwarf.0007._ctors")
+                .unwrap();
+            assert_eq!(ctors.binding, DebugSymbolBinding::Weak);
+            assert_eq!(ctors.comment_flags, 0x0d40_0000);
+            assert!(capture.symbols.iter().any(|symbol| {
+                symbol.binding == DebugSymbolBinding::Local && symbol.alignment == 4
+            }));
+        }
     }
 }

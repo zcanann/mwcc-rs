@@ -122,3 +122,12 @@ impl Default for Flags {
         }
     }
 }
+
+impl Flags {
+    /// Whether whole-file IPA is effective after last-wins optimization flags.
+    /// MWCC accepts `-ipa file -opt off`, but the latter suppresses the IPA
+    /// transformations while retaining the parsed mode on the command line.
+    pub fn whole_file_optimization_enabled(self) -> bool {
+        self.ipa_file && self.optimization != Optimization::O0
+    }
+}

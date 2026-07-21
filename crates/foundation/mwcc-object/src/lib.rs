@@ -13,7 +13,7 @@ mod writer;
 
 pub use debug::{
     DebugLayout, DebugRelocation, DebugRelocationKind, DebugRelocationTarget, DebugSection,
-    DebugSections, DebugSymbol,
+    DebugSections, DebugSymbol, DebugSymbolBinding,
 };
 pub use function_layout::{
     layout_code_sections, layout_function_placements, layout_functions, CodeSection,
@@ -69,6 +69,10 @@ pub enum FunctionSymbolOrder {
     /// The function is registered before body-created references, except for
     /// the legacy fixed-address-symbol special case.
     FunctionFirst,
+    /// Unoptimized modern code registers the current function before its body
+    /// references, but a call to a later definition does not hoist that later
+    /// function's symbol away from its source-definition position.
+    FunctionFirstAtDefinition,
     /// Build 163 with deferred inlining retains function-first body references,
     /// but resolves data already defined in the translation unit before the
     /// current function.

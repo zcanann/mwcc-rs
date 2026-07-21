@@ -9,8 +9,8 @@
 //! pooled across all functions in the unit.
 
 use crate::{
-    layout_code_sections, CommentFormat, DataObject, DebugRelocationTarget, FunctionSymbolOrder,
-    ObjectInput, RelocationTarget,
+    layout_code_sections, CommentFormat, DataObject, DebugRelocationTarget, DebugSymbolBinding,
+    FunctionSymbolOrder, ObjectInput, RelocationTarget,
 };
 use std::collections::HashMap;
 
@@ -985,10 +985,54 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         write_symbol(&mut symtab, 0, 0, 0, STT_SECTION, 0, index_of(name) as u16);
         comment_values.push((section_align(name), 0));
     }
+    // Function symbol bookkeeping begins before captured debug locals because
+    // modern DWARF can place a static function between two `.line` fragments.
+    let mut function_symbols: Vec<u32> = vec![0u32; functions.len()];
+    let mut local_function_symbols: std::collections::HashMap<&str, u32> =
+        std::collections::HashMap::new();
+    let mut emitted_early_func: std::collections::HashSet<usize> =
+        std::collections::HashSet::new();
     let mut debug_symbols: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let mut emitted_debug_symbols: std::collections::HashSet<&str> =
+        std::collections::HashSet::new();
     if let Some(debug) = debug {
-        for symbol in debug.symbols.iter().filter(|symbol| !symbol.is_global) {
+        for symbol in debug
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.binding == DebugSymbolBinding::Local)
+        {
+            if let Some(function_name) = symbol.name.strip_prefix(".line.") {
+                if let Some(index) = functions.iter().position(|function| {
+                    function.is_static
+                        && !function.implicit_local
+                        && function.name == function_name
+                }) {
+                    if emitted_early_func.insert(index) {
+                        let function_symbol = (symtab.len() / SYMBOL_SIZE) as u32;
+                        write_symbol(
+                            &mut symtab,
+                            strtab.add(functions[index].name),
+                            function_offset[index],
+                            function_size[index],
+                            STB_LOCAL_FUNC,
+                            0,
+                            index_of(function_section(index)) as u16,
+                        );
+                        comment_values.push((
+                            input.object_format.code_alignment,
+                            if functions[index].force_active {
+                                FORCE_ACTIVE_FLAG
+                            } else {
+                                0
+                            },
+                        ));
+                        function_symbols[index] = function_symbol;
+                        local_function_symbols.insert(functions[index].name, function_symbol);
+                    }
+                }
+            }
             debug_symbols.insert(symbol.name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
+            emitted_debug_symbols.insert(symbol.name.as_str());
             write_symbol(
                 &mut symtab,
                 strtab.add(&symbol.name),
@@ -998,8 +1042,43 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 0,
                 index_of(symbol.section.name()) as u16,
             );
-            comment_values.push((symbol.alignment, 0));
+            comment_values.push((symbol.alignment, symbol.comment_flags));
         }
+    }
+    let debug_function_lines: std::collections::HashMap<&str, &crate::DebugSymbol> = debug
+        .into_iter()
+        .flat_map(|debug| debug.symbols.iter())
+        .filter_map(|symbol| {
+            (symbol.binding != DebugSymbolBinding::Local)
+                .then(|| symbol.name.strip_prefix(".line.").map(|name| (name, symbol)))
+                .flatten()
+        })
+        .collect();
+    // Modern fragmented DWARF contributes symbols to the compiler's ordinary
+    // source-order symbol stream. Function line fragments follow their function
+    // immediately; all remaining non-local fragments trail the generated run.
+    macro_rules! emit_debug_symbol {
+        ($symbol:expr) => {{
+            let symbol = $symbol;
+            if emitted_debug_symbols.insert(symbol.name.as_str()) {
+                debug_symbols.insert(symbol.name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
+                let binding = match symbol.binding {
+                    DebugSymbolBinding::Local => STB_LOCAL_OBJECT,
+                    DebugSymbolBinding::Global => STB_GLOBAL_OBJECT,
+                    DebugSymbolBinding::Weak => STB_WEAK_OBJECT,
+                };
+                write_symbol(
+                    &mut symtab,
+                    strtab.add(&symbol.name),
+                    symbol.offset,
+                    symbol.size,
+                    binding,
+                    0,
+                    index_of(symbol.section.name()) as u16,
+                );
+                comment_values.push((symbol.alignment, symbol.comment_flags));
+            }
+        }};
     }
     // `static inline` asm helpers (e.g. OSFastCast.h) — a local undefined symbol
     // each, in declaration order, right after the section symbols. `info = 0` is
@@ -1176,12 +1255,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             }
         }
     }
-    // Symbol bookkeeping is declared before the optional interleaving pin: a
-    // pinned sequence can contain both zero statics and static functions.
-    let mut function_symbols: Vec<u32> = vec![0u32; functions.len()];
-    let mut local_function_symbols: std::collections::HashMap<&str, u32> =
-        std::collections::HashMap::new();
-    let mut emitted_early_func: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    // A pinned sequence can contain both zero statics and static functions.
     // An exact whole-TU capture may pin the legacy symbol-creation timeline:
     // zero statics materialize at first reference while static functions appear
     // at a prior declaration or definition, interleaved with those data symbols.
@@ -1986,6 +2060,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                                 0
                             },
                     ));
+                    if input.object_format.function_symbol_order
+                        != FunctionSymbolOrder::FunctionFirstAtDefinition
+                    {
+                        if let Some(line_symbol) = debug_function_lines.get(function.name) {
+                            emit_debug_symbol!(*line_symbol);
+                        }
+                    }
                 } else {
                     write_symbol(
                         &mut symtab,
@@ -2210,6 +2291,22 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         } else {
             (Vec::new(), explicit_ordered)
         };
+        // In unoptimized modern objects, a function's `.line.<name>` fragment
+        // is registered after body-created data references but before direct
+        // call targets. Later definitions keep their own source position.
+        let (post_line_explicit_ordered, explicit_ordered): (Vec<&str>, Vec<&str>) =
+            if input.object_format.function_symbol_order
+                == FunctionSymbolOrder::FunctionFirstAtDefinition
+            {
+                explicit_ordered.into_iter().partition(|name| {
+                    function
+                        .referenced_function_symbols
+                        .iter()
+                        .any(|function_name| function_name == name)
+                })
+            } else {
+                (Vec::new(), explicit_ordered)
+            };
         // The register save/restore HELPERS (_savegpr_N/_restgpr_N) are created
         // while mwcc compiles the PROLOGUE/EPILOGUE — before the function's
         // symbol — even though they are unprototyped (measured: strtoul).
@@ -2267,6 +2364,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     if let Some(forward) = functions.iter().position(|later| {
                         !later.is_static && !later.implicit_local && later.name == name
                     }) {
+                        if input.object_format.function_symbol_order
+                            == FunctionSymbolOrder::FunctionFirstAtDefinition
+                        {
+                            continue;
+                        }
                         global_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
                         function_symbols[forward] = (symtab.len() / SYMBOL_SIZE) as u32;
                         let binding = if functions[forward].is_weak {
@@ -2293,6 +2395,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                             0
                         };
                         comment_values.push((input.object_format.code_alignment, flags));
+                        if input.object_format.function_symbol_order
+                            != FunctionSymbolOrder::FunctionFirstAtDefinition
+                        {
+                            if let Some(line_symbol) = debug_function_lines.get(name) {
+                                emit_debug_symbol!(*line_symbol);
+                            }
+                        }
                         continue;
                     }
                     global_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
@@ -2371,6 +2480,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         symbol_function.name,
                         function_symbols[symbol_index],
                     );
+                    if input.object_format.function_symbol_order
+                        != FunctionSymbolOrder::FunctionFirstAtDefinition
+                    {
+                        if let Some(line_symbol) = debug_function_lines.get(symbol_function.name) {
+                            emit_debug_symbol!(*line_symbol);
+                        }
+                    }
                     for (name, byte_offset) in &symbol_function.entry_points {
                         global_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
                         write_symbol(
@@ -2397,7 +2513,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         emit_referenced!(defined_data_ordered);
         if matches!(
             input.object_format.function_symbol_order,
-            FunctionSymbolOrder::FunctionFirst | FunctionSymbolOrder::LegacyDeferred
+            FunctionSymbolOrder::FunctionFirst
+                | FunctionSymbolOrder::FunctionFirstAtDefinition
+                | FunctionSymbolOrder::LegacyDeferred
         ) || function.is_asm
         {
             emit_referenced!(absolute_ordered);
@@ -2462,7 +2580,20 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 ));
             }
         }
-        emit_referenced!(implicit_ordered);
+        if input.object_format.function_symbol_order
+            == FunctionSymbolOrder::FunctionFirstAtDefinition
+        {
+            if let Some(line_symbol) = debug_function_lines.get(function.name) {
+                emit_debug_symbol!(*line_symbol);
+            }
+            emit_referenced!(post_line_explicit_ordered);
+            emit_referenced!(implicit_ordered);
+        } else {
+            emit_referenced!(implicit_ordered);
+            if let Some(line_symbol) = debug_function_lines.get(function.name) {
+                emit_debug_symbol!(*line_symbol);
+            }
+        }
         // Initialized objects declared right after this function emit here —
         // the source-position interleaving. STATIC functions count too
         // (measured: ansi_fp's .rodata digit table, declared between static
@@ -2509,18 +2640,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         }
     }
     if let Some(debug) = debug {
-        for symbol in debug.symbols.iter().filter(|symbol| symbol.is_global) {
-            debug_symbols.insert(symbol.name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
-            write_symbol(
-                &mut symtab,
-                strtab.add(&symbol.name),
-                symbol.offset,
-                symbol.size,
-                STB_GLOBAL_OBJECT,
-                0,
-                index_of(symbol.section.name()) as u16,
-            );
-            comment_values.push((symbol.alignment, 0));
+        for symbol in debug
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.binding != DebugSymbolBinding::Local)
+        {
+            emit_debug_symbol!(symbol);
         }
     }
     // The `.comment` trailer is now fully determined by the symbol alignments.

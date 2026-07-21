@@ -759,14 +759,14 @@ impl Behavior {
                 .profile
                 .folded_float_compare_linkage_style(),
             folded_float_guard_label_bump: config.build.profile.folded_float_guard_label_bump()
-                + if config.flags.ipa_file {
+                + if config.flags.whole_file_optimization_enabled() {
                     config.build.profile.folded_float_guard_ipa_label_bump()
                 } else {
                     0
                 },
             function_ordinal_accounting_style: match (
                 config.build.profile.function_ordinal_accounting_style(),
-                config.flags.ipa_file,
+                config.flags.whole_file_optimization_enabled(),
             ) {
                 (FunctionOrdinalAccountingStyle::Gc41, true) => {
                     FunctionOrdinalAccountingStyle::Gc41Ipa
@@ -934,7 +934,7 @@ impl Behavior {
                 .build
                 .profile
                 .cxx_virtual_destructor_label_bump(),
-            cxx_inline_ipa_call_label_bump: if config.flags.ipa_file {
+            cxx_inline_ipa_call_label_bump: if config.flags.whole_file_optimization_enabled() {
                 config.build.profile.cxx_inline_ipa_call_label_bump()
             } else {
                 0
@@ -966,8 +966,7 @@ impl Behavior {
             deferred_inlining: config.flags.inline_deferred,
             use_lmw_stmw: config.flags.use_lmw_stmw,
             scheduler_enabled: config.flags.scheduler_enabled,
-            tail_call_optimization: config.flags.ipa_file
-                && config.flags.optimization != Optimization::O0,
+            tail_call_optimization: config.flags.whole_file_optimization_enabled(),
             terminal_indirect_tail_call: config.build.profile.terminal_indirect_tail_call(),
         }
     }

@@ -148,7 +148,7 @@ def main() -> None:
         "after-grouped": 3,
     }[args.layout]
 
-    output = bytearray(b"MWDC\x01")
+    output = bytearray(b"MWDC\x02")
     output.append(layout)
     write_bytes(output, section_bytes(data, sections, ".line"))
     write_bytes(output, section_bytes(data, sections, ".debug"))
@@ -161,17 +161,37 @@ def main() -> None:
         index for index, section in enumerate(sections) if section.name in (".line", ".debug")
     }
     captured_symbols = [
-        symbol
-        for symbol in symbol_table
+        (index, symbol)
+        for index, symbol in enumerate(symbol_table)
         if symbol[0] not in (".line", ".debug") and symbol[4] in debug_section_indexes
     ]
     output.extend(struct.pack(">I", len(captured_symbols)))
-    for name, value, size, info, section_index in captured_symbols:
+    comment = section_bytes(data, sections, ".comment")
+    expected_comment_size = 60 + max(0, len(symbol_table) - 2) * 8
+    if len(comment) != expected_comment_size:
+        raise ValueError(
+            f"unexpected .comment size {len(comment)} for {len(symbol_table)} symbols"
+        )
+    for symbol_index, (name, value, size, info, section_index) in captured_symbols:
         encoded_name = name.encode("utf-8")
         section_kind = 0 if sections[section_index].name == ".line" else 1
         binding = info >> 4
+        if binding not in (0, 1, 2):
+            raise ValueError(f"unsupported debug-symbol binding {binding} for {name}")
+        alignment, comment_flags = struct.unpack_from(
+            ">II", comment, 60 + (symbol_index - 2) * 8
+        )
         output.extend(
-            struct.pack(">HBBIII", len(encoded_name), section_kind, binding != 0, value, size, 1)
+            struct.pack(
+                ">HBBIIII",
+                len(encoded_name),
+                section_kind,
+                binding,
+                value,
+                size,
+                alignment,
+                comment_flags,
+            )
         )
         output.extend(encoded_name)
 

@@ -436,8 +436,7 @@ fn compile(
     let mut machine_functions: Vec<mwcc_machine_code::MachineFunction> =
         Vec::with_capacity(unit.functions.len());
     for (function_index, function) in unit.functions.iter().enumerate() {
-        if config.flags.ipa_file
-            && config.flags.optimization != mwcc_versions::Optimization::O0
+        if config.flags.whole_file_optimization_enabled()
             && function.is_static
             && inline_summaries.should_elide_ipa_function(&function.name)
         {
@@ -1594,12 +1593,14 @@ fn compile(
         emb_sda21_offset: config.build.emb_sda21_offset,
         code_alignment,
         sdata2_writable: config.build.sdata2_writable,
-        function_symbol_order: if config.flags.ipa_file {
+        function_symbol_order: if config.flags.whole_file_optimization_enabled() {
             // Whole-file IPA registers the optimized function before the
             // external target discovered while lowering its body.
             mwcc_machine_code_to_object::FunctionSymbolOrder::FunctionFirst
         } else if config.build.function_symbol_before_references {
-            if config.flags.inline_deferred {
+            if config.flags.optimization == mwcc_versions::Optimization::O0 {
+                mwcc_machine_code_to_object::FunctionSymbolOrder::FunctionFirstAtDefinition
+            } else if config.flags.inline_deferred {
                 mwcc_machine_code_to_object::FunctionSymbolOrder::LegacyDeferred
             } else {
                 mwcc_machine_code_to_object::FunctionSymbolOrder::FunctionFirst
@@ -1780,8 +1781,16 @@ mod tests {
 
     #[test]
     fn command_line_opt_off_overrides_an_earlier_level() {
-        let parsed = parse_invocation(&["-O4,p".into(), "-opt".into(), "off".into()]);
+        let parsed = parse_invocation(&[
+            "-O4,p".into(),
+            "-ipa".into(),
+            "file".into(),
+            "-opt".into(),
+            "off".into(),
+        ]);
         assert_eq!(parsed.flags.optimization, mwcc_versions::Optimization::O0);
+        assert!(parsed.flags.ipa_file);
+        assert!(!parsed.flags.whole_file_optimization_enabled());
     }
 
     #[test]

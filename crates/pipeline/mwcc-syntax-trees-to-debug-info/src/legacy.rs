@@ -43,9 +43,6 @@ pub(super) fn lower(
     build: CompilerBuild,
     code_alignment: u32,
 ) -> Compilation<DebugSections> {
-    if let Some(capture) = captures::lookup(unit, machine_functions, source_name, build)? {
-        return Ok(capture);
-    }
     let globals: Vec<_> = unit
         .globals
         .iter()
@@ -309,6 +306,15 @@ pub(super) fn lower(
         }
     }
     finish(line, records, DebugLayout::BeforeDataGrouped)
+}
+
+pub(super) fn lookup_capture(
+    unit: &TranslationUnit,
+    machine_functions: &[MachineFunction],
+    source_name: &str,
+    build: CompilerBuild,
+) -> Compilation<Option<DebugSections>> {
+    captures::lookup(unit, machine_functions, source_name, build)
 }
 
 fn finish(
