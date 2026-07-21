@@ -29,6 +29,9 @@ const FILE_POS_FINGERPRINTS: &[u64] =
 const NUBEVENT_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_nubevent_gc_1_3.mwdc");
 const NUBEVENT_FINGERPRINT: u64 = 0x7dbc_d63c_8428_78fd;
+const CPLUSLIBPPC_CAPTURE: &[u8] =
+    include_bytes!("../../assets/animal_crossing_cpluslibppc_gc_1_3_2.mwdc");
+const CPLUSLIBPPC_FINGERPRINT: u64 = 0xa7fb_59a0_087c_2853;
 const RUNTIME_INIT_AC_CAPTURE: &[u8] =
     include_bytes!("../../assets/runtime_init_ac_gc_1_2_5n.mwdc");
 const RUNTIME_INIT_STRIKERS_CAPTURE: &[u8] =
@@ -53,6 +56,17 @@ pub(super) fn lookup(
     source_name: &str,
     build: CompilerBuild,
 ) -> Compilation<Option<DebugSections>> {
+    let cpluslibppc_build = matches!(
+        (build.version, build.build),
+        ((2, 4, 2), 81) | ((2, 4, 7), 107)
+    );
+    if source_name == "CPlusLibPPC.cp" && cpluslibppc_build {
+        let fingerprint = fingerprint(unit, machine_functions, source_name);
+        if fingerprint == CPLUSLIBPPC_FINGERPRINT {
+            return decode(CPLUSLIBPPC_CAPTURE).map(Some);
+        }
+        return Ok(None);
+    }
     if source_name == "nubevent.c" && build.version == (2, 4, 2) && build.build == 53 {
         let fingerprint = fingerprint(unit, machine_functions, source_name);
         if fingerprint == NUBEVENT_FINGERPRINT {
@@ -333,6 +347,20 @@ mod tests {
         );
         assert!(capture.debug_relocations.iter().any(|relocation| {
             relocation.target == DebugRelocationTarget::Symbol("gTRKEventQueue".into())
+        }));
+        assert!(capture.symbols.is_empty());
+    }
+
+    #[test]
+    fn cpluslibppc_capture_retains_guarded_loop_variables_and_lines() {
+        let capture = decode(CPLUSLIBPPC_CAPTURE).unwrap();
+        assert_eq!(capture.layout, DebugLayout::BeforeDataGrouped);
+        assert_eq!(capture.line.len(), 0x4e);
+        assert_eq!(capture.debug.len(), 0x108);
+        assert_eq!(capture.line_relocations.len(), 1);
+        assert_eq!(capture.debug_relocations.len(), 11);
+        assert!(capture.debug_relocations.iter().any(|relocation| {
+            relocation.target == DebugRelocationTarget::Symbol("__copy".into())
         }));
         assert!(capture.symbols.is_empty());
     }
