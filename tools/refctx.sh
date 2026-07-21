@@ -356,7 +356,7 @@ if ! "$ours" --build "$build" ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$d
   # ordinal difference because MWCC debug bookkeeping advances the @N stream.
   # This same-flags projection is diagnostic only and never earns whole-object
   # BYTE credit.
-  if [[ "$defer_detail" == debug-info:* ]]; then
+  if [[ "$defer_detail" == debug-info:* && "${REFCTX_CODE_PROJECTION:-0}" == 1 ]]; then
     reference_projected=0
     if [[ $direct_ready -eq 1 ]]; then
       if (

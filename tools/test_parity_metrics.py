@@ -133,8 +133,13 @@ class IdentityTests(unittest.TestCase):
             parse_loop_args(["--work-only", "--audit-only"])
 
     def test_reference_runner_parallelism_is_explicit_and_bounded(self):
-        self.assertEqual(parse_reference_args([]).jobs, 1)
+        defaults = parse_reference_args([])
+        self.assertEqual(defaults.jobs, 1)
+        self.assertFalse(defaults.code_projection)
         self.assertEqual(parse_reference_args(["--jobs", "4"]).jobs, 4)
+        self.assertTrue(
+            parse_reference_args(["--code-projection"]).code_projection
+        )
 
         release_slow = threading.Event()
 

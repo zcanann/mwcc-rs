@@ -269,6 +269,7 @@ def run_row(
     refctx: Path,
     compiler: Path,
     timeout: int,
+    code_projection: bool,
 ) -> Tuple[str, str]:
     project = reference_root / row["project"]
     command = [
@@ -282,6 +283,7 @@ def run_row(
     environment["REFCTX_EMPTY_BASE"] = "1"
     environment["MWCC_BIN"] = str(compiler)
     environment["MWCC_EXPERIMENTAL_BUILDS"] = "1"
+    environment["REFCTX_CODE_PROJECTION"] = "1" if code_projection else "0"
     try:
         result = subprocess.run(
             command,
@@ -344,6 +346,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--shard-count", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--timeout", type=int, default=300)
+    parser.add_argument(
+        "--code-projection",
+        action="store_true",
+        help="retry debug-deferred rows with -sym off for diagnostic code metrics",
+    )
     parser.add_argument(
         "--jobs",
         type=int,
@@ -458,6 +465,7 @@ def main() -> int:
                 refctx,
                 compiler,
                 args.timeout,
+                args.code_projection,
             )
         else:
             status, detail = "UNSUPPORTED_BUILD", support_detail
