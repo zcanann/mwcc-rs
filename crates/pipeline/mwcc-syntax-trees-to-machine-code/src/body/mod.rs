@@ -11,6 +11,7 @@ mod conditional;
 mod dispatchers;
 mod driver;
 mod enum_remap_member_update;
+mod endian_stack_pack;
 mod float_store_fill;
 mod fixed_address_object_flush;
 mod fixed_port_bitfield;

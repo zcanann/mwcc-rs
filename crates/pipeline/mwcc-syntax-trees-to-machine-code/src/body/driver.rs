@@ -1866,6 +1866,12 @@ impl Generator {
         if self.try_long_long_member_initialize(function)? {
             return Ok(());
         }
+        // Endian scalar wrappers intentionally take the address of a 16/32/64-bit
+        // parameter, select its frame image or a reversed stack array, then tail
+        // into a byte-buffer call. Claim all widths before the long-long router.
+        if self.try_endian_stack_pack(function)? {
+            return Ok(());
+        }
         // A long long (64-bit) value lives in a general-register PAIR — r3:r4 is high:low. Route
         // every long-long-involved function to the dedicated handler so none falls through to the
         // 32-bit codegen (which would emit a single-register result for a 64-bit value — wrong
