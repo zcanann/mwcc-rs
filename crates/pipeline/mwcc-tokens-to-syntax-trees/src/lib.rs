@@ -2011,6 +2011,32 @@ blr\n\
     }
 
     #[test]
+    fn resolves_local_typeof_aliases_for_anonymous_member_elements() {
+        let source = r#"
+            struct Asset {
+                struct { short x; short y; } positions[2];
+            };
+            int read(struct Asset* asset) {
+                typedef __typeof__(((struct Asset){ 0 }).positions[0]) position_t;
+                position_t* position = &asset->positions[0];
+                return position->y;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].return_expression,
+            Some(Expression::Member { offset: 2, .. })
+        ));
+    }
+
+    #[test]
     fn parses_scoped_function_pointer_typedef_calls() {
         let source = r#"
             void invoke(void* code, void* value) {

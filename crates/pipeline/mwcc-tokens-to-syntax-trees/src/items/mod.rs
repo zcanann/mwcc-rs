@@ -3503,12 +3503,33 @@ impl Parser {
             Option<Type>,
             Option<crate::cxx::CxxFunctionType>,
         )> = Vec::new();
+        let mut local_struct_typedefs: Vec<(String, Option<String>)> = Vec::new();
         // A local declaration may open with a storage-class keyword: `static` gives the variable
         // static storage (codegen'd like a global, so recorded and deferred for now), while
         // `register`/`auto` are ordinary-automatic hints with no codegen effect. These are
         // `Identifier` tokens, so peek past them before the type test below.
         loop {
             if matches!(self.peek(), Token::Identifier(word) if word == "typedef") {
+                if matches!(self.peek_at(1), Token::Identifier(word) if word == "__typeof__") {
+                    let (alias, declared_type, struct_tag) =
+                        self.parse_local_typeof_member_typedef()?;
+                    let previous_type = self.typedefs.insert(alias.clone(), declared_type);
+                    let previous_function_type =
+                        self.function_pointer_typedefs.remove(&alias);
+                    local_function_pointer_typedefs.push((
+                        alias.clone(),
+                        previous_type,
+                        previous_function_type,
+                    ));
+                    let previous_struct = self.struct_typedefs.get(&alias).cloned();
+                    if let Some(tag) = struct_tag {
+                        self.struct_typedefs.insert(alias.clone(), tag);
+                    } else {
+                        self.struct_typedefs.remove(&alias);
+                    }
+                    local_struct_typedefs.push((alias, previous_struct));
+                    continue;
+                }
                 let (alias, function_type) = self.parse_local_function_pointer_typedef()?;
                 let previous_type = self
                     .typedefs
@@ -4169,6 +4190,13 @@ impl Parser {
                 self.function_pointer_typedefs.remove(&alias);
             }
         }
+        for (alias, previous_struct) in local_struct_typedefs.into_iter().rev() {
+            if let Some(tag) = previous_struct {
+                self.struct_typedefs.insert(alias, tag);
+            } else {
+                self.struct_typedefs.remove(&alias);
+            }
+        }
 
         let mut locals = locals;
         locals.extend(block_locals);
@@ -4215,6 +4243,70 @@ impl Parser {
         let function_type = self.parse_cxx_function_type(return_identity)?;
         self.expect(Token::Semicolon)?;
         Ok((alias, function_type))
+    }
+
+    /// Parse the MWERKS/GNU local alias form used to name an anonymous member
+    /// element type: `typedef __typeof__(((struct S){0}).field[0]) Alias;`.
+    /// This is declaration introspection only; the compound literal is never
+    /// evaluated, and the selected type comes from the recovered aggregate.
+    fn parse_local_typeof_member_typedef(
+        &mut self,
+    ) -> Compilation<(String, Type, Option<String>)> {
+        if !self.eat_word("typedef") || !self.eat_word("__typeof__") {
+            return Err(Diagnostic::error("expected a local __typeof__ typedef"));
+        }
+        self.expect(Token::ParenOpen)?;
+        let mut parens = 1i32;
+        let mut braces = 0i32;
+        let mut brackets = 0i32;
+        let mut struct_name = None;
+        let mut member_name = None;
+        while parens > 0 {
+            match self.tokens.get(self.position) {
+                Some(Token::KeywordStruct) => {
+                    if let Some(Token::Identifier(name)) = self.tokens.get(self.position + 1) {
+                        struct_name = Some(name.clone());
+                    }
+                }
+                Some(Token::Dot) => {
+                    if let Some(Token::Identifier(name)) = self.tokens.get(self.position + 1) {
+                        member_name = Some(name.clone());
+                    }
+                }
+                Some(Token::ParenOpen) => parens += 1,
+                Some(Token::ParenClose) => parens -= 1,
+                Some(Token::BraceOpen) => braces += 1,
+                Some(Token::BraceClose) => braces -= 1,
+                Some(Token::BracketOpen) => brackets += 1,
+                Some(Token::BracketClose) => brackets -= 1,
+                Some(Token::EndOfFile) | None => {
+                    return Err(Diagnostic::error("unterminated local __typeof__ typedef"))
+                }
+                _ => {}
+            }
+            self.position += 1;
+        }
+        if braces != 0 || brackets != 0 {
+            return Err(Diagnostic::error("unbalanced local __typeof__ member expression"));
+        }
+        let aggregate = struct_name
+            .ok_or_else(|| Diagnostic::error("__typeof__ member expression has no struct type"))?;
+        let member = member_name
+            .ok_or_else(|| Diagnostic::error("__typeof__ member expression has no member"))?;
+        let field = self
+            .structs
+            .get(&aggregate)
+            .and_then(|layout| layout.fields.get(&member))
+            .ok_or_else(|| {
+                Diagnostic::error(format!(
+                    "__typeof__ member '{aggregate}.{member}' has no recovered layout"
+                ))
+            })?;
+        let declared_type = field.member_type;
+        let struct_tag = field.struct_tag.clone();
+        let alias = self.parse_identifier()?;
+        self.expect(Token::Semicolon)?;
+        Ok((alias, declared_type, struct_tag))
     }
 
     pub(crate) fn peek_is_type(&self) -> bool {
