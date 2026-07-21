@@ -1866,6 +1866,26 @@ blr\n\
             (8, "__dt__7DerivedFv".to_string(), 0),
             (20, "@8@__dt__7DerivedFv".to_string(), 0),
         ]);
+        assert!(matches!(unit.functions[1].statements.as_slice(), [
+            mwcc_syntax_trees::Statement::If { then_body, .. }
+        ] if matches!(then_body.as_slice(), [
+            mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Call { name: secondary, arguments: secondary_args }
+            ),
+            mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Call { name: primary, arguments: primary_args }
+            ),
+            mwcc_syntax_trees::Statement::If { .. },
+        ] if secondary == "__dt__9SecondaryFv"
+            && matches!(secondary_args.as_slice(), [
+                mwcc_syntax_trees::Expression::MemberAddress { offset: 8, .. },
+                mwcc_syntax_trees::Expression::IntegerLiteral(0),
+            ])
+            && primary == "__dt__7PrimaryFv"
+            && matches!(primary_args.as_slice(), [
+                mwcc_syntax_trees::Expression::Variable(this),
+                mwcc_syntax_trees::Expression::IntegerLiteral(0),
+            ] if this == "this"))));
     }
 
     #[test]

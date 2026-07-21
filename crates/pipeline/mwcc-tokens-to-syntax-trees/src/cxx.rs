@@ -2938,6 +2938,48 @@ impl Parser {
         }
         Ok(statements)
     }
+
+    /// Synthesize non-virtual base destruction in language-mandated reverse
+    /// declaration order. Base destructors receive deleting flag zero: only
+    /// the complete-object destructor may invoke operator delete.
+    pub(crate) fn synthesize_base_destructor_calls(
+        &self,
+        scope: &str,
+    ) -> Compilation<Vec<Statement>> {
+        let class = self.cxx_classes.get(scope).ok_or_else(|| {
+            Diagnostic::error(format!(
+                "class layout for destructor '{scope}' was not recovered"
+            ))
+        })?;
+        let mut statements = Vec::new();
+        for base in class.bases.iter().rev() {
+            let Some(base_class) = self.cxx_classes.get(&base.name) else {
+                continue;
+            };
+            if !base_class.has_virtual_destructor {
+                continue;
+            }
+            let this = if base.offset == 0 {
+                Expression::Variable("this".to_string())
+            } else {
+                Expression::MemberAddress {
+                    base: Box::new(Expression::Variable("this".to_string())),
+                    offset: base.offset,
+                    element: mwcc_syntax_trees::Pointee::UnsignedChar,
+                    index_stride: None,
+                }
+            };
+            statements.push(Statement::Expression(Expression::Call {
+                name: self.mangle_typed_member_in_current_namespace(
+                    &base.name,
+                    "__dt",
+                    &[],
+                )?,
+                arguments: vec![this, Expression::IntegerLiteral(0)],
+            }));
+        }
+        Ok(statements)
+    }
 }
 
 /// Mangle an ordinary, singly-qualified member function.

@@ -355,6 +355,245 @@ impl ConstructorTail {
     }
 }
 
+/// Lower a complete-object deleting destructor with explicit reverse-order
+/// base calls. The frontend supplies the C++ lifetime semantics; this owner
+/// supplies the two saved homes and the measured predecrement-frame schedule.
+pub(crate) fn lower_composed_destructor(
+    function: &Function,
+    config: CompilerConfig,
+) -> Option<MachineFunction> {
+    if Behavior::resolve(&config).frame_convention != FrameConvention::Predecrement
+        || !function.name.starts_with("__dt__")
+        || function.parameters.len() != 2
+        || function.parameters[0].name != "this"
+        || !matches!(function.parameters[0].parameter_type, Type::StructPointer { .. })
+        || function.parameters[1].name != "__destroy"
+        || function.parameters[1].parameter_type != Type::Short
+        || !function.locals.is_empty()
+        || !function.guards.is_empty()
+        || !matches!(
+            function.return_expression.as_ref(),
+            Some(Expression::Variable(name)) if name == "this"
+        )
+    {
+        return None;
+    }
+    let [Statement::If {
+        condition: Expression::Variable(condition),
+        then_body,
+        else_body,
+    }] = function.statements.as_slice()
+    else {
+        return None;
+    };
+    if condition != "this" || !else_body.is_empty() {
+        return None;
+    }
+    let (delete_guard, base_statements) = then_body.split_last()?;
+    let base_calls: Vec<(String, u32)> = base_statements
+        .iter()
+        .map(parse_base_destructor_call)
+        .collect::<Option<_>>()?;
+    if base_calls.is_empty() {
+        return None;
+    }
+    let Statement::If {
+        condition:
+            Expression::Binary {
+                operator: mwcc_syntax_trees::BinaryOperator::Greater,
+                left,
+                right,
+            },
+        then_body: delete_body,
+        else_body: delete_else,
+    } = delete_guard
+    else {
+        return None;
+    };
+    if !matches!(left.as_ref(), Expression::Variable(name) if name == "__destroy")
+        || !matches!(right.as_ref(), Expression::IntegerLiteral(0))
+        || !delete_else.is_empty()
+    {
+        return None;
+    }
+    let [Statement::Expression(Expression::Call {
+        name: delete_callee,
+        arguments: delete_arguments,
+    })] = delete_body.as_slice()
+    else {
+        return None;
+    };
+    if !matches!(delete_arguments.as_slice(), [Expression::Variable(name)] if name == "this") {
+        return None;
+    }
+
+    let mut output = MachineFunction::new(function.name.clone());
+    output.instructions.extend([
+        Instruction::StoreWordWithUpdate {
+            s: 1,
+            a: 1,
+            offset: -16,
+        },
+        Instruction::MoveFromLinkRegister { d: 0 },
+        Instruction::CompareWordImmediate { a: 3, immediate: 0 },
+        Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 20,
+        },
+        Instruction::StoreWord {
+            s: 31,
+            a: 1,
+            offset: 12,
+        },
+        Instruction::Or { a: 31, s: 4, b: 4 },
+        Instruction::StoreWord {
+            s: 30,
+            a: 1,
+            offset: 8,
+        },
+        Instruction::Or { a: 30, s: 3, b: 3 },
+        Instruction::BranchConditionalForward {
+            options: 12,
+            condition_bit: 2,
+            target: 0,
+        },
+    ]);
+    let null_branch = 8;
+    let mut relocations = Vec::new();
+    let mut referenced_functions = Vec::new();
+    for (index, (callee, adjustment)) in base_calls.iter().enumerate() {
+        if index == 0 {
+            output
+                .instructions
+                .push(Instruction::load_immediate(4, 0));
+            if *adjustment != 0 {
+                output.instructions.push(Instruction::AddImmediate {
+                    d: 3,
+                    a: 3,
+                    immediate: i16::try_from(*adjustment).ok()?,
+                });
+            }
+        } else {
+            emit_adjusted_saved_object(&mut output.instructions, *adjustment)?;
+            output
+                .instructions
+                .push(Instruction::load_immediate(4, 0));
+        }
+        let instruction_index = output.instructions.len();
+        output.instructions.push(Instruction::BranchAndLink {
+            target: callee.clone(),
+        });
+        relocations.push(Relocation {
+            instruction_index,
+            kind: RelocationKind::Rel24,
+            target: RelocationTarget::External(callee.clone()),
+        });
+        referenced_functions.push(callee.clone());
+    }
+    output.instructions.extend([
+        Instruction::CompareWordImmediate {
+            a: 31,
+            immediate: 0,
+        },
+        Instruction::BranchConditionalForward {
+            options: 4,
+            condition_bit: 1,
+            target: 0,
+        },
+        Instruction::Or { a: 3, s: 30, b: 30 },
+    ]);
+    let deleting_branch = output.instructions.len() - 2;
+    let delete_call = output.instructions.len();
+    output.instructions.push(Instruction::BranchAndLink {
+        target: delete_callee.clone(),
+    });
+    relocations.push(Relocation {
+        instruction_index: delete_call,
+        kind: RelocationKind::Rel24,
+        target: RelocationTarget::External(delete_callee.clone()),
+    });
+    referenced_functions.push(delete_callee.clone());
+    let epilogue = output.instructions.len();
+    if let Instruction::BranchConditionalForward { target, .. } =
+        &mut output.instructions[null_branch]
+    {
+        *target = epilogue;
+    }
+    if let Instruction::BranchConditionalForward { target, .. } =
+        &mut output.instructions[deleting_branch]
+    {
+        *target = epilogue;
+    }
+    output.instructions.extend([
+        Instruction::Or { a: 3, s: 30, b: 30 },
+        Instruction::LoadWord {
+            d: 31,
+            a: 1,
+            offset: 12,
+        },
+        Instruction::LoadWord {
+            d: 30,
+            a: 1,
+            offset: 8,
+        },
+        Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 20,
+        },
+        Instruction::MoveToLinkRegister { s: 0 },
+        Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 16,
+        },
+        Instruction::BranchToLinkRegister,
+    ]);
+    output.relocations = relocations;
+    output.symbol_order = referenced_functions.clone();
+    output.referenced_function_symbols = referenced_functions.clone();
+    output.implicit_external_callees = referenced_functions;
+    output.is_static = function.is_static;
+    output.is_weak = function.is_weak;
+    output.section = function.section.clone();
+    output.force_active = function.force_active;
+    if config.flags.cpp_exceptions {
+        output.frame = Some(FrameInfo {
+            saved_gpr_count: 2,
+            saved_fpr_count: 0,
+            uses_fpu: false,
+        });
+    }
+    Some(output)
+}
+
+fn emit_adjusted_saved_object(
+    instructions: &mut Vec<Instruction>,
+    adjustment: u32,
+) -> Option<()> {
+    if adjustment == 0 {
+        instructions.push(Instruction::Or { a: 3, s: 30, b: 30 });
+    } else {
+        instructions.push(Instruction::AddImmediate {
+            d: 3,
+            a: 30,
+            immediate: i16::try_from(adjustment).ok()?,
+        });
+    }
+    Some(())
+}
+
+fn parse_base_destructor_call(statement: &Statement) -> Option<(String, u32)> {
+    let Statement::Expression(Expression::Call { name, arguments }) = statement else {
+        return None;
+    };
+    let [object, Expression::IntegerLiteral(0)] = arguments.as_slice() else {
+        return None;
+    };
+    Some((name.clone(), this_adjustment(object)?))
+}
+
 /// Lower an empty polymorphic constructor whose only compiler-generated action
 /// is installing the primary vptr. Constructors with member/base initialization
 /// or a written body remain on the general lowering path.

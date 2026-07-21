@@ -2864,6 +2864,11 @@ impl Parser {
             if !constructor_initializers.is_empty() {
                 function.statements.splice(0..0, constructor_initializers);
             }
+            let destructor_base_calls = if let Some(scope) = &destructor_scope {
+                self.synthesize_base_destructor_calls(scope)?
+            } else {
+                Vec::new()
+            };
             let special_member_scope = constructor_scope.as_ref().or(destructor_scope.as_ref());
             if let Some(scope) = special_member_scope {
                 if let Some(class) = self.cxx_classes.get(scope) {
@@ -2909,30 +2914,32 @@ impl Parser {
                                     .get(scope)
                                     .map_or(0, |layout| layout.size),
                             };
+                            let mut destructor_body = Vec::new();
+                            if destructor_base_calls.is_empty() {
+                                destructor_body.push(vptr_store);
+                            }
+                            destructor_body.append(&mut function.statements);
+                            destructor_body.extend(destructor_base_calls);
+                            destructor_body.push(Statement::If {
+                                condition: Expression::Binary {
+                                    operator: mwcc_syntax_trees::BinaryOperator::Greater,
+                                    left: Box::new(Expression::Variable(
+                                        "__destroy".to_string(),
+                                    )),
+                                    right: Box::new(Expression::IntegerLiteral(0)),
+                                },
+                                then_body: vec![Statement::Expression(Expression::Call {
+                                    name: self
+                                        .cxx_delete_forwarder
+                                        .clone()
+                                        .unwrap_or_else(|| "__dl__FPv".to_string()),
+                                    arguments: vec![Expression::Variable("this".to_string())],
+                                })],
+                                else_body: Vec::new(),
+                            });
                             function.statements = vec![Statement::If {
                                 condition: Expression::Variable("this".to_string()),
-                                then_body: vec![
-                                    vptr_store,
-                                    Statement::If {
-                                        condition: Expression::Binary {
-                                            operator: mwcc_syntax_trees::BinaryOperator::Greater,
-                                            left: Box::new(Expression::Variable(
-                                                "__destroy".to_string(),
-                                            )),
-                                            right: Box::new(Expression::IntegerLiteral(0)),
-                                        },
-                                        then_body: vec![Statement::Expression(Expression::Call {
-                                            name: self
-                                                .cxx_delete_forwarder
-                                                .clone()
-                                                .unwrap_or_else(|| "__dl__FPv".to_string()),
-                                            arguments: vec![Expression::Variable(
-                                                "this".to_string(),
-                                            )],
-                                        })],
-                                        else_body: Vec::new(),
-                                    },
-                                ],
+                                then_body: destructor_body,
                                 else_body: Vec::new(),
                             }];
                             function.return_expression =
