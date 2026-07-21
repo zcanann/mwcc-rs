@@ -1886,11 +1886,22 @@ impl Parser {
             if *self.peek() == Token::KeywordStruct
                 && self.tokens.get(self.position + 2) == Some(&Token::BraceOpen)
             {
+                let definition_start = self.position;
                 self.expect(Token::KeywordStruct)?;
                 let tag = self.parse_identifier()?;
-                let mut layout = self.parse_struct_body()?;
+                let mut layout = self.parse_struct_body().map_err(|error| {
+                    Diagnostic::error(format!("struct layout '{tag}' was not recovered: {error}"))
+                })?;
                 layout.source_tag = Some(tag.clone());
                 self.structs.insert(tag.clone(), layout);
+                if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() {
+                    let layout = &self.structs[&tag];
+                    eprintln!(
+                        "recovered struct '{tag}' at token {definition_start}: size {}, fields {}",
+                        layout.size,
+                        layout.fields.len()
+                    );
+                }
                 if *self.peek() == Token::Semicolon {
                     self.advance();
                     return Ok(());

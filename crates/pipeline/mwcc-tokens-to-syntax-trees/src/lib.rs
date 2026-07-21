@@ -3520,6 +3520,207 @@ blr\n\
     }
 
     #[test]
+    fn recovers_layout_past_a_pointer_to_array_member() {
+        let source = r#"
+            struct Packet {
+                int before;
+                unsigned char (*rows)[2];
+                int after;
+            };
+            int read_after(struct Packet* packet) { return packet->after; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 8, .. })
+        ));
+    }
+
+    #[test]
+    fn defers_access_to_an_unmodeled_pointer_to_array_member() {
+        let source = r#"
+            struct Packet { unsigned char (*rows)[2]; };
+            unsigned char* rows(struct Packet* packet) { return packet->rows; }
+        "#;
+        let error = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap_err();
+        assert!(error
+            .message
+            .contains("accessing pointer-to-array member 'rows' is not supported yet"));
+    }
+
+    #[test]
+    fn recovers_an_inline_anonymous_struct_pointer_member() {
+        let source = r#"
+            struct Packet {
+                int before;
+                struct { int value; }* nested;
+                int after;
+            };
+            int read_nested(struct Packet* packet) { return packet->nested->value; }
+            int read_after(struct Packet* packet) { return packet->after; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 0, base, .. })
+                if matches!(base.as_ref(), mwcc_syntax_trees::Expression::Member { offset: 4, .. })
+        ));
+        assert!(matches!(
+            &unit.functions[1].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 8, .. })
+        ));
+    }
+
+    #[test]
+    fn recovers_layout_past_a_pointer_array_in_an_anonymous_union() {
+        let source = r#"
+            struct Command {
+                float timer;
+                float frame;
+                union {
+                    unsigned* pointers[1];
+                    unsigned word;
+                };
+                int after;
+            };
+            int read_after(struct Command* command) { return command->after; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 12, .. })
+        ));
+    }
+
+    #[test]
+    fn recovers_a_bit_field_variant_in_an_anonymous_union() {
+        let source = r#"
+            struct Hit {
+                int before;
+                union {
+                    void* owner;
+                    unsigned char flag : 1;
+                };
+                int after;
+            };
+            int read_flag(struct Hit* hit) { return hit->flag; }
+            int read_after(struct Hit* hit) { return hit->after; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::BitFieldRead { .. })
+        ));
+        assert!(matches!(
+            &unit.functions[1].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 8, .. })
+        ));
+    }
+
+    #[test]
+    fn recovers_comma_separated_union_variants() {
+        let source = r#"
+            struct Pair { int value; };
+            struct Variants {
+                union Named {
+                    struct Pair first, second;
+                    int scalar;
+                } selected;
+                int after;
+            };
+            int read_second(struct Variants* variants) {
+                return variants->selected.second.value;
+            }
+            int read_after(struct Variants* variants) { return variants->after; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 0, .. })
+        ));
+        assert!(matches!(
+            &unit.functions[1].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 4, .. })
+        ));
+    }
+
+    #[test]
+    fn recovers_a_nested_inline_union_pointer_variant() {
+        let source = r#"
+            struct Command {
+                union {
+                    union Payload { int value; }* payload;
+                    unsigned word;
+                };
+                int after;
+            };
+            int read_payload(struct Command* command) {
+                return command->payload->value;
+            }
+            int read_after(struct Command* command) { return command->after; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 0, base, .. })
+                if matches!(base.as_ref(), mwcc_syntax_trees::Expression::Member { offset: 0, .. })
+        ));
+        assert!(matches!(
+            &unit.functions[1].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 4, .. })
+        ));
+    }
+
+    #[test]
     fn accepts_a_trailing_comma_in_scoped_static_arrays() {
         let source = r#"
             void parse(void) {

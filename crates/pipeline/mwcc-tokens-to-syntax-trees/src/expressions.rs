@@ -1236,6 +1236,11 @@ impl Parser {
                     };
                     let offset = offset + base_offset;
                     let index_stride = base_stride.or(index_stride);
+                    if array_element.is_none() && array_stride.is_some() {
+                        return Err(Diagnostic::error(format!(
+                            "accessing pointer-to-array member '{field}' is not supported yet (roadmap)"
+                        )));
+                    }
                     if let Some((bit_offset, width)) = bit_field {
                         // A bit-field read is the containing unit load shifted+masked to
                         // the field's bits: `(load >> shift) & mask`, which lowers to
