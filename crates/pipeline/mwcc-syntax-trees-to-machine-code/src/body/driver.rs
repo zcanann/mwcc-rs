@@ -1280,6 +1280,12 @@ impl Generator {
         if self.try_trig_dispatcher(function)? {
             return Ok(());
         }
+        // A byte-class tokenizer owns one stack bitmap and three dependent
+        // loops. Lower it as one transaction so their shared registers and
+        // frame schedule remain coherent.
+        if self.try_byte_class_tokenizer(function)? {
+            return Ok(());
+        }
         // The ROTATED LOOP likewise (initialized locals route into value
         // tracking otherwise).
         if self.try_ascii_case_fold_hash_loop(function)? {
