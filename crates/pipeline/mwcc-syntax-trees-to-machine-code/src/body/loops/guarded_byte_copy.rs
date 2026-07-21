@@ -7,6 +7,7 @@
 
 #[allow(unused_imports)]
 use super::*;
+use mwcc_versions::GuardedByteCopyStyle;
 
 struct GuardedByteCopy<'a> {
     destination: &'a str,
@@ -41,6 +42,42 @@ fn is_nonzero_count(expression: &Expression, name: &str) -> bool {
                 && matches!(right.as_ref(), Expression::IntegerLiteral(0)))
 }
 
+fn is_early_return_guard(statement: &Statement, tested: &str, returned: &str) -> bool {
+    matches!(statement,
+        Statement::If {
+            condition: Expression::Unary {
+                operator: UnaryOperator::LogicalNot,
+                operand,
+            },
+            then_body,
+            else_body,
+        } if variable(operand) == Some(tested)
+            && matches!(then_body.as_slice(), [Statement::Return(Some(value))]
+                if variable(value) == Some(returned))
+            && else_body.is_empty())
+}
+
+fn is_alias_of(expression: &Expression, source: &str) -> bool {
+    variable(expression) == Some(source)
+        || matches!(expression,
+            Expression::Cast { operand, .. } if variable(operand) == Some(source))
+}
+
+fn is_decrement_assignment(expression: &Expression, name: &str) -> bool {
+    matches!(expression,
+        Expression::Assign { target, value }
+            if variable(target) == Some(name)
+                && is_step(value, name, BinaryOperator::Subtract))
+}
+
+fn is_post_increment(expression: &Expression, name: &str) -> bool {
+    matches!(expression,
+        Expression::PostStep {
+            target,
+            operator: BinaryOperator::Add,
+        } if variable(target) == Some(name))
+}
+
 fn recognize(function: &Function) -> Option<GuardedByteCopy<'_>> {
     if !function.guards.is_empty() || function_makes_call(function) {
         return None;
@@ -71,6 +108,47 @@ fn recognize(function: &Function) -> Option<GuardedByteCopy<'_>> {
     {
         return None;
     }
+
+    // The parser deliberately preserves postfix side effects inside the store
+    // expression and a do-while decrement inside its condition. Accept that
+    // native representation directly instead of requiring an unrelated pass
+    // to explode it into four artificial assignments first.
+    if let [destination_guard, count_guard, Statement::Assign {
+        name: cursor_assignment,
+        value: cursor_value,
+    }, Statement::Loop {
+        kind: LoopKind::DoWhile,
+        initializer: None,
+        condition: Some(loop_condition),
+        step: None,
+        body,
+    }] = function.statements.as_slice()
+    {
+        let compact_body = matches!(body.as_slice(),
+            [Statement::Store {
+                target: Expression::Dereference { pointer: store_pointer },
+                value: Expression::Dereference { pointer: load_pointer },
+            }] if is_post_increment(store_pointer, &cursor.name)
+                && is_post_increment(load_pointer, &source.name));
+        if is_early_return_guard(
+            destination_guard,
+            &destination.name,
+            &destination.name,
+        ) && is_early_return_guard(count_guard, &count.name, &destination.name)
+            && cursor_assignment == &cursor.name
+            && is_alias_of(cursor_value, &destination.name)
+            && is_decrement_assignment(loop_condition, &count.name)
+            && compact_body
+        {
+            return Some(GuardedByteCopy {
+                destination: &destination.name,
+                source: &source.name,
+                count: &count.name,
+                cursor: &cursor.name,
+            });
+        }
+    }
+
     let [Statement::If {
         condition:
             Expression::Binary {
@@ -175,13 +253,23 @@ impl Generator {
 
         // This whole-function recognizer owns a measured instruction schedule.
         self.output.pre_scheduled = true;
+        let style = self.behavior.guarded_byte_copy_style;
         for register in [destination, count] {
-            self.output
-                .instructions
-                .push(Instruction::CompareLogicalWordImmediate {
-                    a: register,
-                    immediate: 0,
-                });
+            self.output.instructions.push(match style {
+                GuardedByteCopyStyle::LogicalCompare => {
+                    Instruction::CompareLogicalWordImmediate {
+                        a: register,
+                        immediate: 0,
+                    }
+                }
+                GuardedByteCopyStyle::SignedCompare
+                | GuardedByteCopyStyle::SignedCompareWithAlignedStore => {
+                    Instruction::CompareWordImmediate {
+                        a: register,
+                        immediate: 0,
+                    }
+                }
+            });
             self.output
                 .instructions
                 .push(Instruction::BranchConditionalToLinkRegister {
@@ -193,6 +281,14 @@ impl Generator {
             .instructions
             .push(Instruction::move_register(cursor, destination));
         let loop_body = self.fresh_label();
+        let aligned_store = style == GuardedByteCopyStyle::SignedCompareWithAlignedStore;
+        if aligned_store {
+            self.output.instructions.push(Instruction::OrImmediate {
+                a: 0,
+                s: 0,
+                immediate: 0,
+            });
+        }
         self.bind_label(loop_body);
         self.output.instructions.push(Instruction::LoadByteZero {
             d: 0,
@@ -206,16 +302,25 @@ impl Generator {
                 a: count,
                 immediate: -1,
             });
+        if aligned_store {
+            self.output.instructions.push(Instruction::StoreByte {
+                s: 0,
+                a: cursor,
+                offset: 0,
+            });
+        }
         self.output.instructions.push(Instruction::AddImmediate {
             d: source,
             a: source,
             immediate: 1,
         });
-        self.output.instructions.push(Instruction::StoreByte {
-            s: 0,
-            a: cursor,
-            offset: 0,
-        });
+        if !aligned_store {
+            self.output.instructions.push(Instruction::StoreByte {
+                s: 0,
+                a: cursor,
+                offset: 0,
+            });
+        }
         self.output.instructions.push(Instruction::AddImmediate {
             d: cursor,
             a: cursor,
@@ -331,6 +436,59 @@ mod tests {
         }
     }
 
+    fn compact_function() -> Function {
+        let mut function = function();
+        function.statements = vec![
+            Statement::If {
+                condition: Expression::Unary {
+                    operator: UnaryOperator::LogicalNot,
+                    operand: Box::new(name("dst")),
+                },
+                then_body: vec![Statement::Return(Some(name("dst")))],
+                else_body: Vec::new(),
+            },
+            Statement::If {
+                condition: Expression::Unary {
+                    operator: UnaryOperator::LogicalNot,
+                    operand: Box::new(name("n")),
+                },
+                then_body: vec![Statement::Return(Some(name("dst")))],
+                else_body: Vec::new(),
+            },
+            Statement::Assign {
+                name: "cursor".to_string(),
+                value: Expression::Cast {
+                    target_type: Type::Pointer(Pointee::Char),
+                    operand: Box::new(name("dst")),
+                },
+            },
+            Statement::Loop {
+                kind: LoopKind::DoWhile,
+                initializer: None,
+                condition: Some(Expression::Assign {
+                    target: Box::new(name("n")),
+                    value: Box::new(step("n", BinaryOperator::Subtract)),
+                }),
+                step: None,
+                body: vec![Statement::Store {
+                    target: Expression::Dereference {
+                        pointer: Box::new(Expression::PostStep {
+                            target: Box::new(name("cursor")),
+                            operator: BinaryOperator::Add,
+                        }),
+                    },
+                    value: Expression::Dereference {
+                        pointer: Box::new(Expression::PostStep {
+                            target: Box::new(name("src")),
+                            operator: BinaryOperator::Add,
+                        }),
+                    },
+                }],
+            },
+        ];
+        function
+    }
+
     #[test]
     fn recognizes_the_shape_independently_of_runtime_symbol_names() {
         let function = function();
@@ -372,5 +530,18 @@ mod tests {
             right: Box::new(Expression::IntegerLiteral(0)),
         });
         assert!(recognize(&function).is_some());
+    }
+
+    #[test]
+    fn recognizes_the_parsers_compact_postincrement_representation() {
+        let function = compact_function();
+        assert!(recognize(&function).is_some());
+    }
+
+    #[test]
+    fn compact_form_requires_both_early_return_guards() {
+        let mut function = compact_function();
+        function.statements.remove(1);
+        assert!(recognize(&function).is_none());
     }
 }

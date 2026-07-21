@@ -97,6 +97,18 @@ pub enum GuardedMemberInitializationStyle {
     PooledFloatThenInteger,
 }
 
+/// Entry comparison and loop alignment for a null/zero-guarded byte copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuardedByteCopyStyle {
+    /// The 2.3.x and 2.4.x optimizers retain unsigned zero comparisons.
+    LogicalCompare,
+    /// GC 4.1 canonicalizes both equality tests to signed compares.
+    SignedCompare,
+    /// Wii 4.3 aligns the loop with one `nop` and issues its byte store before
+    /// advancing the source cursor.
+    SignedCompareWithAlignedStore,
+}
+
 /// Whole-family lowering of the fdlibm-style `frexp` transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrexpFamilyStyle {
@@ -742,6 +754,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         GuardedMemberInitializationStyle::IntegerThenPooledFloat
     }
 
+    fn guarded_byte_copy_style(&self) -> GuardedByteCopyStyle {
+        GuardedByteCopyStyle::LogicalCompare
+    }
+
     fn frexp_family_style(&self) -> FrexpFamilyStyle {
         FrexpFamilyStyle::VirtualCompactFrame
     }
@@ -1137,6 +1153,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn guarded_byte_copy_style(&self) -> GuardedByteCopyStyle {
+        GuardedByteCopyStyle::SignedCompare
+    }
+
     fn guarded_member_initialization_style(&self) -> GuardedMemberInitializationStyle {
         GuardedMemberInitializationStyle::PooledFloatThenInteger
     }
@@ -1231,6 +1251,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn guarded_byte_copy_style(&self) -> GuardedByteCopyStyle {
+        GuardedByteCopyStyle::SignedCompareWithAlignedStore
+    }
+
     fn guarded_member_initialization_style(&self) -> GuardedMemberInitializationStyle {
         GuardedMemberInitializationStyle::PooledFloatThenInteger
     }

@@ -20,8 +20,8 @@ use crate::profile::{
     FixedAddressConstantStoreStyle, FixedAddressParameterizedRmwStyle,
     FixedAddressPollAddressStyle, FixedAddressRmwStyle, FoldedFloatCompareLinkageStyle,
     FrameConvention, FrexpFamilyStyle, FunctionOrdinalAccountingStyle, GlobalArrayDecayStoreStyle,
-    GlobalArrayIndexStyle, GuardedMemberInitializationStyle, IndexedRmwAssignmentStyle,
-    IntCallResultConversionStyle,
+    GlobalArrayIndexStyle, GuardedByteCopyStyle, GuardedMemberInitializationStyle,
+    IndexedRmwAssignmentStyle, IntCallResultConversionStyle,
     IntegerComparisonValueStyle, IntegerDagStyle, IntegerLoopStyle, IntegerSelectStyle,
     JumpTableBaseStyle, LeadingFrameGuardStoreStyle, LocalDataSymbolOrder, LogicalOrValueStyle,
     LongLongTimerStyle, MaterializationCopyStyle, MemCopyRemainderMaskStyle,
@@ -527,6 +527,8 @@ pub struct Behavior {
     pub leading_frame_guard_store_style: LeadingFrameGuardStoreStyle,
     /// Materialization order for null-guarded constructor-style member stores.
     pub guarded_member_initialization_style: GuardedMemberInitializationStyle,
+    /// Comparison and loop-alignment family for guarded byte copies.
+    pub guarded_byte_copy_style: GuardedByteCopyStyle,
     /// Whole-family schedule for the fdlibm-style `frexp` transaction.
     pub frexp_family_style: FrexpFamilyStyle,
     /// Additional anonymous labels retained around `frexp` when deferred
@@ -793,6 +795,7 @@ impl Behavior {
                 .build
                 .profile
                 .guarded_member_initialization_style(),
+            guarded_byte_copy_style: config.build.profile.guarded_byte_copy_style(),
             frexp_family_style: config.build.profile.frexp_family_style(),
             frexp_deferred_label_bump: if config.flags.inline_deferred {
                 config.build.profile.frexp_deferred_label_bump()
@@ -1777,6 +1780,27 @@ mod tests {
         assert_eq!(
             style(build::WII_1_0),
             GuardedMemberInitializationStyle::PooledFloatThenInteger
+        );
+    }
+
+    #[test]
+    fn guarded_byte_copy_tracks_optimizer_generations() {
+        let style = |build| Behavior::resolve(&CompilerConfig::new(build)).guarded_byte_copy_style;
+        assert_eq!(
+            style(build::GC_1_2_5N),
+            GuardedByteCopyStyle::LogicalCompare
+        );
+        assert_eq!(
+            style(build::GC_2_7),
+            GuardedByteCopyStyle::LogicalCompare
+        );
+        assert_eq!(
+            style(build::GC_3_0A3P1),
+            GuardedByteCopyStyle::SignedCompare
+        );
+        assert_eq!(
+            style(build::WII_1_0),
+            GuardedByteCopyStyle::SignedCompareWithAlignedStore
         );
     }
 }
