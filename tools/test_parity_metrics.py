@@ -523,6 +523,8 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(estimate["measurement_unknown"], 3)
         self.assertEqual(estimate["non_authoritative_unknown"], 2)
         self.assertEqual(estimate["oracle_runnable"], 3)
+        self.assertEqual(estimate["oracle_runnable_proportion"], 3 / 5)
+        self.assertEqual(estimate["oracle_runnable_known_nonparity"], 1)
         self.assertEqual(estimate["oracle_runnable_unknown"], 1)
         self.assertEqual(estimate["oracle_runnable_confirmed_proportion"], 1 / 3)
         self.assertEqual(estimate["oracle_runnable_identification_high"], 2 / 3)

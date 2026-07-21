@@ -669,6 +669,9 @@ def representative_audit(
             and authoritative_result(observation) == "UNKNOWN"
             for observation in direct.values()
         )
+        oracle_runnable_known_nonparity = (
+            oracle_runnable - successes - oracle_runnable_unknown
+        )
         oracle_confirmed_low, oracle_confirmed_high = wilson_interval(
             successes, oracle_runnable
         )
@@ -717,6 +720,12 @@ def representative_audit(
             "identification_upper_interval_high": identification_upper_high,
             "authoritative_provenance": provenance_complete,
             "oracle_runnable": oracle_runnable if provenance_complete else None,
+            "oracle_runnable_proportion": (
+                oracle_runnable / len(selected) if provenance_complete else None
+            ),
+            "oracle_runnable_known_nonparity": (
+                oracle_runnable_known_nonparity if provenance_complete else None
+            ),
             "oracle_runnable_unknown": (
                 oracle_runnable_unknown if provenance_complete else None
             ),
@@ -865,9 +874,11 @@ def print_brief(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]]) 
         print(
             "representative whole-object audit — "
             f"exact {estimate['successes']}/{estimate['total']} = "
-            f"{estimate['confirmed_proportion']:.1%}; known nonparity "
+            f"{estimate['confirmed_proportion']:.1%} confirmed lower bound; known nonparity "
             f"{estimate['known_nonparity']}/{estimate['total']}; measurement unknown "
             f"{estimate['measurement_unknown']}/{estimate['total']}; "
+            f"identification range {estimate['identification_interval_low']:.1%}.."
+            f"{estimate['identification_interval_high']:.1%}; "
             f"95% CI on confirmed share {estimate['confirmed_interval_low']:.1%}.."
             f"{estimate['confirmed_interval_high']:.1%}"
         )
@@ -896,9 +907,16 @@ def print_brief(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]]) 
         )
         if estimate["oracle_runnable"]:
             print(
-                "real-MWCC-runnable sample stratum — whole-object exact "
+                "measurement readiness — real MWCC directly runnable for "
+                f"{estimate['oracle_runnable']}/{estimate['total']} = "
+                f"{estimate['oracle_runnable_proportion']:.1%} of sampled configurations"
+            )
+            print(
+                "real-MWCC-runnable compiler stratum — whole-object exact "
                 f"{estimate['successes']}/{estimate['oracle_runnable']} = "
-                f"{estimate['oracle_runnable_confirmed_proportion']:.1%}; "
+                f"{estimate['oracle_runnable_confirmed_proportion']:.1%}; known nonparity "
+                f"{estimate['oracle_runnable_known_nonparity']}/"
+                f"{estimate['oracle_runnable']}; "
                 f"pipeline-unknown {estimate['oracle_runnable_unknown']}/"
                 f"{estimate['oracle_runnable']}"
             )
