@@ -1282,6 +1282,9 @@ impl Generator {
         }
         // The ROTATED LOOP likewise (initialized locals route into value
         // tracking otherwise).
+        if self.try_ascii_case_fold_hash_loop(function)? {
+            return Ok(());
+        }
         if self.try_rotated_loop(function)? {
             return Ok(());
         }

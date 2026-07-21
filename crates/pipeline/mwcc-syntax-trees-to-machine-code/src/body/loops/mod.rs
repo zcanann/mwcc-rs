@@ -3,6 +3,7 @@
 #[allow(unused_imports)]
 use super::*;
 
+mod ascii_hash;
 mod count_register;
 mod counters;
 mod fill_copy;
