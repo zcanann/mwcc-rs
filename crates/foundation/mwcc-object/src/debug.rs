@@ -27,6 +27,9 @@ pub enum DebugLayout {
     /// Each debug content section is immediately followed by its relocation;
     /// `.comment` precedes the symbol tables (GC/1.3.2).
     BeforeDataInterleaved,
+    /// Full-size `.rodata`/`.data`/`.bss` precede debug content, while small
+    /// `.sdata`/`.sbss`/`.sdata2` follows it (legacy data-only units).
+    BetweenFullAndSmallDataGrouped,
     /// Ordinary data precedes debug content; each debug section is immediately
     /// followed by its relocation.
     AfterDataInterleaved,
@@ -38,6 +41,10 @@ pub enum DebugLayout {
 impl DebugLayout {
     pub(crate) fn before_data(self) -> bool {
         matches!(self, Self::BeforeDataGrouped | Self::BeforeDataInterleaved)
+    }
+
+    pub(crate) fn between_full_and_small_data(self) -> bool {
+        self == Self::BetweenFullAndSmallDataGrouped
     }
 
     pub(crate) fn interleaved_relocations(self) -> bool {

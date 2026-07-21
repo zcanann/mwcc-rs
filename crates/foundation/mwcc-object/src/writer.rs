@@ -833,6 +833,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_bss {
         order.push(".bss");
     }
+    if debug.is_some_and(|debug| debug.layout.between_full_and_small_data()) {
+        order.push(".line");
+        order.push(".debug");
+    }
     if has_sdata {
         order.push(".sdata");
     }
@@ -842,7 +846,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_small_constants || has_const_sdata2 {
         order.push(".sdata2");
     }
-    if debug.is_some_and(|debug| !debug.layout.before_data()) {
+    if debug.is_some_and(|debug| {
+        !debug.layout.before_data() && !debug.layout.between_full_and_small_data()
+    }) {
         order.push(".line");
         if debug.unwrap().layout.interleaved_relocations() {
             order.push(".rela.line");
@@ -3100,6 +3106,21 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             bss_size,
         );
     }
+    if debug.is_some_and(|debug| debug.layout.between_full_and_small_data()) {
+        let debug = debug.unwrap();
+        push(".line", SHT_PROGBITS, 0, 0, 0, 1, 1, debug.line.clone(), 0);
+        push(
+            ".debug",
+            SHT_PROGBITS,
+            0,
+            0,
+            0,
+            4,
+            1,
+            debug.debug.clone(),
+            0,
+        );
+    }
     // Defined small data (`.sdata`/`.sbss`) precedes the read-only constant pool
     // (`.sdata2`), matching the section-name order above.
     if has_sdata {
@@ -3147,7 +3168,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             0,
         );
     }
-    if debug.is_some_and(|debug| !debug.layout.before_data()) {
+    if debug.is_some_and(|debug| {
+        !debug.layout.before_data() && !debug.layout.between_full_and_small_data()
+    }) {
         let debug = debug.unwrap();
         push(".line", SHT_PROGBITS, 0, 0, 0, 1, 1, debug.line.clone(), 0);
         if debug.layout.interleaved_relocations() {

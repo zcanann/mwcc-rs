@@ -308,14 +308,14 @@ pub(super) fn lower(
     finish(line, records, DebugLayout::BeforeDataGrouped)
 }
 
-/// Legacy compilers place a functionless unit's DWARF sections before its data.
-/// Fragmented 4.x generations keep the monolithic data-only payload but move it
-/// after ordinary data, independently of the DIE encoding itself.
+/// Legacy compilers place a functionless unit's DWARF sections between full and
+/// small data. Fragmented 4.x generations keep the monolithic data-only payload
+/// but move it after all data, independently of the DIE encoding itself.
 fn data_only_layout(build: CompilerBuild) -> DebugLayout {
     if build.version.0 >= 4 {
         DebugLayout::AfterDataGrouped
     } else {
-        DebugLayout::BeforeDataGrouped
+        DebugLayout::BetweenFullAndSmallDataGrouped
     }
 }
 
@@ -448,7 +448,10 @@ mod tests {
             mwcc_versions::by_label_experimental("GC/1.2.5").expect("legacy build");
         let fragmented =
             mwcc_versions::by_label_experimental("Wii/1.0").expect("fragmented build");
-        assert_eq!(data_only_layout(legacy), DebugLayout::BeforeDataGrouped);
+        assert_eq!(
+            data_only_layout(legacy),
+            DebugLayout::BetweenFullAndSmallDataGrouped
+        );
         assert_eq!(data_only_layout(fragmented), DebugLayout::AfterDataGrouped);
     }
 }
