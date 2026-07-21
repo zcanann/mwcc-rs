@@ -133,6 +133,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=4,
         help="run independent reference configurations concurrently (default: 4)",
     )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=300,
+        help="maximum seconds per reference configuration (default: 300)",
+    )
     parser.add_argument("--reference-root", type=Path)
     parser.add_argument("--state-dir", type=Path, default=Path("target/reference-parity/frontier"))
     parser.add_argument(
@@ -183,6 +189,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
     if args.jobs < 1:
         print("--jobs must be positive", file=sys.stderr)
+        return 2
+    if args.timeout < 1:
+        print("--timeout must be positive", file=sys.stderr)
         return 2
     run_audit = args.audit_only or args.with_audit
     run_frontier = not args.audit_only
@@ -311,6 +320,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             str(result),
             "--jobs",
             str(args.jobs),
+            "--timeout",
+            str(args.timeout),
             *filters,
         ]
         if args.rerun:
@@ -333,6 +344,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             str(result),
             "--jobs",
             str(args.jobs),
+            "--timeout",
+            str(args.timeout),
             *filters,
         ]
         if args.rerun:
