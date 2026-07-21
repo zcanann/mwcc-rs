@@ -5,6 +5,7 @@
 mod combine;
 mod bitmask_call_chain;
 mod bounded_buffer_append;
+mod bounded_buffer_read;
 mod call_condition_live_in_branches;
 mod computed_between_calls;
 mod counted_resource_search;

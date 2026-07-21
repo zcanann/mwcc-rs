@@ -3124,6 +3124,9 @@ impl Generator {
             if self.try_bounded_buffer_append(function)? {
                 return Ok(());
             }
+            if self.try_bounded_buffer_read(function)? {
+                return Ok(());
+            }
             if reads_value_across_call(function) {
                 return Err(Diagnostic::error(format!(
                     "a value live across a call needs the callee-saved register allocator (roadmap; function '{}')",
