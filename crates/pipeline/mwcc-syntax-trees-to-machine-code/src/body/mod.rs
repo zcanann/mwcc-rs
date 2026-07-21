@@ -3,6 +3,7 @@
 //! Split by family (fire 525); behavior-identical to the former single body.rs.
 
 mod call_prologue;
+mod bounded_member_cursor;
 mod callee_saved;
 mod comma_operator;
 mod condition_linkage;
