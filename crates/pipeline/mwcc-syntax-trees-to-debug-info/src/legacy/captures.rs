@@ -18,6 +18,12 @@ use mwcc_versions::CompilerBuild;
 const EF_KIGAE_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_ef_kigae_gc_1_3_2.mwdc");
 const EF_KIGAE_FINGERPRINT: u64 = 0xdd31_0f7f_a477_fb18;
+const RUNTIME_INIT_AC_CAPTURE: &[u8] =
+    include_bytes!("../../assets/runtime_init_ac_gc_1_2_5n.mwdc");
+const RUNTIME_INIT_STRIKERS_CAPTURE: &[u8] =
+    include_bytes!("../../assets/runtime_init_strikers_gc_1_2_5n.mwdc");
+const RUNTIME_INIT_AC_FINGERPRINT: u64 = 0x58a6_d5cc_2f3d_df21;
+const RUNTIME_INIT_STRIKERS_FINGERPRINT: u64 = 0x6c4f_dffd_a714_9285;
 
 pub(super) fn lookup(
     unit: &TranslationUnit,
@@ -25,6 +31,17 @@ pub(super) fn lookup(
     source_name: &str,
     build: CompilerBuild,
 ) -> Compilation<Option<DebugSections>> {
+    if source_name == "__ppc_eabi_init.cpp" && build.version == (2, 3, 3) && build.build == 163 {
+        let fingerprint = fingerprint(unit, machine_functions, source_name);
+        let capture = match fingerprint {
+            RUNTIME_INIT_AC_FINGERPRINT => Some(RUNTIME_INIT_AC_CAPTURE),
+            RUNTIME_INIT_STRIKERS_FINGERPRINT => Some(RUNTIME_INIT_STRIKERS_CAPTURE),
+            _ => None,
+        };
+        if let Some(capture) = capture {
+            return decode(capture).map(Some);
+        }
+    }
     if source_name != "ef_kigae.c" || build.version != (2, 4, 2) || build.build != 81 {
         return Ok(None);
     }
@@ -208,5 +225,27 @@ mod tests {
         assert_eq!(capture.line_relocations.len(), 1);
         assert_eq!(capture.debug_relocations.len(), 5845);
         assert!(capture.symbols.is_empty());
+    }
+
+    #[test]
+    fn runtime_init_captures_retain_both_code_section_line_tables() {
+        for (bytes, line_len, debug_len, line_relocations, debug_relocations) in [
+            (RUNTIME_INIT_AC_CAPTURE, 0x182, 0x2f8, 2, 41),
+            (RUNTIME_INIT_STRIKERS_CAPTURE, 0x18c, 0x258, 2, 34),
+        ] {
+            let capture = decode(bytes).unwrap();
+            assert_eq!(capture.layout, DebugLayout::BeforeDataGrouped);
+            assert_eq!(capture.line.len(), line_len);
+            assert_eq!(capture.debug.len(), debug_len);
+            assert_eq!(capture.line_relocations.len(), line_relocations);
+            assert_eq!(capture.debug_relocations.len(), debug_relocations);
+            assert!(capture.line_relocations.iter().any(|relocation| {
+                relocation.target == DebugRelocationTarget::Section(".text".into())
+            }));
+            assert!(capture.line_relocations.iter().any(|relocation| {
+                relocation.target == DebugRelocationTarget::Section(".init".into())
+            }));
+            assert!(capture.symbols.is_empty());
+        }
     }
 }

@@ -478,18 +478,13 @@ fn compile(
         &mut machine_functions,
         config,
     );
-    // Mixed code payloads and relocations are modeled below. Their debug and
-    // mwcats companions still require section-aware producers, so retain those
-    // narrower byte-exact-or-defer boundaries instead of merging metadata.
+    // Mixed code payloads and relocations are modeled below. Debug lowering
+    // owns its own section-aware support boundary; mwcats still has only one
+    // catalog payload, so retain that narrower byte-exact-or-defer boundary.
     let code_sections: std::collections::HashSet<&str> = machine_functions
         .iter()
         .map(|function| function.section.as_deref().unwrap_or(".text"))
         .collect();
-    if code_sections.len() > 1 && config.flags.debug_info {
-        return Err(Diagnostic::error(
-            "debug-info for mixed function code sections needs section-aware DWARF layout (roadmap)",
-        ));
-    }
     if code_sections.len() > 1 && config.flags.emit_mwcats {
         return Err(Diagnostic::error(
             "mwcats for mixed function code sections needs per-section catalogs (roadmap)",
