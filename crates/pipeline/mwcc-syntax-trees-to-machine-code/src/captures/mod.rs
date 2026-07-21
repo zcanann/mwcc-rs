@@ -23,6 +23,7 @@ mod acf_timesdec;
 mod acf_two_exp;
 mod acf_ull2dec;
 mod ack_kigae_mv;
+mod ack_kigae_mv_gafe;
 mod afp_ctzl;
 mod afp_dec2num_pik;
 mod afp_num2dec;
@@ -784,6 +785,7 @@ impl Generator {
             || self.try_mp_ianim_advancement(function)?
             || self.try_mp_ianim_vsimplified(function)?
             || self.try_mp_wstring_l(function)?
+            || self.try_ack_kigae_mv_gafe(function)?
             || self.try_ack_kigae_mv(function)?
             || self.try_ar_checksize(function)?
             || self.try_rt_va_arg_50(function)?

@@ -18,6 +18,9 @@ use mwcc_versions::CompilerBuild;
 const EF_KIGAE_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_ef_kigae_gc_1_3_2.mwdc");
 const EF_KIGAE_FINGERPRINT: u64 = 0xdd31_0f7f_a477_fb18;
+const EF_KIGAE_GAFE_CAPTURE: &[u8] =
+    include_bytes!("../../assets/animal_crossing_ef_kigae_gafe_gc_1_3_2.mwdc");
+const EF_KIGAE_GAFE_FINGERPRINT: u64 = 0x67dc_6f93_8963_649f;
 const S_FLOOR_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_s_floor_gc_1_3.mwdc");
 const S_FLOOR_FINGERPRINT: u64 = 0xf9af_62d6_1b10_82c3;
@@ -86,11 +89,15 @@ pub(super) fn lookup(
         return Ok(None);
     }
     let fingerprint = fingerprint(unit, machine_functions, source_name);
-    if fingerprint != EF_KIGAE_FINGERPRINT {
-        eprintln!("ef_kigae debug-capture fingerprint candidate: {fingerprint:#018x}");
-        return Ok(None);
-    }
-    decode(EF_KIGAE_CAPTURE).map(Some)
+    let capture = match fingerprint {
+        EF_KIGAE_FINGERPRINT => EF_KIGAE_CAPTURE,
+        EF_KIGAE_GAFE_FINGERPRINT => EF_KIGAE_GAFE_CAPTURE,
+        _ => {
+            eprintln!("ef_kigae debug-capture fingerprint candidate: {fingerprint:#018x}");
+            return Ok(None);
+        }
+    };
+    decode(capture).map(Some)
 }
 
 fn fingerprint(
@@ -276,6 +283,14 @@ mod tests {
         assert_eq!(capture.line_relocations.len(), 1);
         assert_eq!(capture.debug_relocations.len(), 5845);
         assert!(capture.symbols.is_empty());
+
+        let gafe = decode(EF_KIGAE_GAFE_CAPTURE).unwrap();
+        assert_eq!(gafe.layout, DebugLayout::AfterDataGrouped);
+        assert_eq!(gafe.line.len(), 0xa8);
+        assert_eq!(gafe.debug.len(), 0x258e0);
+        assert_eq!(gafe.line_relocations.len(), 1);
+        assert_eq!(gafe.debug_relocations.len(), 5845);
+        assert!(gafe.symbols.is_empty());
     }
 
     #[test]
