@@ -308,7 +308,13 @@ pub fn lower_function(
         inline_summaries: inline_summaries.clone(),
     };
     generator.assign_parameters(function)?;
-    generator.evaluate_body(function)?;
+    generator.evaluate_body(function).map_err(|mut diagnostic| {
+        let context = format!("function '{}'", function.name);
+        if !diagnostic.message.contains(&context) {
+            diagnostic.message.push_str(&format!(" (in {context})"));
+        }
+        diagnostic
+    })?;
     // Resolve label-addressed branch targets now that emission is complete (and
     // before any stream-shortening pass could shift instruction indices).
     if generator
