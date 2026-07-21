@@ -2783,7 +2783,7 @@ pub(crate) fn encode_template_argument_type(argument: Type) -> Option<String> {
     encode_type(&CxxParameterType::plain(argument)).ok()
 }
 
-fn encode_qualified_type_name(name: &str) -> Compilation<String> {
+pub(crate) fn encode_qualified_type_name(name: &str) -> Compilation<String> {
     let scopes: Vec<&str> = name.split("::").collect();
     encode_qualified_scope(&scopes)
 }

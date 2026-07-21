@@ -240,7 +240,7 @@ impl Parser {
             return None;
         }
         self.position += 1;
-        let Some((argument, end)) = self.template_argument_at(self.position) else {
+        let Some((argument, _, end)) = self.template_argument_at(self.position) else {
             self.position = saved;
             return None;
         };

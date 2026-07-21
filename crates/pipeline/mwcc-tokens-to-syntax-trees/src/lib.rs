@@ -1873,6 +1873,50 @@ blr\n\
     }
 
     #[test]
+    fn mangles_qualified_template_pointer_arguments_with_qualified_pointees() {
+        let source = r#"
+            namespace zen {
+                struct particleMdl;
+                template <typename A>
+                struct CallBack1 { virtual bool invoke(A) = 0; };
+            }
+            int use(zen::CallBack1<zen::particleMdl*>* callback) { return 0; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(
+            unit.functions[0].name,
+            "use__FPQ23zen31CallBack1<PQ23zen11particleMdl>"
+        );
+    }
+
+    #[test]
+    fn rejects_opaque_template_specializations_passed_by_value() {
+        let source = r#"
+            namespace zen {
+                struct particleMdl;
+                template <typename A>
+                struct CallBack1 { virtual bool invoke(A) = 0; };
+            }
+            int use(zen::CallBack1<zen::particleMdl*> callback) { return 0; }
+        "#;
+        assert!(parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .is_err());
+    }
+
+    #[test]
     fn parses_scoped_function_pointer_typedef_calls() {
         let source = r#"
             void invoke(void* code, void* value) {

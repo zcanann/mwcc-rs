@@ -106,18 +106,22 @@ impl Parser {
     /// template layout. This complements typedef instantiation: game headers
     /// commonly place concrete template objects directly in class layouts.
     pub(crate) fn parse_template_instance_type(&mut self) -> Option<Type> {
-        let (_, tag, end) = self.parse_template_instance_at(self.position)?;
+        let (tag, argument, end) = self.parse_template_spelling_at(self.position)?;
         let template_name = tag
             .split('<')
             .next()
             .and_then(|name| name.rsplit("::").next())?;
-        let argument = self
-            .template_argument_at(self.template_argument_start(self.position)?)?
-            .0;
-        let layout = self.instantiate_struct_template_layout(template_name, argument)?;
-        let element_size = layout.size;
-        let element_align = layout.align;
-        self.structs.insert(tag.clone(), layout);
+        let layout = self.instantiate_struct_template_layout(template_name, argument);
+        let followed_by_indirection =
+            matches!(self.tokens.get(end), Some(Token::Star | Token::Ampersand));
+        if layout.is_none() && !followed_by_indirection {
+            return None;
+        }
+        let element_size = layout.as_ref().map_or(0, |layout| layout.size);
+        let element_align = layout.as_ref().map_or(1, |layout| layout.align);
+        if let Some(layout) = layout {
+            self.structs.insert(tag.clone(), layout);
+        }
         self.position = end;
         self.last_struct_tag = Some(tag);
         if self.eat_keyword(Token::Star) {
@@ -126,7 +130,7 @@ impl Parser {
             }
             return Some(Type::StructPointer { element_size });
         }
-        if *self.peek() == Token::Ampersand {
+        if self.eat_keyword(Token::Ampersand) {
             self.last_type_was_aggregate_reference = true;
             return Some(Type::StructPointer { element_size });
         }
@@ -140,21 +144,31 @@ impl Parser {
     /// layout can be recovered. Declaration lookahead must use the same test as
     /// `parse_type`; otherwise `Box<T>* value` is misread as `Box < T > ...`.
     pub(crate) fn peek_is_template_instance_type(&self) -> bool {
-        self.cplusplus && self.parse_template_instance_at(self.position).is_some()
-    }
-
-    fn template_argument_start(&self, start: usize) -> Option<usize> {
-        let mut scan = start + 1;
-        while self.tokens.get(scan) == Some(&Token::Colon)
-            && self.tokens.get(scan + 1) == Some(&Token::Colon)
-            && matches!(self.tokens.get(scan + 2), Some(Token::Identifier(_)))
-        {
-            scan += 3;
+        if !self.cplusplus {
+            return false;
         }
-        (self.tokens.get(scan) == Some(&Token::Less)).then_some(scan + 1)
+        let Some((tag, argument, end)) = self.parse_template_spelling_at(self.position) else {
+            return false;
+        };
+        if matches!(self.tokens.get(end), Some(Token::Star | Token::Ampersand)) {
+            return true;
+        }
+        let Some(template_name) = tag
+            .split('<')
+            .next()
+            .and_then(|name| name.rsplit("::").next())
+        else {
+            return false;
+        };
+        self.instantiate_struct_template_layout(template_name, argument)
+            .is_some()
     }
 
-    fn parse_template_instance_at(&self, start: usize) -> Option<(Type, String, usize)> {
+    /// Recover a template specialization's complete ABI spelling separately
+    /// from its data layout. A pointer or reference to a forward-declared
+    /// specialization is a complete parameter type even when the pointee's
+    /// fields are unavailable; a specialization passed by value is not.
+    fn parse_template_spelling_at(&self, start: usize) -> Option<(String, Option<Type>, usize)> {
         let mut scan = start;
         let mut components = Vec::new();
         let Token::Identifier(first) = self.tokens.get(scan)? else {
@@ -174,7 +188,7 @@ impl Parser {
         if self.tokens.get(scan) != Some(&Token::Less) {
             return None;
         }
-        let argument = self.template_argument_at(scan + 1)?.0;
+        let (argument, argument_identity, _) = self.template_argument_at(scan + 1)?;
         let mut end = scan + 1;
         let mut depth = 1i32;
         while depth > 0 {
@@ -186,40 +200,86 @@ impl Parser {
             }
             end += 1;
         }
-        let template_name = components.last()?;
-        let layout = self.instantiate_struct_template_layout(template_name, argument)?;
-        let argument_identity = argument
-            .and_then(crate::cxx::encode_template_argument_type)
+        let argument_identity = argument_identity
+            .or_else(|| argument.and_then(crate::cxx::encode_template_argument_type))
             .unwrap_or_else(|| "...".to_owned());
         Some((
-            Type::Struct {
-                size: layout.size,
-                align: layout.align,
-            },
             format!("{}<{argument_identity}>", components.join("::")),
+            argument,
             end,
         ))
     }
 
-    pub(crate) fn template_argument_at(&self, start: usize) -> Option<(Option<Type>, usize)> {
-        if let Some((instance, _, end)) = self.parse_template_instance_at(start) {
-            return Some((Some(instance), end));
+    pub(crate) fn template_argument_at(
+        &self,
+        start: usize,
+    ) -> Option<(Option<Type>, Option<String>, usize)> {
+        if let Some((tag, argument, end)) = self.parse_template_spelling_at(start) {
+            let template_name = tag
+                .split('<')
+                .next()
+                .and_then(|name| name.rsplit("::").next())?;
+            let instance = self
+                .instantiate_struct_template_layout(template_name, argument)
+                .map(|layout| Type::Struct {
+                    size: layout.size,
+                    align: layout.align,
+                });
+            let identity = crate::cxx::encode_qualified_type_name(&tag).ok();
+            return Some(self.finish_template_argument_pointer_shape(instance, identity, end));
         }
         let token = self.tokens.get(start)?;
-        let mut declared = self.template_argument_type(token).or_else(|| match token {
+        if matches!(token, Token::Identifier(_)) {
+            let mut end = start + 1;
+            let mut components = vec![match token {
+                Token::Identifier(name) => name.clone(),
+                _ => unreachable!(),
+            }];
+            while self.tokens.get(end) == Some(&Token::Colon)
+                && self.tokens.get(end + 1) == Some(&Token::Colon)
+            {
+                let Some(Token::Identifier(component)) = self.tokens.get(end + 2) else {
+                    break;
+                };
+                components.push(component.clone());
+                end += 3;
+            }
+            if components.len() > 1 {
+                let qualified = components.join("::");
+                let declared = self.struct_value_type(&qualified);
+                let identity = crate::cxx::encode_qualified_type_name(&qualified).ok();
+                return Some(self.finish_template_argument_pointer_shape(declared, identity, end));
+            }
+        }
+        let declared = self.template_argument_type(token).or_else(|| match token {
             Token::Identifier(name) => self.struct_value_type(name),
             _ => None,
         });
         if declared.is_some() || matches!(token, Token::Identifier(_)) {
-            let mut end = start + 1;
-            while self.tokens.get(end) == Some(&Token::Star) {
-                declared = Some(template_pointer_type(declared));
-                end += 1;
-            }
-            Some((declared, end))
+            let identity = declared
+                .and_then(crate::cxx::encode_template_argument_type)
+                .or_else(|| match token {
+                    Token::Identifier(name) => crate::cxx::encode_qualified_type_name(name).ok(),
+                    _ => None,
+                });
+            Some(self.finish_template_argument_pointer_shape(declared, identity, start + 1))
         } else {
             None
         }
+    }
+
+    fn finish_template_argument_pointer_shape(
+        &self,
+        mut declared: Option<Type>,
+        mut identity: Option<String>,
+        mut end: usize,
+    ) -> (Option<Type>, Option<String>, usize) {
+        while self.tokens.get(end) == Some(&Token::Star) {
+            declared = Some(template_pointer_type(declared));
+            identity = identity.map(|identity| format!("P{identity}"));
+            end += 1;
+        }
+        (declared, identity, end)
     }
 
     pub(crate) fn instantiate_struct_template_layout(
