@@ -740,6 +740,18 @@ impl Parser {
         }
     }
 
+    /// Resolve an unqualified class name in the active namespace before using
+    /// the translation-unit-wide typedef fallback. Large game headers reuse
+    /// names such as `Obj` in many sibling namespaces; whichever declaration
+    /// appeared first must not decide the type of every later `Obj*`.
+    pub(crate) fn resolve_scoped_cxx_class_name(&self, class: &str) -> Option<String> {
+        let qualified = self.qualify_cxx_class_name(class);
+        (self.cxx_dispatch_tables.contains_key(&qualified)
+            || self.cxx_classes.contains_key(&qualified)
+            || self.structs.contains_key(&qualified))
+        .then_some(qualified)
+    }
+
     /// Recover declaration semantics from a C++ aggregate independently of
     /// layout parsing. Methods defined in a class body are implicitly inline;
     /// declarations carrying `inline` remain inline when a later out-of-class

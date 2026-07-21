@@ -1244,6 +1244,39 @@ blr\n\
     }
 
     #[test]
+    fn resolves_duplicate_class_names_in_the_active_namespace() {
+        let source = r#"
+            namespace First {
+                struct Obj { int run(int); };
+                int call(Obj* object) { return object->run(1); }
+            }
+            namespace Second {
+                struct Obj { int run(int); };
+                int call(Obj* object) { return object->run(2); }
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            unit.functions[0].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Call { name, .. })
+                if name == "run__Q25First3ObjFi"
+        ));
+        assert!(matches!(
+            unit.functions[1].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Call { name, .. })
+                if name == "run__Q26Second3ObjFi"
+        ));
+    }
+
+    #[test]
     fn mangles_free_cpp_functions_and_preserves_c_linkage() {
         let source = r#"
             extern "C" { int c_api(float); }

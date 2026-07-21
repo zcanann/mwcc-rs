@@ -455,7 +455,11 @@ impl Parser {
             // attempted struct-value declaration.
             let cxx_fundamental = self.cplusplus && matches!(name.as_str(), "bool" | "wchar_t");
             if !cxx_fundamental {
-                if let Some(tag) = self.struct_typedefs.get(name).cloned() {
+                let name = name.clone();
+                let tag = self
+                    .resolve_scoped_cxx_class_name(&name)
+                    .or_else(|| self.struct_typedefs.get(&name).cloned());
+                if let Some(tag) = tag {
                     self.advance();
                     if !matches!(self.peek(), Token::Star | Token::Ampersand) {
                         return match self.struct_value_type(&tag) {
