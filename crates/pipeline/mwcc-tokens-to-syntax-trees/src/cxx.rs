@@ -2617,6 +2617,14 @@ fn encode_type(parameter: &CxxParameterType) -> Compilation<String> {
     Ok(code)
 }
 
+/// Encode a concrete template type argument using the same CodeWarrior ABI
+/// alphabet as function parameters. Template layout recovery owns storage;
+/// symbol spelling remains centralized here so `Vector3<int>` becomes
+/// `Vector3<i>` rather than a parser-specific placeholder.
+pub(crate) fn encode_template_argument_type(argument: Type) -> Option<String> {
+    encode_type(&CxxParameterType::plain(argument)).ok()
+}
+
 fn encode_qualified_type_name(name: &str) -> Compilation<String> {
     let scopes: Vec<&str> = name.split("::").collect();
     encode_qualified_scope(&scopes)

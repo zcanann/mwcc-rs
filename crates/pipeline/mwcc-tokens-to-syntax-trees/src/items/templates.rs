@@ -8,7 +8,7 @@
 use super::{type_alignment, type_size};
 use crate::parser::{
     Parser, StructField, StructLayout, StructTemplate, TemplateField, TemplateFieldType,
-    TemplateTypePattern,
+    TemplateInstantiationKey, TemplateTypePattern,
 };
 use mwcc_syntax_trees::{Pointee, Type};
 use mwcc_tokens::Token;
@@ -188,12 +188,15 @@ impl Parser {
         }
         let template_name = components.last()?;
         let layout = self.instantiate_struct_template_layout(template_name, argument)?;
+        let argument_identity = argument
+            .and_then(crate::cxx::encode_template_argument_type)
+            .unwrap_or_else(|| "...".to_owned());
         Some((
             Type::Struct {
                 size: layout.size,
                 align: layout.align,
             },
-            format!("{}<...>", components.join("::")),
+            format!("{}<{argument_identity}>", components.join("::")),
             end,
         ))
     }
@@ -268,9 +271,55 @@ impl Parser {
                         align: layout.align,
                     },
                     known: true,
-                    tag: Some(format!("{name}<...>")),
+                    tag: self.concrete_template_identity(name, &resolved),
                     layout: Some(layout),
                 })
+            }
+        }
+    }
+
+    fn concrete_template_identity(
+        &self,
+        name: &str,
+        arguments: &[ResolvedTemplateType],
+    ) -> Option<String> {
+        let arguments = arguments
+            .iter()
+            .map(Self::resolved_template_argument_identity)
+            .collect::<Option<Vec<_>>>()?;
+        Some(format!("{name}<{}>", arguments.join(",")))
+    }
+
+    fn resolved_template_argument_identity(argument: &ResolvedTemplateType) -> Option<String> {
+        argument.tag.clone().or_else(|| {
+            if argument.known {
+                crate::cxx::encode_template_argument_type(argument.declared)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn template_pattern_identity(
+        &self,
+        pattern: &TemplateTypePattern,
+        arguments: &[ResolvedTemplateType],
+    ) -> Option<String> {
+        match pattern {
+            TemplateTypePattern::Parameter(index) => {
+                let argument = arguments.get(*index)?;
+                Self::resolved_template_argument_identity(argument)
+            }
+            TemplateTypePattern::Named(name) => Some(name.clone()),
+            TemplateTypePattern::Instance {
+                name,
+                arguments: patterns,
+            } => {
+                let resolved = patterns
+                    .iter()
+                    .map(|pattern| self.template_pattern_identity(pattern, arguments))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(format!("{name}<{}>", resolved.join(",")))
             }
         }
     }
@@ -289,16 +338,41 @@ impl Parser {
                 self.structs.get(name).map_or(0, |layout| layout.size),
                 Some(name.clone()),
             ),
-            TemplateTypePattern::Instance { name, .. } => {
+            TemplateTypePattern::Instance { .. } => {
                 // Do not instantiate here: a self-pointer (`Node<T>*`) would
                 // recurse forever. The concrete instance layout is registered
                 // by the containing type before any expression dereferences it.
-                (0, Some(format!("{name}<...>")))
+                (0, self.template_pattern_identity(pattern, arguments))
             }
         }
     }
 
     fn instantiate_struct_template_layout_with_arguments(
+        &self,
+        template_name: &str,
+        arguments: &[ResolvedTemplateType],
+    ) -> Option<StructLayout> {
+        let key = TemplateInstantiationKey {
+            name: template_name.to_owned(),
+            arguments: arguments
+                .iter()
+                .map(|argument| (argument.declared, argument.known, argument.tag.clone()))
+                .collect(),
+        };
+        {
+            let mut stack = self.template_instantiation_stack.borrow_mut();
+            if stack.contains(&key) {
+                return None;
+            }
+            stack.push(key.clone());
+        }
+        let result = self.instantiate_struct_template_layout_unguarded(template_name, arguments);
+        let popped = self.template_instantiation_stack.borrow_mut().pop();
+        debug_assert!(popped.as_ref() == Some(&key));
+        result
+    }
+
+    fn instantiate_struct_template_layout_unguarded(
         &self,
         template_name: &str,
         arguments: &[ResolvedTemplateType],
@@ -677,7 +751,9 @@ impl Parser {
             cursor += 1;
         }
         if matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if word == "static") {
-            return None;
+            return self
+                .skip_static_template_member(cursor)
+                .map(|next| (Vec::new(), next));
         }
         let (mut field_type, type_tokens) = match self.tokens.get(cursor)? {
             Token::Identifier(name) if parameters.iter().any(|parameter| parameter == name) => {
@@ -775,6 +851,51 @@ impl Parser {
                 Some(Token::Semicolon) => return Some((fields, cursor + 1)),
                 _ => return None,
             }
+        }
+    }
+
+    /// Skip the complete declaration/definition of a static template member.
+    /// Returning `None` after consuming only the `static` token would let the
+    /// outer recovery scan reinterpret `Vector3<T> zero` as an instance field,
+    /// creating a false recursive value layout. Track delimiters so static
+    /// member functions and braced initializers are skipped as one unit too.
+    fn skip_static_template_member(&self, start: usize) -> Option<usize> {
+        let mut cursor = start;
+        let mut parens = 0u32;
+        let mut angles = 0u32;
+        let mut brackets = 0u32;
+        let mut braces = 0u32;
+        let mut saw_brace = false;
+        loop {
+            match self.tokens.get(cursor)? {
+                Token::ParenOpen => parens += 1,
+                Token::ParenClose if parens > 0 => parens -= 1,
+                Token::Less => angles += 1,
+                Token::Greater if angles > 0 => angles -= 1,
+                Token::BracketOpen => brackets += 1,
+                Token::BracketClose if brackets > 0 => brackets -= 1,
+                Token::BraceOpen => {
+                    braces += 1;
+                    saw_brace = true;
+                }
+                Token::BraceClose if braces > 0 => {
+                    braces -= 1;
+                    if saw_brace && braces == 0 && parens == 0 && angles == 0 && brackets == 0 {
+                        let next = cursor + 1;
+                        return Some(if self.tokens.get(next) == Some(&Token::Semicolon) {
+                            next + 1
+                        } else {
+                            next
+                        });
+                    }
+                }
+                Token::Semicolon if parens == 0 && angles == 0 && brackets == 0 && braces == 0 => {
+                    return Some(cursor + 1);
+                }
+                Token::EndOfFile => return None,
+                _ => {}
+            }
+            cursor += 1;
         }
     }
 

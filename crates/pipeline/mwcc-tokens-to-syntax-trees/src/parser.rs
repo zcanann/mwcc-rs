@@ -144,6 +144,12 @@ pub(crate) struct StructTemplate {
     pub(crate) fields: Vec<TemplateField>,
 }
 
+#[derive(Clone, PartialEq)]
+pub(crate) struct TemplateInstantiationKey {
+    pub(crate) name: String,
+    pub(crate) arguments: Vec<(Type, bool, Option<String>)>,
+}
+
 #[derive(Clone)]
 pub(crate) struct Parser {
     pub(crate) tokens: Vec<Token>,
@@ -166,6 +172,11 @@ pub(crate) struct Parser {
     /// Single-parameter C++ struct templates whose instance fields can be laid
     /// out when a concrete typedef such as `Vector3<float>` is encountered.
     pub(crate) struct_templates: HashMap<String, StructTemplate>,
+    /// Active concrete template-layout keys. Layout recovery is recursive for
+    /// nested value members and bases, so malformed or incompletely recovered
+    /// cycles must resolve to "layout unavailable" instead of overflowing the
+    /// compiler stack.
+    pub(crate) template_instantiation_stack: std::cell::RefCell<Vec<TemplateInstantiationKey>>,
     /// `(template class, member)` pairs defined inside a template body. An
     /// out-of-class concrete specialization of one of these remains inline and
     /// emits no code unless used; a merely declared member's specialization does.

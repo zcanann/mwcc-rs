@@ -139,6 +139,7 @@ pub fn parse_located_translation_unit_with_enum_min(
         structs: HashMap::new(),
         cxx_classes: HashMap::new(),
         struct_templates: HashMap::new(),
+        template_instantiation_stack: std::cell::RefCell::new(Vec::new()),
         inline_template_members: std::collections::HashSet::new(),
         empty_nested_template_types: std::collections::HashSet::new(),
         inline_cxx_members: std::collections::HashSet::new(),
@@ -1883,6 +1884,49 @@ blr\n\
             unit.functions[0].return_expression,
             Some(mwcc_syntax_trees::Expression::Member { offset: 8, .. })
         ));
+    }
+
+    #[test]
+    fn excludes_static_self_values_from_template_instance_layouts() {
+        let source = r#"
+            template <typename T> struct Vector3 {
+                T x, y, z;
+                static Vector3<T> zero;
+            };
+            int read_z(Vector3<int>* value) { return value->z; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.functions[0].name, "read_z__FP10Vector3<i>");
+        assert!(matches!(
+            unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 8, .. })
+        ));
+    }
+
+    #[test]
+    fn bounds_recursive_template_value_layout_recovery() {
+        let source = r#"
+            template <typename T> struct Recursive {
+                Recursive<T> value;
+            };
+            Recursive<int> instance;
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(unit.globals.is_empty());
     }
 
     #[test]
