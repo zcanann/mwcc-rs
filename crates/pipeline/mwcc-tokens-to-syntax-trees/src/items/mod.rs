@@ -2594,9 +2594,25 @@ impl Parser {
                 Vec::new()
             };
             let source_function_name = name.clone();
+            // C language linkage belongs to a qualified declaration identity.
+            // A global `extern "C" sinf` must not suppress mangling or overload
+            // registration for a distinct `std::sinf` prototype/definition.
+            let linkage_namespace = namespace_scope.clone().or_else(|| {
+                let scopes = self
+                    .namespace_stack
+                    .iter()
+                    .filter(|scope| !scope.is_empty())
+                    .cloned()
+                    .collect::<Vec<_>>();
+                (!scopes.is_empty()).then(|| scopes.join("::"))
+            });
+            let linkage_source_name = linkage_namespace.as_ref().map_or_else(
+                || source_function_name.clone(),
+                |scope| format!("{scope}::{source_function_name}"),
+            );
             let inherited_c_linkage = self
                 .c_linkage_functions
-                .contains(source_function_name.as_str());
+                .contains(linkage_source_name.as_str());
 
             if let Some(scope) = &member_scope {
                 let source_name = if constructor_scope.is_some() {
@@ -2695,7 +2711,7 @@ impl Parser {
                 self.advance(); // a prototype — record its return + parameter types, keep looking
                 self.named_prototype_parameters += source_named_parameter_count;
                 if self.default_cplusplus && !self.cplusplus {
-                    self.c_linkage_functions.insert(source_function_name);
+                    self.c_linkage_functions.insert(linkage_source_name);
                 }
                 let parameter_types = parameters
                     .iter()

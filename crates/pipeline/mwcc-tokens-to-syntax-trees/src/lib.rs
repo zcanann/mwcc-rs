@@ -1286,6 +1286,7 @@ blr\n\
     #[test]
     fn resolves_namespace_qualified_free_function_calls_and_definitions() {
         let source = r#"
+            extern "C" { float sinf(float value); }
             namespace std { float sinf(float value); }
             float wrapper(float value) { return std::sinf(value); }
             float std::sinf(float value) { return value; }
