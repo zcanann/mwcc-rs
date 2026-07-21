@@ -2679,6 +2679,26 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 section,
             );
             comment_values.push((data_aligns[object.name], flags));
+            // Function elision can leave an initialized object's recorded
+            // source position beyond the surviving machine-function count.
+            // The ordinary source-position run then never visits it. Its late
+            // fallback still has to register every relocation target before
+            // relocation payloads are resolved; otherwise a valid external
+            // reference becomes a symbol-table indexing panic.
+            if !object.relocations.is_empty() {
+                emit_object_targets!(object);
+            }
+        }
+    }
+    // A code reference can predeclare an initialized object's symbol before
+    // the source-position object run. The run then correctly avoids emitting a
+    // duplicate object symbol, but it must not strand that object's own
+    // relocation targets. Close the symbol table over every data relocation;
+    // the helper is idempotent and only emits targets not registered by their
+    // measured source-position owner above.
+    for object in &input.data_objects {
+        if !object.relocations.is_empty() {
+            emit_object_targets!(object);
         }
     }
     if let Some(debug) = debug {
@@ -2823,7 +2843,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             *local_data_symbols
                 .get(name)
                 .or_else(|| local_function_symbols.get(name))
-                .unwrap_or_else(|| &global_symbols[name]),
+                .or_else(|| global_symbols.get(name))
+                .unwrap_or_else(|| panic!("unresolved data relocation target '{name}'")),
             0,
         )
     };
