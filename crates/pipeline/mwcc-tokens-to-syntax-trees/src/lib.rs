@@ -3057,4 +3057,19 @@ blr\n\
             .message
             .contains("an explicit C++ template specialization was not lowered"));
     }
+
+    #[test]
+    fn retains_volatile_on_file_scope_objects() {
+        let source = "static volatile int status; int plain;";
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(unit.globals[0].is_volatile);
+        assert!(!unit.globals[1].is_volatile);
+    }
 }

@@ -1900,6 +1900,16 @@ impl Generator {
         {
             return self.emit_long_long(function);
         }
+        // A non-volatile terminal global store/read pair is one value operation.
+        // Canonicalize it to the assignment-expression form that owns mwcc's
+        // stored-result reuse before the conservative recomputation gate below.
+        if let Some(coalesced) = coalesce_terminal_global_store_return(
+            function,
+            &self.globals,
+            &self.volatile_globals,
+        ) {
+            return self.evaluate_body(&coalesced);
+        }
         // `loc = …; return loc` where `loc` is a VARIABLE-INDEXED access (`p[i]`) or a GLOBAL —
         // mwcc reuses the scaled index it already computed (`slwi` once) or the just-stored value,
         // but ours recomputes the index (`slwi` twice) or reloads the global, a byte-different

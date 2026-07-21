@@ -207,6 +207,11 @@ pub fn lower_function(
                     .map(|local| (local.name.clone(), local.declared_type)),
             )
             .collect(),
+        volatile_globals: globals
+            .iter()
+            .filter(|global| global.is_volatile)
+            .map(|global| global.name.clone())
+            .collect(),
         // Subscriptable array globals (non-const) with their total byte size, so a
         // `g[i]` picks the right address mode (SDA21 vs ADDR16) by size. An EXTERN
         // array is included: mwcc addresses it identically to a defined one (verified

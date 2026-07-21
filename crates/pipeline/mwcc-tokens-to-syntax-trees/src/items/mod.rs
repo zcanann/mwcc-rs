@@ -772,6 +772,7 @@ impl Parser {
                                 name: mangled,
                                 is_extern: false,
                                 is_static: false,
+                                is_volatile: false,
                                 array_length: None,
                                 array_length_inferred: false,
                                 initializer: None,
@@ -878,6 +879,7 @@ impl Parser {
                 name: String::new(),
                 is_extern: false,
                 is_static: false,
+                is_volatile: false,
                 is_weak: false,
                 non_static_functions_before: functions.iter().filter(|f| !f.is_static).count(),
                 functions_before: functions.len(),
@@ -1852,6 +1854,7 @@ impl Parser {
                         name,
                         is_extern,
                         is_static,
+                        is_volatile: false,
                         array_length: None,
                         array_length_inferred: false,
                         initializer: None,
@@ -1872,6 +1875,7 @@ impl Parser {
                 return Ok(());
             }
             let return_type = self.parse_type()?;
+            let declared_is_volatile = self.last_type_was_volatile;
             // Keep the declared aggregate identity before parsing attributes, placement
             // expressions, or initializers: each may contain a cast whose own parse_type call
             // overwrites `last_struct_tag` (notably `T hw : (u32)(void*)ADDRESS`).
@@ -1982,6 +1986,7 @@ impl Parser {
                     name: pointer_name,
                     is_extern,
                     is_static,
+                    is_volatile: declared_is_volatile,
                     array_length: pointer_array_length,
                     array_length_inferred: pointer_array_unsized,
                     initializer: None,
@@ -2361,6 +2366,7 @@ impl Parser {
                         name: declarator_name,
                         is_extern,
                         is_static,
+                        is_volatile: declared_is_volatile,
                         array_length,
                         array_length_inferred,
                         initializer,
@@ -2906,6 +2912,7 @@ impl Parser {
                                     name: vtable,
                                     is_extern: false,
                                     is_static: false,
+                                    is_volatile: false,
                                     is_weak: false,
                                     non_static_functions_before: functions
                                         .iter()

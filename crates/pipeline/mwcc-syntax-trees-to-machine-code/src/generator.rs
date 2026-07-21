@@ -134,6 +134,9 @@ pub(crate) struct Generator {
     /// File-scope globals by name; a reference to one loads from the small-data
     /// area (an `R_PPC_EMB_SDA21` relocation off r13, the `0(r0)` placeholder).
     pub(crate) globals: HashMap<String, Type>,
+    /// Volatile globals are kept separate from the compact type map so semantic
+    /// rewrites can prove that eliminating a reload is legal.
+    pub(crate) volatile_globals: HashSet<String>,
     /// Total byte size of each file-scope *array* global, by name. Drives the
     /// per-symbol address mode when subscripting it: a small array (≤ 8 bytes,
     /// `.sdata`) materializes via SDA21, a large one (`.data`/`.bss`) via ADDR16.

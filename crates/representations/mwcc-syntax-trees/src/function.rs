@@ -165,6 +165,9 @@ pub struct GlobalDeclaration {
     pub name: String,
     pub is_extern: bool,
     pub is_static: bool,
+    /// Whether reads and writes are observable volatile accesses. Optimizing
+    /// passes must not replace a post-store read with the stored value.
+    pub is_volatile: bool,
     /// A weak object symbol (an inline function's emitted static local).
     pub is_weak: bool,
     /// How many NON-STATIC functions were defined before this declaration —

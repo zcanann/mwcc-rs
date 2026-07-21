@@ -964,6 +964,47 @@ pub(crate) fn fold_would_duplicate(
     false
 }
 
+/// Coalesce `global = value; return global;` into `return global = value;`.
+///
+/// With no intervening operation, the assignment expression has the same C
+/// value and exposes mwcc's live stored-value schedule to the existing return
+/// lowering. A volatile global is deliberately excluded: its trailing read is
+/// a distinct observable access and must remain a reload.
+pub(crate) fn coalesce_terminal_global_store_return(
+    function: &Function,
+    globals: &std::collections::HashMap<String, Type>,
+    volatile_globals: &std::collections::HashSet<String>,
+) -> Option<Function> {
+    let return_expression = function.return_expression.as_ref()?;
+    let Statement::Store { target, value } = function.statements.last()? else {
+        return None;
+    };
+    let Expression::Variable(name) = target else {
+        return None;
+    };
+    if !globals.contains_key(name)
+        || volatile_globals.contains(name)
+        || !structurally_equal(target, return_expression)
+        // The existing assignment-return path is verified when an earlier
+        // call has already established the non-leaf frame. A terminal call as
+        // the function's only call has a distinct prologue schedule and stays
+        // deferred until that owner exists.
+        || !function.statements[..function.statements.len() - 1]
+            .iter()
+            .any(statement_has_call)
+    {
+        return None;
+    }
+
+    let mut coalesced = function.clone();
+    coalesced.statements.pop();
+    coalesced.return_expression = Some(Expression::Assign {
+        target: Box::new(target.clone()),
+        value: Box::new(value.clone()),
+    });
+    Some(coalesced)
+}
+
 /// Fold a function's value-tracked locals into its stores and trailing return, then
 /// recompile — `int x = a; gi = x; x = b; gj = x;` becomes `gi = a; gj = b;`, and `int x =
 /// a; gi = x; return x;` becomes `gi = a; return a;`. The store paths (or, when mwcc would
