@@ -2409,7 +2409,11 @@ impl Parser {
                         declared_type: return_type,
                         name: declarator_name,
                         is_extern,
-                        is_static,
+                        // A non-extern namespace-scope const object has internal
+                        // linkage in C++. Preserve that source-language rule so
+                        // the object pass can elide a scalar whose value was
+                        // folded, while an address-taken survivor binds LOCAL.
+                        is_static: is_static || (self.cplusplus && object_is_const && !is_extern),
                         is_volatile: declared_is_volatile,
                         array_length,
                         array_length_inferred,

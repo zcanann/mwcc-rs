@@ -3146,6 +3146,16 @@ blr\n\
     }
 
     #[test]
+    fn namespace_const_has_internal_linkage_only_in_cxx() {
+        let tokens = mwcc_source_to_tokens::tokenize("const int value = 3;").unwrap();
+        let cxx = parse_translation_unit(tokens.clone(), true, true, 1, 3).unwrap();
+        let c = parse_translation_unit(tokens, false, true, 1, 3).unwrap();
+
+        assert!(cxx.globals[0].is_static);
+        assert!(!c.globals[0].is_static);
+    }
+
+    #[test]
     fn retains_signed_long_long_width_in_struct_layouts() {
         let source = r#"
             typedef signed long long int OSTime;
