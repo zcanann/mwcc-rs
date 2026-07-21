@@ -960,6 +960,7 @@ impl Parser {
             }
             if begins_member {
                 self.capture_cxx_member_template_forwarder(index, &class);
+                self.capture_cxx_constructor(index, &class);
                 let starts_virtual = matches!(self.tokens.get(index), Some(Token::Identifier(word)) if word == "virtual");
                 match self.capture_cxx_method(index, &class) {
                     Some(Some(prototype)) => prototypes.push(prototype),
@@ -976,6 +977,51 @@ impl Parser {
             index += 1;
         }
         prototypes
+    }
+
+    /// Recover one constructor declaration without requiring the containing
+    /// class's complete field/method layout. This is intentionally signature
+    /// only; an in-class body is retained separately by
+    /// `capture_cxx_inline_definition`.
+    fn capture_cxx_constructor(&mut self, declaration_index: usize, class: &str) {
+        let Some(source_name) = class.rsplit("::").next() else {
+            return;
+        };
+        if !matches!(self.tokens.get(declaration_index), Some(Token::Identifier(name)) if name == source_name)
+            || self.tokens.get(declaration_index + 1) != Some(&Token::ParenOpen)
+        {
+            return;
+        }
+        let mut probe = self.clone();
+        probe.position = declaration_index + 1;
+        let Ok(signature) = probe.parse_class_parameter_types() else {
+            return;
+        };
+        let Ok(is_inline) = probe.skip_class_method_tail() else {
+            return;
+        };
+        let scopes: Vec<&str> = class.split("::").collect();
+        let Ok(mangled) = mangle_qualified_member_function_typed(
+            &scopes,
+            "__ct",
+            &signature.cxx_parameters,
+        ) else {
+            return;
+        };
+        let method = RecoveredCxxMethod {
+            mangled: mangled.clone(),
+            fixed_parameter_count: signature.parameters.len(),
+            variadic: false,
+            parameters: signature.parameters,
+            cxx_parameters: signature.cxx_parameters,
+        };
+        let methods = self.cxx_constructors.entry(class.to_owned()).or_default();
+        if !methods.iter().any(|existing| existing.mangled == mangled) {
+            methods.push(method);
+        }
+        if is_inline {
+            self.skipped_inline_names.insert(mangled);
+        }
     }
 
     /// Parse an in-class inline body through the ordinary out-of-class member
@@ -1007,9 +1053,11 @@ impl Parser {
         let Some(member_index) = parameter_open.checked_sub(1) else {
             return;
         };
-        if !matches!(source.get(member_index), Some((Token::Identifier(_), _))) {
+        let Some((Token::Identifier(member_name), _)) = source.get(member_index) else {
             return;
-        }
+        };
+        let constructor = member_index == 0
+            && class.rsplit("::").next().is_some_and(|name| name == member_name);
         let location = source[member_index].1;
         let mut qualification = Vec::new();
         for (index, component) in class.split("::").enumerate() {
@@ -1022,6 +1070,9 @@ impl Parser {
         qualification.push((Token::Colon, location));
         qualification.push((Token::Colon, location));
         source.splice(member_index..member_index, qualification);
+        if constructor {
+            source.insert(0, (Token::KeywordVoid, location));
+        }
         let eof_location = source.last().map_or(location, |(_, location)| *location);
         source.push((Token::EndOfFile, eof_location));
 
@@ -1042,6 +1093,7 @@ impl Parser {
             && functions.len() == 1
         {
             let function = functions.pop().expect("length checked");
+            self.skipped_inline_names.insert(function.name.clone());
             if !self
                 .skipped_inline_definitions
                 .iter()
@@ -2364,26 +2416,35 @@ impl Parser {
         class_name: &str,
         argument_count: usize,
     ) -> Compilation<String> {
-        let class = self.cxx_classes.get(class_name).ok_or_else(|| {
-            Diagnostic::error(format!(
-                "class layout for placement construction of '{class_name}' was not recovered"
-            ))
-        })?;
-        let candidates: Vec<_> = class
-            .constructors
-            .iter()
-            .filter(|signature| signature.parameters.len() == argument_count)
-            .collect();
-        if candidates.len() != 1 {
-            return Err(Diagnostic::error(format!(
-                "constructor overload resolution for placement construction of '{class_name}' is ambiguous or unavailable (roadmap)"
-            )));
+        if let Some(class) = self.cxx_classes.get(class_name) {
+            let candidates: Vec<_> = class
+                .constructors
+                .iter()
+                .filter(|signature| signature.parameters.len() == argument_count)
+                .collect();
+            if candidates.len() == 1 {
+                return self.mangle_typed_member_in_current_namespace(
+                    class_name,
+                    "__ct",
+                    &candidates[0].cxx_parameters,
+                );
+            }
         }
-        self.mangle_typed_member_in_current_namespace(
-            class_name,
-            "__ct",
-            &candidates[0].cxx_parameters,
-        )
+        let qualified = self.qualify_cxx_class_name(class_name);
+        let candidates: Vec<_> = self
+            .cxx_constructors
+            .get(&qualified)
+            .or_else(|| self.cxx_constructors.get(class_name))
+            .into_iter()
+            .flatten()
+            .filter(|method| method.fixed_parameter_count == argument_count)
+            .collect();
+        match candidates.as_slice() {
+            [method] => Ok(method.mangled.clone()),
+            _ => Err(Diagnostic::error(format!(
+                "constructor overload resolution for placement construction of '{class_name}' is ambiguous or unavailable (roadmap)"
+            ))),
+        }
     }
 
     fn parse_class_parameter_types(&mut self) -> Compilation<ClassParameterTypes> {

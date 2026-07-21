@@ -197,6 +197,10 @@ pub(crate) struct Parser {
     /// keyed by fully-qualified `(class, member)` name. Calls carry no implicit
     /// `this`, but still require CodeWarrior member-function mangling.
     pub(crate) cxx_static_methods: HashMap<(String, String), Vec<crate::cxx::RecoveredCxxMethod>>,
+    /// Constructor overloads recovered independently of object layout. Large
+    /// headers may contain unsupported unrelated methods while their constructor
+    /// signatures and inline bodies remain fully usable.
+    pub(crate) cxx_constructors: HashMap<String, Vec<crate::cxx::RecoveredCxxMethod>>,
     /// Free C++ function overloads recovered from prototypes/definitions,
     /// keyed by their unqualified source name. Calls resolve by arity only when
     /// that selects one ABI symbol unambiguously.

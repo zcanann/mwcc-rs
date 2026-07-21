@@ -145,6 +145,7 @@ pub fn parse_located_translation_unit_with_enum_min(
         inline_cxx_members: std::collections::HashSet::new(),
         cxx_inline_materializations: Vec::new(),
         cxx_static_methods: HashMap::new(),
+        cxx_constructors: HashMap::new(),
         cxx_free_functions: HashMap::new(),
         cxx_instance_methods: HashMap::new(),
         cxx_explicit_instance_methods: HashMap::new(),
@@ -1970,6 +1971,42 @@ blr\n\
                 slot_offset: 8,
                 ..
             })
+        ));
+    }
+
+    #[test]
+    fn retains_block_local_constructor_calls_for_inline_expansion() {
+        let source = r#"
+            struct Pixel {
+                Pixel(int value) { x = value; }
+                int x;
+            };
+            int use(int value) {
+                if (value) {
+                    Pixel pixel(value);
+                }
+                return value;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(unit.skipped_inline_names.contains("__ct__5PixelFi"));
+        assert!(unit
+            .skipped_inline_definitions
+            .iter()
+            .any(|function| function.name == "__ct__5PixelFi"));
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::If { then_body, .. }]
+                if matches!(then_body.as_slice(),
+                    [mwcc_syntax_trees::Statement::Expression(Expression::Call { name, .. })]
+                    if name == "__ct__5PixelFi")
         ));
     }
 

@@ -748,6 +748,34 @@ impl Parser {
                 if let Some(tag) = &struct_tag {
                     self.variable_structs.insert(name.clone(), tag.clone());
                 }
+                let constructor_call = if !is_static
+                    && struct_tag.is_some()
+                    && self.eat_keyword(Token::ParenOpen)
+                {
+                    let mut arguments = Vec::new();
+                    if *self.peek() != Token::ParenClose {
+                        loop {
+                            arguments.push(self.expression()?);
+                            if !self.eat_keyword(Token::Comma) {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect(Token::ParenClose)?;
+                    let class_name = struct_tag.as_deref().expect("checked above");
+                    let constructor = self
+                        .resolve_placement_constructor(class_name, arguments.len())?;
+                    let mut call_arguments = vec![Expression::AddressOf {
+                        operand: Box::new(Expression::Variable(name.clone())),
+                    }];
+                    call_arguments.extend(arguments);
+                    Some(Statement::Expression(Expression::Call {
+                        name: constructor,
+                        arguments: call_arguments,
+                    }))
+                } else {
+                    None
+                };
                 let mut data_bytes = None;
                 let mut data_relocations = Vec::new();
                 let initializer = if is_static && self.eat_keyword(Token::Equals) {
@@ -814,6 +842,9 @@ impl Parser {
                     is_const: false,
                     row_bytes: None,
                 });
+                if let Some(call) = constructor_call {
+                    statements.push(call);
+                }
                 if !self.eat_keyword(Token::Comma) {
                     break;
                 }
