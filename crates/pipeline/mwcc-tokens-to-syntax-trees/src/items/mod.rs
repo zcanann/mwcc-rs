@@ -2860,27 +2860,49 @@ impl Parser {
                 }
             }
             let mut function = parsed_function?;
+            let constructor_prefix_len = constructor_initializers.len();
             if !constructor_initializers.is_empty() {
                 function.statements.splice(0..0, constructor_initializers);
             }
             let special_member_scope = constructor_scope.as_ref().or(destructor_scope.as_ref());
             if let Some(scope) = special_member_scope {
                 if let Some(class) = self.cxx_classes.get(scope) {
-                    if let Some(vptr_offset) = class.vptr_offset {
+                    if !class.vtable_components.is_empty() {
                         let vtable = format!("__vt__{}{}", scope.len(), scope);
-                        let target = Expression::Member {
-                            base: Box::new(Expression::Variable("this".to_string())),
-                            offset: vptr_offset,
-                            member_type: Type::UnsignedInt,
-                            index_stride: None,
-                        };
-                        let vptr_store = Statement::Store {
-                            target,
-                            value: Expression::AddressOf {
-                                operand: Box::new(Expression::Variable(vtable.clone())),
-                            },
-                        };
+                        let mut table_offset = 0u32;
+                        let vptr_stores: Vec<Statement> = class
+                            .vtable_components
+                            .iter()
+                            .map(|component| {
+                                let address = Expression::AddressOf {
+                                    operand: Box::new(Expression::Variable(vtable.clone())),
+                                };
+                                let value = if table_offset == 0 {
+                                    address
+                                } else {
+                                    Expression::MemberAddress {
+                                        base: Box::new(address),
+                                        offset: table_offset,
+                                        element: mwcc_syntax_trees::Pointee::UnsignedChar,
+                                        index_stride: None,
+                                    }
+                                };
+                                let store = Statement::Store {
+                                    target: Expression::Member {
+                                        base: Box::new(Expression::Variable("this".to_string())),
+                                        offset: component.vptr_offset,
+                                        member_type: Type::UnsignedInt,
+                                        index_stride: None,
+                                    },
+                                    value,
+                                };
+                                table_offset +=
+                                    8 + component.virtual_slots.max(1) as u32 * 4;
+                                store
+                            })
+                            .collect();
                         if destructor_scope.is_some() && class.has_virtual_destructor {
+                            let vptr_store = vptr_stores[0].clone();
                             function.return_type = Type::StructPointer {
                                 element_size: self
                                     .structs
@@ -2917,8 +2939,32 @@ impl Parser {
                                 Some(Expression::Variable("this".to_string()));
 
                             if !globals.iter().any(|global| global.name == vtable) {
-                                let table_size = 8 + class.virtual_slots.max(1) * 4;
-                                let mut data_relocations = vec![(8, function.name.clone(), 0)];
+                                let table_size: usize = class
+                                    .vtable_components
+                                    .iter()
+                                    .map(|component| 8 + component.virtual_slots.max(1) * 4)
+                                    .sum();
+                                let mut data_relocations = Vec::new();
+                                let mut component_offset = 0u32;
+                                for component in &class.vtable_components {
+                                    if let Some(slot) = component.virtual_destructor_slot {
+                                        let target = if component.object_offset == 0 {
+                                            function.name.clone()
+                                        } else {
+                                            format!(
+                                                "@{}@{}",
+                                                component.object_offset, function.name
+                                            )
+                                        };
+                                        data_relocations.push((
+                                            component_offset + u32::from(slot),
+                                            target,
+                                            0,
+                                        ));
+                                    }
+                                    component_offset +=
+                                        8 + component.virtual_slots.max(1) as u32 * 4;
+                                }
                                 data_relocations.extend(
                                     class.virtual_definitions.iter().map(|(offset, name)| {
                                         (u32::from(*offset), name.clone(), 0)
@@ -2951,7 +2997,10 @@ impl Parser {
                                 });
                             }
                         } else if constructor_scope.is_some() {
-                            function.statements.insert(0, vptr_store);
+                            function.statements.splice(
+                                constructor_prefix_len..constructor_prefix_len,
+                                vptr_stores,
+                            );
                         }
                     }
                 }

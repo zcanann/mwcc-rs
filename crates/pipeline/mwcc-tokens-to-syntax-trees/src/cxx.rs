@@ -78,6 +78,22 @@ pub(crate) struct ClassLayout {
     pub(crate) has_virtual_destructor: bool,
     /// Primary-vtable byte offset of the deleting-destructor entry.
     pub(crate) virtual_destructor_slot: Option<u16>,
+    /// Every polymorphic non-virtual base subobject contributing a vptr to the
+    /// complete object, in depth-first declaration order. The first component
+    /// is the primary table; later components become contiguous subtables in
+    /// CodeWarrior's vtable group.
+    pub(crate) vtable_components: Vec<VtableComponent>,
+}
+
+#[derive(Clone)]
+pub(crate) struct VtableComponent {
+    /// Adjustment from the complete object to the base subobject passed as
+    /// `this`. This can differ from `vptr_offset` when a base declares data
+    /// before its first virtual member.
+    pub(crate) object_offset: u32,
+    pub(crate) vptr_offset: u32,
+    pub(crate) virtual_slots: usize,
+    pub(crate) virtual_destructor_slot: Option<u16>,
 }
 
 #[derive(Clone)]
@@ -2169,9 +2185,9 @@ impl Parser {
                 let base_name = self
                     .resolve_scoped_cxx_class_name(&source_base_name)
                     .unwrap_or(source_base_name);
-                let (base_is_polymorphic, base_vptr_offset, base_virtual_slots) = self
-                    .cxx_classes
-                    .get(&base_name)
+                let base_class = self.cxx_classes.get(&base_name).cloned();
+                let (base_is_polymorphic, base_vptr_offset, base_virtual_slots) = base_class
+                    .as_ref()
                     .map_or((false, None, 0), |base| {
                         (base.is_polymorphic, base.vptr_offset, base.virtual_slots)
                     });
@@ -2201,6 +2217,7 @@ impl Parser {
                 layout
                     .function_pointer_fields
                     .extend(base.function_pointer_fields.iter().cloned());
+                let is_primary_base = class.bases.is_empty();
                 class.bases.push(BaseClass {
                     name: base_name,
                     offset: base_offset,
@@ -2209,7 +2226,23 @@ impl Parser {
                 if class.vptr_offset.is_none() {
                     class.vptr_offset = base_vptr_offset.map(|offset| base_offset + offset);
                 }
-                class.virtual_slots = class.virtual_slots.max(base_virtual_slots);
+                if is_primary_base {
+                    class.virtual_slots = base_virtual_slots;
+                    if let Some(base_class) = &base_class {
+                        class.has_virtual_destructor = base_class.has_virtual_destructor;
+                        class.virtual_destructor_slot = base_class.virtual_destructor_slot;
+                    }
+                }
+                if let Some(base_class) = base_class {
+                    class.vtable_components.extend(base_class.vtable_components.into_iter().map(
+                        |component| VtableComponent {
+                            object_offset: base_offset + component.object_offset,
+                            vptr_offset: base_offset + component.vptr_offset,
+                            virtual_slots: component.virtual_slots,
+                            virtual_destructor_slot: component.virtual_destructor_slot,
+                        },
+                    ));
+                }
                 offset += base.size;
                 max_align = max_align.max(base_align);
                 if !self.eat_keyword(Token::Comma) {
@@ -2244,6 +2277,12 @@ impl Parser {
                     // already supply the primary vptr and skip this path.
                     offset = offset.div_ceil(4) * 4;
                     class.vptr_offset = Some(offset);
+                    class.vtable_components.push(VtableComponent {
+                        object_offset: 0,
+                        vptr_offset: offset,
+                        virtual_slots: 0,
+                        virtual_destructor_slot: None,
+                    });
                     offset += 4;
                     max_align = max_align.max(4);
                     class.is_polymorphic = true;
@@ -2268,18 +2307,24 @@ impl Parser {
             }
             if *self.peek() == Token::Tilde {
                 if is_virtual {
-                    class.virtual_destructor_slot = Some(u16::try_from(
-                        8usize
-                            .checked_add(class.virtual_slots.checked_mul(4).ok_or_else(|| {
-                                Diagnostic::error("C++ virtual destructor slot overflow")
-                            })?)
-                            .ok_or_else(|| {
-                                Diagnostic::error("C++ virtual destructor slot overflow")
-                            })?,
-                    )
-                    .map_err(|_| Diagnostic::error("C++ virtual destructor slot overflow"))?);
-                    class.virtual_slots += 1;
+                    if class.virtual_destructor_slot.is_none() {
+                        class.virtual_destructor_slot = Some(u16::try_from(
+                            8usize
+                                .checked_add(class.virtual_slots.checked_mul(4).ok_or_else(|| {
+                                    Diagnostic::error("C++ virtual destructor slot overflow")
+                                })?)
+                                .ok_or_else(|| {
+                                    Diagnostic::error("C++ virtual destructor slot overflow")
+                                })?,
+                        )
+                        .map_err(|_| Diagnostic::error("C++ virtual destructor slot overflow"))?);
+                        class.virtual_slots += 1;
+                    }
                     class.has_virtual_destructor = true;
+                    if let Some(primary) = class.vtable_components.first_mut() {
+                        primary.virtual_slots = class.virtual_slots;
+                        primary.virtual_destructor_slot = class.virtual_destructor_slot;
+                    }
                 }
                 self.skip_class_member()?;
                 // An in-class destructor definition is commonly followed by an
@@ -2395,6 +2440,9 @@ impl Parser {
                     let vptr_offset = u16::try_from(class.vptr_offset.unwrap_or(0))
                         .map_err(|_| Diagnostic::error("C++ primary vptr offset overflow"))?;
                     class.virtual_slots += 1;
+                    if let Some(primary) = class.vtable_components.first_mut() {
+                        primary.virtual_slots = class.virtual_slots;
+                    }
                     if !is_pure {
                         let qualified = self.qualify_cxx_class_name(&name);
                         let scopes: Vec<&str> = qualified.split("::").collect();

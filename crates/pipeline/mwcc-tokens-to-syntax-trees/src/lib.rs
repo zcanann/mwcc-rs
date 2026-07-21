@@ -1817,6 +1817,58 @@ blr\n\
     }
 
     #[test]
+    fn groups_inherited_vptrs_after_base_construction() {
+        let source = r#"
+            class Primary { int first; public: Primary(); virtual ~Primary(); };
+            class Secondary { int second; public: Secondary(); virtual ~Secondary(); };
+            class Derived : public Primary, public Secondary {
+            public:
+                Derived();
+                virtual ~Derived();
+            };
+            Derived::Derived() {}
+            Derived::~Derived() {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+        ).unwrap();
+        let constructor = &unit.functions[0];
+        assert!(matches!(constructor.statements.as_slice(), [
+            mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Call { name: primary, .. }
+            ),
+            mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Call { name: secondary, .. }
+            ),
+            mwcc_syntax_trees::Statement::Store {
+                target: mwcc_syntax_trees::Expression::Member { offset: 4, .. },
+                value: mwcc_syntax_trees::Expression::AddressOf { operand },
+            },
+            mwcc_syntax_trees::Statement::Store {
+                target: mwcc_syntax_trees::Expression::Member { offset: 12, .. },
+                value: mwcc_syntax_trees::Expression::MemberAddress {
+                    base,
+                    offset: 12,
+                    ..
+                },
+            },
+        ] if primary == "__ct__7PrimaryFv"
+            && secondary == "__ct__9SecondaryFv"
+            && matches!(operand.as_ref(), mwcc_syntax_trees::Expression::Variable(vtable)
+                if vtable == "__vt__7Derived")
+            && matches!(base.as_ref(), mwcc_syntax_trees::Expression::AddressOf { operand }
+                if matches!(operand.as_ref(), mwcc_syntax_trees::Expression::Variable(vtable)
+                    if vtable == "__vt__7Derived"))));
+        let vtable = unit.globals.iter().find(|global| global.name == "__vt__7Derived")
+            .expect("the derived destructor owns the complete vtable group");
+        assert_eq!(vtable.data_bytes.as_ref().map(Vec::len), Some(24));
+        assert_eq!(vtable.data_relocations, vec![
+            (8, "__dt__7DerivedFv".to_string(), 0),
+            (20, "@8@__dt__7DerivedFv".to_string(), 0),
+        ]);
+    }
+
+    #[test]
     fn resolves_a_variadic_member_call_through_a_global_class_pointer() {
         let source = r#"
             struct Stream { void print(char*, ...); };
