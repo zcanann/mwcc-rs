@@ -45,11 +45,14 @@ detection:
 
 ```sh
 cargo build -p mwcc
-# Fast edit loop: rotate a failure-biased sample; prior BYTE rows need not stay green.
-python3 tools/parity_loop.py --work-only --epoch 0
+# Default edit loop: rotate a failure-biased sample; prior BYTE rows need not stay green.
+python3 tools/parity_loop.py --epoch 0
 
 # Periodic scorecard: rerun the frozen representative sample from scratch.
 python3 tools/parity_loop.py --audit-only --audit-size 384 --rerun
+
+# Deliberately run both when cutting a milestone/release scorecard.
+python3 tools/parity_loop.py --with-audit --audit-size 384 --rerun
 ```
 
 The scorecard leads with the literal completion proof: authoritative exact
@@ -62,6 +65,11 @@ non-authoritative synthetic comparisons) widen separate identification bounds;
 they are never silently counted as compiler failures or successes. Deterministic
 out-of-sample canaries cover every project x compiler-version x language cell,
 while remaining outside the statistical estimator.
+
+The edit loop's compact output always labels these evidence layers separately.
+In particular, its failure-biased queue is explicitly *not* a parity estimate;
+if the fixed audit has not been run for the current compiler+harness fingerprint,
+the report says so instead of substituting a canary or work-queue pass count.
 
 The report also separates `BYTE`, `DIFF`, `DEFER`, `HARNESS`, unsupported builds,
 and untested configurations, with language, compiler-version, and project

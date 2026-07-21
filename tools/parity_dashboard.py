@@ -828,6 +828,92 @@ def print_breakdown(title: str, rows: List[Dict[str, Any]]) -> None:
         )
 
 
+def print_brief(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]]) -> None:
+    """Print the few numbers that can legitimately answer "where are we?".
+
+    Each line names its evidence layer and denominator. In particular, the
+    failure-biased work queue is never allowed to masquerade as a parity rate.
+    """
+
+    tool = report["tool_fingerprint"]
+    goal = report["goal_completion"]
+    builds = report["build_coverage"]
+    print("== parity status (denominator-first) ==")
+    print(f"compiler+harness fingerprint: {(tool or '<no observations>')[:24]}")
+    print(
+        "formal completion — authoritative whole-object exact: "
+        f"{goal['authoritative_exact']}/{goal['configurations']} configured TUs; "
+        f"complete project matrices {goal['projects_proven_complete']}/{goal['projects']}"
+    )
+    print(
+        f"measurement coverage — direct observations: {report['observed']}/{report['existing']} "
+        f"existing configured TUs; compiler identities "
+        f"{len(builds['supported_builds'])}/{builds['total_builds']} supported, "
+        f"{len(builds['unsupported_builds'])} unsupported, {len(builds['unprobed_builds'])} unprobed"
+    )
+
+    audit = report.get("representative_audit")
+    if audit is None:
+        print("representative audit — NOT RUN for this fingerprint; no corpus parity estimate")
+    elif not audit["complete"] or not audit["design_valid"] or audit["estimate"] is None:
+        print(
+            f"representative audit — INVALID/INCOMPLETE: {audit['observed']}/{audit['selected']} "
+            "sample rows observed; no corpus parity estimate"
+        )
+    else:
+        estimate = audit["estimate"]
+        print(
+            "representative whole-object audit — "
+            f"exact {estimate['successes']}/{estimate['total']} = "
+            f"{estimate['confirmed_proportion']:.1%}; known nonparity "
+            f"{estimate['known_nonparity']}/{estimate['total']}; measurement unknown "
+            f"{estimate['measurement_unknown']}/{estimate['total']}; "
+            f"95% CI on confirmed share {estimate['confirmed_interval_low']:.1%}.."
+            f"{estimate['confirmed_interval_high']:.1%}"
+        )
+        if estimate["oracle_runnable"]:
+            print(
+                "real-MWCC-runnable sample stratum — whole-object exact "
+                f"{estimate['successes']}/{estimate['oracle_runnable']} = "
+                f"{estimate['oracle_runnable_confirmed_proportion']:.1%}; "
+                f"pipeline-unknown {estimate['oracle_runnable_unknown']}/"
+                f"{estimate['oracle_runnable']}"
+            )
+        if estimate["code_measured"]:
+            print(
+                "code+text-relocation diagnostic — exact "
+                f"{estimate['code_exact']}/{estimate['code_measured']} = "
+                f"{estimate['code_exact_proportion']:.1%}; wrong "
+                f"{estimate['code_wrong']}/{estimate['code_measured']}; "
+                f"projection-deferred {estimate['code_deferred']}"
+            )
+        print(
+            "audit coverage — compiler versions "
+            f"{sum(status != 'UNTESTED' for status in audit['version_coverage'].values())}/"
+            f"{len(audit['version_coverage'])}; project/version/language cells "
+            f"{audit['breadth_coverage_observed']}/{audit['breadth_coverage_cells']}"
+        )
+
+    frontier = report.get("work_frontier")
+    if frontier is not None:
+        outcomes = ", ".join(
+            f"{status} {frontier['statuses'][status]}"
+            for status in STATUSES
+            if status != "UNTESTED" and frontier["statuses"][status]
+        )
+        print(
+            "iteration queue — FAILURE-BIASED, NOT A PARITY ESTIMATE: "
+            f"{frontier['observed']}/{frontier['selected']} observed from "
+            f"N={frontier['universe_size']}; {outcomes or 'no outcomes'}"
+        )
+    if delta_report is not None:
+        print(
+            "cached comparison delta — diagnostic only: "
+            f"+{delta_report['byte_gained']} exact / -{delta_report['byte_lost']} exact "
+            f"across {delta_report['common_observations']} common observations"
+        )
+
+
 def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]]) -> None:
     tool = report["tool_fingerprint"]
     print("== reference parity snapshot ==")
@@ -1096,6 +1182,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--version", action="append")
     parser.add_argument("--language", choices=("c", "c++"), action="append")
     parser.add_argument("--matching-only", action="store_true")
+    parser.add_argument(
+        "--brief",
+        action="store_true",
+        help="print only denominator-qualified status layers",
+    )
     parser.add_argument("--json", action="store_true")
     return parser.parse_args(argv)
 
@@ -1157,6 +1248,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
+    elif args.brief:
+        print_brief(report, delta_report)
     else:
         print_snapshot(report, delta_report)
     return 0

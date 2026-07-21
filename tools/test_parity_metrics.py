@@ -16,6 +16,7 @@ from parity_dashboard import (
     code_result,
     failure_reason,
     normalize_reason,
+    print_brief,
     representative_audit,
     runtime_summary,
     snapshot,
@@ -110,11 +111,15 @@ class IdentityTests(unittest.TestCase):
                 path.write_text(original, encoding="utf-8")
 
     def test_parity_loop_separates_fast_work_from_periodic_audit(self):
+        default = parse_loop_args([])
+        self.assertFalse(default.audit_only)
+        self.assertFalse(default.with_audit)
         work = parse_loop_args(["--work-only"])
         self.assertTrue(work.work_only)
         self.assertEqual(work.size, 32)
         self.assertEqual(str(work.compiler), "target/debug/mwcc")
         self.assertTrue(parse_loop_args(["--audit-only"]).audit_only)
+        self.assertTrue(parse_loop_args(["--with-audit"]).with_audit)
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parse_loop_args(["--work-only", "--audit-only"])
 
@@ -158,6 +163,29 @@ class IdentityTests(unittest.TestCase):
 
 
 class DashboardTests(unittest.TestCase):
+    def test_brief_status_never_presents_the_work_queue_as_parity(self):
+        rows = [row(source="src/a.c"), row(source="src/b.c")]
+        observations = {
+            rows[0]["configuration_id"]: {"status": "BYTE"},
+            rows[1]["configuration_id"]: {"status": "DEFER"},
+        }
+        report = snapshot({"projects": []}, rows, observations, "fingerprint")
+        report["work_frontier"] = work_frontier(
+            rows,
+            observations,
+            {
+                "configuration_ids": [item["configuration_id"] for item in rows],
+                "universe_size": 2,
+            },
+        )
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            print_brief(report, None)
+        rendered = output.getvalue()
+        self.assertIn("0/2 configured TUs", rendered)
+        self.assertIn("NOT RUN", rendered)
+        self.assertIn("FAILURE-BIASED, NOT A PARITY ESTIMATE", rendered)
+
     def test_exact_output_against_original_object_earns_credit_with_synthetic_input(self):
         observation = {
             "status": "BYTE",
