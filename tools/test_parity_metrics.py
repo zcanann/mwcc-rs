@@ -27,7 +27,11 @@ from parity_dashboard import (
 )
 from parity_frontier import build_frontier
 from parity_identity import configuration_id
-from parity_loop import most_comparable_other_tool, parse_args as parse_loop_args
+from parity_loop import (
+    most_comparable_other_tool,
+    parse_args as parse_loop_args,
+    persistent_compiler_image,
+)
 from reference_parity import (
     bounded_completion_order,
     code_verdict,
@@ -181,6 +185,23 @@ class IdentityTests(unittest.TestCase):
                 self.assertEqual(len(fingerprint), 64)
             finally:
                 snapshot_directory.cleanup()
+
+    def test_parity_loop_persists_content_addressed_compiler_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "mwcc"
+            store = root / "images"
+            source.write_bytes(b"first compiler image")
+            first, first_hash = persistent_compiler_image(source, store)
+
+            source.write_bytes(b"replacement compiler image")
+            second, second_hash = persistent_compiler_image(source, store)
+
+            self.assertEqual(first.read_bytes(), b"first compiler image")
+            self.assertEqual(second.read_bytes(), b"replacement compiler image")
+            self.assertNotEqual(first_hash, second_hash)
+            self.assertEqual(first.parent.name, first_hash)
+            self.assertEqual(second.parent.name, second_hash)
 
     def test_parity_baseline_prefers_overlap_over_newer_focused_probe(self):
         with tempfile.TemporaryDirectory() as directory:

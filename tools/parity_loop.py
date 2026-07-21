@@ -8,11 +8,17 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import tempfile
 from typing import List, Optional, Sequence
 
-from reference_parity import harness_fingerprint, result_cache_name
+from reference_parity import (
+    harness_fingerprint,
+    immutable_compiler_snapshot,
+    result_cache_name,
+)
 
 
 INVENTORY_SCHEMA_VERSION = 5
@@ -24,6 +30,44 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def persistent_compiler_image(source: Path, store: Path) -> tuple[Path, str]:
+    """Persist and return one content-addressed compiler image.
+
+    The parity runner also makes a private copy for each process, but pinning
+    the input here ensures every runner launched by one loop invocation starts
+    from the same bytes even if a concurrent Cargo build replaces ``source``.
+    Keeping the image in the state directory also makes an interrupted audit
+    explicitly resumable with ``--compiler <image> --no-build``.
+    """
+
+    temporary_directory, temporary_image, compiler_hash = immutable_compiler_snapshot(
+        source
+    )
+    try:
+        destination_directory = store / compiler_hash
+        destination_directory.mkdir(parents=True, exist_ok=True)
+        destination = destination_directory / source.name
+        if destination.is_file():
+            if sha256_file(destination) != compiler_hash:
+                raise RuntimeError(f"corrupt compiler image: {destination}")
+            return destination, compiler_hash
+
+        with tempfile.NamedTemporaryFile(
+            prefix=f".{source.name}.", dir=destination_directory, delete=False
+        ) as output:
+            staging = Path(output.name)
+        try:
+            shutil.copy2(temporary_image, staging)
+            if sha256_file(staging) != compiler_hash:
+                raise RuntimeError(f"compiler image changed while persisting: {source}")
+            staging.replace(destination)
+        finally:
+            staging.unlink(missing_ok=True)
+        return destination, compiler_hash
+    finally:
+        temporary_directory.cleanup()
 
 
 def result_arguments(paths: List[Path]) -> List[str]:
@@ -144,7 +188,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     run_frontier = not args.audit_only
     root = Path(__file__).resolve().parent.parent
     tools = root / "tools"
-    compiler = args.compiler if args.compiler.is_absolute() else root / args.compiler
+    compiler_source = (
+        args.compiler if args.compiler.is_absolute() else root / args.compiler
+    )
     default_compiler = root / "target/debug/mwcc"
     state = args.state_dir if args.state_dir.is_absolute() else root / args.state_dir
     inventory = state / "inventory.json"
@@ -152,18 +198,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     audit = state / "audit.json"
     runs = state / "runs"
     snapshots = state / "snapshots"
+    compiler_images = state / "compiler-images"
     state.mkdir(parents=True, exist_ok=True)
     runs.mkdir(exist_ok=True)
     snapshots.mkdir(exist_ok=True)
+    compiler_images.mkdir(exist_ok=True)
 
-    if not args.no_build and compiler.resolve() == default_compiler.resolve():
+    if not args.no_build and compiler_source.resolve() == default_compiler.resolve():
         build = subprocess.run(["cargo", "build", "-q", "-p", "mwcc"], cwd=root)
         if build.returncode:
             print("failed to build the default parity compiler", file=sys.stderr)
             return 2
 
-    if not compiler.is_file():
-        print(f"compiler not found: {compiler}", file=sys.stderr)
+    if not compiler_source.is_file():
+        print(f"compiler not found: {compiler_source}", file=sys.stderr)
+        return 2
+
+    try:
+        compiler, compiler_hash = persistent_compiler_image(
+            compiler_source, compiler_images
+        )
+    except (OSError, RuntimeError) as error:
+        print(f"compiler image failed: {error}", file=sys.stderr)
         return 2
 
     inventory_stale = True
@@ -191,7 +247,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if generated.returncode:
             print("warning: inventory contains project capture errors", file=sys.stderr)
 
-    compiler_hash = sha256_file(compiler)
     harness_hash = harness_fingerprint(tools)
     fingerprint = f"{compiler_hash}:{harness_hash}"
     result = runs / result_cache_name(compiler_hash, harness_hash)
