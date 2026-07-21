@@ -1352,6 +1352,9 @@ impl Generator {
         if self.try_inlined_byte_append_loop(function)? {
             return Ok(());
         }
+        if self.try_status_indexed_call_loop(function)? {
+            return Ok(());
+        }
         if !self.skipped_inline_names.is_empty()
             && function_calls_any(function, &self.skipped_inline_names)
         {

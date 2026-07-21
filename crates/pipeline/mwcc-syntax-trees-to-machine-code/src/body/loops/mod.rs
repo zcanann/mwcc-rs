@@ -13,6 +13,7 @@ mod inlined_byte_append;
 pub(crate) mod policy;
 mod poll_search;
 mod search_guard_chain;
+mod status_indexed_call;
 mod virtual_scan;
 mod walker;
 
