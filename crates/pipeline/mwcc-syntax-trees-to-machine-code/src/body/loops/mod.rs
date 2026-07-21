@@ -4,6 +4,7 @@
 use super::*;
 
 mod ascii_hash;
+mod ascii_upper;
 mod count_register;
 mod counters;
 mod fill_copy;
