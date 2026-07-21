@@ -3094,6 +3094,12 @@ impl Generator {
             if self.try_pointer_state_call_loop(function)? {
                 return Ok(());
             }
+            // A range-guarded global-array element consumed by several calls
+            // has one cross-call address survivor and a source-ordered false
+            // edge for every guard term.
+            if self.try_guarded_indexed_call_sequence(function)? {
+                return Ok(());
+            }
             // Counted resource searches keep a status, counter, acquired
             // object, and two output pointers live across their call chain.
             // With inline multiple saves, the allocator colors one dense GPR

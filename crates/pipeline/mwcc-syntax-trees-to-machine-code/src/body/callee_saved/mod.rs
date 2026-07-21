@@ -23,6 +23,7 @@ mod frame_call_then_branch;
 mod frame_convention;
 mod later_call_arguments;
 mod global_swap;
+mod guarded_indexed_call_sequence;
 mod global_call_result_guard;
 mod global_aggregate_initialization;
 mod global_aggregate_pop;
