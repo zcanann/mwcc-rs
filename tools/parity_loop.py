@@ -55,6 +55,11 @@ def newest_other_tool(paths: List[Path], current: str) -> Optional[str]:
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--compiler", type=Path, default=Path("target/debug/mwcc"))
+    parser.add_argument(
+        "--no-build",
+        action="store_true",
+        help="use the selected compiler binary as-is instead of rebuilding the default debug compiler",
+    )
     parser.add_argument("--reference-root", type=Path)
     parser.add_argument("--state-dir", type=Path, default=Path("target/reference-parity/frontier"))
     parser.add_argument(
@@ -108,6 +113,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     root = Path(__file__).resolve().parent.parent
     tools = root / "tools"
     compiler = args.compiler if args.compiler.is_absolute() else root / args.compiler
+    default_compiler = root / "target/debug/mwcc"
     state = args.state_dir if args.state_dir.is_absolute() else root / args.state_dir
     inventory = state / "inventory.json"
     frontier = state / "frontier.json"
@@ -117,6 +123,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     state.mkdir(parents=True, exist_ok=True)
     runs.mkdir(exist_ok=True)
     snapshots.mkdir(exist_ok=True)
+
+    if not args.no_build and compiler.resolve() == default_compiler.resolve():
+        build = subprocess.run(["cargo", "build", "-q", "-p", "mwcc"], cwd=root)
+        if build.returncode:
+            print("failed to build the default parity compiler", file=sys.stderr)
+            return 2
 
     if not compiler.is_file():
         print(f"compiler not found: {compiler}", file=sys.stderr)

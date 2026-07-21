@@ -118,6 +118,8 @@ class IdentityTests(unittest.TestCase):
         self.assertTrue(work.work_only)
         self.assertEqual(work.size, 32)
         self.assertEqual(str(work.compiler), "target/debug/mwcc")
+        self.assertFalse(work.no_build)
+        self.assertTrue(parse_loop_args(["--no-build"]).no_build)
         self.assertTrue(parse_loop_args(["--audit-only"]).audit_only)
         self.assertTrue(parse_loop_args(["--with-audit"]).with_audit)
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
