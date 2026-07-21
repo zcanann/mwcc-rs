@@ -684,6 +684,29 @@ mod tests {
     }
 
     #[test]
+    fn retains_asm_section_and_prior_asm_fact() {
+        let source = r#"
+            extern "C" {
+                __declspec(section ".init") asm void startup(void) {
+                    nofralloc
+                    blr
+                }
+                void after_startup(void) {}
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.functions[0].section.as_deref(), Some(".init"));
+        assert!(unit.functions[1].preceded_by_asm);
+    }
+
+    #[test]
     fn retains_function_source_boundaries() {
         let raw = [
             (Token::KeywordInt, 1),

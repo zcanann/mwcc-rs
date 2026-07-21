@@ -154,6 +154,7 @@ mod tests {
             guards: Vec::new(),
             return_expression: None,
             section: None,
+            preceded_by_asm: false,
             asm_body: None,
             force_active: false,
             text_deferred: false,

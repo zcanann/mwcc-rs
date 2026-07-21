@@ -865,6 +865,7 @@ impl Parser {
                 guards: Vec::new(),
                 return_expression: None,
                 section: None,
+                preceded_by_asm: functions.iter().any(|function| function.asm_body.is_some()),
                 asm_body: None,
                 force_active: false,
             });
@@ -1510,7 +1511,10 @@ impl Parser {
             // error-recovery path), never emitted. (The `static`/`__declspec(weak)`
             // qualifiers already ran.)
             if *self.peek() == Token::Asm && !is_inline {
-                if let Some(function) = self.parse_asm_function(is_static, is_weak, false)? {
+                if let Some(mut function) = self.parse_asm_function(is_static, is_weak, false)? {
+                    function.section = declspec_section.clone().or_else(|| {
+                        self.section_functions.get(&function.name).cloned()
+                    });
                     functions.push(function);
                 }
                 return Ok(());
@@ -1529,7 +1533,10 @@ impl Parser {
                     })
                     .any(|token| *token == Token::Asm);
             if asm_follows_return_type {
-                if let Some(function) = self.parse_asm_function(is_static, is_weak, true)? {
+                if let Some(mut function) = self.parse_asm_function(is_static, is_weak, true)? {
+                    function.section = declspec_section.clone().or_else(|| {
+                        self.section_functions.get(&function.name).cloned()
+                    });
                     functions.push(function);
                 }
                 return Ok(());
@@ -2891,6 +2898,8 @@ impl Parser {
             }
             function.is_weak = function_is_weak;
             function.section = declspec_section.clone().or(proto_section);
+            function.preceded_by_asm =
+                functions.iter().any(|earlier| earlier.asm_body.is_some());
             function.text_deferred = materialize_by_calls;
             functions.push(function);
         }
@@ -4111,6 +4120,7 @@ impl Parser {
             guards,
             return_expression,
             section: None,
+            preceded_by_asm: false,
             asm_body: None,
             force_active: self.force_active,
         })

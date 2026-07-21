@@ -529,6 +529,7 @@ impl Generator {
         let synthetic = Function {
             return_type: function.return_type,
             section: None,
+            preceded_by_asm: function.preceded_by_asm,
             asm_body: None,
             force_active: false,
             name: function.name.clone(),

@@ -492,6 +492,7 @@ pub(crate) fn substitute_const_float_globals(
     let function = Function {
         return_type: function.return_type,
         section: function.section.clone(),
+        preceded_by_asm: function.preceded_by_asm,
         asm_body: None,
         force_active: false,
         name: function.name.clone(),
@@ -665,6 +666,7 @@ pub(crate) fn inline_frame_feeding_locals(
         function: Function {
             return_type: function.return_type,
             section: function.section.clone(),
+            preceded_by_asm: function.preceded_by_asm,
             asm_body: None,
             force_active: false,
             name: function.name.clone(),
@@ -757,6 +759,7 @@ pub(crate) fn normalize_leading_local_assigns(function: &Function) -> Option<Fun
     Some(Function {
         return_type: function.return_type,
         section: function.section.clone(),
+        preceded_by_asm: function.preceded_by_asm,
         asm_body: None,
         force_active: false,
         name: function.name.clone(),
@@ -817,6 +820,7 @@ pub(crate) fn inline_return_only_locals(function: &Function) -> Option<Function>
     Some(Function {
         return_type: function.return_type,
         section: function.section.clone(),
+        preceded_by_asm: function.preceded_by_asm,
         asm_body: None,
         force_active: false,
         name: function.name.clone(),
@@ -904,6 +908,7 @@ pub(crate) fn inline_switch_scrutinee_locals(function: &Function) -> Option<Func
     Some(Function {
         return_type: function.return_type,
         section: function.section.clone(),
+        preceded_by_asm: function.preceded_by_asm,
         asm_body: None,
         force_active: false,
         name: function.name.clone(),
@@ -1172,6 +1177,7 @@ pub(crate) fn inline_store_bearing_locals(function: &Function) -> Option<Functio
     Some(Function {
         return_type: function.return_type,
         section: function.section.clone(),
+        preceded_by_asm: function.preceded_by_asm,
         asm_body: None,
         force_active: false,
         name: function.name.clone(),
@@ -1291,6 +1297,7 @@ pub(crate) fn inline_single_call_result(function: &Function) -> Option<Function>
     Some(Function {
         return_type: function.return_type,
         section: function.section.clone(),
+        preceded_by_asm: function.preceded_by_asm,
         asm_body: None,
         force_active: false,
         name: function.name.clone(),

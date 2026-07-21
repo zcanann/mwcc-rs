@@ -11,11 +11,30 @@ use mwcc_core::{Compilation, Diagnostic};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SourceLanguage {
+    C,
+    Cxx,
+}
+
+impl SourceLanguage {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "c" => Some(Self::C),
+            "c++" | "cpp" | "cxx" => Some(Self::Cxx),
+            _ => None,
+        }
+    }
+}
+
 struct Invocation {
     input: Option<String>,
     output: Option<String>,
     build_label: Option<String>,
     artifacts_directory: Option<String>,
+    /// Explicit `-lang` selection. When absent, the input extension selects the
+    /// frontend; real project lines sometimes deliberately compile `.cpp` as C.
+    source_language: Option<SourceLanguage>,
     /// Codegen-affecting flags parsed from the real build line; the rest are
     /// ignored (they are the preprocessor's or diagnostics' concern).
     flags: mwcc_versions::Flags,
@@ -28,6 +47,7 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
         output: None,
         build_label: None,
         artifacts_directory: None,
+        source_language: None,
         flags: mwcc_versions::Flags::default(),
     };
     let mut index = 0;
@@ -48,6 +68,15 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
             "--emit-artifacts" => {
                 index += 1;
                 invocation.artifacts_directory = arguments.get(index).cloned();
+            }
+            "-lang" => {
+                index += 1;
+                if let Some(language) = arguments
+                    .get(index)
+                    .and_then(|value| SourceLanguage::parse(value))
+                {
+                    invocation.source_language = Some(language);
+                }
             }
             // `-char signed`/`-char unsigned` overrides the build's `char` default.
             "-char" => {
@@ -215,6 +244,11 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                     _ => Optimization::O4,
                 };
             }
+            argument if argument.starts_with("-lang=") => {
+                if let Some(language) = SourceLanguage::parse(&argument[6..]) {
+                    invocation.source_language = Some(language);
+                }
+            }
             argument if argument.ends_with(".c") && invocation.input.is_none() => {
                 invocation.input = Some(argument.to_string());
             }
@@ -275,6 +309,7 @@ fn main() -> ExitCode {
         &source,
         source_name,
         config,
+        invocation.source_language,
         invocation.artifacts_directory.as_deref(),
     ) {
         Ok(object) => {
@@ -296,6 +331,7 @@ fn compile(
     source: &[u8],
     source_name: &str,
     config: mwcc_versions::CompilerConfig,
+    source_language: Option<SourceLanguage>,
     artifacts: Option<&str>,
 ) -> Compilation<Vec<u8>> {
     let located_tokens = mwcc_source_to_tokens::tokenize_bytes_located(source)?;
@@ -304,12 +340,16 @@ fn compile(
         .map(|located| located.token.clone())
         .collect();
     let behavior = mwcc_versions::Behavior::resolve(&config);
-    let is_cxx = matches!(
-        std::path::Path::new(source_name)
-            .extension()
-            .and_then(|extension| extension.to_str()),
-        Some("cpp" | "cp" | "cxx" | "cc")
-    );
+    let is_cxx = match source_language {
+        Some(SourceLanguage::C) => false,
+        Some(SourceLanguage::Cxx) => true,
+        None => matches!(
+            std::path::Path::new(source_name)
+                .extension()
+                .and_then(|extension| extension.to_str()),
+            Some("cpp" | "cp" | "cxx" | "cc")
+        ),
+    };
     let unit = mwcc_tokens_to_syntax_trees::parse_located_translation_unit_with_enum_min(
         located_tokens,
         is_cxx,
@@ -438,6 +478,18 @@ fn compile(
         &mut machine_functions,
         config,
     );
+    // The object writer currently owns one code section per translation unit.
+    // Refuse mixed `.text`/custom-section input explicitly: selecting the first
+    // custom name and silently merging every function would emit a wrong object.
+    let code_sections: std::collections::HashSet<&str> = machine_functions
+        .iter()
+        .map(|function| function.section.as_deref().unwrap_or(".text"))
+        .collect();
+    if code_sections.len() > 1 {
+        return Err(Diagnostic::error(
+            "mixed function code sections need multi-section object layout (roadmap)",
+        ));
+    }
     // MWCC_DUMP_FIXTURES=<dir>: serialize every lowered function's register
     // structure (per-instruction define/use operands via the vreg machine
     // description) — the FIT CORPUS for the keystone allocator (#20). Each
@@ -1464,10 +1516,9 @@ fn compile(
         first.phantom_externals = unit.plain_inline_asm_helpers.clone();
     }
 
-    // The 2.4.2 C++ frontend retains skipped static-inline asm helpers as LOCAL
-    // undefined symbols even when unused (OSInitFastCast in Metroid Prime); the
-    // 2.4.7 line drops them. C's immediate path retains them. Referenced helpers
-    // always need their local UND binding in every generation.
+    // The C and C++ frontends have independent version boundaries for retaining
+    // skipped static-inline asm helpers as LOCAL undefined symbols. Referenced
+    // helpers always need their local UND binding in every generation.
     let referenced_targets: std::collections::HashSet<&str> = machine_functions
         .iter()
         .flat_map(|function| &function.relocations)
@@ -1485,6 +1536,7 @@ fn compile(
         .filter(|name| {
             ((is_cxx && behavior.retain_unused_cxx_inline_asm_symbols)
                 || (!is_cxx
+                    && behavior.retain_unused_c_inline_asm_symbols
                     && !config.flags.inline_deferred
                     && config.flags.optimization != mwcc_versions::Optimization::O0))
                 || referenced_targets.contains(name.as_str())
@@ -1582,7 +1634,7 @@ fn compile(
 
 #[cfg(test)]
 mod tests {
-    use super::parse_invocation;
+    use super::{parse_invocation, SourceLanguage};
     use mwcc_versions::{EnumStorage, GlobalAddressing};
 
     #[test]
@@ -1597,6 +1649,18 @@ mod tests {
             "int".into(),
         ]);
         assert_eq!(integer.flags.enum_storage, EnumStorage::Int);
+    }
+
+    #[test]
+    fn command_line_language_accepts_both_forms_and_is_last_wins() {
+        let equals = parse_invocation(&["-lang=c".into()]);
+        assert_eq!(equals.source_language, Some(SourceLanguage::C));
+
+        let split = parse_invocation(&["-lang".into(), "c++".into()]);
+        assert_eq!(split.source_language, Some(SourceLanguage::Cxx));
+
+        let last_wins = parse_invocation(&["-lang=c++".into(), "-lang".into(), "c".into()]);
+        assert_eq!(last_wins.source_language, Some(SourceLanguage::C));
     }
 
     #[test]

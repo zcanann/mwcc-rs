@@ -374,6 +374,11 @@ pub struct Function {
     /// An explicit `__declspec(section "…")` code section (e.g. `.init` for the
     /// runtime's `__mem.c`), overriding the default `.text` placement. `None` = `.text`.
     pub section: Option<String>,
+    /// At least one inline-asm function precedes this definition in source order.
+    /// Legacy mwcc feeds that file-level fact into later optimizer scheduling
+    /// (notably the Runtime constructor-table walker). Kept after `section` so
+    /// capture hashes remain stable.
+    pub preceded_by_asm: bool,
     /// The body of a Metrowerks inline-`asm` function — a sequence of instructions
     /// and label definitions, emitted verbatim (no prologue/epilogue synthesis, no
     /// optimizer beyond mwcc's branch-to-return peephole; a trailing `blr` is added

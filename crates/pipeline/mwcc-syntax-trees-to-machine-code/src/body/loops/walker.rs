@@ -70,14 +70,10 @@ impl Generator {
         //
         // The second is emitted by the older C++ runtime with peephole-disabled label branches.
         let for_header_form = *kind == LoopKind::For;
-        // Only the peephole-disabled, linkage-first `for` schedule has been characterized. An
-        // optimized form removes the redundant source labels and schedules its table address into
-        // the linkage stores differently, so leave that form in the failure pool until it has an
-        // explicit schedule owner.
-        if for_header_form
-            && (!function.peephole_disabled
-                || self.behavior.frame_convention != FrameConvention::LinkageFirst)
-        {
+        // The old Runtime `for` spelling belongs to the linkage-first compiler family. Peepholes
+        // select between two measured schedules below: disabled retains redundant label edges;
+        // enabled removes them and interleaves the table address through the linkage stores.
+        if for_header_form && self.behavior.frame_convention != FrameConvention::LinkageFirst {
             return Ok(false);
         }
         let table = match (kind, &local.initializer, initializer) {
@@ -222,13 +218,25 @@ impl Generator {
         self.non_leaf = true;
         self.frame_size = 16;
         self.callee_saved = vec![WALKER];
-        self.output.anonymous_label_bump = if for_header_form { 6 } else { 5 };
+        // Peepholes can remove redundant branch edges without rolling back the source
+        // `for` accounting. A preceding asm definition retains the edges through a
+        // different file-level path and consumes one fewer anonymous slot.
+        self.output.anonymous_label_bump = if for_header_form && !function.preceded_by_asm {
+            6
+        } else {
+            5
+        };
         // This recognizer owns the complete function schedule for every optimization level.
         self.output.pre_scheduled = true;
 
         let style = self.behavior.pointer_walker_schedule_style;
         let legacy_for_schedule = for_header_form
             && self.behavior.frame_convention == FrameConvention::LinkageFirst;
+        // A preceding asm definition suppresses the same file-level optimization as
+        // explicit `#pragma peephole off`, retaining the source `for` edges.
+        let legacy_for_keeps_edges = legacy_for_schedule
+            && (function.preceded_by_asm || function.peephole_disabled);
+        let optimized_legacy_for_schedule = legacy_for_schedule && !legacy_for_keeps_edges;
         let direct_address = style == PointerWalkerScheduleStyle::DirectAddressDuplicateLoad;
         let duplicate_entry_load = matches!(
             style,
@@ -239,7 +247,7 @@ impl Generator {
 
         // O0..O3 retain the canonical linkage saves before table materialization. O4 moves `lis`
         // into the mflr latency slot and the dependent scratch `addi` between the two saves.
-        if legacy_for_schedule {
+        if legacy_for_keeps_edges {
             self.output
                 .instructions
                 .push(Instruction::MoveFromLinkRegister { d: 0 });
@@ -260,6 +268,10 @@ impl Generator {
                 a: 1,
                 offset: 12,
             });
+        } else if optimized_legacy_for_schedule {
+            self.output
+                .instructions
+                .push(Instruction::MoveFromLinkRegister { d: 0 });
         } else {
             self.output
                 .instructions
@@ -292,6 +304,13 @@ impl Generator {
                 a: 0,
                 immediate: 0,
             });
+        if optimized_legacy_for_schedule {
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 4,
+            });
+        }
         if interleave_linkage && !legacy_for_schedule {
             self.output.instructions.push(Instruction::StoreWord {
                 s: 0,
@@ -305,6 +324,20 @@ impl Generator {
             a: 3,
             immediate: 0,
         });
+        if optimized_legacy_for_schedule {
+            self.output
+                .instructions
+                .push(Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -16,
+                });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: WALKER,
+                a: 1,
+                offset: 12,
+            });
+        }
         if interleave_linkage && !legacy_for_schedule {
             self.output.instructions.push(Instruction::StoreWord {
                 s: WALKER,
@@ -322,7 +355,7 @@ impl Generator {
 
         // At O0/O1 the source-level body and condition each load `*walker`. O2+ eliminates the body
         // load and reuses the condition's r12 value as the next indirect callee.
-        if legacy_for_schedule {
+        if legacy_for_keeps_edges {
             let next = self.output.instructions.len() + 1;
             self.output
                 .instructions

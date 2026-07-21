@@ -624,6 +624,12 @@ pub enum IntCallResultConversionStyle {
 /// 2.4.x mainline (mwcceppc build 81 through 2.4.7 build 108); a build that
 /// diverges implements this trait and overrides just the differing methods.
 pub trait CodegenProfile: core::fmt::Debug {
+    /// Whether unused C static-inline assembly helpers remain as LOCAL UND
+    /// symbols. The 2.3.3 line drops them; the 2.4.x line retains them.
+    fn retain_unused_c_inline_asm_symbols(&self) -> bool {
+        true
+    }
+
     /// Whether unused C++ static-inline assembly helpers remain as LOCAL UND
     /// symbols. The 2.4.2 line retains them; 2.4.7 drops them unless referenced.
     fn retain_unused_cxx_inline_asm_symbols(&self) -> bool {
@@ -1298,6 +1304,10 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
 };
 
 impl CodegenProfile for Gc233Build163 {
+    fn retain_unused_c_inline_asm_symbols(&self) -> bool {
+        false
+    }
+
     fn long_long_timer_style(&self) -> LongLongTimerStyle {
         LongLongTimerStyle::Unmodeled
     }

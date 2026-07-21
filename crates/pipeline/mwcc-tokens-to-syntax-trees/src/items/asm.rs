@@ -185,6 +185,7 @@ impl Parser {
             guards: Vec::new(),
             return_expression: None,
             section: None,
+            preceded_by_asm: false,
             asm_body: Some(asm_body),
             force_active: self.force_active,
         }))
