@@ -568,6 +568,10 @@ impl Parser {
             // declarations (a `DestructorChain* cur` inside a while) went
             // unregistered before, so member access on them failed to type.
             let struct_tag = self.last_struct_tag.take();
+            // Aggregate references are represented as pointer values in the IR.
+            // `parse_type` deliberately leaves `&` for ABI-aware consumers, so
+            // a local declarator must consume it before reading the name.
+            self.eat_keyword(Token::Ampersand);
             // parse_type consumes the FIRST declarator's `*` into the type;
             // a later declarator's own `*` MIRRORS it (`unsigned char *jp,
             // *kp;` — prime's ansi_fp), same as the function-level rule. A

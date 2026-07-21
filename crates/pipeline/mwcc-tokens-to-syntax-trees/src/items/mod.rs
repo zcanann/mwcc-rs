@@ -3514,6 +3514,9 @@ impl Parser {
                 continue;
             }
             let struct_tag = self.last_struct_tag.take();
+            // Aggregate references use pointer storage internally; consume the
+            // source `&` before parsing the local declarator name.
+            self.eat_keyword(Token::Ampersand);
             // One or more comma-separated declarators, each optionally initialized.
             loop {
                 // `RET (*name)(params)` / `RET (**name)(params)` — a function-

@@ -337,7 +337,6 @@ impl Parser {
             let element_size = self.structs.get(&tag).map_or(0, |layout| layout.size);
             self.last_struct_tag = Some(tag);
             if *self.peek() == Token::Ampersand {
-                self.advance();
                 self.last_type_was_aggregate_reference = true;
                 return Ok(Type::StructPointer { element_size });
             }

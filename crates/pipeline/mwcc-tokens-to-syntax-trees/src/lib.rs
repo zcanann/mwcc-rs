@@ -2044,6 +2044,11 @@ blr\n\
                 float read();
             };
             float Owner::read() { return value.f.z; }
+            class Consumer { public: class Vector& get(int) const; };
+            float sample(Consumer* consumer) {
+                const class Vector& value = consumer->get(0);
+                return value.f.z;
+            }
         "#;
         let unit = parse_translation_unit(
             mwcc_source_to_tokens::tokenize(source).unwrap(),
@@ -2056,6 +2061,10 @@ blr\n\
         assert!(matches!(
             unit.functions[0].return_expression,
             Some(mwcc_syntax_trees::Expression::Member { offset: 12, .. })
+        ));
+        assert!(matches!(
+            unit.functions[1].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 8, .. })
         ));
     }
 

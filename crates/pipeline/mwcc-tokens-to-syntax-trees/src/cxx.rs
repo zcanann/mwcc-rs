@@ -1036,6 +1036,10 @@ impl Parser {
             self.last_enum_tag.take();
             self.last_type_was_wchar = false;
             self.last_array_typedef.take();
+            // A reference return uses pointer storage in the IR, while the `&`
+            // remains a declarator token so ABI-aware type parsing can observe
+            // it. Consume it before the member function name.
+            self.eat_keyword(Token::Ampersand);
             let member = self.parse_identifier()?;
             self.expect(Token::ParenOpen)?;
             let mut parameters = Vec::new();
