@@ -147,6 +147,9 @@ pub fn parse_located_translation_unit_with_enum_min(
         cxx_static_methods: HashMap::new(),
         cxx_free_functions: HashMap::new(),
         cxx_instance_methods: HashMap::new(),
+        cxx_explicit_instance_methods: HashMap::new(),
+        cxx_primary_bases: HashMap::new(),
+        current_cxx_member_class: None,
         cxx_member_template_forwarders: HashMap::new(),
         cxx_template_forwarder_specializations: HashMap::new(),
         cxx_dispatch_tables: HashMap::new(),
@@ -1655,6 +1658,41 @@ blr\n\
             [mwcc_syntax_trees::Statement::Expression(
                 mwcc_syntax_trees::Expression::Call { name, arguments }
             )] if name == "halt__6SystemFPciPc" && arguments.len() == 3
+        ));
+    }
+
+    #[test]
+    fn lowers_base_qualified_virtual_calls_as_direct_calls_with_this() {
+        let source = r#"
+            namespace Game {
+                struct EnemyBase {
+                    virtual void setParameters(int);
+                };
+                namespace Actor {
+                    struct Obj : public EnemyBase {
+                        void configure();
+                    };
+                    void Obj::configure() { EnemyBase::setParameters(3); }
+                }
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Call { name, arguments }
+            )] if name == "setParameters__Q24Game9EnemyBaseFi"
+                && matches!(arguments.as_slice(), [
+                    mwcc_syntax_trees::Expression::Variable(this),
+                    mwcc_syntax_trees::Expression::IntegerLiteral(3),
+                ] if this == "this")
         ));
     }
 

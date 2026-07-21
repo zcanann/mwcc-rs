@@ -204,6 +204,21 @@ pub(crate) struct Parser {
     /// Non-virtual, non-inline instance methods recovered from skipped class
     /// bodies. These support direct `object->member(args)` calls without layout.
     pub(crate) cxx_instance_methods: HashMap<(String, String), Vec<crate::cxx::RecoveredCxxMethod>>,
+    /// Non-inline instance declarations addressable through explicit
+    /// qualification (`Base::method()`). Virtual declarations live here too:
+    /// explicit qualification suppresses dispatch without changing ordinary
+    /// `object->method()` resolution.
+    pub(crate) cxx_explicit_instance_methods:
+        HashMap<(String, String), Vec<crate::cxx::RecoveredCxxMethod>>,
+    /// Declaration-only single-primary-base relationships. This is deliberately
+    /// independent of class layout: large headers can preserve safe zero-offset
+    /// base qualification even when their fields cannot yet be recovered.
+    pub(crate) cxx_primary_bases: HashMap<String, String>,
+    /// Fully qualified declaration identity of the member body being parsed.
+    /// Keep this separate from `current_member_scope`: that legacy scope is a
+    /// recovered-layout key and may intentionally be only the terminal class
+    /// name when a namespace-qualified layout is unavailable.
+    pub(crate) current_cxx_member_class: Option<String>,
     /// In-class member templates whose body is a zero-runtime-argument
     /// forwarding call, keyed by `(class, member)` and naming the free helper
     /// template they invoke.  This is declaration recovery, not a general

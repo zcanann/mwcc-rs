@@ -693,6 +693,15 @@ impl Parser {
                                     "C++ namespace function call '{scope}::{member}' is unavailable (roadmap)"
                                 ))
                             })?
+                        } else if let Some(name) = self
+                            .resolve_explicit_instance_member_call(
+                                &scope,
+                                &member,
+                                arguments.len(),
+                            )?
+                        {
+                            arguments.insert(0, Expression::Variable("this".to_owned()));
+                            name
                         } else {
                             self.resolve_static_member_call(&scope, &member, arguments.len())?
                         };

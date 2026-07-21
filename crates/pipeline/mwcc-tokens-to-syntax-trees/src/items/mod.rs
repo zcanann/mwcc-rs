@@ -2030,6 +2030,10 @@ impl Parser {
                     scope.rsplit("::").next().unwrap_or(scope).to_string()
                 }
             });
+            let member_declaration_scope = member_scope.as_deref().map(|scope| {
+                self.resolve_scoped_cxx_class_name(scope)
+                    .unwrap_or_else(|| self.qualify_cxx_class_name(scope))
+            });
             // A `__attribute__((aligned(n)))` immediately AFTER the declarator name
             // (`T x ATTRIBUTE_ALIGN(n);` — the scalar form). Consuming it here makes the
             // following token the real `;`/`[`/`=`, so the global-variable branch below is
@@ -2826,7 +2830,9 @@ impl Parser {
                 self.deferred_function_names.push(name.clone());
             }
             let previous_member_scope = self.current_member_scope.clone();
+            let previous_member_class = self.current_cxx_member_class.clone();
             let previous_this_struct = self.variable_structs.get("this").cloned();
+            self.current_cxx_member_class = member_declaration_scope;
             if let Some(scope) = &member_layout_scope {
                 self.current_member_scope = Some(scope.clone());
                 self.variable_structs
@@ -2845,6 +2851,7 @@ impl Parser {
                 parameters,
             );
             self.current_member_scope = previous_member_scope;
+            self.current_cxx_member_class = previous_member_class;
             match previous_this_struct {
                 Some(scope) => {
                     self.variable_structs.insert("this".to_string(), scope);

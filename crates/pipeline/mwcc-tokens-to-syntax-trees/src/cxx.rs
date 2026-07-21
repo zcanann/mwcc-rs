@@ -740,16 +740,28 @@ impl Parser {
         }
     }
 
-    /// Resolve an unqualified class name in the active namespace before using
-    /// the translation-unit-wide typedef fallback. Large game headers reuse
-    /// names such as `Obj` in many sibling namespaces; whichever declaration
-    /// appeared first must not decide the type of every later `Obj*`.
+    /// Resolve a class name from the innermost active namespace outward. Large
+    /// game headers reuse names such as `Obj` in many sibling namespaces;
+    /// whichever declaration appeared first must not decide every later
+    /// `Obj*`. Qualified-but-relative names use the same enclosing-scope walk.
     pub(crate) fn resolve_scoped_cxx_class_name(&self, class: &str) -> Option<String> {
-        let qualified = self.qualify_cxx_class_name(class);
-        (self.cxx_dispatch_tables.contains_key(&qualified)
-            || self.cxx_classes.contains_key(&qualified)
-            || self.structs.contains_key(&qualified))
-        .then_some(qualified)
+        let declared = |qualified: &str| {
+            self.cxx_dispatch_tables.contains_key(qualified)
+                || self.cxx_classes.contains_key(qualified)
+                || self.structs.contains_key(qualified)
+        };
+        let scopes = self.named_namespace_scopes();
+        for depth in (0..=scopes.len()).rev() {
+            let qualified = if depth == 0 {
+                class.to_owned()
+            } else {
+                format!("{}::{class}", scopes[..depth].join("::"))
+            };
+            if declared(&qualified) {
+                return Some(qualified);
+            }
+        }
+        None
     }
 
     /// Recover declaration semantics from a C++ aggregate independently of
@@ -818,7 +830,11 @@ impl Parser {
             if unsupported {
                 self.incomplete_cxx_dispatch.insert(class.clone());
             } else if let Some(base) = base {
-                let qualified_base = self.qualify_cxx_class_name(base);
+                let qualified_base = self
+                    .resolve_scoped_cxx_class_name(base)
+                    .unwrap_or_else(|| self.qualify_cxx_class_name(base));
+                self.cxx_primary_bases
+                    .insert(class.clone(), qualified_base.clone());
                 if let Some(base_dispatch) = self
                     .cxx_dispatch_tables
                     .get(&qualified_base)
@@ -1262,6 +1278,35 @@ impl Parser {
                         variadic,
                         is_const_member,
                     );
+                } else {
+                    let scopes: Vec<&str> = class.split("::").collect();
+                    let mangled = if is_const_member && !variadic {
+                        mangle_qualified_member_function_cv_typed(
+                            &scopes,
+                            &member,
+                            &cxx_parameters,
+                            true,
+                        )
+                        .ok()?
+                    } else {
+                        mangle_qualified_member_function_variadic_typed(
+                            &scopes,
+                            &member,
+                            &cxx_parameters,
+                            variadic,
+                        )
+                        .ok()?
+                    };
+                    self.cxx_explicit_instance_methods
+                        .entry((class.to_string(), member))
+                        .or_default()
+                        .push(RecoveredCxxMethod {
+                            mangled,
+                            fixed_parameter_count: parameters.len(),
+                            variadic,
+                            parameters: parameters.clone(),
+                            cxx_parameters: cxx_parameters.clone(),
+                        });
                 }
                 // A virtual call never references the out-of-line member symbol
                 // directly. Recording the slot is the complete result.
@@ -1295,6 +1340,10 @@ impl Parser {
                 parameters
             } else if !is_inline {
                 self.cxx_instance_methods
+                    .entry((class.to_string(), member.clone()))
+                    .or_default()
+                    .push(method.clone());
+                self.cxx_explicit_instance_methods
                     .entry((class.to_string(), member))
                     .or_default()
                     .push(method);
@@ -1466,6 +1515,54 @@ impl Parser {
             )));
         }
         Ok(candidates[0].mangled.clone())
+    }
+
+    /// Resolve `Base::member(args)` inside a member body. An explicit class
+    /// qualifier suppresses virtual dispatch and still passes the current
+    /// object as the first EABI argument. Only the declaration-only primary-base
+    /// chain is accepted, so no secondary-base `this` adjustment is guessed.
+    pub(crate) fn resolve_explicit_instance_member_call(
+        &self,
+        source_class: &str,
+        member: &str,
+        argument_count: usize,
+    ) -> Compilation<Option<String>> {
+        let Some(current_class) = self.current_cxx_member_class.as_deref() else {
+            return Ok(None);
+        };
+        let Some(class) = self.resolve_scoped_cxx_class_name(source_class) else {
+            return Ok(None);
+        };
+        let mut cursor = current_class;
+        let mut related = cursor == class;
+        let mut visited = std::collections::HashSet::new();
+        while !related && visited.insert(cursor) {
+            let Some(base) = self.cxx_primary_bases.get(cursor) else {
+                break;
+            };
+            related = base == &class;
+            cursor = base;
+        }
+        if !related {
+            return Ok(None);
+        }
+        let candidates: Vec<&RecoveredCxxMethod> = self
+            .cxx_explicit_instance_methods
+            .get(&(class.clone(), member.to_string()))
+            .into_iter()
+            .flatten()
+            .filter(|method| {
+                method.fixed_parameter_count == argument_count
+                    || (method.variadic && argument_count >= method.fixed_parameter_count)
+            })
+            .collect();
+        match candidates.as_slice() {
+            [] => Ok(None),
+            [method] => Ok(Some(method.mangled.clone())),
+            _ => Err(Diagnostic::error(format!(
+                "explicit C++ instance call '{class}::{member}' is ambiguous (roadmap)"
+            ))),
+        }
     }
 
     /// Recognize `Alias::Nested()` when `Nested` is an empty class declared
