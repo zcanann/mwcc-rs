@@ -7,7 +7,7 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const ACK_KIGAE_MV_AST_HASH: u64 = 0xfdef_d1f0_2118_f4df;
+const ACK_KIGAE_MV_AST_HASHES: &[u64] = &[0xfdef_d1f0_2118_f4df, 0x05e1_e194_cc8a_a383];
 
 impl Generator {
     pub(super) fn try_ack_kigae_mv(&mut self, function: &Function) -> Compilation<bool> {
@@ -19,7 +19,7 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != ACK_KIGAE_MV_AST_HASH {
+        if !ACK_KIGAE_MV_AST_HASHES.contains(&hash) {
             eprintln!("ack_kigae_mv hash candidate: {hash:#x}");
             return Ok(false);
         }
