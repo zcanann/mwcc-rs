@@ -22,6 +22,7 @@ mod inlined_local_select;
 mod ladders;
 mod legacy_constant_store;
 mod leading_store_guard;
+mod leading_store_guarded_call;
 mod local_select;
 mod long_long_initialize;
 mod long_long_support;

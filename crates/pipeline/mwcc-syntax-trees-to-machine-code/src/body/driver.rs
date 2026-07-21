@@ -2886,6 +2886,12 @@ impl Generator {
         if self.try_non_leaf_if_first_early_return(function)? {
             return Ok(());
         }
+        // A shared member-store value, narrow guard, and guarded call form one
+        // measured scheduling region. It owns the linkage frame as well as the
+        // statements, so claim it before the generic non-leaf prologue below.
+        if self.try_leading_store_guarded_call(function)? {
+            return Ok(());
+        }
         // A function that calls is non-leaf: save the link register using the
         // selected generation's linkage convention before doing anything else.
         let mut lr_store_index: Option<usize> = None;
@@ -3121,7 +3127,6 @@ impl Generator {
         if self.try_leading_store_guard(function)? {
             return Ok(());
         }
-
         // A leading store (or store run) before a trailing `if` needs mwcc's cross-statement
         // scheduler: it hoists the if's condition test as early as possible — into the leading
         // store's value-materialize latency gap (`li r0,1; cmpwi; stw r0,g; beqlr; …`) or to the
