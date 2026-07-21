@@ -2,8 +2,8 @@
 //!
 //! The real `mwcceppc` is the source of truth. For every canary, this compiles
 //! the same source with both the real compiler (run via `wibo`) and our `mwcc`,
-//! then compares the `.text` disassembly. We are correct for a canary if and
-//! only if the two match exactly.
+//! then compares the complete object. This is a small authored regression set,
+//! not a representative reference-project parity estimate.
 //!
 //! Usage: `mwcc-oracle [BUILD]`   (default GC/1.3.2; bare versions imply GC/)
 //! Set `MWCC_ORACLE_FILTER` to a filename substring for a focused probe.
@@ -75,8 +75,10 @@ fn main() -> std::process::ExitCode {
     println!("== differential oracle vs mwcceppc {build} ==");
     let mut passed = 0u32;
     let mut failed = 0u32;
-    // Whole-object byte-exactness, tracked alongside .text. Pass/fail keys on
-    // .text; this reports how many objects match mwcceppc byte-for-byte.
+    let mut build_excluded = 0u32;
+    let mut oracle_rejected = 0u32;
+    let mut oracle_runnable = 0u32;
+    // Whole-object byte-exactness is the canary pass criterion.
     let mut object_exact = 0u32;
     // Relocation correctness — the objdiff contract. `.comment` keeps reloc'd
     // objects from being byte-exact, but their relocations/symbols must match.
@@ -97,11 +99,13 @@ fn main() -> std::process::ExitCode {
                 .is_some_and(|name| name.to_string_lossy().contains(&filter))
         });
     }
+    let selected = entries.len() as u32;
 
     for source in entries {
         let name = source.file_stem().unwrap().to_string_lossy().to_string();
         if !build_directive_applies(&source, &build) {
             println!("  SKIP {name} (not applicable to {build})");
+            build_excluded += 1;
             continue;
         }
         let reference_object = temporary.join("reference.o");
@@ -134,8 +138,10 @@ fn main() -> std::process::ExitCode {
         let _ = oracle.output();
         if !reference_object.exists() {
             println!("  SKIP {name} (oracle rejected the source)");
+            oracle_rejected += 1;
             continue;
         }
+        oracle_runnable += 1;
 
         // Ours — pin codegen to the same build the oracle is running, plus the
         // canary's own flags.
@@ -201,9 +207,21 @@ fn main() -> std::process::ExitCode {
         }
     }
 
+    println!("== canary regression status — NOT A CORPUS PARITY ESTIMATE ==");
     println!(
-        "== {passed} passed, {failed} failed ({object_exact} byte-exact, {reloc_exact} reloc-exact objects) =="
+        "selection: {selected} authored canaries; {build_excluded} build-excluded; \
+         {oracle_rejected} oracle-rejected; denominator {oracle_runnable} oracle-runnable"
     );
+    println!(
+        "whole-object exact: {object_exact}/{oracle_runnable}; nonexact: {failed}/{oracle_runnable}; \
+         relocation-exact diagnostic: {reloc_exact}/{oracle_runnable}"
+    );
+    println!(
+        "reference-project parity is not inferable from these canaries; run \
+         tools/parity_loop.py --with-audit for the fixed representative denominator"
+    );
+    debug_assert_eq!(passed, object_exact);
+    debug_assert_eq!(passed + failed, oracle_runnable);
     if failed == 0 {
         std::process::ExitCode::SUCCESS
     } else {
