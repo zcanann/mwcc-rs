@@ -10,7 +10,7 @@ mod safety;
 mod substitution;
 
 use mwcc_syntax_trees::{Expression, Function, Statement};
-use safety::{composable_function, stable_argument, stable_local_values};
+use safety::{composable_function, stable_arguments, stable_local_values};
 use std::collections::{HashMap, HashSet};
 use substitution::substitute_statement;
 
@@ -92,9 +92,7 @@ impl InlineBodySet {
                 Statement::Expression(Expression::Call { name, arguments })
                     if self.bodies.contains_key(name)
                         && !active.contains(name)
-                        && arguments
-                            .iter()
-                            .all(|argument| stable_argument(argument, stable_variables)) =>
+                        && stable_arguments(&self.bodies[name], arguments, stable_variables) =>
                 {
                     let callee = &self.bodies[name];
                     if callee.parameters.len() != arguments.len() {
@@ -393,6 +391,60 @@ mod tests {
         assert!(InlineBodySet::analyze(&[write])
             .expand_calls(&caller)
             .is_none());
+    }
+
+    #[test]
+    fn expands_a_single_store_that_consumes_one_impure_argument_once() {
+        let setter = function(
+            "setter",
+            vec![
+                Parameter {
+                    parameter_type: Type::StructPointer { element_size: 8 },
+                    name: "this".into(),
+                },
+                Parameter {
+                    parameter_type: Type::Int,
+                    name: "value".into(),
+                },
+            ],
+            vec![Statement::Store {
+                target: Expression::Member {
+                    base: Box::new(Expression::Variable("this".into())),
+                    offset: 4,
+                    member_type: Type::Int,
+                    index_stride: None,
+                },
+                value: Expression::Variable("value".into()),
+            }],
+        );
+        let caller = function(
+            "caller",
+            vec![Parameter {
+                parameter_type: Type::StructPointer { element_size: 8 },
+                name: "object".into(),
+            }],
+            vec![Statement::Expression(Expression::Call {
+                name: "setter".into(),
+                arguments: vec![
+                    Expression::Variable("object".into()),
+                    Expression::Call {
+                        name: "get_value".into(),
+                        arguments: Vec::new(),
+                    },
+                ],
+            })],
+        );
+
+        let expanded = InlineBodySet::analyze(&[setter])
+            .expand_calls(&caller)
+            .expect("the getter call is evaluated once by the substituted store");
+        assert!(matches!(expanded.statements.as_slice(), [
+            Statement::Store {
+                target: Expression::Member { base, offset: 4, .. },
+                value: Expression::Call { name, arguments },
+            }
+        ] if matches!(base.as_ref(), Expression::Variable(object) if object == "object")
+            && name == "get_value" && arguments.is_empty()));
     }
 
     #[test]

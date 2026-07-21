@@ -35,11 +35,113 @@ fn composable_statements(statements: &[Statement]) -> bool {
     })
 }
 
-pub(super) fn stable_argument(expression: &Expression, stable_variables: &HashSet<String>) -> bool {
+fn stable_argument(expression: &Expression, stable_variables: &HashSet<String>) -> bool {
     match expression {
         Expression::Variable(name) => stable_variables.contains(name),
         Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) => true,
         _ => false,
+    }
+}
+
+/// Whether substituting call arguments into this retained body preserves
+/// evaluation count. Stable scalar values are always safe. One otherwise
+/// impure argument is also safe when a one-store setter consumes it exactly
+/// once as the stored value: substitution neither duplicates nor drops the
+/// evaluation and there is no earlier callee-body effect to reorder it with.
+pub(super) fn stable_arguments(
+    function: &Function,
+    arguments: &[Expression],
+    stable_variables: &HashSet<String>,
+) -> bool {
+    if function.parameters.len() != arguments.len() {
+        return false;
+    }
+    let unstable: Vec<usize> = arguments
+        .iter()
+        .enumerate()
+        .filter_map(|(index, argument)| {
+            (!stable_argument(argument, stable_variables)).then_some(index)
+        })
+        .collect();
+    if unstable.is_empty() {
+        return true;
+    }
+    let [unstable_index] = unstable.as_slice() else {
+        return false;
+    };
+    let [Statement::Store { target, value }] = function.statements.as_slice() else {
+        return false;
+    };
+    let parameter = &function.parameters[*unstable_index].name;
+    !expression_mentions(target, parameter) && expression_use_count(value, parameter) == 1
+}
+
+fn expression_use_count(expression: &Expression, name: &str) -> usize {
+    match expression {
+        Expression::Variable(variable) => usize::from(variable == name),
+        Expression::AggregateLiteral(elements) => elements
+            .iter()
+            .map(|element| expression_use_count(element, name))
+            .sum(),
+        Expression::Binary { left, right, .. }
+        | Expression::Assign {
+            target: left,
+            value: right,
+        }
+        | Expression::Comma { left, right } => {
+            expression_use_count(left, name) + expression_use_count(right, name)
+        }
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+            ..
+        } => {
+            expression_use_count(condition, name)
+                + expression_use_count(when_true, name)
+                + expression_use_count(when_false, name)
+        }
+        Expression::Unary { operand, .. }
+        | Expression::Cast { operand, .. }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
+        }
+        | Expression::IndexedUpdateValue { value: operand }
+        | Expression::Dereference { pointer: operand }
+        | Expression::AddressOf { operand }
+        | Expression::PostStep {
+            target: operand, ..
+        } => expression_use_count(operand, name),
+        Expression::Index { base, index } => {
+            expression_use_count(base, name) + expression_use_count(index, name)
+        }
+        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
+            expression_use_count(base, name)
+        }
+        Expression::Call { arguments, .. } => arguments
+            .iter()
+            .map(|argument| expression_use_count(argument, name))
+            .sum(),
+        Expression::CallThrough { target, arguments } => {
+            expression_use_count(target, name)
+                + arguments
+                    .iter()
+                    .map(|argument| expression_use_count(argument, name))
+                    .sum::<usize>()
+        }
+        Expression::VirtualCall {
+            object, arguments, ..
+        } => {
+            expression_use_count(object, name)
+                + arguments
+                    .iter()
+                    .map(|argument| expression_use_count(argument, name))
+                    .sum::<usize>()
+        }
+        Expression::IntegerLiteral(_)
+        | Expression::FloatLiteral(_)
+        | Expression::StringLiteral(_)
+        | Expression::CompoundLiteral { .. } => 0,
     }
 }
 
