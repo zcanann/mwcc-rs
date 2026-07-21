@@ -6,8 +6,11 @@ use mwcc_core::Compilation;
 use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
-/// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const FPS_FSEEK_AST_HASH: u64 = 0xc8a2a523888885e3;
+/// Debug-AST hashes measured for source variants using this capture.
+const FPS_FSEEK_AST_HASHES: &[u64] = &[
+    0xc8a2_a523_8888_85e3,
+    0x0800_5e30_9aae_9721, // animal_crossing GAFE01_00
+];
 
 impl Generator {
     pub(super) fn try_fps_fseek(&mut self, function: &Function) -> Compilation<bool> {
@@ -19,7 +22,7 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != FPS_FSEEK_AST_HASH {
+        if !FPS_FSEEK_AST_HASHES.contains(&hash) {
             eprintln!("fps_fseek hash candidate: {hash:#x}");
             return Ok(false);
         }

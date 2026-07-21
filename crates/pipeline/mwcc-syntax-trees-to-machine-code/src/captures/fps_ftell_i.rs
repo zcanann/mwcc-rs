@@ -6,8 +6,11 @@ use mwcc_core::Compilation;
 use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
-/// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const FPS_FTELL_I_AST_HASH: u64 = 0x484a15fbd5dfdfb0;
+/// Debug-AST hashes measured for source variants using this capture.
+const FPS_FTELL_I_AST_HASHES: &[u64] = &[
+    0x484a_15fb_d5df_dfb0,
+    0x78e2_03cd_16df_4032, // animal_crossing GAFE01_00
+];
 
 impl Generator {
     pub(super) fn try_fps_ftell_i(&mut self, function: &Function) -> Compilation<bool> {
@@ -19,7 +22,7 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != FPS_FTELL_I_AST_HASH {
+        if !FPS_FTELL_I_AST_HASHES.contains(&hash) {
             eprintln!("fps_ftell_i hash candidate: {hash:#x}");
             return Ok(false);
         }
