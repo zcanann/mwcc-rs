@@ -1,5 +1,5 @@
 //! Assembly of a relocatable object, byte-for-byte as mwcceppc emits it. The
-//! object holds one or more functions sharing a single `.text`; the Metrowerks
+//! object holds one or more functions split across ELF code sections; the Metrowerks
 //! `.mwcats.text` section carries one `(0x02000000 | function size, &function)`
 //! record per function, each with its relocation, alongside a symbol table (file,
 //! section, the anonymous `@N` locals, the undefined externals, and a symbol per
@@ -9,7 +9,7 @@
 //! pooled across all functions in the unit.
 
 use crate::{
-    layout_functions, CommentFormat, DataObject, DebugRelocationTarget, FunctionSymbolOrder,
+    layout_code_sections, CommentFormat, DataObject, DebugRelocationTarget, FunctionSymbolOrder,
     ObjectInput, RelocationTarget,
 };
 use std::collections::HashMap;
@@ -106,24 +106,29 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let debug = input.debug.as_ref();
     assert!(input.object_format.code_alignment.is_power_of_two());
 
-    // Track each function's aligned byte offset and unpadded size for its symbol,
-    // relocations, and `.mwcats` record. GameCube functions naturally pack at
-    // four-byte boundaries; Wii build 145 inserts zero padding up to 16 bytes.
-    let mut text = Vec::new();
-    // `.text` LAYOUT order: a text_deferred function (a materialized static
-    // inline) lays out AFTER the next non-deferred function — mwcc's deferred
-    // materialization queue (measured: ww alloc's dealloc_var after
-    // dealloc_fixed, __pool_free after free). Symbols keep source position.
-    let function_layout = layout_functions(functions, input.object_format.code_alignment);
-    let layout_order = function_layout.order;
-    let function_offset = function_layout.offsets;
-    let function_size = function_layout.sizes;
-    for &index in &layout_order {
-        while text.len() % input.object_format.code_alignment as usize != 0 {
-            text.push(0);
+    // Track each function's aligned byte offset within its OWN code section.
+    // Deferred materialization is scheduled independently per section; symbols
+    // retain source position while section payloads use this layout order.
+    let function_layout = layout_code_sections(functions, input.object_format.code_alignment);
+    let function_offset = function_layout.offsets.clone();
+    let function_size = function_layout.sizes.clone();
+    let layout_order: Vec<usize> = function_layout
+        .sections
+        .iter()
+        .flat_map(|section| section.order.iter().copied())
+        .collect();
+    let mut code_payloads: HashMap<&str, Vec<u8>> = HashMap::new();
+    for section in &function_layout.sections {
+        let mut payload = Vec::with_capacity(section.byte_len as usize);
+        for &index in &section.order {
+            while payload.len() % input.object_format.code_alignment as usize != 0 {
+                payload.push(0);
+            }
+            payload.extend_from_slice(functions[index].text);
         }
-        text.extend_from_slice(functions[index].text);
+        code_payloads.insert(section.name, payload);
     }
+    let function_section = |index: usize| functions[index].section.unwrap_or(".text");
 
     let has_text_relocations = functions
         .iter()
@@ -737,12 +742,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     }
 
     // 1. The ordered section-name list (index 0 is the implicit NULL section). The
-    //    unwind tables sit right after `.text`, then the `.sdata2` constant pool;
+    //    unwind tables sit right after the code sections, then the `.sdata2` pool;
     //    their `.rela` and everything downstream key off this order, by name. A
-    //    A data-only unit normally omits `.text` and the `.mwcats` machinery.
+    //    data-only unit normally omits `.text` and the `.mwcats` machinery.
     //    Debug info may still name `.text` as its empty CU/line-table range; in
     //    that case MWCC retains a zero-sized `.text` section and section symbol.
-    let has_functions = !functions.is_empty();
     // mwcc catalogs only COMPILER-GENERATED functions in `.mwcats.text`; hand-written
     // inline-`asm` functions are excluded. An object whose only functions are asm has
     // no `.mwcats.text`/`.rela.mwcats.text` at all (its code still lives in `.text`).
@@ -750,21 +754,15 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // A jump table and large writable globals share `.data`; the lowering guarantees
     // they do not co-occur, so one `.data` entry covers both.
     let has_data = has_jump_table || has_file_data;
-    // A `__declspec(section "…")` on the functions relocates the code section — and
-    // its `.mwcats` catalog and `.rela` sections — from `.text` to that name (the
-    // runtime's `__mem.c` uses `.init`). A TU's functions share one code section
-    // (mixed `.text`/`.init` is not modeled); the derived names follow the same
-    // `.mwcats<sec>` / `.rela<sec>` shape mwcc uses.
-    let text_section: &str = input
-        .functions
+    // `.text` leads when present; custom code sections follow by first source use.
+    // A debug-only unit can retain an empty `.text` even without functions.
+    let mut code_sections: Vec<&str> = function_layout
+        .sections
         .iter()
-        .find_map(|function| function.section)
-        .unwrap_or(".text");
-    let mwcats_section: String = format!(".mwcats{text_section}");
-    let rela_text_section: String = format!(".rela{text_section}");
-    let rela_mwcats_section: String = format!(".rela{mwcats_section}");
-    let has_text = has_functions
-        || debug.is_some_and(|debug| {
+        .map(|section| section.name)
+        .collect();
+    if code_sections.is_empty()
+        && debug.is_some_and(|debug| {
             debug
                 .line_relocations
                 .iter()
@@ -772,13 +770,31 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 .any(|relocation| {
                     matches!(
                         &relocation.target,
-                        DebugRelocationTarget::Section(name) if name == text_section
+                        DebugRelocationTarget::Section(name) if name == ".text"
                     )
                 })
-        });
+        })
+    {
+        code_sections.push(".text");
+        code_payloads.insert(".text", Vec::new());
+    }
+    let text_section = code_sections.first().copied().unwrap_or(".text");
+    let mwcats_section: String = format!(".mwcats{text_section}");
+    let rela_code_sections: Vec<String> = code_sections
+        .iter()
+        .filter(|section| {
+            functions.iter().any(|function| {
+                function.section.unwrap_or(".text") == **section
+                    && !function.relocations.is_empty()
+            })
+        })
+        .map(|section| format!(".rela{section}"))
+        .collect();
+    let rela_mwcats_section: String = format!(".rela{mwcats_section}");
+    let has_text = !code_sections.is_empty();
     let mut order: Vec<&str> = Vec::new();
     if has_text {
-        order.push(text_section);
+        order.extend(code_sections.iter().copied());
     }
     if debug.is_some_and(|debug| debug.layout.before_data()) {
         order.push(".line");
@@ -837,7 +853,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         order.push(&mwcats_section);
     }
     if has_text_relocations {
-        order.push(&rela_text_section);
+        order.extend(rela_code_sections.iter().map(String::as_str));
     }
     if debug
         .is_some_and(|debug| debug.layout.before_data() && !debug.layout.interleaved_relocations())
@@ -939,7 +955,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         *entry = (*entry).max(data_aligns[name]);
     }
     let section_align = |name: &str| -> u32 {
-        if name == text_section {
+        if code_sections.contains(&name) {
             return input.object_format.code_alignment;
         }
         let base = match name {
@@ -1204,7 +1220,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     function_size[index],
                     STB_LOCAL_FUNC,
                     0,
-                    index_of(text_section) as u16,
+                    index_of(function_section(index)) as u16,
                 );
                 comment_values.push((
                     input.object_format.code_alignment,
@@ -1348,7 +1364,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     function_size[index],
                     STB_LOCAL_FUNC,
                     0,
-                    index_of(text_section) as u16,
+                    index_of(function_section(index)) as u16,
                 );
                 comment_values.push((
                     input.object_format.code_alignment,
@@ -1472,7 +1488,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 function_size[index],
                 STB_LOCAL_FUNC,
                 0,
-                index_of(text_section) as u16,
+                index_of(function_section(index)) as u16,
             );
             comment_values.push((input.object_format.code_alignment, 0));
         }
@@ -1763,7 +1779,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     function_size[index],
                     STB_LOCAL_FUNC,
                     0,
-                    index_of(text_section) as u16,
+                    index_of(function_section(index)) as u16,
                 );
                 comment_values.push((
                     input.object_format.code_alignment,
@@ -1863,6 +1879,22 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // reference order, trailing when unused.)
     let first_global_index = (symtab.len() / SYMBOL_SIZE) as u32;
     let mut global_symbols: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    for (name, functions_before) in input.section_externals {
+        if *functions_before != 0 || global_symbols.contains_key(name.as_str()) {
+            continue;
+        }
+        global_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
+        write_symbol(
+            &mut symtab,
+            strtab.add(name),
+            0,
+            0,
+            STB_GLOBAL_NOTYPE,
+            0,
+            SHN_UNDEF,
+        );
+        comment_values.push((0, 0));
+    }
     for name in input.early_undefined_externals {
         if global_symbols.contains_key(name.as_str()) {
             continue;
@@ -1934,7 +1966,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         function_size[function_index],
                         binding,
                         0,
-                        index_of(text_section) as u16,
+                        index_of(function_section(function_index)) as u16,
                     );
                     let flags = if function.is_weak {
                         if function.weak_inline {
@@ -2194,6 +2226,32 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         macro_rules! emit_referenced {
             ($names:expr) => {
                 for name in $names {
+                    if input
+                        .section_externals
+                        .iter()
+                        .any(|(declared, _)| declared == name)
+                    {
+                        for (declared, _) in input.section_externals {
+                            if global_symbols.contains_key(declared.as_str()) {
+                                continue;
+                            }
+                            global_symbols.insert(
+                                declared.as_str(),
+                                (symtab.len() / SYMBOL_SIZE) as u32,
+                            );
+                            write_symbol(
+                                &mut symtab,
+                                strtab.add(declared),
+                                0,
+                                0,
+                                STB_GLOBAL_NOTYPE,
+                                0,
+                                SHN_UNDEF,
+                            );
+                            comment_values.push((0, 0));
+                        }
+                        continue;
+                    }
                     if global_symbols.contains_key(name)
                         || local_data_symbols.contains_key(name)
                         || local_function_symbols.contains_key(name)
@@ -2223,7 +2281,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                             function_size[forward],
                             binding,
                             0,
-                            index_of(text_section) as u16,
+                            index_of(function_section(forward)) as u16,
                         );
                         let flags = if functions[forward].is_weak {
                             if functions[forward].weak_inline {
@@ -2269,26 +2327,30 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 }
             };
         }
-        macro_rules! emit_current_function_symbol {
-            () => {
-                if !function.is_static && !global_symbols.contains_key(function.name) {
-                    function_symbols[index] = (symtab.len() / SYMBOL_SIZE) as u32;
-                    let binding = if function.is_weak {
+        macro_rules! emit_function_symbol {
+            ($function_index:expr) => {{
+                let symbol_index = $function_index;
+                let symbol_function = &functions[symbol_index];
+                if !symbol_function.is_static
+                    && !global_symbols.contains_key(symbol_function.name)
+                {
+                    function_symbols[symbol_index] = (symtab.len() / SYMBOL_SIZE) as u32;
+                    let binding = if symbol_function.is_weak {
                         STB_WEAK_FUNC
                     } else {
                         STB_GLOBAL_FUNC
                     };
                     write_symbol(
                         &mut symtab,
-                        strtab.add(function.name),
-                        function_offset[index],
-                        function_size[index],
+                        strtab.add(symbol_function.name),
+                        function_offset[symbol_index],
+                        function_size[symbol_index],
                         binding,
                         0,
-                        index_of(text_section) as u16,
+                        index_of(function_section(symbol_index)) as u16,
                     );
-                    let flags = if function.is_weak {
-                        if function.weak_inline {
+                    let flags = if symbol_function.is_weak {
+                        if symbol_function.weak_inline {
                             0x0d00_0000
                         } else {
                             0x0e00_0000
@@ -2299,27 +2361,30 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     comment_values.push((
                         input.object_format.code_alignment,
                         flags
-                            | if function.force_active {
+                            | if symbol_function.force_active {
                                 FORCE_ACTIVE_FLAG
                             } else {
                                 0
                             },
                     ));
-                    global_symbols.insert(function.name, function_symbols[index]);
-                    for (name, byte_offset) in &function.entry_points {
+                    global_symbols.insert(
+                        symbol_function.name,
+                        function_symbols[symbol_index],
+                    );
+                    for (name, byte_offset) in &symbol_function.entry_points {
                         global_symbols.insert(name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
                         write_symbol(
                             &mut symtab,
                             strtab.add(name),
-                            function_offset[index] + byte_offset,
+                            function_offset[symbol_index] + byte_offset,
                             0,
                             STB_GLOBAL_NOTYPE,
                             0,
-                            index_of(text_section) as u16,
+                            index_of(function_section(symbol_index)) as u16,
                         );
                         comment_values.push((
                             input.object_format.code_alignment,
-                            if function.force_active {
+                            if symbol_function.force_active {
                                 FORCE_ACTIVE_FLAG
                             } else {
                                 0
@@ -2327,7 +2392,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         ));
                     }
                 }
-            };
+            }};
         }
         emit_referenced!(defined_data_ordered);
         if matches!(
@@ -2336,7 +2401,27 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         ) || function.is_asm
         {
             emit_referenced!(absolute_ordered);
-            emit_current_function_symbol!();
+            emit_function_symbol!(index);
+            // Consecutive hand-written asm definitions are registered as one
+            // source declaration run before body references are discovered.
+            if function.is_asm
+                && input
+                    .section_function_declarations
+                    .iter()
+                    .any(|name| name == function.name)
+            {
+                for follower in index + 1..functions.len() {
+                    if !functions[follower].is_asm
+                        || !input
+                            .section_function_declarations
+                            .iter()
+                            .any(|name| name == functions[follower].name)
+                    {
+                        break;
+                    }
+                    emit_function_symbol!(follower);
+                }
+            }
             emit_referenced!(early_implicit_ordered.iter().copied());
         }
         emit_referenced!(defined_function_ordered);
@@ -2346,7 +2431,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         emit_referenced!(helper_ordered);
         // A `static` function already has its LOCAL symbol (emitted above); only its
         // newly-referenced externals appear in this run, not the function symbol.
-        emit_current_function_symbol!();
+        emit_function_symbol!(index);
         if input.object_format.function_symbol_order == FunctionSymbolOrder::ReferencesFirst {
             emit_referenced!(early_implicit_ordered.iter().copied());
         }
@@ -2365,7 +2450,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     0,
                     STB_GLOBAL_NOTYPE,
                     0,
-                    index_of(text_section) as u16,
+                    index_of(function_section(index)) as u16,
                 );
                 comment_values.push((
                     input.object_format.code_alignment,
@@ -2442,9 +2527,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let comment = comment_record(input.object_format.comment, &comment_values);
 
     // 3. Relocation payloads (now that symbol indices are fixed). Each function's
-    //    `.text` relocations are rebased by its `.text` offset; a relocation
+    //    code relocations are rebased by its offset within its own section; a relocation
     //    targets either an external or one of that function's pooled constants.
-    let mut rela_text = Vec::new();
+    let mut rela_code: HashMap<&str, Vec<u8>> = code_sections
+        .iter()
+        .map(|&section| (section, Vec::new()))
+        .collect();
     for &index in &layout_order {
         let function = &functions[index];
         for relocation in &function.relocations {
@@ -2480,7 +2568,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 }
             };
             write_rela(
-                &mut rela_text,
+                rela_code.get_mut(function_section(index)).unwrap(),
                 function_offset[index] + relocation.offset,
                 symbol,
                 relocation.elf_type,
@@ -2762,17 +2850,19 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         });
     };
     if has_text {
-        push(
-            text_section,
-            SHT_PROGBITS,
-            SHF_WRITE_EXEC,
-            0,
-            0,
-            input.object_format.code_alignment,
-            0,
-            text.to_vec(),
-            0,
-        );
+        for &section in &code_sections {
+            push(
+                section,
+                SHT_PROGBITS,
+                SHF_WRITE_EXEC,
+                0,
+                0,
+                input.object_format.code_alignment,
+                0,
+                code_payloads.remove(section).unwrap_or_default(),
+                0,
+            );
+        }
     }
     if debug.is_some_and(|debug| debug.layout.before_data()) {
         let debug = debug.unwrap();
@@ -2984,17 +3074,20 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         );
     }
     if has_text_relocations {
-        push(
-            &rela_text_section,
-            SHT_RELA,
-            0,
-            symtab_section,
-            index_of(text_section),
-            4,
-            12,
-            rela_text,
-            0,
-        );
+        for rela_name in &rela_code_sections {
+            let section = &rela_name[5..];
+            push(
+                rela_name,
+                SHT_RELA,
+                0,
+                symtab_section,
+                index_of(section),
+                4,
+                12,
+                rela_code.remove(section).unwrap_or_default(),
+                0,
+            );
+        }
     }
     if debug
         .is_some_and(|debug| debug.layout.before_data() && !debug.layout.interleaved_relocations())

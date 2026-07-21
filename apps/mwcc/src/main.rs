@@ -478,16 +478,21 @@ fn compile(
         &mut machine_functions,
         config,
     );
-    // The object writer currently owns one code section per translation unit.
-    // Refuse mixed `.text`/custom-section input explicitly: selecting the first
-    // custom name and silently merging every function would emit a wrong object.
+    // Mixed code payloads and relocations are modeled below. Their debug and
+    // mwcats companions still require section-aware producers, so retain those
+    // narrower byte-exact-or-defer boundaries instead of merging metadata.
     let code_sections: std::collections::HashSet<&str> = machine_functions
         .iter()
         .map(|function| function.section.as_deref().unwrap_or(".text"))
         .collect();
-    if code_sections.len() > 1 {
+    if code_sections.len() > 1 && config.flags.debug_info {
         return Err(Diagnostic::error(
-            "mixed function code sections need multi-section object layout (roadmap)",
+            "debug-info for mixed function code sections needs section-aware DWARF layout (roadmap)",
+        ));
+    }
+    if code_sections.len() > 1 && config.flags.emit_mwcats {
+        return Err(Diagnostic::error(
+            "mwcats for mixed function code sections needs per-section catalogs (roadmap)",
         ));
     }
     // MWCC_DUMP_FIXTURES=<dir>: serialize every lowered function's register
@@ -1552,6 +1557,15 @@ fn compile(
     } else {
         Vec::new()
     };
+    let section_externals: Vec<(String, usize)> = if behavior.materialize_section_prototypes {
+        unit.globals
+            .iter()
+            .filter(|global| global.is_extern && global.section.is_some())
+            .map(|global| (global.name.clone(), global.functions_before))
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let code_alignment = config
         .flags
@@ -1612,6 +1626,8 @@ fn compile(
         &object_inline_asm_symbols,
         &forward_declared_statics,
         &early_undefined_externals,
+        &unit.section_prototypes,
+        &section_externals,
         source_name,
         object_format,
         small_data,

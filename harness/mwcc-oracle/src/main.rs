@@ -244,10 +244,46 @@ fn directive(source: &Path, key: &str) -> Option<Vec<String>> {
             .strip_prefix(&spaced_prefix)
             .or_else(|| trimmed.strip_prefix(&compact_prefix))
         {
-            return Some(rest.split_whitespace().map(str::to_string).collect());
+            return Some(split_directive_arguments(rest));
         }
     }
     None
+}
+
+fn split_directive_arguments(value: &str) -> Vec<String> {
+    let mut arguments = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    for character in value.chars() {
+        match (quote, character) {
+            (Some(delimiter), character) if character == delimiter => quote = None,
+            (Some(_), character) => current.push(character),
+            (None, '\'' | '"') => quote = Some(character),
+            (None, character) if character.is_whitespace() => {
+                if !current.is_empty() {
+                    arguments.push(std::mem::take(&mut current));
+                }
+            }
+            (None, character) => current.push(character),
+        }
+    }
+    if !current.is_empty() {
+        arguments.push(current);
+    }
+    arguments
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_directive_arguments;
+
+    #[test]
+    fn quoted_flag_values_remain_one_argument() {
+        assert_eq!(
+            split_directive_arguments(r#"-pragma "cats off" -Cpp_exceptions off"#),
+            ["-pragma", "cats off", "-Cpp_exceptions", "off"]
+        );
+    }
 }
 
 /// Parse `objdump -r` into normalized `[section] offset type symbol` lines,

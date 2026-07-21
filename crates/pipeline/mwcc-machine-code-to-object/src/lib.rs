@@ -77,14 +77,16 @@ pub struct DefinedGlobal {
 /// order) plus the file-scope variables defined in the unit. `source_name` is the
 /// source file's base name (e.g. "foo.c"), used for the object's `FILE` symbol;
 /// `version` is the compiler version being reproduced, stamped into `.comment`.
-/// The functions share one `.text`, one `.sdata2` constant pool, one
-/// `.mwcats.text`, the unwind sections, and the `.sbss` data section.
+/// The functions may select distinct code sections and share the constant pool,
+/// unwind sections, and data sections.
 pub fn assemble_object(
     functions: &[MachineFunction],
     defined_globals: &[DefinedGlobal],
     inline_asm_symbols: &[String],
     forward_declared_statics: &[String],
     early_undefined_externals: &[String],
+    section_function_declarations: &[String],
+    section_externals: &[(String, usize)],
     source_name: &str,
     object_format: ObjectFormat,
     small_data: bool,
@@ -244,6 +246,8 @@ pub fn assemble_object(
         inline_asm_symbols,
         forward_declared_statics,
         early_undefined_externals,
+        section_function_declarations,
+        section_externals,
         local_symbol_order,
         debug,
     })

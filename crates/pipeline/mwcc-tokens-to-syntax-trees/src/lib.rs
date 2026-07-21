@@ -707,6 +707,26 @@ mod tests {
     }
 
     #[test]
+    fn retains_sections_on_extern_function_pointer_arrays() {
+        let source = r#"
+            typedef void (*callback)(void);
+            __declspec(section ".ctors") extern callback _ctors[];
+            __declspec(section ".dtors") extern callback _dtors[];
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.globals[0].section.as_deref(), Some(".ctors"));
+        assert_eq!(unit.globals[1].section.as_deref(), Some(".dtors"));
+        assert!(unit.globals.iter().all(|global| global.is_extern));
+    }
+
+    #[test]
     fn retains_function_source_boundaries() {
         let raw = [
             (Token::KeywordInt, 1),

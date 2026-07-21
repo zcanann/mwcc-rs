@@ -3,8 +3,8 @@
 //! We own the object bytes deliberately: decomp tooling keys on exact section
 //! ordering, symbol order, alignment, relocations, and the Metrowerks
 //! `.comment`/`.mwcats` records, so the container is reproduced byte-for-byte
-//! just like the `.text`. An object holds one or more functions sharing a single
-//! `.text`, constant pool, and unwind sections. `lib.rs` exposes the input shape
+//! just like the code. An object holds functions split across `.text` and custom
+//! code sections while sharing constant pools and unwind sections. `lib.rs` exposes the input shape
 //! and the entry point; the assembly lives in [`writer`].
 
 mod debug;
@@ -16,7 +16,8 @@ pub use debug::{
     DebugSections, DebugSymbol,
 };
 pub use function_layout::{
-    layout_function_placements, layout_functions, FunctionLayout, FunctionPlacement,
+    layout_code_sections, layout_function_placements, layout_functions, CodeSection,
+    CodeSectionLayout, FunctionLayout, FunctionPlacement,
 };
 
 /// The compiler-specific header fields of Metrowerks' `.comment` section.
@@ -85,8 +86,8 @@ pub struct ObjectInput<'a> {
     pub source_name: &'a str,
     /// Compiler-specific `.comment` header fields.
     pub object_format: ObjectFormat,
-    /// One entry per function definition, in source order. They share one `.text`,
-    /// one `.sdata2` constant pool, one `.mwcats.text` (a record each), and the
+    /// One entry per function definition, in source order. They share one `.sdata2`
+    /// constant pool and unwind tables; each function selects its own code section.
     /// `extab`/`extabindex` unwind sections.
     pub functions: Vec<FunctionObject<'a>>,
     /// File-scope variables *defined* in this unit (not `extern`), in declaration
@@ -112,6 +113,12 @@ pub struct ObjectInput<'a> {
     /// Unused section-attributed function prototypes retained as GLOBAL UND
     /// symbols by early compilers, in declaration order.
     pub early_undefined_externals: &'a [String],
+    /// Section-attributed function declarations seen before their definitions.
+    /// Consecutive asm definitions in this set register as one symbol run.
+    pub section_function_declarations: &'a [String],
+    /// Section-attributed extern data declarations retained as a declaration
+    /// group when any member is first referenced (legacy `_ctors`/`_dtors`).
+    pub section_externals: &'a [(String, usize)],
     /// Optional capture pin for interleaved LOCAL data/function symbols.
     pub local_symbol_order: &'a [String],
     /// Optional CodeWarrior DWARF 1 payload and its object-container metadata.

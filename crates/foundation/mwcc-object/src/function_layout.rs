@@ -17,6 +17,78 @@ pub struct FunctionPlacement {
     pub deferred: bool,
 }
 
+/// Final placement of function bodies split by their ELF code section. Offsets
+/// are relative to each function's own section, while `sections` preserves the
+/// object order (`.text` first, then custom sections by first source use).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodeSectionLayout<'a> {
+    pub sections: Vec<CodeSection<'a>>,
+    pub offsets: Vec<u32>,
+    pub sizes: Vec<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodeSection<'a> {
+    pub name: &'a str,
+    pub order: Vec<usize>,
+    pub byte_len: u32,
+}
+
+pub fn layout_code_sections<'a>(
+    functions: &'a [FunctionObject<'a>],
+    alignment: u32,
+) -> CodeSectionLayout<'a> {
+    assert!(alignment.is_power_of_two());
+    let section_of = |function: &'a FunctionObject<'a>| function.section.unwrap_or(".text");
+    let mut section_names = Vec::new();
+    if functions
+        .iter()
+        .any(|function| section_of(function) == ".text")
+    {
+        section_names.push(".text");
+    }
+    for function in functions {
+        let name = section_of(function);
+        if !section_names.contains(&name) {
+            section_names.push(name);
+        }
+    }
+
+    let mut offsets = vec![0; functions.len()];
+    let mut sizes = vec![0; functions.len()];
+    let mut sections = Vec::with_capacity(section_names.len());
+    for name in section_names {
+        let indices: Vec<usize> = functions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, function)| (section_of(function) == name).then_some(index))
+            .collect();
+        let placements: Vec<FunctionPlacement> = indices
+            .iter()
+            .map(|&index| FunctionPlacement {
+                byte_size: functions[index].text.len() as u32,
+                deferred: functions[index].text_deferred,
+            })
+            .collect();
+        let local = layout_function_placements(&placements, alignment);
+        let order: Vec<usize> = local.order.iter().map(|&index| indices[index]).collect();
+        for (local_index, &function_index) in indices.iter().enumerate() {
+            offsets[function_index] = local.offsets[local_index];
+            sizes[function_index] = local.sizes[local_index];
+        }
+        sections.push(CodeSection {
+            name,
+            order,
+            byte_len: local.byte_len,
+        });
+    }
+    CodeSectionLayout {
+        sections,
+        offsets,
+        sizes,
+    }
+}
+
 pub fn layout_functions(functions: &[FunctionObject<'_>], alignment: u32) -> FunctionLayout {
     let placements: Vec<FunctionPlacement> = functions
         .iter()
@@ -114,5 +186,27 @@ mod tests {
         assert_eq!(layout.order, [1, 0]);
         assert_eq!(layout.offsets, [16, 0]);
         assert_eq!(layout.byte_len, 20);
+    }
+
+    #[test]
+    fn mixed_sections_have_independent_offsets_and_text_leads() {
+        let init = FunctionObject {
+            section: Some(".init"),
+            ..function("init", &[1, 2, 3, 4], false)
+        };
+        let text = function("text", &[5, 6, 7, 8], false);
+        let functions = [init, text];
+        let layout = layout_code_sections(&functions, 4);
+        assert_eq!(
+            layout
+                .sections
+                .iter()
+                .map(|section| section.name)
+                .collect::<Vec<_>>(),
+            [".text", ".init"]
+        );
+        assert_eq!(layout.offsets, [0, 0]);
+        assert_eq!(layout.sections[0].order, [1]);
+        assert_eq!(layout.sections[1].order, [0]);
     }
 }
