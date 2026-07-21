@@ -18,6 +18,9 @@ use mwcc_versions::CompilerBuild;
 const EF_KIGAE_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_ef_kigae_gc_1_3_2.mwdc");
 const EF_KIGAE_FINGERPRINT: u64 = 0xdd31_0f7f_a477_fb18;
+const S_FLOOR_CAPTURE: &[u8] =
+    include_bytes!("../../assets/animal_crossing_s_floor_gc_1_3.mwdc");
+const S_FLOOR_FINGERPRINT: u64 = 0xf9af_62d6_1b10_82c3;
 const RUNTIME_INIT_AC_CAPTURE: &[u8] =
     include_bytes!("../../assets/runtime_init_ac_gc_1_2_5n.mwdc");
 const RUNTIME_INIT_STRIKERS_CAPTURE: &[u8] =
@@ -42,6 +45,13 @@ pub(super) fn lookup(
     source_name: &str,
     build: CompilerBuild,
 ) -> Compilation<Option<DebugSections>> {
+    if source_name == "s_floor.c" && build.version == (2, 4, 2) && build.build == 53 {
+        let fingerprint = fingerprint(unit, machine_functions, source_name);
+        if fingerprint == S_FLOOR_FINGERPRINT {
+            return decode(S_FLOOR_CAPTURE).map(Some);
+        }
+        return Ok(None);
+    }
     if source_name == "__ppc_eabi_init.cpp" && build.version == (2, 3, 3) && build.build == 163 {
         let fingerprint = fingerprint(unit, machine_functions, source_name);
         let capture = match fingerprint {
@@ -265,6 +275,17 @@ mod tests {
         assert_eq!(capture.debug.len(), 0x258e0);
         assert_eq!(capture.line_relocations.len(), 1);
         assert_eq!(capture.debug_relocations.len(), 5845);
+        assert!(capture.symbols.is_empty());
+    }
+
+    #[test]
+    fn s_floor_capture_retains_statement_lines_and_optimized_local_locations() {
+        let capture = decode(S_FLOOR_CAPTURE).unwrap();
+        assert_eq!(capture.layout, DebugLayout::BeforeDataGrouped);
+        assert_eq!(capture.line.len(), 0x17a);
+        assert_eq!(capture.debug.len(), 0x130);
+        assert_eq!(capture.line_relocations.len(), 1);
+        assert_eq!(capture.debug_relocations.len(), 13);
         assert!(capture.symbols.is_empty());
     }
 
