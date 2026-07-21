@@ -163,6 +163,120 @@ def blocker_breakdown(
     return sorted(grouped.values(), key=lambda entry: (-entry["count"], entry["status"], entry["reason"]))
 
 
+def compiler_blocker_family(status: str, reason: str) -> str:
+    """Map specific diagnostics to stable compiler-architecture work areas."""
+
+    if status == "DIFF":
+        return "emitted object mismatch"
+    if status == "UNSUPPORTED_BUILD":
+        return "unsupported compiler build"
+
+    lowered = reason.lower()
+    if lowered.startswith("debug-info:"):
+        return "debug info / object format"
+    if "inline-asm mnemonic" in lowered or "found asm" in lowered:
+        return "inline assembly"
+    if "inline expansion" in lowered or "inline or unavailable" in lowered:
+        return "inline expansion"
+    if any(
+        marker in lowered
+        for marker in (
+            "loop codegen",
+            "switch dispatch",
+            "switch arm",
+            "if-statement",
+            "if-condition",
+            "across the branch",
+        )
+    ):
+        return "control flow"
+    if (
+        lowered.startswith("expected ")
+        or "template specialization was not lowered" in lowered
+        or lowered.startswith("unknown variable")
+        or lowered.startswith("unknown constructor initializer")
+    ):
+        return "front end / parsing and resolution"
+    if any(
+        marker in lowered
+        for marker in (
+            "struct is not declared",
+            "value layout is not declared",
+            "member access on a non-struct-pointer",
+            "class layout for constructor",
+            "constructor initialization",
+            "function call",
+            "member call",
+            "static c++ member call",
+        )
+    ):
+        return "C++ types / layout / calls"
+    if any(
+        marker in lowered
+        for marker in (
+            "global initializer",
+            "global-array",
+            "global-aggregate",
+            "static/const pointer-address global",
+            "struct-table",
+            "string initializer",
+            "multi-dimensional array initializer",
+        )
+    ):
+        return "data and global initialization"
+    if any(
+        marker in lowered
+        for marker in (
+            "variadic",
+            "returning a struct",
+            "long long",
+            "narrow parameter",
+            "pointer to an array-typedef",
+            "c++ new",
+            "array delete",
+        )
+    ):
+        return "ABI and runtime semantics"
+    if any(
+        marker in lowered
+        for marker in (
+            "callee-saved",
+            "register",
+            "scheduler",
+            "schedule",
+            "reassignment",
+            "leaf operand",
+            "float leaf",
+            "recomputes the address",
+        )
+    ):
+        return "backend lowering / registers / scheduling"
+    return "other unsupported lowering"
+
+
+def blocker_family_breakdown(blockers: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Roll failure diagnostics up into mutually exclusive work areas."""
+
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for blocker in blockers:
+        if blocker["status"] not in ("DIFF", "DEFER", "UNSUPPORTED_BUILD"):
+            continue
+        family = compiler_blocker_family(blocker["status"], blocker["reason"])
+        entry = grouped.setdefault(
+            family,
+            {"family": family, "count": 0, "reasons": [], "examples": []},
+        )
+        entry["count"] += blocker["count"]
+        if len(entry["reasons"]) < 3:
+            entry["reasons"].append(
+                {"count": blocker["count"], "reason": blocker["reason"]}
+            )
+        for example in blocker["examples"]:
+            if example not in entry["examples"] and len(entry["examples"]) < 3:
+                entry["examples"].append(example)
+    return sorted(grouped.values(), key=lambda entry: (-entry["count"], entry["family"]))
+
+
 def load_inventory(path: Path) -> Dict[str, Any]:
     with path.open(encoding="utf-8") as source:
         return json.load(source)
@@ -384,6 +498,7 @@ def snapshot(
     substantive_existing = sum(
         bool(row.get("source_has_non_whitespace", True)) for row in existing
     )
+    blockers = blocker_breakdown(existing, observations, unsupported_versions)
     return {
         "tool_fingerprint": tool,
         "configured": len(rows),
@@ -413,7 +528,8 @@ def snapshot(
         "by_language": breakdown(rows, observations, unsupported_versions, "language"),
         "by_version": breakdown(rows, observations, unsupported_versions, "mw_version"),
         "by_project": breakdown(rows, observations, unsupported_versions, "project"),
-        "blockers": blocker_breakdown(existing, observations, unsupported_versions),
+        "blockers": blockers,
+        "blocker_families": blocker_family_breakdown(blockers),
     }
 
 
@@ -603,6 +719,7 @@ def representative_audit(
     population_matches = declared_population is None or declared_population == len(universe)
     selection_members_present = len(selected) == len(selection)
     design_valid = population_matches and selection_members_present
+    blockers = blocker_breakdown(selected_rows, direct, set())
     result: Dict[str, Any] = {
         "method": manifest.get("kind", "simple_random_sample_without_replacement"),
         "seed": manifest.get("seed"),
@@ -621,7 +738,8 @@ def representative_audit(
         # breakdown on the root snapshot. The latter contains opportunistic
         # observations and must not be read as a representative distribution.
         "by_project": breakdown(selected_rows, direct, set(), "project"),
-        "blockers": blocker_breakdown(selected_rows, direct, set()),
+        "blockers": blockers,
+        "blocker_families": blocker_family_breakdown(blockers),
         "execution_requested": len(execution_requested),
         "execution_selected": len(execution_selected),
         "execution_observed": len(execution_direct),
@@ -953,17 +1071,13 @@ def print_brief(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]]) 
             f"{len(audit['version_coverage'])}; project/version/language cells "
             f"{audit['breadth_coverage_observed']}/{audit['breadth_coverage_cells']}"
         )
-        compiler_blockers = [
-            blocker
-            for blocker in audit.get("blockers", [])
-            if blocker["status"] in ("DIFF", "DEFER", "UNSUPPORTED_BUILD")
-        ]
-        if compiler_blockers:
+        blocker_families = audit.get("blocker_families", [])
+        if blocker_families:
             summary = "; ".join(
-                f"{blocker['count']}x {blocker['reason']}"
-                for blocker in compiler_blockers[:5]
+                f"{blocker['count']}x {blocker['family']}"
+                for blocker in blocker_families[:10]
             )
-            print(f"top sampled compiler blockers — {summary}")
+            print(f"sampled compiler blocker families — {summary}")
         audit_delta = audit.get("delta")
         if audit_delta is not None:
             transitions = ", ".join(

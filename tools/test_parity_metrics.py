@@ -16,8 +16,10 @@ import unittest
 from parity_audit import build_audit
 from parity_dashboard import (
     authoritative_result,
+    blocker_family_breakdown,
     code_component_result,
     code_result,
+    compiler_blocker_family,
     failure_reason,
     normalize_reason,
     print_brief,
@@ -383,7 +385,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("measurement-unknown attribution", rendered)
         self.assertIn("resolved exact 2/3", rendered)
         self.assertIn("emitted-object quality (conditional, not feature coverage)", rendered)
-        self.assertIn("top sampled compiler blockers", rendered)
+        self.assertIn("sampled compiler blocker families", rendered)
         self.assertIn("1x ", rendered)
         self.assertIn("audit execution cost", rendered)
         self.assertIn("summed 10.0s", rendered)
@@ -411,6 +413,51 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(report["by_project"][0]["total"], 2)
         self.assertEqual(report["blockers"][0]["status"], "DEFER")
         self.assertNotIn("generated.inc", report["blockers"][0]["reason"])
+
+    def test_compiler_blocker_families_are_stable_architecture_categories(self):
+        self.assertEqual(
+            compiler_blocker_family(
+                "DEFER", "a value live across a call needs the callee-saved register allocator"
+            ),
+            "backend lowering / registers / scheduling",
+        )
+        self.assertEqual(
+            compiler_blocker_family(
+                "DEFER", "expected ParenClose, found Comma at token 42"
+            ),
+            "front end / parsing and resolution",
+        )
+        self.assertEqual(
+            compiler_blocker_family("DIFF", "object bytes differ"),
+            "emitted object mismatch",
+        )
+
+    def test_blocker_family_breakdown_sums_diagnostics_without_measurement_failures(self):
+        families = blocker_family_breakdown(
+            [
+                {
+                    "status": "DEFER",
+                    "reason": "loop codegen is not implemented yet",
+                    "count": 3,
+                    "examples": ["a/loop.c"],
+                },
+                {
+                    "status": "DEFER",
+                    "reason": "switch dispatch codegen is not implemented yet",
+                    "count": 2,
+                    "examples": ["b/switch.c"],
+                },
+                {
+                    "status": "HARNESS",
+                    "reason": "timed out after 30 seconds",
+                    "count": 9,
+                    "examples": ["c/slow.c"],
+                },
+            ]
+        )
+        self.assertEqual(len(families), 1)
+        self.assertEqual(families[0]["family"], "control flow")
+        self.assertEqual(families[0]["count"], 5)
 
     def test_exact_output_against_original_object_earns_credit_with_synthetic_input(self):
         observation = {
