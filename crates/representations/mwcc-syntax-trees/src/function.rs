@@ -255,12 +255,6 @@ pub struct CxxInlineOrdinalFacts {
 /// with one or more function definitions, in source order.
 #[derive(Debug, Clone)]
 pub struct TranslationUnit {
-    /// The token stream contained no source tokens beyond end-of-file. MWCC
-    /// suppresses requested debug sections for this case and emits the same
-    /// comment-only object as a non-debug compilation. This cannot be inferred
-    /// from declarations alone because a typedef-only unit can also have no
-    /// executable globals or functions.
-    pub source_is_empty: bool,
     pub globals: Vec<GlobalDeclaration>,
     pub functions: Vec<Function>,
     /// Named aggregate declarations keyed by their parser identity. Executable

@@ -21,11 +21,18 @@ use std::collections::HashMap;
 pub fn lower_debug_info(
     unit: &TranslationUnit,
     machine_functions: &[MachineFunction],
+    has_emitted_data: bool,
     source_name: &str,
     build: CompilerBuild,
     code_alignment: u32,
 ) -> Compilation<Option<DebugSections>> {
-    if unit.source_is_empty {
+    // Debug sections describe emitted definitions, not merely parsed source.
+    // A typedef-only unit and a preprocessed header bridge whose inline bodies
+    // were all dropped both produce the same comment-only object as a lexically
+    // empty file. Conversely, a functionless data unit still needs DWARF. Keep
+    // this decision at the boundary where executable and data lowering have
+    // already established what survives into the object.
+    if machine_functions.is_empty() && !has_emitted_data {
         return Ok(None);
     }
     // Exact captures are generation-independent semantic debug payloads. Give

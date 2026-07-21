@@ -1714,6 +1714,7 @@ fn compile(
         mwcc_syntax_trees_to_debug_info::lower_debug_info(
             &unit,
             &machine_functions,
+            !defined_globals.is_empty(),
             source_name,
             config.build,
             code_alignment,
