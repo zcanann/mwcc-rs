@@ -3077,6 +3077,12 @@ impl Generator {
             if self.try_callee_saved_structured_body(function)? {
                 return Ok(());
             }
+            // SDK list walks which snapshot `next` before conditionally calling
+            // on the current node. The successor is a genuine loop-carried
+            // callee-saved value; keep this beside the other allocator owners.
+            if self.try_pointer_state_call_loop(function)? {
+                return Ok(());
+            }
             if reads_value_across_call(function) {
                 return Err(Diagnostic::error(format!(
                     "a value live across a call needs the callee-saved register allocator (roadmap; function '{}')",
