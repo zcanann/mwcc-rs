@@ -1,14 +1,33 @@
 //! Status-guarded indexed call loops.
 //!
 //! These loops stop on either a nonzero callee result or a signed element count.
-//! The element cursor, index, count, and forwarded context occupy r31..r28;
-//! the status remains in r3 across the bottom-tested condition.
+//! A call may consume the indexed word value or its address. Wide addressed
+//! elements and word values use an advancing cursor; byte addresses preserve
+//! mwcc's distinct base-plus-index schedule. The status remains in r3 across
+//! the bottom-tested condition.
 
 #[allow(unused_imports)]
 use super::*;
 
 struct StatusIndexedCall<'a> {
     callee: &'a str,
+    argument: IndexedArgument,
+}
+
+#[derive(Clone, Copy)]
+enum IndexedArgument {
+    WordValue,
+    Address { stride: u8 },
+}
+
+impl IndexedArgument {
+    fn cursor_stride(self) -> Option<u8> {
+        match self {
+            Self::WordValue => Some(4),
+            Self::Address { stride: 1 } => None,
+            Self::Address { stride } => Some(stride),
+        }
+    }
 }
 
 fn var(expression: &Expression, name: &str) -> bool {
@@ -30,11 +49,13 @@ fn classify(function: &Function) -> Option<StatusIndexedCall<'_>> {
     if !matches!(
         context.parameter_type,
         Type::Pointer(_) | Type::StructPointer { .. }
-    ) || data.parameter_type != Type::Pointer(Pointee::UnsignedInt)
-        || count.parameter_type != Type::Int
+    ) || count.parameter_type != Type::Int
     {
         return None;
     }
+    let Type::Pointer(data_pointee) = data.parameter_type else {
+        return None;
+    };
     let [status, index] = function.locals.as_slice() else {
         return None;
     };
@@ -85,14 +106,35 @@ fn classify(function: &Function) -> Option<StatusIndexedCall<'_>> {
     else {
         return None;
     };
-    if assigned_status != &status.name
-        || !matches!(arguments.as_slice(), [call_context, Expression::Index { base, index: call_index }]
-            if var(call_context, &context.name) && var(base, &data.name)
-                && var(call_index, &index.name))
-    {
+    if assigned_status != &status.name {
         return None;
     }
-    Some(StatusIndexedCall { callee })
+    let [call_context, indexed_argument] = arguments.as_slice() else {
+        return None;
+    };
+    if !var(call_context, &context.name) {
+        return None;
+    }
+    let indexed = |expression: &Expression| {
+        matches!(expression, Expression::Index { base, index: call_index }
+            if var(base, &data.name) && var(call_index, &index.name))
+    };
+    let argument = match indexed_argument {
+        Expression::Index { .. }
+            if data_pointee == Pointee::UnsignedInt && indexed(indexed_argument) =>
+        {
+            IndexedArgument::WordValue
+        }
+        Expression::AddressOf { operand }
+            if indexed(operand) && matches!(data_pointee.size(), 1 | 2 | 4 | 8) =>
+        {
+            IndexedArgument::Address {
+                stride: data_pointee.size(),
+            }
+        }
+        _ => return None,
+    };
+    Some(StatusIndexedCall { callee, argument })
 }
 
 impl Generator {
@@ -110,16 +152,17 @@ impl Generator {
         {
             return Ok(false);
         }
-        const CURSOR: u8 = 31;
-        const INDEX: u8 = 30;
-        const COUNT: u8 = 29;
+        const HIGH: u8 = 31;
+        const MIDDLE: u8 = 30;
+        const LOW: u8 = 29;
         const CONTEXT: u8 = 28;
+        let cursor_stride = shape.argument.cursor_stride();
         let body = self.fresh_label();
         let condition = self.fresh_label();
         let exit = self.fresh_label();
         self.non_leaf = true;
         self.frame_size = 24;
-        self.callee_saved = vec![CURSOR, INDEX, COUNT, CONTEXT];
+        self.callee_saved = vec![HIGH, MIDDLE, LOW, CONTEXT];
         self.output.pre_scheduled = true;
         self.output.instructions.extend([
             Instruction::MoveFromLinkRegister { d: 0 },
@@ -134,36 +177,66 @@ impl Generator {
                 offset: -24,
             },
             Instruction::StoreWord {
-                s: CURSOR,
+                s: HIGH,
                 a: 1,
                 offset: 20,
             },
-            Instruction::StoreWord {
-                s: INDEX,
-                a: 1,
-                offset: 16,
-            },
-            Instruction::load_immediate(INDEX, 0),
-            Instruction::ShiftLeftImmediate {
-                a: 0,
-                s: INDEX,
-                shift: 2,
-            },
-            Instruction::StoreWord {
-                s: COUNT,
-                a: 1,
-                offset: 12,
-            },
-            Instruction::Add {
-                d: CURSOR,
-                a: 4,
-                b: 0,
-            },
-            Instruction::AddImmediate {
-                d: COUNT,
-                a: 5,
-                immediate: 0,
-            },
+        ]);
+        if let Some(stride) = cursor_stride {
+            self.output.instructions.extend([
+                Instruction::StoreWord {
+                    s: MIDDLE,
+                    a: 1,
+                    offset: 16,
+                },
+                Instruction::load_immediate(MIDDLE, 0),
+                Instruction::ShiftLeftImmediate {
+                    a: 0,
+                    s: MIDDLE,
+                    shift: stride.trailing_zeros() as u8,
+                },
+                Instruction::StoreWord {
+                    s: LOW,
+                    a: 1,
+                    offset: 12,
+                },
+                Instruction::Add {
+                    d: HIGH,
+                    a: 4,
+                    b: 0,
+                },
+                Instruction::AddImmediate {
+                    d: LOW,
+                    a: 5,
+                    immediate: 0,
+                },
+            ]);
+        } else {
+            self.output.instructions.extend([
+                Instruction::load_immediate(HIGH, 0),
+                Instruction::StoreWord {
+                    s: MIDDLE,
+                    a: 1,
+                    offset: 16,
+                },
+                Instruction::AddImmediate {
+                    d: MIDDLE,
+                    a: 5,
+                    immediate: 0,
+                },
+                Instruction::StoreWord {
+                    s: LOW,
+                    a: 1,
+                    offset: 12,
+                },
+                Instruction::AddImmediate {
+                    d: LOW,
+                    a: 4,
+                    immediate: 0,
+                },
+            ]);
+        }
+        self.output.instructions.extend([
             Instruction::StoreWord {
                 s: CONTEXT,
                 a: 1,
@@ -178,53 +251,80 @@ impl Generator {
         ]);
         self.emit_branch_to(condition);
         self.bind_label(body);
-        self.output.instructions.extend([
-            Instruction::move_register(3, CONTEXT),
-            Instruction::LoadWord {
+        self.output.instructions.push(match shape.argument {
+            IndexedArgument::WordValue => Instruction::move_register(3, CONTEXT),
+            IndexedArgument::Address { .. } => Instruction::AddImmediate {
+                d: 3,
+                a: CONTEXT,
+                immediate: 0,
+            },
+        });
+        self.output.instructions.push(match shape.argument {
+            IndexedArgument::WordValue => Instruction::LoadWord {
                 d: 4,
-                a: CURSOR,
+                a: HIGH,
                 offset: 0,
             },
-        ]);
+            IndexedArgument::Address { stride: 1 } => Instruction::Add {
+                d: 4,
+                a: LOW,
+                b: HIGH,
+            },
+            IndexedArgument::Address { .. } => Instruction::AddImmediate {
+                d: 4,
+                a: HIGH,
+                immediate: 0,
+            },
+        });
         self.record_relocation(RelocationKind::Rel24, shape.callee);
         self.output.instructions.push(Instruction::BranchAndLink {
             target: shape.callee.to_string(),
         });
-        self.output.instructions.extend([
-            Instruction::AddImmediate {
-                d: INDEX,
-                a: INDEX,
+        if let Some(stride) = cursor_stride {
+            self.output.instructions.extend([
+                Instruction::AddImmediate {
+                    d: MIDDLE,
+                    a: MIDDLE,
+                    immediate: 1,
+                },
+                Instruction::AddImmediate {
+                    d: HIGH,
+                    a: HIGH,
+                    immediate: i16::from(stride),
+                },
+            ]);
+        } else {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: HIGH,
+                a: HIGH,
                 immediate: 1,
-            },
-            Instruction::AddImmediate {
-                d: CURSOR,
-                a: CURSOR,
-                immediate: 4,
-            },
-        ]);
+            });
+        }
         self.bind_label(condition);
         self.output
             .instructions
             .push(Instruction::CompareWordImmediate { a: 3, immediate: 0 });
         self.emit_branch_conditional_to(4, 2, exit); // bne
-        self.output
-            .instructions
-            .push(Instruction::CompareWord { a: INDEX, b: COUNT });
+        self.output.instructions.push(if cursor_stride.is_some() {
+            Instruction::CompareWord { a: MIDDLE, b: LOW }
+        } else {
+            Instruction::CompareWord { a: HIGH, b: MIDDLE }
+        });
         self.emit_branch_conditional_to(12, 0, body); // blt
         self.bind_label(exit);
         self.output.instructions.extend([
             Instruction::LoadWord {
-                d: CURSOR,
+                d: HIGH,
                 a: 1,
                 offset: 20,
             },
             Instruction::LoadWord {
-                d: INDEX,
+                d: MIDDLE,
                 a: 1,
                 offset: 16,
             },
             Instruction::LoadWord {
-                d: COUNT,
+                d: LOW,
                 a: 1,
                 offset: 12,
             },
