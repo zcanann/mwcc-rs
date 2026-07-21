@@ -162,6 +162,11 @@ impl Parser {
             self.advance();
             self.last_type_was_const = true;
         }
+        if matches!(self.peek(), Token::Identifier(word) if word == crate::CXX_POINTEE_CONST_MARKER)
+        {
+            self.advance();
+            self.last_type_was_const = true;
+        }
         Ok(parsed)
     }
 

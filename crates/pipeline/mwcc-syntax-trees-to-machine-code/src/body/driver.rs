@@ -1196,6 +1196,9 @@ impl Generator {
         if !calls_skipped_inline && self.try_tail_call(function)? {
             return Ok(());
         }
+        if !calls_skipped_inline && self.try_conditional_member_select_tail(function)? {
+            return Ok(());
+        }
         if self.try_legacy_comma_parameter_homes(function)? {
             return Ok(());
         }

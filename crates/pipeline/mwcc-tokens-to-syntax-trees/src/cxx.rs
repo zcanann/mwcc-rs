@@ -807,19 +807,18 @@ impl Parser {
         self.capture_cxx_class_layout(start, &class);
         self.cxx_inline_ordinal_facts.class_definitions += 1;
 
-        // Seed the primary dispatch table from the one supported base. A base
-        // declared in the current namespace is preferred, with the written
-        // name as a fallback for already-qualified/preprocessed declarations.
-        // Multiple or virtual inheritance stays an honest defer: secondary
-        // vptrs require this-adjusting thunks and cannot share this model.
+        // Retain the primary-base identity independently from virtual-table
+        // recovery. In ordinary multiple inheritance the first base begins at
+        // offset zero, so an inherited direct call needs no `this` adjustment.
+        // Secondary-base calls and inherited virtual dispatch still defer.
         let header = &self.tokens[start + 2..index];
         let mut dispatch = RecoveredCxxDispatchTable::default();
         if let Some(colon) = header.iter().position(|token| *token == Token::Colon) {
             let inheritance = &header[colon + 1..];
-            let unsupported = inheritance.iter().any(|token| {
-                token == &Token::Comma
-                    || matches!(token, Token::Identifier(word) if word == "virtual")
-            });
+            let multiple = inheritance.iter().any(|token| token == &Token::Comma);
+            let virtual_base = inheritance.iter().any(
+                |token| matches!(token, Token::Identifier(word) if word == "virtual"),
+            );
             let base = inheritance.iter().find_map(|token| match token {
                 Token::Identifier(word)
                     if !matches!(word.as_str(), "public" | "private" | "protected") =>
@@ -828,22 +827,26 @@ impl Parser {
                 }
                 _ => None,
             });
-            if unsupported {
-                self.incomplete_cxx_dispatch.insert(class.clone());
-            } else if let Some(base) = base {
+            if let Some(base) = base {
                 let qualified_base = self
                     .resolve_scoped_cxx_class_name(base)
                     .unwrap_or_else(|| self.qualify_cxx_class_name(base));
-                self.cxx_primary_bases
-                    .insert(class.clone(), qualified_base.clone());
-                if let Some(base_dispatch) = self
-                    .cxx_dispatch_tables
-                    .get(&qualified_base)
-                    .or_else(|| self.cxx_dispatch_tables.get(base))
-                {
-                    dispatch = base_dispatch.clone();
-                } else {
+                if !virtual_base {
+                    self.cxx_primary_bases
+                        .insert(class.clone(), qualified_base.clone());
+                }
+                if multiple || virtual_base {
                     self.incomplete_cxx_dispatch.insert(class.clone());
+                } else {
+                    if let Some(base_dispatch) = self
+                        .cxx_dispatch_tables
+                        .get(&qualified_base)
+                        .or_else(|| self.cxx_dispatch_tables.get(base))
+                    {
+                        dispatch = base_dispatch.clone();
+                    } else {
+                        self.incomplete_cxx_dispatch.insert(class.clone());
+                    }
                 }
             }
         }
@@ -1992,34 +1995,66 @@ impl Parser {
         let Some(class_name) = self.current_cxx_member_class.as_deref() else {
             return Ok(None);
         };
-        let Some(methods) = self
+        if let Some(methods) = self
             .cxx_classes
             .get(class_name)
             .and_then(|class| class.methods.get(function))
-        else {
-            return Ok(None);
-        };
-        let candidates: Vec<&MemberMethod> = methods
-            .iter()
-            .filter(|method| method.parameters.len() == argument_count)
-            .collect();
-        if candidates.len() != 1 {
-            return Err(Diagnostic::error(format!(
-                "member overload resolution for '{class_name}::{function}' is ambiguous or unavailable (roadmap)"
-            )));
+        {
+            let candidates: Vec<&MemberMethod> = methods
+                .iter()
+                .filter(|method| method.parameters.len() == argument_count)
+                .collect();
+            if candidates.len() != 1 {
+                return Err(Diagnostic::error(format!(
+                    "member overload resolution for '{class_name}::{function}' is ambiguous or unavailable (roadmap)"
+                )));
+            }
+            let method = candidates[0];
+            if let Some(dispatch) = method.virtual_dispatch {
+                return Ok(Some(ImplicitMemberCall::Virtual(dispatch)));
+            }
+            return Ok(Some(ImplicitMemberCall::Direct {
+                name: mangle_qualified_member_function_typed(
+                    &class_name.split("::").collect::<Vec<_>>(),
+                    function,
+                    &method.cxx_parameters,
+                )?,
+                is_inline: method.is_inline,
+            }));
         }
-        let method = candidates[0];
-        if let Some(dispatch) = method.virtual_dispatch {
-            return Ok(Some(ImplicitMemberCall::Virtual(dispatch)));
+
+        // A declaration-only primary-base chain remains usable when the full
+        // executable class layout was too complex to recover. Only that chain
+        // is safe: its incoming `this` stays at offset zero.
+        let mut owner = class_name;
+        let mut visited = std::collections::HashSet::new();
+        while visited.insert(owner) {
+            let candidates: Vec<&RecoveredCxxMethod> = self
+                .cxx_instance_methods
+                .get(&(owner.to_string(), function.to_string()))
+                .into_iter()
+                .flatten()
+                .filter(|method| {
+                    method.fixed_parameter_count == argument_count
+                        || (method.variadic && argument_count >= method.fixed_parameter_count)
+                })
+                .collect();
+            match candidates.as_slice() {
+                [method] => return Ok(Some(ImplicitMemberCall::Direct {
+                    name: method.mangled.clone(),
+                    is_inline: self.skipped_inline_names.contains(&method.mangled),
+                })),
+                [] => {}
+                _ => return Err(Diagnostic::error(format!(
+                    "member overload resolution for '{owner}::{function}' is ambiguous (roadmap)"
+                ))),
+            }
+            let Some(base) = self.cxx_primary_bases.get(owner) else {
+                break;
+            };
+            owner = base;
         }
-        Ok(Some(ImplicitMemberCall::Direct {
-            name: mangle_qualified_member_function_typed(
-                &class_name.split("::").collect::<Vec<_>>(),
-                function,
-                &method.cxx_parameters,
-            )?,
-            is_inline: method.is_inline,
-        }))
+        Ok(None)
     }
 
     /// Parse one class definition and recover its object layout.

@@ -16,6 +16,8 @@ mod parser;
 
 use parser::Parser;
 
+pub(crate) const CXX_POINTEE_CONST_MARKER: &str = "__mwcc_cxx_pointee_const";
+
 /// Parse a token stream into a translation unit (file-scope globals + the
 /// function definition).
 pub fn parse_translation_unit(
@@ -75,20 +77,28 @@ pub fn parse_located_translation_unit_with_enum_min(
     skipped_static_inline_label_base: u8,
     enum_min: bool,
 ) -> Compilation<TranslationUnit> {
-    // "East" pointee qualifiers (`u8 const* i`, `int volatile* p`) are
-    // codegen-transparent — the qualifier binds the POINTEE, which access
-    // codegen doesn't distinguish. Normalize them away when they directly
-    // precede the `*` so every parse_type path sees the canonical `u8*`.
-    // (`int const g = 5;` KEEPS its const: it routes the global to the
-    // read-only section.)
+    // East pointee qualifiers are codegen-transparent, but C++ `const`
+    // remains part of a function's ABI name. Move that fact after the star as
+    // a parser-internal marker: declaration lookahead keeps seeing canonical
+    // `T*`, while parse_type consumes the marker before the declarator name.
     let mut tokens = cxx::normalize_linkage_specifications(tokens);
     tokens = cxx::normalize_constructor_declarators(tokens);
     let mut index = 0;
     while index + 1 < tokens.len() {
-        let is_east_pointee_qualifier = matches!(&tokens[index].token, Token::Identifier(word) if word == "const" || word == "volatile")
-            && tokens[index + 1].token == Token::Star;
-        if is_east_pointee_qualifier {
-            tokens.remove(index);
+        let qualifier = match &tokens[index].token {
+            Token::Identifier(word) if word == "const" => Some(true),
+            Token::Identifier(word) if word == "volatile" => Some(false),
+            _ => None,
+        };
+        if qualifier.is_some() && tokens[index + 1].token == Token::Star {
+            if cplusplus && qualifier == Some(true) {
+                tokens.swap(index, index + 1);
+                tokens[index + 1].token =
+                    Token::Identifier(CXX_POINTEE_CONST_MARKER.to_string());
+                index += 2;
+            } else {
+                tokens.remove(index);
+            }
         } else {
             index += 1;
         }
@@ -1731,6 +1741,30 @@ blr\n\
                     mwcc_syntax_trees::Expression::IntegerLiteral(3),
                 ] if this == "this")
         ));
+    }
+
+    #[test]
+    fn resolves_an_inherited_direct_call_through_a_primary_base() {
+        let source = r#"
+            struct Point {};
+            struct Primary { void Set2(Point const*, Point const*, unsigned int); };
+            struct Secondary {};
+            struct Check : public Primary, public Secondary { void Set(Point const*, Point const*, unsigned int); };
+            void Check::Set(Point const* start, Point const* end, unsigned int id) { Set2(start, end, id); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+        ).unwrap();
+        assert!(matches!(unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Call { name, arguments }
+            )] if name == "Set2__7PrimaryFPC5PointPC5PointUi"
+                && matches!(arguments.as_slice(), [
+                    mwcc_syntax_trees::Expression::Variable(this),
+                    mwcc_syntax_trees::Expression::Variable(start),
+                    mwcc_syntax_trees::Expression::Variable(end),
+                    mwcc_syntax_trees::Expression::Variable(id),
+                ] if this == "this" && start == "start" && end == "end" && id == "id")));
     }
 
     #[test]

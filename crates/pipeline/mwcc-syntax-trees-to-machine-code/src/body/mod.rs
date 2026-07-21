@@ -8,6 +8,7 @@ mod callee_saved;
 mod comma_operator;
 mod condition_linkage;
 mod conditional;
+mod conditional_member_select_tail;
 mod dispatchers;
 mod driver;
 mod enum_remap_member_update;
