@@ -8,8 +8,316 @@
 use mwcc_machine_code::{
     FrameInfo, Instruction, MachineFunction, Relocation, RelocationKind, RelocationTarget,
 };
-use mwcc_syntax_trees::{Function, GlobalDeclaration, Type};
+use mwcc_syntax_trees::{Expression, Function, GlobalDeclaration, Statement, Type};
 use mwcc_versions::{Behavior, CompilerConfig, FrameConvention};
+
+/// Lower a constructor composed from non-virtual base calls, a complete vtable
+/// group installation, and call-valued member stores. These values all depend
+/// on the incoming complete-object pointer across calls, so the ordinary leaf
+/// expression paths cannot schedule them independently. The frontend's AST is
+/// the ABI contract; no class or target-project names participate here.
+pub(crate) fn lower_composed_constructor(
+    function: &Function,
+    _globals: &[GlobalDeclaration],
+    config: CompilerConfig,
+) -> Option<MachineFunction> {
+    if Behavior::resolve(&config).frame_convention != FrameConvention::Predecrement
+        || !function.name.starts_with("__ct__")
+        || function.parameters.len() != 1
+        || function.parameters[0].name != "this"
+        || !matches!(function.parameters[0].parameter_type, Type::StructPointer { .. })
+        || !function.locals.is_empty()
+        || !function.guards.is_empty()
+        || !matches!(
+            function.return_expression.as_ref(),
+            Some(Expression::Variable(name)) if name == "this"
+        )
+    {
+        return None;
+    }
+
+    let vptr_start = function
+        .statements
+        .iter()
+        .position(|statement| parse_vptr_store(statement).is_some())?;
+    let base_calls: Vec<(String, u32)> = function.statements[..vptr_start]
+        .iter()
+        .map(parse_adjusted_call_statement)
+        .collect::<Option<_>>()?;
+    if base_calls.is_empty() {
+        return None;
+    }
+    let mut vptr_end = vptr_start;
+    let mut vptrs = Vec::new();
+    while let Some(vptr) = function
+        .statements
+        .get(vptr_end)
+        .and_then(parse_vptr_store)
+    {
+        vptrs.push(vptr);
+        vptr_end += 1;
+    }
+    if vptrs.len() < 2 || vptrs.len() > 8 {
+        return None;
+    }
+    let vtable = &vptrs[0].0;
+    if vptrs.iter().any(|(name, _, _)| name != vtable) {
+        return None;
+    }
+    let tail_stores: Vec<(u32, String, u32)> = function.statements[vptr_end..]
+        .iter()
+        .map(parse_call_valued_member_store)
+        .collect::<Option<_>>()?;
+    if tail_stores.is_empty() {
+        return None;
+    }
+
+    let mut output = MachineFunction::new(function.name.clone());
+    let mut relocations = Vec::new();
+    let mut referenced_functions = Vec::new();
+    let mut symbol_order = Vec::new();
+    output.instructions.extend([
+        Instruction::StoreWordWithUpdate {
+            s: 1,
+            a: 1,
+            offset: -16,
+        },
+        Instruction::MoveFromLinkRegister { d: 0 },
+        Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 20,
+        },
+        Instruction::StoreWord {
+            s: 31,
+            a: 1,
+            offset: 12,
+        },
+        Instruction::Or { a: 31, s: 3, b: 3 },
+    ]);
+
+    for (index, (callee, adjustment)) in base_calls.iter().enumerate() {
+        if index != 0 || *adjustment != 0 {
+            emit_adjusted_this(&mut output.instructions, *adjustment)?;
+        }
+        let instruction_index = output.instructions.len();
+        output.instructions.push(Instruction::BranchAndLink {
+            target: callee.clone(),
+        });
+        relocations.push(Relocation {
+            instruction_index,
+            kind: RelocationKind::Rel24,
+            target: RelocationTarget::External(callee.clone()),
+        });
+        referenced_functions.push(callee.clone());
+        symbol_order.push(callee.clone());
+    }
+
+    let vtable_register = u8::try_from(vptrs.len() + 2).ok()?;
+    let vtable_hi = output.instructions.len();
+    output
+        .instructions
+        .push(Instruction::load_immediate_shifted(vtable_register, 0));
+    // MWCC fills the address-materialization latency with the first trailing
+    // call's adjusted `this` value.
+    emit_adjusted_this(&mut output.instructions, tail_stores[0].2)?;
+    let vtable_lo = output.instructions.len();
+    output.instructions.push(Instruction::AddImmediate {
+        d: vtable_register,
+        a: vtable_register,
+        immediate: 0,
+    });
+    relocations.extend([
+        Relocation {
+            instruction_index: vtable_hi,
+            kind: RelocationKind::Addr16Ha,
+            target: RelocationTarget::External(vtable.clone()),
+        },
+        Relocation {
+            instruction_index: vtable_lo,
+            kind: RelocationKind::Addr16Lo,
+            target: RelocationTarget::External(vtable.clone()),
+        },
+    ]);
+    symbol_order.push(vtable.clone());
+
+    let mut vptr_registers = vec![vtable_register];
+    for (index, (_, addend, _)) in vptrs.iter().enumerate().skip(1) {
+        let register = if vtable_register - index as u8 == 3 {
+            0
+        } else {
+            vtable_register - index as u8
+        };
+        let immediate = i16::try_from(*addend).ok()?;
+        output.instructions.push(Instruction::AddImmediate {
+            d: register,
+            a: vtable_register,
+            immediate,
+        });
+        vptr_registers.push(register);
+        if index == 1 {
+            output.instructions.push(Instruction::StoreWord {
+                s: vptr_registers[0],
+                a: 31,
+                offset: i16::try_from(vptrs[0].2).ok()?,
+            });
+        }
+    }
+    for (index, (_, _, object_offset)) in vptrs.iter().enumerate().skip(1) {
+        output.instructions.push(Instruction::StoreWord {
+            s: vptr_registers[index],
+            a: 31,
+            offset: i16::try_from(*object_offset).ok()?,
+        });
+    }
+
+    for (index, (target_offset, callee, adjustment)) in tail_stores.iter().enumerate() {
+        if index != 0 {
+            emit_adjusted_this(&mut output.instructions, *adjustment)?;
+        }
+        let instruction_index = output.instructions.len();
+        output.instructions.push(Instruction::BranchAndLink {
+            target: callee.clone(),
+        });
+        relocations.push(Relocation {
+            instruction_index,
+            kind: RelocationKind::Rel24,
+            target: RelocationTarget::External(callee.clone()),
+        });
+        output.instructions.push(Instruction::StoreWord {
+            s: 3,
+            a: 31,
+            offset: i16::try_from(*target_offset).ok()?,
+        });
+        referenced_functions.push(callee.clone());
+        symbol_order.push(callee.clone());
+    }
+
+    output.instructions.extend([
+        Instruction::Or { a: 3, s: 31, b: 31 },
+        Instruction::LoadWord {
+            d: 31,
+            a: 1,
+            offset: 12,
+        },
+        Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 20,
+        },
+        Instruction::MoveToLinkRegister { s: 0 },
+        Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 16,
+        },
+        Instruction::BranchToLinkRegister,
+    ]);
+    output.relocations = relocations;
+    output.symbol_order = symbol_order;
+    output.referenced_function_symbols = referenced_functions.clone();
+    output.implicit_external_callees = referenced_functions;
+    output.is_static = function.is_static;
+    output.is_weak = function.is_weak;
+    output.section = function.section.clone();
+    output.force_active = function.force_active;
+    if config.flags.cpp_exceptions {
+        output.frame = Some(FrameInfo {
+            saved_gpr_count: 1,
+            saved_fpr_count: 0,
+            uses_fpu: false,
+        });
+    }
+    Some(output)
+}
+
+fn emit_adjusted_this(instructions: &mut Vec<Instruction>, adjustment: u32) -> Option<()> {
+    if adjustment == 0 {
+        instructions.push(Instruction::Or { a: 3, s: 31, b: 31 });
+    } else {
+        instructions.push(Instruction::AddImmediate {
+            d: 3,
+            a: 31,
+            immediate: i16::try_from(adjustment).ok()?,
+        });
+    }
+    Some(())
+}
+
+fn this_adjustment(expression: &Expression) -> Option<u32> {
+    match expression {
+        Expression::Variable(name) if name == "this" => Some(0),
+        Expression::MemberAddress { base, offset, .. }
+            if matches!(base.as_ref(), Expression::Variable(name) if name == "this") =>
+        {
+            Some(*offset)
+        }
+        _ => None,
+    }
+}
+
+fn parse_adjusted_call_statement(statement: &Statement) -> Option<(String, u32)> {
+    let Statement::Expression(Expression::Call { name, arguments }) = statement else {
+        return None;
+    };
+    let [object] = arguments.as_slice() else {
+        return None;
+    };
+    Some((name.clone(), this_adjustment(object)?))
+}
+
+fn parse_vptr_store(statement: &Statement) -> Option<(String, u32, u32)> {
+    let Statement::Store { target, value } = statement else {
+        return None;
+    };
+    let Expression::Member { base, offset, .. } = target else {
+        return None;
+    };
+    if !matches!(base.as_ref(), Expression::Variable(name) if name == "this") {
+        return None;
+    }
+    match value {
+        Expression::AddressOf { operand } => {
+            let Expression::Variable(vtable) = operand.as_ref() else {
+                return None;
+            };
+            Some((vtable.clone(), 0, *offset))
+        }
+        Expression::MemberAddress {
+            base,
+            offset: addend,
+            ..
+        } => {
+            let Expression::AddressOf { operand } = base.as_ref() else {
+                return None;
+            };
+            let Expression::Variable(vtable) = operand.as_ref() else {
+                return None;
+            };
+            Some((vtable.clone(), *addend, *offset))
+        }
+        _ => None,
+    }
+}
+
+fn parse_call_valued_member_store(statement: &Statement) -> Option<(u32, String, u32)> {
+    let Statement::Store { target, value } = statement else {
+        return None;
+    };
+    let Expression::Member { base, offset, .. } = target else {
+        return None;
+    };
+    if !matches!(base.as_ref(), Expression::Variable(name) if name == "this") {
+        return None;
+    }
+    let Expression::Call { name, arguments } = value else {
+        return None;
+    };
+    let [object] = arguments.as_slice() else {
+        return None;
+    };
+    Some((*offset, name.clone(), this_adjustment(object)?))
+}
 
 /// Lower an empty polymorphic constructor whose only compiler-generated action
 /// is installing the primary vptr. Constructors with member/base initialization

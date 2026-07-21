@@ -83,6 +83,18 @@ pub fn lower_function(
     if function.asm_body.is_some() {
         return asm::assemble_asm_function(function, Behavior::resolve(&config));
     }
+    let expanded_constructor = function
+        .name
+        .starts_with("__ct__")
+        .then(|| inline_bodies.expand_calls(function))
+        .flatten();
+    if let Some(output) = cxx_abi::lower_composed_constructor(
+        expanded_constructor.as_ref().unwrap_or(function),
+        globals,
+        config.clone(),
+    ) {
+        return Ok(output);
+    }
     if let Some(output) = cxx_abi::lower_virtual_constructor(function, globals) {
         return Ok(output);
     }
