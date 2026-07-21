@@ -178,7 +178,7 @@ pub(super) fn lower(
     if shape == MeasuredShape::DataOnly {
         let mut records: Vec<_> = entries.into_iter().map(DebugRecord::Entry).collect();
         records.extend(data::records(unit, &globals, first_global_id, false)?.records);
-        return finish(line, records, DebugLayout::AfterDataGrouped);
+        return finish(line, records, data_only_layout(build));
     }
 
     if shape == MeasuredShape::VerbatimAsmWithData {
@@ -308,6 +308,17 @@ pub(super) fn lower(
     finish(line, records, DebugLayout::BeforeDataGrouped)
 }
 
+/// Legacy compilers place a functionless unit's DWARF sections before its data.
+/// Fragmented 4.x generations keep the monolithic data-only payload but move it
+/// after ordinary data, independently of the DIE encoding itself.
+fn data_only_layout(build: CompilerBuild) -> DebugLayout {
+    if build.version.0 >= 4 {
+        DebugLayout::AfterDataGrouped
+    } else {
+        DebugLayout::BeforeDataGrouped
+    }
+}
+
 pub(super) fn lookup_capture(
     unit: &TranslationUnit,
     machine_functions: &[MachineFunction],
@@ -425,4 +436,19 @@ fn signed_int_type() -> Attribute {
         AttributeName::FundamentalType,
         AttributeValue::Data2(FundamentalType::SignedInteger as u16),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn data_only_layout_changes_at_the_fragmented_generation() {
+        let legacy =
+            mwcc_versions::by_label_experimental("GC/1.2.5").expect("legacy build");
+        let fragmented =
+            mwcc_versions::by_label_experimental("Wii/1.0").expect("fragmented build");
+        assert_eq!(data_only_layout(legacy), DebugLayout::BeforeDataGrouped);
+        assert_eq!(data_only_layout(fragmented), DebugLayout::AfterDataGrouped);
+    }
 }
