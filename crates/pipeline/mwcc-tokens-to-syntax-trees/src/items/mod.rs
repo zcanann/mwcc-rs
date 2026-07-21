@@ -1729,6 +1729,8 @@ impl Parser {
                             self.array_typedefs.insert(alias.clone(), entry);
                         }
                         if let Some(function_type) = function_pointer {
+                            self.typedefs
+                                .insert(alias.clone(), Type::Pointer(Pointee::Int));
                             self.function_pointer_typedefs.insert(alias, function_type);
                         }
                         return Ok(());

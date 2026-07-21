@@ -1847,6 +1847,32 @@ blr\n\
     }
 
     #[test]
+    fn preserves_a_function_pointer_through_a_typedef_alias() {
+        let source = r#"
+            typedef void (*InterruptHandler)(int, void*);
+            typedef InterruptHandler MonitorCallback;
+            void initialize(void* state, MonitorCallback callback) { }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].parameters.as_slice(),
+            [_, mwcc_syntax_trees::Parameter {
+                parameter_type: mwcc_syntax_trees::Type::Pointer(
+                    mwcc_syntax_trees::Pointee::Int
+                ),
+                ..
+            }]
+        ));
+    }
+
+    #[test]
     fn parses_scoped_function_pointer_typedef_calls() {
         let source = r#"
             void invoke(void* code, void* value) {
