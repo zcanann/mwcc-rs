@@ -1,0 +1,443 @@
+//! Semantics-preserving composition of retained inline function bodies.
+//!
+//! The frontend keeps skipped inline definitions out of object emission but
+//! retains their parsed ASTs. This module owns the conservative subset that can
+//! be spliced into a caller without inventing temporary storage or changing
+//! argument evaluation: void bodies with no locals or non-local control flow,
+//! called as standalone statements with stable scalar arguments.
+
+mod safety;
+mod substitution;
+
+use mwcc_syntax_trees::{Expression, Function, Statement};
+use safety::{composable_function, stable_argument, stable_local_values};
+use std::collections::{HashMap, HashSet};
+use substitution::substitute_statement;
+
+#[derive(Clone, Debug, Default)]
+pub struct InlineBodySet {
+    bodies: HashMap<String, Function>,
+}
+
+impl InlineBodySet {
+    pub fn analyze(skipped: &[Function]) -> Self {
+        let bodies = skipped
+            .iter()
+            .filter(|function| composable_function(function))
+            .map(|function| (function.name.clone(), function.clone()))
+            .collect();
+        Self { bodies }
+    }
+
+    /// Whether a function references a retained body by its canonical AST
+    /// identity. This supplements the frontend's legacy skipped-name set,
+    /// whose C++ entries may still use an unmangled spelling.
+    pub(crate) fn calls_any(&self, function: &Function) -> bool {
+        function
+            .locals
+            .iter()
+            .filter_map(|local| local.initializer.as_ref())
+            .any(|expression| self.expression_contains_call(expression))
+            || function.guards.iter().any(|guard| {
+                self.expression_contains_call(&guard.condition)
+                    || self.expression_contains_call(&guard.value)
+            })
+            || function
+                .return_expression
+                .as_ref()
+                .is_some_and(|expression| self.expression_contains_call(expression))
+            || function
+                .statements
+                .iter()
+                .any(|statement| self.contains_call(statement))
+    }
+
+    /// Expand every composable retained-inline call in `function`.
+    ///
+    /// Returning `None` means either nothing was expanded or at least one call
+    /// to a retained composable body remained in a context this subset cannot
+    /// preserve. The caller must then keep the ordinary safe deferral.
+    pub(crate) fn expand_calls(&self, function: &Function) -> Option<Function> {
+        let mut changed = false;
+        let mut active = HashSet::new();
+        let stable_variables = stable_local_values(function);
+        let statements = self.expand_statements(
+            &function.statements,
+            &stable_variables,
+            &mut active,
+            &mut changed,
+        );
+        if !changed
+            || statements
+                .iter()
+                .any(|statement| self.contains_call(statement))
+        {
+            return None;
+        }
+        let mut expanded = function.clone();
+        expanded.statements = statements;
+        Some(expanded)
+    }
+
+    fn expand_statements(
+        &self,
+        statements: &[Statement],
+        stable_variables: &HashSet<String>,
+        active: &mut HashSet<String>,
+        changed: &mut bool,
+    ) -> Vec<Statement> {
+        let mut output = Vec::new();
+        for statement in statements {
+            match statement {
+                Statement::Expression(Expression::Call { name, arguments })
+                    if self.bodies.contains_key(name)
+                        && !active.contains(name)
+                        && arguments
+                            .iter()
+                            .all(|argument| stable_argument(argument, stable_variables)) =>
+                {
+                    let callee = &self.bodies[name];
+                    if callee.parameters.len() != arguments.len() {
+                        output.push(statement.clone());
+                        continue;
+                    }
+                    let replacements: HashMap<&str, &Expression> = callee
+                        .parameters
+                        .iter()
+                        .map(|parameter| parameter.name.as_str())
+                        .zip(arguments)
+                        .collect();
+                    let substituted: Vec<_> = callee
+                        .statements
+                        .iter()
+                        .map(|statement| substitute_statement(statement, &replacements))
+                        .collect();
+                    *changed = true;
+                    active.insert(name.clone());
+                    output.extend(self.expand_statements(
+                        &substituted,
+                        stable_variables,
+                        active,
+                        changed,
+                    ));
+                    active.remove(name);
+                }
+                Statement::If {
+                    condition,
+                    then_body,
+                    else_body,
+                } => output.push(Statement::If {
+                    condition: condition.clone(),
+                    then_body: self.expand_statements(then_body, stable_variables, active, changed),
+                    else_body: self.expand_statements(else_body, stable_variables, active, changed),
+                }),
+                _ => output.push(statement.clone()),
+            }
+        }
+        output
+    }
+
+    fn contains_call(&self, statement: &Statement) -> bool {
+        match statement {
+            Statement::Store { target, value } => {
+                self.expression_contains_call(target) || self.expression_contains_call(value)
+            }
+            Statement::Assign { value, .. } => self.expression_contains_call(value),
+            Statement::Expression(expression) => self.expression_contains_call(expression),
+            Statement::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                self.expression_contains_call(condition)
+                    || then_body
+                        .iter()
+                        .any(|statement| self.contains_call(statement))
+                    || else_body
+                        .iter()
+                        .any(|statement| self.contains_call(statement))
+            }
+            Statement::Return(expression) => expression
+                .as_ref()
+                .is_some_and(|expression| self.expression_contains_call(expression)),
+            Statement::Switch {
+                scrutinee,
+                arms,
+                default,
+            } => {
+                self.expression_contains_call(scrutinee)
+                    || arms.iter().any(|arm| match &arm.body {
+                        mwcc_syntax_trees::ArmBody::Return(expression) => {
+                            self.expression_contains_call(expression)
+                        }
+                        mwcc_syntax_trees::ArmBody::Statements(statements) => statements
+                            .iter()
+                            .any(|statement| self.contains_call(statement)),
+                    })
+                    || default.as_ref().is_some_and(|body| match body {
+                        mwcc_syntax_trees::ArmBody::Return(expression) => {
+                            self.expression_contains_call(expression)
+                        }
+                        mwcc_syntax_trees::ArmBody::Statements(statements) => statements
+                            .iter()
+                            .any(|statement| self.contains_call(statement)),
+                    })
+            }
+            Statement::Loop {
+                initializer,
+                condition,
+                step,
+                body,
+                ..
+            } => {
+                initializer
+                    .as_ref()
+                    .is_some_and(|expression| self.expression_contains_call(expression))
+                    || condition
+                        .as_ref()
+                        .is_some_and(|expression| self.expression_contains_call(expression))
+                    || step
+                        .as_ref()
+                        .is_some_and(|expression| self.expression_contains_call(expression))
+                    || body.iter().any(|statement| self.contains_call(statement))
+            }
+            Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => {
+                false
+            }
+        }
+    }
+
+    fn expression_contains_call(&self, expression: &Expression) -> bool {
+        match expression {
+            Expression::Call { name, arguments } => {
+                self.bodies.contains_key(name)
+                    || arguments
+                        .iter()
+                        .any(|argument| self.expression_contains_call(argument))
+            }
+            Expression::Binary { left, right, .. }
+            | Expression::Assign {
+                target: left,
+                value: right,
+            }
+            | Expression::Comma { left, right } => {
+                self.expression_contains_call(left) || self.expression_contains_call(right)
+            }
+            Expression::Conditional {
+                condition,
+                when_true,
+                when_false,
+                ..
+            } => {
+                self.expression_contains_call(condition)
+                    || self.expression_contains_call(when_true)
+                    || self.expression_contains_call(when_false)
+            }
+            Expression::Unary { operand, .. }
+            | Expression::Cast { operand, .. }
+            | Expression::BitFieldRead {
+                extracted: operand, ..
+            }
+            | Expression::IndexedUpdateValue { value: operand }
+            | Expression::Dereference { pointer: operand }
+            | Expression::AddressOf { operand }
+            | Expression::PostStep {
+                target: operand, ..
+            } => self.expression_contains_call(operand),
+            Expression::Index { base, index } => {
+                self.expression_contains_call(base) || self.expression_contains_call(index)
+            }
+            Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
+                self.expression_contains_call(base)
+            }
+            Expression::CallThrough { target, arguments } => {
+                self.expression_contains_call(target)
+                    || arguments
+                        .iter()
+                        .any(|argument| self.expression_contains_call(argument))
+            }
+            Expression::VirtualCall {
+                object, arguments, ..
+            } => {
+                self.expression_contains_call(object)
+                    || arguments
+                        .iter()
+                        .any(|argument| self.expression_contains_call(argument))
+            }
+            Expression::AggregateLiteral(elements) => elements
+                .iter()
+                .any(|element| self.expression_contains_call(element)),
+            Expression::IntegerLiteral(_)
+            | Expression::FloatLiteral(_)
+            | Expression::StringLiteral(_)
+            | Expression::Variable(_)
+            | Expression::CompoundLiteral { .. } => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mwcc_syntax_trees::{BinaryOperator, Parameter, Type};
+
+    fn function(name: &str, parameters: Vec<Parameter>, statements: Vec<Statement>) -> Function {
+        Function {
+            return_type: Type::Void,
+            name: name.to_owned(),
+            is_static: true,
+            is_weak: false,
+            parameters,
+            locals: Vec::new(),
+            statements,
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        }
+    }
+
+    #[test]
+    fn expands_nested_void_statement_bodies_with_stable_arguments() {
+        let check = function(
+            "check",
+            vec![Parameter {
+                parameter_type: Type::UnsignedInt,
+                name: "size".into(),
+            }],
+            vec![Statement::If {
+                condition: Expression::Binary {
+                    operator: BinaryOperator::Greater,
+                    left: Box::new(Expression::Variable("size".into())),
+                    right: Box::new(Expression::IntegerLiteral(0)),
+                },
+                then_body: vec![Statement::Expression(Expression::Call {
+                    name: "overflow".into(),
+                    arguments: Vec::new(),
+                })],
+                else_body: Vec::new(),
+            }],
+        );
+        let write = function(
+            "write",
+            vec![Parameter {
+                parameter_type: Type::UnsignedChar,
+                name: "byte".into(),
+            }],
+            vec![Statement::Store {
+                target: Expression::Variable("sink".into()),
+                value: Expression::Variable("byte".into()),
+            }],
+        );
+        let caller = function(
+            "caller",
+            vec![Parameter {
+                parameter_type: Type::UnsignedChar,
+                name: "data".into(),
+            }],
+            vec![
+                Statement::Expression(Expression::Call {
+                    name: "check".into(),
+                    arguments: vec![Expression::IntegerLiteral(1)],
+                }),
+                Statement::Expression(Expression::Call {
+                    name: "write".into(),
+                    arguments: vec![Expression::Variable("data".into())],
+                }),
+            ],
+        );
+
+        let expanded = InlineBodySet::analyze(&[check, write])
+            .expand_calls(&caller)
+            .expect("both retained bodies should compose");
+        assert_eq!(expanded.statements.len(), 2);
+        assert!(matches!(
+            &expanded.statements[0],
+            Statement::If {
+                condition: Expression::Binary { left, .. }, ..
+            } if matches!(left.as_ref(), Expression::IntegerLiteral(1))
+        ));
+        assert!(matches!(
+            &expanded.statements[1],
+            Statement::Store {
+                value: Expression::Variable(name), ..
+            } if name == "data"
+        ));
+    }
+
+    #[test]
+    fn rejects_an_impure_argument_instead_of_duplicating_evaluation() {
+        let write = function(
+            "write",
+            vec![Parameter {
+                parameter_type: Type::Int,
+                name: "value".into(),
+            }],
+            vec![Statement::Expression(Expression::Variable("value".into()))],
+        );
+        let caller = function(
+            "caller",
+            Vec::new(),
+            vec![Statement::Expression(Expression::Call {
+                name: "write".into(),
+                arguments: vec![Expression::Call {
+                    name: "side_effect".into(),
+                    arguments: Vec::new(),
+                }],
+            })],
+        );
+        assert!(InlineBodySet::analyze(&[write])
+            .expand_calls(&caller)
+            .is_none());
+    }
+
+    #[test]
+    fn rejects_a_caller_value_that_can_change_during_the_inlined_body() {
+        let write = function(
+            "write",
+            vec![Parameter {
+                parameter_type: Type::Int,
+                name: "value".into(),
+            }],
+            vec![Statement::Expression(Expression::Variable("value".into()))],
+        );
+        let mut caller = function(
+            "caller",
+            vec![Parameter {
+                parameter_type: Type::Int,
+                name: "data".into(),
+            }],
+            vec![
+                Statement::Expression(Expression::Call {
+                    name: "write".into(),
+                    arguments: vec![Expression::Variable("data".into())],
+                }),
+                Statement::Assign {
+                    name: "data".into(),
+                    value: Expression::IntegerLiteral(3),
+                },
+            ],
+        );
+        assert!(InlineBodySet::analyze(&[write])
+            .expand_calls(&caller)
+            .is_none());
+
+        caller.statements.pop();
+        assert!(InlineBodySet::analyze(&[function(
+            "write",
+            vec![Parameter {
+                parameter_type: Type::Int,
+                name: "value".into(),
+            }],
+            vec![Statement::Expression(Expression::AddressOf {
+                operand: Box::new(Expression::Variable("value".into())),
+            })],
+        )])
+        .expand_calls(&caller)
+        .is_none());
+    }
+}

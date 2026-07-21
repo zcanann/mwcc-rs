@@ -2,7 +2,7 @@
 //! logic lives in the sibling theme modules, each a further `impl Generator`.
 
 use crate::analysis::*;
-use crate::InlineSummaries;
+use crate::{InlineBodySet, InlineSummaries};
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{
     Instruction, MachineFunction, Relocation, RelocationKind, RelocationTarget,
@@ -216,6 +216,9 @@ pub(crate) struct Generator {
     /// register its parameter requires (a float parameter takes f1.., an integer
     /// takes r3..) and a type mismatch is detected rather than silently mis-passed.
     pub(crate) call_parameter_types: HashMap<String, Vec<Type>>,
+    /// Retained skipped-inline bodies eligible for conservative statement-level
+    /// composition after whole-function captures have declined.
+    pub(crate) inline_bodies: InlineBodySet,
     /// Semantically verified summaries of other definitions in this translation
     /// unit. Exact inline compositions consult these instead of callee names.
     pub(crate) inline_summaries: InlineSummaries,

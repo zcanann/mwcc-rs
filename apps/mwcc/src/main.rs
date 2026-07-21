@@ -463,10 +463,13 @@ fn compile(
         &unit.functions,
         &unit.skipped_inline_definitions,
     );
+    let inline_bodies =
+        mwcc_syntax_trees_to_machine_code::InlineBodySet::analyze(&unit.skipped_inline_definitions);
     // Lower every function definition in source order; they share one object.
     let diagnose_function = std::env::var_os("MWCC_DIAGNOSTIC_FUNCTION").is_some();
     let diagnose_syntax_tree = std::env::var_os("MWCC_DIAGNOSTIC_SYNTAX_TREE").is_some();
     if diagnose_syntax_tree {
+        eprintln!("skipped-inline-names {:#?}", unit.skipped_inline_names);
         for function in &unit.skipped_inline_definitions {
             eprintln!("skipped-inline {function:#?}");
         }
@@ -510,6 +513,7 @@ fn compile(
             &unit.variadic_definitions,
             &unit.fixed_address_arrays,
             &unit.fixed_address_objects,
+            &inline_bodies,
             &inline_summaries,
             config,
         ) {

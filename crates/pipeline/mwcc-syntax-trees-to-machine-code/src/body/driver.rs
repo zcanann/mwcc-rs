@@ -1127,6 +1127,8 @@ impl Generator {
     }
 
     pub(crate) fn evaluate_body(&mut self, function: &Function) -> Compilation<()> {
+        let calls_skipped_inline = function_calls_any(function, &self.skipped_inline_names)
+            || self.inline_bodies.calls_any(function);
         // Drop never-referenced, side-effect-free locals (an unused `int s = 0;`) — mwcc
         // emits nothing for them — then recompile the cleaned function.
         if let Some(cleaned) = remove_dead_locals(function) {
@@ -1188,7 +1190,10 @@ impl Generator {
         if self.try_ipa_inlined_pointer_walker(function)? {
             return Ok(());
         }
-        if self.try_tail_call(function)? {
+        // A skipped inline has no callable symbol. Let the retained-body gate
+        // below compose it instead of allowing this broad sibling-call path to
+        // emit an undefined `bl`/`b` target.
+        if !calls_skipped_inline && self.try_tail_call(function)? {
             return Ok(());
         }
         if self.try_legacy_comma_parameter_homes(function)? {
@@ -1355,9 +1360,10 @@ impl Generator {
         if self.try_status_indexed_call_loop(function)? {
             return Ok(());
         }
-        if !self.skipped_inline_names.is_empty()
-            && function_calls_any(function, &self.skipped_inline_names)
-        {
+        if calls_skipped_inline {
+            if let Some(expanded) = self.inline_bodies.expand_calls(function) {
+                return self.evaluate_body(&expanded);
+            }
             return Err(Diagnostic::error(
                 "a call to a skipped inline function needs inline expansion (roadmap)",
             ));

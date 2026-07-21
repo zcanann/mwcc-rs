@@ -28,6 +28,7 @@ mod floats;
 mod frame;
 mod frexp_family;
 mod generator;
+mod inline_expansion;
 mod inline_summaries;
 mod legacy_comparisons;
 mod narrow;
@@ -39,6 +40,7 @@ mod symbol_order;
 mod value_tracking;
 
 use generator::Generator;
+pub use inline_expansion::InlineBodySet;
 pub use inline_summaries::InlineSummaries;
 
 /// Apply optimizer bookkeeping that is observable only after every function in
@@ -72,6 +74,7 @@ pub fn lower_function(
     variadic_definitions: &std::collections::HashSet<String>,
     fixed_address_arrays: &HashMap<String, (i64, mwcc_syntax_trees::Type)>,
     fixed_address_objects: &HashMap<String, i64>,
+    inline_bodies: &InlineBodySet,
     inline_summaries: &InlineSummaries,
     config: CompilerConfig,
 ) -> Compilation<MachineFunction> {
@@ -305,6 +308,7 @@ pub fn lower_function(
         prototyped_names: prototyped_names.clone(),
         weak_materialized_names: weak_materialized_names.clone(),
         call_parameter_types: call_parameter_types.clone(),
+        inline_bodies: inline_bodies.clone(),
         inline_summaries: inline_summaries.clone(),
     };
     generator.assign_parameters(function)?;
