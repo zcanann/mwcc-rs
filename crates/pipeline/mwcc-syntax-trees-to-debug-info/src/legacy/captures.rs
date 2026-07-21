@@ -21,7 +21,8 @@ const EF_KIGAE_FINGERPRINTS: &[u64] =
     &[0xdd31_0f7f_a477_fb18, 0x1b1c_305c_3159_f71c];
 const S_FLOOR_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_s_floor_gc_1_3.mwdc");
-const S_FLOOR_FINGERPRINT: u64 = 0xf9af_62d6_1b10_82c3;
+const S_FLOOR_FINGERPRINTS: &[u64] =
+    &[0xf9af_62d6_1b10_82c3, 0xbabf_c68e_5677_afc5];
 const FILE_POS_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_file_pos_gc_1_3.mwdc");
 const FILE_POS_FINGERPRINTS: &[u64] =
@@ -83,7 +84,7 @@ pub(super) fn lookup(
     }
     if source_name == "s_floor.c" && build.version == (2, 4, 2) && build.build == 53 {
         let fingerprint = fingerprint(unit, machine_functions, source_name);
-        if fingerprint == S_FLOOR_FINGERPRINT {
+        if S_FLOOR_FINGERPRINTS.contains(&fingerprint) {
             return decode(S_FLOOR_CAPTURE).map(Some);
         }
         return Ok(None);
