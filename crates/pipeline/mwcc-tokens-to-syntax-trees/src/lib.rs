@@ -1481,6 +1481,41 @@ blr\n\
     }
 
     #[test]
+    fn first_out_of_line_virtual_method_owns_the_class_vtable() {
+        let source = r#"
+            class Reader {
+            public:
+                virtual int first();
+                virtual int second();
+            };
+            int Reader::first() { return 1; }
+            int Reader::second() { return 2; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        let vtable = unit
+            .globals
+            .iter()
+            .find(|global| global.name == "__vt__6Reader")
+            .expect("the first ordinary virtual definition owns the class vtable");
+        assert_eq!(vtable.data_bytes.as_ref().map(Vec::len), Some(16));
+        assert_eq!(
+            vtable.data_relocations,
+            vec![
+                (8, "first__6ReaderFv".to_string(), 0),
+                (12, "second__6ReaderFv".to_string(), 0),
+            ]
+        );
+    }
+
+    #[test]
     fn inlines_a_scalar_delete_forwarder_into_a_virtual_destructor() {
         let source = r#"
             class Memory {

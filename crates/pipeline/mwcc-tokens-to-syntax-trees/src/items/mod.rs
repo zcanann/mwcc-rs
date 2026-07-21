@@ -5,6 +5,7 @@
 //! Split from the former single items.rs (fire 536); behavior-identical.
 
 mod asm;
+mod cxx_vtables;
 mod initializers;
 mod statements;
 mod template_calls;
@@ -2878,7 +2879,7 @@ impl Parser {
             let previous_member_scope = self.current_member_scope.clone();
             let previous_member_class = self.current_cxx_member_class.clone();
             let previous_this_struct = self.variable_structs.get("this").cloned();
-            self.current_cxx_member_class = member_declaration_scope;
+            self.current_cxx_member_class = member_declaration_scope.clone();
             if let Some(scope) = &member_layout_scope {
                 self.current_member_scope = Some(scope.clone());
                 self.variable_structs
@@ -2993,62 +2994,16 @@ impl Parser {
                                 Some(Expression::Variable("this".to_string()));
 
                             if !globals.iter().any(|global| global.name == vtable) {
-                                let table_size: usize = class
-                                    .vtable_components
-                                    .iter()
-                                    .map(|component| 8 + component.virtual_slots.max(1) * 4)
-                                    .sum();
-                                let mut data_relocations = Vec::new();
-                                let mut component_offset = 0u32;
-                                for component in &class.vtable_components {
-                                    if let Some(slot) = component.virtual_destructor_slot {
-                                        let target = if component.object_offset == 0 {
-                                            function.name.clone()
-                                        } else {
-                                            format!(
-                                                "@{}@{}",
-                                                component.object_offset, function.name
-                                            )
-                                        };
-                                        data_relocations.push((
-                                            component_offset + u32::from(slot),
-                                            target,
-                                            0,
-                                        ));
-                                    }
-                                    component_offset +=
-                                        8 + component.virtual_slots.max(1) as u32 * 4;
-                                }
-                                data_relocations.extend(
-                                    class.virtual_definitions.iter().map(|(offset, name)| {
-                                        (u32::from(*offset), name.clone(), 0)
-                                    }),
-                                );
-                                globals.push(GlobalDeclaration {
-                                    declared_type: Type::Struct {
-                                        size: table_size as u32,
-                                        align: 4,
-                                    },
-                                    name: vtable,
-                                    is_extern: false,
-                                    is_static: false,
-                                    is_volatile: false,
-                                    is_weak: false,
-                                    non_static_functions_before: functions
+                                globals.push(cxx_vtables::global(
+                                    class,
+                                    vtable,
+                                    Some(&function.name),
+                                    functions
                                         .iter()
                                         .filter(|function| !function.is_static)
                                         .count(),
-                                    functions_before: functions.len(),
-                                    array_length: None,
-                                    array_length_inferred: false,
-                                    initializer: None,
-                                    is_const: false,
-                                    address_initializer: None,
-                                    data_bytes: Some(vec![0; table_size]),
-                                    data_relocations,
-                                    section: None,
-                                    attribute_alignment: None,
-                                });
+                                    functions.len(),
+                                ));
                             }
                         } else if constructor_scope.is_some() {
                             function.statements.splice(
@@ -3056,6 +3011,27 @@ impl Parser {
                                 vptr_stores,
                             );
                         }
+                    }
+                }
+            }
+            if let Some(scope) = &member_declaration_scope {
+                if let Some(class) = self.cxx_classes.get(scope) {
+                    let owns_vtable = class
+                        .vtable_key_function
+                        .as_deref()
+                        .is_some_and(|key| key == function.name);
+                    let vtable = format!("__vt__{}{}", scope.len(), scope);
+                    if owns_vtable && !globals.iter().any(|global| global.name == vtable) {
+                        globals.push(cxx_vtables::global(
+                            class,
+                            vtable,
+                            None,
+                            functions
+                                .iter()
+                                .filter(|function| !function.is_static)
+                                .count(),
+                            functions.len(),
+                        ));
                     }
                 }
             }

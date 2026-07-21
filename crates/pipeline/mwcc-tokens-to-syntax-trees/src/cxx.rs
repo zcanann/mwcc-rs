@@ -72,6 +72,10 @@ pub(crate) struct ClassLayout {
     /// Non-pure virtual function definitions keyed by their byte offset in the
     /// primary vtable (including the two ABI header words).
     pub(crate) virtual_definitions: Vec<(u16, String)>,
+    /// First non-inline, non-pure virtual member declared by this class. Its
+    /// out-of-line definition is the ABI key function and owns the vtable when
+    /// the class has no earlier virtual destructor owner.
+    pub(crate) vtable_key_function: Option<String>,
     /// Whether the class declares a virtual destructor. Its out-of-line
     /// definition is a key function and owns the primary vtable in the subset
     /// currently materialized by the frontend.
@@ -2469,6 +2473,12 @@ impl Parser {
                             )?
                         };
                         class.virtual_definitions.push((slot_offset, mangled));
+                        if !is_inline && class.vtable_key_function.is_none() {
+                            class.vtable_key_function = class
+                                .virtual_definitions
+                                .last()
+                                .map(|(_, name)| name.clone());
+                        }
                     }
                     Some(VirtualDispatch {
                         vptr_offset,
