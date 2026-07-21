@@ -344,7 +344,11 @@ else
   echo "PARITY_META reference_object=SYNTHETIC"
 fi
 if ! "$ours" --build "$build" ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$dir/ours/$ctx_name" -o "$dir/our.o" 2>"$dir/oerr"; then
-  defer_detail="$(sed 's/^mwcc: //' "$dir/oerr" | head -1)"
+  # Parser recovery notes can precede a much later terminal codegen diagnostic.
+  # The final `mwcc:` line is the actionable blocker; reporting the first stderr
+  # line made frontier buckets describe harmless header recovery instead.
+  defer_detail="$(sed -n 's/^mwcc: //p' "$dir/oerr" | tail -1)"
+  [[ -n "$defer_detail" ]] || defer_detail="$(tail -1 "$dir/oerr")"
   echo "DEFER  $src — $defer_detail"
   # Full-object parity still fails when debug emission is absent. For compiler-
   # core visibility, retry BOTH compilers with a final `-sym off`. Comparing our
