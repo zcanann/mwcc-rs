@@ -3022,10 +3022,21 @@ impl Parser {
                         .is_some_and(|key| key == function.name);
                     let vtable = format!("__vt__{}{}", scope.len(), scope);
                     if owns_vtable && !globals.iter().any(|global| global.name == vtable) {
+                        let scopes: Vec<&str> = scope.split("::").collect();
+                        let destructor = class
+                            .has_virtual_destructor
+                            .then(|| {
+                                crate::cxx::mangle_qualified_member_function(
+                                    &scopes,
+                                    "__dt",
+                                    &[],
+                                )
+                            })
+                            .transpose()?;
                         globals.push(cxx_vtables::global(
                             class,
                             vtable,
-                            None,
+                            destructor.as_deref(),
                             functions
                                 .iter()
                                 .filter(|function| !function.is_static)

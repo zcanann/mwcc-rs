@@ -1516,6 +1516,67 @@ blr\n\
     }
 
     #[test]
+    fn ordinary_key_function_vtable_includes_a_later_virtual_destructor() {
+        let source = r#"
+            class Reader {
+            public:
+                virtual int value();
+                virtual ~Reader();
+            };
+            int Reader::value() { return 1; }
+            Reader::~Reader() {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let vtable = unit
+            .globals
+            .iter()
+            .find(|global| global.name == "__vt__6Reader")
+            .unwrap();
+        assert_eq!(
+            vtable.data_relocations,
+            vec![
+                (12, "__dt__6ReaderFv".to_string(), 0),
+                (8, "value__6ReaderFv".to_string(), 0),
+            ]
+        );
+        assert_eq!(vtable.functions_before, 0);
+    }
+
+    #[test]
+    fn earlier_virtual_destructor_remains_the_key_function() {
+        let source = r#"
+            class Reader {
+            public:
+                virtual ~Reader();
+                virtual int value();
+            };
+            int Reader::value() { return 1; }
+            Reader::~Reader() {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let vtable = unit
+            .globals
+            .iter()
+            .find(|global| global.name == "__vt__6Reader")
+            .unwrap();
+        assert_eq!(vtable.functions_before, 1);
+    }
+
+    #[test]
     fn inlines_a_scalar_delete_forwarder_into_a_virtual_destructor() {
         let source = r#"
             class Memory {

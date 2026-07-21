@@ -2318,6 +2318,13 @@ impl Parser {
             }
             if *self.peek() == Token::Tilde {
                 if is_virtual {
+                    if class.vtable_key_function.is_none() {
+                        let qualified = self.qualify_cxx_class_name(&name);
+                        let scopes: Vec<&str> = qualified.split("::").collect();
+                        class.vtable_key_function = Some(
+                            mangle_qualified_member_function(&scopes, "__dt", &[])?,
+                        );
+                    }
                     if class.virtual_destructor_slot.is_none() {
                         class.virtual_destructor_slot = Some(u16::try_from(
                             8usize
