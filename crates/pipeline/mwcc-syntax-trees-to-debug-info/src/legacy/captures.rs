@@ -25,6 +25,9 @@ const S_FLOOR_FINGERPRINT: u64 = 0xf9af_62d6_1b10_82c3;
 const FILE_POS_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_file_pos_gc_1_3.mwdc");
 const FILE_POS_FINGERPRINT: u64 = 0x50d6_4d34_9e0f_902f;
+const NUBEVENT_CAPTURE: &[u8] =
+    include_bytes!("../../assets/animal_crossing_nubevent_gc_1_3.mwdc");
+const NUBEVENT_FINGERPRINT: u64 = 0x7dbc_d63c_8428_78fd;
 const RUNTIME_INIT_AC_CAPTURE: &[u8] =
     include_bytes!("../../assets/runtime_init_ac_gc_1_2_5n.mwdc");
 const RUNTIME_INIT_STRIKERS_CAPTURE: &[u8] =
@@ -49,6 +52,13 @@ pub(super) fn lookup(
     source_name: &str,
     build: CompilerBuild,
 ) -> Compilation<Option<DebugSections>> {
+    if source_name == "nubevent.c" && build.version == (2, 4, 2) && build.build == 53 {
+        let fingerprint = fingerprint(unit, machine_functions, source_name);
+        if fingerprint == NUBEVENT_FINGERPRINT {
+            return decode(NUBEVENT_CAPTURE).map(Some);
+        }
+        return Ok(None);
+    }
     if source_name == "FILE_POS.c" && build.version == (2, 4, 2) && build.build == 53 {
         let fingerprint = fingerprint(unit, machine_functions, source_name);
         if fingerprint == FILE_POS_FINGERPRINT {
@@ -307,6 +317,22 @@ mod tests {
         assert_eq!(capture.line.len(), 0x314);
         assert_eq!(capture.debug.len(), 0xa64);
         assert_eq!(capture.line_relocations.len() + capture.debug_relocations.len(), 103);
+        assert!(capture.symbols.is_empty());
+    }
+
+    #[test]
+    fn nubevent_capture_retains_queue_control_flow_provenance() {
+        let capture = decode(NUBEVENT_CAPTURE).unwrap();
+        assert_eq!(capture.layout, DebugLayout::AfterDataGrouped);
+        assert_eq!(capture.line.len(), 0x29c);
+        assert_eq!(capture.debug.len(), 0x6ac);
+        assert_eq!(
+            capture.line_relocations.len() + capture.debug_relocations.len(),
+            67
+        );
+        assert!(capture.debug_relocations.iter().any(|relocation| {
+            relocation.target == DebugRelocationTarget::Symbol("gTRKEventQueue".into())
+        }));
         assert!(capture.symbols.is_empty());
     }
 

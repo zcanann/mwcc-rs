@@ -2177,6 +2177,28 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             emit_object_targets!(object);
         }
     }
+    // Grouped legacy DWARF emits a global-variable DIE while processing the
+    // declaration. A debug relocation to an uninitialized object declared
+    // before every function therefore creates that object's symbol before the
+    // deferred function pass begins (nubevent's gTRKEventQueue). Without debug
+    // the same `.bss` object remains reference-ordered, so key this only to the
+    // retained semantic relocation rather than changing the general BSS rule.
+    if let Some(debug) = debug {
+        for object in &input.data_objects {
+            let debug_declares_object = !object.is_static
+                && object.functions_before == 0
+                && debug.debug_relocations.iter().any(|relocation| {
+                    matches!(
+                        &relocation.target,
+                        DebugRelocationTarget::Symbol(name) if name == object.name
+                    )
+                });
+            if !debug_declares_object || global_symbols.contains_key(object.name) {
+                continue;
+            }
+            emit_initialized_object!(object);
+        }
+    }
     let mut functions_seen = 0usize;
     for (index, function) in functions.iter().enumerate() {
         // A function-local static initializer creates its address targets while

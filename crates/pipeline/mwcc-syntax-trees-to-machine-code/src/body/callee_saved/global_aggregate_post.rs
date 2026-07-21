@@ -47,6 +47,319 @@ fn member_increment(statement: &Statement, global: &str, expected: u16) -> bool 
         && constant_value(right) == Some(1)
 }
 
+struct PredecrementPostPlan<'a> {
+    global: &'a str,
+    acquire: &'a str,
+    copy: &'a str,
+    release: &'a str,
+    count_offset: i16,
+    next_offset: i16,
+    array_offset: i16,
+    stride: i16,
+    entry_id_offset: i16,
+    id_offset: i16,
+    capacity: i16,
+    full_error: i16,
+    minimum: i16,
+}
+
+fn emit_predecrement(generator: &mut Generator, plan: &PredecrementPostPlan<'_>) {
+    generator.non_leaf = true;
+    generator.callee_saved = vec![31, 30, 29];
+    generator.frame_size = 32;
+    generator.output.pre_scheduled = true;
+    generator.output.symbol_order = vec![
+        plan.global.to_string(),
+        plan.acquire.to_string(),
+        plan.copy.to_string(),
+        plan.release.to_string(),
+    ];
+    generator.output.anonymous_label_bump = 9;
+    generator.output.post_constant_label_bump = 0;
+
+    generator
+        .output
+        .instructions
+        .push(Instruction::StoreWordWithUpdate {
+            s: 1,
+            a: 1,
+            offset: -32,
+        });
+    generator
+        .output
+        .instructions
+        .push(Instruction::MoveFromLinkRegister { d: 0 });
+    generator.record_relocation(RelocationKind::Addr16Ha, plan.global);
+    generator
+        .output
+        .instructions
+        .push(Instruction::load_immediate_shifted(4, 0));
+    generator.output.instructions.push(Instruction::StoreWord {
+        s: 0,
+        a: 1,
+        offset: 36,
+    });
+    generator.output.instructions.push(Instruction::StoreWord {
+        s: 31,
+        a: 1,
+        offset: 28,
+    });
+    generator
+        .output
+        .instructions
+        .push(Instruction::load_immediate(31, 0));
+    generator.output.instructions.push(Instruction::StoreWord {
+        s: 30,
+        a: 1,
+        offset: 24,
+    });
+    generator.output.instructions.push(Instruction::StoreWord {
+        s: 29,
+        a: 1,
+        offset: 20,
+    });
+    generator
+        .output
+        .instructions
+        .push(Instruction::move_register(29, 3));
+    generator.record_relocation(RelocationKind::Addr16Lo, plan.global);
+    generator.output.instructions.push(Instruction::AddImmediate {
+        d: 3,
+        a: 4,
+        immediate: 0,
+    });
+    generator.record_relocation(RelocationKind::Rel24, plan.acquire);
+    generator
+        .output
+        .instructions
+        .push(Instruction::BranchAndLink {
+            target: plan.acquire.to_string(),
+        });
+
+    generator.record_relocation(RelocationKind::Addr16Ha, plan.global);
+    generator
+        .output
+        .instructions
+        .push(Instruction::load_immediate_shifted(3, 0));
+    generator.record_relocation(RelocationKind::Addr16Lo, plan.global);
+    generator.output.instructions.push(Instruction::AddImmediate {
+        d: 30,
+        a: 3,
+        immediate: 0,
+    });
+    generator.output.instructions.push(Instruction::LoadWord {
+        d: 3,
+        a: 30,
+        offset: plan.count_offset,
+    });
+    generator
+        .output
+        .instructions
+        .push(Instruction::CompareWordImmediate {
+            a: 3,
+            immediate: plan.capacity,
+        });
+    let has_space = generator.fresh_label();
+    let finish_transaction = generator.fresh_label();
+    generator.emit_branch_conditional_to(4, 2, has_space);
+    generator
+        .output
+        .instructions
+        .push(Instruction::load_immediate(31, plan.full_error));
+    generator.emit_branch_to(finish_transaction);
+    generator.bind_label(has_space);
+
+    generator.output.instructions.push(Instruction::LoadWord {
+        d: 0,
+        a: 30,
+        offset: plan.next_offset,
+    });
+    generator
+        .output
+        .instructions
+        .push(Instruction::move_register(4, 29));
+    generator
+        .output
+        .instructions
+        .push(Instruction::load_immediate(5, plan.stride));
+    generator
+        .output
+        .instructions
+        .push(Instruction::Add { d: 0, a: 0, b: 3 });
+    generator
+        .output
+        .instructions
+        .push(Instruction::ShiftRightLogicalImmediate {
+            a: 3,
+            s: 0,
+            shift: 31,
+        });
+    generator
+        .output
+        .instructions
+        .push(Instruction::ClearLeftImmediate {
+            a: 0,
+            s: 0,
+            clear: 31,
+        });
+    generator
+        .output
+        .instructions
+        .push(Instruction::Xor { a: 0, s: 0, b: 3 });
+    generator
+        .output
+        .instructions
+        .push(Instruction::SubtractFrom { d: 0, a: 3, b: 0 });
+    generator
+        .output
+        .instructions
+        .push(Instruction::MultiplyImmediate {
+            d: 29,
+            a: 0,
+            immediate: plan.stride,
+        });
+    generator
+        .output
+        .instructions
+        .push(Instruction::Add { d: 3, a: 30, b: 29 });
+    generator.output.instructions.push(Instruction::AddImmediate {
+        d: 3,
+        a: 3,
+        immediate: plan.array_offset,
+    });
+    generator.record_relocation(RelocationKind::Rel24, plan.copy);
+    generator
+        .output
+        .instructions
+        .push(Instruction::BranchAndLink {
+            target: plan.copy.to_string(),
+        });
+
+    generator.record_relocation(RelocationKind::Addr16Ha, plan.global);
+    generator
+        .output
+        .instructions
+        .push(Instruction::load_immediate_shifted(3, 0));
+    generator.record_relocation(RelocationKind::Addr16Lo, plan.global);
+    generator.output.instructions.push(Instruction::AddImmediate {
+        d: 4,
+        a: 3,
+        immediate: 0,
+    });
+    generator.output.instructions.push(Instruction::LoadWord {
+        d: 0,
+        a: 4,
+        offset: plan.id_offset,
+    });
+    generator
+        .output
+        .instructions
+        .push(Instruction::Add { d: 3, a: 4, b: 29 });
+    generator.output.instructions.push(Instruction::StoreWord {
+        s: 0,
+        a: 3,
+        offset: plan.array_offset + plan.entry_id_offset,
+    });
+    generator.output.instructions.push(Instruction::LoadWord {
+        d: 3,
+        a: 4,
+        offset: plan.id_offset,
+    });
+    generator.output.instructions.push(Instruction::AddImmediate {
+        d: 0,
+        a: 3,
+        immediate: 1,
+    });
+    generator
+        .output
+        .instructions
+        .push(Instruction::CompareLogicalWordImmediate {
+            a: 0,
+            immediate: plan.minimum as u16,
+        });
+    generator.output.instructions.push(Instruction::StoreWord {
+        s: 0,
+        a: 4,
+        offset: plan.id_offset,
+    });
+    let id_valid = generator.fresh_label();
+    generator.emit_branch_conditional_to(4, 0, id_valid);
+    generator
+        .output
+        .instructions
+        .push(Instruction::load_immediate(0, plan.minimum));
+    generator.output.instructions.push(Instruction::StoreWord {
+        s: 0,
+        a: 4,
+        offset: plan.id_offset,
+    });
+    generator.bind_label(id_valid);
+    generator.output.instructions.push(Instruction::LoadWord {
+        d: 3,
+        a: 30,
+        offset: plan.count_offset,
+    });
+    generator.output.instructions.push(Instruction::AddImmediate {
+        d: 0,
+        a: 3,
+        immediate: 1,
+    });
+    generator.output.instructions.push(Instruction::StoreWord {
+        s: 0,
+        a: 30,
+        offset: plan.count_offset,
+    });
+    generator.bind_label(finish_transaction);
+
+    generator.record_relocation(RelocationKind::Addr16Ha, plan.global);
+    generator
+        .output
+        .instructions
+        .push(Instruction::load_immediate_shifted(3, 0));
+    generator.record_relocation(RelocationKind::Addr16Lo, plan.global);
+    generator.output.instructions.push(Instruction::AddImmediate {
+        d: 3,
+        a: 3,
+        immediate: 0,
+    });
+    generator.record_relocation(RelocationKind::Rel24, plan.release);
+    generator
+        .output
+        .instructions
+        .push(Instruction::BranchAndLink {
+            target: plan.release.to_string(),
+        });
+    generator.output.instructions.push(Instruction::LoadWord {
+        d: 0,
+        a: 1,
+        offset: 36,
+    });
+    generator
+        .output
+        .instructions
+        .push(Instruction::move_register(3, 31));
+    for (register, offset) in [(31, 28), (30, 24), (29, 20)] {
+        generator.output.instructions.push(Instruction::LoadWord {
+            d: register,
+            a: 1,
+            offset,
+        });
+    }
+    generator
+        .output
+        .instructions
+        .push(Instruction::MoveToLinkRegister { s: 0 });
+    generator.output.instructions.push(Instruction::AddImmediate {
+        d: 1,
+        a: 1,
+        immediate: 32,
+    });
+    generator
+        .output
+        .instructions
+        .push(Instruction::BranchToLinkRegister);
+}
+
 impl Generator {
     /// Lower a lock/full-check/copy/update/unlock queue post. The legacy
     /// allocator preserves the input in r31, the queue base in r30, the count
@@ -56,8 +369,7 @@ impl Generator {
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
-        if self.behavior.frame_convention != FrameConvention::LinkageFirst
-            || !self.frame_slots.is_empty()
+        if !self.frame_slots.is_empty()
             || !function.guards.is_empty()
             || function.return_type != Type::Int
         {
@@ -306,6 +618,37 @@ impl Generator {
             (Ok(capacity), Ok(error), Ok(minimum)) => (capacity, error, minimum),
             _ => return Ok(false),
         };
+
+        if self.behavior.frame_convention == FrameConvention::Predecrement {
+            let Some(copy) = self.inline_summaries.fixed_size_copy(copy_callee).cloned() else {
+                return Ok(false);
+            };
+            if copy.byte_count != stride {
+                return Ok(false);
+            }
+            emit_predecrement(
+                self,
+                &PredecrementPostPlan {
+                    global,
+                    acquire: acquire_callee,
+                    copy: &copy.callee,
+                    release: release_callee,
+                    count_offset,
+                    next_offset,
+                    array_offset,
+                    stride,
+                    entry_id_offset,
+                    id_offset,
+                    capacity,
+                    full_error,
+                    minimum,
+                },
+            );
+            return Ok(true);
+        }
+        if self.behavior.frame_convention != FrameConvention::LinkageFirst {
+            return Ok(false);
+        }
 
         self.non_leaf = true;
         self.callee_saved = vec![31, 30, 29, 28];
