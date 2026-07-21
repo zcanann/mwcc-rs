@@ -1917,6 +1917,32 @@ blr\n\
     }
 
     #[test]
+    fn retains_in_class_inline_member_bodies_for_semantic_inlining() {
+        let source = r#"
+            struct Box {
+                int value;
+                int get() { return value; }
+            };
+            int use(Box* box) { return box->get(); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(unit.skipped_inline_names.contains("get__3BoxFv"));
+        assert_eq!(unit.skipped_inline_definitions.len(), 1);
+        assert_eq!(unit.skipped_inline_definitions[0].name, "get__3BoxFv");
+        assert!(matches!(
+            unit.functions[0].return_expression,
+            Some(Expression::Call { ref name, .. }) if name == "get__3BoxFv"
+        ));
+    }
+
+    #[test]
     fn parses_scoped_function_pointer_typedef_calls() {
         let source = r#"
             void invoke(void* code, void* value) {

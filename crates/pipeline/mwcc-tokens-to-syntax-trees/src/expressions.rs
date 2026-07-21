@@ -737,9 +737,12 @@ impl Parser {
                             is_inline,
                         } => {
                             if is_inline {
-                                return Err(Diagnostic::error(format!(
-                                    "an inline C++ member call to '{name}' is not lowered yet (roadmap)"
-                                )));
+                                // The declaration pass records in-class bodies as
+                                // analysis-only skipped definitions. Keep a real
+                                // call node here so the semantic inliner can claim
+                                // it; codegen still rejects any unexpanded call to
+                                // this non-emitted symbol.
+                                self.skipped_inline_names.insert(mangled.clone());
                             }
                             arguments.insert(0, Expression::Variable("this".to_string()));
                             Expression::Call {

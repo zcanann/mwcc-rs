@@ -857,7 +857,7 @@ impl Parser {
         let mut explicitly_inline = false;
         let mut member_name: Option<String> = None;
         let mut member_declaration_start = body_start;
-        let mut inline_body_start = None;
+        let mut inline_body = None;
         while let Some(token) = self.tokens.get(index) {
             let begins_member = brace_depth == 1
                 && paren_depth == 0
@@ -908,7 +908,7 @@ impl Parser {
                             {
                                 self.cxx_inline_ordinal_facts.virtual_destructors += 1;
                             }
-                            inline_body_start = Some(index + 1);
+                            inline_body = Some((member_declaration_start, index + 1));
                         }
                     }
                     brace_depth += 1;
@@ -919,7 +919,7 @@ impl Parser {
                         return prototypes;
                     }
                     if brace_depth == 1 {
-                        if let Some(body_start) = inline_body_start.take() {
+                        if let Some((declaration_start, body_start)) = inline_body.take() {
                             self.cxx_inline_ordinal_facts.control_flow_labels +=
                                 inline_control_flow_labels(&self.tokens[body_start..index]);
                             self.cxx_inline_ordinal_facts.direct_calls += self.tokens
@@ -930,6 +930,11 @@ impl Parser {
                                         && tokens[1] == Token::ParenOpen
                                 })
                                 .count();
+                            self.capture_cxx_inline_definition(
+                                declaration_start,
+                                index,
+                                &class,
+                            );
                         }
                         explicitly_inline = false;
                         member_name = None;
@@ -971,6 +976,80 @@ impl Parser {
             index += 1;
         }
         prototypes
+    }
+
+    /// Parse an in-class inline body through the ordinary out-of-class member
+    /// definition path on an isolated token stream. The recovered function is
+    /// analysis-only: it supplies verified semantics to inline summaries and is
+    /// never appended to the translation unit's emitted definitions.
+    fn capture_cxx_inline_definition(
+        &mut self,
+        declaration_start: usize,
+        body_end: usize,
+        class: &str,
+    ) {
+        let mut source: Vec<(Token, mwcc_tokens::SourceLocation)> = self.tokens
+            [declaration_start..=body_end]
+            .iter()
+            .cloned()
+            .zip(self.locations[declaration_start..=body_end].iter().copied())
+            .collect();
+        while matches!(source.first(), Some((Token::Identifier(word), _)) if matches!(word.as_str(), "virtual" | "explicit"))
+        {
+            source.remove(0);
+        }
+        let Some(parameter_open) = source
+            .iter()
+            .position(|(token, _)| *token == Token::ParenOpen)
+        else {
+            return;
+        };
+        let Some(member_index) = parameter_open.checked_sub(1) else {
+            return;
+        };
+        if !matches!(source.get(member_index), Some((Token::Identifier(_), _))) {
+            return;
+        }
+        let location = source[member_index].1;
+        let mut qualification = Vec::new();
+        for (index, component) in class.split("::").enumerate() {
+            if index > 0 {
+                qualification.push((Token::Colon, location));
+                qualification.push((Token::Colon, location));
+            }
+            qualification.push((Token::Identifier(component.to_owned()), location));
+        }
+        qualification.push((Token::Colon, location));
+        qualification.push((Token::Colon, location));
+        source.splice(member_index..member_index, qualification);
+        let eof_location = source.last().map_or(location, |(_, location)| *location);
+        source.push((Token::EndOfFile, eof_location));
+
+        let (tokens, locations): (Vec<_>, Vec<_>) = source.into_iter().unzip();
+        let mut probe = self.clone();
+        probe.tokens = tokens;
+        probe.locations = locations;
+        probe.position = 0;
+        probe.namespace_stack.clear();
+        probe.recover_skipped_inline_definition = true;
+        let mut globals = Vec::new();
+        let mut functions = Vec::new();
+        let mut prototypes = Vec::new();
+        if probe
+            .parse_top_level_item(&mut globals, &mut functions, &mut prototypes)
+            .is_ok()
+            && globals.is_empty()
+            && functions.len() == 1
+        {
+            let function = functions.pop().expect("length checked");
+            if !self
+                .skipped_inline_definitions
+                .iter()
+                .any(|existing| existing.name == function.name)
+            {
+                self.skipped_inline_definitions.push(function);
+            }
+        }
     }
 
     /// Recover a namespace-qualified layout without coupling declaration
@@ -1376,13 +1455,16 @@ impl Parser {
                 parameters: parameters.clone(),
                 cxx_parameters: cxx_parameters.clone(),
             };
+            if is_inline {
+                self.skipped_inline_names.insert(mangled.clone());
+            }
             let prototype_parameters = if is_static {
                 self.cxx_static_methods
                     .entry((class.to_string(), member))
                     .or_default()
                     .push(method);
                 parameters
-            } else if !is_inline {
+            } else {
                 self.cxx_instance_methods
                     .entry((class.to_string(), member.clone()))
                     .or_default()
@@ -1391,13 +1473,14 @@ impl Parser {
                     .entry((class.to_string(), member))
                     .or_default()
                     .push(method);
+                if is_inline {
+                    return Some(None);
+                }
                 let mut prototype_parameters = vec![Type::StructPointer {
                     element_size: self.structs.get(class).map_or(0, |layout| layout.size),
                 }];
                 prototype_parameters.extend(parameters);
                 prototype_parameters
-            } else {
-                return Some(None);
             };
             if variadic {
                 self.variadic_definitions.insert(mangled.clone());
