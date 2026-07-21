@@ -31,6 +31,7 @@ from reference_parity import (
     harness_fingerprint,
     immutable_compiler_snapshot,
     parity_metadata,
+    parse_args as parse_reference_args,
     result_cache_name,
     selection_is_probability_sample,
     stable_sample,
@@ -118,13 +119,19 @@ class IdentityTests(unittest.TestCase):
         work = parse_loop_args(["--work-only"])
         self.assertTrue(work.work_only)
         self.assertEqual(work.size, 32)
+        self.assertEqual(work.jobs, 4)
         self.assertEqual(str(work.compiler), "target/debug/mwcc")
         self.assertFalse(work.no_build)
         self.assertTrue(parse_loop_args(["--no-build"]).no_build)
+        self.assertEqual(parse_loop_args(["--jobs", "2"]).jobs, 2)
         self.assertTrue(parse_loop_args(["--audit-only"]).audit_only)
         self.assertTrue(parse_loop_args(["--with-audit"]).with_audit)
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parse_loop_args(["--work-only", "--audit-only"])
+
+    def test_reference_runner_parallelism_is_explicit_and_bounded(self):
+        self.assertEqual(parse_reference_args([]).jobs, 1)
+        self.assertEqual(parse_reference_args(["--jobs", "4"]).jobs, 4)
 
     def test_result_cache_name_changes_with_either_tool_input(self):
         baseline = result_cache_name("a" * 64, "b" * 64)

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -312,6 +313,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--shard-count", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--timeout", type=int, default=300)
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="compile this many independent configurations concurrently (default: 1)",
+    )
     parser.add_argument("--selection", type=Path, help="run stable configuration IDs from a frontier manifest")
     parser.add_argument("--write-selection", type=Path, help="write the selected stable configuration IDs")
     parser.add_argument("--sample-size", type=int, default=0, help="select a deterministic hash-ranked sample")
@@ -325,6 +332,9 @@ def main() -> int:
     args = parse_args()
     if args.shard_count < 1 or not 0 <= args.shard_index < args.shard_count:
         print("invalid shard index/count", file=sys.stderr)
+        return 2
+    if args.jobs < 1:
+        print("--jobs must be positive", file=sys.stderr)
         return 2
     if args.selection is not None and args.sample_size:
         print("--selection and --sample-size are mutually exclusive", file=sys.stderr)
@@ -387,57 +397,76 @@ def main() -> int:
         )
     cache.parent.mkdir(parents=True, exist_ok=True)
     cached = {} if args.rerun else load_cache(cache)
-    build_support: Dict[str, Tuple[bool, str]] = {}
+    build_support: Dict[str, Tuple[bool, str]] = {
+        build: build_supported(compiler, build)
+        for build in dict.fromkeys(
+            row["mw_version"]
+            for row in rows
+            if observation_id(row_configuration_id(row), fingerprint) not in cached
+        )
+    }
     counts = {status: 0 for status in STATUSES}
     code_counts = {status: 0 for status in ("BYTE", "DIFF", "DEFER", "EMPTY")}
     code_unmeasured = 0
     reused = 0
 
-    with cache.open("a", encoding="utf-8") as cache_output:
-        for index, row in enumerate(rows, 1):
-            config_identity = row_configuration_id(row)
-            identity = observation_id(config_identity, fingerprint)
-            if identity in cached:
-                record = cached[identity]
-                status = record["status"]
-                detail = record.get("output", "")
+    def observe(row: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
+        config_identity = row_configuration_id(row)
+        identity = observation_id(config_identity, fingerprint)
+        if identity in cached:
+            return cached[identity], True
+
+        observed_at = datetime.now(timezone.utc).isoformat()
+        row_started = time.monotonic()
+        build = row["mw_version"]
+        supported, support_detail = build_support[build]
+        if supported:
+            status, detail = run_row(
+                row,
+                Path(inventory["reference_root"]),
+                refctx,
+                compiler,
+                args.timeout,
+            )
+        else:
+            status, detail = "UNSUPPORTED_BUILD", support_detail
+        return (
+            {
+                "id": identity,
+                "configuration_id": config_identity,
+                "tool_fingerprint": fingerprint,
+                "compiler_sha256": compiler_hash,
+                "harness_sha256": harness_hash,
+                "observed_at": observed_at,
+                "elapsed_seconds": round(time.monotonic() - row_started, 6),
+                "status": status,
+                "project": row["project"],
+                "variant": row["variant"],
+                "source": row["source"],
+                "mw_version": row["mw_version"],
+                "language": row["language"],
+                "matching": row["matching"],
+                "source_sha256": row.get("source_sha256"),
+                "output": detail,
+                "evidence": parity_metadata(detail),
+            },
+            False,
+        )
+
+    with cache.open("a", encoding="utf-8") as cache_output, ThreadPoolExecutor(
+        max_workers=args.jobs
+    ) as executor:
+        # executor.map preserves inventory order for deterministic logs while
+        # letting later rows run behind an expensive TU. Results are appended
+        # only by this main thread, so JSONL records cannot interleave.
+        for index, (row, (record, was_cached)) in enumerate(
+            zip(rows, executor.map(observe, rows)), 1
+        ):
+            status = record["status"]
+            detail = record.get("output", "")
+            if was_cached:
                 reused += 1
             else:
-                observed_at = datetime.now(timezone.utc).isoformat()
-                row_started = time.monotonic()
-                build = row["mw_version"]
-                if build not in build_support:
-                    build_support[build] = build_supported(compiler, build)
-                supported, support_detail = build_support[build]
-                if supported:
-                    status, detail = run_row(
-                        row,
-                        Path(inventory["reference_root"]),
-                        refctx,
-                        compiler,
-                        args.timeout,
-                    )
-                else:
-                    status, detail = "UNSUPPORTED_BUILD", support_detail
-                record = {
-                    "id": identity,
-                    "configuration_id": config_identity,
-                    "tool_fingerprint": fingerprint,
-                    "compiler_sha256": compiler_hash,
-                    "harness_sha256": harness_hash,
-                    "observed_at": observed_at,
-                    "elapsed_seconds": round(time.monotonic() - row_started, 6),
-                    "status": status,
-                    "project": row["project"],
-                    "variant": row["variant"],
-                    "source": row["source"],
-                    "mw_version": row["mw_version"],
-                    "language": row["language"],
-                    "matching": row["matching"],
-                    "source_sha256": row.get("source_sha256"),
-                    "output": detail,
-                    "evidence": parity_metadata(detail),
-                }
                 cache_output.write(json.dumps(record, sort_keys=True) + "\n")
                 cache_output.flush()
             counts[status] = counts.get(status, 0) + 1
