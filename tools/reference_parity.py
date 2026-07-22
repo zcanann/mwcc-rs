@@ -39,6 +39,16 @@ STATUSES = (
 ACTIVE_ROW_PROCESSES: set[int] = set()
 ACTIVE_ROW_PROCESSES_LOCK = threading.Lock()
 
+HARNESS_INPUTS = (
+    "refctx.sh",
+    "refctx_pch.py",
+    "refctx_pragmas.py",
+    "reference_parity.py",
+    "parity_identity.py",
+    "decompctx_runner.py",
+    "object_code_metrics.py",
+)
+
 
 def register_active_row_process(process_group: int) -> None:
     with ACTIVE_ROW_PROCESSES_LOCK:
@@ -113,17 +123,32 @@ def immutable_compiler_snapshot(source: Path) -> Tuple[tempfile.TemporaryDirecto
 def harness_fingerprint(script_dir: Path) -> str:
     """Hash every executable input that can change a row classification."""
 
-    return files_fingerprint(
-        (
-            script_dir / "refctx.sh",
-            script_dir / "refctx_pch.py",
-            script_dir / "refctx_pragmas.py",
-            script_dir / "reference_parity.py",
-            script_dir / "parity_identity.py",
-            script_dir / "decompctx_runner.py",
-            script_dir / "object_code_metrics.py",
-        )
-    )
+    return files_fingerprint(script_dir / name for name in HARNESS_INPUTS)
+
+
+def immutable_harness_snapshot(
+    script_dir: Path,
+) -> Tuple[tempfile.TemporaryDirectory, Path, str]:
+    """Copy one stable, self-contained harness image for a complete batch.
+
+    `refctx.sh` resolves its helpers relative to `tools/`, so the snapshot
+    preserves that tiny repository layout. Hash-before/hash-after plus the copy
+    hash prevents a concurrent edit from producing a mixed harness image.
+    """
+
+    directory = tempfile.TemporaryDirectory(prefix="mwcc-parity-harness-")
+    snapshot_tools = Path(directory.name) / "tools"
+    snapshot_tools.mkdir()
+    for _ in range(3):
+        before = harness_fingerprint(script_dir)
+        for name in HARNESS_INPUTS:
+            shutil.copy2(script_dir / name, snapshot_tools / name)
+        after = harness_fingerprint(script_dir)
+        copied = harness_fingerprint(snapshot_tools)
+        if before == after == copied:
+            return directory, snapshot_tools / "refctx.sh", copied
+    directory.cleanup()
+    raise RuntimeError("harness changed repeatedly while snapshotting")
 
 
 def load_inventory(args: argparse.Namespace, script_dir: Path) -> Dict[str, Any]:
@@ -458,7 +483,6 @@ def main() -> int:
     script_dir = Path(__file__).resolve().parent
     root = script_dir.parent
     compiler = args.compiler if args.compiler.is_absolute() else root / args.compiler
-    refctx = script_dir / "refctx.sh"
     if not compiler.is_file():
         print(f"compiler not found: {compiler} (build it with cargo build --release -p mwcc)", file=sys.stderr)
         return 2
@@ -490,10 +514,10 @@ def main() -> int:
 
     try:
         compiler_snapshot, compiler, compiler_hash = immutable_compiler_snapshot(compiler)
+        harness_snapshot, refctx, harness_hash = immutable_harness_snapshot(script_dir)
     except (OSError, RuntimeError) as error:
-        print(f"compiler snapshot failed: {error}", file=sys.stderr)
+        print(f"tool snapshot failed: {error}", file=sys.stderr)
         return 2
-    harness_hash = harness_fingerprint(script_dir)
     fingerprint = compiler_hash + ":" + harness_hash
     cache = args.cache
     if cache is None:

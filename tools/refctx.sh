@@ -395,6 +395,19 @@ if grep -q 'Unknown option' <<<"$direct_reference_output"; then
   echo "INVALID_CONFIGURATION  $src — $invalid_detail"
   exit 0
 fi
+if [[ "${REFCTX_CONFIGURED_ONLY:-0}" == 1 && "$oracle_direct" == "REJECTED" ]] \
+  && grep -q '### mwcceppc.exe Compiler:' <<<"$direct_reference_output"; then
+  # The requested project/version/source tuple is not an executable parity
+  # experiment when the reference compiler rejects that exact invocation.
+  # This is configuration validity, not a harness malfunction: no synthetic
+  # bridge may substitute for the authoritative configured-source oracle.
+  invalid_detail="$(grep -Em1 'undefined identifier|syntax error|illegal|cannot be opened|file not found' <<<"$direct_reference_output" || true)"
+  [[ -n "$invalid_detail" ]] || invalid_detail="reference MWCC rejected the configured source invocation"
+  invalid_detail="$(sed 's/^[#[:space:]]*//' <<<"$invalid_detail")"
+  emit_oracle_meta
+  echo "INVALID_CONFIGURATION  $src — $invalid_detail"
+  exit 0
+fi
 
 # 2. Preprocess the self-contained file to a clean .i for our mwcc (which does not
 #    preprocess). mwcceppc drops language-changing pragmas from `-E` output, so

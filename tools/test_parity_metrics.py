@@ -44,6 +44,7 @@ from reference_parity import (
     code_verdict,
     harness_fingerprint,
     immutable_compiler_snapshot,
+    immutable_harness_snapshot,
     parity_metadata,
     parse_args as parse_reference_args,
     result_cache_name,
@@ -79,7 +80,12 @@ def row(**overrides):
     return value
 
 
-def refctx_fixture(root: Path, *, reject_direct_bridge: bool = False):
+def refctx_fixture(
+    root: Path,
+    *,
+    reject_direct_bridge: bool = False,
+    reject_direct_source: bool = False,
+):
     project = root / "project"
     source = project / "src" / "test.c"
     source.parent.mkdir(parents=True)
@@ -125,6 +131,7 @@ def refctx_fixture(root: Path, *, reject_direct_bridge: bool = False):
         "input=\n"
         "preprocess=0\n"
         f"reject_direct_bridge={int(reject_direct_bridge)}\n"
+        f"reject_direct_source={int(reject_direct_source)}\n"
         "while [ \"$#\" -gt 0 ]; do\n"
         "  case \"$1\" in\n"
         "    -o) output=$2; shift 2 ;;\n"
@@ -144,6 +151,9 @@ def refctx_fixture(root: Path, *, reject_direct_bridge: bool = False):
         "      ;;\n"
         "  esac\n"
         "  cp \"$input\" \"$output\"\n"
+        "elif [ \"$reject_direct_source\" -eq 1 ] && [ \"$input\" = src/test.c ]; then\n"
+        "  printf '### mwcceppc.exe Compiler:\\n# Error: declaration syntax error\\n' >&2\n"
+        "  exit 1\n"
         "elif [ \"$reject_direct_bridge\" -eq 1 ] && grep -q BROKEN_DIRECT_BRIDGE \"$input\"; then\n"
         "  exit 1\n"
         "else\n"
@@ -212,6 +222,31 @@ def run_configured_only_refctx_fixture(project: Path, ffcc: Path, compiler: Path
 
 
 class IdentityTests(unittest.TestCase):
+    def test_harness_snapshot_is_immutable_after_source_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tools = Path(directory) / "tools"
+            tools.mkdir()
+            harness_inputs = (
+                "refctx.sh",
+                "refctx_pch.py",
+                "refctx_pragmas.py",
+                "reference_parity.py",
+                "parity_identity.py",
+                "decompctx_runner.py",
+                "object_code_metrics.py",
+            )
+            for index, name in enumerate(harness_inputs):
+                (tools / name).write_text(f"input {index}\n", encoding="utf-8")
+            snapshot, refctx, fingerprint = immutable_harness_snapshot(tools)
+            try:
+                before = refctx.read_text(encoding="utf-8")
+                (tools / "refctx.sh").write_text("changed\n", encoding="utf-8")
+                self.assertEqual(refctx.read_text(encoding="utf-8"), before)
+                self.assertEqual(harness_fingerprint(refctx.parent), fingerprint)
+                self.assertNotEqual(harness_fingerprint(tools), fingerprint)
+            finally:
+                snapshot.cleanup()
+
     def test_reason_normalization_accepts_preserved_source_basenames(self):
         self.assertEqual(
             normalize_reason(
@@ -289,6 +324,23 @@ class IdentityTests(unittest.TestCase):
                 },
             )
             self.assertIn("BYTE   src/test.c", completed.stdout)
+            self.assertNotIn("direct_bridge", completed.stdout)
+
+    def test_configured_only_refctx_attributes_oracle_rejection_to_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project, ffcc, fake_compiler = refctx_fixture(
+                root, reject_direct_source=True
+            )
+            completed = run_configured_only_refctx_fixture(
+                project, ffcc, fake_compiler
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(
+                parity_metadata(completed.stdout),
+                {"oracle_direct": "REJECTED"},
+            )
+            self.assertIn("INVALID_CONFIGURATION  src/test.c", completed.stdout)
             self.assertNotIn("direct_bridge", completed.stdout)
 
     def test_refctx_rejected_direct_bridge_falls_back_to_labeled_synthetic_input(self):
