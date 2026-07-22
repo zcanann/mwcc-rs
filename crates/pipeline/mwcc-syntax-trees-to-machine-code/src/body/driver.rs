@@ -3040,6 +3040,9 @@ impl Generator {
             if self.try_callee_saved_call_loop(function)? {
                 return Ok(());
             }
+            if self.try_call_live_counter_loop(function)? {
+                return Ok(());
+            }
             // (guard-less call handlers continue below)
             // `*a = g(); *b = h();` — 2–4 output pointers saved in r31/r30/… across their calls.
             // Runs before the general callee-saved path, which would otherwise emit the stores
