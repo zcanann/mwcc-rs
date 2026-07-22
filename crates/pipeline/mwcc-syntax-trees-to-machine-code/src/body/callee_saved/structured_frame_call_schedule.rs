@@ -95,6 +95,7 @@ impl Generator {
 
         self.schedule_biased_scaled_member_call();
         self.schedule_shifted_member_mask_call();
+        self.schedule_call_result_member_mask_call(first_saved);
 
         // When a saved value and a frame address are the final independent
         // arguments of a dense-frame call, build 163 forwards the saved value
@@ -225,6 +226,86 @@ impl Generator {
             }
         }
     }
+
+    /// A call result saved for the sixth argument leaves an independent member
+    /// load and argument forward behind it. Legacy MWCC fills the result-copy
+    /// latency with that load, forwards the result, then consumes the load in
+    /// the XOR/mask chain.
+    fn schedule_call_result_member_mask_call(&mut self, first_saved: u8) {
+        let mut start = 0;
+        while start + 10 < self.output.instructions.len() {
+            if !is_call_result_member_mask_window(
+                &self.output.instructions[start..start + 11],
+                first_saved,
+            ) {
+                start += 1;
+                continue;
+            }
+            let window: Vec<_> = self.output.instructions[start..start + 11].to_vec();
+            let order = [0, 2, 1, 8, 3, 4, 6, 5, 7, 9, 10];
+            for (destination, source) in order.into_iter().enumerate() {
+                self.output.instructions[start + destination] = window[source].clone();
+            }
+            start += 11;
+        }
+    }
+}
+
+fn is_call_result_member_mask_window(instructions: &[Instruction], first_saved: u8) -> bool {
+    let [
+        Instruction::BranchAndLink { .. },
+        Instruction::AddImmediate {
+            d: result_home,
+            a: 3,
+            immediate: 0,
+        },
+        Instruction::LoadWord {
+            d: 0,
+            a: member_base,
+            ..
+        },
+        Instruction::Xor {
+            a: 0,
+            s: mask_source,
+            b: 0,
+        },
+        Instruction::AndContiguousMask {
+            a: masked_value,
+            s: 0,
+            ..
+        },
+        Instruction::AddImmediate {
+            d: 3,
+            a: first_argument,
+            immediate: 0,
+        },
+        Instruction::AddImmediate {
+            d: 4,
+            a: masked_argument,
+            immediate: 0,
+        },
+        Instruction::AddImmediate { d: 5, a: 1, .. },
+        Instruction::AddImmediate {
+            d: 6,
+            a: result_argument,
+            immediate: 0,
+        },
+        Instruction::AddImmediate {
+            d: 7,
+            a: 0,
+            immediate: 1,
+        },
+        Instruction::BranchAndLink { .. },
+    ] = instructions
+    else {
+        return false;
+    };
+    *result_home >= first_saved
+        && result_home == result_argument
+        && masked_value == masked_argument
+        && *member_base >= first_saved
+        && *mask_source >= first_saved
+        && *first_argument >= first_saved
 }
 
 fn defined_general(instruction: &Instruction) -> Option<u8> {
@@ -235,4 +316,31 @@ fn defined_general(instruction: &Instruction) -> Option<u8> {
                 && operand.class == mwcc_vreg::Class::General
         })
         .map(|operand| operand.register)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_a_saved_result_and_member_mask_call_window() {
+        let instructions = vec![
+            Instruction::BranchAndLink { target: "length".into() },
+            Instruction::AddImmediate { d: 28, a: 3, immediate: 0 },
+            Instruction::LoadWord { d: 0, a: 31, offset: 40 },
+            Instruction::Xor { a: 0, s: 30, b: 0 },
+            Instruction::AndContiguousMask { a: 40, s: 0, begin: 0, end: 15 },
+            Instruction::AddImmediate { d: 3, a: 29, immediate: 0 },
+            Instruction::AddImmediate { d: 4, a: 40, immediate: 0 },
+            Instruction::AddImmediate { d: 5, a: 1, immediate: 32 },
+            Instruction::AddImmediate { d: 6, a: 28, immediate: 0 },
+            Instruction::AddImmediate { d: 7, a: 0, immediate: 1 },
+            Instruction::BranchAndLink { target: "read".into() },
+        ];
+        assert!(is_call_result_member_mask_window(&instructions, 28));
+
+        let mut wrong_argument = instructions;
+        wrong_argument[8] = Instruction::AddImmediate { d: 6, a: 27, immediate: 0 };
+        assert!(!is_call_result_member_mask_window(&wrong_argument, 28));
+    }
 }
