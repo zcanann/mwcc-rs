@@ -54,7 +54,10 @@ impl Parser {
     }
 
     fn parse_placement_new(&mut self) -> Compilation<Expression> {
-        let storage = self.expression()?;
+        let mut placement_arguments = vec![self.expression()?];
+        while self.eat_keyword(Token::Comma) {
+            placement_arguments.push(self.expression()?);
+        }
         self.expect(Token::ParenClose)?;
         let class_name = self.parse_identifier()?;
         self.expect(Token::ParenOpen)?;
@@ -68,8 +71,14 @@ impl Parser {
             }
         }
         self.expect(Token::ParenClose)?;
+        if placement_arguments.len() != 1 {
+            return Err(Diagnostic::error(format!(
+                "constructed scalar C++ placement new for class '{class_name}' with {} placement arguments needs allocator and null-guard lowering (roadmap)",
+                placement_arguments.len()
+            )));
+        }
         let constructor = self.resolve_placement_constructor(&class_name, arguments.len())?;
-        let mut call_arguments = vec![storage];
+        let mut call_arguments = placement_arguments;
         call_arguments.extend(arguments);
         self.expression_struct_tag = Some(class_name);
         Ok(Expression::Call {

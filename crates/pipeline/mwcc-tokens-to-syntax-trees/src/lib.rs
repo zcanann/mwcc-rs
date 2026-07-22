@@ -3023,6 +3023,26 @@ blr\n\
     }
 
     #[test]
+    fn parses_multi_argument_placement_new_before_deferring_its_lowering() {
+        let source = r#"
+            void* operator new(unsigned long, const char*, int);
+            class Item { public: Item(); };
+            Item* create() { return new ("source.cpp", 12) Item(); }
+        "#;
+        let error = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap_err();
+        assert!(error.message.contains(
+            "placement new for class 'Item' with 2 placement arguments needs allocator and null-guard lowering"
+        ));
+    }
+
+    #[test]
     fn normalizes_trivial_scalar_new_to_the_eabi_allocator() {
         let source = r#"
             void* operator new(unsigned long);
