@@ -945,6 +945,50 @@ blr\n\
     }
 
     #[test]
+    fn substitutes_a_single_use_inline_accessor_with_a_member_read_argument() {
+        let source = r#"
+            struct GObj { char pad[44]; void *user_data; };
+            struct Fighter { char pad[6744]; struct GObj *victim; };
+            static inline void *get_user_data(struct GObj *gobj) {
+                return gobj->user_data;
+            }
+            void sink(void *);
+            void compiled(struct Fighter *fp) {
+                void *victim = get_user_data(fp->victim);
+                sink(victim);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        let initializer = unit.functions[0].locals[0].initializer.as_ref().unwrap();
+        let expanded = match initializer {
+            Expression::Cast { operand, .. } => operand.as_ref(),
+            expression => expression,
+        };
+        assert!(
+            matches!(
+                expanded,
+                Expression::Member {
+                    base,
+                    offset: 44,
+                    ..
+                } if matches!(
+                    base.as_ref(),
+                    Expression::Member { offset: 6744, .. }
+                )
+            ),
+            "unexpected accessor expansion: {initializer:#?}"
+        );
+    }
+
+    #[test]
     fn does_not_skip_an_emitting_template_member_specialization() {
         let source = r#"
             template <int N, typename T>

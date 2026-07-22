@@ -756,18 +756,16 @@ impl Parser {
                 } else {
                     // A call to a PARSED single-return inline definition substitutes
                     // the body (mwcc -inline auto inlines it; a bl would be wrong
-                    // bytes). Only PURE arguments (a variable or literal) substitute
-                    // — the body may read a parameter several times; an impure call
-                    // stays a Call and the skipped-inline check defers the unit.
+                    // bytes). Stable values may be repeated. A read expression may
+                    // also substitute when the body evaluates that parameter exactly
+                    // once and unconditionally; this covers pointer accessors such as
+                    // `get_user_data(fp->victim)` without duplicating or dropping a
+                    // memory read. Everything else stays a Call so the skipped-inline
+                    // check can defer the unit safely.
                     match self.inline_bodies.get(&name) {
                         Some((parameters, body))
                             if parameters.len() == arguments.len()
-                                && arguments.iter().all(|argument| {
-                                    matches!(
-                                        argument,
-                                        Expression::Variable(_) | Expression::IntegerLiteral(_)
-                                    )
-                                }) =>
+                                && inline_arguments_are_safe(parameters, body, &arguments) =>
                         {
                             let map: std::collections::HashMap<&str, &Expression> = parameters
                                 .iter()
@@ -1448,5 +1446,84 @@ pub(crate) fn substitute_variables(
             value: Box::new(substitute_variables(value, map)),
         },
         other => other.clone(),
+    }
+}
+
+/// Whether substituting a single-return inline body preserves the caller's
+/// argument evaluations. Variables and constants are stable even when the body
+/// mentions them repeatedly. A side-effect-free read chain is safe only when its
+/// parameter occurs once on an unconditional expression path.
+fn inline_arguments_are_safe(
+    parameters: &[String],
+    body: &Expression,
+    arguments: &[Expression],
+) -> bool {
+    parameters
+        .iter()
+        .zip(arguments)
+        .all(|(parameter, argument)| {
+            matches!(
+                argument,
+                Expression::Variable(_)
+                    | Expression::IntegerLiteral(_)
+                    | Expression::FloatLiteral(_)
+            ) || (is_side_effect_free_read(argument)
+                && unconditional_use_count(body, parameter) == Some(1))
+        })
+}
+
+fn is_side_effect_free_read(expression: &Expression) -> bool {
+    match expression {
+        Expression::Variable(_)
+        | Expression::IntegerLiteral(_)
+        | Expression::FloatLiteral(_)
+        | Expression::StringLiteral(_) => true,
+        Expression::Unary { operand, .. }
+        | Expression::Cast { operand, .. }
+        | Expression::Dereference { pointer: operand }
+        | Expression::AddressOf { operand }
+        | Expression::Member { base: operand, .. }
+        | Expression::MemberAddress { base: operand, .. } => is_side_effect_free_read(operand),
+        Expression::Index { base, index } => {
+            is_side_effect_free_read(base) && is_side_effect_free_read(index)
+        }
+        _ => false,
+    }
+}
+
+/// Count parameter uses while rejecting constructs that may skip or reorder the
+/// evaluation relative to another effect. The accepted tree is deliberately
+/// narrow: accessors, casts, and ordinary arithmetic over pure operands.
+fn unconditional_use_count(expression: &Expression, name: &str) -> Option<usize> {
+    match expression {
+        Expression::Variable(variable) => Some(usize::from(variable == name)),
+        Expression::IntegerLiteral(_)
+        | Expression::FloatLiteral(_)
+        | Expression::StringLiteral(_) => Some(0),
+        Expression::Unary { operand, .. }
+        | Expression::Cast { operand, .. }
+        | Expression::Dereference { pointer: operand }
+        | Expression::AddressOf { operand }
+        | Expression::Member { base: operand, .. }
+        | Expression::MemberAddress { base: operand, .. } => {
+            unconditional_use_count(operand, name)
+        }
+        Expression::Index { base, index } => {
+            Some(
+                unconditional_use_count(base, name)?
+                    + unconditional_use_count(index, name)?,
+            )
+        }
+        Expression::Binary {
+            operator,
+            left,
+            right,
+        } if !matches!(operator, BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr) => Some(
+            unconditional_use_count(left, name)? + unconditional_use_count(right, name)?,
+        ),
+        // Calls, assignments, short-circuit/conditional forms, and expression
+        // kinds whose value can carry hidden storage are not parser-level inline
+        // substitution candidates.
+        _ => None,
     }
 }
