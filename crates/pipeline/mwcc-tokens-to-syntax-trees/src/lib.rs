@@ -1150,6 +1150,35 @@ blr\n\
     }
 
     #[test]
+    fn explicit_specialization_inherits_written_inline_from_primary_template() {
+        let source = r#"
+            template <typename T>
+            class Callback {
+            public:
+                inline virtual void draw(T);
+            };
+            template <> void Callback<int*>::draw(int*) {}
+            int compiled(void) { return 3; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(
+            unit.functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            ["compiled__Fv"]
+        );
+        assert!(unit.skipped_inline_names.contains("draw"));
+    }
+
+    #[test]
     fn skips_primary_templates_with_default_arguments() {
         let source = r#"
             template <typename T, typename Pointer = T*>

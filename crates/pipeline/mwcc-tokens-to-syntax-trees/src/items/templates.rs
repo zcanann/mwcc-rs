@@ -1528,6 +1528,7 @@ impl Parser {
             return;
         }
         index += 1;
+        let class_body_start = index;
         let mut brace_depth = 1i32;
         while let Some(token) = self.tokens.get(index) {
             if brace_depth == 1 {
@@ -1583,9 +1584,28 @@ impl Parser {
                         while matches!(self.tokens.get(cursor), Some(Token::Identifier(_))) {
                             cursor += 1;
                         }
-                        if self.tokens.get(cursor) == Some(&Token::BraceOpen) {
+                        let explicitly_inline = self.tokens[class_body_start..index]
+                            .iter()
+                            .rev()
+                            .take_while(|token| {
+                                !matches!(
+                                    token,
+                                    Token::Semicolon
+                                        | Token::BraceOpen
+                                        | Token::BraceClose
+                                        | Token::Colon
+                                )
+                            })
+                            .any(|token| {
+                                matches!(token, Token::Identifier(word) if word == "inline" || word == "__inline")
+                            });
+                        if explicitly_inline
+                            || self.tokens.get(cursor) == Some(&Token::BraceOpen)
+                        {
                             self.inline_template_members
                                 .insert((class_name.clone(), member_name.clone()));
+                        }
+                        if self.tokens.get(cursor) == Some(&Token::BraceOpen) {
                             if let Some(
                                 [Token::KeywordReturn, Token::Identifier(field), Token::Semicolon, Token::BraceClose],
                             ) = self.tokens.get(cursor + 1..cursor + 5)
