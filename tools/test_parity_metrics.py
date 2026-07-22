@@ -868,7 +868,7 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(report["goal_completion"]["configured_source_exact"], 0)
         self.assertEqual(report["goal_completion"]["projects_proven_complete"], 0)
 
-    def test_goal_completion_does_not_credit_a_bridge_only_match(self):
+    def test_configured_failure_overrides_a_bridge_only_match(self):
         source = row(source="src/bridge-only.c")
         observation = {
             "status": "BYTE",
@@ -886,10 +886,25 @@ class DashboardTests(unittest.TestCase):
             "tool",
         )["goal_completion"]
 
-        self.assertEqual(goal["authoritative_exact"], 1)
+        self.assertEqual(goal["authoritative_exact"], 0)
         self.assertEqual(goal["configured_source_exact"], 0)
         self.assertEqual(goal["by_project"][0]["remaining"], 1)
         self.assertEqual(goal["projects_proven_complete"], 0)
+
+    def test_configured_only_result_is_authoritative(self):
+        self.assertEqual(
+            authoritative_result(
+                {
+                    "status": "BYTE",
+                    "evidence": {
+                        "oracle_direct": "RUNNABLE",
+                        "configured_source": "BYTE",
+                        "verdict_input": "CONFIGURED",
+                    },
+                }
+            ),
+            "BYTE",
+        )
 
     def test_snapshot_exposes_projects_outside_the_mwcc_denominator(self):
         configured = row(project="configured")

@@ -784,6 +784,13 @@ def authoritative_result(observation: Dict[str, Any]) -> str:
     if status == "UNSUPPORTED_BUILD":
         return status
     evidence = observation_evidence(observation)
+    configured = evidence.get("configured_source")
+    if evidence.get("oracle_direct") == "RUNNABLE" and configured in (
+        "BYTE",
+        "DIFF",
+        "DEFER",
+    ):
+        return configured
     reference_is_direct = evidence.get("reference_object") == "DIRECT" or (
         "reference_object" not in evidence
         and evidence.get("comparison_input") == "DIRECT"
