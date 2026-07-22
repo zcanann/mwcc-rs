@@ -1323,6 +1323,12 @@ impl Generator {
         if self.try_ctr_pair_loop(function)? {
             return Ok(());
         }
+        if self.try_bit_reverse_loop(function)? {
+            return Ok(());
+        }
+        if self.try_xnor_feedback_loop(function)? {
+            return Ok(());
+        }
         if self.try_norm_loop(function)? {
             return Ok(());
         }

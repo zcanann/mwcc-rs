@@ -12,7 +12,7 @@
 //! constant buried in instruction selection.
 
 use crate::config::CompilerConfig;
-use crate::flags::{GlobalAddressing, Optimization};
+use crate::flags::{GlobalAddressing, Optimization, OptimizationGoal};
 use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
     CallDispatcherStyle, CoefficientTableRelocationStyle, CommaValuePlacementStyle,
@@ -499,6 +499,9 @@ pub struct Behavior {
     /// below, but source-local allocation is itself observable at `-O0` and needs
     /// the actual stage boundary rather than inferring it from an unrelated knob.
     pub optimization: Optimization,
+    /// The `,p`/`,s` objective retained independently from the optimization
+    /// level so loop lowering can reproduce size-sensitive unrolling.
+    pub optimization_goal: OptimizationGoal,
     /// Register, literal-pool, and epilogue family for dense call dispatchers.
     pub call_dispatcher_style: CallDispatcherStyle,
     /// Ordinals carried across a source-leading leaf by deferred emission.
@@ -765,6 +768,7 @@ impl Behavior {
     pub fn resolve(config: &CompilerConfig) -> Self {
         Behavior {
             optimization: config.flags.optimization,
+            optimization_goal: config.flags.optimization_goal,
             call_dispatcher_style: config.build.profile.call_dispatcher_style(),
             deferred_transparent_leaf_bump: config
                 .build

@@ -5,6 +5,7 @@ use super::*;
 
 mod ascii_hash;
 mod ascii_upper;
+mod bit_reverse;
 mod count_register;
 mod counters;
 mod fill_copy;
@@ -18,6 +19,7 @@ mod search_guard_chain;
 mod status_indexed_call;
 mod virtual_scan;
 mod walker;
+mod xnor_feedback;
 
 /// Signedness of a byte pointer's element. Plain `char *` has already been
 /// resolved by the frontend to one of these two types for the selected mwcc
