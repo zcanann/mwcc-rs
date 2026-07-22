@@ -1295,9 +1295,15 @@ pub(crate) fn substitute(
         Expression::BitFieldRead {
             extracted,
             promoted_type,
+            storage,
+            shift,
+            width,
         } => Expression::BitFieldRead {
             extracted: Box::new(substitute(extracted, values)),
             promoted_type: *promoted_type,
+            storage: Box::new(substitute(storage, values)),
+            shift: *shift,
+            width: *width,
         },
         Expression::IndexedUpdateValue { value } => Expression::IndexedUpdateValue {
             value: Box::new(substitute(value, values)),

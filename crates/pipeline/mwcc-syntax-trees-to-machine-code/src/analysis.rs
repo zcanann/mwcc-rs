@@ -1235,10 +1235,12 @@ pub(crate) fn structurally_equal(a: &Expression, b: &Expression) -> bool {
             Expression::BitFieldRead {
                 extracted: ea,
                 promoted_type: ta,
+                ..
             },
             Expression::BitFieldRead {
                 extracted: eb,
                 promoted_type: tb,
+                ..
             },
         ) => ta == tb && structurally_equal(ea, eb),
         (Expression::Dereference { pointer: pa }, Expression::Dereference { pointer: pb }) => {

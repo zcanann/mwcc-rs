@@ -62,6 +62,13 @@ pub enum Expression {
     BitFieldRead {
         extracted: Box<Expression>,
         promoted_type: Type,
+        /// The containing byte/halfword/word lvalue before extraction. Reads use
+        /// `extracted`; stores use this once for their read-modify-write cycle.
+        storage: Box<Expression>,
+        /// Number of low storage bits discarded by the extraction.
+        shift: u8,
+        /// Number of field bits retained after the shift.
+        width: u8,
     },
     /// The desugared value of indexed update syntax (`a[i] op= x` or a
     /// value-discarded `a[i]++`). The wrapper retains frontend provenance for

@@ -54,6 +54,9 @@ impl Generator {
             Expression::IndexedUpdateValue { value } => (value.as_ref(), true),
             value => (value, false),
         };
+        if self.try_emit_bit_field_store(target, value)? {
+            return Ok(());
+        }
         // A volatile automatic assignment is an observable store to its frame
         // slot. The parser marks volatile locals as frame-resident, so this path
         // also prevents the ordinary value tracker from substituting the last

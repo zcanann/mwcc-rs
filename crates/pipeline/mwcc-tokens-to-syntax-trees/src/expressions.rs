@@ -1265,6 +1265,7 @@ impl Parser {
                             member_type: load_type,
                             index_stride,
                         };
+                        let storage = load.clone();
                         let value = if shift > 0 {
                             Expression::Binary {
                                 operator: mwcc_syntax_trees::BinaryOperator::ShiftRight,
@@ -1295,6 +1296,9 @@ impl Parser {
                                 Type::UnsignedInt
                             },
                             extracted: Box::new(extracted),
+                            storage: Box::new(storage),
+                            shift: shift as u8,
+                            width,
                         };
                         struct_tag = None;
                         continue;

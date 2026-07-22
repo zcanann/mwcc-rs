@@ -82,9 +82,15 @@ fn substitute_expression(
         Expression::BitFieldRead {
             extracted,
             promoted_type,
+            storage,
+            shift,
+            width,
         } => Expression::BitFieldRead {
             extracted: Box::new(substitute_expression(extracted, replacements)),
             promoted_type: *promoted_type,
+            storage: Box::new(substitute_expression(storage, replacements)),
+            shift: *shift,
+            width: *width,
         },
         Expression::IndexedUpdateValue { value } => Expression::IndexedUpdateValue {
             value: Box::new(substitute_expression(value, replacements)),
