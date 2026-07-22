@@ -30,7 +30,7 @@ pub(crate) fn terminal_implicit_inline_is_consumed(
 /// source order. An all-asm translation unit therefore remains unchanged.
 pub(crate) fn apply_deferred_emission_order(
     functions: &mut Vec<MachineFunction>,
-    post_leaf_anonymous_bump: u8,
+    transparent_leaf_bump: u8,
 ) {
     let mut source_order = std::mem::take(functions);
 
@@ -74,7 +74,7 @@ pub(crate) fn apply_deferred_emission_order(
             *prefix += u32::from(
                 function
                     .post_function_anonymous_bump
-                    .unwrap_or(post_leaf_anonymous_bump),
+                    .unwrap_or(transparent_leaf_bump),
             );
         }
     }
