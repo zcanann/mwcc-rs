@@ -865,6 +865,8 @@ pub trait CodegenProfile: core::fmt::Debug {
         PlainLinkageEpilogueStyle::ReloadBeforeStackRestore
     }
 
+    /// Restore order for a call-result store through a saved pointer when the
+    /// O4 latency scheduler is active.
     fn pointer_call_store_epilogue_style(&self) -> PointerCallStoreEpilogueStyle {
         PointerCallStoreEpilogueStyle::LinkRegisterFirst
     }
@@ -1314,6 +1316,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn pointer_call_store_epilogue_style(&self) -> PointerCallStoreEpilogueStyle {
+        PointerCallStoreEpilogueStyle::SavedPointerFirst
+    }
+
     fn guarded_byte_copy_style(&self) -> GuardedByteCopyStyle {
         GuardedByteCopyStyle::SignedCompareWithAlignedStore
     }

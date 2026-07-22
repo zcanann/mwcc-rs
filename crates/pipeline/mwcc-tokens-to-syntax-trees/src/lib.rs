@@ -4435,4 +4435,34 @@ blr\n\
         assert_eq!(unit.function_inline_prebumps["second"], 8);
         assert_eq!(unit.skipped_inline_functions, 8);
     }
+
+    #[test]
+    fn pragma_pop_restores_all_pushed_codegen_state() {
+        let source = r#"
+            void plain(void) {}
+            #pragma push
+            #pragma force_active on
+            #pragma defer_codegen on
+            #pragma peephole off
+            void scoped(void) {}
+            #pragma pop
+            void restored(void) {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(!unit.functions[0].force_active);
+        assert!(unit.functions[1].force_active);
+        assert!(!unit.functions[2].force_active);
+        assert!(!unit.functions[0].peephole_disabled);
+        assert!(unit.functions[1].peephole_disabled);
+        assert!(!unit.functions[2].peephole_disabled);
+        assert_eq!(unit.deferred_function_names, ["scoped"]);
+    }
 }

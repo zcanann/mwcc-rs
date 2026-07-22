@@ -563,9 +563,10 @@ impl Generator {
 
     /// `void s(T *p, …) { *p = g(args); }` — a call's result stored through a pointer
     /// PARAMETER that must survive the call. mwcc saves the pointer in r31 (`mr r31,r3`),
-    /// runs the call, then stores the result through r31 (`stw r3,0(r31)`). The epilogue's
-    /// LR/GPR restore order changed in the GC 4.1 optimizer generation. Restricted to a
-    /// general (int/pointer/narrow) pointee,
+    /// runs the call, then stores the result through r31 (`stw r3,0(r31)`). At `-O4`, the
+    /// 2.4.x latency scheduler issues the saved-LR reload before r31; lower optimization
+    /// levels and the 4.x scheduler retain the canonical r31-before-LR teardown.
+    /// Restricted to a general (int/pointer/narrow) pointee,
     /// a general-returning call, and arguments that do not reference the saved pointer.
     pub(crate) fn try_store_call_through_pointer(
         &mut self,
@@ -673,9 +674,10 @@ impl Generator {
             Diagnostic::error("store-through-saved-pointer offset out of range (roadmap)")
         })?;
 
-        // Callee-saved frame: r31 holds the pointer across the call. The 2.4.x
-        // generation reloads LR before r31; GC 4.1 reverses those independent
-        // restores. Keep that version boundary in the resolved behavior profile.
+        // Callee-saved frame: r31 holds the pointer across the call. At -O4 the 2.4.x
+        // scheduler treats the store as the end of the pointer's dependency chain and fills
+        // the teardown slot by loading LR before r31. At -O3 and below, and in the 4.x
+        // scheduler, it leaves the canonical r31-before-LR order.
         let frame_size: i16 = 16;
         self.non_leaf = true;
         self.frame_size = frame_size;
@@ -683,8 +685,9 @@ impl Generator {
         // epilogue reload (emit_epilogue_and_return reads callee_saved) renames too.
         let saved = self.fresh_virtual_general();
         self.callee_saved = vec![saved];
-        self.epilogue_lr_first = self.behavior.pointer_call_store_epilogue_style
-            == PointerCallStoreEpilogueStyle::LinkRegisterFirst;
+        self.epilogue_lr_first = self.behavior.schedule_latency_slots
+            && self.behavior.pointer_call_store_epilogue_style
+                == PointerCallStoreEpilogueStyle::LinkRegisterFirst;
         // The interleaved save+move prologue, from the FRAME BUILDER.
         self.output
             .instructions

@@ -463,8 +463,9 @@ pub(crate) struct Parser {
     /// A speculative parser clone sets this while recovering one skipped inline
     /// body so the ordinary definition parser does not deliberately reject it.
     pub(crate) recover_skipped_inline_definition: bool,
-    /// `#pragma cplusplus` state: declarations parsed under it mangle their
-    /// symbol names (push/pop scope the switch).
+    /// Default and active `#pragma cplusplus` state. The composite pragma stack
+    /// also scopes codegen state changed by force_active, defer_codegen, and
+    /// peephole directives.
     pub(crate) default_cplusplus: bool,
     pub(crate) cplusplus: bool,
     pub(crate) pragma_stack: Vec<PragmaState>,

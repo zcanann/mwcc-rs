@@ -232,8 +232,8 @@ pub(crate) fn statement_calls(
 
 impl Parser {
     /// Consume surfaced file-scope pragmas and update parser state. Keeping this
-    /// at translation-unit level lets a language pragma affect the namespace or
-    /// declaration that follows it instead of being mistaken for part of that item.
+    /// at translation-unit level lets stateful pragmas affect the declaration
+    /// that follows instead of being mistaken for part of that item.
     fn consume_top_level_pragmas(&mut self) {
         while let Token::Pragma(directive) = self.peek() {
             match directive.as_str() {

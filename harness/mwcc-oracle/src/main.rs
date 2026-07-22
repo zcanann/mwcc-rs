@@ -46,29 +46,43 @@ impl Drop for ScratchDirectory {
     }
 }
 
-const COMPILE_FLAGS: &[&str] = &[
-    "-nodefaults",
-    "-proc",
-    "gekko",
-    "-align",
-    "powerpc",
-    "-enum",
-    "int",
-    "-fp",
-    "hardware",
-    "-O4,p",
-    "-inline",
-    "auto",
-    "-maxerrors",
-    "1",
-    "-nosyspath",
-    "-RTTI",
-    "off",
-    "-fp_contract",
-    "on",
-    "-str",
-    "reuse",
+const COMPILE_FLAG_GROUPS: &[&[&str]] = &[
+    &["-nodefaults"],
+    &["-proc", "gekko"],
+    &["-align", "powerpc"],
+    &["-enum", "int"],
+    &["-fp", "hardware"],
+    &["-O4,p"],
+    &["-inline", "auto"],
+    &["-maxerrors", "1"],
+    &["-nosyspath"],
+    &["-RTTI", "off"],
+    &["-fp_contract", "on"],
+    &["-str", "reuse"],
 ];
+
+fn option_family(option: &str) -> &str {
+    if option.starts_with("-O") { "-O" } else { option }
+}
+
+/// Baseline flags not superseded by a canary directive.
+///
+/// Legacy MWCC does not reliably resolve repeated option families: both
+/// `-O4,p -O3` and `-O3 -O4,p` select O4. An override therefore has to replace
+/// the baseline group, not merely appear before or after it.
+fn baseline_flags(extra: &[String]) -> Vec<&'static str> {
+    COMPILE_FLAG_GROUPS
+        .iter()
+        .filter(|group| {
+            let family = option_family(group[0]);
+            !extra
+                .iter()
+                .filter(|argument| argument.starts_with('-'))
+                .any(|argument| option_family(argument) == family)
+        })
+        .flat_map(|group| group.iter().copied())
+        .collect()
+}
 
 fn main() -> std::process::ExitCode {
     let requested_build = std::env::args()
@@ -151,16 +165,20 @@ fn main() -> std::process::ExitCode {
         // -O4 small-data configuration is verifiable from a canary file alone.
         let extra_flags = flag_directive(&source);
 
-        // Oracle: wibo sjiswrap mwcceppc FLAGS [extra] -c source -o reference.o
+        // Repeated MWCC option families do not implement ordinary last-one-wins
+        // semantics. Remove superseded defaults so directives really compile the
+        // reference at the same configuration as mwcc-rs.
+        // Oracle: wibo sjiswrap mwcceppc [extra] FLAGS -c source -o reference.o
+        let baseline_flags = baseline_flags(&extra_flags);
         let mut oracle = Command::new(&wibo);
         oracle
             .arg(&sjis)
             .arg(&real_compiler)
-            .args(COMPILE_FLAGS)
+            .args(&extra_flags)
+            .args(&baseline_flags)
             .args(
                 (source.extension().is_some_and(|extension| extension == "c")).then_some("-lang=c"),
             )
-            .args(&extra_flags)
             .arg("-c")
             .arg(&source)
             .arg("-o")
@@ -323,7 +341,7 @@ fn split_directive_arguments(value: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::split_directive_arguments;
+    use super::{baseline_flags, split_directive_arguments};
 
     #[test]
     fn quoted_flag_values_remain_one_argument() {
@@ -331,6 +349,16 @@ mod tests {
             split_directive_arguments(r#"-pragma "cats off" -Cpp_exceptions off"#),
             ["-pragma", "cats off", "-Cpp_exceptions", "off"]
         );
+    }
+
+    #[test]
+    fn explicit_options_replace_their_baseline_family() {
+        let extra = ["-O3".to_string(), "-inline".to_string(), "deferred".to_string()];
+        let baseline = baseline_flags(&extra);
+        assert!(!baseline.contains(&"-O4,p"));
+        assert!(!baseline.contains(&"-inline"));
+        assert!(!baseline.contains(&"auto"));
+        assert!(baseline.windows(2).any(|pair| pair == ["-proc", "gekko"]));
     }
 }
 

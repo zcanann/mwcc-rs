@@ -1360,6 +1360,22 @@ mod tests {
     }
 
     #[test]
+    fn four_x_profiles_keep_saved_pointer_ahead_of_link_reload() {
+        for compiler_build in [build::GC_3_0A3, build::GC_3_0A3P1, build::WII_1_0] {
+            assert_eq!(
+                Behavior::resolve(&CompilerConfig::new(compiler_build))
+                    .pointer_call_store_epilogue_style,
+                PointerCallStoreEpilogueStyle::SavedPointerFirst
+            );
+        }
+        assert_eq!(
+            Behavior::resolve(&CompilerConfig::new(build::GC_2_7))
+                .pointer_call_store_epilogue_style,
+            PointerCallStoreEpilogueStyle::LinkRegisterFirst
+        );
+    }
+
+    #[test]
     fn o0_preserves_sequential_expression_lowering() {
         let mut config = CompilerConfig::new(build::GC_1_3_2);
         config.flags.optimization = Optimization::O0;
