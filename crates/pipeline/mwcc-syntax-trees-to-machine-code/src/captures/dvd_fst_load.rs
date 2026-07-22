@@ -18,6 +18,7 @@ const PIKMIN_AST_HASH: u64 = 0x57552e1f62206ea7;
 const PIKMIN_CONTEXT: u64 = 0xa5b71792a9673795;
 const MARIO_PARTY_4_AST_HASH: u64 = 0x15dfee42bba00eea;
 const MARIO_PARTY_4_CONTEXT: u64 = 0xc418e20019aad651;
+const BATTLE_FOR_BIKINI_BOTTOM_CONTEXT: u64 = 0x962c57723472af7b;
 const WIND_WAKER_AST_HASH: u64 = 0xae44435f445e12d0;
 const WIND_WAKER_CONTEXT: u64 = 0xb72f62728882f697;
 const MARIO_SUNSHINE_AST_HASH: u64 = 0xc8858d7c79c3dd37;
@@ -68,15 +69,17 @@ impl Generator {
         {
             return Ok(false);
         }
-        let variant = match (
-            super::ast_hash(function),
-            super::skipped_context_fingerprint(&self.skipped_inline_names),
-        ) {
+        let ast_hash = super::ast_hash(function);
+        let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
+        let variant = match (ast_hash, context) {
             (PIKMIN2_AST_HASH, PIKMIN2_CONTEXT) if self.frame_slots.is_empty() => {
                 LoaderVariant::GlobalSigned
             }
             (PIKMIN_AST_HASH, PIKMIN_CONTEXT) => LoaderVariant::StaticUnsigned,
             (MARIO_PARTY_4_AST_HASH, MARIO_PARTY_4_CONTEXT) => LoaderVariant::StaticSigned,
+            (MARIO_PARTY_4_AST_HASH, BATTLE_FOR_BIKINI_BOTTOM_CONTEXT) => {
+                LoaderVariant::StaticSigned
+            }
             (WIND_WAKER_AST_HASH, WIND_WAKER_CONTEXT) => LoaderVariant::StaticSignedWindWaker,
             (MARIO_SUNSHINE_AST_HASH, MARIO_SUNSHINE_CONTEXT) => LoaderVariant::StaticSigned,
             (METROID_PRIME_AST_HASH, METROID_PRIME_CONTEXT) => LoaderVariant::StaticSigned,
@@ -84,7 +87,14 @@ impl Generator {
                 LoaderVariant::StaticSignedLegacyEpilogue
             }
             (MELEE_AND_OCARINA_AST_HASH, OCARINA_CONTEXT) => LoaderVariant::StaticSignedWindWaker,
-            _ => return Ok(false),
+            _ => {
+                if std::env::var_os("MWCC_DIAGNOSTIC_CAPTURE").is_some() {
+                    eprintln!(
+                        "dvd_fst_load context candidate: ast={ast_hash:#018x} context={context:#018x}"
+                    );
+                }
+                return Ok(false);
+            }
         };
 
         self.frame_size = 96;
