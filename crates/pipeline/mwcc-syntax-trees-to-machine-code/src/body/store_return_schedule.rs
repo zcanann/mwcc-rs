@@ -15,6 +15,69 @@ pub(super) struct GlobalConstantStoreReturnPlan {
 }
 
 impl Generator {
+    /// `old = global; global = replacement; return old;`.
+    ///
+    /// The local is a snapshot across the write. Under SDA addressing MWCC
+    /// loads the old value into r0, fills that load's latency slot with the
+    /// independent store from the incoming register, then moves r0 to r3.
+    pub(super) fn try_saved_global_exchange(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if self.behavior.global_addressing != GlobalAddressing::SmallData
+            || !function.guards.is_empty()
+            || function_makes_call(function)
+        {
+            return Ok(false);
+        }
+        let [local] = function.locals.as_slice() else {
+            return Ok(false);
+        };
+        let [Statement::Assign {
+            name: saved,
+            value: Expression::Variable(global_read),
+        }, Statement::Store {
+            target: Expression::Variable(global_write),
+            value,
+        }] = function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        if local.name != *saved
+            || local.initializer.is_some()
+            || local.is_volatile
+            || local.is_static
+            || local.array_length.is_some()
+            || global_read != global_write
+            || function.return_type != local.declared_type
+            || self.globals.get(global_read.as_str()) != Some(&local.declared_type)
+            || !matches!(function.return_expression.as_ref(), Some(Expression::Variable(name)) if name == saved)
+        {
+            return Ok(false);
+        }
+        let Some(pointee) = pointee_of_type(local.declared_type) else {
+            return Ok(false);
+        };
+        if matches!(pointee, Pointee::Float | Pointee::Double) {
+            return Ok(false);
+        }
+        let Expression::Variable(replacement_name) = value else {
+            return Ok(false);
+        };
+        let Some(replacement) = self.lookup_general(replacement_name) else {
+            return Ok(false);
+        };
+
+        self.emit_global_load(global_read, GENERAL_SCRATCH)?;
+        self.emit_global_store(global_write, pointee, replacement)?;
+        self.output.instructions.push(Instruction::move_register(
+            Eabi::general_result().number,
+            GENERAL_SCRATCH,
+        ));
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     /// Recognize a terminal run of integer-global stores sharing one small
     /// constant, followed by a small constant return. MWCC materializes the
     /// shared store value once. The linkage-first pipeline uses the final
