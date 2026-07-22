@@ -31,6 +31,7 @@ mod leading_store_guard;
 mod leading_store_guarded_call;
 mod local_select;
 mod long_long_initialize;
+mod long_long_serial_fold;
 mod long_long_support;
 mod long_long_wait;
 mod loops;
