@@ -130,8 +130,10 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
             // now begin here instead of being treated as live from function entry.
             open.insert((Class::General, 3), (index, index));
             open.insert((Class::Float, 1), (index, index));
-            defined_physical_ranges.insert((Class::General, 3));
-            defined_physical_ranges.insert((Class::Float, 1));
+            // A call result is not automatically an argument to the next call.
+            // Only an explicit later definition/materialization enters
+            // `defined_physical_ranges`; otherwise an unused result must remain
+            // a zero-length occupancy instead of blocking intervening virtuals.
         }
         // Then definitions: a PHYSICAL register's old value ends and a new range
         // begins (the classic r3 parameter/temporary/result reuse). A VIRTUAL
@@ -377,6 +379,64 @@ mod tests {
             allocation.physical(Reg::general(0).virtual_register().unwrap()),
             Some(3),
             "the dead incoming r3 is reusable before the call result redefines it"
+        );
+    }
+
+    #[test]
+    fn an_unused_call_result_does_not_block_a_preferred_intervening_virtual() {
+        let stream = [
+            Instruction::BranchAndLink {
+                target: "side_effect".into(),
+            },
+            Instruction::LoadWord {
+                d: v(0),
+                a: 31,
+                offset: 128,
+            },
+            Instruction::AddImmediate {
+                d: 0,
+                a: v(0),
+                immediate: 47,
+            },
+            Instruction::RotateAndMask {
+                a: v(0),
+                s: 0,
+                shift: 0,
+                begin: 0,
+                end: 26,
+            },
+            Instruction::LoadWord {
+                d: 30,
+                a: v(0),
+                offset: 32,
+            },
+            Instruction::BranchAndLink {
+                target: "produce".into(),
+            },
+            Instruction::AddImmediate {
+                d: 28,
+                a: 3,
+                immediate: 0,
+            },
+        ];
+        let liveness = analyze(&stream);
+        let mut intervals = liveness.intervals.clone();
+        intervals
+            .iter_mut()
+            .find(|interval| interval.vreg.id == 0)
+            .expect("intervening pointer")
+            .prefer = Some(3);
+        let allocation = LinearScan
+            .allocate(
+                &intervals,
+                &liveness.pinned,
+                &liveness.calls,
+                &RegisterConstraints::gekko(),
+            )
+            .unwrap();
+        assert_eq!(
+            allocation.physical(Reg::general(0).virtual_register().unwrap()),
+            Some(3)
         );
     }
 
