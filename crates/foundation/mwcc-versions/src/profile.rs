@@ -1372,6 +1372,10 @@ impl CodegenProfile for Wii43Build145 {
         1
     }
 
+    fn call_dispatcher_style(&self) -> CallDispatcherStyle {
+        CallDispatcherStyle::Packed41
+    }
+
     fn deferred_transparent_leaf_bump(&self) -> u8 {
         4
     }

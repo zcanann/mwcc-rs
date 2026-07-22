@@ -770,10 +770,7 @@ impl Behavior {
             optimization: config.flags.optimization,
             optimization_goal: config.flags.optimization_goal,
             call_dispatcher_style: config.build.profile.call_dispatcher_style(),
-            deferred_transparent_leaf_bump: config
-                .build
-                .profile
-                .deferred_transparent_leaf_bump(),
+            deferred_transparent_leaf_bump: config.build.profile.deferred_transparent_leaf_bump(),
             deferred_call_dispatcher_labels_per_case: if config.flags.inline_deferred {
                 config
                     .build
@@ -1800,6 +1797,10 @@ mod tests {
             CallDispatcherStyle::Legacy24x
         );
         assert_eq!(gc41.call_dispatcher_style, CallDispatcherStyle::Packed41);
+        let wii43 = Behavior::resolve(&CompilerConfig::new(
+            crate::build::by_label_experimental("Wii/1.0").unwrap(),
+        ));
+        assert_eq!(wii43.call_dispatcher_style, CallDispatcherStyle::Packed41);
         assert!(gc41
             .active_quirks()
             .iter()
