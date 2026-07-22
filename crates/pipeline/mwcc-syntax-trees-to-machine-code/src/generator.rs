@@ -2,6 +2,7 @@
 //! logic lives in the sibling theme modules, each a further `impl Generator`.
 
 use crate::analysis::*;
+use crate::condition_global_cache::ConditionGlobalValue;
 use crate::{InlineBodySet, InlineSummaries};
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{
@@ -229,6 +230,10 @@ pub(crate) struct Generator {
     /// The resolved version policy decides whether the compiler generation takes
     /// advantage of that live value.
     pub(crate) stored_globals: HashMap<String, (u8, usize)>,
+    /// Nonvolatile pointer globals retained while one side-effect-free branch
+    /// condition reads several of their members. The scope owner restores this
+    /// map before emitting the guarded body, so reuse cannot cross a call.
+    pub(crate) condition_global_values: HashMap<String, ConditionGlobalValue>,
     /// Non-empty once a constant-address access in this function has materialized a
     /// base register (`lis hi`). mwcc handles multiple such accesses by allocating
     /// ALL the bases up front, chosen by look-ahead over every value and (for the

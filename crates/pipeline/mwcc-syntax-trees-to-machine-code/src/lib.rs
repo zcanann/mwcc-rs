@@ -17,6 +17,7 @@ mod body;
 mod captures;
 mod casts;
 mod comparisons;
+mod condition_global_cache;
 mod control_flow;
 mod copy_convention;
 mod cxx_abi;
@@ -294,6 +295,7 @@ pub fn lower_function(
         register_avoid: HashMap::new(),
         register_prefer: HashMap::new(),
         stored_globals: HashMap::new(),
+        condition_global_values: HashMap::new(),
         const_address_bases: HashSet::new(),
         emitted_variable_index_store: false,
         prematerialized_float_constants: Vec::new(),

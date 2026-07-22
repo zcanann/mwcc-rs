@@ -155,6 +155,16 @@ impl Generator {
             {
                 let pointee = pointee_of_type(member_type)
                     .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
+                if let Some(base) = self.condition_global_base(name)? {
+                    let displacement = self.emit_member_base_adjustment(base, offset);
+                    self.output.instructions.push(displacement_load(
+                        pointee,
+                        destination,
+                        base,
+                        displacement,
+                    )?);
+                    return Ok(());
+                }
                 // A FLOAT/double member loads into an FPR, so the pointer must go to a GPR base —
                 // reusing the FPR destination's NUMBER would address through the matching GPR
                 // (`f1`↔`r1`/sp). Integer members share the destination GPR as both base and result.

@@ -276,24 +276,30 @@ impl Generator {
                     else_body,
                 } if else_body.is_empty() => {
                     let terms = logical_and_terms(condition);
-                    let mut branches = Vec::with_capacity(terms.len());
-                    for term in terms {
-                        let (options, condition_bit) =
-                            self.emit_condition_test(term).map_err(|mut diagnostic| {
-                                diagnostic.message.push_str(&format!(
-                                    " (in structured if condition {statement_index})"
-                                ));
-                                diagnostic
-                            })?;
-                        branches.push(self.output.instructions.len());
-                        self.output
-                            .instructions
-                            .push(Instruction::BranchConditionalForward {
-                                options,
-                                condition_bit,
-                                target: 0,
-                            });
-                    }
+                    let previous_cache = self.begin_condition_global_cache(condition);
+                    let condition_result = (|| {
+                        let mut branches = Vec::with_capacity(terms.len());
+                        for term in terms {
+                            let (options, condition_bit) =
+                                self.emit_condition_test(term).map_err(|mut diagnostic| {
+                                    diagnostic.message.push_str(&format!(
+                                        " (in structured if condition {statement_index})"
+                                    ));
+                                    diagnostic
+                                })?;
+                            branches.push(self.output.instructions.len());
+                            self.output
+                                .instructions
+                                .push(Instruction::BranchConditionalForward {
+                                    options,
+                                    condition_bit,
+                                    target: 0,
+                                });
+                        }
+                        Ok(branches)
+                    })();
+                    self.restore_condition_global_cache(previous_cache);
+                    let branches = condition_result?;
                     self.emit_structured_statements(
                         then_body,
                         function,
