@@ -460,7 +460,28 @@ impl Generator {
             Expression::MemberAddress { base, offset, .. } => {
                 // The array's address: `base + offset` (a `mr` when the array is at
                 // the start of the struct).
-                let base_register = self.member_base_register(base)?;
+                let base_register = if let Expression::Member {
+                    base: inner,
+                    offset: member_offset,
+                    member_type: member_type @ (Type::Pointer(_) | Type::StructPointer { .. }),
+                    index_stride: None,
+                } = base.as_ref()
+                {
+                    // Keep the original struct base live when a later argument
+                    // reads another member from it. Loading the intermediate
+                    // pointer directly into the address argument avoids the old
+                    // in-place `lwz base,...(base)` clobber.
+                    self.emit_member_load(
+                        inner,
+                        *member_offset,
+                        *member_type,
+                        None,
+                        destination,
+                    )?;
+                    destination
+                } else {
+                    self.member_base_register(base)?
+                };
                 if *offset == 0 {
                     if base_register != destination {
                         self.output.instructions.push(Instruction::move_register(destination, base_register));

@@ -9,10 +9,17 @@ use super::structured_entry_alias::{
     fold_entry_alias_zero_test, plan_first_call_alias, EntryAliasBoundary, EntryParameterAlias,
 };
 use super::guarded_computed_survivor::emit_scaled_index;
-use super::structured_frame_assignment::sink_single_use_parameter_assignment;
+use super::structured_call_accumulator::{
+    call_accumulator_assignment_count, call_accumulator_names,
+    fold_zero_initialized_call_accumulator,
+};
+use super::structured_frame_entry::structured_dense_frame_entry_index;
+use super::structured_frame_assignment::{
+    sink_low_mask_parameter_assignment, sink_single_use_parameter_assignment,
+};
 use super::structured_locals::{
-    dead_ephemeral_float_locals, is_definitely_assigned_before_reads, plan_deferred_saved_homes,
-    plan_ephemeral_locals,
+    body_uses_local, dead_ephemeral_float_locals, is_definitely_assigned_before_reads,
+    plan_deferred_saved_homes, plan_ephemeral_locals,
 };
 use super::structured_prologue::saved_home_stores_precede_initialization;
 #[allow(unused_imports)]
@@ -34,12 +41,26 @@ impl Generator {
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
+        let mut normalized = function.clone();
+        let mut changed = false;
         if self.behavior.frame_convention == FrameConvention::Predecrement {
-            if let Some(rewritten) = sink_single_use_parameter_assignment(function) {
-                return self.try_callee_saved_structured_body_impl(&rewritten, true);
+            if let Some(rewritten) = sink_low_mask_parameter_assignment(&normalized) {
+                normalized = rewritten;
+                changed = true;
+            } else if let Some(rewritten) = sink_single_use_parameter_assignment(&normalized) {
+                normalized = rewritten;
+                changed = true;
             }
+            }
+        if let Some(rewritten) = fold_zero_initialized_call_accumulator(&normalized) {
+            normalized = rewritten;
+            changed = true;
         }
+        if changed {
+            self.try_callee_saved_structured_body_impl(&normalized, true)
+        } else {
         self.try_callee_saved_structured_body_impl(function, true)
+    }
     }
 
     fn try_callee_saved_structured_body_impl(
@@ -101,6 +122,7 @@ impl Generator {
                         }))
             })
             .collect();
+        let call_accumulators = call_accumulator_names(function);
         // Entry-initialized locals rank ahead of incoming parameters. Deferred
         // locals introduced by nested declarations or inline expansion rank
         // after them and may share a home when their lifetimes do not overlap.
@@ -108,7 +130,9 @@ impl Generator {
             .locals
             .iter()
             .filter(|local| {
-                local.array_length.is_none() && survivors.contains(local.name.as_str())
+                local.array_length.is_none()
+                    && survivors.contains(local.name.as_str())
+                    && !call_accumulators.contains(local.name.as_str())
             })
             .collect();
         if saved_locals.iter().any(|local| {
@@ -161,10 +185,21 @@ impl Generator {
         let count =
             eager_saved_locals.len() + saved_parameters.len() + deferred_home_plan.group_count;
         let first_saved = 32usize.saturating_sub(count);
+        let dense_entry_prefix = with_frame_array
+            && structured_dense_frame_entry_index(function).is_some_and(|index| index != 0);
         let homes: Vec<u8> = (0..count)
             .map(|home_index| {
                 if with_frame_array && eager_saved_locals.is_empty() && count <= 18 {
-                    let preferred = if home_index < saved_parameters.len() {
+                    let preferred = if dense_entry_prefix
+                        && deferred_home_plan.group_count == 1
+                    {
+                        if home_index < saved_parameters.len() {
+                            let source_index = saved_parameters.len() - 1 - home_index;
+                            first_saved + (source_index + 2) % count
+                        } else {
+                            first_saved + 1
+                        }
+                    } else if home_index < saved_parameters.len() {
                         first_saved + saved_parameters.len() - 1 - home_index
                     } else {
                         first_saved + home_index
@@ -256,6 +291,13 @@ impl Generator {
                     a: 1,
                     offset: 4,
                 },
+            ]);
+            if dense_entry_prefix {
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate(GENERAL_SCRATCH, 0));
+            }
+            self.output.instructions.extend([
                 Instruction::StoreWordWithUpdate {
                     s: 1,
                     a: 1,
@@ -437,18 +479,18 @@ impl Generator {
             );
         }
         self.plan_structured_float_handoff(function, &ephemeral_locals);
-        let dense_entry_emitted = if dense_frame {
-            if !self.emit_structured_dense_frame_entry(function, &saved_parameter_homes)? {
-                return Err(Diagnostic::error(
+        let dense_statement_start = if dense_frame {
+            self.emit_structured_dense_frame_entry(function, &saved_parameter_homes)?
+                .ok_or_else(|| {
+                    Diagnostic::error(
                     "a dense structured frame needs a schedulable entry definition",
-                ));
-            }
-            true
+                    )
+                })?
         } else {
-            false
+            0
         };
-        let alias_statements = if dense_entry_emitted {
-            &function.statements[1..]
+        let alias_statements = if dense_frame {
+            &function.statements[dense_statement_start..]
         } else {
             function.statements.as_slice()
         };
@@ -471,8 +513,8 @@ impl Generator {
         let mut return_branches = Vec::new();
         let mut label_positions = std::collections::HashMap::new();
         let mut pending_gotos = Vec::new();
-        let statement_start = if dense_entry_emitted {
-            1
+        let statement_start = if dense_frame {
+            dense_statement_start
         } else if entry_parameter_alias
             .as_ref()
             .is_some_and(|alias| alias.boundary == EntryAliasBoundary::AfterFirstStatement)
@@ -512,6 +554,12 @@ impl Generator {
             &mut pending_gotos,
             &mut condition_alias,
         )?;
+        if dense_entry_prefix {
+            self.schedule_structured_prefixed_frame_entry();
+        }
+        if !call_accumulators.is_empty() {
+            self.schedule_structured_call_accumulator_chain();
+        }
         if dense_frame {
             self.schedule_structured_frame_store_call();
         }
@@ -538,6 +586,8 @@ impl Generator {
             };
             self.evaluate(return_expression, function.return_type, result)?;
         }
+        let lowered_accumulator_return = !call_accumulators.is_empty()
+            && self.lower_structured_call_accumulator_return();
         let epilogue = self.output.instructions.len();
         for branch in return_branches {
             if let Instruction::Branch { target } = &mut self.output.instructions[branch] {
@@ -548,6 +598,17 @@ impl Generator {
         // both collapse to direct instruction offsets. Build 163 exposes those
         // otherwise-hidden labels through the later unwind-symbol ordinal.
         self.output.anonymous_label_bump += structured_hidden_label_count(&function.statements);
+        if !call_accumulators.is_empty() {
+            // Each normalized call result leaves one optimizer-only label. The
+            // modern branchless terminal select consumes two more labels even
+            // though neither survives into the scheduled instruction stream.
+            self.output.anonymous_label_bump += call_accumulator_assignment_count(function);
+            if lowered_accumulator_return
+                && self.behavior.frame_convention == FrameConvention::Predecrement
+            {
+                self.output.anonymous_label_bump += 2;
+            }
+        }
         if dense_inline_save {
             self.output.instructions.extend([
                 Instruction::LoadMultipleWord {
@@ -600,7 +661,7 @@ impl Generator {
         Ok(true)
     }
 
-    fn emit_structured_statements(
+    pub(super) fn emit_structured_statements(
         &mut self,
         statements: &[Statement],
         function: &Function,
@@ -619,6 +680,22 @@ impl Generator {
         for (statement_index, statement) in statements.iter().enumerate() {
             let emitted_start = self.output.instructions.len();
             match statement {
+                Statement::If {
+                    condition,
+                    then_body,
+                    else_body,
+                } if !else_body.is_empty() => self.emit_structured_if_else(
+                    condition,
+                    then_body,
+                    else_body,
+                    statement_index,
+                    function,
+                    ephemeral_locals,
+                    return_branches,
+                    label_positions,
+                    pending_gotos,
+                    entry_alias,
+                )?,
                 Statement::If {
                     condition,
                     then_body,
@@ -783,13 +860,59 @@ impl Generator {
                                 .map(|parameter| parameter.parameter_type)
                         })
                         .expect("eligibility checked");
-                    let destination = self
-                        .locations
-                        .get(name)
-                        .ok_or_else(|| {
+                    let previous = self.locations.get(name).map(|location| location.register);
+                    let preference = previous
+                        .and_then(|register| {
+                            (register >= mwcc_vreg::VIRTUAL_BASE)
+                                .then(|| register - mwcc_vreg::VIRTUAL_BASE)
+                        })
+                        .and_then(|id| self.register_prefer.get(&u32::from(id)).copied());
+                    let dying_preference = preference.or_else(|| {
+                        function
+                            .locals
+                            .iter()
+                            .map(|local| local.name.as_str())
+                            .chain(function.parameters.iter().map(|parameter| parameter.name.as_str()))
+                            .filter(|candidate| *candidate != name)
+                            .find_map(|candidate| {
+                                (expression_reads_name(value, candidate)
+                                    && !body_uses_local(
+                                        &statements[statement_index + 1..],
+                                        candidate,
+                                    ))
+                                .then(|| self.locations.get(candidate))
+                                .flatten()
+                                .and_then(|location| {
+                                    (location.register >= mwcc_vreg::VIRTUAL_BASE)
+                                        .then(|| location.register - mwcc_vreg::VIRTUAL_BASE)
+                                })
+                                .and_then(|id| {
+                                    self.register_prefer.get(&u32::from(id)).copied()
+                                })
+                            })
+                    });
+                    let accumulator = self.try_emit_structured_call_accumulator(
+                        name,
+                        value,
+                        previous,
+                        dying_preference,
+                    )?;
+                    if let Some(destination) = accumulator {
+                        self.locations.insert(
+                            name.clone(),
+                            Location {
+                                class: ValueClass::General,
+                                register: destination,
+                                signed: self.signed_of(declared_type),
+                                width: declared_type.width(),
+                                pointee: None,
+                                stride: None,
+                            },
+                        );
+                    } else {
+                        let destination = previous.ok_or_else(|| {
                             Diagnostic::error("structured assignment has no register home")
-                        })?
-                        .register;
+                        })?;
                     let handled_computed_address =
                         if let (
                             Type::StructPointer { element_size },
@@ -850,6 +973,7 @@ impl Generator {
                             ));
                             diagnostic
                         })?;
+                }
                 }
                 _ => self.emit_statement(statement).map_err(|mut diagnostic| {
                     diagnostic.message.push_str(&format!(
@@ -918,7 +1042,10 @@ fn supports_statements(statements: &[Statement], function: &Function) -> bool {
             then_body,
             else_body,
             ..
-        } => else_body.is_empty() && supports_statements(then_body, function),
+        } => {
+            supports_statements(then_body, function)
+                && supports_statements(else_body, function)
+        }
         _ => false,
     })
 }

@@ -3,6 +3,148 @@
 use super::*;
 
 impl Generator {
+    /// Dense saved frames expose the assertion's boolean temporary and branch
+    /// schedule directly. The entry owner has already copied the tested
+    /// parameter with record enabled, so this emits the remaining range test
+    /// and cold report diamond without materializing a second boolean value.
+    pub(crate) fn try_emit_dense_frame_assertion(
+        &mut self,
+        expression: &Expression,
+        condition_register: u8,
+        zero_preloaded: bool,
+    ) -> Compilation<bool> {
+        let Some(shape) = DiscardedAssertion::recognize(expression) else {
+            return Ok(false);
+        };
+        let Some((name, upper)) = dense_frame_assertion_range(&shape) else {
+            return Ok(false);
+        };
+        if self.lookup_general(&name) != Some(condition_register) {
+            return Ok(false);
+        }
+        if !zero_preloaded {
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(GENERAL_SCRATCH, 0));
+        }
+
+        let below = self.output.instructions.len();
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 0,
+                target: 0,
+            });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate {
+                a: condition_register,
+                immediate: upper,
+            });
+        let above = self.output.instructions.len();
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 0,
+                target: 0,
+            });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(GENERAL_SCRATCH, 1));
+        let boolean_join = self.output.instructions.len();
+        for branch in [below, above] {
+            if let Instruction::BranchConditionalForward { target, .. } =
+                &mut self.output.instructions[branch]
+            {
+                *target = boolean_join;
+            }
+        }
+        self.output
+            .instructions
+            .push(Instruction::ClearLeftImmediateRecord {
+                a: GENERAL_SCRATCH,
+                s: GENERAL_SCRATCH,
+                clear: 24,
+            });
+        let done = self.output.instructions.len();
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 0,
+            });
+        if !self.try_emit_dense_frame_assertion_report(shape.name, shape.arguments)? {
+            return Ok(false);
+        }
+        let after_report = self.output.instructions.len();
+        if let Instruction::BranchConditionalForward { target, .. } =
+            &mut self.output.instructions[done]
+        {
+            *target = after_report;
+        }
+        self.output.anonymous_label_bump += 5;
+        Ok(true)
+    }
+
+    fn try_emit_dense_frame_assertion_report(
+        &mut self,
+        name: &str,
+        arguments: &[Expression],
+    ) -> Compilation<bool> {
+        let [Expression::StringLiteral(file), line, Expression::StringLiteral(asserted)] =
+            arguments
+        else {
+            return Ok(false);
+        };
+        let Some(line) = constant_value(line).and_then(|value| i16::try_from(value).ok()) else {
+            return Ok(false);
+        };
+        if !self.variadic_callees.contains(name)
+            || self.behavior.global_addressing != GlobalAddressing::SmallData
+            || file.len() + 1 <= 8
+            || asserted.len() + 1 <= 8
+        {
+            return Ok(false);
+        }
+
+        let file = self.string_literal_placeholder(file);
+        let asserted = self.string_literal_placeholder(asserted);
+        match self.behavior.frame_convention {
+            FrameConvention::LinkageFirst => {
+                self.emit_address_high(3, &file);
+                self.output
+                    .instructions
+                    .push(Instruction::ConditionRegisterClear { d: 6 });
+                self.emit_address_high(4, &asserted);
+                self.emit_string_address_low(&asserted, 4, 5);
+                self.emit_string_address_low(&file, 3, 3);
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate(4, line));
+            }
+            FrameConvention::Predecrement => {
+                self.emit_address_high(3, &file);
+                self.emit_address_high(5, &asserted);
+                self.emit_string_address_low(&file, 3, 3);
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate(4, line));
+                self.emit_string_address_low(&asserted, 5, 5);
+                self.output
+                    .instructions
+                    .push(Instruction::ConditionRegisterClear { d: 6 });
+            }
+        }
+        self.record_relocation(RelocationKind::Rel24, name);
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: name.to_string(),
+        });
+        Ok(true)
+    }
+
     /// Lower the SDK assertion shape `(void)(condition || (report(...), 0))`.
     /// The logical value and linkage sequence are scheduled as one region;
     /// treating the call as an ordinary expression loses both MWCC schedules.
@@ -203,6 +345,42 @@ impl Generator {
         });
         Ok(true)
     }
+}
+
+pub(crate) fn dense_frame_assertion_parameter(expression: &Expression) -> Option<String> {
+    let shape = DiscardedAssertion::recognize(expression)?;
+    dense_frame_assertion_range(&shape).map(|(name, _)| name)
+}
+
+fn dense_frame_assertion_range(shape: &DiscardedAssertion<'_>) -> Option<(String, i16)> {
+    let left = comparison_with_constant_on_right(shape.left);
+    let right = comparison_with_constant_on_right(shape.right);
+    let Expression::Binary {
+        operator: BinaryOperator::GreaterEqual,
+        left: left_value,
+        right: left_constant,
+    } = &left
+    else {
+        return None;
+    };
+    let Expression::Binary {
+        operator: BinaryOperator::Less,
+        left: right_value,
+        right: right_constant,
+    } = &right
+    else {
+        return None;
+    };
+    let (Expression::Variable(left_name), Expression::Variable(right_name)) =
+        (left_value.as_ref(), right_value.as_ref())
+    else {
+        return None;
+    };
+    if left_name != right_name || constant_value(left_constant) != Some(0) {
+        return None;
+    }
+    let upper = constant_value(right_constant).and_then(|value| i16::try_from(value).ok())?;
+    Some((left_name.clone(), upper))
 }
 
 enum DelayedLinkage {
