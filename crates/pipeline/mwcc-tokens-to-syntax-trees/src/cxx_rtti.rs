@@ -248,6 +248,7 @@ fn data_global(
             size: bytes.len() as u32,
             align: alignment,
         },
+        source_fundamental: None,
         name,
         is_extern: false,
         is_static,

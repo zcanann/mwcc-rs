@@ -63,13 +63,7 @@ pub(super) fn lower(
     build: CompilerBuild,
     code_alignment: u32,
 ) -> Compilation<DebugSections> {
-    let globals: Vec<_> = unit
-        .globals
-        .iter()
-        .filter(|global| {
-            !global.name.is_empty() && emitted_data_symbols.contains(global.name.as_str())
-        })
-        .collect();
+    let globals = emitted_globals(unit, emitted_data_symbols);
     let shape = classify_shape(unit, machine_functions, &globals, build)?;
 
     let placements: Vec<FunctionPlacement> = machine_functions
@@ -502,6 +496,20 @@ pub(super) fn lower(
     finish(line, records, DebugLayout::BeforeDataGrouped)
 }
 
+fn emitted_globals<'a>(
+    unit: &'a TranslationUnit,
+    emitted_data_symbols: &HashSet<String>,
+) -> Vec<&'a mwcc_syntax_trees::GlobalDeclaration> {
+    unit.globals
+        .iter()
+        .filter(|global| {
+            !global.name.is_empty()
+                && global.is_data_definition()
+                && emitted_data_symbols.contains(global.name.as_str())
+        })
+        .collect()
+}
+
 /// Legacy compilers place a functionless unit's DWARF sections between full and
 /// small data. Fragmented 4.x generations keep the monolithic data-only payload
 /// but move it after all data, independently of the DIE encoding itself.
@@ -714,6 +722,7 @@ mod tests {
     fn inline_static() -> mwcc_syntax_trees::GlobalDeclaration {
         mwcc_syntax_trees::GlobalDeclaration {
             declared_type: Type::Double,
+            source_fundamental: None,
             name: "coefficient$localstatic0$helper".into(),
             is_extern: false,
             is_static: false,
@@ -756,5 +765,39 @@ mod tests {
         let mut wrong_width = global;
         wrong_width.data_bytes = Some(vec![0; 4]);
         assert!(!is_retained_inline_static(&wrong_width));
+    }
+
+    #[test]
+    fn emitted_globals_exclude_reference_only_extern_redeclarations() {
+        let source = br#"
+            extern unsigned int bitmap[4];
+            unsigned int bitmap[4] = { 1, 2, 3, 4 };
+            extern int initialized_extern = 7;
+            extern int reference_only;
+        "#;
+        let unit = mwcc_tokens_to_syntax_trees::parse_located_translation_unit(
+            mwcc_source_to_tokens::tokenize_bytes_located(source).expect("tokens"),
+            false,
+            false,
+            3,
+            1,
+        )
+        .expect("translation unit");
+        let symbols = HashSet::from([
+            "bitmap".to_string(),
+            "initialized_extern".to_string(),
+            "reference_only".to_string(),
+        ]);
+
+        let globals = emitted_globals(&unit, &symbols);
+        assert_eq!(
+            globals
+                .iter()
+                .map(|global| global.name.as_str())
+                .collect::<Vec<_>>(),
+            ["bitmap", "initialized_extern"]
+        );
+        assert!(!globals[0].is_extern);
+        assert!(globals[1].is_extern);
     }
 }

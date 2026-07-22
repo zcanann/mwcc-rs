@@ -46,6 +46,7 @@ pub(super) fn global(
             size: table_size as u32,
             align: 4,
         },
+        source_fundamental: None,
         name,
         is_extern: false,
         is_static: false,

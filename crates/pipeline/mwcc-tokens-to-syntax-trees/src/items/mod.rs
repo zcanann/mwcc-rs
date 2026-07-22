@@ -770,6 +770,7 @@ impl Parser {
                                     .count(),
                                 functions_before: functions.len(),
                                 declared_type: local.declared_type,
+                                source_fundamental: None,
                                 name: mangled,
                                 is_extern: false,
                                 is_static: false,
@@ -879,6 +880,7 @@ impl Parser {
             self.function_sources.push(None);
             globals.push(GlobalDeclaration {
                 declared_type: Type::Int,
+                source_fundamental: None,
                 name: String::new(),
                 is_extern: false,
                 is_static: false,
@@ -1933,6 +1935,7 @@ impl Parser {
                             .count(),
                         functions_before: functions.len(),
                         declared_type: struct_type,
+                        source_fundamental: None,
                         name,
                         is_extern,
                         is_static,
@@ -1957,6 +1960,7 @@ impl Parser {
                 return Ok(());
             }
             let return_type = self.parse_type()?;
+            let declared_source_fundamental = self.last_source_fundamental;
             let declared_is_volatile = self.last_type_was_volatile;
             // Keep the declared aggregate identity before parsing attributes, placement
             // expressions, or initializers: each may contain a cast whose own parse_type call
@@ -2065,6 +2069,7 @@ impl Parser {
                         .count(),
                     functions_before: functions.len(),
                     declared_type: Type::StructPointer { element_size: 0 },
+                    source_fundamental: None,
                     name: pointer_name,
                     is_extern,
                     is_static,
@@ -2446,6 +2451,7 @@ impl Parser {
                             .count(),
                         functions_before: functions.len(),
                         declared_type: return_type,
+                        source_fundamental: declared_source_fundamental,
                         name: declarator_name,
                         is_extern,
                         // A non-extern namespace-scope const object has internal

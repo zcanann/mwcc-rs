@@ -897,14 +897,9 @@ fn compile(
             },
             ..global.clone()
         };
-        // `extern T g[] = {...}` — extern WITH an initializer — is a DEFINITION
-        // (ansi_files' FILE table); only an initializer-less extern is a pure
-        // reference to a symbol defined elsewhere.
-        let extern_reference = global.is_extern
-            && global.initializer.is_none()
-            && global.data_bytes.is_none()
-            && global.address_initializer.is_none();
-        if extern_reference || matches!(global.declared_type, mwcc_syntax_trees::Type::Void) {
+        if !global.is_data_definition()
+            || matches!(global.declared_type, mwcc_syntax_trees::Type::Void)
+        {
             continue;
         }
         let force_full_data_section = global.section.is_none()
