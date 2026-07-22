@@ -327,6 +327,7 @@ pub fn lower_function(
             function,
             inline_expansion_facts,
         ),
+        inline_expansion_facts,
         epilogue_lr_first: false,
         epilogue_lr_before_gprs: false,
         narrow_truncation_context: false,

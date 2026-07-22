@@ -12,61 +12,102 @@ pub(super) fn expand_statement(
     stable_variables: &HashSet<String>,
     active: &mut HashSet<String>,
     changed: &mut bool,
+    value_body_substitutions: &mut usize,
 ) -> Statement {
-    let expression = |value: &Expression, active: &mut HashSet<String>, changed: &mut bool| {
-        expand_expression(value, bodies, stable_variables, active, changed)
+    let expression = |value: &Expression,
+                      active: &mut HashSet<String>,
+                      changed: &mut bool,
+                      value_body_substitutions: &mut usize| {
+        expand_expression(
+            value,
+            bodies,
+            stable_variables,
+            active,
+            changed,
+            value_body_substitutions,
+        )
     };
     match statement {
         Statement::Store { target, value } => Statement::Store {
-            target: expression(target, active, changed),
-            value: expression(value, active, changed),
+            target: expression(target, active, changed, value_body_substitutions),
+            value: expression(value, active, changed, value_body_substitutions),
         },
         Statement::Assign { name, value } => Statement::Assign {
             name: name.clone(),
-            value: expression(value, active, changed),
+            value: expression(value, active, changed, value_body_substitutions),
         },
-        Statement::Expression(value) => Statement::Expression(expression(value, active, changed)),
+        Statement::Expression(value) => {
+            Statement::Expression(expression(value, active, changed, value_body_substitutions))
+        }
         Statement::If {
             condition,
             then_body,
             else_body,
         } => Statement::If {
-            condition: expression(condition, active, changed),
+            condition: expression(condition, active, changed, value_body_substitutions),
             then_body: then_body
                 .iter()
                 .map(|statement| {
-                    expand_statement(statement, bodies, stable_variables, active, changed)
+                    expand_statement(
+                        statement,
+                        bodies,
+                        stable_variables,
+                        active,
+                        changed,
+                        value_body_substitutions,
+                    )
                 })
                 .collect(),
             else_body: else_body
                 .iter()
                 .map(|statement| {
-                    expand_statement(statement, bodies, stable_variables, active, changed)
+                    expand_statement(
+                        statement,
+                        bodies,
+                        stable_variables,
+                        active,
+                        changed,
+                        value_body_substitutions,
+                    )
                 })
                 .collect(),
         },
         Statement::Return(value) => Statement::Return(
             value
                 .as_ref()
-                .map(|value| expression(value, active, changed)),
+                .map(|value| expression(value, active, changed, value_body_substitutions)),
         ),
         Statement::Switch {
             scrutinee,
             arms,
             default,
         } => Statement::Switch {
-            scrutinee: expression(scrutinee, active, changed),
+            scrutinee: expression(scrutinee, active, changed, value_body_substitutions),
             arms: arms
                 .iter()
                 .map(|arm| mwcc_syntax_trees::SwitchArm {
                     value: arm.value,
-                    body: expand_arm(&arm.body, bodies, stable_variables, active, changed),
+                    body: expand_arm(
+                        &arm.body,
+                        bodies,
+                        stable_variables,
+                        active,
+                        changed,
+                        value_body_substitutions,
+                    ),
                     falls_through: arm.falls_through,
                 })
                 .collect(),
-            default: default
-                .as_ref()
-                .map(|body| expand_arm(body, bodies, stable_variables, active, changed)),
+            default: default.as_ref().map(|body| {
+                expand_arm(
+                    body,
+                    bodies,
+                    stable_variables,
+                    active,
+                    changed,
+                    value_body_substitutions,
+                )
+            }),
         },
         Statement::Loop {
             initializer,
@@ -77,17 +118,24 @@ pub(super) fn expand_statement(
         } => Statement::Loop {
             initializer: initializer
                 .as_ref()
-                .map(|value| expression(value, active, changed)),
+                .map(|value| expression(value, active, changed, value_body_substitutions)),
             condition: condition
                 .as_ref()
-                .map(|value| expression(value, active, changed)),
+                .map(|value| expression(value, active, changed, value_body_substitutions)),
             step: step
                 .as_ref()
-                .map(|value| expression(value, active, changed)),
+                .map(|value| expression(value, active, changed, value_body_substitutions)),
             body: body
                 .iter()
                 .map(|statement| {
-                    expand_statement(statement, bodies, stable_variables, active, changed)
+                    expand_statement(
+                        statement,
+                        bodies,
+                        stable_variables,
+                        active,
+                        changed,
+                        value_body_substitutions,
+                    )
                 })
                 .collect(),
             kind: *kind,
@@ -104,6 +152,7 @@ fn expand_arm(
     stable_variables: &HashSet<String>,
     active: &mut HashSet<String>,
     changed: &mut bool,
+    value_body_substitutions: &mut usize,
 ) -> ArmBody {
     match body {
         ArmBody::Return(value) => ArmBody::Return(expand_expression(
@@ -112,12 +161,20 @@ fn expand_arm(
             stable_variables,
             active,
             changed,
+            value_body_substitutions,
         )),
         ArmBody::Statements(statements) => ArmBody::Statements(
             statements
                 .iter()
                 .map(|statement| {
-                    expand_statement(statement, bodies, stable_variables, active, changed)
+                    expand_statement(
+                        statement,
+                        bodies,
+                        stable_variables,
+                        active,
+                        changed,
+                        value_body_substitutions,
+                    )
                 })
                 .collect(),
         ),
@@ -130,6 +187,7 @@ pub(super) fn expand_expression(
     stable_variables: &HashSet<String>,
     active: &mut HashSet<String>,
     changed: &mut bool,
+    value_body_substitutions: &mut usize,
 ) -> Expression {
     expand_expression_with_facts(
         expression,
@@ -137,6 +195,7 @@ pub(super) fn expand_expression(
         stable_variables,
         active,
         changed,
+        value_body_substitutions,
         &HashSet::new(),
     )
 }
@@ -147,15 +206,20 @@ fn expand_expression_with_facts(
     stable_variables: &HashSet<String>,
     active: &mut HashSet<String>,
     changed: &mut bool,
+    value_body_substitutions: &mut usize,
     known_nonzero: &HashSet<String>,
 ) -> Expression {
-    let recurse = |value: &Expression, active: &mut HashSet<String>, changed: &mut bool| {
+    let recurse = |value: &Expression,
+                   active: &mut HashSet<String>,
+                   changed: &mut bool,
+                   value_body_substitutions: &mut usize| {
         expand_expression_with_facts(
             value,
             bodies,
             stable_variables,
             active,
             changed,
+            value_body_substitutions,
             known_nonzero,
         )
     };
@@ -163,7 +227,7 @@ fn expand_expression_with_facts(
         Expression::Call { name, arguments } => {
             let arguments: Vec<_> = arguments
                 .iter()
-                .map(|argument| recurse(argument, active, changed))
+                .map(|argument| recurse(argument, active, changed, value_body_substitutions))
                 .collect();
             let Some(body) = bodies.get(name) else {
                 return Expression::Call {
@@ -191,15 +255,16 @@ fn expand_expression_with_facts(
                 known_nonzero,
             );
             *changed = true;
+            *value_body_substitutions += 1;
             active.insert(name.clone());
-            let expanded = recurse(&substituted, active, changed);
+            let expanded = recurse(&substituted, active, changed, value_body_substitutions);
             active.remove(name);
             expanded
         }
         Expression::AggregateLiteral(elements) => Expression::AggregateLiteral(
             elements
                 .iter()
-                .map(|element| recurse(element, active, changed))
+                .map(|element| recurse(element, active, changed, value_body_substitutions))
                 .collect(),
         ),
         Expression::Binary {
@@ -207,7 +272,7 @@ fn expand_expression_with_facts(
             left,
             right,
         } => {
-            let left = recurse(left, active, changed);
+            let left = recurse(left, active, changed, value_body_substitutions);
             let mut right_facts = known_nonzero.clone();
             if *operator == mwcc_syntax_trees::BinaryOperator::LogicalAnd {
                 if let Some(name) = proven_nonzero_name(&left) {
@@ -220,6 +285,7 @@ fn expand_expression_with_facts(
                 stable_variables,
                 active,
                 changed,
+                value_body_substitutions,
                 &right_facts,
             );
             Expression::Binary {
@@ -230,7 +296,7 @@ fn expand_expression_with_facts(
         }
         Expression::Unary { operator, operand } => Expression::Unary {
             operator: *operator,
-            operand: Box::new(recurse(operand, active, changed)),
+            operand: Box::new(recurse(operand, active, changed, value_body_substitutions)),
         },
         Expression::Conditional {
             condition,
@@ -238,9 +304,24 @@ fn expand_expression_with_facts(
             when_false,
             origin,
         } => Expression::Conditional {
-            condition: Box::new(recurse(condition, active, changed)),
-            when_true: Box::new(recurse(when_true, active, changed)),
-            when_false: Box::new(recurse(when_false, active, changed)),
+            condition: Box::new(recurse(
+                condition,
+                active,
+                changed,
+                value_body_substitutions,
+            )),
+            when_true: Box::new(recurse(
+                when_true,
+                active,
+                changed,
+                value_body_substitutions,
+            )),
+            when_false: Box::new(recurse(
+                when_false,
+                active,
+                changed,
+                value_body_substitutions,
+            )),
             origin: *origin,
         },
         Expression::Cast {
@@ -248,7 +329,7 @@ fn expand_expression_with_facts(
             operand,
         } => Expression::Cast {
             target_type: *target_type,
-            operand: Box::new(recurse(operand, active, changed)),
+            operand: Box::new(recurse(operand, active, changed, value_body_substitutions)),
         },
         Expression::BitFieldRead {
             extracted,
@@ -257,24 +338,29 @@ fn expand_expression_with_facts(
             shift,
             width,
         } => Expression::BitFieldRead {
-            extracted: Box::new(recurse(extracted, active, changed)),
+            extracted: Box::new(recurse(
+                extracted,
+                active,
+                changed,
+                value_body_substitutions,
+            )),
             promoted_type: *promoted_type,
-            storage: Box::new(recurse(storage, active, changed)),
+            storage: Box::new(recurse(storage, active, changed, value_body_substitutions)),
             shift: *shift,
             width: *width,
         },
         Expression::IndexedUpdateValue { value } => Expression::IndexedUpdateValue {
-            value: Box::new(recurse(value, active, changed)),
+            value: Box::new(recurse(value, active, changed, value_body_substitutions)),
         },
         Expression::Dereference { pointer } => Expression::Dereference {
-            pointer: Box::new(recurse(pointer, active, changed)),
+            pointer: Box::new(recurse(pointer, active, changed, value_body_substitutions)),
         },
         Expression::AddressOf { operand } => Expression::AddressOf {
-            operand: Box::new(recurse(operand, active, changed)),
+            operand: Box::new(recurse(operand, active, changed, value_body_substitutions)),
         },
         Expression::Index { base, index } => Expression::Index {
-            base: Box::new(recurse(base, active, changed)),
-            index: Box::new(recurse(index, active, changed)),
+            base: Box::new(recurse(base, active, changed, value_body_substitutions)),
+            index: Box::new(recurse(index, active, changed, value_body_substitutions)),
         },
         Expression::Member {
             base,
@@ -282,7 +368,7 @@ fn expand_expression_with_facts(
             member_type,
             index_stride,
         } => Expression::Member {
-            base: Box::new(recurse(base, active, changed)),
+            base: Box::new(recurse(base, active, changed, value_body_substitutions)),
             offset: *offset,
             member_type: *member_type,
             index_stride: *index_stride,
@@ -293,16 +379,16 @@ fn expand_expression_with_facts(
             element,
             index_stride,
         } => Expression::MemberAddress {
-            base: Box::new(recurse(base, active, changed)),
+            base: Box::new(recurse(base, active, changed, value_body_substitutions)),
             offset: *offset,
             element: *element,
             index_stride: *index_stride,
         },
         Expression::CallThrough { target, arguments } => Expression::CallThrough {
-            target: Box::new(recurse(target, active, changed)),
+            target: Box::new(recurse(target, active, changed, value_body_substitutions)),
             arguments: arguments
                 .iter()
-                .map(|argument| recurse(argument, active, changed))
+                .map(|argument| recurse(argument, active, changed, value_body_substitutions))
                 .collect(),
         },
         Expression::VirtualCall {
@@ -313,27 +399,27 @@ fn expand_expression_with_facts(
             variadic,
             arguments,
         } => Expression::VirtualCall {
-            object: Box::new(recurse(object, active, changed)),
+            object: Box::new(recurse(object, active, changed, value_body_substitutions)),
             vptr_offset: *vptr_offset,
             slot_offset: *slot_offset,
             return_type: *return_type,
             variadic: *variadic,
             arguments: arguments
                 .iter()
-                .map(|argument| recurse(argument, active, changed))
+                .map(|argument| recurse(argument, active, changed, value_body_substitutions))
                 .collect(),
         },
         Expression::PostStep { target, operator } => Expression::PostStep {
-            target: Box::new(recurse(target, active, changed)),
+            target: Box::new(recurse(target, active, changed, value_body_substitutions)),
             operator: *operator,
         },
         Expression::Assign { target, value } => Expression::Assign {
-            target: Box::new(recurse(target, active, changed)),
-            value: Box::new(recurse(value, active, changed)),
+            target: Box::new(recurse(target, active, changed, value_body_substitutions)),
+            value: Box::new(recurse(value, active, changed, value_body_substitutions)),
         },
         Expression::Comma { left, right } => Expression::Comma {
-            left: Box::new(recurse(left, active, changed)),
-            right: Box::new(recurse(right, active, changed)),
+            left: Box::new(recurse(left, active, changed, value_body_substitutions)),
+            right: Box::new(recurse(right, active, changed, value_body_substitutions)),
         },
         Expression::IntegerLiteral(_)
         | Expression::FloatLiteral(_)

@@ -359,6 +359,9 @@ pub(crate) struct Generator {
     /// Allocator bookkeeping retained after value-returning inline calls have
     /// been expanded away. The linkage-first frame policy owns its placement.
     pub(crate) legacy_inline_expansion_frame_bytes: usize,
+    /// Frontend substitutions whose eliminated optimizer nodes still advance
+    /// the anonymous ordinal stream when body expansion occurs.
+    pub(crate) inline_expansion_facts: mwcc_syntax_trees::InlineExpansionFacts,
     /// Emit the saved-LR reload BEFORE the callee-saved GPR reloads in the epilogue. mwcc
     /// orders it this way for a callee-saved STORE sink (`foo(); gi = a;` — the saved value
     /// is stored after the call, then `lwz r0,20; lwz r31,12; mtlr`), as opposed to the

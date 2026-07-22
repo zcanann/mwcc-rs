@@ -9,6 +9,7 @@
 
 mod call_sites;
 mod frame_residue;
+mod ordinal_residue;
 mod returns;
 mod safety;
 mod substitution;
@@ -34,6 +35,24 @@ pub(crate) fn legacy_frame_residue_bytes(
     facts: mwcc_syntax_trees::InlineExpansionFacts,
 ) -> usize {
     frame_residue::legacy_frame_residue_bytes(function, facts)
+}
+
+pub(crate) fn ordinal_residue(
+    facts: mwcc_syntax_trees::InlineExpansionFacts,
+    statement_body_substitutions: usize,
+    value_body_substitutions: usize,
+) -> u32 {
+    ordinal_residue::ordinal_residue(
+        facts,
+        statement_body_substitutions,
+        value_body_substitutions,
+    )
+}
+
+pub(crate) struct ExpandedCalls {
+    pub(crate) function: Function,
+    pub(crate) statement_body_substitutions: usize,
+    pub(crate) value_body_substitutions: usize,
 }
 
 impl InlineBodySet {
@@ -102,7 +121,14 @@ impl InlineBodySet {
     /// to a retained composable body remained in a context this subset cannot
     /// preserve. The caller must then keep the ordinary safe deferral.
     pub(crate) fn expand_calls(&self, function: &Function) -> Option<Function> {
+        self.expand_calls_with_facts(function)
+            .map(|expanded| expanded.function)
+    }
+
+    pub(crate) fn expand_calls_with_facts(&self, function: &Function) -> Option<ExpandedCalls> {
         let mut changed = false;
+        let mut statement_body_substitutions = 0;
+        let mut value_body_substitutions = 0;
         let mut active = HashSet::new();
         let stable_variables = stable_local_values(function);
         let mut locals = function.locals.clone();
@@ -121,6 +147,7 @@ impl InlineBodySet {
             &mut locals,
             &mut occupied_names,
             &mut next_local_id,
+            &mut statement_body_substitutions,
         );
         let statements: Vec<_> = statements
             .iter()
@@ -131,6 +158,7 @@ impl InlineBodySet {
                     &stable_variables,
                     &mut active,
                     &mut changed,
+                    &mut value_body_substitutions,
                 )
             })
             .collect();
@@ -144,6 +172,7 @@ impl InlineBodySet {
                     &stable_variables,
                     &mut active,
                     &mut changed,
+                    &mut value_body_substitutions,
                 ));
             }
         }
@@ -154,6 +183,7 @@ impl InlineBodySet {
                 &stable_variables,
                 &mut active,
                 &mut changed,
+                &mut value_body_substitutions,
             );
             guard.value = value_calls::expand_expression(
                 &guard.value,
@@ -161,6 +191,7 @@ impl InlineBodySet {
                 &stable_variables,
                 &mut active,
                 &mut changed,
+                &mut value_body_substitutions,
             );
         }
         if let Some(return_expression) = &expanded.return_expression {
@@ -170,13 +201,18 @@ impl InlineBodySet {
                 &stable_variables,
                 &mut active,
                 &mut changed,
+                &mut value_body_substitutions,
             ));
         }
         expanded.statements = statements;
         if !changed || self.calls_any(&expanded) {
             return None;
         }
-        Some(expanded)
+        Some(ExpandedCalls {
+            function: expanded,
+            statement_body_substitutions,
+            value_body_substitutions,
+        })
     }
 
     fn expand_statements(
@@ -188,6 +224,7 @@ impl InlineBodySet {
         locals: &mut Vec<mwcc_syntax_trees::LocalDeclaration>,
         occupied_names: &mut HashSet<String>,
         next_local_id: &mut usize,
+        statement_body_substitutions: &mut usize,
     ) -> Vec<Statement> {
         let mut output = Vec::new();
         for statement in statements {
@@ -265,6 +302,7 @@ impl InlineBodySet {
                         substituted.push(Statement::Label(return_boundary));
                     }
                     *changed = true;
+                    *statement_body_substitutions += 1;
                     active.insert(name.clone());
                     output.extend(self.expand_statements(
                         &substituted,
@@ -274,6 +312,7 @@ impl InlineBodySet {
                         locals,
                         occupied_names,
                         next_local_id,
+                        statement_body_substitutions,
                     ));
                     active.remove(name);
                 }
@@ -291,6 +330,7 @@ impl InlineBodySet {
                         locals,
                         occupied_names,
                         next_local_id,
+                        statement_body_substitutions,
                     ),
                     else_body: self.expand_statements(
                         else_body,
@@ -300,6 +340,7 @@ impl InlineBodySet {
                         locals,
                         occupied_names,
                         next_local_id,
+                        statement_body_substitutions,
                     ),
                 }),
                 _ => output.push(statement.clone()),

@@ -5,7 +5,7 @@ typedef struct Limits {
     float upper;
     int first_timer;
     float lower;
-    int second_timer;
+    float second_timer;
 } Limits;
 
 typedef struct State {

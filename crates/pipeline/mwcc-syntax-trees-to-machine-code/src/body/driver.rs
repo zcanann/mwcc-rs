@@ -1385,8 +1385,13 @@ impl Generator {
             return Ok(());
         }
         if calls_skipped_inline {
-            if let Some(expanded) = self.inline_bodies.expand_calls(function) {
-                return self.evaluate_body(&expanded);
+            if let Some(expanded) = self.inline_bodies.expand_calls_with_facts(function) {
+                self.output.anonymous_label_bump += crate::inline_expansion::ordinal_residue(
+                    self.inline_expansion_facts,
+                    expanded.statement_body_substitutions,
+                    expanded.value_body_substitutions,
+                );
+                return self.evaluate_body(&expanded.function);
             }
             return Err(Diagnostic::error(
                 "a call to a skipped inline function needs inline expansion (roadmap)",
