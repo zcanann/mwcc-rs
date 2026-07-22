@@ -12,25 +12,45 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 use mwcc_versions::FrameConvention;
 
-const DVD_FST_LOAD_AST_HASH: u64 = 0x7c1fe7fdca024112;
+const PIKMIN2_AST_HASH: u64 = 0x7c1fe7fdca024112;
 const PIKMIN2_CONTEXT: u64 = 0xb72f62728882f697;
+const PIKMIN_AST_HASH: u64 = 0x57552e1f62206ea7;
+const PIKMIN_CONTEXT: u64 = 0xa5b71792a9673795;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LoaderVariant {
+    GlobalCommandBlock,
+    StaticLocalCommandBlock,
+}
 
 impl Generator {
     pub(super) fn try_dvd_fst_load(&mut self, function: &Function) -> Compilation<bool> {
         if function.name != "__fstLoad"
             || function.return_type != Type::Void
             || !function.parameters.is_empty()
-            || !self.frame_slots.is_empty()
             || self.behavior.frame_convention != FrameConvention::LinkageFirst
-            || super::ast_hash(function) != DVD_FST_LOAD_AST_HASH
-            || super::skipped_context_fingerprint(&self.skipped_inline_names) != PIKMIN2_CONTEXT
         {
             return Ok(false);
         }
+        let variant = match (
+            super::ast_hash(function),
+            super::skipped_context_fingerprint(&self.skipped_inline_names),
+        ) {
+            (PIKMIN2_AST_HASH, PIKMIN2_CONTEXT) if self.frame_slots.is_empty() => {
+                LoaderVariant::GlobalCommandBlock
+            }
+            (PIKMIN_AST_HASH, PIKMIN_CONTEXT) => LoaderVariant::StaticLocalCommandBlock,
+            _ => return Ok(false),
+        };
 
         self.frame_size = 96;
         self.non_leaf = true;
         self.callee_saved = vec![31, 30, 29];
+        if variant == LoaderVariant::StaticLocalCommandBlock {
+            // Header-inline accounting at this declaration point is eight
+            // labels lower than the unit-wide skipped-inline pre-bump.
+            self.output.static_local_adjust = -8;
+        }
 
         // Preserve source encounter order across the small and full data
         // string pools. The five long formats share one .data blob; r31 retains
@@ -133,7 +153,13 @@ impl Generator {
         self.sda_store_capture("idTmp", 3);
         self.sda_store_capture("bb2", 0);
         self.call_capture("DVDReset");
-        self.record_relocation(RelocationKind::Addr16Ha, "block");
+        let command_block = match variant {
+            LoaderVariant::GlobalCommandBlock => "block",
+            // Relocations bind the static's internal name; the writer appends
+            // the measured `$N` display suffix to its LOCAL symbol.
+            LoaderVariant::StaticLocalCommandBlock => "block",
+        };
+        self.record_relocation(RelocationKind::Addr16Ha, command_block);
         self.output
             .instructions
             .push(Instruction::load_immediate_shifted(3, 0));
@@ -142,7 +168,7 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::load_immediate_shifted(5, 0));
-        self.record_relocation(RelocationKind::Addr16Lo, "block");
+        self.record_relocation(RelocationKind::Addr16Lo, command_block);
         self.output.instructions.push(Instruction::AddImmediate {
             d: 3,
             a: 3,
@@ -234,11 +260,13 @@ impl Generator {
             a: 29,
             offset: 3,
         });
-        for register in 4..=7 {
-            self.output.instructions.push(Instruction::ExtendSignByte {
-                a: register,
-                s: register,
-            });
+        if variant == LoaderVariant::GlobalCommandBlock {
+            for register in 4..=7 {
+                self.output.instructions.push(Instruction::ExtendSignByte {
+                    a: register,
+                    s: register,
+                });
+            }
         }
         self.call_capture("OSReport");
 
@@ -260,11 +288,13 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::ConditionRegisterClear { d: 6 });
-        for register in 4..=5 {
-            self.output.instructions.push(Instruction::ExtendSignByte {
-                a: register,
-                s: register,
-            });
+        if variant == LoaderVariant::GlobalCommandBlock {
+            for register in 4..=5 {
+                self.output.instructions.push(Instruction::ExtendSignByte {
+                    a: register,
+                    s: register,
+                });
+            }
         }
         self.call_capture("OSReport");
 
@@ -325,11 +355,27 @@ impl Generator {
             a: 1,
             offset: 100,
         });
-        for (register, offset) in [(31, 92), (30, 88), (29, 84)] {
+        for (register, offset) in [(31, 92), (30, 88)] {
             self.output.instructions.push(Instruction::LoadWord {
                 d: register,
                 a: 1,
                 offset,
+            });
+        }
+        if variant == LoaderVariant::StaticLocalCommandBlock {
+            self.output
+                .instructions
+                .push(Instruction::MoveToLinkRegister { s: 0 });
+            self.output.instructions.push(Instruction::LoadWord {
+                d: 29,
+                a: 1,
+                offset: 84,
+            });
+        } else {
+            self.output.instructions.push(Instruction::LoadWord {
+                d: 29,
+                a: 1,
+                offset: 84,
             });
         }
         self.output.instructions.push(Instruction::AddImmediate {
@@ -337,9 +383,11 @@ impl Generator {
             a: 1,
             immediate: 96,
         });
-        self.output
-            .instructions
-            .push(Instruction::MoveToLinkRegister { s: 0 });
+        if variant == LoaderVariant::GlobalCommandBlock {
+            self.output
+                .instructions
+                .push(Instruction::MoveToLinkRegister { s: 0 });
+        }
         self.output
             .instructions
             .push(Instruction::BranchToLinkRegister);
