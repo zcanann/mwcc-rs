@@ -1,10 +1,16 @@
 //! Recursive substitution of expression-valued retained inline calls.
 
-use super::safety::stable_arguments;
+use super::safety::{stable_argument, stable_local_values};
 use super::substitution::substitute_expression;
 use super::value_body::ValueInlineBody;
-use mwcc_syntax_trees::{ArmBody, Expression, Statement};
+use mwcc_syntax_trees::{ArmBody, Expression, LocalDeclaration, Statement};
 use std::collections::{HashMap, HashSet};
+
+pub(super) struct LocalAllocator<'a> {
+    pub(super) locals: &'a mut Vec<LocalDeclaration>,
+    pub(super) occupied_names: &'a mut HashSet<String>,
+    pub(super) next_local_id: &'a mut usize,
+}
 
 pub(super) fn expand_statement(
     statement: &Statement,
@@ -13,11 +19,12 @@ pub(super) fn expand_statement(
     active: &mut HashSet<String>,
     changed: &mut bool,
     value_body_substitutions: &mut usize,
+    allocator: &mut LocalAllocator<'_>,
 ) -> Statement {
-    let expression = |value: &Expression,
-                      active: &mut HashSet<String>,
-                      changed: &mut bool,
-                      value_body_substitutions: &mut usize| {
+    let mut expression = |value: &Expression,
+                          active: &mut HashSet<String>,
+                          changed: &mut bool,
+                          value_body_substitutions: &mut usize| {
         expand_expression(
             value,
             bodies,
@@ -25,6 +32,7 @@ pub(super) fn expand_statement(
             active,
             changed,
             value_body_substitutions,
+            allocator,
         )
     };
     match statement {
@@ -55,6 +63,7 @@ pub(super) fn expand_statement(
                         active,
                         changed,
                         value_body_substitutions,
+                        allocator,
                     )
                 })
                 .collect(),
@@ -68,6 +77,7 @@ pub(super) fn expand_statement(
                         active,
                         changed,
                         value_body_substitutions,
+                        allocator,
                     )
                 })
                 .collect(),
@@ -94,6 +104,7 @@ pub(super) fn expand_statement(
                         active,
                         changed,
                         value_body_substitutions,
+                        allocator,
                     ),
                     falls_through: arm.falls_through,
                 })
@@ -106,6 +117,7 @@ pub(super) fn expand_statement(
                     active,
                     changed,
                     value_body_substitutions,
+                    allocator,
                 )
             }),
         },
@@ -135,6 +147,7 @@ pub(super) fn expand_statement(
                         active,
                         changed,
                         value_body_substitutions,
+                        allocator,
                     )
                 })
                 .collect(),
@@ -153,6 +166,7 @@ fn expand_arm(
     active: &mut HashSet<String>,
     changed: &mut bool,
     value_body_substitutions: &mut usize,
+    allocator: &mut LocalAllocator<'_>,
 ) -> ArmBody {
     match body {
         ArmBody::Return(value) => ArmBody::Return(expand_expression(
@@ -162,6 +176,7 @@ fn expand_arm(
             active,
             changed,
             value_body_substitutions,
+            allocator,
         )),
         ArmBody::Statements(statements) => ArmBody::Statements(
             statements
@@ -174,6 +189,7 @@ fn expand_arm(
                         active,
                         changed,
                         value_body_substitutions,
+                        allocator,
                     )
                 })
                 .collect(),
@@ -188,11 +204,12 @@ pub(super) fn expand_expression(
     active: &mut HashSet<String>,
     changed: &mut bool,
     value_body_substitutions: &mut usize,
+    allocator: &mut LocalAllocator<'_>,
 ) -> Expression {
-    let recurse = |value: &Expression,
-                   active: &mut HashSet<String>,
-                   changed: &mut bool,
-                   value_body_substitutions: &mut usize| {
+    let mut recurse = |value: &Expression,
+                       active: &mut HashSet<String>,
+                       changed: &mut bool,
+                       value_body_substitutions: &mut usize| {
         expand_expression(
             value,
             bodies,
@@ -200,6 +217,7 @@ pub(super) fn expand_expression(
             active,
             changed,
             value_body_substitutions,
+            allocator,
         )
     };
     match expression {
@@ -214,26 +232,76 @@ pub(super) fn expand_expression(
                     arguments,
                 };
             };
-            if active.contains(name)
-                || !stable_arguments(&body.source, &arguments, stable_variables)
-            {
+            if active.contains(name) {
                 return Expression::Call {
                     name: name.clone(),
                     arguments,
                 };
             }
-            let replacements: HashMap<_, _> = body
-                .source
-                .parameters
-                .iter()
-                .map(|parameter| parameter.name.clone())
-                .zip(arguments)
-                .collect();
-            let substituted = substitute_expression(&body.expression, &replacements);
+            let mut replacements = HashMap::new();
+            let mut argument_initializers = Vec::new();
+            for (parameter, argument) in body.source.parameters.iter().zip(arguments) {
+                if stable_argument(&argument, stable_variables) {
+                    replacements.insert(parameter.name.clone(), argument);
+                    continue;
+                }
+                let unique_name = fresh_name(name, &parameter.name, allocator);
+                replacements.insert(
+                    parameter.name.clone(),
+                    Expression::Variable(unique_name.clone()),
+                );
+                allocator.locals.push(LocalDeclaration {
+                    declared_type: parameter.parameter_type,
+                    name: unique_name.clone(),
+                    initializer: None,
+                    is_volatile: false,
+                    array_length: None,
+                    is_static: false,
+                    data_bytes: None,
+                    data_relocations: Vec::new(),
+                    is_const: false,
+                    row_bytes: None,
+                });
+                argument_initializers.push(Expression::Assign {
+                    target: Box::new(Expression::Variable(unique_name)),
+                    value: Box::new(argument),
+                });
+            }
+            let callee_stable = stable_local_values(&body.source);
+            let mut nested_stable_variables = stable_variables.clone();
+            for local in &body.source.locals {
+                let unique_name = fresh_name(name, &local.name, allocator);
+                replacements.insert(
+                    local.name.clone(),
+                    Expression::Variable(unique_name.clone()),
+                );
+                if callee_stable.contains(&local.name) {
+                    nested_stable_variables.insert(unique_name.clone());
+                }
+                let mut declaration = local.clone();
+                declaration.name = unique_name;
+                declaration.initializer = None;
+                allocator.locals.push(declaration);
+            }
+            let substituted = argument_initializers.into_iter().rev().fold(
+                substitute_expression(&body.expression, &replacements),
+                |right, left| Expression::Comma {
+                    left: Box::new(left),
+                    right: Box::new(right),
+                },
+            );
             *changed = true;
             *value_body_substitutions += 1;
             active.insert(name.clone());
-            let expanded = recurse(&substituted, active, changed, value_body_substitutions);
+            let expanded = expand_expression(
+                &substituted,
+                bodies,
+                &nested_stable_variables,
+                active,
+                changed,
+                value_body_substitutions,
+                allocator,
+            );
             active.remove(name);
             expanded
         }
@@ -396,5 +464,18 @@ pub(super) fn expand_expression(
         | Expression::StringLiteral(_)
         | Expression::Variable(_)
         | Expression::CompoundLiteral { .. } => expression.clone(),
+    }
+}
+
+fn fresh_name(name: &str, local: &str, allocator: &mut LocalAllocator<'_>) -> String {
+    loop {
+        let candidate = format!(
+            "__mwcc_inline_{}_{}_{}",
+            name, *allocator.next_local_id, local
+        );
+        *allocator.next_local_id += 1;
+        if allocator.occupied_names.insert(candidate.clone()) {
+            return candidate;
+        }
     }
 }

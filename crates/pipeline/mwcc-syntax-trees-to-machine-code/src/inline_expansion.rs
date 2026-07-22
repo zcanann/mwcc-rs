@@ -94,6 +94,22 @@ impl InlineBodySet {
                 values.entry(function.name.clone()).or_insert(body);
             }
         }
+        if let Some(needle) = std::env::var_os("MWCC_CAPTURE_INLINE") {
+            let needle = needle.to_string_lossy();
+            for function in skipped
+                .iter()
+                .filter(|function| function.name.contains(needle.as_ref()))
+            {
+                eprintln!(
+                    "inline summary {}: statement={} value={} locals={} statements={}",
+                    function.name,
+                    bodies.contains_key(&function.name),
+                    values.contains_key(&function.name),
+                    function.locals.len(),
+                    function.statements.len(),
+                );
+            }
+        }
         Self { bodies, values }
     }
 
@@ -154,6 +170,16 @@ impl InlineBodySet {
             &mut next_local_id,
             &mut statement_body_substitutions,
         );
+        let initializers: Vec<_> = locals
+            .iter()
+            .enumerate()
+            .filter_map(|(index, local)| local.initializer.clone().map(|value| (index, value)))
+            .collect();
+        let mut allocator = value_calls::LocalAllocator {
+            locals: &mut locals,
+            occupied_names: &mut occupied_names,
+            next_local_id: &mut next_local_id,
+        };
         let statements: Vec<_> = statements
             .iter()
             .map(|statement| {
@@ -164,23 +190,23 @@ impl InlineBodySet {
                     &mut active,
                     &mut changed,
                     &mut value_body_substitutions,
+                    &mut allocator,
                 )
             })
             .collect();
-        let mut expanded = function.clone();
-        expanded.locals = locals;
-        for local in &mut expanded.locals {
-            if let Some(initializer) = &local.initializer {
-                local.initializer = Some(value_calls::expand_expression(
-                    initializer,
-                    &self.values,
-                    &stable_variables,
-                    &mut active,
-                    &mut changed,
-                    &mut value_body_substitutions,
-                ));
-            }
+        for (index, initializer) in initializers {
+            let initializer = value_calls::expand_expression(
+                &initializer,
+                &self.values,
+                &stable_variables,
+                &mut active,
+                &mut changed,
+                &mut value_body_substitutions,
+                &mut allocator,
+            );
+            allocator.locals[index].initializer = Some(initializer);
         }
+        let mut expanded = function.clone();
         for guard in &mut expanded.guards {
             guard.condition = value_calls::expand_expression(
                 &guard.condition,
@@ -189,6 +215,7 @@ impl InlineBodySet {
                 &mut active,
                 &mut changed,
                 &mut value_body_substitutions,
+                &mut allocator,
             );
             guard.value = value_calls::expand_expression(
                 &guard.value,
@@ -197,6 +224,7 @@ impl InlineBodySet {
                 &mut active,
                 &mut changed,
                 &mut value_body_substitutions,
+                &mut allocator,
             );
         }
         if let Some(return_expression) = &expanded.return_expression {
@@ -207,10 +235,27 @@ impl InlineBodySet {
                 &mut active,
                 &mut changed,
                 &mut value_body_substitutions,
+                &mut allocator,
             ));
         }
+        drop(allocator);
+        expanded.locals = locals;
         expanded.statements = statements;
-        if !changed || self.calls_any(&expanded) {
+        let calls_remain = self.calls_any(&expanded);
+        if calls_remain
+            && std::env::var_os("MWCC_CAPTURE_FUNCTION")
+                .is_some_and(|name| name == std::ffi::OsStr::new(&function.name))
+        {
+            let mut calls = HashMap::new();
+            collect_function_calls(&expanded, &mut calls);
+            let mut retained = calls
+                .into_keys()
+                .filter(|name| self.bodies.contains_key(name) || self.values.contains_key(name))
+                .collect::<Vec<_>>();
+            retained.sort();
+            eprintln!("unexpanded retained inline calls: {}", retained.join(", "));
+        }
+        if !changed || calls_remain {
             return None;
         }
         Some(ExpandedCalls {
@@ -841,29 +886,34 @@ mod tests {
     }
 
     #[test]
-    fn rejects_an_impure_argument_instead_of_duplicating_evaluation() {
-        let write = function(
+    fn materializes_an_impure_value_inline_argument_once() {
+        let mut identity = function(
             "write",
             vec![Parameter {
                 parameter_type: Type::Int,
                 name: "value".into(),
             }],
-            vec![Statement::Expression(Expression::Variable("value".into()))],
-        );
-        let caller = function(
-            "caller",
             Vec::new(),
-            vec![Statement::Expression(Expression::Call {
-                name: "write".into(),
-                arguments: vec![Expression::Call {
-                    name: "side_effect".into(),
-                    arguments: Vec::new(),
-                }],
-            })],
         );
-        assert!(InlineBodySet::analyze(&[write])
+        identity.return_type = Type::Int;
+        identity.return_expression = Some(Expression::Variable("value".into()));
+        let mut caller = function("caller", Vec::new(), Vec::new());
+        caller.return_type = Type::Int;
+        caller.return_expression = Some(Expression::Call {
+            name: "write".into(),
+            arguments: vec![Expression::Call {
+                name: "side_effect".into(),
+                arguments: Vec::new(),
+            }],
+        });
+        let expanded = InlineBodySet::analyze(&[identity])
             .expand_calls(&caller)
-            .is_none());
+            .expect("an impure argument should be captured at the call site");
+        assert_eq!(expanded.locals.len(), 1);
+        assert!(matches!(expanded.return_expression,
+            Some(Expression::Comma { left, .. })
+        if matches!(left.as_ref(), Expression::Assign { value, .. }
+            if matches!(value.as_ref(), Expression::Call { name, .. } if name == "side_effect"))));
     }
 
     #[test]
@@ -921,7 +971,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_caller_value_that_can_change_during_the_inlined_body() {
+    fn rejects_a_changing_caller_value_and_an_escape() {
         let write = function(
             "write",
             vec![Parameter {
@@ -1007,5 +1057,59 @@ mod tests {
         let repeated =
             InlineBodySet::analyze_with_definitions(&[helper, caller.clone(), second_caller], &[]);
         assert!(repeated.expand_calls(&caller).is_none());
+    }
+
+    #[test]
+    fn composes_a_value_body_with_call_site_local_temporaries() {
+        let mut helper = function(
+            "turn",
+            vec![Parameter {
+                parameter_type: Type::Float,
+                name: "speed".into(),
+            }],
+            vec![Statement::Expression(Expression::Call {
+                name: "update".into(),
+                arguments: vec![Expression::Variable("angle".into())],
+            })],
+        );
+        helper.return_type = Type::Float;
+        helper.locals = vec![local(
+            "angle",
+            Type::Float,
+            Expression::Call {
+                name: "measure".into(),
+                arguments: vec![Expression::Variable("speed".into())],
+            },
+        )];
+        helper.return_expression = Some(Expression::Variable("angle".into()));
+
+        let mut caller = function(
+            "caller",
+            vec![Parameter {
+                parameter_type: Type::Float,
+                name: "speed".into(),
+            }],
+            Vec::new(),
+        );
+        caller.return_type = Type::Float;
+        caller.return_expression = Some(Expression::Call {
+            name: "turn".into(),
+            arguments: vec![Expression::Variable("speed".into())],
+        });
+
+        let expanded = InlineBodySet::analyze(&[helper])
+            .expand_calls(&caller)
+            .expect("a sequenced value body should compose");
+        assert_eq!(expanded.locals.len(), 1);
+        assert!(expanded.locals[0].initializer.is_none());
+        let temporary = &expanded.locals[0].name;
+        assert!(temporary.starts_with("__mwcc_inline_turn_"));
+        assert!(matches!(
+            expanded.return_expression,
+            Some(Expression::Comma { left, right })
+                if matches!(left.as_ref(), Expression::Assign { target, .. }
+                    if matches!(target.as_ref(), Expression::Variable(name) if name == temporary))
+                && matches!(right.as_ref(), Expression::Comma { .. })
+        ));
     }
 }

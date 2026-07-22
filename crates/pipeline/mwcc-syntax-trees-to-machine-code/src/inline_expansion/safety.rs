@@ -67,7 +67,7 @@ fn composable_statements(statements: &[Statement], local_names: &HashSet<&str>) 
     })
 }
 
-fn stable_argument(expression: &Expression, stable_variables: &HashSet<String>) -> bool {
+pub(super) fn stable_argument(expression: &Expression, stable_variables: &HashSet<String>) -> bool {
     match expression {
         Expression::Variable(name) => stable_variables.contains(name),
         Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) => true,

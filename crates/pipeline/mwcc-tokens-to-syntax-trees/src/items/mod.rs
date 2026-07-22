@@ -1114,6 +1114,18 @@ impl Parser {
             && functions.len() == 1
         {
             let function = functions.pop().expect("length checked");
+            for (source_name, methods) in probe.cxx_free_functions {
+                let retained = self.cxx_free_functions.entry(source_name).or_default();
+                for method in methods {
+                    if !retained
+                        .iter()
+                        .any(|existing| existing.mangled == method.mangled)
+                    {
+                        retained.push(method);
+                    }
+                }
+            }
+            self.skipped_inline_names.insert(function.name.clone());
             if !self
                 .skipped_inline_definitions
                 .iter()

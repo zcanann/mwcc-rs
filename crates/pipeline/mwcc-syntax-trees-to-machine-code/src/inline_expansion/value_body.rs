@@ -5,6 +5,7 @@
 //! `result = A; if (condition) result = B; return result;` body and preserves
 //! it as a comma/conditional expression at the original call position.
 
+use super::safety::composable_function;
 use mwcc_syntax_trees::{
     BinaryOperator, ConditionalOrigin, Expression, Function, Statement, Type, UnaryOperator,
 };
@@ -16,11 +17,22 @@ pub(super) struct ValueInlineBody {
 }
 
 pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
-    if function.return_type == Type::Void
-        || !function.guards.is_empty()
-        || function.asm_body.is_some()
-    {
+    if !function.guards.is_empty() || function.asm_body.is_some() {
         return None;
+    }
+    if function.return_type == Type::Void {
+        if function.return_expression.is_some()
+            || !composable_function(function)
+            || !function.statements.iter().all(void_expression_statement)
+        {
+            return None;
+        }
+        return summarize_sequenced_body(function, Expression::IntegerLiteral(0)).map(
+            |expression| ValueInlineBody {
+                source: function.clone(),
+                expression,
+            },
+        );
     }
     // A direct scalar/member return is the smallest value-inline body. Keep it
     // before the result-local pattern below: ordinary (non-inline) definitions
@@ -32,6 +44,21 @@ pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
             expression: function.return_expression.clone()?,
         });
     }
+    if let Some(expression) = summarize_result_selection(function) {
+        return Some(ValueInlineBody {
+            source: function.clone(),
+            expression,
+        });
+    }
+    summarize_sequenced_body(function, function.return_expression.clone()?).map(|expression| {
+        ValueInlineBody {
+            source: function.clone(),
+            expression,
+        }
+    })
+}
+
+fn summarize_result_selection(function: &Function) -> Option<Expression> {
     let [result] = function.locals.as_slice() else {
         return None;
     };
@@ -96,10 +123,118 @@ pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
             right: Box::new(right),
         }
     });
-    Some(ValueInlineBody {
-        source: function.clone(),
-        expression,
-    })
+    Some(expression)
+}
+
+/// Convert a scalar inline body into a comma expression. Caller-owned fresh
+/// locals are allocated when this summary is substituted, so initializers and
+/// side effects still execute exactly where the original call appeared.
+fn summarize_sequenced_body(function: &Function, result: Expression) -> Option<Expression> {
+    if function.locals.len() > 4
+        || statement_count(&function.statements) > 12
+        || function.locals.iter().any(|local| {
+            local.is_static
+                || local.is_volatile
+                || local.array_length.is_some()
+                || matches!(local.declared_type, Type::Struct { .. })
+        })
+    {
+        return None;
+    }
+    let mut expressions = Vec::new();
+    for local in &function.locals {
+        if let Some(initializer) = &local.initializer {
+            expressions.push(Expression::Assign {
+                target: Box::new(Expression::Variable(local.name.clone())),
+                value: Box::new(initializer.clone()),
+            });
+        }
+    }
+    for statement in &function.statements {
+        expressions.push(statement_expression(statement)?);
+    }
+    expressions.push(result);
+    Some(sequence(expressions))
+}
+
+fn void_expression_statement(statement: &Statement) -> bool {
+    match statement {
+        Statement::Store { .. } | Statement::Assign { .. } => true,
+        Statement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            then_body.iter().all(void_expression_statement)
+                && else_body.iter().all(void_expression_statement)
+        }
+        _ => false,
+    }
+}
+
+fn statement_count(statements: &[Statement]) -> usize {
+    statements
+        .iter()
+        .map(|statement| match statement {
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => 1 + statement_count(then_body) + statement_count(else_body),
+            _ => 1,
+        })
+        .sum()
+}
+
+fn statement_expression(statement: &Statement) -> Option<Expression> {
+    match statement {
+        Statement::Expression(expression) => Some(expression.clone()),
+        Statement::Assign { name, value } => Some(Expression::Assign {
+            target: Box::new(Expression::Variable(name.clone())),
+            value: Box::new(value.clone()),
+        }),
+        Statement::Store { target, value } => Some(Expression::Assign {
+            target: Box::new(target.clone()),
+            value: Box::new(value.clone()),
+        }),
+        Statement::If {
+            condition,
+            then_body,
+            else_body,
+        } => Some(Expression::Conditional {
+            condition: Box::new(condition.clone()),
+            when_true: Box::new(statement_sequence(then_body)?),
+            when_false: Box::new(statement_sequence(else_body)?),
+            origin: ConditionalOrigin::IfAssignments,
+        }),
+        Statement::Return(_)
+        | Statement::Switch { .. }
+        | Statement::Break
+        | Statement::Continue
+        | Statement::Goto(_)
+        | Statement::Label(_)
+        | Statement::Loop { .. } => None,
+    }
+}
+
+fn statement_sequence(statements: &[Statement]) -> Option<Expression> {
+    let mut expressions = statements
+        .iter()
+        .map(statement_expression)
+        .collect::<Option<Vec<_>>>()?;
+    expressions.push(Expression::IntegerLiteral(0));
+    Some(sequence(expressions))
+}
+
+fn sequence(expressions: Vec<Expression>) -> Expression {
+    expressions
+        .into_iter()
+        .rev()
+        .reduce(|right, left| Expression::Comma {
+            left: Box::new(left),
+            right: Box::new(right),
+        })
+        .expect("a value-inline sequence always contains its return expression")
 }
 
 /// Ordinary definitions are eligible for automatic value inlining only when
@@ -173,7 +308,10 @@ mod tests {
         });
 
         let summary = summarize_automatic(&function).expect("direct accessor");
-        assert!(matches!(summary.expression, Expression::Member { offset: 4, .. }));
+        assert!(matches!(
+            summary.expression,
+            Expression::Member { offset: 4, .. }
+        ));
     }
 
     #[test]

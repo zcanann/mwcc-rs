@@ -1042,6 +1042,33 @@ blr\n\
     }
 
     #[test]
+    fn resolves_calls_to_recovered_free_cxx_inline_definitions() {
+        let source = r#"
+            inline bool within(float value, float limit) {
+                bool result = false;
+                if (value <= limit) result = true;
+                return result;
+            }
+            namespace Game { namespace Baby {
+                bool compiled(float value) { return within(value, 3.0f); }
+            } }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(unit.skipped_inline_names.contains("within__Fff"));
+        assert!(matches!(
+            unit.functions[0].return_expression,
+            Some(Expression::Call { ref name, .. }) if name == "within__Fff"
+        ));
+    }
+
+    #[test]
     fn substitutes_a_single_use_inline_accessor_with_a_member_read_argument() {
         let source = r#"
             struct GObj { char pad[44]; void *user_data; };

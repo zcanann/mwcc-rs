@@ -722,7 +722,19 @@ impl Parser {
         source_name: &str,
         arguments: &[Expression],
     ) -> Compilation<Option<String>> {
-        let key = self.free_cxx_source_name(source_name);
+        let scopes = self.named_namespace_scopes();
+        let Some(key) = (0..=scopes.len()).rev().find_map(|depth| {
+            let candidate = if depth == 0 {
+                source_name.to_owned()
+            } else {
+                format!("{}::{source_name}", scopes[..depth].join("::"))
+            };
+            self.cxx_free_functions
+                .contains_key(&candidate)
+                .then_some(candidate)
+        }) else {
+            return Ok(None);
+        };
         let candidates: Vec<&RecoveredCxxMethod> = self
             .cxx_free_functions
             .get(&key)
@@ -744,7 +756,17 @@ impl Parser {
     /// argument). Without an expected function-pointer signature, only a single
     /// recovered overload is unambiguous; overloaded names remain unresolved.
     pub(crate) fn resolve_free_cxx_function_address(&self, source_name: &str) -> Option<String> {
-        let key = self.free_cxx_source_name(source_name);
+        let scopes = self.named_namespace_scopes();
+        let key = (0..=scopes.len()).rev().find_map(|depth| {
+            let candidate = if depth == 0 {
+                source_name.to_owned()
+            } else {
+                format!("{}::{source_name}", scopes[..depth].join("::"))
+            };
+            self.cxx_free_functions
+                .contains_key(&candidate)
+                .then_some(candidate)
+        })?;
         let candidates = self.cxx_free_functions.get(&key)?;
         match candidates.as_slice() {
             [method] => Some(method.mangled.clone()),
