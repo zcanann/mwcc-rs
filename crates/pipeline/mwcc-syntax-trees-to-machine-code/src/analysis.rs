@@ -1138,6 +1138,24 @@ pub(crate) fn constant_value(expression: &Expression) -> Option<i64> {
             operator: UnaryOperator::BitNot,
             operand,
         } => constant_value(operand).map(|value| !value),
+        // Preserve casts that do not change the represented integer. This is
+        // enough to fold source-level `OSRoundUp32B(sizeof(pointer))` without
+        // guessing about narrowing, signed wrap, or pointer conversions.
+        Expression::Cast {
+            target_type,
+            operand,
+        } => {
+            let value = constant_value(operand)?;
+            match target_type {
+                Type::Int if i32::try_from(value).is_ok() => Some(value),
+                Type::UnsignedInt if u32::try_from(value).is_ok() => Some(value),
+                Type::Short if i16::try_from(value).is_ok() => Some(value),
+                Type::UnsignedShort if u16::try_from(value).is_ok() => Some(value),
+                Type::Char if i8::try_from(value).is_ok() => Some(value),
+                Type::UnsignedChar if u8::try_from(value).is_ok() => Some(value),
+                _ => None,
+            }
+        }
         Expression::Binary {
             operator,
             left,

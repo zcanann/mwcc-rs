@@ -1104,6 +1104,7 @@ fn compile(
                 is_static: global.is_static
                     && (global.section.is_some()
                         || global.is_const
+                        || all_null
                         || static_unit_function_table
                         || static_unit_data_table),
                 is_explicit_zero,

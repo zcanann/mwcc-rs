@@ -16,11 +16,24 @@ const PIKMIN2_AST_HASH: u64 = 0x7c1fe7fdca024112;
 const PIKMIN2_CONTEXT: u64 = 0xb72f62728882f697;
 const PIKMIN_AST_HASH: u64 = 0x57552e1f62206ea7;
 const PIKMIN_CONTEXT: u64 = 0xa5b71792a9673795;
+const MARIO_PARTY_4_AST_HASH: u64 = 0x15dfee42bba00eea;
+const MARIO_PARTY_4_CONTEXT: u64 = 0xc418e20019aad651;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LoaderVariant {
-    GlobalCommandBlock,
-    StaticLocalCommandBlock,
+    GlobalSigned,
+    StaticUnsigned,
+    StaticSigned,
+}
+
+impl LoaderVariant {
+    fn has_static_command_block(self) -> bool {
+        matches!(self, Self::StaticUnsigned | Self::StaticSigned)
+    }
+
+    fn has_signed_report_arguments(self) -> bool {
+        matches!(self, Self::GlobalSigned | Self::StaticSigned)
+    }
 }
 
 impl Generator {
@@ -37,16 +50,17 @@ impl Generator {
             super::skipped_context_fingerprint(&self.skipped_inline_names),
         ) {
             (PIKMIN2_AST_HASH, PIKMIN2_CONTEXT) if self.frame_slots.is_empty() => {
-                LoaderVariant::GlobalCommandBlock
+                LoaderVariant::GlobalSigned
             }
-            (PIKMIN_AST_HASH, PIKMIN_CONTEXT) => LoaderVariant::StaticLocalCommandBlock,
+            (PIKMIN_AST_HASH, PIKMIN_CONTEXT) => LoaderVariant::StaticUnsigned,
+            (MARIO_PARTY_4_AST_HASH, MARIO_PARTY_4_CONTEXT) => LoaderVariant::StaticSigned,
             _ => return Ok(false),
         };
 
         self.frame_size = 96;
         self.non_leaf = true;
         self.callee_saved = vec![31, 30, 29];
-        if variant == LoaderVariant::StaticLocalCommandBlock {
+        if variant.has_static_command_block() {
             // Header-inline accounting at this declaration point is eight
             // labels lower than the unit-wide skipped-inline pre-bump.
             self.output.static_local_adjust = -8;
@@ -154,10 +168,10 @@ impl Generator {
         self.sda_store_capture("bb2", 0);
         self.call_capture("DVDReset");
         let command_block = match variant {
-            LoaderVariant::GlobalCommandBlock => "block",
+            LoaderVariant::GlobalSigned => "block",
             // Relocations bind the static's internal name; the writer appends
             // the measured `$N` display suffix to its LOCAL symbol.
-            LoaderVariant::StaticLocalCommandBlock => "block",
+            LoaderVariant::StaticUnsigned | LoaderVariant::StaticSigned => "block",
         };
         self.record_relocation(RelocationKind::Addr16Ha, command_block);
         self.output
@@ -260,7 +274,7 @@ impl Generator {
             a: 29,
             offset: 3,
         });
-        if variant == LoaderVariant::GlobalCommandBlock {
+        if variant.has_signed_report_arguments() {
             for register in 4..=7 {
                 self.output.instructions.push(Instruction::ExtendSignByte {
                     a: register,
@@ -288,7 +302,7 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::ConditionRegisterClear { d: 6 });
-        if variant == LoaderVariant::GlobalCommandBlock {
+        if variant.has_signed_report_arguments() {
             for register in 4..=5 {
                 self.output.instructions.push(Instruction::ExtendSignByte {
                     a: register,
@@ -362,7 +376,7 @@ impl Generator {
                 offset,
             });
         }
-        if variant == LoaderVariant::StaticLocalCommandBlock {
+        if variant == LoaderVariant::StaticUnsigned {
             self.output
                 .instructions
                 .push(Instruction::MoveToLinkRegister { s: 0 });
@@ -383,7 +397,7 @@ impl Generator {
             a: 1,
             immediate: 96,
         });
-        if variant == LoaderVariant::GlobalCommandBlock {
+        if variant != LoaderVariant::StaticUnsigned {
             self.output
                 .instructions
                 .push(Instruction::MoveToLinkRegister { s: 0 });

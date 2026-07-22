@@ -163,8 +163,11 @@ fn recognize(function: &Function) -> Option<AsyncStateCallback<'_>> {
     }
     let mut zero_body = None;
     let mut one_body = None;
-    for arm in arms {
-        if arm.falls_through {
+    for (arm_index, arm) in arms.iter().enumerate() {
+        // Falling out of the final case is semantically the same as an
+        // explicit break. Only fallthrough into another case changes this
+        // two-state shape.
+        if arm.falls_through && arm_index + 1 != arms.len() {
             return None;
         }
         let ArmBody::Statements(body) = &arm.body else {
