@@ -234,7 +234,44 @@ impl Generator {
                 }
                 continue;
             }
-            let value_register = self.general_register_of_leaf(&guard.value)?;
+            let value_register = match self.general_register_of_leaf(&guard.value) {
+                Ok(register) => register,
+                Err(_) if !expression_has_side_effect(&guard.value) => {
+                    // A pure computed guard result cannot participate in the
+                    // leaf-only select. Keep the source diamond: branch around
+                    // the computation on the false path, evaluate directly into
+                    // the ABI result, and return from the taken path.
+                    if is_last && final_in_result {
+                        self.output.instructions.push(
+                            Instruction::BranchConditionalToLinkRegister {
+                                options,
+                                condition_bit,
+                            },
+                        );
+                        self.evaluate_tail(&guard.value, return_type, result)?;
+                        self.output
+                            .instructions
+                            .push(Instruction::BranchToLinkRegister);
+                        return Ok(());
+                    }
+                    let false_branch = self.output.instructions.len();
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchConditionalForward {
+                            options,
+                            condition_bit,
+                            target: 0,
+                        });
+                    self.evaluate_tail(&guard.value, return_type, result)?;
+                    self.output
+                        .instructions
+                        .push(Instruction::BranchToLinkRegister);
+                    let false_arm = self.output.instructions.len();
+                    self.patch_forward(false_branch, false_arm);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
 
             if is_last && final_in_result {
                 // false path returns the final value already in the result register
