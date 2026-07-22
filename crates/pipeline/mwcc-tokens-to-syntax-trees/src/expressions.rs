@@ -723,16 +723,10 @@ impl Parser {
                                 // this non-emitted symbol.
                                 self.skipped_inline_names.insert(mangled.clone());
                             }
-                            let this = if this_adjustment == 0 {
-                                Expression::Variable("this".to_string())
-                            } else {
-                                Expression::MemberAddress {
-                                    base: Box::new(Expression::Variable("this".to_string())),
-                                    offset: this_adjustment,
-                                    element: mwcc_syntax_trees::Pointee::UnsignedChar,
-                                    index_stride: None,
-                                }
-                            };
+                            let this = adjust_cxx_object(
+                                Expression::Variable("this".to_string()),
+                                this_adjustment,
+                            );
                             arguments.insert(0, this);
                             Expression::Call {
                                 name: mangled,
@@ -743,16 +737,10 @@ impl Parser {
                             dispatch,
                             this_adjustment,
                         } => {
-                            let object = if this_adjustment == 0 {
-                                Expression::Variable("this".to_string())
-                            } else {
-                                Expression::MemberAddress {
-                                    base: Box::new(Expression::Variable("this".to_string())),
-                                    offset: this_adjustment,
-                                    element: mwcc_syntax_trees::Pointee::UnsignedChar,
-                                    index_stride: None,
-                                }
-                            };
+                            let object = adjust_cxx_object(
+                                Expression::Variable("this".to_string()),
+                                this_adjustment,
+                            );
                             Expression::VirtualCall {
                                 object: Box::new(object),
                                 vptr_offset: dispatch.vptr_offset,
@@ -1161,44 +1149,57 @@ impl Parser {
                             }
                         }
                         self.expect(Token::ParenClose)?;
-                        let direct_call = match explicit_template_argument {
-                            Some(template_argument) => self.resolve_member_template_forwarder(
+                        if let Some(template_argument) = explicit_template_argument {
+                            let Some(name) = self.resolve_member_template_forwarder(
                                 &tag,
                                 &field,
                                 template_argument,
                                 arguments.len(),
-                            ),
-                            None => {
-                                self.resolve_instance_member_call(&tag, &field, arguments.len())
-                            }
-                        }?;
-                        if let Some(name) = direct_call {
+                            )? else {
+                                return Err(Diagnostic::error(format!(
+                                    "C++ member-template call '{tag}::{field}' is inline or unavailable (roadmap)"
+                                )));
+                            };
                             arguments.insert(0, expression);
                             expression = Expression::Call { name, arguments };
-                        } else if let Some(dispatch) = explicit_template_argument
-                            .is_none()
-                            .then(|| {
-                                self.resolve_virtual_member_call(&tag, &field, arguments.len())
-                            })
-                            .transpose()?
-                            .flatten()
+                        } else if let Some(member_call) =
+                            self.resolve_instance_member_call(&tag, &field, arguments.len())?
                         {
-                            expression = Expression::VirtualCall {
-                                object: Box::new(expression),
-                                vptr_offset: dispatch.vptr_offset,
-                                slot_offset: dispatch.slot_offset,
-                                return_type: dispatch.return_type,
-                                variadic: dispatch.variadic,
-                                arguments,
-                            };
+                            match member_call {
+                                crate::cxx::ImplicitMemberCall::Direct {
+                                    name,
+                                    is_inline,
+                                    this_adjustment,
+                                } => {
+                                    if is_inline {
+                                        self.skipped_inline_names.insert(name.clone());
+                                    }
+                                    arguments.insert(
+                                        0,
+                                        adjust_cxx_object(expression, this_adjustment),
+                                    );
+                                    expression = Expression::Call { name, arguments };
+                                }
+                                crate::cxx::ImplicitMemberCall::Virtual {
+                                    dispatch,
+                                    this_adjustment,
+                                } => {
+                                    expression = Expression::VirtualCall {
+                                        object: Box::new(adjust_cxx_object(
+                                            expression,
+                                            this_adjustment,
+                                        )),
+                                        vptr_offset: dispatch.vptr_offset,
+                                        slot_offset: dispatch.slot_offset,
+                                        return_type: dispatch.return_type,
+                                        variadic: dispatch.variadic,
+                                        arguments,
+                                    };
+                                }
+                            }
                         } else {
-                            let kind = if explicit_template_argument.is_some() {
-                                "member-template"
-                            } else {
-                                "member"
-                            };
                             return Err(Diagnostic::error(format!(
-                                "C++ {kind} call '{tag}::{field}' is inline or unavailable (roadmap)"
+                                "C++ member call '{tag}::{field}' is unavailable (roadmap)"
                             )));
                         }
                         struct_tag = None;
@@ -1463,6 +1464,22 @@ pub(crate) fn substitute_variables(
             value: Box::new(substitute_variables(value, map)),
         },
         other => other.clone(),
+    }
+}
+
+/// Form the base-subobject pointer passed as the EABI `this` argument. Keeping
+/// this shared by implicit and explicit member calls prevents secondary-base
+/// adjustment from depending on source spelling.
+fn adjust_cxx_object(object: Expression, offset: u32) -> Expression {
+    if offset == 0 {
+        object
+    } else {
+        Expression::MemberAddress {
+            base: Box::new(object),
+            offset,
+            element: mwcc_syntax_trees::Pointee::UnsignedChar,
+            index_stride: None,
+        }
     }
 }
 

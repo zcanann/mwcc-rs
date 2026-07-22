@@ -2291,6 +2291,27 @@ blr\n\
     }
 
     #[test]
+    fn resolves_inherited_calls_on_explicit_objects_with_base_adjustment() {
+        let source = r#"
+            struct Header { int header; };
+            struct Service { int state; void stop(); };
+            struct Worker : public Header, public Service {};
+            void halt(Worker* worker) { worker->stop(); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+        )
+        .unwrap();
+        assert!(matches!(unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Call { name, arguments }
+            )] if name == "stop__7ServiceFv"
+                && matches!(arguments.as_slice(), [
+                    mwcc_syntax_trees::Expression::MemberAddress { base, offset: 4, .. }
+                ] if matches!(base.as_ref(), mwcc_syntax_trees::Expression::Variable(worker) if worker == "worker"))));
+    }
+
+    #[test]
     fn lays_out_multiple_bases_and_synthesizes_adjusted_default_constructor_calls() {
         let source = r#"
             struct Primary { Primary(); int first; };

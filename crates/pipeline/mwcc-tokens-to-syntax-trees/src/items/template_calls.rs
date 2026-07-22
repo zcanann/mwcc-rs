@@ -292,7 +292,9 @@ impl Parser {
             if *candidate_argument != argument || (owner != &qualified_class && owner != class) {
                 continue;
             }
-            if let Some(name) = self.resolve_instance_member_call(class, target_member, 0)? {
+            if let Some(crate::cxx::ImplicitMemberCall::Direct { name, .. }) =
+                self.resolve_instance_member_call(class, target_member, 0)?
+            {
                 if !resolved.contains(&name) {
                     resolved.push(name);
                 }

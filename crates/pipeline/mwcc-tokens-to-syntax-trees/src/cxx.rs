@@ -2041,15 +2041,16 @@ impl Parser {
         class: &str,
         member: &str,
         argument_count: usize,
-    ) -> Compilation<Option<String>> {
-        let source_class = class;
-        let class = self.qualify_cxx_class_name(source_class);
+    ) -> Compilation<Option<ImplicitMemberCall>> {
+        let resolved = self
+            .resolve_scoped_cxx_class_name(class)
+            .unwrap_or_else(|| class.to_owned());
         let candidates: Vec<&RecoveredCxxMethod> = self
             .cxx_instance_methods
-            .get(&(class.clone(), member.to_string()))
+            .get(&(resolved.clone(), member.to_string()))
             .or_else(|| {
                 self.cxx_instance_methods
-                    .get(&(source_class.to_string(), member.to_string()))
+                    .get(&(class.to_string(), member.to_string()))
             })
             .into_iter()
             .flatten()
@@ -2059,12 +2060,28 @@ impl Parser {
             })
             .collect();
         match candidates.as_slice() {
-            [] => Ok(None),
-            [method] => Ok(Some(method.mangled.clone())),
-            _ => Err(Diagnostic::error(format!(
-                "C++ member call '{class}::{member}' is ambiguous (roadmap)"
-            ))),
+            [method] => {
+                return Ok(Some(ImplicitMemberCall::Direct {
+                    name: method.mangled.clone(),
+                    is_inline: self.skipped_inline_names.contains(&method.mangled),
+                    this_adjustment: 0,
+                }));
+            }
+            [] => {}
+            _ => {
+                return Err(Diagnostic::error(format!(
+                    "C++ member call '{resolved}::{member}' is ambiguous (roadmap)"
+                )));
+            }
         }
+        if let Some(dispatch) = self.resolve_virtual_member_call(&resolved, member, argument_count)?
+        {
+            return Ok(Some(ImplicitMemberCall::Virtual {
+                dispatch,
+                this_adjustment: 0,
+            }));
+        }
+        self.resolve_member_call_in_class(&resolved, member, argument_count)
     }
 
     /// Resolve a virtual member by declaration signature and return the ABI
@@ -2242,6 +2259,19 @@ impl Parser {
         let Some(class_name) = self.current_cxx_member_class.as_deref() else {
             return Ok(None);
         };
+        self.resolve_member_call_in_class(class_name, function, argument_count)
+    }
+
+    /// Resolve ordinary member lookup for a known object class. Both implicit
+    /// calls on `this` and explicit `object.member()` calls use this path so
+    /// inheritance, virtual dispatch, inline identity, and base adjustment
+    /// cannot drift between the two expression spellings.
+    fn resolve_member_call_in_class(
+        &self,
+        class_name: &str,
+        function: &str,
+        argument_count: usize,
+    ) -> Compilation<Option<ImplicitMemberCall>> {
         if let Some(methods) = self
             .cxx_classes
             .get(class_name)
