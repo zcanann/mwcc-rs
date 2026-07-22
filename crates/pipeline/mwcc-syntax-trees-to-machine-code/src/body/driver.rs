@@ -1924,6 +1924,9 @@ impl Generator {
         if self.try_control_block_unique_copy(function)? {
             return Ok(());
         }
+        if self.try_conditional_member_copy(function)? {
+            return Ok(());
+        }
         // Endian scalar wrappers intentionally take the address of a 16/32/64-bit
         // parameter, select its frame image or a reversed stack array, then tail
         // into a byte-buffer call. Claim all widths before the long-long router.

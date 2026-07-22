@@ -10,6 +10,7 @@ mod callee_saved;
 mod comma_operator;
 mod condition_linkage;
 mod conditional;
+mod conditional_member_copy;
 mod conditional_member_select_tail;
 mod control_block_unique_copy;
 mod dispatchers;
