@@ -202,6 +202,12 @@ pub(crate) struct Parser {
     /// let callable objects and ordinary trivial accessors inline after a
     /// concrete layout has supplied the field offset.
     pub(crate) inline_template_accessors: HashMap<(String, String, usize), String>,
+    /// Out-of-class primary-template constructor initializer summaries. Each
+    /// entry maps a concrete field to the constructor argument copied into it;
+    /// value construction is admitted only when the summary covers the entire
+    /// instantiated aggregate.
+    pub(crate) template_value_constructors:
+        HashMap<(String, usize), Vec<(String, usize)>>,
     /// Empty classes declared directly inside a primary class template. Their
     /// value construction has no runtime payload, but remains semantically
     /// distinct from a static member call during expression parsing.

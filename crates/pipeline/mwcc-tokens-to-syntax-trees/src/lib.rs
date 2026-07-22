@@ -163,6 +163,7 @@ pub fn parse_located_translation_unit_with_enum_min(
         template_instantiation_stack: std::cell::RefCell::new(Vec::new()),
         inline_template_members: std::collections::HashSet::new(),
         inline_template_accessors: std::collections::HashMap::new(),
+        template_value_constructors: std::collections::HashMap::new(),
         empty_nested_template_types: std::collections::HashSet::new(),
         inline_cxx_members: std::collections::HashSet::new(),
         cxx_inline_materializations: Vec::new(),
@@ -3019,6 +3020,34 @@ blr\n\
                 base.as_ref(),
                 mwcc_syntax_trees::Expression::Member { offset: 4, .. }
             )
+        ));
+    }
+
+    #[test]
+    fn recovers_template_value_constructor_initializers() {
+        let source = r#"
+            template <typename T> struct Vec3 {
+                T x, y, z;
+                Vec3(T value);
+            };
+            typedef Vec3<float> Vec3f;
+            template <typename T>
+            inline Vec3<T>::Vec3(T value) : x(value), y(value), z(value) {}
+            struct Holder { Vec3f position; };
+            void clear(Holder* holder) { holder->position = Vec3f(0.0f); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Store {
+                value: mwcc_syntax_trees::Expression::AggregateLiteral(elements),
+                ..
+            }] if elements.len() == 3 && elements.iter().all(|element| {
+                matches!(element, mwcc_syntax_trees::Expression::FloatLiteral(value) if *value == 0.0)
+            })
         ));
     }
 

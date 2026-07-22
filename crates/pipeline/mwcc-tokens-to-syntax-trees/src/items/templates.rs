@@ -10,7 +10,7 @@ use crate::parser::{
     Parser, StructField, StructLayout, StructTemplate, TemplateField, TemplateFieldType,
     TemplateInstantiationKey, TemplateTypePattern,
 };
-use mwcc_syntax_trees::{Pointee, Type};
+use mwcc_syntax_trees::{Expression, Pointee, Type};
 use mwcc_tokens::Token;
 use std::collections::HashMap;
 
@@ -836,6 +836,138 @@ impl Parser {
         self.capture_inline_template_members();
         self.capture_template_virtual_methods();
         self.capture_mixed_struct_template();
+        self.capture_template_value_constructor();
+    }
+
+    /// Recover an out-of-class template constructor whose initializer list is
+    /// made entirely of direct parameter copies:
+    /// `Template<T>::Template(T v) : x(v), y(v), z(v) {}`. The body may remain
+    /// skipped; the initializer list is a complete semantic summary for value
+    /// construction once a concrete specialization layout is available.
+    fn capture_template_value_constructor(&mut self) {
+        let start = self.position;
+        if !matches!(self.tokens.get(start), Some(Token::Identifier(word)) if word == "template")
+            || self.tokens.get(start + 1) != Some(&Token::Less)
+        {
+            return;
+        }
+        let mut cursor = start + 1;
+        let mut angles = 0i32;
+        loop {
+            match self.tokens.get(cursor) {
+                Some(Token::Less) => angles += 1,
+                Some(Token::Greater) => {
+                    angles -= 1;
+                    if angles == 0 {
+                        cursor += 1;
+                        break;
+                    }
+                }
+                Some(Token::EndOfFile) | None => return,
+                _ => {}
+            }
+            cursor += 1;
+        }
+        while matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if matches!(word.as_str(), "inline" | "__inline"))
+        {
+            cursor += 1;
+        }
+        let Some(Token::Identifier(template_name)) = self.tokens.get(cursor) else {
+            return;
+        };
+        let template_name = template_name.clone();
+        cursor += 1;
+        if self.tokens.get(cursor) == Some(&Token::Less) {
+            let mut depth = 0i32;
+            loop {
+                match self.tokens.get(cursor) {
+                    Some(Token::Less) => depth += 1,
+                    Some(Token::Greater) => {
+                        depth -= 1;
+                        if depth == 0 {
+                            cursor += 1;
+                            break;
+                        }
+                    }
+                    Some(Token::EndOfFile) | None => return,
+                    _ => {}
+                }
+                cursor += 1;
+            }
+        }
+        if self.tokens.get(cursor) != Some(&Token::Colon)
+            || self.tokens.get(cursor + 1) != Some(&Token::Colon)
+            || !matches!(self.tokens.get(cursor + 2), Some(Token::Identifier(name)) if name == &template_name)
+            || self.tokens.get(cursor + 3) != Some(&Token::ParenOpen)
+        {
+            return;
+        }
+        cursor += 4;
+        let mut parameter_names = Vec::new();
+        let mut parameter_start = cursor;
+        let mut nested = 0i32;
+        loop {
+            match self.tokens.get(cursor) {
+                Some(Token::ParenOpen | Token::Less | Token::BracketOpen) => nested += 1,
+                Some(Token::Greater | Token::BracketClose) if nested > 0 => nested -= 1,
+                Some(Token::ParenClose) if nested > 0 => nested -= 1,
+                Some(Token::Comma | Token::ParenClose) if nested == 0 => {
+                    let name = self.tokens[parameter_start..cursor]
+                        .iter()
+                        .rev()
+                        .find_map(|token| match token {
+                            Token::Identifier(name) => Some(name.clone()),
+                            _ => None,
+                        });
+                    if parameter_start != cursor {
+                        let Some(name) = name else { return };
+                        parameter_names.push(name);
+                    }
+                    if self.tokens.get(cursor) == Some(&Token::ParenClose) {
+                        cursor += 1;
+                        break;
+                    }
+                    cursor += 1;
+                    parameter_start = cursor;
+                    continue;
+                }
+                Some(Token::EndOfFile) | None => return,
+                _ => {}
+            }
+            cursor += 1;
+        }
+        if self.tokens.get(cursor) != Some(&Token::Colon) || parameter_names.is_empty() {
+            return;
+        }
+        cursor += 1;
+        let mut initializers = Vec::new();
+        loop {
+            let Some(Token::Identifier(field)) = self.tokens.get(cursor) else {
+                return;
+            };
+            let field = field.clone();
+            let Some([Token::ParenOpen, Token::Identifier(argument), Token::ParenClose]) =
+                self.tokens.get(cursor + 1..cursor + 4)
+            else {
+                return;
+            };
+            let Some(argument_index) = parameter_names.iter().position(|name| name == argument)
+            else {
+                return;
+            };
+            initializers.push((field, argument_index));
+            cursor += 4;
+            if self.tokens.get(cursor) == Some(&Token::Comma) {
+                cursor += 1;
+                continue;
+            }
+            if self.tokens.get(cursor) != Some(&Token::BraceOpen) {
+                return;
+            }
+            break;
+        }
+        self.template_value_constructors
+            .insert((template_name, parameter_names.len()), initializers);
     }
 
     /// Retain virtual declaration slots for an opaque primary template when
@@ -1502,6 +1634,53 @@ impl Parser {
             .inline_template_accessors
             .get(&(primary.to_owned(), member.to_owned(), arity))?;
         self.structs.get(instance)?.fields.get(field).cloned()
+    }
+
+    /// Materialize a concrete template value from a recovered constructor
+    /// initializer summary. Every stored field must be covered exactly once;
+    /// partial or duplicate summaries remain ordinary calls and defer later.
+    pub(crate) fn resolve_template_value_construction(
+        &self,
+        source_name: &str,
+        arguments: &[Expression],
+    ) -> Option<Vec<Expression>> {
+        let qualified = self.qualify_cxx_class_name(source_name);
+        let template = self
+            .template_aliases
+            .get(source_name)
+            .or_else(|| self.template_aliases.get(&qualified))
+            .map(String::as_str)
+            .or_else(|| source_name.split('<').next())?;
+        let summary = self
+            .template_value_constructors
+            .get(&(template.to_owned(), arguments.len()))?;
+        let concrete = self
+            .struct_typedefs
+            .get(source_name)
+            .or_else(|| self.struct_typedefs.get(&qualified))
+            .map_or(source_name, String::as_str);
+        let layout = self
+            .structs
+            .get(concrete)
+            .or_else(|| self.structs.get(source_name))
+            .or_else(|| self.structs.get(&qualified))?;
+        let ordered_fields = layout.fields_in_declaration_order();
+        if ordered_fields.len() != summary.len() {
+            return None;
+        }
+        ordered_fields
+            .into_iter()
+            .map(|(field, _)| {
+                let matches = summary
+                    .iter()
+                    .filter(|(initialized, _)| initialized == field)
+                    .collect::<Vec<_>>();
+                let [(_, argument)] = matches.as_slice() else {
+                    return None;
+                };
+                arguments.get(*argument).cloned()
+            })
+            .collect()
     }
 
     /// Instantiate `typedef Template<Concrete> Alias;` from a recovered

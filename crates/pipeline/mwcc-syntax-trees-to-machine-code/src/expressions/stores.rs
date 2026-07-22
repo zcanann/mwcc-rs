@@ -470,6 +470,57 @@ impl Generator {
                 }
             }
         }
+        // A template value constructor may reduce to a complete aggregate of
+        // identical float lanes (`Vector3f(v)` -> `{v, v, v}`). When those
+        // lanes exactly fill the destination member, evaluate the shared value
+        // once and broadcast it with displacement stores. The size proof keeps
+        // this out of padded/mixed aggregates whose field offsets are unknown
+        // to the machine-code layer.
+        if let (
+            Expression::Member {
+                base,
+                offset,
+                member_type: Type::Struct { size, .. },
+                index_stride: None,
+            },
+            Expression::AggregateLiteral(elements),
+        ) = (target, value)
+        {
+            if let Some(first) = elements.first() {
+                let fills_member = elements
+                    .len()
+                    .checked_mul(4)
+                    .zip(usize::try_from(*size).ok())
+                    .is_some_and(|(bytes, size)| bytes == size);
+                let uniform = elements
+                    .iter()
+                    .all(|element| structurally_equal(first, element));
+                let floats = elements.iter().all(|element| self.is_float_value(element));
+                if fills_member && uniform && floats {
+                    let address = self.member_base_register(base)?;
+                    let source = self.place_store_value(first, Pointee::Float)?;
+                    for index in 0..elements.len() {
+                        let displacement = u32::try_from(index)
+                            .ok()
+                            .and_then(|index| index.checked_mul(4))
+                            .and_then(|lane| offset.checked_add(lane))
+                            .and_then(|offset| i16::try_from(offset).ok())
+                            .ok_or_else(|| {
+                                Diagnostic::error(
+                                    "aggregate member store displacement is out of range",
+                                )
+                            })?;
+                        self.output.instructions.push(displacement_store(
+                            Pointee::Float,
+                            source,
+                            address,
+                            displacement,
+                        )?);
+                    }
+                    return Ok(());
+                }
+            }
+        }
         // `gp->field = v` / `g.field = v` for a file-scope struct base: materialize
         // the base (a struct POINTER's value, or a struct VALUE's address) into a
         // register chosen to avoid the value's inputs, then a displacement store at

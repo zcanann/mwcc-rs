@@ -708,7 +708,12 @@ impl Parser {
                     }
                 }
                 self.expect(Token::ParenClose)?;
-                if let Some(member_call) = self.resolve_implicit_member_call(&name, &arguments)?
+                if let Some(elements) =
+                    self.resolve_template_value_construction(&name, &arguments)
+                {
+                    Expression::AggregateLiteral(elements)
+                } else if let Some(member_call) =
+                    self.resolve_implicit_member_call(&name, &arguments)?
                 {
                     match member_call {
                         crate::cxx::ImplicitMemberCall::Direct {
