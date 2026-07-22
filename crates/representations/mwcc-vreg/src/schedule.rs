@@ -203,7 +203,7 @@ pub fn coalesce_self_moves_preserving(
     for (index, instruction) in original.into_iter().enumerate() {
         permutation.push(next);
         let is_self_move = matches!(&instruction, Instruction::Or { a, s, b } if a == s && s == b)
-            || matches!(&instruction, Instruction::AddImmediate { d, a, immediate: 0 } if d == a)
+            || matches!(&instruction, Instruction::AddImmediate { d, a, immediate: 0 } if d == a && *a != 0)
             || matches!(&instruction, Instruction::FloatMove { d, b } if d == b);
         if !is_self_move || preserved_indices.contains(&index) {
             instructions.push(instruction);
@@ -726,6 +726,27 @@ mod tests {
             [Instruction::AddImmediate {
                 d: 3,
                 a: 3,
+                immediate: 0
+            }]
+        ));
+    }
+
+    #[test]
+    fn li_r0_zero_is_not_an_addi_self_move() {
+        let mut stream = vec![Instruction::AddImmediate {
+            d: 0,
+            a: 0,
+            immediate: 0,
+        }];
+
+        let permutation = coalesce_self_moves(&mut stream);
+
+        assert_eq!(permutation, vec![0]);
+        assert!(matches!(
+            stream.as_slice(),
+            [Instruction::AddImmediate {
+                d: 0,
+                a: 0,
                 immediate: 0
             }]
         ));
