@@ -3079,6 +3079,18 @@ impl Generator {
             if self.try_callee_saved_result_across_call_return(function)? {
                 return Ok(());
             }
+            // `x = parameter->member; g(x, integer, float);` — a computed
+            // local that dies as the first argument of its only call.
+            if self.try_computed_local_call_forward(function)? {
+                return Ok(());
+            }
+            // `x = f(parameters...); g(x, constants...);` — all parameters die
+            // in f and x remains in r3 for g's first argument, so neither value
+            // needs a callee-saved home. The mixed GPR/FPR tail lives separately
+            // from the older integer-only, parameterless result-feed schedule.
+            if self.try_result_call_forward_with_live_ins(function)? {
+                return Ok(());
+            }
             // `x = f(); g(…, x, …);` void — the result feeds the next call and dies (no home).
             if self.try_result_feeds_call(function)? {
                 return Ok(());
