@@ -57,7 +57,7 @@ pub fn lower_debug_info(
             return fragmented::lower_aggregate_data_unit(unit, grouped).map(Some);
         }
     } else if fragmented_generation {
-        if !has_emitted_data && legacy::matches_simple_void_functions(unit, machine_functions) {
+        if !has_emitted_data {
             let grouped =
                 legacy::lower(unit, machine_functions, source_name, build, code_alignment)?;
             return fragmented::lower_simple_void_functions(

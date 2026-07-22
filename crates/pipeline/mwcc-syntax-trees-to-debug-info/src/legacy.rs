@@ -133,6 +133,27 @@ pub(super) fn lower(
             machine_functions,
             &layout,
         )?);
+    } else if shape == MeasuredShape::ConstantFunctions && build.version.0 >= 4 {
+        for (machine_index, (_, source)) in source_functions.iter().enumerate() {
+            let terminal_return_line = source.terminal_return_line.ok_or_else(|| {
+                Diagnostic::error(
+                    "debug-info: a constant function has no terminal return source line",
+                )
+            })?;
+            line_records.extend([
+                LineRecord {
+                    line: terminal_return_line,
+                    column: u16::MAX,
+                    address_delta: layout.offsets[machine_index],
+                },
+                LineRecord {
+                    line: source.body_end_line,
+                    column: u16::MAX,
+                    address_delta: layout.offsets[machine_index]
+                        + layout.sizes[machine_index].saturating_sub(4),
+                },
+            ]);
+        }
     } else {
         for (machine_index, (_, source)) in source_functions.iter().enumerate() {
             let terminal_return_line = source.terminal_return_line.ok_or_else(|| {
@@ -415,13 +436,6 @@ pub(super) fn lookup_capture(
     captures::lookup(unit, machine_functions, source_name, source, build)
 }
 
-pub(super) fn matches_simple_void_functions(
-    unit: &TranslationUnit,
-    machine_functions: &[MachineFunction],
-) -> bool {
-    simple_void_functions::matches(unit, machine_functions)
-}
-
 fn finish(
     line: mwcc_dwarf1::EncodedSection,
     records: Vec<DebugRecord>,
@@ -596,10 +610,8 @@ mod tests {
 
     #[test]
     fn data_only_layout_changes_at_the_fragmented_generation() {
-        let legacy =
-            mwcc_versions::by_label_experimental("GC/1.2.5").expect("legacy build");
-        let fragmented =
-            mwcc_versions::by_label_experimental("Wii/1.0").expect("fragmented build");
+        let legacy = mwcc_versions::by_label_experimental("GC/1.2.5").expect("legacy build");
+        let fragmented = mwcc_versions::by_label_experimental("Wii/1.0").expect("fragmented build");
         assert_eq!(
             data_only_layout(legacy),
             DebugLayout::BetweenFullAndSmallDataGrouped
