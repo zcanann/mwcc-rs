@@ -1094,6 +1094,34 @@ blr\n\
     }
 
     #[test]
+    fn inline_destructor_identity_does_not_hide_a_constructor_definition() {
+        let source = r#"
+            struct C {
+                C();
+                inline virtual ~C();
+            };
+            C::~C() {}
+            C::C() {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            ["__ct__1CFv"]
+        );
+    }
+
+    #[test]
     fn retains_named_parameter_identity_in_member_definition_symbols() {
         let source = r#"
             struct Creature { int value; };

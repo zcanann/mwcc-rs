@@ -17,6 +17,24 @@ use crate::cxx_analysis_facts::{
 use crate::items::{pointee_of, type_alignment, type_size};
 use crate::parser::{Parser, StructField, StructLayout};
 
+/// Give inline special members identities that cannot collide with one
+/// another. Their source spellings both contain the class name (`C()` and
+/// `~C()`), while out-of-class recovery needs to distinguish the two before
+/// either one has been mangled.
+pub(crate) fn canonical_inline_member_name(
+    class: &str,
+    source_name: &str,
+    is_destructor: bool,
+) -> String {
+    if is_destructor {
+        "__dt".to_string()
+    } else if class.rsplit("::").next() == Some(source_name) {
+        "__ct".to_string()
+    } else {
+        source_name.to_string()
+    }
+}
+
 /// The C++-only information that a plain C struct layout cannot retain.
 /// Declaration order controls constructor initialization order, while base
 /// names distinguish a base initializer from an identically shaped member.
@@ -962,7 +980,13 @@ impl Parser {
                         .checked_sub(1)
                         .and_then(|previous| self.tokens.get(previous))
                         .and_then(|previous| match previous {
-                            Token::Identifier(name) => Some(name.clone()),
+                            Token::Identifier(name) => Some(canonical_inline_member_name(
+                                &class,
+                                name,
+                                index.checked_sub(2).and_then(|before_name| {
+                                    self.tokens.get(before_name)
+                                }) == Some(&Token::Tilde),
+                            )),
                             _ => None,
                         });
                 }

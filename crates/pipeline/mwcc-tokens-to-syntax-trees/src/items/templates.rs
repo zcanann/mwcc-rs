@@ -569,6 +569,7 @@ impl Parser {
         let mut angle_qualified_name: Option<&str> = None;
         let mut class_name: Option<&str> = None;
         let mut member_name: Option<&str> = None;
+        let mut member_is_destructor = false;
         let mut awaiting_member = false;
 
         while let Some(token) = self.tokens.get(index) {
@@ -590,9 +591,13 @@ impl Parser {
                     // handles `N::C::f`: the second `::` replaces `N` with `C`.
                     class_name = angle_qualified_name.take().or(last_identifier);
                     member_name = None;
+                    member_is_destructor = false;
                     saw_qualified_member = true;
                     awaiting_member = true;
                     index += 1;
+                }
+                Token::Tilde if parameter_depth == 0 && angle_depth == 0 && awaiting_member => {
+                    member_is_destructor = true;
                 }
                 Token::Identifier(name) if parameter_depth == 0 && angle_depth == 0 => {
                     if awaiting_member && !saw_parameter_list {
@@ -616,9 +621,14 @@ impl Parser {
                         return false;
                     };
                     let qualified_class = self.qualify_cxx_class_name(class);
+                    let member = crate::cxx::canonical_inline_member_name(
+                        class,
+                        member,
+                        member_is_destructor,
+                    );
                     let ordinary_inline = self
                         .inline_cxx_members
-                        .contains(&(qualified_class, member.to_string()));
+                        .contains(&(qualified_class, member.clone()));
                     let template_inline = (explicit_specialization
                         || saw_template_arguments
                         || self.template_aliases.contains_key(class))
@@ -628,7 +638,7 @@ impl Parser {
                                 .get(class)
                                 .map_or(class, String::as_str);
                             self.inline_template_members
-                                .contains(&(primary.to_string(), member.to_string()))
+                                .contains(&(primary.to_string(), member))
                         };
                     return ordinary_inline || template_inline;
                 }
