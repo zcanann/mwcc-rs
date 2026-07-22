@@ -69,7 +69,27 @@ impl Generator {
         // arguments. This is the same source-order latency schedule MWCC uses
         // in the corresponding Melee body.
         permutation.extend([19, 16, 20, 17, 21, 18, 22, 23]);
-        permutation.extend(24..self.output.instructions.len());
+        if post_callback_bitfield_call_region(&self.output.instructions[24..], state, entry) {
+            // The entry argument is materialized while the bit value is live.
+            // Retaining that collision selects r4 for the bit value and makes
+            // the entry copy an addi, as in the legacy value graph.
+            self.output.instructions[33] = Instruction::AddImmediate {
+                d: 3,
+                a: entry,
+                immediate: 0,
+            };
+            if trailing_state_call_pair(&self.output.instructions[36..], state) {
+                self.output.instructions[38] = Instruction::AddImmediate {
+                    d: 3,
+                    a: state,
+                    immediate: 0,
+                };
+            }
+            permutation.extend([24, 25, 26, 27, 28, 30, 33, 29, 31, 34, 32, 35]);
+            permutation.extend(36..self.output.instructions.len());
+        } else {
+            permutation.extend(24..self.output.instructions.len());
+        }
         apply_permutation(&mut self.output, &permutation);
 
         // Two substituted initializer calls each leave two anonymous optimizer
@@ -202,6 +222,126 @@ fn mixed_literal_call_region(instructions: &[Instruction], entry: u8) -> Option<
         return None;
     };
     (first == entry && first_copy == entry).then_some(())
+}
+
+fn post_callback_bitfield_call_region(instructions: &[Instruction], state: u8, entry: u8) -> bool {
+    let Some(region) = instructions.get(..12) else {
+        return false;
+    };
+    if !matches!(region[1], Instruction::BranchAndLink { .. })
+        || !matches!(region[11], Instruction::BranchAndLink { .. })
+    {
+        return false;
+    }
+    let Instruction::Or {
+        a: 3,
+        s: update_argument,
+        b: update_argument_copy,
+    } = region[0]
+    else {
+        return false;
+    };
+    let Instruction::AddImmediateShifted {
+        d: callback_address,
+        a: 0,
+        ..
+    } = region[2]
+    else {
+        return false;
+    };
+    let Instruction::AddImmediate {
+        d: 0,
+        a: callback_address_low,
+        ..
+    } = region[3]
+    else {
+        return false;
+    };
+    let Instruction::StoreWord {
+        s: 0,
+        a: callback_base,
+        ..
+    } = region[4]
+    else {
+        return false;
+    };
+    let Instruction::LoadByteZero {
+        d: 0,
+        a: bitfield_base,
+        ..
+    } = region[5]
+    else {
+        return false;
+    };
+    let Instruction::AddImmediate {
+        d: bit_value,
+        a: 0,
+        immediate: 1,
+    } = region[6]
+    else {
+        return false;
+    };
+    let Instruction::RotateAndMaskInsert {
+        a: 0,
+        s: bit_value_use,
+        ..
+    } = region[7]
+    else {
+        return false;
+    };
+    let Instruction::StoreByte {
+        s: 0,
+        a: bitfield_store_base,
+        ..
+    } = region[8]
+    else {
+        return false;
+    };
+    let Instruction::Or {
+        a: 3,
+        s: call_argument,
+        b: call_argument_copy,
+    } = region[9]
+    else {
+        return false;
+    };
+    if !matches!(region[10], Instruction::AddImmediate { d: 4, a: 0, .. }) {
+        return false;
+    }
+
+    update_argument == entry
+        && update_argument_copy == entry
+        && callback_address == callback_address_low
+        && callback_base == state
+        && bitfield_base == state
+        && bit_value == bit_value_use
+        && bitfield_store_base == state
+        && call_argument == entry
+        && call_argument_copy == entry
+}
+
+fn trailing_state_call_pair(instructions: &[Instruction], state: u8) -> bool {
+    matches!(
+        instructions.get(..5),
+        Some([
+            Instruction::Or {
+                a: 3,
+                s: first_argument,
+                b: first_argument_copy,
+            },
+            Instruction::BranchAndLink { .. },
+            Instruction::Or {
+                a: 3,
+                s: second_argument,
+                b: second_argument_copy,
+            },
+            Instruction::AddImmediate { d: 4, a: 0, .. },
+            Instruction::BranchAndLink { .. },
+        ]) if *first_argument == state
+            && *first_argument_copy == state
+            && *second_argument == state
+            && *second_argument_copy == state
+    )
 }
 
 fn apply_permutation(output: &mut mwcc_machine_code::MachineFunction, permutation: &[usize]) {
