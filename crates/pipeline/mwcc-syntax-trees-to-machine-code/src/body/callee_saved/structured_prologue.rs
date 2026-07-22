@@ -23,6 +23,35 @@ pub(super) fn saved_home_stores_precede_initialization(
 }
 
 impl Generator {
+    pub(super) fn try_emit_structured_wide_saved_initializer(
+        &mut self,
+        initializer: &Expression,
+        home: u8,
+    ) -> bool {
+        let Some(value) = constant_value(initializer) else {
+            return false;
+        };
+        let value = value as i32;
+        if (-0x8000..=0x7fff).contains(&value) {
+            return false;
+        }
+        let low = (value as u32 & 0xffff) as i16;
+        if low == 0 {
+            return false;
+        }
+        let high_adjusted = ((value - i32::from(low)) >> 16) as i16;
+        let scratch = Eabi::general_result().number;
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(scratch, high_adjusted));
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: home,
+            a: scratch,
+            immediate: low,
+        });
+        true
+    }
+
     pub(super) fn emit_structured_saved_home_store(
         &mut self,
         home: u8,
@@ -43,11 +72,7 @@ impl Generator {
         frame_size: i16,
     ) {
         for (range_index, &home) in homes.iter().enumerate() {
-            self.emit_structured_saved_home_store(
-                home,
-                first_home_index + range_index,
-                frame_size,
-            );
+            self.emit_structured_saved_home_store(home, first_home_index + range_index, frame_size);
         }
     }
 }

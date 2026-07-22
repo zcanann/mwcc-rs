@@ -11,7 +11,7 @@ use super::structured_entry_alias::{
 use super::guarded_computed_survivor::emit_scaled_index;
 use super::structured_call_accumulator::{
     call_accumulator_assignment_count, call_accumulator_names,
-    fold_zero_initialized_call_accumulator,
+    fold_zero_initialized_call_accumulator, in_place_call_combined_return_name,
 };
 use super::structured_frame_entry::structured_dense_frame_entry_index;
 use super::structured_frame_assignment::{
@@ -93,8 +93,11 @@ impl Generator {
         } else {
             None
         };
-        if (!with_frame_array
-            && (function.return_type != Type::Void || function.return_expression.is_some()))
+        let supported_plain_return = (function.return_type == Type::Void
+            && function.return_expression.is_none())
+            || (matches!(function.return_type, Type::Int | Type::UnsignedInt)
+                && function.return_expression.is_some());
+        if (!with_frame_array && !supported_plain_return)
             || !supports_statements(&function.statements, function)
         {
             return Ok(false);
@@ -386,11 +389,10 @@ impl Generator {
             if !batched_saved_home_stores && !dense_frame {
                 self.emit_structured_saved_home_store(home, home_index - 1, plan.frame_size);
             }
-            self.evaluate(
-                local.initializer.as_ref().expect("partitioned as eager"),
-                local.declared_type,
-                home,
-            )?;
+            let initializer = local.initializer.as_ref().expect("partitioned as eager");
+            if !self.try_emit_structured_wide_saved_initializer(initializer, home) {
+                self.evaluate(initializer, local.declared_type, home)?;
+            }
             self.locations.insert(
                 local.name.clone(),
                 Location {
@@ -584,7 +586,22 @@ impl Generator {
                 Type::Float | Type::Double => Eabi::float_result().number,
                 _ => Eabi::general_result().number,
             };
+            if self.behavior.frame_convention == FrameConvention::LinkageFirst
+                && in_place_call_combined_return_name(function).is_some()
+                && matches!(return_expression, Expression::Variable(_))
+            {
+                let Expression::Variable(name) = return_expression else {
+                    unreachable!("matched variable return")
+                };
+                let source = self.general_register_of(name)?;
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: result,
+                    a: source,
+                    immediate: 0,
+                });
+            } else {
             self.evaluate(return_expression, function.return_type, result)?;
+        }
         }
         let lowered_accumulator_return = !call_accumulators.is_empty()
             && self.lower_structured_call_accumulator_return();
@@ -910,10 +927,30 @@ impl Generator {
                             },
                         );
                     } else {
-                        let destination = previous.ok_or_else(|| {
+                        let previous = previous.ok_or_else(|| {
                             Diagnostic::error("structured assignment has no register home")
                         })?;
-                    let handled_computed_address =
+                        let terminal_result = self.behavior.frame_convention
+                            == FrameConvention::Predecrement
+                            && statement_index + 1 == statements.len()
+                            && in_place_call_combined_return_name(function) == Some(name.as_str());
+                        let destination = if terminal_result {
+                            Eabi::general_result().number
+                        } else {
+                            previous
+                        };
+                        let handled_wide_initializer = self
+                            .try_emit_structured_wide_saved_initializer(value, destination);
+                        let handled_call_combine = !handled_wide_initializer
+                            && self
+                            .try_emit_structured_in_place_call_combine(
+                                name,
+                                value,
+                                destination,
+                            )?;
+                        let handled_computed_address = if !handled_wide_initializer
+                            && !handled_call_combine
+                        {
                         if let (
                             Type::StructPointer { element_size },
                             Expression::AddressOf { operand },
@@ -961,8 +998,14 @@ impl Generator {
                             }
                         } else {
                             false
+                        }
+                        } else {
+                            false
                         };
-                    if handled_computed_address {
+                        if handled_wide_initializer
+                            || handled_call_combine
+                            || handled_computed_address
+                        {
                         Ok(())
                     } else {
                         self.evaluate(value, declared_type, destination)
@@ -973,6 +1016,12 @@ impl Generator {
                             ));
                             diagnostic
                         })?;
+                        if terminal_result {
+                            self.locations
+                                .get_mut(name)
+                                .expect("structured assignment home")
+                                .register = destination;
+                        }
                 }
                 }
                 _ => self.emit_statement(statement).map_err(|mut diagnostic| {

@@ -34,6 +34,27 @@ pub(super) fn call_accumulator_assignment_count(function: &Function) -> u32 {
         .count() as u32
 }
 
+pub(super) fn in_place_call_combined_return_name(function: &Function) -> Option<&str> {
+    let Expression::Variable(returned) = function.return_expression.as_ref()? else {
+        return None;
+    };
+    function.statements.iter().any(|statement| {
+        matches!(
+            statement,
+            Statement::Assign {
+                name,
+                value: Expression::Binary {
+                    operator: BinaryOperator::BitOr,
+                    left,
+                    right,
+                },
+            } if name == returned
+                && matches!(left.as_ref(), Expression::Variable(read) if read == name)
+                && matches!(right.as_ref(), Expression::Call { .. })
+        )
+    }).then_some(returned.as_str())
+}
+
 pub(super) fn fold_zero_initialized_call_accumulator(function: &Function) -> Option<Function> {
     let statements = &function.statements;
     for index in 0..statements.len().saturating_sub(1) {
@@ -113,6 +134,35 @@ fn is_call_accumulator_value(name: &str, value: &Expression) -> bool {
 }
 
 impl Generator {
+    pub(super) fn try_emit_structured_in_place_call_combine(
+        &mut self,
+        name: &str,
+        value: &Expression,
+        destination: u8,
+    ) -> Compilation<bool> {
+        let Expression::Binary {
+            operator: BinaryOperator::BitOr,
+            left,
+            right,
+        } = value
+        else {
+            return Ok(false);
+        };
+        if !matches!(left.as_ref(), Expression::Variable(read) if read == name)
+            || !matches!(right.as_ref(), Expression::Call { .. })
+        {
+            return Ok(false);
+        }
+
+        self.evaluate(right, Type::Int, Eabi::general_result().number)?;
+        self.output.instructions.push(Instruction::Or {
+            a: destination,
+            s: destination,
+            b: Eabi::general_result().number,
+        });
+        Ok(true)
+    }
+
     pub(super) fn try_emit_structured_call_accumulator(
         &mut self,
         name: &str,
