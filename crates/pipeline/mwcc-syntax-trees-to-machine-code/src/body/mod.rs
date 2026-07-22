@@ -3,6 +3,7 @@
 //! Split by family (fire 525); behavior-identical to the former single body.rs.
 
 mod call_prologue;
+mod leading_member_store_call;
 mod aggregate_return_temporaries;
 mod ascii_pointer_compare;
 mod assertion_expression;

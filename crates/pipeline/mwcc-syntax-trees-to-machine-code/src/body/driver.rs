@@ -3522,7 +3522,9 @@ impl Generator {
 
         // Hoist a leading register move from the body's statements (a call's argument
         // setup) into the prologue's mflr->LR-store slot.
-        self.hoist_leading_arg_moves(lr_store_index);
+        if !self.schedule_leading_member_store_call() {
+            self.hoist_leading_arg_moves(lr_store_index);
+        }
 
         if let Some(plan) = scheduled_global_store_return {
             self.emit_global_constant_store_return_plan(plan)?;
