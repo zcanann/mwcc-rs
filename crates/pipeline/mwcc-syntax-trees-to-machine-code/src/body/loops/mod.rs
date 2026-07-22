@@ -5,6 +5,7 @@ use super::*;
 
 mod ascii_hash;
 mod ascii_upper;
+mod bit_reverse;
 mod count_register;
 mod counters;
 mod fill_copy;

@@ -258,7 +258,9 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                     };
                 }
             }
-            // `-O0,p` .. `-O4,s` — only the level affects what we model so far.
+            // `-O0,p` .. `-O4,s`: the level and the performance/size objective
+            // are independently observable. A spelling without a suffix resets
+            // the objective to mwcc's performance default.
             argument if argument.starts_with("-O") && argument.len() >= 3 => {
                 invocation.flags.optimization = match argument.as_bytes()[2] {
                     b'0' => Optimization::O0,
@@ -266,6 +268,10 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                     b'2' => Optimization::O2,
                     b'3' => Optimization::O3,
                     _ => Optimization::O4,
+                };
+                invocation.flags.optimization_goal = match argument.split_once(',') {
+                    Some((_, "s" | "space")) => mwcc_versions::OptimizationGoal::Size,
+                    _ => mwcc_versions::OptimizationGoal::Performance,
                 };
             }
             argument if argument.starts_with("-lang=") => {
@@ -2069,6 +2075,27 @@ mod tests {
         assert_eq!(parsed.flags.optimization, mwcc_versions::Optimization::O0);
         assert!(parsed.flags.ipa_file);
         assert!(!parsed.flags.whole_file_optimization_enabled());
+    }
+
+    #[test]
+    fn command_line_optimization_goal_is_last_wins() {
+        let size = parse_invocation(&["-O4,s".into()]);
+        assert_eq!(
+            size.flags.optimization_goal,
+            mwcc_versions::OptimizationGoal::Size
+        );
+
+        let performance = parse_invocation(&["-O4,space".into(), "-O3,p".into()]);
+        assert_eq!(
+            performance.flags.optimization_goal,
+            mwcc_versions::OptimizationGoal::Performance
+        );
+
+        let unsuffixed = parse_invocation(&["-O4,s".into(), "-O2".into()]);
+        assert_eq!(
+            unsuffixed.flags.optimization_goal,
+            mwcc_versions::OptimizationGoal::Performance
+        );
     }
 
     #[test]
