@@ -3007,6 +3007,9 @@ impl Generator {
         let mut lr_store_index: Option<usize> = None;
         if function_makes_call(function) {
             if !function.guards.is_empty() {
+                if self.try_guarded_computed_survivor_return(function)? {
+                    return Ok(());
+                }
                 // `if (call()) return C; ... return D;` — a sequence of
                 // call-tested constant exits sharing one LR-only epilogue.
                 if self.try_call_condition_return_chain(function)? {
