@@ -350,6 +350,7 @@ impl Generator {
         // condition values only along that guard's fallthrough edge, then let
         // the next condition retain the intersection it also reads.
         let mut carried_condition_cache_restore = None;
+        let mut scheduled_float_store = None;
         for (statement_index, statement) in statements.iter().enumerate() {
             match statement {
                 Statement::If {
@@ -504,6 +505,15 @@ impl Generator {
                     diagnostic
                 })?,
             }
+            if let Some(store_index) = scheduled_float_store.take() {
+                self.swap_structured_float_store_with_guard_test(store_index)?;
+            }
+            if self.plans_structured_float_store_guard_swap(
+                statement,
+                statements.get(statement_index + 1),
+            ) {
+                scheduled_float_store = self.output.instructions.len().checked_sub(1);
+            }
             if release_dead_float_locations {
                 self.release_dead_ephemeral_float_locations(
                     ephemeral_locals,
@@ -511,6 +521,7 @@ impl Generator {
                 );
             }
         }
+        debug_assert!(scheduled_float_store.is_none());
         if let Some((previous, previous_float)) = carried_condition_cache_restore {
             self.restore_condition_global_cache(previous);
             self.restore_condition_float_cache(previous_float);
