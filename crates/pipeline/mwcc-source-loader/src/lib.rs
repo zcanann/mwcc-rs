@@ -93,7 +93,7 @@ impl LoadContext<'_> {
         let mut conditional = Vec::new();
         let mut directive_continuation = false;
         let mut lexical_state = macro_expansion::LexicalState::default();
-        for line in physical_lines(&source) {
+        for (line_index, line) in physical_lines(&source).enumerate() {
             if directive_continuation {
                 directive_continuation = line_continues(line);
                 preserve_line_ending(&mut output, line);
@@ -102,9 +102,11 @@ impl LoadContext<'_> {
             if let Some(directive) = parse_directive(line) {
                 directive_continuation = line_continues(line);
                 if update_conditional_state(&mut conditional, directive, &self.definitions) {
+                    preserve_line_ending(&mut output, line);
                     continue;
                 }
                 if !is_active(&conditional) {
+                    preserve_line_ending(&mut output, line);
                     continue;
                 }
                 if let Some(definition) = parse_define(directive) {
@@ -140,6 +142,7 @@ impl LoadContext<'_> {
                     continue;
                 }
             } else if !is_active(&conditional) {
+                preserve_line_ending(&mut output, line);
                 continue;
             }
             let Some(include) = parse_include(line) else {
@@ -155,10 +158,14 @@ impl LoadContext<'_> {
                 continue;
             };
             let included = self.load_file(&included_path)?;
-            output.extend_from_slice(&included);
-            if !included.is_empty() && !included.ends_with(b"\n") && line.ends_with(b"\n") {
+            if !included.is_empty() {
+                append_line_directive(&mut output, 1);
+                output.extend_from_slice(&included);
+            }
+            if !included.is_empty() && !included.ends_with(b"\n") {
                 output.push(b'\n');
             }
+            append_line_directive(&mut output, line_index as u32 + 2);
         }
         Ok(output)
     }
@@ -406,6 +413,10 @@ fn preserve_line_ending(output: &mut Vec<u8>, line: &[u8]) {
     }
 }
 
+fn append_line_directive(output: &mut Vec<u8>, line: u32) {
+    output.extend_from_slice(format!("#line {line}\n").as_bytes());
+}
+
 fn normalize_existing(path: &Path) -> std::io::Result<PathBuf> {
     path.canonicalize()
 }
@@ -481,7 +492,10 @@ mod tests {
         let loaded = SourceLoader::new(vec![access])
             .load(&source.join("unit.c"))
             .unwrap();
-        assert_eq!(loaded, b"int sibling;\nint access;\n");
+        assert_eq!(
+            loaded,
+            b"#line 1\nint sibling;\n#line 2\n#line 1\nint access;\n#line 3\n"
+        );
     }
 
     #[test]
@@ -502,7 +516,10 @@ mod tests {
         let loaded = SourceLoader::default()
             .load(&scratch.0.join("unit.c"))
             .unwrap();
-        assert_eq!(loaded, b"char *s = \"\x82\xa0\";\nint f(void);\n");
+        assert_eq!(
+            loaded,
+            b"#line 1\n#line 1\nchar *s = \"\x82\xa0\";\n#line 2\n#line 3\n#line 2\nint f(void);\n"
+        );
     }
 
     #[test]
@@ -518,7 +535,10 @@ mod tests {
         let loaded = SourceLoader::default()
             .load(&scratch.0.join("unit.c"))
             .unwrap();
-        assert_eq!(loaded, b"int selected;\nint f(void);\n");
+        assert_eq!(
+            loaded,
+            b"\n\n\n#line 1\nint selected;\n#line 5\n\nint f(void);\n"
+        );
     }
 
     #[test]
@@ -533,7 +553,7 @@ mod tests {
         let mut loader = SourceLoader::default();
         loader.define("ENABLED", "1");
         let loaded = loader.load(&scratch.0.join("unit.c")).unwrap();
-        assert_eq!(loaded, b"#define LOCAL 3\nint yes;\n");
+        assert_eq!(loaded, b"#define LOCAL 3\n\nint yes;\n\n\n\n\n\n\n");
     }
 
     #[test]
