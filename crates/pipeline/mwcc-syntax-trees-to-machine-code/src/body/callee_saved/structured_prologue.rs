@@ -40,6 +40,81 @@ pub(super) fn uses_dense_saved_register_range(
 }
 
 impl Generator {
+    pub(super) fn try_emit_dense_eager_global_array_initializer(
+        &mut self,
+        initializer: &Expression,
+        destination: u8,
+    ) -> Compilation<bool> {
+        let Expression::AddressOf { operand } = initializer else {
+            return Ok(false);
+        };
+        let Expression::Index { base, index } = operand.as_ref() else {
+            return Ok(false);
+        };
+        let (Expression::Variable(global), Expression::Variable(index)) =
+            (base.as_ref(), index.as_ref())
+        else {
+            return Ok(false);
+        };
+        let Some(&total_size) = self.global_array_sizes.get(global) else {
+            return Ok(false);
+        };
+        if self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8 {
+            return Ok(false);
+        }
+        let Some(&element_type) = self.globals.get(global) else {
+            return Ok(false);
+        };
+        let element_size = match element_type {
+            Type::Struct { size, .. } if size != 0 => size,
+            _ => u32::from(
+                pointee_of_type(element_type)
+                    .ok_or_else(|| {
+                        Diagnostic::error("dense global-array initializer has no element size")
+                    })?
+                    .size(),
+            ),
+        };
+        let index = self.lookup_general(index).ok_or_else(|| {
+            Diagnostic::error("dense global-array initializer index has no register")
+        })?;
+        let high = self.fresh_virtual_general_preferring(3);
+        let scaled = self.fresh_virtual_general_preferring(5);
+        self.emit_address_high(high, global);
+        if element_size.is_power_of_two() {
+            self.output
+                .instructions
+                .push(Instruction::ShiftLeftImmediate {
+                    a: scaled,
+                    s: index,
+                    shift: element_size.trailing_zeros() as u8,
+                });
+        } else {
+            let immediate = i16::try_from(element_size).map_err(|_| {
+                Diagnostic::error("dense global-array element size is too large to scale")
+            })?;
+            self.output
+                .instructions
+                .push(Instruction::MultiplyImmediate {
+                    d: scaled,
+                    a: index,
+                    immediate,
+                });
+        }
+        self.record_relocation(RelocationKind::Addr16Lo, global);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: GENERAL_SCRATCH,
+            a: high,
+            immediate: 0,
+        });
+        self.output.instructions.push(Instruction::Add {
+            d: destination,
+            a: GENERAL_SCRATCH,
+            b: scaled,
+        });
+        Ok(true)
+    }
+
     pub(super) fn schedule_dense_eager_initializer(&mut self, start: usize) {
         if !matches!(
             self.output.instructions.get(start),

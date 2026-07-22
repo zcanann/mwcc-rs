@@ -10,6 +10,58 @@ use super::structured_locals::body_uses_local;
 #[allow(unused_imports)]
 use super::*;
 
+pub(super) struct DenseEagerPointerRoundUp {
+    pub(super) base_name: String,
+    pub(super) pointer_name: String,
+    pub(super) statement_index: usize,
+    pub(super) rounded_expression: Expression,
+}
+
+pub(super) fn plan_dense_eager_pointer_round_up(
+    function: &Function,
+) -> Option<DenseEagerPointerRoundUp> {
+    for local in &function.locals {
+        if !is_byte_pointer(function, &local.name) {
+            continue;
+        }
+        let Some(initializer) = local.initializer.as_ref() else {
+            continue;
+        };
+        let Some((base, displacement)) = byte_pointer_displacement(initializer) else {
+            continue;
+        };
+        let base_name = match base {
+            Expression::Variable(name) => name,
+            Expression::Cast { operand, .. } => match operand.as_ref() {
+                Expression::Variable(name) => name,
+                _ => continue,
+            },
+            _ => continue,
+        };
+        let Some((statement_index, rounded_expression)) = function
+            .statements
+            .iter()
+            .enumerate()
+            .find_map(|(index, statement)| match statement {
+                Statement::Assign { name, value } if name == &local.name => {
+                    compose_round_up_bias(value, &local.name, displacement)
+                        .map(|expression| (index, expression))
+                }
+                _ => None,
+            })
+        else {
+            continue;
+        };
+        return Some(DenseEagerPointerRoundUp {
+            base_name: base_name.clone(),
+            pointer_name: local.name.clone(),
+            statement_index,
+            rounded_expression,
+        });
+    }
+    None
+}
+
 /// Compose a byte displacement immediately preceding a power-of-two pointer
 /// round-up into the round-up's `addi` bias. MWCC keeps the intermediate pointer
 /// in one register, but selects `load; addi combined_bias; clrrwi` rather than
@@ -806,6 +858,79 @@ fn is_pure_parameter_rewrite(expression: &Expression, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mwcc_syntax_trees::Parameter;
+
+    fn byte_pointer_local(name: &str, initializer: Expression) -> LocalDeclaration {
+        LocalDeclaration {
+            declared_type: Type::Pointer(Pointee::UnsignedChar),
+            name: name.into(),
+            initializer: Some(initializer),
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        }
+    }
+
+    #[test]
+    fn plans_a_round_up_across_a_pointer_initializer_and_assignment() {
+        let function = Function {
+            return_type: Type::Void,
+            name: "compiled".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: vec![Parameter {
+                parameter_type: Type::Pointer(Pointee::UnsignedChar),
+                name: "base".into(),
+            }],
+            locals: vec![byte_pointer_local(
+                "aligned",
+                Expression::Binary {
+                    operator: BinaryOperator::Add,
+                    left: Box::new(Expression::Variable("base".into())),
+                    right: Box::new(Expression::IntegerLiteral(16)),
+                },
+            )],
+            statements: vec![Statement::Assign {
+                name: "aligned".into(),
+                value: Expression::Cast {
+                    target_type: Type::Pointer(Pointee::UnsignedChar),
+                    operand: Box::new(Expression::Binary {
+                        operator: BinaryOperator::BitAnd,
+                        left: Box::new(Expression::Binary {
+                            operator: BinaryOperator::Add,
+                            left: Box::new(Expression::Cast {
+                                target_type: Type::UnsignedInt,
+                                operand: Box::new(Expression::Variable("aligned".into())),
+                            }),
+                            right: Box::new(Expression::IntegerLiteral(31)),
+                        }),
+                        right: Box::new(Expression::IntegerLiteral(!31_i64)),
+                    }),
+                },
+            }],
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+
+        let plan = plan_dense_eager_pointer_round_up(&function).unwrap();
+        assert_eq!(plan.base_name, "base");
+        assert_eq!(plan.pointer_name, "aligned");
+        assert_eq!(plan.statement_index, 0);
+        assert!(has_composed_round_up_bias(
+            &plan.rounded_expression,
+            "aligned"
+        ));
+    }
 
     #[test]
     fn distinguishes_call_forwarding_from_an_ordinary_local_read() {

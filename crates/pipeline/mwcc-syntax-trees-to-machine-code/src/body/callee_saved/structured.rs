@@ -18,8 +18,8 @@ use super::structured_frame_assignment::{
     adjacent_byte_pointer_round_up_name, fold_adjacent_byte_pointer_round_up,
     fold_terminal_pointer_load_alias, is_folded_terminal_pointer_load_alias,
     is_transient_biased_scaled_member_call_local, is_transient_direct_call_argument_local,
-    is_transient_shifted_member_mask_call_local, sink_low_mask_parameter_assignment,
-    sink_single_use_parameter_assignment,
+    is_transient_shifted_member_mask_call_local, plan_dense_eager_pointer_round_up,
+    sink_low_mask_parameter_assignment, sink_single_use_parameter_assignment,
 };
 use super::structured_frame_entry::structured_dense_frame_entry_index;
 use super::structured_home_layout::dense_eager_home_preference;
@@ -273,6 +273,9 @@ impl Generator {
             parameter_home_reuse
                 .reuses_parameter_home(eager_saved_locals.len(), saved_parameters.len()),
         );
+        let dense_eager_round_up = dense_frame
+            .then(|| plan_dense_eager_pointer_round_up(function))
+            .flatten();
         let dense_entry_prefix = with_frame_array
             && !global_member_search_entry
             && structured_dense_frame_entry_index(function).is_some_and(|index| index != 0);
@@ -592,6 +595,8 @@ impl Generator {
         }
 
         let mut home_index = 0;
+        let mut deferred_round_up_base = None;
+        let mut dense_eager_consumed_statements = 0usize;
         for local in eager_saved_locals {
             let home = homes[home_index];
             home_index += 1;
@@ -600,8 +605,50 @@ impl Generator {
             }
             let initializer = local.initializer.as_ref().expect("partitioned as eager");
             let initializer_start = self.output.instructions.len();
-            if !self.try_emit_structured_wide_saved_initializer(initializer, home) {
-                self.evaluate(initializer, local.declared_type, home)?;
+            let mut location_register = home;
+            let is_round_up_base = dense_eager_round_up
+                .as_ref()
+                .is_some_and(|round_up| round_up.base_name == local.name);
+            let is_rounded_pointer = dense_eager_round_up
+                .as_ref()
+                .is_some_and(|round_up| round_up.pointer_name == local.name);
+            if is_round_up_base {
+                let temporary = self.fresh_virtual_general_preferring(3);
+                self.evaluate(initializer, local.declared_type, temporary)?;
+                location_register = temporary;
+                deferred_round_up_base = Some((local.name.clone(), home, temporary));
+            } else if is_rounded_pointer {
+                let round_up = dense_eager_round_up
+                    .as_ref()
+                    .expect("rounded pointer was classified");
+                let (base_name, base_home, temporary) = deferred_round_up_base
+                    .as_ref()
+                    .expect("rounded pointer base must be initialized first");
+                debug_assert_eq!(base_name, &round_up.base_name);
+                let substitutions = std::collections::HashMap::from([(
+                    round_up.pointer_name.clone(),
+                    Expression::Variable(round_up.base_name.clone()),
+                )]);
+                let rounded =
+                    crate::value_tracking::substitute(&round_up.rounded_expression, &substitutions);
+                self.evaluate(&rounded, local.declared_type, home)?;
+                self.output
+                    .instructions
+                    .push(Instruction::move_register(*base_home, *temporary));
+                self.locations
+                    .get_mut(base_name)
+                    .expect("rounded pointer base was initialized")
+                    .register = *base_home;
+                dense_eager_consumed_statements = round_up.statement_index + 1;
+            } else {
+                let handled_dense_global = stagger_dense_parameter_copies
+                    && home_index == 1
+                    && self.try_emit_dense_eager_global_array_initializer(initializer, home)?;
+                if !handled_dense_global
+                    && !self.try_emit_structured_wide_saved_initializer(initializer, home)
+                {
+                    self.evaluate(initializer, local.declared_type, home)?;
+                }
             }
             if stagger_dense_parameter_copies && home_index == 1 {
                 self.schedule_dense_eager_initializer(initializer_start);
@@ -618,7 +665,7 @@ impl Generator {
                 local.name.clone(),
                 Location {
                     class: ValueClass::General,
-                    register: home,
+                    register: location_register,
                     signed: self.signed_of(local.declared_type),
                     width: local.declared_type.width(),
                     pointee: match local.declared_type {
@@ -712,7 +759,7 @@ impl Generator {
         self.plan_structured_float_handoff(function, &ephemeral_locals);
         let dense_statement_start = if dense_frame {
             if global_member_search_entry || saved_parameter_base != 0 {
-                0
+                dense_eager_consumed_statements
             } else {
                 self.emit_structured_dense_frame_entry(function, &saved_parameter_homes)?
                     .ok_or_else(|| {
