@@ -49,6 +49,7 @@ mod structured;
 mod structured_entry_alias;
 mod structured_float_compare;
 mod structured_inline_residue;
+mod structured_inline_assertion;
 mod structured_locals;
 mod structured_prologue;
 mod structured_store_schedule;

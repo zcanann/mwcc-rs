@@ -9,7 +9,9 @@ use super::structured_locals::{
     dead_ephemeral_float_locals, is_definitely_assigned_before_reads, plan_deferred_saved_homes,
     plan_ephemeral_locals,
 };
-use super::structured_entry_alias::{plan_first_call_alias, EntryAliasBoundary, EntryParameterAlias};
+use super::structured_entry_alias::{
+    fold_entry_alias_zero_test, plan_first_call_alias, EntryAliasBoundary, EntryParameterAlias,
+};
 use super::structured_prologue::saved_home_stores_precede_initialization;
 #[allow(unused_imports)]
 use super::*;
@@ -375,14 +377,29 @@ impl Generator {
                     let condition_result = (|| {
                         self.preload_condition_global_cache(condition)?;
                         let mut branches = Vec::with_capacity(terms.len());
-                        for (term_index, term) in terms.into_iter().enumerate() {
-                            let (options, condition_bit) =
-                                self.emit_condition_test(term).map_err(|mut diagnostic| {
+                        for (term_index, term) in terms.iter().copied().enumerate() {
+                            let retained_assertion_condition = if term_index == 0 {
+                                None
+                            } else {
+                                self.emit_proven_inline_assertion(terms[term_index - 1], term)?
+                            };
+                            let (options, condition_bit) = match retained_assertion_condition {
+                                Some(condition) => condition,
+                                None => self.emit_condition_test(term).map_err(|mut diagnostic| {
                                     diagnostic.message.push_str(&format!(
                                         " (in structured if condition {statement_index})"
                                     ));
                                     diagnostic
-                                })?;
+                                })?,
+                            };
+                            if statement_index == 0 && term_index == 0 {
+                                if let Some(alias) = entry_alias.as_ref() {
+                                    fold_entry_alias_zero_test(
+                                        &mut self.output.instructions,
+                                        alias,
+                                    );
+                                }
+                            }
                             branches.push(self.output.instructions.len());
                             self.output
                                 .instructions
@@ -626,7 +643,7 @@ fn read_after_possible_call(statements: &[Statement], name: &str, mut prior_call
                 then_body,
                 else_body,
             } => {
-                read_after |= prior_call && expression_reads_name(condition, name);
+                read_after |= expression_reads_name_across_call(condition, name, prior_call);
                 let branch_entry_call = prior_call || expression_has_call(condition);
                 let then_flow = read_after_possible_call(then_body, name, branch_entry_call);
                 let else_flow = read_after_possible_call(else_body, name, branch_entry_call);
@@ -651,15 +668,19 @@ fn read_after_possible_call(statements: &[Statement], name: &str, mut prior_call
                 }
             }
             Statement::Store { target, value } => {
-                read_after |= prior_call
-                    && (expression_reads_name(target, name) || expression_reads_name(value, name));
+                read_after |= expression_reads_name_across_call(target, name, prior_call)
+                    || expression_reads_name_across_call(
+                        value,
+                        name,
+                        prior_call || expression_has_call(target),
+                    );
                 prior_call |= statement_has_call(statement);
             }
             Statement::Assign {
                 name: assigned_name,
                 value,
             } => {
-                read_after |= prior_call && expression_reads_name(value, name);
+                read_after |= expression_reads_name_across_call(value, name, prior_call);
                 if assigned_name == name {
                     // A fresh definition after a call kills the old value's
                     // cross-call lifetime. A self-referential update retains it.
@@ -670,14 +691,13 @@ fn read_after_possible_call(statements: &[Statement], name: &str, mut prior_call
                 }
             }
             Statement::Expression(value) => {
-                read_after |= prior_call && expression_reads_name(value, name);
+                read_after |= expression_reads_name_across_call(value, name, prior_call);
                 prior_call |= statement_has_call(statement);
             }
             Statement::Return(expression) => {
-                read_after |= prior_call
-                    && expression
-                        .as_ref()
-                        .is_some_and(|value| expression_reads_name(value, name));
+                read_after |= expression.as_ref().is_some_and(|value| {
+                    expression_reads_name_across_call(value, name, prior_call)
+                });
                 return Flow {
                     read_after_call: read_after,
                     call_on_fallthrough: false,
