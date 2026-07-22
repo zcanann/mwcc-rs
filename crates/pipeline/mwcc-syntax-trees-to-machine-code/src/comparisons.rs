@@ -1596,8 +1596,18 @@ impl Generator {
         if self.f1_holds_float_argument() {
             return Err(Diagnostic::error("a float member/global compare with a float argument in f1 needs the FP register allocator (roadmap)"));
         }
-        self.evaluate_float(operand, FLOAT_FIRST)?;
-        Ok(FLOAT_FIRST)
+        // A structured float local already lives in the virtual-register
+        // allocator. Keep comparison temporaries in that same allocation
+        // domain: hard-pinning this later load to f1 would conservatively
+        // evict a long-lived local that MWCC leaves in f1, then require an
+        // avoidable move back into the call-argument register.
+        let destination = if self.has_virtual_float_location() {
+            self.fresh_virtual_float_preferring(FLOAT_FIRST)
+        } else {
+            FLOAT_FIRST
+        };
+        self.evaluate_float(operand, destination)?;
+        Ok(destination)
     }
 
     /// Whether `value` is a full-word (32-bit) memory load — a dereference,

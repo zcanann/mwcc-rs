@@ -405,6 +405,15 @@ impl Generator {
         virtual_register.to_field()
     }
 
+    /// Whether floating-point values in the current function already use the
+    /// virtual-register allocator. New overlapping temporaries must join that
+    /// allocation domain instead of being hard-pinned to a physical FPR.
+    pub(crate) fn has_virtual_float_location(&self) -> bool {
+        self.locations.values().any(|location| {
+            location.class == ValueClass::Float && Reg::is_virtual_field(location.register)
+        })
+    }
+
     /// A fresh general virtual register carrying a consumer-tree PREFERENCE — the
     /// register the value's consumer wants it in (taken when free at allocation).
     pub(crate) fn fresh_virtual_general_preferring(&mut self, register: u8) -> u8 {
