@@ -1060,97 +1060,17 @@ impl Parser {
                 && (self.tokens.get(self.position + 1) == Some(&Token::BraceOpen)
                     || self.tokens.get(self.position + 2) == Some(&Token::BraceOpen))
             {
-                let (tag, inner, pointer_depth, member_name) =
-                    self.parse_inline_union_declarator()?;
-                let inner_size = inner.size;
-                let inner_align = (inner.align as u32).max(1);
-                self.expect(Token::Semicolon)?;
                 if let Some((_, unit_offset, bits_used)) = bit_unit.take() {
                     // mwcc TRIMS the container to the bytes its bits use
                     // (measured: 4 bits -> next byte member at +1; 9-12 bits
                     // -> +2; the container type still sets the alignment).
                     offset = unit_offset + u32::from(bits_used).div_ceil(8);
                 }
-                match (tag, pointer_depth, member_name) {
-                    (tag, depth, Some(name)) => {
-                        let variant_tag =
-                            tag.unwrap_or_else(|| format!("@anon{}", self.structs.len()));
-                        self.structs.insert(variant_tag.clone(), inner);
-                        let (member_type, member_align, member_size, struct_tag) = if depth > 0 {
-                            (
-                                if depth == 1 {
-                                    Type::StructPointer {
-                                        element_size: inner_size,
-                                    }
-                                } else {
-                                    Type::Pointer(Pointee::Pointer)
-                                },
-                                4,
-                                4,
-                                (depth == 1).then_some(variant_tag),
-                            )
-                        } else {
-                            (
-                                Type::Struct {
-                                    size: inner_size,
-                                    align: inner_align as u8,
-                                },
-                                inner_align,
-                                inner_size,
-                                Some(variant_tag),
-                            )
-                        };
-                        alignment_max = alignment_max.max(member_align);
-                        offset = align_layout_offset(offset, member_align)?;
-                        layout.insert_field(
-                            name,
-                            StructField {
-                                member_type,
-                                source_fundamental: None,
-                                offset,
-                                struct_tag,
-                                array_element: None,
-                                array_bytes: None,
-                                array_stride: None,
-                                bit_field: None,
-                            },
-                        );
-                        offset = advance_layout_offset(offset, member_size)?;
-                    }
-                    // `union Tag { … };` — register the tag, no member contributed.
-                    (Some(tag), 0, None) => {
-                        self.structs.insert(tag, inner);
-                    }
-                    // `union { … };` — flatten every member at the union's offset.
-                    (None, 0, None) => {
-                        alignment_max = alignment_max.max(inner_align);
-                        offset = align_layout_offset(offset, inner_align)?;
-                        for (field_name, field) in inner.fields_in_declaration_order() {
-                            layout.insert_field(
-                                field_name.clone(),
-                                StructField {
-                                    member_type: field.member_type,
-                                    source_fundamental: field.source_fundamental,
-                                    offset: offset + field.offset,
-                                    struct_tag: field.struct_tag.clone(),
-                                    array_element: field.array_element,
-                                    array_bytes: field.array_bytes,
-                                    array_stride: field.array_stride,
-                                    bit_field: field.bit_field,
-                                },
-                            );
-                        }
-                        layout
-                            .function_pointer_fields
-                            .extend(inner.function_pointer_fields.iter().cloned());
-                        offset = advance_layout_offset(offset, inner_size)?;
-                    }
-                    (_, _, None) => {
-                        return Err(Diagnostic::error(
-                            "an inline-union pointer member needs a name",
-                        ));
-                    }
-                }
+                self.parse_and_place_inline_union(
+                    &mut layout,
+                    &mut offset,
+                    &mut alignment_max,
+                )?;
                 continue;
             }
             // An array-typedef member (`Mtx unk_F0;` where `Mtx` is `typedef float
@@ -1481,7 +1401,7 @@ impl Parser {
         Ok(layout)
     }
 
-    fn parse_inline_union_declarator(
+    pub(crate) fn parse_inline_union_declarator(
         &mut self,
     ) -> Compilation<(Option<String>, StructLayout, usize, Option<String>)> {
         self.advance(); // `union`
@@ -1506,6 +1426,106 @@ impl Parser {
             None
         };
         Ok((tag, inner, pointer_depth, member_name))
+    }
+
+    /// Parse and place one inline union declaration in an enclosing aggregate.
+    /// C structs and C++ classes use exactly the same storage rules; returning
+    /// the visible field names lets the C++ declaration model retain its member
+    /// order without duplicating union layout arithmetic in `cxx.rs`.
+    pub(crate) fn parse_and_place_inline_union(
+        &mut self,
+        layout: &mut StructLayout,
+        offset: &mut u32,
+        alignment_max: &mut u32,
+    ) -> Compilation<Vec<String>> {
+        let (tag, inner, pointer_depth, member_name) =
+            self.parse_inline_union_declarator()?;
+        self.expect(Token::Semicolon)?;
+        let inner_size = inner.size;
+        let inner_align = u32::from(inner.align).max(1);
+        match (tag, pointer_depth, member_name) {
+            (tag, depth, Some(name)) => {
+                let variant_tag =
+                    tag.unwrap_or_else(|| format!("@anon{}", self.structs.len()));
+                self.structs.insert(variant_tag.clone(), inner);
+                let (member_type, member_align, member_size, struct_tag) = if depth > 0 {
+                    (
+                        if depth == 1 {
+                            Type::StructPointer {
+                                element_size: inner_size,
+                            }
+                        } else {
+                            Type::Pointer(Pointee::Pointer)
+                        },
+                        4,
+                        4,
+                        (depth == 1).then_some(variant_tag),
+                    )
+                } else {
+                    (
+                        Type::Struct {
+                            size: inner_size,
+                            align: inner_align as u8,
+                        },
+                        inner_align,
+                        inner_size,
+                        Some(variant_tag),
+                    )
+                };
+                *alignment_max = (*alignment_max).max(member_align);
+                *offset = align_layout_offset(*offset, member_align)?;
+                layout.insert_field(
+                    name.clone(),
+                    StructField {
+                        member_type,
+                        source_fundamental: None,
+                        offset: *offset,
+                        struct_tag,
+                        array_element: None,
+                        array_bytes: None,
+                        array_stride: None,
+                        bit_field: None,
+                    },
+                );
+                *offset = advance_layout_offset(*offset, member_size)?;
+                Ok(vec![name])
+            }
+            // `union Tag { … };` registers its tag but contributes no member.
+            (Some(tag), 0, None) => {
+                self.structs.insert(tag, inner);
+                Ok(Vec::new())
+            }
+            // `union { … };` promotes every overlapping member into its owner.
+            (None, 0, None) => {
+                *alignment_max = (*alignment_max).max(inner_align);
+                *offset = align_layout_offset(*offset, inner_align)?;
+                let mut names = Vec::new();
+                for (field_name, field) in inner.fields_in_declaration_order() {
+                    layout.insert_field(
+                        field_name.clone(),
+                        StructField {
+                            member_type: field.member_type,
+                            source_fundamental: field.source_fundamental,
+                            offset: *offset + field.offset,
+                            struct_tag: field.struct_tag.clone(),
+                            array_element: field.array_element,
+                            array_bytes: field.array_bytes,
+                            array_stride: field.array_stride,
+                            bit_field: field.bit_field,
+                        },
+                    );
+                    names.push(field_name.clone());
+                }
+                layout
+                    .function_pointer_fields
+                    .extend(inner.function_pointer_fields.iter().cloned());
+                *offset = advance_layout_offset(*offset, inner_size)?;
+                Ok(names)
+            }
+            (_, _, None) => Err(Diagnostic::error(
+                "an inline-union pointer member needs a name",
+            )),
+        }
     }
 
     /// Parse a `union { … }` body: every member starts at offset 0, so the union's

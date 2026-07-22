@@ -641,6 +641,29 @@ impl Parser {
             .collect()
     }
 
+    /// Resolve a namespace qualifier using ordinary enclosing-namespace
+    /// lookup. Inside `Game::Baby`, an unqualified `EnemyFunc::call()` first
+    /// probes `Game::Baby::EnemyFunc`, then `Game::EnemyFunc`, then the global
+    /// namespace. Namespace calls need the resolved declaration scope both to
+    /// select their overload set and to preserve the ABI's qualified mangling.
+    pub(crate) fn resolve_scoped_cxx_namespace_name(&self, namespace: &str) -> Option<String> {
+        if self.cxx_namespaces.contains(namespace) {
+            return Some(namespace.to_owned());
+        }
+        let scopes = self.named_namespace_scopes();
+        for depth in (0..=scopes.len()).rev() {
+            let candidate = if depth == 0 {
+                namespace.to_owned()
+            } else {
+                format!("{}::{namespace}", scopes[..depth].join("::"))
+            };
+            if self.cxx_namespaces.contains(&candidate) {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
     fn free_cxx_source_name(&self, function: &str) -> String {
         let scopes = self.named_namespace_scopes();
         if scopes.is_empty() {
@@ -2626,6 +2649,22 @@ impl Parser {
             {
                 self.advance();
                 self.advance();
+                continue;
+            }
+            // An inline union definition is a complete member type declaration,
+            // not the `union Tag` type-id handled by `parse_type`. Keep its
+            // storage and promoted-member behavior identical to C aggregates:
+            // `union { ... } value;` contributes one named subobject, while
+            // `union { ... };` promotes overlapping members into the class.
+            if matches!(self.peek(), Token::Identifier(word) if word == "union")
+                && (self.tokens.get(self.position + 1) == Some(&Token::BraceOpen)
+                    || self.tokens.get(self.position + 2) == Some(&Token::BraceOpen))
+            {
+                class.fields.extend(self.parse_and_place_inline_union(
+                    &mut layout,
+                    &mut offset,
+                    &mut max_align,
+                )?);
                 continue;
             }
             // Declaration specifiers may be interleaved. Layout recovery does

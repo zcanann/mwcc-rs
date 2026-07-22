@@ -1702,6 +1702,30 @@ blr\n\
     }
 
     #[test]
+    fn resolves_sibling_namespaces_from_a_nested_namespace() {
+        let source = r#"
+            namespace Game {
+                namespace EnemyFunc {
+                    int choose(int a, int b, int c, int d, int e, int f);
+                }
+                namespace Baby {
+                    int run() { return EnemyFunc::choose(1, 2, 3, 4, 5, 6); }
+                }
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            unit.functions[0].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Call { name, arguments })
+                if name == "choose__Q24Game9EnemyFuncFiiiiii" && arguments.len() == 6
+        ));
+    }
+
+    #[test]
     fn treats_anonymous_namespace_as_a_transparent_declaration_scope() {
         let source = r#"
             namespace {
@@ -2928,6 +2952,44 @@ blr\n\
         assert!(matches!(
             unit.globals[0].declared_type,
             mwcc_syntax_trees::Type::Struct { size: 12, align: 4 }
+        ));
+    }
+
+    #[test]
+    fn recovers_named_inline_union_members_in_cxx_classes() {
+        let source = r#"
+            class ID32 {
+                char text[5];
+                union { char bytes[4]; unsigned int value; } id;
+            };
+            struct BaseParm {
+                virtual int size() = 0;
+                ID32 id;
+                BaseParm* next;
+                char* name;
+            };
+            template <typename T> struct Parm : public BaseParm {
+                virtual int size() { return sizeof(T); }
+                T value;
+                T unused;
+                T minimum;
+                T maximum;
+            };
+            struct Holder { Parm<float> parm; };
+            ID32 identifier;
+            Holder holder;
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.globals[0].declared_type,
+            mwcc_syntax_trees::Type::Struct { size: 12, align: 4 }
+        ));
+        assert!(matches!(
+            unit.globals[1].declared_type,
+            mwcc_syntax_trees::Type::Struct { size: 40, align: 4 }
         ));
     }
 

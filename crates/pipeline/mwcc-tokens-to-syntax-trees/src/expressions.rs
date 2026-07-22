@@ -660,15 +660,17 @@ impl Parser {
                     {
                         Expression::AggregateLiteral(Vec::new())
                     } else {
-                        let name = if self.cxx_namespaces.contains(&scope) {
+                        let name = if let Some(namespace) =
+                            self.resolve_scoped_cxx_namespace_name(&scope)
+                        {
                             self.resolve_qualified_free_cxx_call(
-                                &scope,
+                                &namespace,
                                 &member,
                                 &arguments,
                             )?
                             .ok_or_else(|| {
                                 Diagnostic::error(format!(
-                                    "C++ namespace function call '{scope}::{member}' is unavailable (roadmap)"
+                                    "C++ namespace function call '{namespace}::{member}' is unavailable (roadmap)"
                                 ))
                             })?
                         } else if let Some(name) = self
