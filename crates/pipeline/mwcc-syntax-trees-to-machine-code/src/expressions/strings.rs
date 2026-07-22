@@ -11,8 +11,7 @@ impl Generator {
     /// target a placeholder `@@strN` name, which the unit's string resolver rewrites
     /// to the real `@N`.
     pub(crate) fn emit_string_literal(&mut self, bytes: &[u8], destination: u8) -> Compilation<()> {
-        let index = self.intern_string_literal(bytes);
-        let placeholder = format!("@@str{index}");
+        let placeholder = self.string_literal_placeholder(bytes);
         match self.behavior.global_addressing {
             GlobalAddressing::SmallData => {
                 // A string within the small-data threshold (≤ 8 bytes incl. the NUL) lands in
@@ -48,6 +47,25 @@ impl Generator {
                 Ok(())
             }
         }
+    }
+
+    /// Return the resolver placeholder for an interned string. Call-argument
+    /// schedulers use this when MWCC separates an address's high and low halves
+    /// with independent argument setup.
+    pub(crate) fn string_literal_placeholder(&mut self, bytes: &[u8]) -> String {
+        let index = self.intern_string_literal(bytes);
+        format!("@@str{index}")
+    }
+
+    /// Finish an absolute string address in a destination which may differ from
+    /// the register holding its high half.
+    pub(crate) fn emit_string_address_low(&mut self, placeholder: &str, base: u8, destination: u8) {
+        self.record_relocation(RelocationKind::Addr16Lo, placeholder);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: destination,
+            a: base,
+            immediate: 0,
+        });
     }
 
     /// Intern a string literal into the function's pooled list (by bytes), returning
