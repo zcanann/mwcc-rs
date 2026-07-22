@@ -297,6 +297,7 @@ impl Generator {
 
     fn insert_instruction(&mut self, position: usize, instruction: Instruction) {
         self.output.instructions.insert(position, instruction);
+        self.labels.inserted(position, 1);
         for relocation in &mut self.output.relocations {
             if relocation.instruction_index >= position {
                 relocation.instruction_index += 1;

@@ -3688,6 +3688,7 @@ impl Generator {
                 let relocations_before = self.output.relocations.len();
                 let virtuals_before = self.next_virtual;
                 let bump_before = self.output.anonymous_label_bump;
+                let labels_before = self.labels.checkpoint();
                 match self.evaluate_tail(&select, function.return_type, result) {
                     Ok(()) => {
                         self.output
@@ -3700,6 +3701,7 @@ impl Generator {
                         self.output.relocations.truncate(relocations_before);
                         self.next_virtual = virtuals_before;
                         self.output.anonymous_label_bump = bump_before;
+                        self.labels.rollback(labels_before);
                     }
                 }
             }
@@ -4067,6 +4069,7 @@ impl Generator {
                     let relocations_before = self.output.relocations.len();
                     let virtuals_before = self.next_virtual;
                     let bump_before = self.output.anonymous_label_bump;
+                    let labels_before = self.labels.checkpoint();
                     match self
                         .emit_conditional(condition, when_true, when_false, result, true, *origin)
                     {
@@ -4076,6 +4079,7 @@ impl Generator {
                             self.output.relocations.truncate(relocations_before);
                             self.next_virtual = virtuals_before;
                             self.output.anonymous_label_bump = bump_before;
+                            self.labels.rollback(labels_before);
                             // Emit the branch form DIRECTLY (a nested-ternary
                             // fall-through would recurse through the same
                             // fallback forever — defer that).

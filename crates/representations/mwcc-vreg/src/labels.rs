@@ -23,6 +23,19 @@ use mwcc_machine_code::Instruction;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Label(usize);
 
+/// An opaque snapshot used to discard labels created by speculative emission.
+///
+/// Instruction selection occasionally tries one lowering and truncates its
+/// instruction stream when that lowering declines.  Label state is part of
+/// that stream and must be restored with it; retaining a speculative branch
+/// use can otherwise patch an unrelated instruction which later reuses the
+/// same index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LabelCheckpoint {
+    bound_len: usize,
+    pending_len: usize,
+}
+
 /// The label table for one function: bindings and recorded branch uses.
 #[derive(Debug, Default)]
 pub struct Labels {
@@ -33,6 +46,36 @@ pub struct Labels {
 }
 
 impl Labels {
+    /// Snapshot the append-only portions of this function's label table.
+    pub fn checkpoint(&self) -> LabelCheckpoint {
+        LabelCheckpoint {
+            bound_len: self.bound.len(),
+            pending_len: self.pending.len(),
+        }
+    }
+
+    /// Discard labels and branch uses created after `checkpoint`.
+    pub fn rollback(&mut self, checkpoint: LabelCheckpoint) {
+        self.bound.truncate(checkpoint.bound_len);
+        self.pending.truncate(checkpoint.pending_len);
+    }
+
+    /// Account for instructions inserted into the stream during emission.
+    /// Both branch owners and bound destinations are instruction indices, so
+    /// an insertion at either position moves them together.
+    pub fn inserted(&mut self, at: usize, count: usize) {
+        for binding in self.bound.iter_mut().flatten() {
+            if *binding >= at {
+                *binding += count;
+            }
+        }
+        for (instruction_index, _) in &mut self.pending {
+            if *instruction_index >= at {
+                *instruction_index += count;
+            }
+        }
+    }
+
     /// A new, unbound label.
     pub fn fresh(&mut self) -> Label {
         self.bound.push(None);
@@ -56,9 +99,15 @@ impl Labels {
     pub fn resolve(&self, instructions: &mut [Instruction]) -> Result<(), Label> {
         for &(index, label) in &self.pending {
             let resolved = self.bound[label.0].ok_or(label)?;
+            if !matches!(
+                instructions[index],
+                Instruction::BranchConditionalForward { .. } | Instruction::Branch { .. }
+            ) {
+                unreachable!("label use at instruction {index} recorded on a non-branch: {:?}", instructions[index]);
+            }
             match &mut instructions[index] {
                 Instruction::BranchConditionalForward { target, .. } | Instruction::Branch { target } => *target = resolved,
-                other => unreachable!("label use recorded on a non-branch: {other:?}"),
+                _ => unreachable!("checked above"),
             }
         }
         Ok(())
@@ -124,5 +173,42 @@ mod tests {
         let mut stream = vec![Instruction::Branch { target: 0 }];
         labels.use_at(0, never);
         assert_eq!(labels.resolve(&mut stream), Err(never));
+    }
+
+    #[test]
+    fn rollback_discards_speculative_branch_uses() {
+        let mut labels = Labels::default();
+        let checkpoint = labels.checkpoint();
+        let speculative = labels.fresh();
+        labels.use_at(0, speculative);
+        labels.bind(speculative, 1);
+
+        labels.rollback(checkpoint);
+        let mut replacement_stream = vec![Instruction::AddImmediate {
+            d: 3,
+            a: 0,
+            immediate: 0,
+        }];
+        labels.resolve(&mut replacement_stream).unwrap();
+    }
+
+    #[test]
+    fn insertion_moves_branch_uses_and_bound_destinations() {
+        let mut labels = Labels::default();
+        let join = labels.fresh();
+        labels.use_at(0, join);
+        labels.bind(join, 1);
+        labels.inserted(0, 1);
+
+        let mut stream = vec![
+            Instruction::AddImmediate {
+                d: 3,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::Branch { target: 0 },
+        ];
+        labels.resolve(&mut stream).unwrap();
+        assert_eq!(stream[1], Instruction::Branch { target: 2 });
     }
 }

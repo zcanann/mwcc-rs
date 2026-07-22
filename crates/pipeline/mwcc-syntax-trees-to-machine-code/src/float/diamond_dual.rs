@@ -493,10 +493,12 @@ impl Generator {
         let instructions_before = self.output.instructions.len();
         let relocations_before = self.output.relocations.len();
         let bump_before = self.output.anonymous_label_bump;
+        let labels_before = self.labels.checkpoint();
         let rollback = |generator: &mut Generator| {
             generator.output.instructions.truncate(instructions_before);
             generator.output.relocations.truncate(relocations_before);
             generator.output.anonymous_label_bump = bump_before;
+            generator.labels.rollback(labels_before);
             generator.float.pseudo_params.clear();
         };
         let mut condition_encoding: Option<(u8, u8)> = None;
@@ -630,6 +632,7 @@ impl Generator {
                     let mark = self.output.instructions.len();
                     let relocation_mark = self.output.relocations.len();
                     let bump_mark = self.output.anonymous_label_bump;
+                    let labels_mark = self.labels.checkpoint();
                     let claimed = if composed {
                         self.try_float_dag_return(&else_synthetic())
                     } else {
@@ -659,6 +662,7 @@ impl Generator {
                     self.output.instructions.truncate(mark);
                     self.output.relocations.truncate(relocation_mark);
                     self.output.anonymous_label_bump = bump_mark;
+                    self.labels.rollback(labels_mark);
                     if !claimed_ok || last_read.is_none() {
                         self.float.pseudo_params = saved_pseudo;
                         self.float.reload_x = saved_reload;
@@ -1210,11 +1214,13 @@ impl Generator {
         let instructions_before = self.output.instructions.len();
         let relocations_before = self.output.relocations.len();
         let bump_before = self.output.anonymous_label_bump;
+        let labels_before = self.labels.checkpoint();
         let frame_before = self.frame_size;
         let rollback = |generator: &mut Generator| {
             generator.output.instructions.truncate(instructions_before);
             generator.output.relocations.truncate(relocations_before);
             generator.output.anonymous_label_bump = bump_before;
+            generator.labels.rollback(labels_before);
             generator.frame_size = frame_before;
         };
         if let Some((hi_register, addis_shift)) = punned_hi {
@@ -1343,6 +1349,7 @@ impl Generator {
         self.output.instructions.truncate(instructions_before);
         self.output.relocations.truncate(relocations_before);
         self.output.anonymous_label_bump = bump_before;
+        self.labels.rollback(labels_before);
         let (Ok(true), Some(register)) = (&dry, register) else {
             self.float.phantom_local = None;
             self.float.phantom_register = None;

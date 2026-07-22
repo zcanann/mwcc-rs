@@ -63,6 +63,7 @@ impl Generator {
                 offset: 20,
             },
         );
+        self.labels.inserted(store_position, 1);
         // The insert shifts condition instructions at/after it down by one, so
         // their relocations (for example, a global's SDA21 load) move with them.
         for relocation in &mut self.output.relocations {

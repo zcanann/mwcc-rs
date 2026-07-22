@@ -1630,6 +1630,7 @@ impl Generator {
         if matches!(
             operand,
             Expression::Conditional { .. }
+                | Expression::Cast { .. }
                 | Expression::Binary {
                     operator: BinaryOperator::LogicalAnd
                         | BinaryOperator::LogicalOr

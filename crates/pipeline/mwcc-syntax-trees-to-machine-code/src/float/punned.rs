@@ -550,6 +550,7 @@ impl Generator {
         let instructions_before = self.output.instructions.len();
         let relocations_before = self.output.relocations.len();
         let bump_before = self.output.anonymous_label_bump;
+        let labels_before = self.labels.checkpoint();
         let frame_before = self.frame_size;
         let legacy_reloading = self.behavior.punned_float_frame_convention
             == mwcc_versions::PunnedFloatFrameConvention::LegacyReloading;
@@ -867,6 +868,7 @@ impl Generator {
                 self.output.instructions.truncate(instructions_before);
                 self.output.relocations.truncate(relocations_before);
                 self.output.anonymous_label_bump = bump_before;
+                self.labels.rollback(labels_before);
                 self.frame_size = frame_before;
                 return other.map(|_| false);
             }

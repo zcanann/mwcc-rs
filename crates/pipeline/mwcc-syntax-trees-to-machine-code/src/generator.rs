@@ -904,9 +904,9 @@ impl Generator {
     pub(crate) fn general_register_of_leaf(&self, expression: &Expression) -> Compilation<u8> {
         match expression {
             Expression::Variable(name) => self.general_register_of(name),
-            _ => Err(Diagnostic::error(
-                "v0: a leaf operand must be a variable (constants in trees: roadmap M3)",
-            )),
+            _ => Err(Diagnostic::error(format!(
+                "a general register was requested for a non-leaf expression: {expression:?}"
+            ))),
         }
     }
 
