@@ -714,7 +714,9 @@ impl Generator {
         let has_array_local = function
             .locals
             .iter()
-            .any(|local| local.array_length.is_some());
+            .any(|local| {
+                local.array_length.is_some() && function_uses_name(function, &local.name)
+            });
         if address_taken.is_empty() && !has_array_local {
             return Ok(false);
         }
@@ -865,7 +867,9 @@ impl Generator {
             .collect();
         for local in slot_locals {
             let is_array = local.array_length.is_some();
-            if address_taken.contains(local.name.as_str()) || is_array {
+            if address_taken.contains(local.name.as_str())
+                || (is_array && function_uses_name(function, &local.name))
+            {
                 // Only an uninitialized local is modeled here (its value comes from a
                 // store through the taken address, or — for an array — element stores).
                 // A struct-image local (`GXColor c = {…};`, data_bytes set) needs the

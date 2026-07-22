@@ -203,16 +203,41 @@ struct AssignmentFlow {
 /// declarations live in the function table, while their initialization must
 /// remain inside the branch containing the original inline call.
 pub(super) fn is_definitely_assigned_before_reads(statements: &[Statement], name: &str) -> bool {
-    assignment_flow(statements, name, false).is_some_and(|flow| flow.assigned)
+    let mut pending_gotos = std::collections::HashMap::<String, Vec<bool>>::new();
+    let mut seen_labels = std::collections::HashSet::<String>::new();
+    assignment_flow(
+        statements,
+        name,
+        false,
+        &mut pending_gotos,
+        &mut seen_labels,
+    )
+    .is_some_and(|flow| flow.assigned && pending_gotos.is_empty())
 }
 
 fn assignment_flow(
     statements: &[Statement],
     name: &str,
     mut initialized: bool,
+    pending_gotos: &mut std::collections::HashMap<String, Vec<bool>>,
+    seen_labels: &mut std::collections::HashSet<String>,
 ) -> Option<AssignmentFlow> {
     let mut assigned = false;
+    let mut falls_through = true;
     for statement in statements {
+        if let Statement::Label(label) = statement {
+            seen_labels.insert(label.clone());
+            let incoming = pending_gotos.remove(label).unwrap_or_default();
+            if falls_through || !incoming.is_empty() {
+                initialized = (!falls_through || initialized)
+                    && incoming.into_iter().all(|state| state);
+                falls_through = true;
+            }
+            continue;
+        }
+        if !falls_through {
+            continue;
+        }
         let reads_before_assignment = match statement {
             Statement::Assign {
                 name: assigned_name,
@@ -249,8 +274,20 @@ fn assignment_flow(
                 else_body,
                 ..
             } => {
-                let then_flow = assignment_flow(then_body, name, initialized)?;
-                let else_flow = assignment_flow(else_body, name, initialized)?;
+                let then_flow = assignment_flow(
+                    then_body,
+                    name,
+                    initialized,
+                    pending_gotos,
+                    seen_labels,
+                )?;
+                let else_flow = assignment_flow(
+                    else_body,
+                    name,
+                    initialized,
+                    pending_gotos,
+                    seen_labels,
+                )?;
                 assigned |= then_flow.assigned || else_flow.assigned;
                 initialized = match (then_flow.falls_through, else_flow.falls_through) {
                     (true, true) => then_flow.initialized && else_flow.initialized,
@@ -265,12 +302,18 @@ fn assignment_flow(
                     }
                 };
             }
-            Statement::Return(_) => {
-                return Some(AssignmentFlow {
-                    initialized,
-                    assigned,
-                    falls_through: false,
-                });
+            Statement::Goto(label) => {
+                if seen_labels.contains(label) {
+                    return None;
+                }
+                pending_gotos
+                    .entry(label.clone())
+                    .or_default()
+                    .push(initialized);
+                falls_through = false;
+            }
+            Statement::Return(_) | Statement::Break | Statement::Continue => {
+                falls_through = false
             }
             _ => {}
         }
@@ -278,7 +321,7 @@ fn assignment_flow(
     Some(AssignmentFlow {
         initialized,
         assigned,
-        falls_through: true,
+        falls_through,
     })
 }
 
@@ -469,6 +512,55 @@ mod tests {
         });
 
         assert!(plan_ephemeral_locals(&function, &std::collections::HashSet::new()).is_none());
+    }
+
+    #[test]
+    fn accepts_an_assignment_after_a_goto_target() {
+        let statements = vec![
+            Statement::Goto("error".into()),
+            Statement::Return(None),
+            Statement::Label("error".into()),
+            Statement::Assign {
+                name: "callback".into(),
+                value: Expression::IntegerLiteral(1),
+            },
+            Statement::If {
+                condition: Expression::Variable("callback".into()),
+                then_body: Vec::new(),
+                else_body: Vec::new(),
+            },
+        ];
+        assert!(is_definitely_assigned_before_reads(&statements, "callback"));
+    }
+
+    #[test]
+    fn retains_a_definition_shared_by_forward_gotos() {
+        let statements = vec![
+            Statement::Assign {
+                name: "card".into(),
+                value: Expression::IntegerLiteral(1),
+            },
+            Statement::If {
+                condition: Expression::IntegerLiteral(1),
+                then_body: vec![Statement::Goto("error".into())],
+                else_body: Vec::new(),
+            },
+            Statement::Return(None),
+            Statement::Label("error".into()),
+            Statement::Expression(Expression::Variable("card".into())),
+        ];
+        assert!(is_definitely_assigned_before_reads(&statements, "card"));
+    }
+
+    #[test]
+    fn rejects_a_label_target_read_before_assignment() {
+        let statements = vec![
+            Statement::Goto("error".into()),
+            Statement::Assign { name: "value".into(), value: Expression::IntegerLiteral(1) },
+            Statement::Label("error".into()),
+            Statement::Expression(Expression::Variable("value".into())),
+        ];
+        assert!(!is_definitely_assigned_before_reads(&statements, "value"));
     }
 
     #[test]

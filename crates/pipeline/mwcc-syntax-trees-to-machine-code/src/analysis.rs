@@ -134,6 +134,64 @@ pub(crate) fn expression_reads_name(expression: &Expression, name: &str) -> bool
     reads_register(expression, &single)
 }
 
+/// Whether executable source in `function` refers to a local or parameter.
+/// Declarations remain in the AST for debug provenance even when optimization
+/// removes their storage, so frame planning must distinguish declaration from use.
+pub(crate) fn function_uses_name(function: &Function, name: &str) -> bool {
+    fn arm_uses_name(arm: &mwcc_syntax_trees::ArmBody, name: &str) -> bool {
+        match arm {
+            mwcc_syntax_trees::ArmBody::Return(value) => expression_reads_name(value, name),
+            mwcc_syntax_trees::ArmBody::Statements(statements) => {
+                statements_use_name(statements, name)
+            }
+        }
+    }
+
+    fn statements_use_name(statements: &[Statement], name: &str) -> bool {
+        statements.iter().any(|statement| match statement {
+            Statement::Store { target, value } => {
+                expression_reads_name(target, name) || expression_reads_name(value, name)
+            }
+            Statement::Assign { name: assigned, value } => {
+                assigned == name || expression_reads_name(value, name)
+            }
+            Statement::Expression(expression) | Statement::Return(Some(expression)) => {
+                expression_reads_name(expression, name)
+            }
+            Statement::If { condition, then_body, else_body } => {
+                expression_reads_name(condition, name)
+                    || statements_use_name(then_body, name)
+                    || statements_use_name(else_body, name)
+            }
+            Statement::Switch { scrutinee, arms, default } => {
+                expression_reads_name(scrutinee, name)
+                    || arms.iter().any(|arm| arm_uses_name(&arm.body, name))
+                    || default.as_ref().is_some_and(|arm| arm_uses_name(arm, name))
+            }
+            Statement::Loop { initializer, condition, step, body, .. } => {
+                initializer.iter().chain(condition).chain(step)
+                    .any(|expression| expression_reads_name(expression, name))
+                    || statements_use_name(body, name)
+            }
+            Statement::Return(None)
+            | Statement::Break
+            | Statement::Continue
+            | Statement::Goto(_)
+            | Statement::Label(_) => false,
+        })
+    }
+
+    function.locals.iter().filter_map(|local| local.initializer.as_ref())
+        .any(|initializer| expression_reads_name(initializer, name))
+        || statements_use_name(&function.statements, name)
+        || function.guards.iter().any(|guard| {
+            expression_reads_name(&guard.condition, name)
+                || expression_reads_name(&guard.value, name)
+        })
+        || function.return_expression.as_ref()
+            .is_some_and(|value| expression_reads_name(value, name))
+}
+
 /// Whether evaluating `expression` can read `name` after a real call has
 /// completed. `prior_call` carries call state from the enclosing statement
 /// sequence; calls nested inside the expression are evaluated in the order
@@ -1776,8 +1834,15 @@ pub(crate) fn fits_single_scratch(expression: &Expression, destination_is_scratc
             }
             _ => fits_single_scratch(operand, destination_is_scratch),
         },
-        // conditionals and casts are only handled at the top of an evaluation,
-        // not nested inside the single-scratch tree model
+        // A full-width integer/pointer cast is representation-preserving and its
+        // evaluator simply writes the operand into the requested destination.
+        // Narrowing and floating casts need additional instructions/registers.
+        Expression::Cast { target_type, operand }
+            if target_type.width() == 32
+                && !matches!(target_type, Type::Float | Type::Double) =>
+        {
+            fits_single_scratch(operand, destination_is_scratch)
+        }
         Expression::Conditional { .. } | Expression::Cast { .. } => false,
         Expression::BitFieldRead { extracted, .. } => {
             fits_single_scratch(extracted, destination_is_scratch)
@@ -1836,6 +1901,49 @@ mod tests {
             operand: Box::new(Expression::IntegerLiteral(0)),
         };
         assert_eq!(constant_value(&null), Some(0));
+    }
+
+    #[test]
+    fn an_unused_array_declaration_is_not_an_executable_use() {
+        let mut function = Function {
+            return_type: Type::Void,
+            name: "f".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: vec![],
+            locals: vec![],
+            statements: vec![],
+            guards: vec![],
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+        assert!(!function_uses_name(&function, "scratch"));
+        function.statements.push(Statement::Expression(Expression::Variable("scratch".into())));
+        assert!(function_uses_name(&function, "scratch"));
+    }
+
+    #[test]
+    fn full_width_casts_are_transparent_to_scratch_planning() {
+        let cast = |expression| Expression::Cast {
+            target_type: Type::UnsignedInt,
+            operand: Box::new(expression),
+        };
+        let difference = Expression::Binary {
+            operator: BinaryOperator::Subtract,
+            left: Box::new(cast(Expression::Variable("left".into()))),
+            right: Box::new(cast(Expression::Member {
+                base: Box::new(Expression::Variable("object".into())),
+                offset: 4,
+                member_type: Type::Pointer(mwcc_syntax_trees::Pointee::Int),
+                index_stride: None,
+            })),
+        };
+        assert!(fits_single_scratch(&difference, true));
     }
 
     fn var(name: &str) -> Expression {
