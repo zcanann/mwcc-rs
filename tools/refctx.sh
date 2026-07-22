@@ -127,8 +127,8 @@ done
 # compiler-core bridge comparison. Keep this function outside the fallback
 # preprocessing branch: directly preprocessable rows need the same configured
 # source evidence as generated-PCH and decompctx-backed rows.
+configured_source="UNAVAILABLE"
 measure_configured_source() {
-  local configured_source="UNAVAILABLE"
   local -a configured_extra=()
   if [[ "$oracle_direct" == "RUNNABLE" ]]; then
     if [[ -n "${pch_root:-}" && -d "${pch_root:-}" ]]; then
@@ -150,6 +150,31 @@ measure_configured_source() {
     fi
     echo "PARITY_META configured_source=$configured_source"
   fi
+}
+
+# The project's configured source invocation is the parity goal. The
+# preprocessed bridge below remains valuable for compiler-core diagnostics, but
+# it must not replace this authoritative verdict when both compilers accepted
+# the original translation unit with the project's exact flags.
+emit_configured_source_verdict() {
+  case "$configured_source" in
+    BYTE)
+      echo "PARITY_META verdict_input=CONFIGURED"
+      echo "BYTE   $src — configured whole object byte-identical ✅"
+      python3 "$code_metrics" "$objdump" "$dir/ref.direct.o" "$dir/our.configured.o"
+      ;;
+    DIFF)
+      echo "PARITY_META verdict_input=CONFIGURED"
+      echo "DIFF   $src — configured objects differ"
+      python3 "$code_metrics" "$objdump" "$dir/ref.direct.o" "$dir/our.configured.o"
+      ;;
+    DEFER)
+      echo "PARITY_META verdict_input=CONFIGURED"
+      configured_detail="$(sed -n 's/^mwcc: //p' "$dir/our.configured.log" | tail -1)"
+      [[ -n "$configured_detail" ]] || configured_detail="$(tail -1 "$dir/our.configured.log")"
+      echo "DEFER  $src — $configured_detail"
+      ;;
+  esac
 }
 
 # Prefer the authoritative project input. Real MWCC can resolve most projects'
@@ -424,6 +449,7 @@ fi
 # before any optional bridge step can fail and exit early.
 emit_oracle_meta
 measure_configured_source
+emit_configured_source_verdict
 
 # Directly preprocessable rows bypassed the fallback block above. Compile the
 # compiler-core reference from the exact same preprocessed bridge handed to

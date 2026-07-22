@@ -239,6 +239,7 @@ class IdentityTests(unittest.TestCase):
                 {
                     "oracle_direct": "RUNNABLE",
                     "configured_source": "BYTE",
+                    "verdict_input": "CONFIGURED",
                     "direct_bridge": "RUNNABLE",
                     "comparison_input": "DIRECT",
                     "reference_object": "PREPROCESSED",
@@ -259,6 +260,7 @@ class IdentityTests(unittest.TestCase):
                 {
                     "oracle_direct": "RUNNABLE",
                     "configured_source": "BYTE",
+                    "verdict_input": "CONFIGURED",
                     "direct_bridge": "REJECTED",
                     "comparison_input": "SYNTHETIC",
                     "reference_object": "SYNTHETIC",
