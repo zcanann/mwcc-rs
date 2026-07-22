@@ -68,7 +68,11 @@ impl Generator {
                     stride: Some(allocation_size),
                 },
             );
-            let emitted = self.emit_comma_side_effect(&inline_body);
+            let emitted = if self.try_emit_constructor_initializer_run(&inline_body, retained)? {
+                Ok(())
+            } else {
+                self.emit_comma_side_effect(&inline_body)
+            };
             self.locations.remove(&inline_result_name);
             emitted?;
         } else {

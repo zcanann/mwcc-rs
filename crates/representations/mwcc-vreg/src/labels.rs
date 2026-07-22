@@ -76,6 +76,44 @@ impl Labels {
         }
     }
 
+    /// Account for instructions removed from the stream. Callers must prove no
+    /// label is bound to, and no branch use originates in, the removed range.
+    pub fn removed(&mut self, at: usize, count: usize) {
+        let end = at + count;
+        for binding in self.bound.iter_mut().flatten() {
+            debug_assert!(!(*binding >= at && *binding < end));
+            if *binding >= end {
+                *binding -= count;
+            }
+        }
+        for (instruction_index, _) in &mut self.pending {
+            debug_assert!(!(*instruction_index >= at && *instruction_index < end));
+            if *instruction_index >= end {
+                *instruction_index -= count;
+            }
+        }
+    }
+
+    /// Account for moving one instruction from `from` to an earlier `to` slot.
+    pub fn moved_before(&mut self, from: usize, to: usize) {
+        debug_assert!(to < from);
+        let move_index = |index: &mut usize| {
+            *index = if *index == from {
+                to
+            } else if (to..from).contains(index) {
+                *index + 1
+            } else {
+                *index
+            };
+        };
+        for binding in self.bound.iter_mut().flatten() {
+            move_index(binding);
+        }
+        for (instruction_index, _) in &mut self.pending {
+            move_index(instruction_index);
+        }
+    }
+
     /// A new, unbound label.
     pub fn fresh(&mut self) -> Label {
         self.bound.push(None);
@@ -130,6 +168,22 @@ mod tests {
         labels.bind(skip, 2);
         labels.resolve(&mut stream).unwrap();
         assert_eq!(stream[0], Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 2 });
+    }
+
+    #[test]
+    fn removal_and_earlier_move_keep_label_indices_attached() {
+        let mut labels = Labels::default();
+        let target = labels.fresh();
+        labels.use_at(7, target);
+        labels.bind(target, 12);
+
+        labels.removed(5, 1);
+        assert_eq!(labels.pending[0].0, 6);
+        assert_eq!(labels.bound[target.0], Some(11));
+
+        labels.moved_before(6, 2);
+        assert_eq!(labels.pending[0].0, 2);
+        assert_eq!(labels.bound[target.0], Some(11));
     }
 
     #[test]

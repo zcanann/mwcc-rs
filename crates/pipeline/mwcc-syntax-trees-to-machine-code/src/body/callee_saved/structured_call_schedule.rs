@@ -71,6 +71,115 @@ fn expression_call_argument_index(expression: &Expression, candidate: &str) -> O
 }
 
 impl Generator {
+    /// Complete the paired entry-call schedule by restoring LR before the one
+    /// saved receiver. The entry shape is the proof that this ordering applies;
+    /// unrelated one-register frames retain the generic epilogue.
+    pub(super) fn schedule_saved_receiver_entry_epilogue(&mut self) {
+        if self.callee_saved.len() != 1
+            || self.output.instructions.len() < 11
+            || !matches!(&self.output.instructions[..6], [
+                Instruction::StoreWordWithUpdate { s: 1, a: 1, .. },
+                Instruction::MoveFromLinkRegister { d: 0 },
+                Instruction::AddImmediate { d: 4, a: 0, .. },
+                Instruction::StoreWord { s: 0, a: 1, .. },
+                Instruction::StoreWord { s, a: 1, .. },
+                Instruction::Or { a, s: 3, b: 3 },
+            ] if *s == self.callee_saved[0] && *a == self.callee_saved[0])
+        {
+            return;
+        }
+        let end = self.output.instructions.len();
+        if matches!(&self.output.instructions[end - 5..], [
+            Instruction::LoadWord { d: saved, a: 1, .. },
+            Instruction::LoadWord { d: 0, a: 1, .. },
+            Instruction::MoveToLinkRegister { s: 0 },
+            Instruction::AddImmediate { d: 1, a: 1, .. },
+            Instruction::BranchToLinkRegister,
+        ] if *saved == self.callee_saved[0])
+        {
+            self.output.instructions.swap(end - 5, end - 4);
+        }
+    }
+
+    /// A first call through a receiver just promoted from r3 into a saved home
+    /// does not need to copy that receiver back to r3: r3 still contains the
+    /// entry value. MWCC uses the freed issue slot to materialize a literal
+    /// second argument between `mflr` and the two prologue stores.
+    pub(super) fn schedule_saved_receiver_entry_call(
+        &mut self,
+        statement: &Statement,
+        function: &Function,
+        statement_index: usize,
+        emitted_start: usize,
+    ) {
+        if statement_index != 0
+            || self.behavior.frame_convention != FrameConvention::Predecrement
+            || self.callee_saved.len() != 1
+        {
+            return;
+        }
+        let Statement::Expression(expression) = statement else {
+            return;
+        };
+        let Some(arguments) = leading_call_arguments(expression) else {
+            return;
+        };
+        let [Expression::Variable(receiver), Expression::IntegerLiteral(literal)] = arguments
+        else {
+            return;
+        };
+        if function
+            .parameters
+            .first()
+            .map(|parameter| parameter.name.as_str())
+            != Some(receiver.as_str())
+            || self.lookup_general(receiver) != self.callee_saved.first().copied()
+        {
+            return;
+        }
+        let prefix = &self.output.instructions;
+        if emitted_start != 5
+            || prefix.len() < 8
+            || !matches!(&prefix[..8], [
+                Instruction::StoreWordWithUpdate { s: 1, a: 1, .. },
+                Instruction::MoveFromLinkRegister { d: 0 },
+                Instruction::StoreWord { s: 0, a: 1, .. },
+                Instruction::StoreWord { s, a: 1, .. },
+                Instruction::Or { a, s: source, b },
+                Instruction::Or { a: 3, s: call_source, b: call_source_b },
+                Instruction::AddImmediate { d: 4, a: 0, immediate },
+                Instruction::BranchAndLink { .. },
+            ] if *s == self.callee_saved[0]
+                && *a == self.callee_saved[0]
+                && *source == 3
+                && *b == 3
+                && *call_source == self.callee_saved[0]
+                && *call_source_b == self.callee_saved[0]
+                && i64::from(*immediate) == *literal)
+        {
+            return;
+        }
+        self.output.instructions.remove(5);
+        self.labels.removed(5, 1);
+        for relocation in &mut self.output.relocations {
+            if relocation.instruction_index > 5 {
+                relocation.instruction_index -= 1;
+            }
+        }
+        let literal_load = self.output.instructions.remove(5);
+        self.labels.moved_before(5, 2);
+        for relocation in &mut self.output.relocations {
+            relocation.instruction_index = if relocation.instruction_index == 5 {
+                2
+            } else if (2..5).contains(&relocation.instruction_index) {
+                relocation.instruction_index + 1
+            } else {
+                relocation.instruction_index
+            };
+        }
+        self.output.instructions.insert(2, literal_load);
+    }
+
     /// Build 163 keeps the power-of-two product in r3 while forming a second
     /// call argument such as `consume(data, length * 8 + 1)`. The generic
     /// immediate selector coalesces both operations into the argument home;
@@ -180,6 +289,14 @@ impl Generator {
             a: source,
             immediate: 0,
         };
+    }
+}
+
+fn leading_call_arguments(expression: &Expression) -> Option<&[Expression]> {
+    match expression {
+        Expression::Call { arguments, .. } => Some(arguments),
+        Expression::Comma { left, .. } => leading_call_arguments(left),
+        _ => None,
     }
 }
 

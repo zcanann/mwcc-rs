@@ -1141,6 +1141,7 @@ impl Generator {
         } else {
             self.emit_epilogue_and_return();
         }
+        self.schedule_saved_receiver_entry_epilogue();
         self.schedule_legacy_inline_expansion_residue();
         Ok(true)
     }
@@ -1604,6 +1605,12 @@ impl Generator {
                 statement,
                 &statements[statement_index + 1..],
                 function,
+                emitted_start,
+            );
+            self.schedule_saved_receiver_entry_call(
+                statement,
+                function,
+                statement_index,
                 emitted_start,
             );
             if let Some(store_index) = scheduled_float_store.take() {

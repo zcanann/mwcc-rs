@@ -10,6 +10,7 @@ mod call_argument_schedules;
 mod call_argument_types;
 mod calls;
 mod constructed_new;
+mod constructor_initializers;
 mod driver;
 mod global_array_decay;
 mod global_array_index;
