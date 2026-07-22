@@ -17,6 +17,7 @@ mod body;
 mod captures;
 mod casts;
 mod comparisons;
+mod condition_float_cache;
 mod condition_global_cache;
 mod control_flow;
 mod copy_convention;
@@ -299,6 +300,7 @@ pub fn lower_function(
         register_prefer: HashMap::new(),
         stored_globals: HashMap::new(),
         condition_global_values: HashMap::new(),
+        condition_float_cache: Default::default(),
         const_address_bases: HashSet::new(),
         emitted_variable_index_store: false,
         prematerialized_float_constants: Vec::new(),
@@ -399,8 +401,18 @@ pub fn lower_function(
         // A capture template may pin its own measured order (atof, pikmin
         // s_ldexp) — only derive from the AST when it didn't.
         if generator.output.symbol_order.is_empty() {
-            generator.output.symbol_order = symbol_order::referenced_names(
+            // A skipped inline's callees enter the symbol stream at the expanded
+            // call site, not after every name visible in the caller's original
+            // AST. Reconstruct the same expanded tree used by body lowering so
+            // declaration-order symbols preserve that source position.
+            let expanded_symbol_source = body::function_calls_any(
                 function,
+                &generator.skipped_inline_names,
+            )
+            .then(|| generator.inline_bodies.expand_calls(function))
+            .flatten();
+            generator.output.symbol_order = symbol_order::referenced_names(
+                expanded_symbol_source.as_ref().unwrap_or(function),
                 &generator.call_return_types,
                 generator.behavior.symbol_traversal_style,
             );

@@ -1413,9 +1413,9 @@ impl Generator {
                     "two loaded float operands with a float argument in f1 need the FP register allocator (roadmap)",
                 ));
             }
-            self.evaluate_float(left, FLOAT_FIRST)?;
-            self.evaluate_float(right, FLOAT_SCRATCH)?;
-            (FLOAT_FIRST, FLOAT_SCRATCH)
+            let a = self.place_condition_float_load(left, FLOAT_FIRST)?;
+            let b = self.place_condition_float_load(right, FLOAT_SCRATCH)?;
+            (a, b)
         } else if eq && (left_load || right_load) {
             // `==`/`!=` against a loaded value (member/global) uses a *swapped* register
             // assignment versus the ordered form: the constant in f1 (loaded first), the
@@ -1427,23 +1427,23 @@ impl Generator {
             }
             if right_literal && left_load {
                 self.load_float_literal_into(FLOAT_FIRST, right, double)?;
-                self.evaluate_float(left, FLOAT_SCRATCH)?;
-                (FLOAT_SCRATCH, FLOAT_FIRST)
+                let value = self.place_condition_float_load(left, FLOAT_SCRATCH)?;
+                (value, FLOAT_FIRST)
             } else if left_literal && right_load {
                 self.load_float_literal_into(FLOAT_FIRST, left, double)?;
-                self.evaluate_float(right, FLOAT_SCRATCH)?;
-                (FLOAT_FIRST, FLOAT_SCRATCH)
+                let value = self.place_condition_float_load(right, FLOAT_SCRATCH)?;
+                (FLOAT_FIRST, value)
             } else {
                 return Err(Diagnostic::error("this floating-point == comparison needs the value register allocator (roadmap)"));
             }
         } else if left_load && !right_load && !right_literal {
             let b = self.float_register_of_leaf(right)?;
-            self.evaluate_float(left, FLOAT_SCRATCH)?;
-            (FLOAT_SCRATCH, b)
+            let a = self.place_condition_float_load(left, FLOAT_SCRATCH)?;
+            (a, b)
         } else if right_load && !left_load && !left_literal {
             let a = self.float_register_of_leaf(left)?;
-            self.evaluate_float(right, FLOAT_SCRATCH)?;
-            (a, FLOAT_SCRATCH)
+            let b = self.place_condition_float_load(right, FLOAT_SCRATCH)?;
+            (a, b)
         } else if right_literal && !left_literal {
             // One operand is a pool literal and the other a value that must be loaded (a
             // float member or global): mwcc loads the constant into f0 first, then the
@@ -1622,7 +1622,20 @@ impl Generator {
         } else {
             FLOAT_FIRST
         };
+        self.place_condition_float_load(operand, destination)
+    }
+
+    fn place_condition_float_load(
+        &mut self,
+        operand: &Expression,
+        destination: u8,
+    ) -> Compilation<u8> {
+        if let Some(register) = self.condition_float_register(operand) {
+            self.record_condition_float_value(operand, register);
+            return Ok(register);
+        }
         self.evaluate_float(operand, destination)?;
+        self.record_condition_float_value(operand, destination);
         Ok(destination)
     }
 

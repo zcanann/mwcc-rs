@@ -318,12 +318,18 @@ impl Generator {
                     else_body,
                 } if else_body.is_empty() => {
                     let terms = logical_and_terms(condition);
-                    let previous_cache =
-                        if let Some(previous) = carried_condition_cache_restore.take() {
+                    let (previous_cache, previous_float_cache) =
+                        if let Some((previous, previous_float)) =
+                            carried_condition_cache_restore.take()
+                        {
                             self.continue_condition_global_cache(condition);
-                            previous
+                            self.continue_condition_float_cache(condition);
+                            (previous, previous_float)
                         } else {
-                            self.begin_condition_global_cache(condition)
+                            (
+                                self.begin_condition_global_cache(condition),
+                                self.begin_condition_float_cache(condition),
+                            )
                         };
                     let condition_result = (|| {
                         self.preload_condition_global_cache(condition)?;
@@ -361,9 +367,14 @@ impl Generator {
                                 statements.get(statement_index + 1),
                                 Some(Statement::If { else_body, .. }) if else_body.is_empty()
                             );
-                    let continuation_cache =
-                        carry_fallthrough_cache.then(|| self.condition_global_values.clone());
+                    let continuation_cache = carry_fallthrough_cache.then(|| {
+                        (
+                            self.condition_global_values.clone(),
+                            self.condition_float_cache.clone(),
+                        )
+                    });
                     self.restore_condition_global_cache(previous_cache);
+                    self.restore_condition_float_cache(previous_float_cache);
                     let branches = condition_result?;
                     self.commit_structured_float_handoff();
                     self.emit_structured_statements(
@@ -390,9 +401,11 @@ impl Generator {
                             *branch_target = target;
                         }
                     }
-                    if let Some(cache) = continuation_cache {
+                    if let Some((cache, float_cache)) = continuation_cache {
                         let previous = std::mem::replace(&mut self.condition_global_values, cache);
-                        carried_condition_cache_restore = Some(previous);
+                        let previous_float =
+                            std::mem::replace(&mut self.condition_float_cache, float_cache);
+                        carried_condition_cache_restore = Some((previous, previous_float));
                     }
                 }
                 Statement::Return(None) => {
@@ -447,8 +460,9 @@ impl Generator {
                 })?,
             }
         }
-        if let Some(previous) = carried_condition_cache_restore {
+        if let Some((previous, previous_float)) = carried_condition_cache_restore {
             self.restore_condition_global_cache(previous);
+            self.restore_condition_float_cache(previous_float);
         }
         Ok(())
     }

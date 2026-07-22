@@ -7,6 +7,9 @@
 
 #[allow(unused_imports)]
 use super::*;
+use crate::condition_float_cache::{
+    is_direct_float_memory_load, same_direct_float_memory_load,
+};
 use crate::generator::{
     float_compare_literal_key, FloatCompareLiteralKey, PreloadedFloatCompareLiteral,
     RetainedFloatCompareValue, StructuredFloatHandoff, FLOAT_SCRATCH,
@@ -219,66 +222,6 @@ impl Generator {
             register: FLOAT_SCRATCH,
         });
         Ok(())
-    }
-}
-
-fn is_direct_float_memory_load(expression: &Expression) -> bool {
-    matches!(
-        expression,
-        Expression::Member {
-            member_type: Type::Float | Type::Double,
-            ..
-        } | Expression::Dereference { .. }
-            | Expression::Index { .. }
-    )
-}
-
-fn same_direct_float_memory_load(left: &Expression, right: &Expression) -> bool {
-    match (left, right) {
-        (
-            Expression::Member {
-                base: left_base,
-                offset: left_offset,
-                member_type: left_type,
-                index_stride: left_stride,
-            },
-            Expression::Member {
-                base: right_base,
-                offset: right_offset,
-                member_type: right_type,
-                index_stride: right_stride,
-            },
-        ) => {
-            left_offset == right_offset
-                && left_type == right_type
-                && left_stride == right_stride
-                && same_address_expression(left_base, right_base)
-        }
-        (Expression::Dereference { pointer: left }, Expression::Dereference { pointer: right }) => {
-            same_address_expression(left, right)
-        }
-        (
-            Expression::Index {
-                base: left_base,
-                index: left_index,
-            },
-            Expression::Index {
-                base: right_base,
-                index: right_index,
-            },
-        ) => {
-            same_address_expression(left_base, right_base)
-                && same_address_expression(left_index, right_index)
-        }
-        _ => false,
-    }
-}
-
-fn same_address_expression(left: &Expression, right: &Expression) -> bool {
-    match (left, right) {
-        (Expression::Variable(left), Expression::Variable(right)) => left == right,
-        (Expression::IntegerLiteral(left), Expression::IntegerLiteral(right)) => left == right,
-        _ => same_direct_float_memory_load(left, right),
     }
 }
 
