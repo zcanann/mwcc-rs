@@ -530,11 +530,18 @@ impl Generator {
         // member-address adjustment. This keeps the dependent `addi` pair
         // adjacent and leaves the independent object adjustment immediately
         // before the call (`f(&object.member, "name")`).
+        let first_is_member_address = arguments.first().is_some_and(|argument| {
+            matches!(argument, Expression::MemberAddress { .. })
+                || matches!(
+                    argument,
+                    Expression::AddressOf { operand }
+                        if matches!(operand.as_ref(), Expression::Member { .. })
+                )
+        });
         if self.behavior.string_literals_packed
-            && matches!(
-                arguments,
-                [Expression::MemberAddress { .. }, Expression::StringLiteral(_)]
-            )
+            && first_is_member_address
+            && matches!(arguments.get(1), Some(Expression::StringLiteral(_)))
+            && arguments.len() == 2
         {
             self.evaluate_general(&arguments[1], Eabi::FIRST_GENERAL_ARGUMENT + 1)?;
             self.evaluate_general(&arguments[0], Eabi::FIRST_GENERAL_ARGUMENT)?;

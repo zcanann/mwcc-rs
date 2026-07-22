@@ -2209,6 +2209,41 @@ mod tests {
     }
 
     #[test]
+    fn packed_string_call_schedules_member_address_last() {
+        let source = br#"
+            struct Item { int padding; int value; };
+            extern void consume(int*, const char*);
+            int run(struct Item* item) {
+                consume(&item->value, "name");
+                return 1;
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.cpp_exceptions = false;
+        flags.debug_info = false;
+        flags.emit_mwcats = false;
+        flags.string_literals_read_only = true;
+        flags.string_literals_packed = true;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::DEFAULT,
+            flags,
+        };
+        let object = compile(source, "packed.c", config, Some(SourceLanguage::C), None, false)
+            .expect("the packed-string call should compile");
+        let word_position = |expected: [u8; 4]| {
+            object
+                .chunks_exact(4)
+                .position(|word| word == expected)
+                .expect("expected instruction")
+        };
+        let string_high = word_position([0x3c, 0x80, 0x00, 0x00]);
+        let string_low = word_position([0x38, 0x84, 0x00, 0x00]);
+        let member = word_position([0x38, 0x63, 0x00, 0x04]);
+        assert!(string_high < string_low);
+        assert_eq!(member, string_low + 1);
+    }
+
+    #[test]
     fn command_line_pool_mode_is_last_wins() {
         let off = parse_invocation(&["-pool".into(), "off".into()]);
         assert!(!off.flags.pooling_enabled);
