@@ -516,20 +516,27 @@ impl Parser {
         // C-style cast once its destination type is known. Keep the syntax in
         // the parser rather than teaching later lowering stages about two
         // spellings of the same conversion.
-        if self.cplusplus && matches!(self.peek(), Token::Identifier(name) if name == "static_cast")
+        let mut named_cast_struct_tag = None;
+        let named_cast_expression = if self.cplusplus
+            && matches!(self.peek(), Token::Identifier(name) if name == "static_cast")
         {
             self.advance();
             self.expect(Token::Less)?;
             let target_type = self.parse_type()?;
+            if matches!(target_type, Type::StructPointer { .. }) {
+                named_cast_struct_tag = self.last_struct_tag.take();
+            }
             self.expect(Token::Greater)?;
             self.expect(Token::ParenOpen)?;
             let operand = self.expression()?;
             self.expect(Token::ParenClose)?;
-            return Ok(Expression::Cast {
+            Some(Expression::Cast {
                 target_type,
                 operand: Box::new(operand),
-            });
-        }
+            })
+        } else {
+            None
+        };
 
         // `_var_arg_typeof(type)` is an mwcc intrinsic: the EABI vararg class
         // code fed to `__va_arg` (measured GC/2.6: aggregate -> 0, gpr scalar/
@@ -601,8 +608,11 @@ impl Parser {
 
         // A `(struct S *)x` cast carries the struct tag (stashed by `parse_type` in
         // `last_struct_tag`) so a member access on the cast result resolves its layout.
-        let mut cast_struct_tag: Option<String> = None;
-        let mut expression = match self.advance() {
+        let mut cast_struct_tag: Option<String> = named_cast_struct_tag;
+        let mut expression = if let Some(expression) = named_cast_expression {
+            expression
+        } else {
+            match self.advance() {
             Token::IntegerLiteral(value) => Expression::IntegerLiteral(value),
             Token::FloatLiteral(value) => Expression::FloatLiteral(value),
             // A string literal (the raw bytes) — pooled and loaded by address.
@@ -938,6 +948,7 @@ impl Parser {
                     "expected an expression, found {other} at {}",
                     self.diagnostic_position(token_index)
                 )));
+            }
             }
         };
         // postfix subscript `base[index]` and member access `base->field` /

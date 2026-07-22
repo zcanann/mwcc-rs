@@ -318,6 +318,26 @@ mod tests {
     }
 
     #[test]
+    fn binds_postfix_member_access_to_a_named_pointer_cast() {
+        let source = r#"
+            struct Item { int value; };
+            int read(void* opaque) { return static_cast<Item*>(opaque)->value; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 0, .. })
+        ));
+    }
+
+    #[test]
     fn recovers_nested_class_layout_for_out_of_class_member_bodies() {
         let source = r#"
             class Outer {
