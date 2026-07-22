@@ -8,6 +8,7 @@ import contextlib
 import io
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import threading
 import time
@@ -47,8 +48,11 @@ from reference_parity import (
     parse_args as parse_reference_args,
     result_cache_name,
     run_row,
+    register_active_row_process,
     selection_is_probability_sample,
     stable_sample,
+    terminate_active_row_processes,
+    unregister_active_row_process,
     verdict_line,
 )
 from refctx_pch import generated_pch_paths
@@ -242,6 +246,19 @@ class IdentityTests(unittest.TestCase):
                 time.sleep(0.05)
             else:
                 self.fail(f"timed-out refctx child {pid} is still running")
+
+    def test_runner_termination_kills_every_active_row_process_group(self):
+        process = subprocess.Popen(["sleep", "60"], start_new_session=True)
+        register_active_row_process(process.pid)
+        try:
+            terminate_active_row_processes()
+            process.wait(timeout=2)
+            self.assertIsNotNone(process.returncode)
+        finally:
+            unregister_active_row_process(process.pid)
+            if process.poll() is None:
+                os.killpg(process.pid, 9)
+                process.wait(timeout=2)
 
     def test_result_cache_name_changes_with_either_tool_input(self):
         baseline = result_cache_name("a" * 64, "b" * 64)

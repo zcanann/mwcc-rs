@@ -18,6 +18,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -33,6 +34,45 @@ STATUSES = (
     "INVALID_CONFIGURATION",
     "UNSUPPORTED_BUILD",
 )
+
+
+ACTIVE_ROW_PROCESSES: set[int] = set()
+ACTIVE_ROW_PROCESSES_LOCK = threading.Lock()
+
+
+def register_active_row_process(process_group: int) -> None:
+    with ACTIVE_ROW_PROCESSES_LOCK:
+        ACTIVE_ROW_PROCESSES.add(process_group)
+
+
+def unregister_active_row_process(process_group: int) -> None:
+    with ACTIVE_ROW_PROCESSES_LOCK:
+        ACTIVE_ROW_PROCESSES.discard(process_group)
+
+
+def terminate_active_row_processes() -> None:
+    """Kill every in-flight refctx process group owned by this runner."""
+
+    with ACTIVE_ROW_PROCESSES_LOCK:
+        process_groups = tuple(ACTIVE_ROW_PROCESSES)
+    for process_group in process_groups:
+        try:
+            os.killpg(process_group, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def install_termination_handlers() -> None:
+    """Make an interrupted batch stop its row subprocesses before unwinding."""
+
+    def terminate(signum, _frame):
+        terminate_active_row_processes()
+        if signum == signal.SIGINT:
+            raise KeyboardInterrupt
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGINT, terminate)
+    signal.signal(signal.SIGTERM, terminate)
 
 
 def sha256_file(path: Path) -> str:
@@ -295,19 +335,23 @@ def run_row(
         env=environment,
         start_new_session=True,
     )
+    register_active_row_process(process.pid)
     try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        # refctx is a shell pipeline. Killing only that shell leaves the actual
-        # compiler running and every timed-out audit row continues consuming a
-        # core. Give each row its own session and terminate the entire process
-        # group before returning the timeout observation.
         try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.communicate()
-        return "HARNESS", f"timed out after {timeout}s"
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # refctx is a shell pipeline. Killing only that shell leaves the actual
+            # compiler running and every timed-out audit row continues consuming a
+            # core. Give each row its own session and terminate the entire process
+            # group before returning the timeout observation.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+            return "HARNESS", f"timed out after {timeout}s"
+    finally:
+        unregister_active_row_process(process.pid)
     output = "\n".join(part.strip() for part in (stdout, stderr) if part.strip())
     return classify(output, process.returncode), output
 
@@ -382,6 +426,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    install_termination_handlers()
     if args.shard_count < 1 or not 0 <= args.shard_index < args.shard_count:
         print("invalid shard index/count", file=sys.stderr)
         return 2
