@@ -12,8 +12,24 @@ use std::collections::HashMap;
 struct FunctionPlan<'a> {
     function: &'a Function,
     function_id: DebugEntryId,
+    selected_parameters: Vec<(usize, u8)>,
     parameter_ids: Vec<DebugEntryId>,
     parameter_end: Option<DebugEntryId>,
+}
+
+/// Allocated function/parameter identities, independent of the DIEs that may
+/// follow them. Mixed GC 4.x units need this boundary before data types can be
+/// assigned IDs, while function parameter types may in turn reference those
+/// data-owned type DIEs.
+pub(super) struct SelectedFunctionPlan<'a> {
+    functions: Vec<FunctionPlan<'a>>,
+    next_id: DebugEntryId,
+}
+
+impl SelectedFunctionPlan<'_> {
+    pub(super) fn next_id(&self) -> DebugEntryId {
+        self.next_id
+    }
 }
 
 pub(super) fn records<'a>(
@@ -62,49 +78,19 @@ pub(super) fn selected_records<'a>(
     aggregate_ids: &HashMap<String, DebugEntryId>,
     parameter_registers: &[Vec<(usize, u8)>],
 ) -> Compilation<Vec<DebugRecord>> {
-    selected_records_with_terminal(
+    selected_plan(functions, first_id, parameter_registers)?.records(
         unit,
-        functions,
         layout,
-        first_id,
         aggregate_ids,
-        parameter_registers,
         None,
     )
 }
 
-/// Encode a function run whose final sibling is a following data/type DIE.
-/// Fragmented GC 4.x units interleave semantic families without inserting the
-/// legacy function-list null records between them.
-pub(super) fn selected_records_followed_by<'a>(
-    unit: &'a TranslationUnit,
+pub(super) fn selected_plan<'a>(
     functions: &[&'a Function],
-    layout: &FunctionLayout,
     first_id: DebugEntryId,
-    aggregate_ids: &HashMap<String, DebugEntryId>,
     parameter_registers: &[Vec<(usize, u8)>],
-    following: DebugEntryId,
-) -> Compilation<Vec<DebugRecord>> {
-    selected_records_with_terminal(
-        unit,
-        functions,
-        layout,
-        first_id,
-        aggregate_ids,
-        parameter_registers,
-        Some(following),
-    )
-}
-
-fn selected_records_with_terminal<'a>(
-    unit: &'a TranslationUnit,
-    functions: &[&'a Function],
-    layout: &FunctionLayout,
-    first_id: DebugEntryId,
-    aggregate_ids: &HashMap<String, DebugEntryId>,
-    parameter_registers: &[Vec<(usize, u8)>],
-    following: Option<DebugEntryId>,
-) -> Compilation<Vec<DebugRecord>> {
+) -> Compilation<SelectedFunctionPlan<'a>> {
     if functions.len() != parameter_registers.len() {
         return Err(Diagnostic::error(
             "debug-info: function parameter plans are not aligned",
@@ -122,68 +108,84 @@ fn selected_records_with_terminal<'a>(
         plans.push(FunctionPlan {
             function,
             function_id,
+            selected_parameters: selected.clone(),
             parameter_ids,
             parameter_end,
         });
     }
 
-    let mut records = Vec::new();
-    for (index, plan) in plans.iter().enumerate() {
-        let sibling = plans
-            .get(index + 1)
-            .map_or(following.unwrap_or(FUNCTION_END), |following| {
-                following.function_id
-            });
-        let mut attributes = vec![
-            attribute(AttributeName::Sibling, AttributeValue::Reference(sibling)),
-            attribute(
-                AttributeName::Name,
-                AttributeValue::String(plan.function.name.clone()),
-            ),
-        ];
-        if plan.function.return_type != Type::Void {
-            attributes.push(data::member_type_attribute(
-                plan.function.return_type,
-                None,
-                None,
-            )?);
-        }
-        attributes.extend([
-            attribute(
-                AttributeName::LowPc,
-                AttributeValue::Address(Address::external(&plan.function.name)),
-            ),
-            attribute(
-                AttributeName::HighPc,
-                AttributeValue::Address(Address::external_with_addend(
-                    ".text",
-                    (layout.offsets[index] + layout.sizes[index]) as i32,
-                )),
-            ),
-        ]);
-        records.push(DebugRecord::Entry(DebugEntry {
-            id: plan.function_id,
-            tag: Tag::GlobalSubroutine,
-            attributes,
-        }));
+    Ok(SelectedFunctionPlan {
+        functions: plans,
+        next_id: DebugEntryId(next_id),
+    })
+}
 
-        for (selected_index, (parameter_index, register)) in
-            parameter_registers[index].iter().copied().enumerate()
-        {
-            let parameter = plan
-                .function
-                .parameters
-                .get(parameter_index)
-                .ok_or_else(|| {
-                    Diagnostic::error("debug-info: selected parameter index is out of range")
-                })?;
-            let sibling = plan
-                .parameter_ids
-                .get(selected_index + 1)
-                .copied()
-                .or(plan.parameter_end)
-                .expect("a planned parameter list has an end marker");
-            let aggregate_id = unit
+impl SelectedFunctionPlan<'_> {
+    pub(super) fn records(
+        &self,
+        unit: &TranslationUnit,
+        layout: &FunctionLayout,
+        aggregate_ids: &HashMap<String, DebugEntryId>,
+        following: Option<DebugEntryId>,
+    ) -> Compilation<Vec<DebugRecord>> {
+        let mut records = Vec::new();
+        for (index, plan) in self.functions.iter().enumerate() {
+            let sibling = self
+                .functions
+                .get(index + 1)
+                .map_or(following.unwrap_or(FUNCTION_END), |following| {
+                    following.function_id
+                });
+            let mut attributes = vec![
+                attribute(AttributeName::Sibling, AttributeValue::Reference(sibling)),
+                attribute(
+                    AttributeName::Name,
+                    AttributeValue::String(plan.function.name.clone()),
+                ),
+            ];
+            if plan.function.return_type != Type::Void {
+                attributes.push(data::member_type_attribute(
+                    plan.function.return_type,
+                    None,
+                    None,
+                )?);
+            }
+            attributes.extend([
+                attribute(
+                    AttributeName::LowPc,
+                    AttributeValue::Address(Address::external(&plan.function.name)),
+                ),
+                attribute(
+                    AttributeName::HighPc,
+                    AttributeValue::Address(Address::external_with_addend(
+                        ".text",
+                        (layout.offsets[index] + layout.sizes[index]) as i32,
+                    )),
+                ),
+            ]);
+            records.push(DebugRecord::Entry(DebugEntry {
+                id: plan.function_id,
+                tag: Tag::GlobalSubroutine,
+                attributes,
+            }));
+
+            for (selected_index, (parameter_index, register)) in
+                plan.selected_parameters.iter().copied().enumerate()
+            {
+                let parameter = plan
+                    .function
+                    .parameters
+                    .get(parameter_index)
+                    .ok_or_else(|| {
+                        Diagnostic::error("debug-info: selected parameter index is out of range")
+                    })?;
+                let sibling = plan
+                    .parameter_ids
+                    .get(selected_index + 1)
+                    .copied()
+                    .or(plan.parameter_end)
+                    .expect("a planned parameter list has an end marker");
+                let aggregate_id = unit
                 .function_parameter_aggregate_tags
                 .get(&(plan.function.name.clone(), parameter.name.clone()))
                 .map(|tag| {
@@ -195,40 +197,86 @@ fn selected_records_with_terminal<'a>(
                     })
                 })
                 .transpose()?;
-            records.push(DebugRecord::Entry(DebugEntry {
-                id: plan.parameter_ids[selected_index],
-                tag: Tag::FormalParameter,
-                attributes: vec![
-                    attribute(AttributeName::Sibling, AttributeValue::Reference(sibling)),
-                    attribute(
-                        AttributeName::Name,
-                        AttributeValue::String(parameter.name.clone()),
-                    ),
-                    data::member_type_attribute(parameter.parameter_type, aggregate_id, None)?,
-                    attribute(
-                        AttributeName::Location,
-                        AttributeValue::Block2(vec![1, 0, 0, 0, register]),
-                    ),
-                ],
-            }));
+                records.push(DebugRecord::Entry(DebugEntry {
+                    id: plan.parameter_ids[selected_index],
+                    tag: Tag::FormalParameter,
+                    attributes: vec![
+                        attribute(AttributeName::Sibling, AttributeValue::Reference(sibling)),
+                        attribute(
+                            AttributeName::Name,
+                            AttributeValue::String(parameter.name.clone()),
+                        ),
+                        data::member_type_attribute(parameter.parameter_type, aggregate_id, None)?,
+                        attribute(
+                            AttributeName::Location,
+                            AttributeValue::Block2(vec![1, 0, 0, 0, register]),
+                        ),
+                    ],
+                }));
+            }
+            if let Some(end) = plan.parameter_end {
+                records.push(DebugRecord::Marker(end));
+                records.push(DebugRecord::Raw(vec![0, 0, 0, 4]));
+            }
         }
-        if let Some(end) = plan.parameter_end {
-            records.push(DebugRecord::Marker(end));
-            records.push(DebugRecord::Raw(vec![0, 0, 0, 4]));
+        if following.is_none() {
+            records.extend([
+                DebugRecord::Marker(FUNCTION_END),
+                DebugRecord::Raw(vec![0, 0, 0, 4]),
+                DebugRecord::Raw(vec![0, 0, 0, 4]),
+            ]);
         }
+        Ok(records)
     }
-    if following.is_none() {
-        records.extend([
-            DebugRecord::Marker(FUNCTION_END),
-            DebugRecord::Raw(vec![0, 0, 0, 4]),
-            DebugRecord::Raw(vec![0, 0, 0, 4]),
-        ]);
-    }
-    Ok(records)
 }
 
 fn allocate(next_id: &mut u32) -> DebugEntryId {
     let id = DebugEntryId(*next_id);
     *next_id += 1;
     id
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mwcc_syntax_trees::{Parameter, Pointee};
+
+    #[test]
+    fn selected_plan_exposes_parameter_and_terminator_id_span() {
+        let first = function("first");
+        let second = function("second");
+        let plan = selected_plan(
+            &[&first, &second],
+            DebugEntryId(1),
+            &[Vec::new(), vec![(0, 31)]],
+        )
+        .unwrap();
+
+        // Function IDs consume 1 and 2; the retained parameter and its child
+        // terminator consume 3 and 4. Following DIE families start at 5.
+        assert_eq!(plan.next_id(), DebugEntryId(5));
+    }
+
+    fn function(name: &str) -> Function {
+        Function {
+            return_type: Type::Void,
+            name: name.into(),
+            is_static: false,
+            is_weak: false,
+            parameters: vec![Parameter {
+                parameter_type: Type::Pointer(Pointee::Int),
+                name: "destination".into(),
+            }],
+            locals: Vec::new(),
+            statements: Vec::new(),
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        }
+    }
 }

@@ -35,6 +35,8 @@ enum MeasuredShape {
     ConstantFunctionsWithInlineStatics,
     /// GC 4.x constant-return functions followed by aggregate type/data DIEs.
     FragmentedFunctionsWithAggregateData,
+    /// GC 4.x optimized void functions followed by aggregate type/data DIEs.
+    FragmentedSimpleVoidFunctionsWithAggregateData,
     /// A functionless translation unit containing supported scalar, array, and
     /// aggregate data declarations.
     DataOnly,
@@ -123,7 +125,11 @@ pub(super) fn lower(
                 )));
             }
         }
-    } else if shape == MeasuredShape::SimpleVoidFunctions {
+    } else if matches!(
+        shape,
+        MeasuredShape::SimpleVoidFunctions
+            | MeasuredShape::FragmentedSimpleVoidFunctionsWithAggregateData
+    ) {
         line_records.extend(simple_void_functions::line_records(
             &source_functions,
             machine_functions,
@@ -240,28 +246,35 @@ pub(super) fn lower(
         return finish(line, records, data_only_layout(build));
     }
 
-    if shape == MeasuredShape::FragmentedFunctionsWithAggregateData {
+    if matches!(
+        shape,
+        MeasuredShape::FragmentedFunctionsWithAggregateData
+            | MeasuredShape::FragmentedSimpleVoidFunctionsWithAggregateData
+    ) {
         let mut records: Vec<_> = entries.into_iter().map(DebugRecord::Entry).collect();
         let source_function_refs = source_functions
             .iter()
             .map(|(function, _)| *function)
             .collect::<Vec<_>>();
         let first_mixed_function_id = DebugEntryId(1);
-        let first_data_id = DebugEntryId(
-            first_mixed_function_id.0
-                + u32::try_from(source_function_refs.len())
-                    .map_err(|_| Diagnostic::error("debug-info: too many fragmented functions"))?,
-        );
-        let data = data::fragmented_records(unit, first_data_id)?;
-        let parameter_registers = vec![Vec::new(); source_function_refs.len()];
-        records.extend(functions::selected_records_followed_by(
-            unit,
+        let parameter_registers =
+            if shape == MeasuredShape::FragmentedSimpleVoidFunctionsWithAggregateData {
+                simple_void_functions::parameter_registers(&source_functions)?
+            } else {
+                vec![Vec::new(); source_function_refs.len()]
+            };
+        let function_plan = functions::selected_plan(
             &source_function_refs,
-            &layout,
             first_mixed_function_id,
-            &data.aggregate_ids,
             &parameter_registers,
-            first_data_id,
+        )?;
+        let first_data_id = function_plan.next_id();
+        let data = data::fragmented_records(unit, first_data_id)?;
+        records.extend(function_plan.records(
+            unit,
+            &layout,
+            &data.aggregate_ids,
+            Some(first_data_id),
         )?);
         records.extend(data.records);
         return finish(line, records, DebugLayout::AfterDataGrouped);
@@ -441,6 +454,9 @@ pub(super) fn lower(
         MeasuredShape::FragmentedFunctionsWithAggregateData => {
             unreachable!("fragmented mixed units return before legacy function records")
         }
+        MeasuredShape::FragmentedSimpleVoidFunctionsWithAggregateData => {
+            unreachable!("fragmented mixed units return before legacy function records")
+        }
         MeasuredShape::DataOnly => unreachable!("data-only units return before function records"),
         MeasuredShape::VerbatimAsmWithData => {
             unreachable!("verbatim asm/data units return before legacy function records")
@@ -554,6 +570,16 @@ fn classify_shape(
         && unit.functions.iter().all(is_exported_constant_int_function);
     if fragmented_functions_with_aggregate_data {
         return Ok(MeasuredShape::FragmentedFunctionsWithAggregateData);
+    }
+
+    let fragmented_simple_void_functions_with_aggregate_data = build.version.0 >= 4
+        && !globals.is_empty()
+        && globals
+            .iter()
+            .all(|global| matches!(global.declared_type, Type::Struct { .. }))
+        && simple_void_functions::matches(unit, machine_functions);
+    if fragmented_simple_void_functions_with_aggregate_data {
+        return Ok(MeasuredShape::FragmentedSimpleVoidFunctionsWithAggregateData);
     }
 
     if unit.functions.is_empty() && machine_functions.is_empty() && !globals.is_empty() {
