@@ -534,20 +534,57 @@ def snapshot(
     }
 
 
-def delta(
-    current: Dict[str, Dict[str, Any]], baseline: Dict[str, Dict[str, Any]], universe: set[str]
+def transition_delta(
+    current: Dict[str, Dict[str, Any]],
+    baseline: Dict[str, Dict[str, Any]],
+    universe: set[str],
+    value,
+    comparable: Optional[set[str]] = None,
 ) -> Dict[str, Any]:
+    """Compare one evidence layer without mixing in unknown outcomes."""
+
     transitions: Counter[str] = Counter()
+    common = 0
     for identity in universe & current.keys() & baseline.keys():
-        before = baseline[identity]["status"]
-        after = current[identity]["status"]
+        before = value(baseline[identity])
+        after = value(current[identity])
+        if comparable is not None and (before not in comparable or after not in comparable):
+            continue
+        common += 1
         if before != after:
             transitions[f"{before}->{after}"] += 1
     return {
-        "common_observations": len(universe & current.keys() & baseline.keys()),
+        "common_observations": common,
         "byte_gained": sum(count for transition, count in transitions.items() if transition.endswith("->BYTE")),
         "byte_lost": sum(count for transition, count in transitions.items() if transition.startswith("BYTE->")),
         "transitions": dict(sorted(transitions.items())),
+    }
+
+
+def delta(
+    current: Dict[str, Dict[str, Any]], baseline: Dict[str, Dict[str, Any]], universe: set[str]
+) -> Dict[str, Any]:
+    """Report movement separately for raw, authoritative, and drop-in evidence."""
+
+    raw = transition_delta(current, baseline, universe, lambda observation: observation["status"])
+    authoritative = transition_delta(
+        current,
+        baseline,
+        universe,
+        authoritative_result,
+        {"BYTE", "DIFF", "DEFER", "UNSUPPORTED_BUILD"},
+    )
+    configured_source = transition_delta(
+        current,
+        baseline,
+        universe,
+        lambda observation: observation_evidence(observation).get("configured_source", "UNKNOWN"),
+        {"BYTE", "DIFF", "DEFER"},
+    )
+    return {
+        **raw,
+        "authoritative": authoritative,
+        "configured_source": configured_source,
     }
 
 
@@ -1181,16 +1218,15 @@ def print_brief(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]]) 
             print(f"sampled compiler blocker families — {summary}")
         audit_delta = audit.get("delta")
         if audit_delta is not None:
-            transitions = ", ".join(
-                f"{name} {count}"
-                for name, count in audit_delta["transitions"].items()
-            )
+            authoritative = audit_delta["authoritative"]
+            configured = audit_delta["configured_source"]
             print(
-                "fixed-audit movement — "
-                f"+{audit_delta['byte_gained']} exact / "
-                f"-{audit_delta['byte_lost']} exact across "
-                f"{audit_delta['common_observations']}/{audit['selected']} common sample rows"
-                f"{'; ' + transitions if transitions else ''}"
+                "fixed-audit movement — configured-source exact "
+                f"+{configured['byte_gained']} / -{configured['byte_lost']} across "
+                f"{configured['common_observations']}/{audit['selected']} comparable sample rows; "
+                "authoritative whole-object exact "
+                f"+{authoritative['byte_gained']} / -{authoritative['byte_lost']} across "
+                f"{authoritative['common_observations']}/{audit['selected']} comparable sample rows"
             )
         runtime = audit["runtime"]
         if runtime["measured"]:
@@ -1219,10 +1255,15 @@ def print_brief(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]]) 
             f"N={frontier['universe_size']}; {outcomes or 'no outcomes'}"
         )
     if delta_report is not None:
+        authoritative = delta_report["authoritative"]
+        configured = delta_report["configured_source"]
         print(
-            "cached comparison delta — diagnostic only: "
-            f"+{delta_report['byte_gained']} exact / -{delta_report['byte_lost']} exact "
-            f"across {delta_report['common_observations']} common observations"
+            "cached comparison movement — configured-source exact "
+            f"+{configured['byte_gained']} / -{configured['byte_lost']} across "
+            f"{configured['common_observations']} comparable rows; authoritative "
+            f"whole-object exact +{authoritative['byte_gained']} / "
+            f"-{authoritative['byte_lost']} across "
+            f"{authoritative['common_observations']} comparable rows"
         )
 
 
@@ -1448,12 +1489,20 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
         print(f"audit outcomes: {counts}")
         audit_delta = audit.get("delta")
         if audit_delta is not None:
+            authoritative = audit_delta["authoritative"]
+            configured = audit_delta["configured_source"]
             print(
-                f"fixed-audit delta: +{audit_delta['byte_gained']} BYTE / "
-                f"-{audit_delta['byte_lost']} BYTE across "
-                f"{audit_delta['common_observations']}/{audit['selected']} common sample rows"
+                f"fixed-audit configured-source delta: +{configured['byte_gained']} BYTE / "
+                f"-{configured['byte_lost']} BYTE across "
+                f"{configured['common_observations']}/{audit['selected']} comparable sample rows"
             )
-            for transition, count in audit_delta["transitions"].items():
+            print(
+                f"fixed-audit authoritative whole-object delta: "
+                f"+{authoritative['byte_gained']} BYTE / "
+                f"-{authoritative['byte_lost']} BYTE across "
+                f"{authoritative['common_observations']}/{audit['selected']} comparable sample rows"
+            )
+            for transition, count in authoritative["transitions"].items():
                 print(f"  {transition}: {count}")
     frontier = report.get("work_frontier")
     if frontier is not None:

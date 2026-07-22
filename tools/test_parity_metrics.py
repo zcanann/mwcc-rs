@@ -20,6 +20,7 @@ from parity_dashboard import (
     code_component_result,
     code_result,
     compiler_blocker_family,
+    delta,
     failure_reason,
     normalize_reason,
     print_brief,
@@ -322,6 +323,40 @@ class IdentityTests(unittest.TestCase):
 
 
 class DashboardTests(unittest.TestCase):
+    def test_delta_separates_authoritative_and_configured_source_movement(self):
+        def observation(status, configured=None, direct=True):
+            evidence = {}
+            if direct:
+                evidence.update(
+                    oracle_direct="RUNNABLE",
+                    comparison_input="DIRECT",
+                    reference_object="DIRECT",
+                )
+            if configured is not None:
+                evidence["configured_source"] = configured
+            return {"status": status, "evidence": evidence}
+
+        baseline = {
+            "gain": observation("DIFF", "DEFER"),
+            "loss": observation("BYTE", "BYTE"),
+            "newly_measured": observation("HARNESS"),
+        }
+        current = {
+            "gain": observation("BYTE", "BYTE"),
+            "loss": observation("DIFF", "DIFF"),
+            "newly_measured": observation("BYTE", "BYTE"),
+        }
+
+        movement = delta(current, baseline, set(current))
+
+        self.assertEqual(movement["common_observations"], 3)
+        self.assertEqual(movement["authoritative"]["common_observations"], 2)
+        self.assertEqual(movement["authoritative"]["byte_gained"], 1)
+        self.assertEqual(movement["authoritative"]["byte_lost"], 1)
+        self.assertEqual(movement["configured_source"]["common_observations"], 2)
+        self.assertEqual(movement["configured_source"]["byte_gained"], 1)
+        self.assertEqual(movement["configured_source"]["byte_lost"], 1)
+
     def test_brief_status_never_presents_the_work_queue_as_parity(self):
         rows = [row(source="src/a.c"), row(source="src/b.c")]
         observations = {
