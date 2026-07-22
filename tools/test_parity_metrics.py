@@ -139,7 +139,9 @@ class IdentityTests(unittest.TestCase):
 
             wibo = tools / "wibo"
             wibo.write_text(
-                "#!/bin/sh\nshift\nexec \"$@\"\n",
+                "#!/bin/sh\n"
+                "case \"$1\" in *sjiswrap.exe) shift ;; esac\n"
+                "exec \"$@\"\n",
                 encoding="utf-8",
             )
             wibo.chmod(0o755)

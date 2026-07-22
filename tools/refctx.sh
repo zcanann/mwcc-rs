@@ -427,7 +427,7 @@ measure_configured_source
 # source comparison.
 if [[ $direct_ready -eq 1 ]]; then
   if ! (
-    cd "$dir/ours" && "$wibo" "$sjis" "$compiler" \
+    cd "$dir/ours" && "$wibo" "$compiler" \
       ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$ctx_name" \
       -o "$dir/ref.o"
   ) >"$dir/reference.bridge.log" 2>&1; then
@@ -467,7 +467,7 @@ if ! "$ours" --build "$build" ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$d
     reference_projected=0
     if [[ $direct_ready -eq 1 ]]; then
       if (
-        cd "$dir/ours" && "$wibo" "$sjis" "$compiler" \
+        cd "$dir/ours" && "$wibo" "$compiler" \
           ${compiler_flags[@]+"${compiler_flags[@]}"} -sym off -c "$ctx_name" \
           -o "$dir/reference.projected.o"
       ) >"$dir/reference.projected.log" 2>&1; then
