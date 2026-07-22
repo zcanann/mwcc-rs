@@ -2892,36 +2892,58 @@ impl Parser {
     pub(crate) fn resolve_placement_constructor(
         &self,
         class_name: &str,
-        argument_count: usize,
+        arguments: &[Expression],
     ) -> Compilation<String> {
         if let Some(class) = self.cxx_classes.get(class_name) {
-            let candidates: Vec<_> = class
+            let mut candidates = class
                 .constructors
                 .iter()
-                .filter(|signature| signature.parameters.len() == argument_count)
-                .collect();
-            if candidates.len() == 1 {
-                return self.mangle_typed_member_in_current_namespace(
-                    class_name,
-                    "__ct",
-                    &candidates[0].cxx_parameters,
-                );
+                .filter(|signature| signature.parameters.len() == arguments.len())
+                .map(|signature| {
+                    self.mangle_typed_member_in_current_namespace(
+                        class_name,
+                        "__ct",
+                        &signature.cxx_parameters,
+                    )
+                })
+                .collect::<Compilation<Vec<_>>>()?;
+            candidates.sort();
+            candidates.dedup();
+            if let [constructor] = candidates.as_slice() {
+                return Ok(constructor.clone());
             }
         }
-        let qualified = self.qualify_cxx_class_name(class_name);
+        let qualified = if class_name.contains("::") {
+            class_name.to_owned()
+        } else {
+            self.qualify_cxx_class_name(class_name)
+        };
         let candidates: Vec<_> = self
             .cxx_constructors
             .get(&qualified)
             .or_else(|| self.cxx_constructors.get(class_name))
             .into_iter()
             .flatten()
-            .filter(|method| method.fixed_parameter_count == argument_count)
+            .filter(|method| method.fixed_parameter_count == arguments.len())
             .collect();
+        let mut unique = candidates
+            .iter()
+            .map(|method| method.mangled.as_str())
+            .collect::<Vec<_>>();
+        unique.sort_unstable();
+        unique.dedup();
+        if let [constructor] = unique.as_slice() {
+            return Ok((*constructor).to_owned());
+        }
         match candidates.as_slice() {
             [method] => Ok(method.mangled.clone()),
-            _ => Err(Diagnostic::error(format!(
-                "constructor overload resolution for placement construction of '{class_name}' is ambiguous or unavailable (roadmap)"
-            ))),
+            _ => self
+                .resolve_exact_cxx_overload(&qualified, &candidates, arguments)?
+                .ok_or_else(|| {
+                    Diagnostic::error(format!(
+                        "constructor overload resolution for '{class_name}' is unavailable (roadmap)"
+                    ))
+                }),
         }
     }
 

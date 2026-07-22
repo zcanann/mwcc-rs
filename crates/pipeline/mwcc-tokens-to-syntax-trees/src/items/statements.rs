@@ -783,8 +783,8 @@ impl Parser {
                     }
                     self.expect(Token::ParenClose)?;
                     let class_name = struct_tag.as_deref().expect("checked above");
-                    let constructor = self
-                        .resolve_placement_constructor(class_name, arguments.len())?;
+                    let constructor =
+                        self.resolve_placement_constructor(class_name, &arguments)?;
                     let mut call_arguments = vec![Expression::AddressOf {
                         operand: Box::new(Expression::Variable(name.clone())),
                     }];

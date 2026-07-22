@@ -94,7 +94,8 @@ fn contains_call(expression: &Expression) -> bool {
     match expression {
         Expression::Call { .. }
         | Expression::CallThrough { .. }
-        | Expression::VirtualCall { .. } => true,
+        | Expression::VirtualCall { .. }
+        | Expression::ConstructedNew { .. } => true,
         Expression::Binary { left, right, .. }
         | Expression::Comma { left, right }
         | Expression::Assign {
@@ -327,6 +328,17 @@ fn collect(expression: &Expression, names: &mut Names) {
                 }
             }
             names.push_call(name.clone());
+        }
+        Expression::ConstructedNew {
+            constructor,
+            arguments,
+            ..
+        } => {
+            for argument in arguments {
+                collect(argument, names);
+            }
+            names.push_call("__nw__FUl".to_owned());
+            names.push_call(constructor.clone());
         }
         Expression::Assign { target, value } => collect_assignment(target, value, names),
     }

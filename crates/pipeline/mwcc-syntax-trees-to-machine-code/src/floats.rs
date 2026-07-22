@@ -249,7 +249,9 @@ impl Generator {
                 Ok(())
             }
             Expression::IntegerLiteral(_) => Err(Diagnostic::error("integer literal in float context")),
-            Expression::AddressOf { .. } => Err(Diagnostic::error("an address is not a float value")),
+            Expression::AddressOf { .. } | Expression::ConstructedNew { .. } => {
+                Err(Diagnostic::error("an address is not a float value"))
+            }
         }
     }
 

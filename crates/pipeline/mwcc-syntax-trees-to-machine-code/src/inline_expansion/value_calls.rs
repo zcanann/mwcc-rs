@@ -367,6 +367,18 @@ pub(super) fn expand_expression(
                 .map(|argument| recurse(argument, active, changed, value_body_substitutions))
                 .collect(),
         },
+        Expression::ConstructedNew {
+            allocation_size,
+            constructor,
+            arguments,
+        } => Expression::ConstructedNew {
+            allocation_size: *allocation_size,
+            constructor: constructor.clone(),
+            arguments: arguments
+                .iter()
+                .map(|argument| recurse(argument, active, changed, value_body_substitutions))
+                .collect(),
+        },
         Expression::PostStep { target, operator } => Expression::PostStep {
             target: Box::new(recurse(target, active, changed, value_body_substitutions)),
             operator: *operator,

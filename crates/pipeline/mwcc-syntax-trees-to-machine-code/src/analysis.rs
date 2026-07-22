@@ -228,6 +228,10 @@ pub(crate) fn count_name_occurrences(expression: &Expression, name: &str) -> usi
                     .map(|argument| count_name_occurrences(argument, name))
                     .sum::<usize>()
         }
+        Expression::ConstructedNew { arguments, .. } => arguments
+            .iter()
+            .map(|argument| count_name_occurrences(argument, name))
+            .sum(),
         Expression::AggregateLiteral(_) => 0,
         Expression::Variable(variable) => usize::from(variable == name),
         Expression::IntegerLiteral(_)
@@ -582,6 +586,11 @@ fn collect_register_reads(
                 collect_register_reads(argument, registers, collected);
             }
         }
+        Expression::ConstructedNew { arguments, .. } => {
+            for argument in arguments {
+                collect_register_reads(argument, registers, collected);
+            }
+        }
         Expression::AggregateLiteral(_) => {}
         Expression::PostStep { target, .. } => collect_register_reads(target, registers, collected),
         Expression::Variable(name) => {
@@ -791,6 +800,11 @@ fn reads_register_after_call(expression: &Expression, registers: &HashSet<&str>)
             }
             false
         }
+        // Allocation completes before constructor arguments are marshaled, so
+        // every register-backed constructor argument crosses a real call.
+        Expression::ConstructedNew { arguments, .. } => arguments
+            .iter()
+            .any(|argument| reads_register(argument, registers)),
         Expression::CompoundLiteral { .. } => false,
         Expression::AggregateLiteral(_) => false,
         Expression::PostStep { target, .. } => {
@@ -887,6 +901,9 @@ pub(crate) fn reads_register(expression: &Expression, registers: &HashSet<&str>)
                     .iter()
                     .any(|argument| reads_register(argument, registers))
         }
+        Expression::ConstructedNew { arguments, .. } => arguments
+            .iter()
+            .any(|argument| reads_register(argument, registers)),
         Expression::AggregateLiteral(_) => false,
         Expression::PostStep { target, .. } => reads_register(target, registers),
         Expression::Variable(name) => registers.contains(name.as_str()),
@@ -954,7 +971,9 @@ pub(crate) fn expression_has_call(expression: &Expression) -> bool {
         Expression::Call { .. } => true,
         // An indirect call (through a function pointer) always makes the function
         // non-leaf — the link register must be saved around the `bctrl`.
-        Expression::CallThrough { .. } | Expression::VirtualCall { .. } => true,
+        Expression::CallThrough { .. }
+        | Expression::VirtualCall { .. }
+        | Expression::ConstructedNew { .. } => true,
         Expression::Binary { left, right, .. } => {
             expression_has_call(left) || expression_has_call(right)
         }
@@ -1473,6 +1492,11 @@ fn collect_computed_subexpressions<'a>(expression: &'a Expression, into: &mut Ve
             object, arguments, ..
         } => {
             collect_computed_subexpressions(object, into);
+            for argument in arguments {
+                collect_computed_subexpressions(argument, into);
+            }
+        }
+        Expression::ConstructedNew { arguments, .. } => {
             for argument in arguments {
                 collect_computed_subexpressions(argument, into);
             }

@@ -90,7 +90,8 @@ fn expression_contains_call(expression: &Expression) -> bool {
     match expression {
         Expression::Call { .. }
         | Expression::CallThrough { .. }
-        | Expression::VirtualCall { .. } => true,
+        | Expression::VirtualCall { .. }
+        | Expression::ConstructedNew { .. } => true,
         Expression::AggregateLiteral(elements) => elements.iter().any(expression_contains_call),
         Expression::Binary { left, right, .. }
         | Expression::Assign {

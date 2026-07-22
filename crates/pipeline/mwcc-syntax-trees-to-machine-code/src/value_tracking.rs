@@ -1072,7 +1072,8 @@ fn used_in_sign_sensitive_op(
         Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
             used_in_sign_sensitive_op(base, names)
         }
-        Expression::Call { arguments, .. } => arguments
+        Expression::Call { arguments, .. }
+        | Expression::ConstructedNew { arguments, .. } => arguments
             .iter()
             .any(|argument| used_in_sign_sensitive_op(argument, names)),
         Expression::Assign { target, value } => {
@@ -1158,7 +1159,10 @@ fn has_additive_chain(expression: &Expression) -> bool {
             has_additive_chain(target) || has_additive_chain(value)
         }
         Expression::Comma { left, right } => has_additive_chain(left) || has_additive_chain(right),
-        Expression::Call { arguments, .. } => arguments.iter().any(has_additive_chain),
+        Expression::Call { arguments, .. }
+        | Expression::ConstructedNew { arguments, .. } => {
+            arguments.iter().any(has_additive_chain)
+        }
         Expression::Variable(_)
         | Expression::IntegerLiteral(_)
         | Expression::FloatLiteral(_)
@@ -1235,7 +1239,8 @@ fn count_references(name: &str, expression: &Expression) -> usize {
         Expression::Comma { left, right } => {
             count_references(name, left) + count_references(name, right)
         }
-        Expression::Call { arguments, .. } => arguments
+        Expression::Call { arguments, .. }
+        | Expression::ConstructedNew { arguments, .. } => arguments
             .iter()
             .map(|argument| count_references(name, argument))
             .sum(),
@@ -1342,6 +1347,18 @@ pub(crate) fn substitute(
         },
         Expression::Call { name, arguments } => Expression::Call {
             name: name.clone(),
+            arguments: arguments
+                .iter()
+                .map(|argument| substitute(argument, values))
+                .collect(),
+        },
+        Expression::ConstructedNew {
+            allocation_size,
+            constructor,
+            arguments,
+        } => Expression::ConstructedNew {
+            allocation_size: *allocation_size,
+            constructor: constructor.clone(),
             arguments: arguments
                 .iter()
                 .map(|argument| substitute(argument, values))

@@ -36,9 +36,34 @@ impl Parser {
         }
 
         if let Some(class_name) = aggregate_tag {
-            return Err(Diagnostic::error(format!(
-                "constructed scalar C++ new for class '{class_name}' needs the allocation null guard (roadmap)"
-            )));
+            let Type::Struct {
+                size: allocation_size,
+                ..
+            } = allocated_type
+            else {
+                return Err(Diagnostic::error(
+                    "internal: a constructed C++ allocation has no class layout",
+                ));
+            };
+            let mut arguments = Vec::new();
+            if self.eat_keyword(Token::ParenOpen) {
+                if *self.peek() != Token::ParenClose {
+                    loop {
+                        arguments.push(self.expression()?);
+                        if !self.eat_keyword(Token::Comma) {
+                            break;
+                        }
+                    }
+                }
+                self.expect(Token::ParenClose)?;
+            }
+            let constructor = self.resolve_placement_constructor(&class_name, &arguments)?;
+            self.expression_struct_tag = Some(class_name);
+            return Ok(Expression::ConstructedNew {
+                allocation_size,
+                constructor,
+                arguments,
+            });
         }
         if *self.peek() == Token::ParenOpen {
             return Err(Diagnostic::error(
@@ -102,7 +127,7 @@ impl Parser {
                 placement_arguments.len()
             )));
         }
-        let constructor = self.resolve_placement_constructor(&class_name, arguments.len())?;
+        let constructor = self.resolve_placement_constructor(&class_name, &arguments)?;
         let mut call_arguments = placement_arguments;
         call_arguments.extend(arguments);
         self.expression_struct_tag = Some(class_name);

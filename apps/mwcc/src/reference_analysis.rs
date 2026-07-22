@@ -212,6 +212,17 @@ fn collect_expression(
                 collect_expression(argument, owner, candidates, referenced);
             }
         }
+        Expression::ConstructedNew {
+            constructor,
+            arguments,
+            ..
+        } => {
+            record("__nw__FUl", owner, candidates, referenced);
+            record(constructor, owner, candidates, referenced);
+            for argument in arguments {
+                collect_expression(argument, owner, candidates, referenced);
+            }
+        }
         Expression::AggregateLiteral(elements) => {
             for element in elements {
                 collect_expression(element, owner, candidates, referenced);

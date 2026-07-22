@@ -3070,6 +3070,31 @@ blr\n\
     }
 
     #[test]
+    fn retains_scalar_new_as_a_null_guarded_construction_expression() {
+        let source = r#"
+            class Item { public: Item(); int value; int other; };
+            Item::Item() { value = 7; }
+            Item* create() { return new Item(); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[1].return_expression,
+            Some(mwcc_syntax_trees::Expression::ConstructedNew {
+                allocation_size: 8,
+                constructor,
+                arguments,
+            }) if constructor == "__ct__4ItemFv" && arguments.is_empty()
+        ));
+    }
+
+    #[test]
     fn parses_multi_argument_placement_new_before_deferring_its_lowering() {
         let source = r#"
             void* operator new(unsigned long, const char*, int);

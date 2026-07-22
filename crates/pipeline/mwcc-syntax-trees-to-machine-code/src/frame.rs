@@ -3015,7 +3015,8 @@ fn walk(expression: &Expression, names: &mut HashSet<String>) {
             walk(target, names);
             walk(value, names);
         }
-        Expression::Call { arguments, .. } => {
+        Expression::Call { arguments, .. }
+        | Expression::ConstructedNew { arguments, .. } => {
             for argument in arguments {
                 walk(argument, names);
             }

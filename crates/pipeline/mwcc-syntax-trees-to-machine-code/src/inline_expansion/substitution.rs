@@ -169,6 +169,18 @@ pub(super) fn substitute_expression(
                 .map(|argument| substitute_expression(argument, replacements))
                 .collect(),
         },
+        Expression::ConstructedNew {
+            allocation_size,
+            constructor,
+            arguments,
+        } => Expression::ConstructedNew {
+            allocation_size: *allocation_size,
+            constructor: constructor.clone(),
+            arguments: arguments
+                .iter()
+                .map(|argument| substitute_expression(argument, replacements))
+                .collect(),
+        },
         Expression::PostStep { target, operator } => Expression::PostStep {
             target: Box::new(substitute_expression(target, replacements)),
             operator: *operator,

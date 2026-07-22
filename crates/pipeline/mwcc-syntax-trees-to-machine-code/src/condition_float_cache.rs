@@ -166,6 +166,7 @@ fn expression_has_value_barrier(expression: &Expression) -> bool {
         Expression::Call { .. }
         | Expression::CallThrough { .. }
         | Expression::VirtualCall { .. }
+        | Expression::ConstructedNew { .. }
         | Expression::PostStep { .. }
         | Expression::Assign { .. } => true,
         Expression::Binary { left, right, .. }
@@ -216,6 +217,7 @@ fn pure_prefix_contains(expression: &Expression, target: &Expression, barrier: &
         Expression::Call { .. }
         | Expression::CallThrough { .. }
         | Expression::VirtualCall { .. }
+        | Expression::ConstructedNew { .. }
         | Expression::PostStep { .. }
         | Expression::Assign { .. } => {
             *barrier = true;

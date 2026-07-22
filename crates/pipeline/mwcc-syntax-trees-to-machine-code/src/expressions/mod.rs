@@ -9,6 +9,7 @@ mod bit_fields;
 mod call_argument_schedules;
 mod call_argument_types;
 mod calls;
+mod constructed_new;
 mod driver;
 mod global_array_decay;
 mod global_array_index;

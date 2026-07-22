@@ -157,6 +157,11 @@ fn collect_member_pointer_base_order(
                 collect_member_pointer_base_order(argument, names, seen);
             }
         }
+        Expression::ConstructedNew { arguments, .. } => {
+            for argument in arguments {
+                collect_member_pointer_base_order(argument, names, seen);
+            }
+        }
         Expression::PostStep { target, .. } => {
             collect_member_pointer_base_order(target, names, seen);
         }
@@ -214,6 +219,7 @@ fn collect_member_pointer_bases(
         Expression::Call { .. }
         | Expression::CallThrough { .. }
         | Expression::VirtualCall { .. }
+        | Expression::ConstructedNew { .. }
         | Expression::PostStep { .. }
         | Expression::Assign { .. } => *barrier_seen = true,
         Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {

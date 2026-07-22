@@ -380,6 +380,16 @@ impl Generator {
                     false,
                 )
             }
+            Expression::ConstructedNew {
+                allocation_size,
+                constructor,
+                arguments,
+            } => self.emit_constructed_new(
+                *allocation_size,
+                constructor,
+                arguments,
+                destination,
+            ),
             Expression::AggregateLiteral(_) => Err(Diagnostic::error("an aggregate initializer is not supported here (captures only)")),
             Expression::PostStep { .. } => Err(Diagnostic::error(
                 "a postfix step used as a value is not supported yet (roadmap)",
