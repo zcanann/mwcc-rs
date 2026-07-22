@@ -3448,6 +3448,61 @@ impl Parser {
         }
     }
 
+    /// Convert concrete aggregate lvalues passed to reference constructor
+    /// parameters into their EABI addresses. Source syntax omits `&`, but the
+    /// semantic inliner must see the pointer value or it will try to bind an
+    /// aggregate into a scalar parameter temporary.
+    pub(crate) fn lower_placement_constructor_arguments(
+        &self,
+        class_name: &str,
+        constructor_name: &str,
+        arguments: Vec<Expression>,
+    ) -> Vec<Expression> {
+        let resolved = self
+            .resolve_scoped_cxx_class_name(class_name)
+            .unwrap_or_else(|| class_name.to_owned());
+        let local = resolved.rsplit("::").next().unwrap_or(resolved.as_str());
+        let Some(class) = self
+            .cxx_classes
+            .get(&resolved)
+            .or_else(|| self.cxx_classes.get(class_name))
+            .or_else(|| self.cxx_classes.get(local))
+        else {
+            return arguments;
+        };
+        let signatures = class
+            .constructors
+            .iter()
+            .filter(|signature| signature.parameters.len() == arguments.len())
+            .filter(|signature| {
+                mangle_qualified_member_function_typed(
+                    &resolved.split("::").collect::<Vec<_>>(),
+                    "__ct",
+                    &signature.cxx_parameters,
+                )
+                .is_ok_and(|name| name == constructor_name)
+            })
+            .collect::<Vec<_>>();
+        let [signature] = signatures.as_slice() else {
+            return arguments;
+        };
+        arguments
+            .into_iter()
+            .zip(signature.parameters.iter().zip(&signature.cxx_parameters))
+            .map(|(argument, (storage, parameter))| {
+                if (parameter.is_reference || matches!(storage, Type::StructPointer { .. }))
+                    && matches!(self.cxx_expression_type(&argument), Some(Type::Struct { .. }))
+                {
+                    Expression::AddressOf {
+                        operand: Box::new(argument),
+                    }
+                } else {
+                    argument
+                }
+            })
+            .collect()
+    }
+
     /// Whether source class metadata declares a zero-argument constructor.
     ///
     /// An automatic class object written without an initializer still invokes
@@ -3858,6 +3913,61 @@ impl Parser {
                 return Err(Diagnostic::error(format!(
                     "non-scalar constructor initialization for '{field_name}' is not supported yet (roadmap)"
                 )));
+            }
+            // Preserve the scalar field types of a three-float aggregate copy.
+            // Collapsing `Vector3f` to an opaque 12-byte store makes the backend
+            // use integer word copies; MWCC retains the member graph and issues
+            // lfs/stfs operations that its constructor scheduler can interleave.
+            if let (
+                Type::Struct { size: 12, .. },
+                Some(struct_tag),
+                [Expression::Variable(source)],
+            ) = (field.member_type, field.struct_tag.as_ref(), arguments.as_slice())
+            {
+                let source_matches = parameters.iter().any(|parameter| {
+                    parameter.name == *source
+                        && matches!(
+                            parameter.parameter_type,
+                            Type::Struct { size: 12, .. }
+                                | Type::StructPointer { .. }
+                        )
+                });
+                let components = self.structs.get(struct_tag).map(|layout| {
+                    layout
+                        .field_order
+                        .iter()
+                        .filter_map(|name| layout.fields.get(name))
+                        .collect::<Vec<_>>()
+                });
+                if source_matches
+                    && components.as_ref().is_some_and(|components| {
+                        components.len() == 3
+                            && components.iter().enumerate().all(|(index, component)| {
+                                component.offset == index as u32 * 4
+                                    && component.member_type == Type::Float
+                                    && component.array_element.is_none()
+                                    && component.bit_field.is_none()
+                            })
+                    })
+                {
+                    for component in components.expect("the shape was checked") {
+                        statements.push(Statement::Store {
+                            target: Expression::Member {
+                                base: Box::new(Expression::Variable("this".to_string())),
+                                offset: field.offset + component.offset,
+                                member_type: Type::Float,
+                                index_stride: None,
+                            },
+                            value: Expression::Member {
+                                base: Box::new(Expression::Variable(source.clone())),
+                                offset: component.offset,
+                                member_type: Type::Float,
+                                index_stride: None,
+                            },
+                        });
+                    }
+                    continue;
+                }
             }
             statements.push(Statement::Store {
                 target: Expression::Member {

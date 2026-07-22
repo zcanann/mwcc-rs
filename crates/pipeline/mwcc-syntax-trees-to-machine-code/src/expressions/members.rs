@@ -163,7 +163,15 @@ impl Generator {
         }
         // `v.field` where `v` is a frame-resident struct local: a plain r1-relative
         // load at the slot offset plus the member offset.
-        if let Expression::Variable(name) = base {
+        let frame_aggregate_name = match base {
+            Expression::Variable(name) => Some(name),
+            Expression::AddressOf { operand } => match operand.as_ref() {
+                Expression::Variable(name) => Some(name),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(name) = frame_aggregate_name {
             if let Some(slot) = self.frame_slots.get(name) {
                 let pointee = pointee_of_type(member_type)
                     .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;

@@ -2951,17 +2951,27 @@ blr\n\
             constructor.parameters.first().map(|parameter| parameter.parameter_type),
             Some(constructor.return_type)
         );
-        assert!(constructor.statements.iter().any(|statement| matches!(
-            statement,
-            Statement::Store {
-                target: Expression::Member {
-                    offset: 4,
-                    member_type: Type::Struct { size: 12, .. },
-                    ..
-                },
-                value: Expression::Variable(position),
-            } if position == "position"
-        )));
+        assert!(constructor.statements.windows(3).any(|statements| {
+            statements.iter().enumerate().all(|(index, statement)| matches!(
+                statement,
+                Statement::Store {
+                    target: Expression::Member {
+                        offset,
+                        member_type: Type::Float,
+                        ..
+                    },
+                    value: Expression::Member {
+                        base,
+                        offset: source_offset,
+                        member_type: Type::Float,
+                        ..
+                    },
+                } if *offset == 4 + index as u32 * 4
+                    && *source_offset == index as u32 * 4
+                    && matches!(base.as_ref(), Expression::Variable(position)
+                        if position == "position")
+            ))
+        }));
         assert!(constructor.statements.iter().any(|statement| matches!(
             statement,
             Statement::Store {
