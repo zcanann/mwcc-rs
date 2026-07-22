@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter, defaultdict
+from datetime import datetime, timedelta
 import json
 import math
 from pathlib import Path
@@ -567,16 +568,43 @@ def wilson_interval(successes: int, total: int, z: float = 1.959963984540054) ->
 def runtime_summary(observations: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     """Summarize measured per-configuration wall time without guessing missing values."""
 
+    observations = list(observations)
     elapsed = sorted(
         float(observation["elapsed_seconds"])
         for observation in observations
         if isinstance(observation.get("elapsed_seconds"), (int, float))
         and observation["elapsed_seconds"] >= 0
     )
+    intervals = []
+    for observation in observations:
+        duration = observation.get("elapsed_seconds")
+        observed_at = observation.get("observed_at")
+        if not isinstance(duration, (int, float)) or duration < 0 or not observed_at:
+            continue
+        try:
+            started = datetime.fromisoformat(observed_at)
+        except (TypeError, ValueError):
+            continue
+        intervals.append((started, started + timedelta(seconds=float(duration))))
+
+    active_wall_seconds = None
+    if intervals:
+        intervals.sort()
+        merged = [intervals[0]]
+        for started, ended in intervals[1:]:
+            previous_started, previous_ended = merged[-1]
+            if started <= previous_ended:
+                merged[-1] = (previous_started, max(previous_ended, ended))
+            else:
+                merged.append((started, ended))
+        active_wall_seconds = sum(
+            (ended - started).total_seconds() for started, ended in merged
+        )
     if not elapsed:
         return {
             "measured": 0,
             "total_seconds": None,
+            "active_wall_seconds": active_wall_seconds,
             "median_seconds": None,
             "p95_seconds": None,
             "max_seconds": None,
@@ -592,6 +620,7 @@ def runtime_summary(observations: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         "measured": count,
         "total_seconds": sum(elapsed),
+        "active_wall_seconds": active_wall_seconds,
         "median_seconds": median,
         "p95_seconds": elapsed[p95_index],
         "max_seconds": elapsed[-1],
@@ -1093,11 +1122,16 @@ def print_brief(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]]) 
             )
         runtime = audit["runtime"]
         if runtime["measured"]:
+            active_wall = (
+                f"; active wall {runtime['active_wall_seconds']:.1f}s"
+                if runtime["active_wall_seconds"] is not None
+                else ""
+            )
             print(
                 "audit execution cost — "
                 f"{runtime['measured']} rows timed; summed {runtime['total_seconds']:.1f}s; "
                 f"median {runtime['median_seconds']:.2f}s; p95 {runtime['p95_seconds']:.2f}s; "
-                f"max {runtime['max_seconds']:.2f}s"
+                f"max {runtime['max_seconds']:.2f}s{active_wall}"
             )
 
     frontier = report.get("work_frontier")
@@ -1193,10 +1227,16 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
                 f"cells observed ({audit['breadth_sentinels']} out-of-sample sentinels)"
             )
         if runtime["measured"]:
+            active_wall = (
+                f"; active wall {runtime['active_wall_seconds']:.1f}s"
+                if runtime["active_wall_seconds"] is not None
+                else ""
+            )
             print(
                 f"audit execution cost: {runtime['total_seconds']:.1f}s aggregate for "
                 f"{runtime['measured']} rows; median {runtime['median_seconds']:.3f}s; "
                 f"p95 {runtime['p95_seconds']:.3f}s; max {runtime['max_seconds']:.3f}s"
+                f"{active_wall}"
             )
         if not audit["design_valid"]:
             print(

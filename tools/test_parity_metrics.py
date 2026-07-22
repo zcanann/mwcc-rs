@@ -476,15 +476,16 @@ class DashboardTests(unittest.TestCase):
     def test_runtime_summary_reports_cost_distribution_and_missing_count(self):
         report = runtime_summary(
             [
-                {"elapsed_seconds": 4.0},
-                {"elapsed_seconds": 1.0},
+                {"elapsed_seconds": 4.0, "observed_at": "2026-01-01T00:00:00+00:00"},
+                {"elapsed_seconds": 1.0, "observed_at": "2026-01-01T00:00:01+00:00"},
                 {},
-                {"elapsed_seconds": 3.0},
-                {"elapsed_seconds": 2.0},
+                {"elapsed_seconds": 3.0, "observed_at": "2026-01-01T00:00:05+00:00"},
+                {"elapsed_seconds": 2.0, "observed_at": "2026-01-01T00:00:06+00:00"},
             ]
         )
         self.assertEqual(report["measured"], 4)
         self.assertEqual(report["total_seconds"], 10.0)
+        self.assertEqual(report["active_wall_seconds"], 7.0)
         self.assertEqual(report["median_seconds"], 2.5)
         self.assertEqual(report["p95_seconds"], 4.0)
         self.assertEqual(report["max_seconds"], 4.0)
