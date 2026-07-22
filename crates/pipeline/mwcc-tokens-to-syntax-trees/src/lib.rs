@@ -1578,6 +1578,34 @@ blr\n\
     }
 
     #[test]
+    fn devirtualizes_an_inherited_call_on_a_concrete_local_object() {
+        let source = r#"
+            struct Base { virtual void create(); };
+            struct Derived : public Base {};
+            void run() { Derived effect; effect.create(); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        let run = unit
+            .functions
+            .iter()
+            .find(|function| function.name == "run__Fv")
+            .expect("run should be parsed");
+        assert!(matches!(run.statements.as_slice(), [
+            Statement::Expression(Expression::Call { name, arguments })
+        ] if name == "create__4BaseFv"
+            && matches!(arguments.as_slice(), [Expression::AddressOf { operand }]
+                if matches!(operand.as_ref(), Expression::Variable(object) if object == "effect"))));
+    }
+
+    #[test]
     fn preserves_const_qualification_on_a_direct_instance_call() {
         let source = r#"
             class Item {

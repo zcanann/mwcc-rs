@@ -743,6 +743,7 @@ impl Parser {
                             dispatch,
                             return_struct_tag,
                             this_adjustment,
+                            ..
                         } => {
                             self.expression_struct_tag = return_struct_tag;
                             let object = adjust_cxx_object(
@@ -1418,6 +1419,14 @@ impl Parser {
         object: Expression,
         mut arguments: Vec<Expression>,
     ) -> Compilation<Expression> {
+        let concrete_object = matches!(
+            &object,
+            Expression::Variable(name)
+                if matches!(
+                    self.variable_types.get(name).or_else(|| self.global_types.get(name)),
+                    Some(Type::Struct { .. })
+                )
+        );
         let Some(member_call) = self.resolve_instance_member_call(class, member, &arguments)? else {
             if let Some(copy) = self.lower_three_component_copy_setter(
                 class,
@@ -1440,6 +1449,11 @@ impl Parser {
                 if is_inline {
                     self.skipped_inline_names.insert(name.clone());
                 }
+                let object = concrete_object
+                    .then(|| Expression::AddressOf {
+                        operand: Box::new(object.clone()),
+                    })
+                    .unwrap_or(object);
                 arguments.insert(0, adjust_cxx_object(object, this_adjustment));
                 Expression::Call { name, arguments }
             }
@@ -1447,15 +1461,29 @@ impl Parser {
                 dispatch,
                 return_struct_tag,
                 this_adjustment,
+                direct_name,
+                direct_is_inline,
             } => {
                 self.expression_struct_tag = return_struct_tag;
-                Expression::VirtualCall {
-                    object: Box::new(adjust_cxx_object(object, this_adjustment)),
-                    vptr_offset: dispatch.vptr_offset,
-                    slot_offset: dispatch.slot_offset,
-                    return_type: dispatch.return_type,
-                    variadic: dispatch.variadic,
-                    arguments,
+                if concrete_object && direct_name.is_some() {
+                    let name = direct_name.expect("concrete dispatch target was checked");
+                    if direct_is_inline {
+                        self.skipped_inline_names.insert(name.clone());
+                    }
+                    let object = Expression::AddressOf {
+                        operand: Box::new(object),
+                    };
+                    arguments.insert(0, adjust_cxx_object(object, this_adjustment));
+                    Expression::Call { name, arguments }
+                } else {
+                    Expression::VirtualCall {
+                        object: Box::new(adjust_cxx_object(object, this_adjustment)),
+                        vptr_offset: dispatch.vptr_offset,
+                        slot_offset: dispatch.slot_offset,
+                        return_type: dispatch.return_type,
+                        variadic: dispatch.variadic,
+                        arguments,
+                    }
                 }
             }
         })

@@ -170,6 +170,8 @@ pub(crate) enum ImplicitMemberCall {
         dispatch: VirtualDispatch,
         return_struct_tag: Option<String>,
         this_adjustment: u32,
+        direct_name: Option<String>,
+        direct_is_inline: bool,
     },
 }
 
@@ -2189,6 +2191,14 @@ impl Parser {
                 )));
             }
         }
+        // A complete class layout retains the declaration owner needed to
+        // devirtualize calls on concrete objects. Prefer that richer lookup;
+        // declaration-only classes still use the slot-only table below.
+        if self.cxx_classes.contains_key(&resolved) {
+            if let Some(call) = self.resolve_member_call_in_class(&resolved, member, arguments)? {
+                return Ok(Some(call));
+            }
+        }
         if let Some((dispatch, return_struct_tag)) =
             self.resolve_virtual_member_call(&resolved, member, argument_count)?
         {
@@ -2196,9 +2206,11 @@ impl Parser {
                 dispatch,
                 return_struct_tag,
                 this_adjustment: 0,
+                direct_name: None,
+                direct_is_inline: false,
             }));
         }
-        self.resolve_member_call_in_class(&resolved, member, arguments)
+        Ok(None)
     }
 
     /// Resolve a virtual member by declaration signature and return the ABI
@@ -2428,6 +2440,12 @@ impl Parser {
                     dispatch,
                     return_struct_tag: method.return_struct_tag.clone(),
                     this_adjustment: 0,
+                    direct_name: Some(mangle_qualified_member_function_typed(
+                        &class_name.split("::").collect::<Vec<_>>(),
+                        function,
+                        &method.cxx_parameters,
+                    )?),
+                    direct_is_inline: method.is_inline,
                 }));
             }
             return Ok(Some(ImplicitMemberCall::Direct {
@@ -2508,6 +2526,12 @@ impl Parser {
                     dispatch,
                     return_struct_tag: method.return_struct_tag.clone(),
                     this_adjustment,
+                    direct_name: Some(mangle_qualified_member_function_typed(
+                        &owner.split("::").collect::<Vec<_>>(),
+                        function,
+                        &method.cxx_parameters,
+                    )?),
+                    direct_is_inline: method.is_inline,
                 }));
             }
             return Ok(Some(ImplicitMemberCall::Direct {
