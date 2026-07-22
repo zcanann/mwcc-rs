@@ -1273,6 +1273,31 @@ blr\n\
     }
 
     #[test]
+    fn qualified_enumerator_initializers_register_the_enum_type() {
+        let source = r#"
+            namespace ParticleIds {
+                enum Id { NormalHit = 13 };
+            }
+            enum HitMark { Normal = ParticleIds::NormalHit };
+            class Collider {
+            public:
+                void set(HitMark mark) {}
+                int flags;
+            };
+            int compiled(void) { return sizeof(Collider); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.aggregate_definitions["Collider"].byte_size, 4);
+    }
+
+    #[test]
     fn skips_primary_templates_with_default_arguments() {
         let source = r#"
             template <typename T, typename Pointer = T*>

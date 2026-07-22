@@ -368,9 +368,31 @@ impl Parser {
         let negative = self.eat_keyword(Token::Minus);
         let value = match self.advance() {
             Token::IntegerLiteral(value) => value,
-            Token::Identifier(name) => *self.enum_constants.get(&name).ok_or_else(|| {
-                Diagnostic::error(format!("non-constant enumerator value '{name}'"))
-            })?,
+            Token::Identifier(name) => {
+                // C++ enum initializers commonly qualify a previously declared
+                // enumerator (`Namespace::Value`). Enumerator values live in
+                // the flat constant registry today, so retain the complete
+                // spelling for namespaced registries while also resolving the
+                // terminal name used by existing namespace parsing.
+                let mut qualified = name;
+                let mut terminal = qualified.clone();
+                while *self.peek() == Token::Colon && *self.peek_at(1) == Token::Colon {
+                    self.advance();
+                    self.advance();
+                    terminal = self.parse_identifier()?;
+                    qualified.push_str("::");
+                    qualified.push_str(&terminal);
+                }
+                self.enum_constants
+                    .get(&qualified)
+                    .or_else(|| self.enum_constants.get(&terminal))
+                    .copied()
+                    .ok_or_else(|| {
+                        Diagnostic::error(format!(
+                            "non-constant enumerator value '{qualified}'"
+                        ))
+                    })?
+            }
             Token::ParenOpen => {
                 let value = self.parse_enum_value()?;
                 self.expect(Token::ParenClose)?;
