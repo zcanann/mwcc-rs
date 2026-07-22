@@ -341,6 +341,7 @@ impl Generator {
         // [stwu, mflr, scheduled gap..., stw LR] ->
         // [mflr, scheduled gap..., stw LR, stwu].
         self.output.instructions[..=link_store].rotate_left(1);
+        self.schedule_linkage_first_entry_arguments();
         // The same linkage-first convention tears down in the inverse order:
         // restore SP before writing LR. Most allocator-owned epilogues already
         // arrive in that order; hand-emitted loop owners still carry the 2.4.x

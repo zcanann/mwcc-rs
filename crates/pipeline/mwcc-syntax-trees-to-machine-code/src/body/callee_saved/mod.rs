@@ -25,6 +25,7 @@ mod fixed_rmw_recognize;
 mod frame_call_then_branch;
 mod frame_convention;
 mod later_call_arguments;
+mod linkage_first_arguments;
 mod global_swap;
 mod guarded_indexed_call_sequence;
 mod global_call_result_guard;
