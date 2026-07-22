@@ -42,6 +42,8 @@ struct Invocation {
     source_language: Option<SourceLanguage>,
     /// Ordered filesystem access paths used to materialize the source graph.
     include_paths: Vec<PathBuf>,
+    /// Object-like macro definitions visible while selecting conditional source.
+    preprocessor_definitions: std::collections::HashMap<String, String>,
     /// Codegen-affecting flags parsed from the real build line.
     flags: mwcc_versions::Flags,
 }
@@ -55,6 +57,7 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
         artifacts_directory: None,
         source_language: None,
         include_paths: Vec::new(),
+        preprocessor_definitions: std::collections::HashMap::new(),
         flags: mwcc_versions::Flags::default(),
     };
     let mut index = 0;
@@ -89,6 +92,18 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                 index += 1;
                 if let Some(path) = arguments.get(index) {
                     invocation.include_paths.push(PathBuf::from(path));
+                }
+            }
+            "-D" | "-d" => {
+                index += 1;
+                if let Some(definition) = arguments.get(index) {
+                    apply_macro_definition(&mut invocation.preprocessor_definitions, definition);
+                }
+            }
+            "-U" => {
+                index += 1;
+                if let Some(name) = arguments.get(index) {
+                    invocation.preprocessor_definitions.remove(name);
                 }
             }
             // `-char signed`/`-char unsigned` overrides the build's `char` default.
@@ -293,6 +308,15 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
             argument if argument.starts_with("-I") && argument.len() > 2 => {
                 invocation.include_paths.push(PathBuf::from(&argument[2..]));
             }
+            argument if argument.starts_with("-D") && argument.len() > 2 => {
+                apply_macro_definition(
+                    &mut invocation.preprocessor_definitions,
+                    &argument[2..],
+                );
+            }
+            argument if argument.starts_with("-U") && argument.len() > 2 => {
+                invocation.preprocessor_definitions.remove(&argument[2..]);
+            }
             argument if argument.ends_with(".c") && invocation.input.is_none() => {
                 invocation.input = Some(argument.to_string());
             }
@@ -301,6 +325,29 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
         index += 1;
     }
     invocation
+}
+
+fn apply_macro_definition(
+    definitions: &mut std::collections::HashMap<String, String>,
+    definition: &str,
+) {
+    let (name, value) = definition.split_once('=').unwrap_or((definition, "1"));
+    if !name.is_empty() {
+        definitions.insert(name.to_string(), value.to_string());
+    }
+}
+
+fn source_is_cxx(source_name: &str, source_language: Option<SourceLanguage>) -> bool {
+    match source_language {
+        Some(SourceLanguage::C) => false,
+        Some(SourceLanguage::Cxx) => true,
+        None => matches!(
+            std::path::Path::new(source_name)
+                .extension()
+                .and_then(|extension| extension.to_str()),
+            Some("cpp" | "cp" | "cxx" | "cc")
+        ),
+    }
 }
 
 fn main() -> ExitCode {
@@ -332,9 +379,15 @@ fn main() -> ExitCode {
         None => mwcc_versions::DEFAULT,
     };
 
-    let source = match mwcc_source_loader::SourceLoader::new(invocation.include_paths)
-        .load(std::path::Path::new(&input))
-    {
+    let mut source_loader = mwcc_source_loader::SourceLoader::new(invocation.include_paths);
+    source_loader.define("__MWERKS__", "1");
+    if source_is_cxx(&input, invocation.source_language) {
+        source_loader.define("__cplusplus", "1");
+    }
+    for (name, value) in invocation.preprocessor_definitions {
+        source_loader.define(name, value);
+    }
+    let source = match source_loader.load(std::path::Path::new(&input)) {
         Ok(source) => source,
         Err(diagnostic) => {
             eprintln!("mwcc: {diagnostic}");
@@ -423,16 +476,7 @@ fn compile(
         .map(|located| located.token.clone())
         .collect();
     let behavior = mwcc_versions::Behavior::resolve(&config);
-    let is_cxx = match source_language {
-        Some(SourceLanguage::C) => false,
-        Some(SourceLanguage::Cxx) => true,
-        None => matches!(
-            std::path::Path::new(source_name)
-                .extension()
-                .and_then(|extension| extension.to_str()),
-            Some("cpp" | "cp" | "cxx" | "cc")
-        ),
-    };
+    let is_cxx = source_is_cxx(source_name, source_language);
     let mut unit = mwcc_tokens_to_syntax_trees::parse_located_translation_unit_with_enum_min(
         located_tokens,
         is_cxx,
@@ -2019,6 +2063,27 @@ mod tests {
             parsed.include_paths,
             ["first", "second", "third", "fourth"].map(std::path::PathBuf::from)
         );
+    }
+
+    #[test]
+    fn command_line_macro_definitions_support_mwcc_and_standard_forms() {
+        let parsed = parse_invocation(&[
+            "-DVERSION=2".into(),
+            "-d".into(),
+            "FEATURE".into(),
+            "-D".into(),
+            "REMOVED=1".into(),
+            "-UREMOVED".into(),
+        ]);
+        assert_eq!(
+            parsed.preprocessor_definitions.get("VERSION"),
+            Some(&String::from("2"))
+        );
+        assert_eq!(
+            parsed.preprocessor_definitions.get("FEATURE"),
+            Some(&String::from("1"))
+        );
+        assert!(!parsed.preprocessor_definitions.contains_key("REMOVED"));
     }
 
     #[test]

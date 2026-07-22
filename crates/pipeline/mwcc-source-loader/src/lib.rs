@@ -1,23 +1,37 @@
 //! Filesystem source loading for a translation unit.
 //!
-//! This phase owns physical source discovery: it resolves `#include` directives
-//! against the including file and the driver's ordered access paths, then emits
-//! one byte-preserving source buffer. Macro expansion and conditional directives
-//! deliberately remain for the preprocessor proper; keeping filesystem policy
-//! here prevents it from leaking into the lexer or parser.
+//! This phase owns physical source discovery and selection: it resolves
+//! `#include` directives against the including file and the driver's ordered
+//! access paths, evaluates conditional directives, and emits one byte-preserving
+//! source buffer. Token-level macro substitution remains a later frontend
+//! responsibility; filesystem policy never leaks into the lexer or parser.
+
+mod condition;
 
 use mwcc_core::{Compilation, Diagnostic};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SourceLoader {
     access_paths: Vec<PathBuf>,
+    definitions: HashMap<String, String>,
 }
 
 impl SourceLoader {
     pub fn new(access_paths: Vec<PathBuf>) -> Self {
-        Self { access_paths }
+        Self {
+            access_paths,
+            definitions: HashMap::new(),
+        }
+    }
+
+    pub fn define(&mut self, name: impl Into<String>, value: impl Into<String>) {
+        self.definitions.insert(name.into(), value.into());
+    }
+
+    pub fn undefine(&mut self, name: &str) {
+        self.definitions.remove(name);
     }
 
     /// Load `input` and recursively materialize every resolvable include.
@@ -40,6 +54,7 @@ impl SourceLoader {
         let mut context = LoadContext {
             access_paths: &access_paths,
             loaded: HashSet::new(),
+            definitions: self.definitions.clone(),
         };
         context.load_file(&input)
     }
@@ -48,6 +63,7 @@ impl SourceLoader {
 struct LoadContext<'a> {
     access_paths: &'a [PathBuf],
     loaded: HashSet<PathBuf>,
+    definitions: HashMap<String, String>,
 }
 
 impl LoadContext<'_> {
@@ -62,7 +78,39 @@ impl LoadContext<'_> {
             Diagnostic::error(format!("cannot read {}: {error}", canonical.display()))
         })?;
         let mut output = Vec::with_capacity(source.len());
+        let mut conditional = Vec::new();
+        let mut directive_continuation = false;
         for line in physical_lines(&source) {
+            if directive_continuation {
+                directive_continuation = line_continues(line);
+                preserve_line_ending(&mut output, line);
+                continue;
+            }
+            if let Some(directive) = parse_directive(line) {
+                directive_continuation = line_continues(line);
+                if update_conditional_state(&mut conditional, directive, &self.definitions) {
+                    continue;
+                }
+                if !is_active(&conditional) {
+                    continue;
+                }
+                if let Some((name, value)) = parse_define(directive) {
+                    self.definitions.insert(name.to_string(), value.to_string());
+                    output.extend_from_slice(line);
+                    continue;
+                }
+                if let Some(name) = directive
+                    .strip_prefix("undef")
+                    .and_then(directive_argument)
+                    .and_then(directive_name)
+                {
+                    self.definitions.remove(name);
+                    output.extend_from_slice(line);
+                    continue;
+                }
+            } else if !is_active(&conditional) {
+                continue;
+            }
             let Some(include) = parse_include(line) else {
                 output.extend_from_slice(line);
                 continue;
@@ -100,6 +148,130 @@ impl LoadContext<'_> {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ConditionalBranch {
+    parent_active: bool,
+    branch_taken: bool,
+    active: bool,
+}
+
+fn is_active(stack: &[ConditionalBranch]) -> bool {
+    stack.last().map_or(true, |branch| branch.active)
+}
+
+fn update_conditional_state(
+    stack: &mut Vec<ConditionalBranch>,
+    directive: &str,
+    definitions: &HashMap<String, String>,
+) -> bool {
+    let parent_active = is_active(stack);
+    let condition = if let Some(name) = directive
+        .strip_prefix("ifdef")
+        .and_then(directive_argument)
+        .and_then(directive_name)
+    {
+        Some(definitions.contains_key(name))
+    } else if let Some(name) = directive
+        .strip_prefix("ifndef")
+        .and_then(directive_argument)
+        .and_then(directive_name)
+    {
+        Some(!definitions.contains_key(name))
+    } else {
+        directive
+            .strip_prefix("if")
+            .and_then(conditional_argument)
+            .map(|expression| condition::evaluate(expression, definitions))
+    };
+    if let Some(condition) = condition {
+        let active = parent_active && condition;
+        stack.push(ConditionalBranch {
+            parent_active,
+            branch_taken: active,
+            active,
+        });
+        return true;
+    }
+    if let Some(expression) = directive
+        .strip_prefix("elif")
+        .and_then(conditional_argument)
+    {
+        if let Some(branch) = stack.last_mut() {
+            let active = branch.parent_active
+                && !branch.branch_taken
+                && condition::evaluate(expression, definitions);
+            branch.active = active;
+            branch.branch_taken |= active;
+        }
+        return true;
+    }
+    if directive == "else" || directive.starts_with("else ") {
+        if let Some(branch) = stack.last_mut() {
+            branch.active = branch.parent_active && !branch.branch_taken;
+            branch.branch_taken = true;
+        }
+        return true;
+    }
+    if directive == "endif" || directive.starts_with("endif ") {
+        stack.pop();
+        return true;
+    }
+    false
+}
+
+fn parse_directive(line: &[u8]) -> Option<&str> {
+    std::str::from_utf8(line)
+        .ok()?
+        .trim()
+        .strip_prefix('#')
+        .map(str::trim_start)
+}
+
+fn directive_argument(text: &str) -> Option<&str> {
+    text.as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_whitespace)
+        .then(|| text.trim())
+        .filter(|argument| !argument.is_empty())
+}
+
+fn conditional_argument(text: &str) -> Option<&str> {
+    text.as_bytes()
+        .first()
+        .is_some_and(|byte| byte.is_ascii_whitespace() || *byte == b'(')
+        .then(|| text.trim())
+        .filter(|argument| !argument.is_empty())
+}
+
+fn directive_name(text: &str) -> Option<&str> {
+    text.trim()
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        .next()
+        .filter(|name| !name.is_empty())
+}
+
+fn parse_define(directive: &str) -> Option<(&str, &str)> {
+    let argument = directive
+        .strip_prefix("define")
+        .and_then(directive_argument)?;
+    let name_end = argument
+        .bytes()
+        .position(|byte| !byte.is_ascii_alphanumeric() && byte != b'_')
+        .unwrap_or(argument.len());
+    let name = &argument[..name_end];
+    if name.is_empty() {
+        return None;
+    }
+    // Function-like macros count as defined but are not integer-valued in `#if`.
+    let rest = &argument[name_end..];
+    let value = if rest.starts_with('(') {
+        "1"
+    } else {
+        rest.trim().split("//").next().unwrap_or_default().trim()
+    };
+    Some((name, if value.is_empty() { "1" } else { value }))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Include<'a> {
     path: &'a str,
@@ -107,8 +279,7 @@ struct Include<'a> {
 }
 
 fn parse_include(line: &[u8]) -> Option<Include<'_>> {
-    let text = std::str::from_utf8(line).ok()?.trim();
-    let directive = text.strip_prefix('#')?.trim_start();
+    let directive = parse_directive(line)?;
     let argument = directive.strip_prefix("include")?;
     if argument
         .as_bytes()
@@ -133,6 +304,20 @@ fn parse_include(line: &[u8]) -> Option<Include<'_>> {
 
 fn physical_lines(source: &[u8]) -> impl Iterator<Item = &[u8]> {
     source.split_inclusive(|byte| *byte == b'\n')
+}
+
+fn line_continues(line: &[u8]) -> bool {
+    line.iter()
+        .rev()
+        .copied()
+        .find(|byte| !matches!(byte, b'\n' | b'\r' | b' ' | b'\t'))
+        == Some(b'\\')
+}
+
+fn preserve_line_ending(output: &mut Vec<u8>, line: &[u8]) {
+    if line.ends_with(b"\n") {
+        output.push(b'\n');
+    }
 }
 
 fn normalize_existing(path: &Path) -> std::io::Result<PathBuf> {
@@ -235,20 +420,53 @@ mod tests {
     }
 
     #[test]
-    fn unresolved_includes_remain_for_conditional_preprocessing() {
+    fn inactive_includes_are_ignored_and_active_branches_are_selected() {
         let scratch = Scratch::new();
+        std::fs::write(scratch.0.join("present.h"), b"int selected;\n").unwrap();
         std::fs::write(
             scratch.0.join("unit.c"),
-            b"#ifdef NEVER\n#include <absent.h>\n#endif\nint f(void);\n",
+            b"#ifdef NEVER\n#include <absent.h>\n#else\n#include \"present.h\"\n#endif\nint f(void);\n",
         )
         .unwrap();
 
         let loaded = SourceLoader::default()
             .load(&scratch.0.join("unit.c"))
             .unwrap();
-        assert_eq!(
-            loaded,
-            b"#ifdef NEVER\n#include <absent.h>\n#endif\nint f(void);\n"
-        );
+        assert_eq!(loaded, b"int selected;\nint f(void);\n");
+    }
+
+    #[test]
+    fn source_and_driver_definitions_control_nested_branches() {
+        let scratch = Scratch::new();
+        std::fs::write(
+            scratch.0.join("unit.c"),
+            b"#define LOCAL 3\n#if defined(ENABLED) && LOCAL >= 3\nint yes;\n#if 0\nint never;\n#endif\n#else\nint no;\n#endif\n",
+        )
+        .unwrap();
+
+        let mut loader = SourceLoader::default();
+        loader.define("ENABLED", "1");
+        let loaded = loader.load(&scratch.0.join("unit.c")).unwrap();
+        assert_eq!(loaded, b"#define LOCAL 3\nint yes;\n");
+    }
+
+    #[test]
+    fn multiline_macro_bodies_do_not_leak_into_language_tokens() {
+        let scratch = Scratch::new();
+        std::fs::write(
+            scratch.0.join("unit.c"),
+            concat!(
+                "#define BODY(x) do { \\\n",
+                "  x += 1; \\\n",
+                "} while (0)\n",
+                "int f(void);\n"
+            ),
+        )
+        .unwrap();
+
+        let loaded = SourceLoader::default()
+            .load(&scratch.0.join("unit.c"))
+            .unwrap();
+        assert_eq!(loaded, b"#define BODY(x) do { \\\n\n\nint f(void);\n");
     }
 }

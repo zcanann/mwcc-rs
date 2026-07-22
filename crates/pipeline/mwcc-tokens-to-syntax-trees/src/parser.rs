@@ -546,7 +546,11 @@ pub(crate) struct Parser {
 
 impl Parser {
     pub(crate) fn peek(&self) -> &Token {
-        &self.tokens[self.position]
+        // Recovery may consume the explicit EOF sentinel while skipping an
+        // unsupported declaration. Treat every later lookahead as EOF too;
+        // malformed or partially supported input must become a diagnostic or
+        // an exhausted translation unit, never an index-out-of-bounds panic.
+        &self.tokens[self.position.min(self.tokens.len() - 1)]
     }
     /// The token `offset` positions ahead, clamped to the final (end-of-input)
     /// token so lookahead never runs off the end.
@@ -555,7 +559,7 @@ impl Parser {
         &self.tokens[index]
     }
     pub(crate) fn current_location(&self) -> SourceLocation {
-        self.locations[self.position]
+        self.locations[self.position.min(self.locations.len() - 1)]
     }
     pub(crate) fn diagnostic_position(&self, token_index: usize) -> String {
         let location = self.locations[token_index.min(self.locations.len() - 1)];
