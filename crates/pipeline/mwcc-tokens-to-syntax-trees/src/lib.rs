@@ -162,6 +162,7 @@ pub fn parse_located_translation_unit_with_enum_min(
         struct_templates: HashMap::new(),
         template_instantiation_stack: std::cell::RefCell::new(Vec::new()),
         inline_template_members: std::collections::HashSet::new(),
+        inline_template_accessors: std::collections::HashMap::new(),
         empty_nested_template_types: std::collections::HashSet::new(),
         inline_cxx_members: std::collections::HashSet::new(),
         cxx_inline_materializations: Vec::new(),
@@ -2990,6 +2991,34 @@ blr\n\
         assert!(matches!(
             unit.globals[1].declared_type,
             mwcc_syntax_trees::Type::Struct { size: 40, align: 4 }
+        ));
+    }
+
+    #[test]
+    fn inlines_callable_template_data_member_accessors() {
+        let source = r#"
+            template <typename T> struct Parm {
+                T value;
+                T& operator()() { return value; }
+            };
+            struct Holder { int prefix; Parm<float> speed; };
+            float read(Holder* holder) { return holder->speed(); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Member {
+                base,
+                offset: 0,
+                member_type: mwcc_syntax_trees::Type::Float,
+                ..
+            }) if matches!(
+                base.as_ref(),
+                mwcc_syntax_trees::Expression::Member { offset: 4, .. }
+            )
         ));
     }
 

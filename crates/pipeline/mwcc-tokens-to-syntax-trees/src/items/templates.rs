@@ -1407,10 +1407,26 @@ impl Parser {
                             .insert((class_name.clone(), nested.clone()));
                     }
                 }
-                if let Token::Identifier(member_name) = token {
-                    if self.tokens.get(index + 1) == Some(&Token::ParenOpen) {
-                        let mut cursor = index + 1;
+                if let Token::Identifier(source_member_name) = token {
+                    let call_operator = source_member_name == "operator"
+                        && self.tokens.get(index + 1) == Some(&Token::ParenOpen)
+                        && self.tokens.get(index + 2) == Some(&Token::ParenClose)
+                        && self.tokens.get(index + 3) == Some(&Token::ParenOpen);
+                    let parameter_open = if call_operator {
+                        Some(index + 3)
+                    } else {
+                        (self.tokens.get(index + 1) == Some(&Token::ParenOpen))
+                            .then_some(index + 1)
+                    };
+                    if let Some(parameter_open) = parameter_open {
+                        let member_name = if call_operator {
+                            "__cl".to_owned()
+                        } else {
+                            source_member_name.clone()
+                        };
+                        let mut cursor = parameter_open;
                         let mut parens = 0i32;
+                        let mut commas = 0usize;
                         while let Some(candidate) = self.tokens.get(cursor) {
                             match candidate {
                                 Token::ParenOpen => parens += 1,
@@ -1421,17 +1437,32 @@ impl Parser {
                                         break;
                                     }
                                 }
+                                Token::Comma if parens == 1 => commas += 1,
                                 Token::EndOfFile => return,
                                 _ => {}
                             }
                             cursor += 1;
                         }
+                        let parameter_empty = cursor == parameter_open + 2
+                            || (cursor == parameter_open + 3
+                                && self.tokens.get(parameter_open + 1)
+                                    == Some(&Token::KeywordVoid));
+                        let arity = if parameter_empty { 0 } else { commas + 1 };
                         while matches!(self.tokens.get(cursor), Some(Token::Identifier(_))) {
                             cursor += 1;
                         }
                         if self.tokens.get(cursor) == Some(&Token::BraceOpen) {
                             self.inline_template_members
                                 .insert((class_name.clone(), member_name.clone()));
+                            if let Some(
+                                [Token::KeywordReturn, Token::Identifier(field), Token::Semicolon, Token::BraceClose],
+                            ) = self.tokens.get(cursor + 1..cursor + 5)
+                            {
+                                self.inline_template_accessors.insert(
+                                    (class_name.clone(), member_name, arity),
+                                    field.clone(),
+                                );
+                            }
                         }
                     }
                 }
@@ -1449,6 +1480,28 @@ impl Parser {
             }
             index += 1;
         }
+    }
+
+    /// Resolve a primary-template accessor summary against an instantiated
+    /// object's concrete field layout. The summary is source-level (`return
+    /// field;`); offsets and types always come from the specialization layout.
+    pub(crate) fn resolve_inline_template_accessor(
+        &self,
+        instance: &str,
+        member: &str,
+        arity: usize,
+    ) -> Option<StructField> {
+        // Substituting an accessor with explicit arguments would also have to
+        // preserve every argument's side effects. Zero-argument summaries are
+        // complete as-is; richer inline substitution remains a separate step.
+        if arity != 0 {
+            return None;
+        }
+        let primary = instance.split('<').next().unwrap_or(instance);
+        let field = self
+            .inline_template_accessors
+            .get(&(primary.to_owned(), member.to_owned(), arity))?;
+        self.structs.get(instance)?.fields.get(field).cloned()
     }
 
     /// Instantiate `typedef Template<Concrete> Alias;` from a recovered

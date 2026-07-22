@@ -1007,6 +1007,45 @@ impl Parser {
                     self.expect(Token::ParenClose)?;
                     expression = Expression::Call { name, arguments };
                 }
+                // `callable(args)` where the expression has a recovered class
+                // identity invokes `operator()`. A zero-argument primary-
+                // template accessor such as `Parm<T>::operator() { return
+                // mValue; }` is substituted directly from its semantic summary;
+                // other callable classes use ordinary instance-call lowering.
+                Token::ParenOpen if struct_tag.is_some() => {
+                    let tag = struct_tag.take().expect("guarded above");
+                    self.advance();
+                    let mut arguments = Vec::new();
+                    if *self.peek() != Token::ParenClose {
+                        loop {
+                            arguments.push(self.expression()?);
+                            if *self.peek() == Token::Comma {
+                                self.advance();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect(Token::ParenClose)?;
+                    if let Some(field) =
+                        self.resolve_inline_template_accessor(&tag, "__cl", arguments.len())
+                    {
+                        expression = Expression::Member {
+                            base: Box::new(expression),
+                            offset: field.offset,
+                            member_type: field.member_type,
+                            index_stride: None,
+                        };
+                        struct_tag = field.struct_tag;
+                    } else {
+                        expression = self.lower_cxx_instance_member_call(
+                            &tag,
+                            "__cl",
+                            expression,
+                            arguments,
+                        )?;
+                    }
+                }
                 Token::ParenOpen
                     if matches!(&expression, Expression::Dereference { pointer }
                         if matches!(pointer.as_ref(), Expression::Variable(_))) =>
@@ -1132,8 +1171,15 @@ impl Parser {
                         .structs
                         .get(&tag)
                         .is_some_and(|layout| layout.function_pointer_fields.contains(&field));
+                    let is_data_field = self
+                        .structs
+                        .get(&tag)
+                        .is_some_and(|layout| layout.fields.contains_key(&field));
                     let explicit_template_argument = self.try_explicit_member_template_argument();
-                    if *self.peek() == Token::ParenOpen && !is_function_pointer_field {
+                    if *self.peek() == Token::ParenOpen
+                        && !is_function_pointer_field
+                        && !is_data_field
+                    {
                         // A non-virtual instance method is a direct call with
                         // the object pointer prepended as the implicit `this`.
                         // Virtual declarations are deliberately absent from the
@@ -1164,45 +1210,13 @@ impl Parser {
                             };
                             arguments.insert(0, expression);
                             expression = Expression::Call { name, arguments };
-                        } else if let Some(member_call) =
-                            self.resolve_instance_member_call(&tag, &field, arguments.len())?
-                        {
-                            match member_call {
-                                crate::cxx::ImplicitMemberCall::Direct {
-                                    name,
-                                    is_inline,
-                                    this_adjustment,
-                                } => {
-                                    if is_inline {
-                                        self.skipped_inline_names.insert(name.clone());
-                                    }
-                                    arguments.insert(
-                                        0,
-                                        adjust_cxx_object(expression, this_adjustment),
-                                    );
-                                    expression = Expression::Call { name, arguments };
-                                }
-                                crate::cxx::ImplicitMemberCall::Virtual {
-                                    dispatch,
-                                    this_adjustment,
-                                } => {
-                                    expression = Expression::VirtualCall {
-                                        object: Box::new(adjust_cxx_object(
-                                            expression,
-                                            this_adjustment,
-                                        )),
-                                        vptr_offset: dispatch.vptr_offset,
-                                        slot_offset: dispatch.slot_offset,
-                                        return_type: dispatch.return_type,
-                                        variadic: dispatch.variadic,
-                                        arguments,
-                                    };
-                                }
-                            }
                         } else {
-                            return Err(Diagnostic::error(format!(
-                                "C++ member call '{tag}::{field}' is unavailable (roadmap)"
-                            )));
+                            expression = self.lower_cxx_instance_member_call(
+                                &tag,
+                                &field,
+                                expression,
+                                arguments,
+                            )?;
                         }
                         struct_tag = None;
                         continue;
@@ -1365,6 +1379,50 @@ impl Parser {
             });
         }
         Ok(expression)
+    }
+
+    /// Lower a resolved instance-member call with the ABI's implicit object
+    /// argument. Both `object.method()` and callable-object `object()` syntax
+    /// use this path so virtual dispatch, inline identity, and base adjustment
+    /// remain consistent.
+    fn lower_cxx_instance_member_call(
+        &mut self,
+        class: &str,
+        member: &str,
+        object: Expression,
+        mut arguments: Vec<Expression>,
+    ) -> Compilation<Expression> {
+        let member_call = self
+            .resolve_instance_member_call(class, member, arguments.len())?
+            .ok_or_else(|| {
+                Diagnostic::error(format!(
+                    "C++ member call '{class}::{member}' is unavailable (roadmap)"
+                ))
+            })?;
+        Ok(match member_call {
+            crate::cxx::ImplicitMemberCall::Direct {
+                name,
+                is_inline,
+                this_adjustment,
+            } => {
+                if is_inline {
+                    self.skipped_inline_names.insert(name.clone());
+                }
+                arguments.insert(0, adjust_cxx_object(object, this_adjustment));
+                Expression::Call { name, arguments }
+            }
+            crate::cxx::ImplicitMemberCall::Virtual {
+                dispatch,
+                this_adjustment,
+            } => Expression::VirtualCall {
+                object: Box::new(adjust_cxx_object(object, this_adjustment)),
+                vptr_offset: dispatch.vptr_offset,
+                slot_offset: dispatch.slot_offset,
+                return_type: dispatch.return_type,
+                variadic: dispatch.variadic,
+                arguments,
+            },
+        })
     }
 }
 
