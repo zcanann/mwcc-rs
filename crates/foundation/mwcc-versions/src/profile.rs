@@ -16,17 +16,6 @@ pub enum FrameConvention {
     LinkageFirst,
 }
 
-/// Prologue schedule for compiler-generated deleting destructors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CxxDestructorPrologueStyle {
-    /// The 2.4.x scheduler compares `this` early and interleaves the two saved
-    /// parameter homes with the callee-saved register stores.
-    EarlyNullCheck,
-    /// GC 4.1 saves both callee-saved registers, establishes their parameter
-    /// homes, and only then compares `this` against null.
-    SavedHomesBeforeNullCheck,
-}
-
 /// Ordering of the saved-LR reload in a linkage-first frame without saved GPRs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlainLinkageEpilogueStyle {
@@ -841,11 +830,6 @@ pub trait CodegenProfile: core::fmt::Debug {
         FrameConvention::Predecrement
     }
 
-    /// Prologue schedule for compiler-generated deleting destructors.
-    fn cxx_destructor_prologue_style(&self) -> CxxDestructorPrologueStyle {
-        CxxDestructorPrologueStyle::EarlyNullCheck
-    }
-
     /// Saved-LR reload order for a plain linkage-first non-leaf frame.
     fn plain_linkage_epilogue_style(&self) -> PlainLinkageEpilogueStyle {
         PlainLinkageEpilogueStyle::ReloadBeforeStackRestore
@@ -1178,10 +1162,6 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
-    fn cxx_destructor_prologue_style(&self) -> CxxDestructorPrologueStyle {
-        CxxDestructorPrologueStyle::SavedHomesBeforeNullCheck
-    }
-
     fn guarded_byte_copy_style(&self) -> GuardedByteCopyStyle {
         GuardedByteCopyStyle::SignedCompare
     }

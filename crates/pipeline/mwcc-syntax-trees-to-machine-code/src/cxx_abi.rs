@@ -14,7 +14,7 @@ use mwcc_machine_code::{
     FrameInfo, Instruction, MachineFunction, Relocation, RelocationKind, RelocationTarget,
 };
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, GlobalDeclaration, Statement, Type};
-use mwcc_versions::{Behavior, CompilerConfig, CxxDestructorPrologueStyle, FrameConvention};
+use mwcc_versions::{Behavior, CompilerConfig, FrameConvention};
 
 /// Lower a constructor composed from non-virtual base calls, a complete vtable
 /// group installation, and call-valued member stores. These values all depend
@@ -607,7 +607,6 @@ pub(crate) fn lower_composed_destructor(
         return None;
     }
 
-    let behavior = Behavior::resolve(&config);
     let mut output = MachineFunction::new(function.name.clone());
     output.instructions.extend([
         Instruction::StoreWordWithUpdate {
@@ -616,56 +615,30 @@ pub(crate) fn lower_composed_destructor(
             offset: -16,
         },
         Instruction::MoveFromLinkRegister { d: 0 },
-    ]);
-    match behavior.cxx_destructor_prologue_style {
-        CxxDestructorPrologueStyle::EarlyNullCheck => output.instructions.extend([
-            Instruction::CompareWordImmediate { a: 3, immediate: 0 },
-            Instruction::StoreWord {
-                s: 0,
-                a: 1,
-                offset: 20,
-            },
-            Instruction::StoreWord {
-                s: 31,
-                a: 1,
-                offset: 12,
-            },
-            Instruction::Or { a: 31, s: 4, b: 4 },
-            Instruction::StoreWord {
-                s: 30,
-                a: 1,
-                offset: 8,
-            },
-            Instruction::Or { a: 30, s: 3, b: 3 },
-        ]),
-        CxxDestructorPrologueStyle::SavedHomesBeforeNullCheck => output.instructions.extend([
-            Instruction::StoreWord {
-                s: 0,
-                a: 1,
-                offset: 20,
-            },
-            Instruction::StoreWord {
-                s: 31,
-                a: 1,
-                offset: 12,
-            },
-            Instruction::StoreWord {
-                s: 30,
-                a: 1,
-                offset: 8,
-            },
-            Instruction::Or { a: 30, s: 3, b: 3 },
-            Instruction::Or { a: 31, s: 4, b: 4 },
-            Instruction::CompareWordImmediate { a: 3, immediate: 0 },
-        ]),
-    }
-    output
-        .instructions
-        .push(Instruction::BranchConditionalForward {
+        Instruction::CompareWordImmediate { a: 3, immediate: 0 },
+        Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 20,
+        },
+        Instruction::StoreWord {
+            s: 31,
+            a: 1,
+            offset: 12,
+        },
+        Instruction::Or { a: 31, s: 4, b: 4 },
+        Instruction::StoreWord {
+            s: 30,
+            a: 1,
+            offset: 8,
+        },
+        Instruction::Or { a: 30, s: 3, b: 3 },
+        Instruction::BranchConditionalForward {
             options: 12,
             condition_bit: 2,
             target: 0,
-        });
+        },
+    ]);
     let null_branch = 8;
     let mut relocations = Vec::new();
     let mut referenced_functions = Vec::new();
