@@ -1338,6 +1338,9 @@ impl Generator {
                     if is_folded_terminal_pointer_load_alias(function, statement_index) {
                         continue;
                     }
+                    if self.try_emit_frame_aggregate_virtual_assignment(name, value)? {
+                        continue;
+                    }
                     let declared_type = function
                         .locals
                         .iter()

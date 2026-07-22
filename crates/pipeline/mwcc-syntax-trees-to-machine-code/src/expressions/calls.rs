@@ -97,6 +97,46 @@ impl Generator {
         )
     }
 
+    /// Lower an assignment from an aggregate-returning virtual call into the
+    /// destination's frame slot. Both the ordinary and structured body owners
+    /// must use the hidden-result EABI instead of treating the aggregate as a
+    /// scalar register value.
+    pub(crate) fn try_emit_frame_aggregate_virtual_assignment(
+        &mut self,
+        name: &str,
+        value: &Expression,
+    ) -> Compilation<bool> {
+        let Expression::VirtualCall {
+            object,
+            vptr_offset,
+            slot_offset,
+            return_type: Type::Struct { size, .. },
+            variadic,
+            arguments,
+        } = value
+        else {
+            return Ok(false);
+        };
+        if !self.frame_slots.get(name).is_some_and(|slot| {
+            matches!(slot.value_type, Type::Struct { size: slot_size, .. } if slot_size == *size)
+                && !slot.is_array
+        }) {
+            return Ok(false);
+        }
+        let result_address = Expression::AddressOf {
+            operand: Box::new(Expression::Variable(name.to_string())),
+        };
+        self.emit_virtual_call_with_aggregate_result(
+            object,
+            *vptr_offset,
+            *slot_offset,
+            *variadic,
+            arguments,
+            &result_address,
+        )?;
+        Ok(true)
+    }
+
     fn emit_virtual_call_with_hidden_result(
         &mut self,
         object: &Expression,
@@ -120,15 +160,37 @@ impl Generator {
             }
             _ => object.clone(),
         };
-        let mut all_arguments = Vec::with_capacity(arguments.len() + 1 + usize::from(hidden_result.is_some()));
-        if let Some(result_address) = hidden_result {
-            all_arguments.push(result_address.clone());
-        }
-        all_arguments.push(object_argument);
-        all_arguments.extend_from_slice(arguments);
-        self.emit_arguments(&all_arguments, "<virtual>")?;
-
         let object_register = Eabi::FIRST_GENERAL_ARGUMENT + u8::from(hidden_result.is_some());
+        let dispatch_register = if let Some(result_address) = hidden_result {
+            // With a saved leaf receiver and no explicit arguments, MWCC stages
+            // `this` in r4 before forming the hidden-result address in r3. The
+            // original saved home remains live and is used for vtable dispatch.
+            // Keeping that provenance avoids an unnecessary dependence on r4.
+            let saved_receiver = arguments
+                .is_empty()
+                .then(|| self.leaf_info(&object_argument).ok())
+                .flatten()
+                .filter(|(register, width, _)| *register >= 14 && *width == 32)
+                .map(|(register, _, _)| register);
+            if let Some(receiver) = saved_receiver {
+                self.evaluate_general(&object_argument, object_register)?;
+                self.evaluate_general(result_address, Eabi::FIRST_GENERAL_ARGUMENT)?;
+                receiver
+            } else {
+                let mut all_arguments = Vec::with_capacity(arguments.len() + 2);
+                all_arguments.push(result_address.clone());
+                all_arguments.push(object_argument);
+                all_arguments.extend_from_slice(arguments);
+                self.emit_arguments(&all_arguments, "<virtual>")?;
+                object_register
+            }
+        } else {
+            let mut all_arguments = Vec::with_capacity(arguments.len() + 1);
+            all_arguments.push(object_argument);
+            all_arguments.extend_from_slice(arguments);
+            self.emit_arguments(&all_arguments, "<virtual>")?;
+            object_register
+        };
 
         let vptr_offset = i16::try_from(vptr_offset)
             .map_err(|_| Diagnostic::error("a virtual-table pointer offset is out of range"))?;
@@ -136,7 +198,7 @@ impl Generator {
             .map_err(|_| Diagnostic::error("a virtual-table slot offset is out of range"))?;
         self.output.instructions.push(Instruction::LoadWord {
             d: 12,
-            a: object_register,
+            a: dispatch_register,
             offset: vptr_offset,
         });
         self.output.instructions.push(Instruction::LoadWord {

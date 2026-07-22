@@ -3986,35 +3986,12 @@ impl Generator {
                     ))
                 }
             }
-            Statement::Assign {
-                name,
-                value:
-                    Expression::VirtualCall {
-                        object,
-                        vptr_offset,
-                        slot_offset,
-                        return_type: Type::Struct { size, .. },
-                        variadic,
-                        arguments,
-                    },
-            } if self.frame_slots.get(name).is_some_and(|slot| {
-                matches!(slot.value_type, Type::Struct { size: slot_size, .. } if slot_size == *size)
-                    && !slot.is_array
-            }) => {
-                let result_address = Expression::AddressOf {
-                    operand: Box::new(Expression::Variable(name.clone())),
-                };
-                self.emit_virtual_call_with_aggregate_result(
-                    object,
-                    *vptr_offset,
-                    *slot_offset,
-                    *variadic,
-                    arguments,
-                    &result_address,
-                )
-            }
             Statement::Assign { name, value } if self.frame_slots.contains_key(name) => {
-                self.emit_store(&Expression::Variable(name.clone()), value)
+                if self.try_emit_frame_aggregate_virtual_assignment(name, value)? {
+                    Ok(())
+                } else {
+                    self.emit_store(&Expression::Variable(name.clone()), value)
+                }
             }
             // Reassignment is handled by value tracking; reaching here means it was
             // mixed with stores/calls, which that path defers.
