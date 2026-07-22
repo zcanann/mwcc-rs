@@ -525,6 +525,21 @@ impl Generator {
             }
         }
         let direct_call = !self.globals.contains_key(name) && !self.locations.contains_key(name);
+        // With packed `@stringBaseN` literals, MWCC schedules the complete
+        // absolute address of a second string argument before a cheap first
+        // member-address adjustment. This keeps the dependent `addi` pair
+        // adjacent and leaves the independent object adjustment immediately
+        // before the call (`f(&object.member, "name")`).
+        if self.behavior.string_literals_packed
+            && matches!(
+                arguments,
+                [Expression::MemberAddress { .. }, Expression::StringLiteral(_)]
+            )
+        {
+            self.evaluate_general(&arguments[1], Eabi::FIRST_GENERAL_ARGUMENT + 1)?;
+            self.evaluate_general(&arguments[0], Eabi::FIRST_GENERAL_ARGUMENT)?;
+            return Ok(());
+        }
         if self.try_emit_member_constant_arguments(arguments, direct_call)? {
             return Ok(());
         }
