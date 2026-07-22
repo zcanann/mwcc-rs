@@ -58,6 +58,7 @@ mod structured_frame_assignment;
 mod structured_frame_bitfield_stores;
 mod structured_frame_call_schedule;
 mod structured_frame_entry;
+mod structured_home_layout;
 mod structured_if_else;
 mod structured_inline_residue;
 mod structured_inline_assertion;

@@ -22,6 +22,7 @@ use super::structured_frame_assignment::{
     sink_single_use_parameter_assignment,
 };
 use super::structured_frame_entry::structured_dense_frame_entry_index;
+use super::structured_home_layout::dense_eager_home_preference;
 use super::structured_liveness::read_after_possible_call;
 use super::structured_locals::{
     body_uses_local, dead_ephemeral_float_locals, is_definitely_assigned_before_reads,
@@ -314,7 +315,19 @@ impl Generator {
         let deferred_preference_base = eager_saved_locals.len() + saved_parameters.len();
         let homes: Vec<u8> = (0..count)
             .map(|home_index| {
-                if global_member_search_entry && home_index >= deferred_preference_base {
+                if dense_frame && !eager_saved_locals.is_empty() {
+                    let preferred = dense_eager_home_preference(
+                        eager_saved_locals.len(),
+                        saved_parameters.len(),
+                        count,
+                        home_index,
+                    );
+                    if let Some(register) = preferred {
+                        self.fresh_virtual_general_preferring(register)
+                    } else {
+                        self.fresh_virtual_general()
+                    }
+                } else if global_member_search_entry && home_index >= deferred_preference_base {
                     let group = home_index - deferred_preference_base;
                     let rank = global_group_order
                         .iter()
