@@ -591,9 +591,7 @@ fn schedule_instructions(generator: &mut Generator) {
             .map(|argument| list[slot_fill[argument]])
             .collect()
     };
-    for relocation in &mut generator.output.relocations {
-        relocation.instruction_index = permutation[relocation.instruction_index];
-    }
+    remap_instruction_indices(generator, &permutation);
 }
 
 /// Move the epilogue's saved-LR reload up to right after the last call, remapping
@@ -626,9 +624,7 @@ fn hoist_link_register_reload(generator: &mut Generator) {
         }
     }
     let permutation = mwcc_vreg::hoist_link_register_reload(&mut generator.output.instructions);
-    for relocation in &mut generator.output.relocations {
-        relocation.instruction_index = permutation[relocation.instruction_index];
-    }
+    remap_instruction_indices(generator, &permutation);
 }
 
 fn schedule_link_register_save(generator: &mut Generator) {
@@ -636,17 +632,41 @@ fn schedule_link_register_save(generator: &mut Generator) {
         return;
     }
     let permutation = mwcc_vreg::schedule_link_register_save(&mut generator.output.instructions);
+    remap_instruction_indices(generator, &permutation);
+}
+
+/// Coalesce allocator self-moves on the physical stream, remapping every
+/// instruction-index owner through the resulting removal.
+fn coalesce_self_moves(generator: &mut Generator) {
+    let permutation = mwcc_vreg::coalesce_self_moves(&mut generator.output.instructions);
+    remap_instruction_indices(generator, &permutation);
+}
+
+/// Remap relocations and internal branch destinations after an instruction
+/// permutation. Branch destinations are instruction indices just like
+/// relocation owners; leaving them stale after deleting a self-move can skip
+/// the first instruction of a guarded continuation.
+fn remap_instruction_indices(generator: &mut Generator, permutation: &[usize]) {
     for relocation in &mut generator.output.relocations {
         relocation.instruction_index = permutation[relocation.instruction_index];
     }
+    remap_branch_targets(&mut generator.output.instructions, permutation);
 }
 
-/// Coalesce allocator self-moves (`mr rX,rX`) on the physical stream, remapping relocation
-/// indices through the resulting removal.
-fn coalesce_self_moves(generator: &mut Generator) {
-    let permutation = mwcc_vreg::coalesce_self_moves(&mut generator.output.instructions);
-    for relocation in &mut generator.output.relocations {
-        relocation.instruction_index = permutation[relocation.instruction_index];
+fn remap_branch_targets(instructions: &mut [Instruction], permutation: &[usize]) {
+    let old_end = permutation.len();
+    let new_end = instructions.len();
+    for instruction in instructions {
+        let target = match instruction {
+            Instruction::BranchConditionalForward { target, .. }
+            | Instruction::Branch { target } => target,
+            _ => continue,
+        };
+        *target = if *target == old_end {
+            new_end
+        } else {
+            permutation[*target]
+        };
     }
 }
 
@@ -678,5 +698,37 @@ fn collapse_forward_branch_to_terminal_blr(instructions: &mut [Instruction]) {
                 };
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod instruction_index_tests {
+    use super::*;
+
+    #[test]
+    fn a_removed_self_move_remaps_the_guarded_continuation() {
+        let mut instructions = vec![
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 0,
+                target: 3,
+            },
+            Instruction::FloatMove { d: 1, b: 1 },
+            Instruction::BranchAndLink {
+                target: "guarded".into(),
+            },
+            Instruction::move_register(3, 31),
+            Instruction::BranchAndLink {
+                target: "continuation".into(),
+            },
+        ];
+        let permutation = mwcc_vreg::coalesce_self_moves(&mut instructions);
+        remap_branch_targets(&mut instructions, &permutation);
+        let Instruction::BranchConditionalForward { target, .. } = instructions[0] else {
+            panic!("expected guarded branch");
+        };
+
+        assert_eq!(target, 2);
+        assert!(matches!(instructions[target], Instruction::Or { a: 3, .. }));
     }
 }
