@@ -193,6 +193,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--audit-size", type=int, default=384)
     parser.add_argument("--audit-seed", default="mwcc-representative-audit-v1")
     parser.add_argument("--audit-epoch", default="0")
+    parser.add_argument(
+        "--audit-purpose",
+        choices=("paired-panel", "fresh-holdout"),
+        default="paired-panel",
+        help="label the audit's statistical role (default: paired-panel)",
+    )
     parser.add_argument("--seed", default="mwcc-frontier-v1")
     parser.add_argument("--epoch", default="0", help="change to rotate equally ranked work")
     parser.add_argument("--refresh-inventory", action="store_true")
@@ -341,6 +347,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         args.audit_seed,
         "--epoch",
         args.audit_epoch,
+        "--purpose",
+        args.audit_purpose,
         *filters,
     ]
     if run_audit and subprocess.run(audit_command).returncode:

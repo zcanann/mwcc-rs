@@ -163,6 +163,13 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(parse_loop_args(["--jobs", "2"]).jobs, 2)
         self.assertTrue(parse_loop_args(["--audit-only"]).audit_only)
         self.assertTrue(parse_loop_args(["--with-audit"]).with_audit)
+        self.assertEqual(default.audit_purpose, "paired-panel")
+        self.assertEqual(
+            parse_loop_args(
+                ["--audit-purpose", "fresh-holdout"]
+            ).audit_purpose,
+            "fresh-holdout",
+        )
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parse_loop_args(["--work-only", "--audit-only"])
 
@@ -1039,9 +1046,15 @@ class AuditSelectionTests(unittest.TestCase):
         rows = [row(source=f"src/{index}.c") for index in range(20)]
         first = build_audit(rows, 7, "seed", "0")
         second = build_audit(list(reversed(rows)), 7, "seed", "0")
+        self.assertEqual(first["purpose"], "paired-panel")
         self.assertEqual(first["configuration_ids"], second["configuration_ids"])
         self.assertEqual(first["sample_configuration_ids"], second["sample_configuration_ids"])
         self.assertEqual(len(first["sample_configuration_ids"]), 7)
+
+    def test_audit_records_fresh_holdout_role(self):
+        rows = [row(source="src/a.c")]
+        audit = build_audit(rows, 1, "seed", "1", "fresh-holdout")
+        self.assertEqual(audit["purpose"], "fresh-holdout")
 
     def test_fixed_audit_adds_rare_version_sentinel_outside_sample(self):
         rows = [row(source=f"src/{index}.c") for index in range(20)]

@@ -55,7 +55,13 @@ def preferred_sentinel(
     )
 
 
-def build_audit(rows: List[Dict[str, Any]], size: int, seed: str, epoch: str) -> Dict[str, Any]:
+def build_audit(
+    rows: List[Dict[str, Any]],
+    size: int,
+    seed: str,
+    epoch: str,
+    purpose: str = "paired-panel",
+) -> Dict[str, Any]:
     identities = sorted({row["configuration_id"] for row in rows})
     sample = sorted(identities, key=lambda identity: audit_rank(identity, seed, epoch))[
         : min(size, len(identities))
@@ -125,6 +131,7 @@ def build_audit(rows: List[Dict[str, Any]], size: int, seed: str, epoch: str) ->
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "seed": seed,
         "epoch": epoch,
+        "purpose": purpose,
         "population_size": len(identities),
         # Execution is the statistically representative sample plus only the
         # sentinels needed to exercise build identities and breadth cells
@@ -146,6 +153,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--size", type=int, default=384)
     parser.add_argument("--seed", default="mwcc-representative-audit-v1")
     parser.add_argument("--epoch", default="0", help="change deliberately to rotate the fixed audit")
+    parser.add_argument(
+        "--purpose",
+        choices=("paired-panel", "fresh-holdout"),
+        default="paired-panel",
+        help="declare whether this sample may have influenced compiler work",
+    )
     parser.add_argument("--project", action="append")
     parser.add_argument("--version", action="append")
     parser.add_argument("--language", choices=("c", "c++"), action="append")
@@ -160,7 +173,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
     try:
         inventory = load_inventory(args.inventory)
-        audit = build_audit(candidate_rows(inventory, args), args.size, args.seed, args.epoch)
+        audit = build_audit(
+            candidate_rows(inventory, args),
+            args.size,
+            args.seed,
+            args.epoch,
+            args.purpose,
+        )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     except (OSError, ValueError, json.JSONDecodeError) as error:

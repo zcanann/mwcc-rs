@@ -851,6 +851,7 @@ def representative_audit(
     blockers = blocker_breakdown(selected_rows, direct, set())
     result: Dict[str, Any] = {
         "method": manifest.get("kind", "simple_random_sample_without_replacement"),
+        "purpose": manifest.get("purpose", "unspecified"),
         "seed": manifest.get("seed"),
         "epoch": manifest.get("epoch"),
         "population_size": len(universe),
@@ -1205,6 +1206,12 @@ def print_brief(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]]) 
         )
     else:
         estimate = audit["estimate"]
+        purpose = audit.get("purpose", "unspecified")
+        if purpose != "fresh-holdout":
+            print(
+                f"audit role — {purpose}; useful for paired movement, not an unbiased "
+                "current-population estimate after sample-guided tuning"
+            )
         print(
             "representative whole-object audit — "
             f"exact {estimate['successes']}/{estimate['total']} = "
