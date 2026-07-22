@@ -1638,6 +1638,20 @@ impl Generator {
             self.evaluate_general(operand, result)?;
             return Ok(result);
         }
+        if matches!(
+            operand,
+            Expression::Conditional { .. }
+                | Expression::Binary {
+                    operator: BinaryOperator::LogicalAnd
+                        | BinaryOperator::LogicalOr
+                        | BinaryOperator::BitAnd
+                        | BinaryOperator::BitOr,
+                    ..
+                }
+        ) {
+            self.evaluate_general(operand, GENERAL_SCRATCH)?;
+            return Ok(GENERAL_SCRATCH);
+        }
         self.general_register_of_leaf(operand)
     }
 }

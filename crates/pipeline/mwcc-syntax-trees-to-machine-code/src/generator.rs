@@ -7,7 +7,7 @@ use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{
     Instruction, MachineFunction, Relocation, RelocationKind, RelocationTarget,
 };
-use mwcc_syntax_trees::{Expression, Pointee, Type, UnaryOperator};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Pointee, Type, UnaryOperator};
 use mwcc_versions::Behavior;
 use mwcc_vreg::{Reg, RegisterConstraints};
 use std::collections::{HashMap, HashSet};
@@ -449,6 +449,29 @@ impl Generator {
             Expression::Member { member_type, .. } => {
                 matches!(member_type, Type::Float | Type::Double)
             }
+            Expression::Binary {
+                operator,
+                left,
+                right,
+            } if matches!(
+                operator,
+                BinaryOperator::Add
+                    | BinaryOperator::Subtract
+                    | BinaryOperator::Multiply
+                    | BinaryOperator::Divide
+            ) =>
+            {
+                self.is_float_operand(left) || self.is_float_operand(right)
+            }
+            Expression::Cast { target_type, .. } => {
+                matches!(target_type, Type::Float | Type::Double)
+            }
+            Expression::Comma { right, .. } => self.is_float_operand(right),
+            Expression::Conditional {
+                when_true,
+                when_false,
+                ..
+            } => self.is_float_operand(when_true) || self.is_float_operand(when_false),
             _ => false,
         }
     }

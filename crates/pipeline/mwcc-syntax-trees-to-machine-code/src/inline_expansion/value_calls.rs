@@ -131,8 +131,33 @@ pub(super) fn expand_expression(
     active: &mut HashSet<String>,
     changed: &mut bool,
 ) -> Expression {
+    expand_expression_with_facts(
+        expression,
+        bodies,
+        stable_variables,
+        active,
+        changed,
+        &HashSet::new(),
+    )
+}
+
+fn expand_expression_with_facts(
+    expression: &Expression,
+    bodies: &HashMap<String, ValueInlineBody>,
+    stable_variables: &HashSet<String>,
+    active: &mut HashSet<String>,
+    changed: &mut bool,
+    known_nonzero: &HashSet<String>,
+) -> Expression {
     let recurse = |value: &Expression, active: &mut HashSet<String>, changed: &mut bool| {
-        expand_expression(value, bodies, stable_variables, active, changed)
+        expand_expression_with_facts(
+            value,
+            bodies,
+            stable_variables,
+            active,
+            changed,
+            known_nonzero,
+        )
     };
     match expression {
         Expression::Call { name, arguments } => {
@@ -161,7 +186,10 @@ pub(super) fn expand_expression(
                 .map(|parameter| parameter.name.clone())
                 .zip(arguments)
                 .collect();
-            let substituted = substitute_expression(&body.expression, &replacements);
+            let substituted = strip_proven_assertions(
+                substitute_expression(&body.expression, &replacements),
+                known_nonzero,
+            );
             *changed = true;
             active.insert(name.clone());
             let expanded = recurse(&substituted, active, changed);
@@ -178,11 +206,28 @@ pub(super) fn expand_expression(
             operator,
             left,
             right,
-        } => Expression::Binary {
-            operator: *operator,
-            left: Box::new(recurse(left, active, changed)),
-            right: Box::new(recurse(right, active, changed)),
-        },
+        } => {
+            let left = recurse(left, active, changed);
+            let mut right_facts = known_nonzero.clone();
+            if *operator == mwcc_syntax_trees::BinaryOperator::LogicalAnd {
+                if let Some(name) = proven_nonzero_name(&left) {
+                    right_facts.insert(name.to_owned());
+                }
+            }
+            let right = expand_expression_with_facts(
+                right,
+                bodies,
+                stable_variables,
+                active,
+                changed,
+                &right_facts,
+            );
+            Expression::Binary {
+                operator: *operator,
+                left: Box::new(left),
+                right: Box::new(right),
+            }
+        }
         Expression::Unary { operator, operand } => Expression::Unary {
             operator: *operator,
             operand: Box::new(recurse(operand, active, changed)),
@@ -295,5 +340,42 @@ pub(super) fn expand_expression(
         | Expression::StringLiteral(_)
         | Expression::Variable(_)
         | Expression::CompoundLiteral { .. } => expression.clone(),
+    }
+}
+
+fn proven_nonzero_name(expression: &Expression) -> Option<&str> {
+    match expression {
+        Expression::Variable(name) => Some(name),
+        Expression::Binary {
+            operator: mwcc_syntax_trees::BinaryOperator::NotEqual,
+            left,
+            right,
+        } if matches!(right.as_ref(), Expression::IntegerLiteral(0)) => match left.as_ref() {
+            Expression::Variable(name) => Some(name),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn strip_proven_assertions(expression: Expression, known_nonzero: &HashSet<String>) -> Expression {
+    let Expression::Comma { left, right } = expression else {
+        return expression;
+    };
+    let is_proven_assert = matches!(left.as_ref(), Expression::Conditional {
+        condition,
+        when_true,
+        when_false,
+        ..
+    } if matches!(condition.as_ref(), Expression::Variable(name) if known_nonzero.contains(name))
+        && matches!(when_true.as_ref(), Expression::Cast {
+            target_type: mwcc_syntax_trees::Type::Void,
+            operand,
+        } if matches!(operand.as_ref(), Expression::IntegerLiteral(0)))
+        && matches!(when_false.as_ref(), Expression::Call { name, .. } if name == "__assert"));
+    if is_proven_assert {
+        strip_proven_assertions(*right, known_nonzero)
+    } else {
+        Expression::Comma { left, right }
     }
 }

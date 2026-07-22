@@ -3881,9 +3881,15 @@ impl Generator {
             {
                 Ok(())
             }
-            Statement::Expression(_) => Err(Diagnostic::error(
-                "only a call may be a bare statement (roadmap)",
-            )),
+            Statement::Expression(expression) => {
+                if self.try_emit_conditional_call_statement(expression)? {
+                    Ok(())
+                } else {
+                    Err(Diagnostic::error(
+                        "only a call may be a bare statement (roadmap)",
+                    ))
+                }
+            }
             Statement::Assign { name, value } if self.frame_slots.contains_key(name) => {
                 self.emit_store(&Expression::Variable(name.clone()), value)
             }

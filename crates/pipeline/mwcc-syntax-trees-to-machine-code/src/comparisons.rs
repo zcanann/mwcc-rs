@@ -1432,11 +1432,11 @@ impl Generator {
             } else {
                 return Err(Diagnostic::error("this floating-point == comparison needs the value register allocator (roadmap)"));
             }
-        } else if left_load && !right_load {
+        } else if left_load && !right_load && !right_literal {
             let b = self.float_register_of_leaf(right)?;
             self.evaluate_float(left, FLOAT_SCRATCH)?;
             (FLOAT_SCRATCH, b)
-        } else if right_load && !left_load {
+        } else if right_load && !left_load && !left_literal {
             let a = self.float_register_of_leaf(left)?;
             self.evaluate_float(right, FLOAT_SCRATCH)?;
             (a, FLOAT_SCRATCH)

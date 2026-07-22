@@ -5,7 +5,9 @@
 //! `result = A; if (condition) result = B; return result;` body and preserves
 //! it as a comma/conditional expression at the original call position.
 
-use mwcc_syntax_trees::{ConditionalOrigin, Expression, Function, Statement, Type};
+use mwcc_syntax_trees::{
+    BinaryOperator, ConditionalOrigin, Expression, Function, Statement, Type, UnaryOperator,
+};
 
 #[derive(Clone, Debug)]
 pub(super) struct ValueInlineBody {
@@ -65,11 +67,15 @@ pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
         return None;
     }
 
-    let selection = Expression::Conditional {
-        condition: Box::new(condition.clone()),
-        when_true: Box::new(Expression::IntegerLiteral(*selected)),
-        when_false: Box::new(Expression::IntegerLiteral(*initial)),
-        origin: ConditionalOrigin::IfAssignments,
+    let selection = if *initial == 0 && *selected == 1 && is_boolean_expression(condition) {
+        condition.clone()
+    } else {
+        Expression::Conditional {
+            condition: Box::new(condition.clone()),
+            when_true: Box::new(Expression::IntegerLiteral(*selected)),
+            when_false: Box::new(Expression::IntegerLiteral(*initial)),
+            origin: ConditionalOrigin::IfAssignments,
+        }
     };
     let expression = prefix.iter().rev().fold(selection, |right, statement| {
         let Statement::Expression(left) = statement else {
@@ -84,6 +90,27 @@ pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
         source: function.clone(),
         expression,
     })
+}
+
+fn is_boolean_expression(expression: &Expression) -> bool {
+    match expression {
+        Expression::Binary { operator, .. } => matches!(
+            operator,
+            BinaryOperator::Equal
+                | BinaryOperator::NotEqual
+                | BinaryOperator::Less
+                | BinaryOperator::LessEqual
+                | BinaryOperator::Greater
+                | BinaryOperator::GreaterEqual
+                | BinaryOperator::LogicalAnd
+                | BinaryOperator::LogicalOr
+        ),
+        Expression::Unary {
+            operator: UnaryOperator::LogicalNot,
+            ..
+        } => true,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -145,12 +172,9 @@ mod tests {
 
         let summary = summarize(&function).expect("selection body should summarize");
         assert!(matches!(summary.expression, Expression::Comma { right, .. }
-            if matches!(right.as_ref(), Expression::Conditional {
-                origin: ConditionalOrigin::IfAssignments,
-                when_true,
-                when_false,
-                ..
-            } if matches!(when_true.as_ref(), Expression::IntegerLiteral(1))
-                && matches!(when_false.as_ref(), Expression::IntegerLiteral(0)))));
+        if matches!(right.as_ref(), Expression::Binary {
+            operator: BinaryOperator::NotEqual,
+            ..
+        })));
     }
 }

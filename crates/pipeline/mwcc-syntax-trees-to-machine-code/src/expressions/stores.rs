@@ -54,6 +54,27 @@ impl Generator {
             Expression::IndexedUpdateValue { value } => (value.as_ref(), true),
             value => (value, false),
         };
+        // `aggregate = *&aggregate` is an exact self-copy. Inlined setters can
+        // expose this when their source argument aliases the destination (for
+        // example `jobj->scale = *&jobj->scale`); mwcc removes it entirely.
+        if matches!(
+            target,
+            Expression::Member {
+                member_type: Type::Struct { .. },
+                ..
+            }
+        ) {
+            if structurally_equal(target, value) {
+                return Ok(());
+            }
+            if let Expression::Dereference { pointer } = value {
+                if let Expression::AddressOf { operand } = pointer.as_ref() {
+                    if structurally_equal(target, operand) {
+                        return Ok(());
+                    }
+                }
+            }
+        }
         if self.try_emit_bit_field_store(target, value)? {
             return Ok(());
         }

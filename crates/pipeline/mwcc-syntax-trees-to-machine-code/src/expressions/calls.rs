@@ -227,6 +227,40 @@ impl Generator {
         // left-to-right would overwrite the earlier arguments (`s(5, f())`, `s(f(), g())`), so defer.
         // (A call in the FIRST argument alone is fine: later constant/in-place arguments do not clobber
         // its r3 result, e.g. `s(f(), 5)`.)
+        // A float-returning SECOND argument beside a callee-saved first leaf is
+        // simpler: evaluate the nested call into f1, then copy the preserved leaf
+        // into r3. Measured in `outer(fp, float_call(fp->member))` as `bl; mr
+        // r3,r31; bl`; no intermediate save or argument shuffle is needed.
+        if let [first @ Expression::Variable(first_name), second @ Expression::Call {
+            name: second_name,
+            ..
+        }] = arguments
+        {
+            let parameter_types = self.call_parameter_types.get(name);
+            let first_parameter = parameter_types.and_then(|types| types.first()).copied();
+            let second_parameter = parameter_types.and_then(|types| types.get(1)).copied();
+            let first_is_general = first_parameter
+                .is_some_and(|ty| !matches!(ty, Type::Float | Type::Double));
+            let second_is_float = matches!(second_parameter, Some(Type::Float | Type::Double));
+            let call_returns_float = matches!(
+                self.call_return_types.get(second_name),
+                Some(Type::Float | Type::Double)
+            );
+            let first_survives_call = self.globals.contains_key(first_name.as_str())
+                || self
+                    .locations
+                    .get(first_name.as_str())
+                    .is_some_and(|location| location.register >= 14);
+            if first_is_general
+                && second_is_float
+                && call_returns_float
+                && first_survives_call
+            {
+                self.evaluate_float(second, Eabi::FIRST_FLOAT_ARGUMENT)?;
+                self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT)?;
+                return Ok(());
+            }
+        }
         // `h(gg, g())` / `h(arr, g())` — a GLOBAL first argument and an argument-free call
         // as the SECOND. The global is reloadable (it lives in memory), so mwcc needs no
         // callee-saved register: it evaluates the call FIRST (its result in r3), then

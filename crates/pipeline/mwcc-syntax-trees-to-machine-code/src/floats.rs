@@ -1,6 +1,7 @@
 //! Floating-point expression evaluation and multiply-add contraction.
 
 use crate::analysis::*;
+use crate::casts::IntToFloatSchedule;
 use crate::generator::*;
 use crate::operands::*;
 use mwcc_core::{Compilation, Diagnostic};
@@ -277,42 +278,79 @@ impl Generator {
         ) {
             return Ok(false);
         }
-        let left_float = self.is_float_leaf(left);
-        let right_float = self.is_float_leaf(right);
-        if left_float == right_float {
-            return Ok(false); // both float or neither: not a mixed promotion
+        let left_float_leaf = self.is_float_leaf(left);
+        let right_float_leaf = self.is_float_leaf(right);
+        if left_float_leaf != right_float_leaf {
+            let (integer_operand, float_operand) = if left_float_leaf {
+                (right, left)
+            } else {
+                (left, right)
+            };
+            let integer_is_wide = self
+                .cast_operand_width(integer_operand)
+                .is_none_or(|width| width >= 32);
+            if integer_is_wide
+                && self.general_register_of_leaf(integer_operand).is_ok()
+                && self.float_register_of_leaf(float_operand).ok() == Some(FLOAT_FIRST)
+                && destination == FLOAT_FIRST
+            {
+                self.emit_int_to_float(integer_operand, FLOAT_SCRATCH, double, BIAS_REGISTER)?;
+                let (left_register, right_register) = if left_float_leaf {
+                    (FLOAT_FIRST, FLOAT_SCRATCH)
+                } else {
+                    (FLOAT_SCRATCH, FLOAT_FIRST)
+                };
+                let operands = Operands::ordered(left_register, right_register)?;
+                self.output.instructions.push(float_combine(
+                    operator,
+                    destination,
+                    operands,
+                    double,
+                )?);
+                return Ok(true);
+            }
+        }
+
+        // A structured non-leaf body already owns conversion scratch space. It
+        // may promote a loaded int beside a loaded float without introducing a
+        // second frame: load both values, run the shared magic-bias body, then
+        // combine in source order. The enclosing comparison scheduler can later
+        // interleave two such conversions without duplicating their semantics.
+        let left_float = self.is_float_operand(left);
+        let right_float = self.is_float_operand(right);
+        if left_float == right_float || !self.non_leaf || destination != FLOAT_SCRATCH {
+            return Ok(false);
         }
         let (integer_operand, float_operand) = if left_float {
             (right, left)
         } else {
             (left, right)
         };
-        // A narrow (char/short) source is a separate, version-divergent idiom — defer it.
         if self
             .cast_operand_width(integer_operand)
-            .map_or(false, |width| width < 32)
+            .is_some_and(|width| width < 32)
+            || !(self.is_word_load(integer_operand)
+                || self.general_register_of_leaf(integer_operand).is_ok())
+            || !(self.is_float_operand(float_operand) || self.is_float_leaf(float_operand))
         {
             return Ok(false);
         }
-        // The integer operand must be a plain int-width GPR leaf.
-        if self.general_register_of_leaf(integer_operand).is_err() {
-            return Ok(false);
-        }
-        // Verified shape only: the float operand in f1 and the result into f1, so the bias
-        // lands in f2 (clear of the scratch f0 and the operand/result f1).
-        let float_register = match self.float_register_of_leaf(float_operand) {
-            Ok(register) => register,
-            Err(_) => return Ok(false),
-        };
-        if float_register != FLOAT_FIRST || destination != FLOAT_FIRST {
-            return Ok(false);
-        }
-        self.emit_int_to_float(integer_operand, FLOAT_SCRATCH, double, BIAS_REGISTER)?;
-        // Operand registers in source order: the converted integer is in the scratch f0.
+        let integer_register = self.fresh_virtual_general();
+        self.evaluate_general(integer_operand, integer_register)?;
+        self.evaluate_float(float_operand, FLOAT_FIRST)?;
+        let signed = self.signedness_of(integer_operand)?;
+        self.emit_int_to_float_body(
+            integer_register,
+            FLOAT_SCRATCH,
+            double,
+            signed,
+            BIAS_REGISTER,
+            IntToFloatSchedule::LeafValue,
+        );
         let (left_register, right_register) = if left_float {
-            (float_register, FLOAT_SCRATCH)
+            (FLOAT_FIRST, FLOAT_SCRATCH)
         } else {
-            (FLOAT_SCRATCH, float_register)
+            (FLOAT_SCRATCH, FLOAT_FIRST)
         };
         let operands = Operands::ordered(left_register, right_register)?;
         self.output
@@ -492,6 +530,31 @@ impl Generator {
         destination: u8,
         double: bool,
     ) -> Compilation<Operands> {
+        const FLOAT_RESULT: u8 = 1;
+        // A call result arrives in f1. For `loaded_value OP call()`, mwcc emits
+        // the call first, then loads the memory operand into f0 so it does not
+        // need to preserve that operand across the call. The mirrored source
+        // spelling uses the same placement with the operand order reversed.
+        if self.is_float_located(left) && self.is_float_call_value(right) {
+            if !self.float_location_survives_call(left) {
+                return Err(Diagnostic::error(
+                    "a loaded float operand live across a call needs callee-saved base allocation (roadmap)",
+                ));
+            }
+            self.evaluate_float(right, FLOAT_RESULT)?;
+            self.emit_located_operand(left, FLOAT_SCRATCH)?;
+            return Operands::ordered(FLOAT_SCRATCH, FLOAT_RESULT);
+        }
+        if self.is_float_call_value(left) && self.is_float_located(right) {
+            if !self.float_location_survives_call(right) {
+                return Err(Diagnostic::error(
+                    "a loaded float operand live across a call needs callee-saved base allocation (roadmap)",
+                ));
+            }
+            self.evaluate_float(left, FLOAT_RESULT)?;
+            self.emit_located_operand(right, FLOAT_SCRATCH)?;
+            return Operands::ordered(FLOAT_RESULT, FLOAT_SCRATCH);
+        }
         if self.is_float_located(left) && self.is_float_located(right) {
             // The left load goes to a fresh virtual the allocator places (it
             // coalesces onto a free FPR, or the result register when that is free);
@@ -547,6 +610,25 @@ impl Generator {
             return Operands::ordered(left_register, FLOAT_SCRATCH);
         }
         unreachable!("caller checked one side is a float load")
+    }
+
+    fn is_float_call_value(&self, expression: &Expression) -> bool {
+        match expression {
+            Expression::Call { name, .. } => matches!(
+                self.call_return_types.get(name),
+                Some(Type::Float | Type::Double)
+            ),
+            Expression::VirtualCall { return_type, .. } => {
+                matches!(return_type, Type::Float | Type::Double)
+            }
+            _ => false,
+        }
+    }
+
+    fn float_location_survives_call(&self, expression: &Expression) -> bool {
+        self.registers_used_by(expression)
+            .into_iter()
+            .all(|register| !matches!(register, 0 | 3..=12))
     }
 
     pub(crate) fn place_float_operands(
