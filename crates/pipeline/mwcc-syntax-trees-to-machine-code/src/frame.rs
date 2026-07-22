@@ -1407,6 +1407,14 @@ impl Generator {
         } else {
             // Body statements, then the return value.
             for statement in &function.statements {
+                if matches!(statement, Statement::Loop { .. })
+                    && self.try_emit_global_struct_member_search_loop_in_function(
+                        statement,
+                        Some(function),
+                    )?
+                {
+                    continue;
+                }
                 self.emit_statement(statement)?;
             }
         }

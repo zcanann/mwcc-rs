@@ -3973,11 +3973,17 @@ impl Generator {
             Statement::Return(_) => Err(Diagnostic::error(
                 "early-return codegen is not implemented yet (roadmap)",
             )),
-            // Loops (while/do-while/for) parse but defer until the loop codegen
-            // (backward branch + the callee-saved counter) lands.
-            Statement::Loop { .. } => Err(Diagnostic::error(
-                "loop codegen is not implemented yet (roadmap)",
-            )),
+            // Focused loop owners lower measured topologies; every other loop
+            // still defers rather than falling through to straight-line codegen.
+            Statement::Loop { .. } => {
+                if self.try_emit_global_struct_member_search_loop(statement)? {
+                    Ok(())
+                } else {
+                    Err(Diagnostic::error(
+                        "loop codegen is not implemented yet (roadmap)",
+                    ))
+                }
+            }
         }
     }
 
