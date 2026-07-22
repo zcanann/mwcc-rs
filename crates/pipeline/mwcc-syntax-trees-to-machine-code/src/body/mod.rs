@@ -4,6 +4,7 @@
 
 mod call_prologue;
 mod ascii_pointer_compare;
+mod assertion_expression;
 mod bounded_member_cursor;
 mod callee_saved;
 mod comma_operator;
