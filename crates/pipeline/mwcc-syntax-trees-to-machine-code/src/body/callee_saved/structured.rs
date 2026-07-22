@@ -10,6 +10,7 @@ use super::structured_call_accumulator::{
     call_accumulator_assignment_count, call_accumulator_names,
     fold_zero_initialized_call_accumulator, in_place_call_combined_return_name,
 };
+use super::structured_aggregate_slots::plan_aggregate_frame_slots;
 use super::structured_call_schedule::transient_call_argument_register;
 use super::structured_entry_alias::{
     fold_entry_alias_zero_test, plan_first_call_alias, EntryAliasBoundary, EntryParameterAlias,
@@ -474,15 +475,13 @@ impl Generator {
             .collect();
         let mut plan = mwcc_vreg::FramePlan::with_local_region(homes.clone(), local_region_bytes);
         if frame_array.is_none() && !aggregate_frame_locals.is_empty() {
-            let mut offset = 8u32;
+            let placements =
+                plan_aggregate_frame_slots(&aggregate_frame_locals, &function.statements)?;
             for local in aggregate_frame_locals.iter().rev() {
-                let Type::Struct { size, align } = local.declared_type else {
+                let Type::Struct { size, .. } = local.declared_type else {
                     unreachable!("aggregate frame locals were filtered")
                 };
-                let align = u32::from(align.max(1));
-                offset = offset.div_ceil(align) * align;
-                let slot_offset = i16::try_from(offset)
-                    .map_err(|_| Diagnostic::error("structured aggregate slot is out of range"))?;
+                let slot_offset = placements[&local.name];
                 let slot_size = u8::try_from(size)
                     .map_err(|_| Diagnostic::error("structured aggregate slot is too large"))?;
                 self.frame_slots.insert(
@@ -496,9 +495,6 @@ impl Generator {
                         is_array: false,
                     },
                 );
-                offset = offset
-                    .checked_add(size)
-                    .ok_or_else(|| Diagnostic::error("structured aggregate frame is too large"))?;
             }
         }
         if let Some(array) = frame_array {

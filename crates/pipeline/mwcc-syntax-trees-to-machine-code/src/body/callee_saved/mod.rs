@@ -53,6 +53,7 @@ mod structured;
 mod structured_call_schedule;
 mod structured_condition_schedule;
 mod structured_call_accumulator;
+mod structured_aggregate_slots;
 mod structured_entry_alias;
 mod structured_float_compare;
 mod structured_frame_assignment;
