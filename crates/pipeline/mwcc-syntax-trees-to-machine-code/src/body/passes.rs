@@ -206,6 +206,126 @@ pub(crate) fn remove_dead_locals(function: &Function) -> Option<Function> {
     })
 }
 
+/// Eliminate immutable pointer locals that only rename another pointer.
+///
+/// C++ downcast helpers commonly introduce `Derived* object = (Derived*)base`
+/// before a body that also owns address-taken aggregate locals. Those aggregates
+/// select frame lowering, where a register-only alias has no stack slot or
+/// register home. The cast changes source type identity but not the EABI word;
+/// member offsets have already been resolved by the frontend, so substituting
+/// the original pointer is semantics-preserving and matches mwcc's copy
+/// propagation.
+pub(crate) fn inline_immutable_pointer_aliases(function: &Function) -> Option<Function> {
+    fn assigns(statement: &Statement, name: &str) -> bool {
+        match statement {
+            Statement::Store { target, value } => {
+                crate::analysis::expression_assigns_name(target, name)
+                    || crate::analysis::expression_assigns_name(value, name)
+            }
+            Statement::Assign {
+                name: target,
+                value,
+            } => target == name || crate::analysis::expression_assigns_name(value, name),
+            Statement::Expression(expression) => {
+                crate::analysis::expression_assigns_name(expression, name)
+            }
+            Statement::If {
+                condition,
+                then_body,
+                else_body,
+                ..
+            } => crate::analysis::expression_assigns_name(condition, name)
+                || then_body.iter().any(|inner| assigns(inner, name))
+                || else_body.iter().any(|inner| assigns(inner, name)),
+            _ => false,
+        }
+    }
+
+    fn substitutable(statement: &Statement) -> bool {
+        match statement {
+            Statement::Store { .. }
+            | Statement::Assign { .. }
+            | Statement::Expression(_) => true,
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => then_body.iter().all(substitutable) && else_body.iter().all(substitutable),
+            _ => false,
+        }
+    }
+
+    if function.locals.is_empty() || !function.statements.iter().all(substitutable) {
+        return None;
+    }
+    let address_taken = crate::frame::collect_address_taken(function);
+    let mut values = std::collections::HashMap::new();
+    let mut removed = std::collections::HashSet::new();
+    for local in &function.locals {
+        if !matches!(
+            local.declared_type,
+            Type::Pointer(_) | Type::StructPointer { .. }
+        ) || address_taken.contains(local.name.as_str())
+            || function
+                .statements
+                .iter()
+                .any(|statement| assigns(statement, &local.name))
+        {
+            continue;
+        }
+        let Some(initializer) = local.initializer.as_ref() else {
+            continue;
+        };
+        let alias = match initializer {
+            Expression::Variable(_) => initializer.clone(),
+            Expression::Cast { operand, .. }
+                if matches!(operand.as_ref(), Expression::Variable(_)) =>
+            {
+                (**operand).clone()
+            }
+            _ => continue,
+        };
+        let alias = crate::value_tracking::substitute(&alias, &values);
+        values.insert(local.name.clone(), alias);
+        removed.insert(local.name.as_str());
+    }
+    if removed.is_empty() {
+        return None;
+    }
+    Some(Function {
+        locals: function
+            .locals
+            .iter()
+            .filter(|local| !removed.contains(local.name.as_str()))
+            .map(|local| LocalDeclaration {
+                initializer: local
+                    .initializer
+                    .as_ref()
+                    .map(|value| crate::value_tracking::substitute(value, &values)),
+                ..local.clone()
+            })
+            .collect(),
+        statements: function
+            .statements
+            .iter()
+            .map(|statement| substitute_statement(statement, &values))
+            .collect(),
+        guards: function
+            .guards
+            .iter()
+            .map(|guard| GuardedReturn {
+                condition: crate::value_tracking::substitute(&guard.condition, &values),
+                value: crate::value_tracking::substitute(&guard.value, &values),
+            })
+            .collect(),
+        return_expression: function
+            .return_expression
+            .as_ref()
+            .map(|value| crate::value_tracking::substitute(value, &values)),
+        ..function.clone()
+    })
+}
+
 /// A DEAD trailing local whose initializer has a side effect (`int x = g();` where x is never read):
 /// mwcc keeps the call but discards the result. Convert it to a leading expression statement so the
 /// ordinary call/return paths emit it — `int x=g(); return a+b;` becomes `g(); return a+b;`. Keeping
@@ -334,6 +454,9 @@ pub(crate) fn substitute_statement(
             name: name.clone(),
             value: crate::value_tracking::substitute(value, values),
         },
+        Statement::Expression(expression) => {
+            Statement::Expression(crate::value_tracking::substitute(expression, values))
+        }
         Statement::If {
             condition,
             then_body,
@@ -1671,6 +1794,86 @@ pub(crate) fn function_calls_any(
 mod tests {
     use super::*;
     use mwcc_syntax_trees::Parameter;
+
+    fn automatic_local(
+        name: &str,
+        declared_type: Type,
+        initializer: Option<Expression>,
+    ) -> LocalDeclaration {
+        LocalDeclaration {
+            declared_type,
+            name: name.into(),
+            initializer,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        }
+    }
+
+    #[test]
+    fn immutable_pointer_aliases_fold_through_calls_and_member_stores() {
+        let pointer = Type::StructPointer { element_size: 32 };
+        let function = Function {
+            return_type: Type::Void,
+            name: "use_alias".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: vec![Parameter {
+                parameter_type: pointer,
+                name: "base".into(),
+            }],
+            locals: vec![automatic_local(
+                "derived",
+                pointer,
+                Some(Expression::Cast {
+                    target_type: pointer,
+                    operand: Box::new(Expression::Variable("base".into())),
+                }),
+            )],
+            statements: vec![
+                Statement::Expression(Expression::Call {
+                    name: "touch".into(),
+                    arguments: vec![Expression::Variable("derived".into())],
+                }),
+                Statement::Store {
+                    target: Expression::Member {
+                        base: Box::new(Expression::Variable("derived".into())),
+                        offset: 8,
+                        member_type: Type::Int,
+                        index_stride: None,
+                    },
+                    value: Expression::IntegerLiteral(1),
+                },
+            ],
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+
+        let folded = inline_immutable_pointer_aliases(&function)
+            .expect("an immutable pointer rename should fold");
+        assert!(folded.locals.is_empty());
+        assert!(matches!(
+            folded.statements.as_slice(),
+            [
+                Statement::Expression(Expression::Call { arguments, .. }),
+                Statement::Store {
+                    target: Expression::Member { base, .. },
+                    ..
+                },
+            ] if matches!(arguments.as_slice(), [Expression::Variable(name)] if name == "base")
+                && matches!(base.as_ref(), Expression::Variable(name) if name == "base")
+        ));
+    }
 
     #[test]
     fn store_local_folding_does_not_cross_a_global_snapshot_write() {

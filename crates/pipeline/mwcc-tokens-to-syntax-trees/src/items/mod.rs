@@ -2755,14 +2755,14 @@ impl Parser {
 
             let constructor_scope = member_declaration_scope
                 .as_ref()
-                .filter(|scope| scope.as_str() == name.as_str())
+                .filter(|scope| scope.rsplit("::").next() == Some(name.as_str()))
                 .cloned();
             let destructor_scope = member_declaration_scope
                 .as_ref()
                 .filter(|_| name == "__dt")
                 .cloned();
             let constructor_initializers = if let Some(scope) = &constructor_scope {
-                self.parse_constructor_initializers(scope)?
+                self.parse_constructor_initializers(scope, &parameters)?
             } else {
                 Vec::new()
             };

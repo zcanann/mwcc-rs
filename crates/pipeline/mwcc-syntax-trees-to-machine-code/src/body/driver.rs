@@ -1150,6 +1150,9 @@ impl Generator {
         if let Some(cleaned) = remove_dead_locals(function) {
             return self.evaluate_body(&cleaned);
         }
+        if let Some(inlined) = inline_immutable_pointer_aliases(function) {
+            return self.evaluate_body(&inlined);
+        }
         // A dead trailing local with a side-effecting (call) initializer becomes a leading statement,
         // so the call is emitted for effect rather than dropped (`int x=g(); return a+b;` → `g();
         // return a+b;`).
@@ -1415,9 +1418,24 @@ impl Generator {
                 );
                 return self.evaluate_body(&expanded.function);
             }
-            return Err(Diagnostic::error(
-                "a call to a skipped inline function needs inline expansion (roadmap)",
-            ));
+            let mut unresolved: Vec<_> = self
+                .skipped_inline_names
+                .iter()
+                .filter(|name| {
+                    let singleton = std::collections::HashSet::from([(*name).clone()]);
+                    function_calls_any(function, &singleton)
+                })
+                .cloned()
+                .collect();
+            unresolved.sort();
+            let suffix = if unresolved.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", unresolved.join(", "))
+            };
+            return Err(Diagnostic::error(format!(
+                "a call to a skipped inline function needs inline expansion (roadmap){suffix}"
+            )));
         }
         // A NATIVE caller of a WEAK-MATERIALIZED plain inline defers the same
         // way: mwcc may have re-inlined a trivial body at this call site

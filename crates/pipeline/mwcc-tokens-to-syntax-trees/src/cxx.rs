@@ -1387,6 +1387,11 @@ impl Parser {
             {
                 self.skipped_inline_definitions.push(function);
             }
+        } else if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() {
+            eprintln!(
+                "failed to retain inline definition for {class}::{member_name}: {parsed:?}; recovered functions: {}",
+                functions.len()
+            );
         }
     }
 
@@ -3507,6 +3512,7 @@ impl Parser {
     pub(crate) fn parse_constructor_initializers(
         &mut self,
         scope: &str,
+        parameters: &[mwcc_syntax_trees::Parameter],
     ) -> Compilation<Vec<Statement>> {
         let class = self.cxx_classes.get(scope).ok_or_else(|| {
             Diagnostic::error(format!(
@@ -3614,7 +3620,19 @@ impl Parser {
                     "member '{field_name}' is absent from class '{scope}'"
                 ))
             })?;
-            if field.struct_tag.is_some() || arguments.len() != 1 {
+            let aggregate_copy = !matches!(field.member_type, Type::Struct { .. })
+                || matches!(
+                    arguments.as_slice(),
+                    [Expression::Variable(source)]
+                        if matches!(
+                            parameters
+                                .iter()
+                                .find(|parameter| parameter.name == *source)
+                                .map(|parameter| parameter.parameter_type),
+                            Some(Type::Struct { .. } | Type::StructPointer { .. })
+                        )
+                );
+            if arguments.len() != 1 || !aggregate_copy {
                 return Err(Diagnostic::error(format!(
                     "non-scalar constructor initialization for '{field_name}' is not supported yet (roadmap)"
                 )));

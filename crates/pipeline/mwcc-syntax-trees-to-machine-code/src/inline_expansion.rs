@@ -612,6 +612,75 @@ mod tests {
     }
 
     #[test]
+    fn expands_constructor_body_when_its_return_value_is_discarded() {
+        let aggregate = Type::Struct { size: 12, align: 4 };
+        let pointer = Type::StructPointer { element_size: 16 };
+        let mut constructor = function(
+            "constructor",
+            vec![
+                Parameter {
+                    parameter_type: pointer,
+                    name: "this".into(),
+                },
+                Parameter {
+                    parameter_type: Type::StructPointer { element_size: 0 },
+                    name: "source".into(),
+                },
+            ],
+            vec![
+                Statement::Store {
+                    target: Expression::Member {
+                        base: Box::new(Expression::Variable("this".into())),
+                        offset: 0,
+                        member_type: Type::StructPointer { element_size: 0 },
+                        index_stride: None,
+                    },
+                    value: Expression::AddressOf {
+                        operand: Box::new(Expression::Variable("vtable".into())),
+                    },
+                },
+                Statement::Store {
+                    target: Expression::Member {
+                        base: Box::new(Expression::Variable("this".into())),
+                        offset: 4,
+                        member_type: aggregate,
+                        index_stride: None,
+                    },
+                    value: Expression::Variable("source".into()),
+                },
+            ],
+        );
+        constructor.return_type = pointer;
+        constructor.return_expression = Some(Expression::Variable("this".into()));
+        let caller = function(
+            "caller",
+            vec![],
+            vec![Statement::Expression(Expression::Call {
+                name: "constructor".into(),
+                arguments: vec![
+                    Expression::AddressOf {
+                        operand: Box::new(Expression::Variable("target".into())),
+                    },
+                    Expression::Variable("source".into()),
+                ],
+            })],
+        );
+
+        let expanded = InlineBodySet::analyze(&[constructor])
+            .expand_calls(&caller)
+            .expect("a discarded constructor call should compose");
+        assert!(matches!(
+            expanded.statements.as_slice(),
+            [Statement::Store { .. }, Statement::Store {
+                target: Expression::Member { base, offset: 4, .. },
+                value: Expression::Variable(source),
+            }] if matches!(base.as_ref(), Expression::AddressOf { operand }
+                if matches!(operand.as_ref(), Expression::Variable(target) if target == "target"))
+                && source == "source"
+        ));
+    }
+
+    #[test]
     fn expands_nested_void_statement_bodies_with_stable_arguments() {
         let check = function(
             "check",

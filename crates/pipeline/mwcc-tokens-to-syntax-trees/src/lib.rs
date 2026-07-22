@@ -231,7 +231,7 @@ pub fn parse_located_translation_unit_with_enum_min(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mwcc_syntax_trees::{Expression, Statement};
+    use mwcc_syntax_trees::{Expression, Statement, Type};
 
     #[test]
     fn retains_volatile_automatic_storage() {
@@ -2768,6 +2768,48 @@ blr\n\
                     [mwcc_syntax_trees::Statement::Expression(Expression::Call { name, .. })]
                     if name == "__ct__5PixelFi")
         ));
+    }
+
+    #[test]
+    fn retains_aggregate_copy_constructor_initializers_for_inline_expansion() {
+        let source = r#"
+            struct Vec { float x; float y; float z; };
+            namespace efx {
+                struct Arg {
+                    Arg(const Vec& position) : value(position) {}
+                    virtual const char* getName() { return "Arg"; }
+                    Vec value;
+                };
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let constructor = unit
+            .skipped_inline_definitions
+            .iter()
+            .find(|function| function.name == "__ct__Q23efx3ArgFRC3Vec")
+            .expect("the constructor initializer should be retained");
+        assert_eq!(
+            constructor.parameters.first().map(|parameter| parameter.parameter_type),
+            Some(constructor.return_type)
+        );
+        assert!(constructor.statements.iter().any(|statement| matches!(
+            statement,
+            Statement::Store {
+                target: Expression::Member {
+                    offset: 4,
+                    member_type: Type::Struct { size: 12, .. },
+                    ..
+                },
+                value: Expression::Variable(position),
+            } if position == "position"
+        )));
     }
 
     #[test]

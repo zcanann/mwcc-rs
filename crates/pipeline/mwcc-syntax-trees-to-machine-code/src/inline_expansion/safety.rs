@@ -9,7 +9,21 @@ pub(super) fn composable_function(function: &Function) -> bool {
         .iter()
         .map(|local| local.name.as_str())
         .collect();
-    function.return_type == Type::Void
+    let discarded_result_is_safe = function.return_type == Type::Void
+        || matches!(
+            (
+                function.parameters.first(),
+                function.return_expression.as_ref()
+            ),
+            (
+                Some(parameter),
+                Some(Expression::Variable(result))
+            ) if parameter.name == "this"
+                && result == "this"
+                && parameter.parameter_type == function.return_type
+                && matches!(function.return_type, Type::StructPointer { .. })
+        );
+    discarded_result_is_safe
         && function.locals.iter().all(|local| {
             !local.is_static
                 && !local.is_volatile
@@ -17,7 +31,8 @@ pub(super) fn composable_function(function: &Function) -> bool {
                 && local.initializer.is_some()
         })
         && function.guards.is_empty()
-        && function.return_expression.is_none()
+        && (function.return_expression.is_none()
+            || matches!(function.return_expression, Some(Expression::Variable(ref name)) if name == "this"))
         && function.asm_body.is_none()
         && composable_statements(&function.statements, &local_names)
         && function
@@ -85,9 +100,10 @@ fn stable_lvalue_address(expression: &Expression, stable_variables: &HashSet<Str
 
 /// Whether substituting call arguments into this retained body preserves
 /// evaluation count. Stable scalar values are always safe. One otherwise
-/// impure argument is also safe when a one-store setter consumes it exactly
-/// once as the stored value: substitution neither duplicates nor drops the
-/// evaluation and there is no earlier callee-body effect to reorder it with.
+/// impure argument is also safe when a store-only setter/constructor consumes
+/// it exactly once as a stored value: substitution neither duplicates nor
+/// drops the evaluation. Other stores may initialize independent fields such
+/// as a constructor's vptr.
 pub(super) fn stable_arguments(
     function: &Function,
     arguments: &[Expression],
@@ -118,11 +134,25 @@ pub(super) fn stable_arguments(
             expression_use_count(value, &function.parameters[*unstable_index].name) == 1
         });
     }
-    let [Statement::Store { target, value }] = function.statements.as_slice() else {
-        return false;
-    };
     let parameter = &function.parameters[*unstable_index].name;
-    !expression_mentions(target, parameter) && expression_use_count(value, parameter) == 1
+    let stores: Option<Vec<_>> = function
+        .statements
+        .iter()
+        .map(|statement| match statement {
+            Statement::Store { target, value } => Some((target, value)),
+            _ => None,
+        })
+        .collect();
+    stores.is_some_and(|stores| {
+        stores
+            .iter()
+            .all(|(target, _)| !expression_mentions(target, parameter))
+            && stores
+                .iter()
+                .map(|(_, value)| expression_use_count(value, parameter))
+                .sum::<usize>()
+                == 1
+    })
 }
 
 fn expression_use_count(expression: &Expression, name: &str) -> usize {

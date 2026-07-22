@@ -134,6 +134,69 @@ pub(crate) fn expression_reads_name(expression: &Expression, name: &str) -> bool
     reads_register(expression, &single)
 }
 
+/// Whether evaluating `expression` writes the named scalar/pointer object.
+pub(crate) fn expression_assigns_name(expression: &Expression, name: &str) -> bool {
+    match expression {
+        Expression::Assign { target, value } => {
+            expression_reads_name(target, name) || expression_assigns_name(value, name)
+        }
+        Expression::PostStep { target, .. } => expression_reads_name(target, name),
+        Expression::AggregateLiteral(elements) => elements
+            .iter()
+            .any(|element| expression_assigns_name(element, name)),
+        Expression::Binary { left, right, .. } | Expression::Comma { left, right } => {
+            expression_assigns_name(left, name) || expression_assigns_name(right, name)
+        }
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+            ..
+        } => {
+            expression_assigns_name(condition, name)
+                || expression_assigns_name(when_true, name)
+                || expression_assigns_name(when_false, name)
+        }
+        Expression::Unary { operand, .. }
+        | Expression::Cast { operand, .. }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
+        }
+        | Expression::IndexedUpdateValue { value: operand }
+        | Expression::Dereference { pointer: operand }
+        | Expression::AddressOf { operand } => expression_assigns_name(operand, name),
+        Expression::Index { base, index } => {
+            expression_assigns_name(base, name) || expression_assigns_name(index, name)
+        }
+        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
+            expression_assigns_name(base, name)
+        }
+        Expression::Call { arguments, .. }
+        | Expression::ConstructedNew { arguments, .. } => arguments
+            .iter()
+            .any(|argument| expression_assigns_name(argument, name)),
+        Expression::CallThrough { target, arguments } => {
+            expression_assigns_name(target, name)
+                || arguments
+                    .iter()
+                    .any(|argument| expression_assigns_name(argument, name))
+        }
+        Expression::VirtualCall {
+            object, arguments, ..
+        } => {
+            expression_assigns_name(object, name)
+                || arguments
+                    .iter()
+                    .any(|argument| expression_assigns_name(argument, name))
+        }
+        Expression::IntegerLiteral(_)
+        | Expression::FloatLiteral(_)
+        | Expression::StringLiteral(_)
+        | Expression::Variable(_)
+        | Expression::CompoundLiteral { .. } => false,
+    }
+}
+
 /// Whether executable source in `function` refers to a local or parameter.
 /// Declarations remain in the AST for debug provenance even when optimization
 /// removes their storage, so frame planning must distinguish declaration from use.
