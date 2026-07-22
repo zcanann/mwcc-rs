@@ -1136,9 +1136,13 @@ impl Generator {
                 when_false,
                 ..
             } => {
-                let (options, condition_bit) = self.emit_condition_test(condition)?;
                 let else_label = self.fresh_label();
-                self.emit_branch_conditional_to(options, condition_bit, else_label);
+                let mut terms = Vec::new();
+                collect_logical_and_terms(condition, &mut terms);
+                for term in terms {
+                    let (options, condition_bit) = self.emit_condition_test(term)?;
+                    self.emit_branch_conditional_to(options, condition_bit, else_label);
+                }
                 self.emit_comma_side_effect(when_true)?;
                 if expression_has_side_effect(when_false) {
                     let end = self.fresh_label();
@@ -1625,5 +1629,19 @@ impl Generator {
                 end,
             });
         Ok(true)
+    }
+}
+
+fn collect_logical_and_terms<'a>(expression: &'a Expression, into: &mut Vec<&'a Expression>) {
+    if let Expression::Binary {
+        operator: BinaryOperator::LogicalAnd,
+        left,
+        right,
+    } = expression
+    {
+        collect_logical_and_terms(left, into);
+        collect_logical_and_terms(right, into);
+    } else {
+        into.push(expression);
     }
 }

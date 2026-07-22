@@ -3,6 +3,7 @@
 //! Split by family (fire 525); behavior-identical to the former single body.rs.
 
 mod call_prologue;
+mod aggregate_return_temporaries;
 mod ascii_pointer_compare;
 mod assertion_expression;
 mod bounded_member_cursor;
@@ -66,6 +67,7 @@ pub(crate) use callee_saved::{
 pub(crate) use guarded_aggregate_update::{
     summarize_guarded_aggregate_update, GuardedAggregateUpdateSummary,
 };
+use aggregate_return_temporaries::materialize_aggregate_return_temporaries;
 pub(crate) use local_select::{
     summarize_unoptimized_local_select, UnoptimizedLocalSelectSummary,
 };

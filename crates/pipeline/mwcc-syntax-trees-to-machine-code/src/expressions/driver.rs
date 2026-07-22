@@ -629,14 +629,23 @@ impl Generator {
                     }
                     let peeled_left = peel(self, left)?;
                     let peeled_right = peel(self, right)?;
-                    let is_simple = |operand: &Expression| {
-                        matches!(operand, Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::FloatLiteral(_))
+                    let is_simple = |operand: &Expression| match operand {
+                        Expression::Variable(_)
+                        | Expression::IntegerLiteral(_)
+                        | Expression::FloatLiteral(_) => true,
+                        Expression::Member { base, .. } => {
+                            matches!(base.as_ref(), Expression::Variable(name)
+                                if self.frame_slots.contains_key(name))
+                        }
+                        _ => false,
                     };
                     if matches!(operator, BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr)
                         || !is_simple(&peeled_left)
                         || !is_simple(&peeled_right)
                     {
-                        return Err(Diagnostic::error("a comma operand in this expression is not supported yet (roadmap)"));
+                        return Err(Diagnostic::error(format!(
+                            "a comma operand in this expression is not supported yet (roadmap): left={peeled_left:?}, right={peeled_right:?}"
+                        )));
                     }
                     let peeled = Expression::Binary {
                         operator: *operator,
