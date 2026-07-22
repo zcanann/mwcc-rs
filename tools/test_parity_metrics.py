@@ -79,6 +79,113 @@ def row(**overrides):
     return value
 
 
+def refctx_fixture(root: Path, *, reject_direct_bridge: bool = False):
+    project = root / "project"
+    source = project / "src" / "test.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("int value;\n", encoding="utf-8")
+
+    project_tools = project / "tools"
+    project_tools.mkdir()
+    (project_tools / "decompctx.py").write_text(
+        "from pathlib import Path\n"
+        "import sys\n"
+        "defines = set()\n"
+        "include_dirs = []\n"
+        "def import_h_file(include, *args, **kwargs):\n"
+        "    return ''\n"
+        "def main():\n"
+        "    args = sys.argv[1:]\n"
+        "    Path(args[args.index('-o') + 1]).write_bytes(Path(args[0]).read_bytes())\n",
+        encoding="utf-8",
+    )
+
+    ffcc = root / "ffcc"
+    tools = ffcc / "build" / "tools"
+    compiler_dir = ffcc / "build" / "compilers" / "GC" / "2.6"
+    binutils = ffcc / "build" / "binutils"
+    tools.mkdir(parents=True)
+    compiler_dir.mkdir(parents=True)
+    binutils.mkdir(parents=True)
+
+    wibo = tools / "wibo"
+    wibo.write_text(
+        "#!/bin/sh\n"
+        "case \"$1\" in *sjiswrap.exe) shift ;; esac\n"
+        "exec \"$@\"\n",
+        encoding="utf-8",
+    )
+    wibo.chmod(0o755)
+    (tools / "sjiswrap.exe").write_text("", encoding="utf-8")
+
+    fake_compiler = root / "fake-compiler"
+    fake_compiler.write_text(
+        "#!/bin/sh\n"
+        "output=\n"
+        "input=\n"
+        "preprocess=0\n"
+        f"reject_direct_bridge={int(reject_direct_bridge)}\n"
+        "while [ \"$#\" -gt 0 ]; do\n"
+        "  case \"$1\" in\n"
+        "    -o) output=$2; shift 2 ;;\n"
+        "    -E) preprocess=1; input=$2; shift 2 ;;\n"
+        "    -c) input=$2; shift 2 ;;\n"
+        "    *) shift ;;\n"
+        "  esac\n"
+        "done\n"
+        "mkdir -p \"$(dirname \"$output\")\"\n"
+        "if [ \"$preprocess\" -eq 1 ]; then\n"
+        "  case \"$input\" in\n"
+        "    *direct-source*)\n"
+        "      if [ \"$reject_direct_bridge\" -eq 1 ]; then\n"
+        "        printf 'BROKEN_DIRECT_BRIDGE\\n' > \"$output\"\n"
+        "        exit 0\n"
+        "      fi\n"
+        "      ;;\n"
+        "  esac\n"
+        "  cp \"$input\" \"$output\"\n"
+        "elif [ \"$reject_direct_bridge\" -eq 1 ] && grep -q BROKEN_DIRECT_BRIDGE \"$input\"; then\n"
+        "  exit 1\n"
+        "else\n"
+        "  printf 'object\\n' > \"$output\"\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    fake_compiler.chmod(0o755)
+    reference_compiler = compiler_dir / "mwcceppc.exe"
+    reference_compiler.write_bytes(fake_compiler.read_bytes())
+    reference_compiler.chmod(0o755)
+
+    objdump = binutils / "powerpc-eabi-objdump"
+    objdump.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    objdump.chmod(0o755)
+    return project, ffcc, fake_compiler
+
+
+def run_refctx_fixture(project: Path, ffcc: Path, compiler: Path):
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "FFCC": str(ffcc),
+            "MWCC_BIN": str(compiler),
+            "REFCTX_EMPTY_BASE": "1",
+        }
+    )
+    return subprocess.run(
+        [
+            "bash",
+            str(Path(__file__).with_name("refctx.sh")),
+            str(project),
+            "src/test.c",
+            "GC/2.6",
+        ],
+        text=True,
+        capture_output=True,
+        env=environment,
+        timeout=10,
+    )
+
+
 class IdentityTests(unittest.TestCase):
     def test_reason_normalization_accepts_preserved_source_basenames(self):
         self.assertEqual(
@@ -124,89 +231,37 @@ class IdentityTests(unittest.TestCase):
     def test_refctx_direct_ready_records_configured_source(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            project = root / "project"
-            source = project / "src" / "test.c"
-            source.parent.mkdir(parents=True)
-            source.write_text("int value;\n", encoding="utf-8")
-
-            ffcc = root / "ffcc"
-            tools = ffcc / "build" / "tools"
-            compiler_dir = ffcc / "build" / "compilers" / "GC" / "2.6"
-            binutils = ffcc / "build" / "binutils"
-            tools.mkdir(parents=True)
-            compiler_dir.mkdir(parents=True)
-            binutils.mkdir(parents=True)
-
-            wibo = tools / "wibo"
-            wibo.write_text(
-                "#!/bin/sh\n"
-                "case \"$1\" in *sjiswrap.exe) shift ;; esac\n"
-                "exec \"$@\"\n",
-                encoding="utf-8",
-            )
-            wibo.chmod(0o755)
-            (tools / "sjiswrap.exe").write_text("", encoding="utf-8")
-
-            fake_compiler = root / "fake-compiler"
-            fake_compiler.write_text(
-                "#!/bin/sh\n"
-                "output=\n"
-                "input=\n"
-                "preprocess=0\n"
-                "while [ \"$#\" -gt 0 ]; do\n"
-                "  case \"$1\" in\n"
-                "    -o) output=$2; shift 2 ;;\n"
-                "    -E) preprocess=1; input=$2; shift 2 ;;\n"
-                "    -c) input=$2; shift 2 ;;\n"
-                "    *) shift ;;\n"
-                "  esac\n"
-                "done\n"
-                "mkdir -p \"$(dirname \"$output\")\"\n"
-                "if [ \"$preprocess\" -eq 1 ]; then\n"
-                "  cp \"$input\" \"$output\"\n"
-                "else\n"
-                "  printf 'object\\n' > \"$output\"\n"
-                "fi\n",
-                encoding="utf-8",
-            )
-            fake_compiler.chmod(0o755)
-            reference_compiler = compiler_dir / "mwcceppc.exe"
-            reference_compiler.write_bytes(fake_compiler.read_bytes())
-            reference_compiler.chmod(0o755)
-
-            objdump = binutils / "powerpc-eabi-objdump"
-            objdump.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-            objdump.chmod(0o755)
-
-            environment = os.environ.copy()
-            environment.update(
-                {
-                    "FFCC": str(ffcc),
-                    "MWCC_BIN": str(fake_compiler),
-                    "REFCTX_EMPTY_BASE": "1",
-                }
-            )
-            completed = subprocess.run(
-                [
-                    "bash",
-                    str(Path(__file__).with_name("refctx.sh")),
-                    str(project),
-                    "src/test.c",
-                    "GC/2.6",
-                ],
-                text=True,
-                capture_output=True,
-                env=environment,
-                timeout=10,
-            )
+            project, ffcc, fake_compiler = refctx_fixture(root)
+            completed = run_refctx_fixture(project, ffcc, fake_compiler)
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertEqual(
                 parity_metadata(completed.stdout),
                 {
                     "oracle_direct": "RUNNABLE",
                     "configured_source": "BYTE",
+                    "direct_bridge": "RUNNABLE",
                     "comparison_input": "DIRECT",
                     "reference_object": "PREPROCESSED",
+                },
+            )
+            self.assertIn("BYTE   src/test.c", completed.stdout)
+
+    def test_refctx_rejected_direct_bridge_falls_back_to_labeled_synthetic_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project, ffcc, fake_compiler = refctx_fixture(
+                root, reject_direct_bridge=True
+            )
+            completed = run_refctx_fixture(project, ffcc, fake_compiler)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(
+                parity_metadata(completed.stdout),
+                {
+                    "oracle_direct": "RUNNABLE",
+                    "configured_source": "BYTE",
+                    "direct_bridge": "REJECTED",
+                    "comparison_input": "SYNTHETIC",
+                    "reference_object": "SYNTHETIC",
                 },
             )
             self.assertIn("BYTE   src/test.c", completed.stdout)

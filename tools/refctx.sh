@@ -216,7 +216,7 @@ fi
 # later; the machine-readable parser intentionally keeps the last value.
 emit_oracle_meta
 
-if [[ $direct_ready -eq 0 ]]; then
+prepare_synthetic_bridge() {
 if [[ -n "${REFCTX_INCLUDES:-}" ]]; then
   read -r -a include_dirs <<< "$REFCTX_INCLUDES"
 else
@@ -413,6 +413,10 @@ fi
 [[ -f "$dir/ref.o" ]] || { echo "real mwcc rejected $ctx_name"; exit 1; }
 cp "$dir/ctx.i" "$dir/ours/$ctx_name"
 fi
+}
+
+if [[ $direct_ready -eq 0 ]]; then
+  prepare_synthetic_bridge
 fi
 
 # The initial direct probe may have been rejected before a generated-PCH retry
@@ -431,8 +435,16 @@ if [[ $direct_ready -eq 1 ]]; then
       ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$ctx_name" \
       -o "$dir/ref.o"
   ) >"$dir/reference.bridge.log" 2>&1; then
-    printf '%s\n' "$(<"$dir/reference.bridge.log")" >&2
-    exit 1
+    # Some legacy `-E` modes produce a token stream that the same compiler
+    # cannot compile (for example `OSError error` becomes `OSErrorerror`). The
+    # direct object and configured-source probe remain authoritative; recover a
+    # separately labeled synthetic bridge so compiler-core progress is still
+    # measurable instead of turning the entire row into a harness failure.
+    echo "PARITY_META direct_bridge=REJECTED"
+    direct_ready=0
+    prepare_synthetic_bridge
+  else
+    echo "PARITY_META direct_bridge=RUNNABLE"
   fi
 fi
 
