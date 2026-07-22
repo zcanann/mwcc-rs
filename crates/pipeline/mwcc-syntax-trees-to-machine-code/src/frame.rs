@@ -2613,6 +2613,7 @@ impl Generator {
                     return Ok(());
                 }
             }
+            return self.emit_member_address(base, *offset, destination);
         }
         Err(Diagnostic::error(
             "address-of a non-frame-resident lvalue is not supported yet (roadmap)",

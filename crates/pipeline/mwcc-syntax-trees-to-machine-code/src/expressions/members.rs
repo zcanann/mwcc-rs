@@ -27,6 +27,43 @@ pub(crate) fn embedded_member_address_base(expression: &Expression) -> Option<(&
 }
 
 impl Generator {
+    /// Materialize the address of a member lvalue. A nested pointer member is
+    /// loaded into the destination first, preserving the original aggregate base;
+    /// a plain pointer base can remain in its home register.
+    pub(crate) fn emit_member_address(
+        &mut self,
+        base: &Expression,
+        offset: u32,
+        destination: u8,
+    ) -> Compilation<()> {
+        let base_register = if let Expression::Member {
+            base: inner,
+            offset: member_offset,
+            member_type: member_type @ (Type::Pointer(_) | Type::StructPointer { .. }),
+            index_stride: None,
+        } = base
+        {
+            self.emit_member_load(inner, *member_offset, *member_type, None, destination)?;
+            destination
+        } else {
+            self.member_base_register(base)?
+        };
+        if offset == 0 {
+            if base_register != destination {
+                self.output.instructions.push(Instruction::move_register(destination, base_register));
+            }
+        } else {
+            let offset = i16::try_from(offset)
+                .map_err(|_| Diagnostic::error("member address offset out of range (roadmap)"))?;
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: destination,
+                a: base_register,
+                immediate: offset,
+            });
+        }
+        Ok(())
+    }
+
     /// Split an arbitrary 32-bit member offset into MWCC's address adjustment
     /// and signed D-form displacement. Small offsets remain a single load/store;
     /// larger offsets use `addis base,base,ha(offset)` before the access.

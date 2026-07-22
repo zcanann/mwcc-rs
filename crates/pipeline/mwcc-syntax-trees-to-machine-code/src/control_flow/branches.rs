@@ -1162,6 +1162,28 @@ impl Generator {
                 if self.is_float_operand(left) || self.is_float_operand(right) {
                     return self.emit_float_condition(*operator, left, right);
                 }
+                // Integer immediates are encoded on the right by `cmpwi`/`cmplwi`.
+                // Normalize a side-effect-free constant written on the left so
+                // `0 <= result` shares the same lowering as `result >= 0`.
+                if (constant_value(left) == Some(0) || as_small_integer(left).is_some())
+                    && constant_value(right).is_none()
+                {
+                    let swapped_operator = match operator {
+                        BinaryOperator::Less => BinaryOperator::Greater,
+                        BinaryOperator::Greater => BinaryOperator::Less,
+                        BinaryOperator::LessEqual => BinaryOperator::GreaterEqual,
+                        BinaryOperator::GreaterEqual => BinaryOperator::LessEqual,
+                        BinaryOperator::Equal => BinaryOperator::Equal,
+                        BinaryOperator::NotEqual => BinaryOperator::NotEqual,
+                        _ => unreachable!("is_comparison restricts the operator"),
+                    };
+                    let normalized = Expression::Binary {
+                        operator: swapped_operator,
+                        left: Box::new((**right).clone()),
+                        right: Box::new((**left).clone()),
+                    };
+                    return self.emit_condition_test(&normalized);
+                }
                 // Two member loads need distinct temporaries. Keep r3 for the
                 // left value and reserve it while selecting the right member's
                 // address, which naturally gives a global pointer base r4 and
@@ -1316,7 +1338,7 @@ impl Generator {
                         matches!(as_member(left), Some((_, _, mwcc_syntax_trees::Type::Char)))
                             .then_some((8, true))
                     });
-                match (as_small_integer(right), is_zero_literal(right)) {
+                match (as_small_integer(right), constant_value(right) == Some(0)) {
                     (Some(constant), _) => {
                         let register = if let Some((width, narrow_signed)) = left_extend {
                             self.emit_widen(GENERAL_SCRATCH, left_register, width, narrow_signed);

@@ -1153,6 +1153,9 @@ pub(crate) fn constant_value(expression: &Expression) -> Option<i64> {
                 Type::UnsignedShort if u16::try_from(value).is_ok() => Some(value),
                 Type::Char if i8::try_from(value).is_ok() => Some(value),
                 Type::UnsignedChar if u8::try_from(value).is_ok() => Some(value),
+                // C's null pointer constant remains the all-zero bit pattern
+                // after conversion to any object/function pointer type.
+                Type::Pointer(_) | Type::StructPointer { .. } if value == 0 => Some(0),
                 _ => None,
             }
         }
@@ -1825,6 +1828,15 @@ pub(crate) fn is_compound_load(expression: &Expression) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cast_null_pointer_remains_a_constant_zero() {
+        let null = Expression::Cast {
+            target_type: Type::Pointer(mwcc_syntax_trees::Pointee::Int),
+            operand: Box::new(Expression::IntegerLiteral(0)),
+        };
+        assert_eq!(constant_value(&null), Some(0));
+    }
 
     fn var(name: &str) -> Expression {
         Expression::Variable(name.to_string())
