@@ -308,6 +308,10 @@ pub struct TranslationUnit {
     /// Skipped `inline` function definitions: each advanced mwcc's `@N` counter
     /// by 3 (compiled then dropped), so the writer pre-bumps the numbering.
     pub skipped_inline_functions: usize,
+    /// Cumulative skipped-inline ordinal cost at each emitted function's
+    /// source position. Later inline definitions must not shift constants in
+    /// an earlier function even though they share one translation unit.
+    pub function_inline_prebumps: std::collections::HashMap<String, usize>,
     /// Structural facts for version-specific C++ inline ordinal accounting.
     pub cxx_inline_ordinal_facts: CxxInlineOrdinalFacts,
     /// Inline-substitution provenance keyed by emitted function name.

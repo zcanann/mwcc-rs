@@ -126,6 +126,7 @@ pub fn parse_located_translation_unit_with_enum_min(
         defer_codegen: false,
         deferred_function_names: Vec::new(),
         skipped_inline_functions: 0,
+        function_inline_prebumps: std::collections::HashMap::new(),
         cxx_inline_ordinal_facts: mwcc_syntax_trees::CxxInlineOrdinalFacts::default(),
         named_prototype_parameters: 0,
         static_local_prebumps: std::collections::HashMap::new(),
@@ -4335,5 +4336,30 @@ blr\n\
         .unwrap();
         assert!(unit.globals[0].is_volatile);
         assert!(!unit.globals[1].is_volatile);
+    }
+
+    #[test]
+    fn samples_skipped_inline_cost_at_each_function_definition() {
+        let source = r#"
+            static inline int before(void) { return 1; }
+            int first(void) { return 2; }
+            static inline int between(int value) {
+                if (value) { return 3; }
+                return 4;
+            }
+            int second(void) { return 5; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(unit.function_inline_prebumps["first"], 3);
+        assert_eq!(unit.function_inline_prebumps["second"], 8);
+        assert_eq!(unit.skipped_inline_functions, 8);
     }
 }

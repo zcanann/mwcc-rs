@@ -8,6 +8,7 @@
 mod cxx_analysis_residues;
 mod cxx_rtti_names;
 mod function_order;
+mod inline_ordinal_positions;
 mod reference_analysis;
 
 use mwcc_core::{Compilation, Diagnostic};
@@ -713,9 +714,7 @@ fn compile(
         // charge the same analysis a second time before emitted functions.
         0
     } else {
-        unit.skipped_inline_functions
-            + cxx_inline_bump
-            + prototype_name_bump
+        cxx_inline_bump + prototype_name_bump
     };
     let cxx_rtti_prior_declaration_bump = if cxx_analysis_residues.is_some() {
         0
@@ -777,6 +776,13 @@ fn compile(
                 section: None,
             });
         }
+    }
+    if cxx_analysis_residues.is_none() {
+        inline_ordinal_positions::distribute(
+            &mut machine_functions,
+            &unit.function_inline_prebumps,
+            unit.skipped_inline_functions,
+        );
     }
     // Deferred inlining has its own translation-unit emission schedule. Keep the
     // policy isolated from lowering and object layout: both consume its result.

@@ -820,6 +820,8 @@ impl Parser {
                 // its body cannot add top-level inline definitions, so the bump
                 // at the definition covers every declaration inside it.
                 for function in &functions[functions_before..] {
+                    self.function_inline_prebumps
+                        .insert(function.name.clone(), bump_before_item);
                     for local in function.locals.iter().filter(|local| local.is_static) {
                         self.static_local_prebumps
                             .insert(local.name.clone(), bump_before_item);
@@ -974,6 +976,7 @@ impl Parser {
             inline_asm_symbols: std::mem::take(&mut self.inline_asm_symbols),
             plain_inline_asm_helpers: std::mem::take(&mut self.plain_inline_asm_helpers),
             skipped_inline_functions: self.skipped_inline_functions,
+            function_inline_prebumps: std::mem::take(&mut self.function_inline_prebumps),
             cxx_inline_ordinal_facts: self.cxx_inline_ordinal_facts,
             inline_expansion_facts: std::mem::take(&mut self.inline_expansion_facts),
             static_local_prebumps: std::mem::take(&mut self.static_local_prebumps),

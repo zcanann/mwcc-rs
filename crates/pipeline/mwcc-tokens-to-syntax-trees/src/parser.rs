@@ -398,6 +398,8 @@ pub(crate) struct Parser {
     /// Anonymous-label cost accumulated while mwcc compiles and then drops
     /// inline definitions; the base and body-label weights are generation-aware.
     pub(crate) skipped_inline_functions: usize,
+    /// Cumulative skipped-inline cost sampled when each real function is parsed.
+    pub(crate) function_inline_prebumps: std::collections::HashMap<String, usize>,
     /// C++ class/inline syntax retained for version-specific anonymous-symbol
     /// accounting after parsing.
     pub(crate) cxx_inline_ordinal_facts: mwcc_syntax_trees::CxxInlineOrdinalFacts,
