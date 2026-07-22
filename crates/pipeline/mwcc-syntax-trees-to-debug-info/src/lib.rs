@@ -4,6 +4,7 @@
 //! machine representation supplies final code sizes and deferred layout state.
 //! DWARF byte encoding and ELF container policy remain in their own crates.
 
+mod fragmented;
 mod legacy;
 
 use mwcc_core::{Compilation, Diagnostic};
@@ -52,6 +53,16 @@ pub fn lower_debug_info(
     // instead keeps the monolithic grouped stream used by the legacy lowering.
     let monolithic_data_unit = unit.functions.is_empty() && machine_functions.is_empty();
     if fragmented_generation && !monolithic_data_unit {
+        if fragmented::matches_single_empty_leaf(unit, machine_functions, has_emitted_data) {
+            let grouped = legacy::lower(
+                unit,
+                machine_functions,
+                source_name,
+                build,
+                code_alignment,
+            )?;
+            return fragmented::lower_single_empty_leaf(unit, build, grouped).map(Some);
+        }
         return Err(Diagnostic::error(
             "debug-info: this compiler generation's fragmented/interleaved object format is not implemented yet (roadmap)",
         ));
