@@ -69,6 +69,18 @@ pub fn lower_debug_info(
             )
             .map(Some);
         }
+        if fragmented::matches_aggregate_data_unit(unit) {
+            let grouped =
+                legacy::lower(unit, machine_functions, source_name, build, code_alignment)?;
+            return fragmented::lower_functions_with_aggregate_data(
+                unit,
+                machine_functions,
+                build,
+                code_alignment,
+                grouped,
+            )
+            .map(Some);
+        }
         return Err(Diagnostic::error(
             "debug-info: this compiler generation's fragmented/interleaved object format is not implemented yet (roadmap)",
         ));

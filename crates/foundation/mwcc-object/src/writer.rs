@@ -2209,7 +2209,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             .filter_map(|symbol| symbol.name.strip_prefix(".dwarf.0007."))
             .filter_map(|name| input.data_objects.iter().find(|object| object.name == name))
             .collect::<Vec<_>>();
-        let debug_data_order = if fragmented_data_order.is_empty() {
+        let has_fragmented_functions = debug
+            .symbols
+            .iter()
+            .any(|symbol| symbol.name.starts_with(".dwarf.0006."));
+        let debug_data_order = if has_fragmented_functions {
+            Vec::new()
+        } else if fragmented_data_order.is_empty() {
             input.data_objects.iter().collect::<Vec<_>>()
         } else {
             fragmented_data_order

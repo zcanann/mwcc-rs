@@ -62,6 +62,49 @@ pub(super) fn selected_records<'a>(
     aggregate_ids: &HashMap<String, DebugEntryId>,
     parameter_registers: &[Vec<(usize, u8)>],
 ) -> Compilation<Vec<DebugRecord>> {
+    selected_records_with_terminal(
+        unit,
+        functions,
+        layout,
+        first_id,
+        aggregate_ids,
+        parameter_registers,
+        None,
+    )
+}
+
+/// Encode a function run whose final sibling is a following data/type DIE.
+/// Fragmented GC 4.x units interleave semantic families without inserting the
+/// legacy function-list null records between them.
+pub(super) fn selected_records_followed_by<'a>(
+    unit: &'a TranslationUnit,
+    functions: &[&'a Function],
+    layout: &FunctionLayout,
+    first_id: DebugEntryId,
+    aggregate_ids: &HashMap<String, DebugEntryId>,
+    parameter_registers: &[Vec<(usize, u8)>],
+    following: DebugEntryId,
+) -> Compilation<Vec<DebugRecord>> {
+    selected_records_with_terminal(
+        unit,
+        functions,
+        layout,
+        first_id,
+        aggregate_ids,
+        parameter_registers,
+        Some(following),
+    )
+}
+
+fn selected_records_with_terminal<'a>(
+    unit: &'a TranslationUnit,
+    functions: &[&'a Function],
+    layout: &FunctionLayout,
+    first_id: DebugEntryId,
+    aggregate_ids: &HashMap<String, DebugEntryId>,
+    parameter_registers: &[Vec<(usize, u8)>],
+    following: Option<DebugEntryId>,
+) -> Compilation<Vec<DebugRecord>> {
     if functions.len() != parameter_registers.len() {
         return Err(Diagnostic::error(
             "debug-info: function parameter plans are not aligned",
@@ -88,7 +131,9 @@ pub(super) fn selected_records<'a>(
     for (index, plan) in plans.iter().enumerate() {
         let sibling = plans
             .get(index + 1)
-            .map_or(FUNCTION_END, |following| following.function_id);
+            .map_or(following.unwrap_or(FUNCTION_END), |following| {
+                following.function_id
+            });
         let mut attributes = vec![
             attribute(AttributeName::Sibling, AttributeValue::Reference(sibling)),
             attribute(
@@ -125,9 +170,13 @@ pub(super) fn selected_records<'a>(
         for (selected_index, (parameter_index, register)) in
             parameter_registers[index].iter().copied().enumerate()
         {
-            let parameter = plan.function.parameters.get(parameter_index).ok_or_else(|| {
-                Diagnostic::error("debug-info: selected parameter index is out of range")
-            })?;
+            let parameter = plan
+                .function
+                .parameters
+                .get(parameter_index)
+                .ok_or_else(|| {
+                    Diagnostic::error("debug-info: selected parameter index is out of range")
+                })?;
             let sibling = plan
                 .parameter_ids
                 .get(selected_index + 1)
@@ -168,11 +217,13 @@ pub(super) fn selected_records<'a>(
             records.push(DebugRecord::Raw(vec![0, 0, 0, 4]));
         }
     }
-    records.extend([
-        DebugRecord::Marker(FUNCTION_END),
-        DebugRecord::Raw(vec![0, 0, 0, 4]),
-        DebugRecord::Raw(vec![0, 0, 0, 4]),
-    ]);
+    if following.is_none() {
+        records.extend([
+            DebugRecord::Marker(FUNCTION_END),
+            DebugRecord::Raw(vec![0, 0, 0, 4]),
+            DebugRecord::Raw(vec![0, 0, 0, 4]),
+        ]);
+    }
     Ok(records)
 }
 

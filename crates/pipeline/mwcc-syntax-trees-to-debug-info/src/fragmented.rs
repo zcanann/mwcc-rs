@@ -190,6 +190,187 @@ pub(super) fn lower_simple_void_functions(
     Ok(sections)
 }
 
+pub(super) fn lower_functions_with_aggregate_data(
+    unit: &TranslationUnit,
+    machine_functions: &[MachineFunction],
+    build: CompilerBuild,
+    code_alignment: u32,
+    mut sections: DebugSections,
+) -> Compilation<DebugSections> {
+    let post_framed_bump = fragmented_post_framed_bump(build);
+    let (first_ordinal, line_end_ordinal) =
+        fragment_ordinals(machine_functions, build, post_framed_bump)?;
+    let line_header = format!(".line..{first_ordinal}");
+    let compile_unit = format!(".dwarf.0011..{}", line_end_ordinal + 1);
+    let compile_unit_size = read_u32(&sections.debug, 0)?;
+    let (function_fragments, data_start) =
+        function_fragment_boundaries(unit, &sections.debug, compile_unit_size)?;
+    let (data_fragments, first_null_offset, second_null_offset, second_null_size) =
+        data_fragment_boundaries(unit, &sections.debug, data_start)?;
+    let placements = machine_functions
+        .iter()
+        .map(|function| FunctionPlacement {
+            byte_size: function.encode_text().len() as u32,
+            deferred: function.text_deferred,
+        })
+        .collect::<Vec<_>>();
+    let function_layout = layout_function_placements(&placements, code_alignment);
+    let line_fragments = line_fragment_boundaries(&sections.line, &function_layout)?;
+    if function_fragments.len() != unit.functions.len()
+        || line_fragments.len() != unit.functions.len()
+        || second_null_offset + second_null_size != sections.debug.len() as u32
+    {
+        return Err(Diagnostic::error(
+            "debug-info: invalid GC 4.1 mixed fragment boundaries",
+        ));
+    }
+
+    let line_end_offset = sections.line.len().saturating_sub(10) as u32;
+    let closing_placement = DebugSymbolPlacement::AfterFunctionLocals(unit.functions.len() - 1);
+    sections.layout = DebugLayout::AfterDataGrouped;
+    sections.post_framed_function_anonymous_bump_override = Some(post_framed_bump);
+    sections.symbols = vec![
+        symbol(
+            line_header.clone(),
+            DebugSection::Line,
+            0,
+            8,
+            1,
+            DebugSymbolBinding::Local,
+            0,
+            DebugSymbolPlacement::Early,
+        ),
+        symbol(
+            format!(".line..{line_end_ordinal}"),
+            DebugSection::Line,
+            line_end_offset,
+            10,
+            1,
+            DebugSymbolBinding::Local,
+            0,
+            closing_placement,
+        ),
+        symbol(
+            compile_unit.clone(),
+            DebugSection::Debug,
+            0,
+            compile_unit_size,
+            4,
+            DebugSymbolBinding::Local,
+            0,
+            closing_placement,
+        ),
+        symbol(
+            format!(".dwarf.0000..{}", line_end_ordinal + 2),
+            DebugSection::Debug,
+            first_null_offset,
+            4,
+            1,
+            DebugSymbolBinding::Local,
+            0,
+            closing_placement,
+        ),
+        symbol(
+            format!(".dwarf.0000..{}", line_end_ordinal + 3),
+            DebugSection::Debug,
+            second_null_offset,
+            second_null_size,
+            1,
+            DebugSymbolBinding::Local,
+            0,
+            closing_placement,
+        ),
+    ];
+    for ((function, line), debug) in unit
+        .functions
+        .iter()
+        .zip(&line_fragments)
+        .zip(&function_fragments)
+    {
+        let binding = function_binding(function.is_static, function.is_weak);
+        let flags = if function.is_weak { 0x0e00_0000 } else { 0 };
+        sections.symbols.push(symbol(
+            format!(".line.{}", function.name),
+            DebugSection::Line,
+            line.offset,
+            line.size,
+            1,
+            binding,
+            flags,
+            DebugSymbolPlacement::Early,
+        ));
+        sections.symbols.push(symbol(
+            debug.name.clone(),
+            DebugSection::Debug,
+            debug.offset,
+            debug.size,
+            1,
+            binding,
+            flags,
+            DebugSymbolPlacement::Early,
+        ));
+    }
+    for fragment in &data_fragments {
+        sections.symbols.push(symbol(
+            fragment.name.clone(),
+            DebugSection::Debug,
+            fragment.offset,
+            fragment.size,
+            1,
+            fragment.binding,
+            fragment.comment_flags,
+            DebugSymbolPlacement::Early,
+        ));
+    }
+
+    for relocation in &mut sections.line_relocations {
+        relocation.kind = DebugRelocationKind::UnalignedAddress32;
+    }
+    for relocation in &mut sections.debug_relocations {
+        relocation.kind = DebugRelocationKind::UnalignedAddress32;
+        match &relocation.target {
+            DebugRelocationTarget::Section(name) if name == ".debug" && relocation.offset == 8 => {
+                relocation.target = DebugRelocationTarget::Symbol(compile_unit.clone());
+            }
+            DebugRelocationTarget::Section(name) if name == ".line" => {
+                relocation.target = DebugRelocationTarget::Symbol(line_header.clone());
+            }
+            DebugRelocationTarget::Section(name) if name == ".debug" => {
+                if let Some(fragment) = function_fragments
+                    .iter()
+                    .find(|fragment| fragment.contains(relocation.offset))
+                {
+                    relocation.target = DebugRelocationTarget::Symbol(fragment.name.clone());
+                    relocation.addend -= fragment.offset as i32;
+                } else if let Some(fragment) = reference_fragment(
+                    &data_fragments,
+                    relocation.offset,
+                    u32::try_from(relocation.addend).unwrap_or(u32::MAX),
+                ) {
+                    relocation.target = DebugRelocationTarget::Symbol(fragment.name.clone());
+                    relocation.addend -= fragment.offset as i32;
+                }
+            }
+            DebugRelocationTarget::Section(name) if name == ".text" => {
+                if let Some((index, _)) = function_fragments
+                    .iter()
+                    .enumerate()
+                    .find(|(_, fragment)| fragment.contains(relocation.offset))
+                {
+                    relocation.target =
+                        DebugRelocationTarget::Symbol(unit.functions[index].name.clone());
+                    relocation.addend -=
+                        i32::try_from(function_layout.offsets[index]).map_err(|_| {
+                            Diagnostic::error("debug-info: GC 4.1 function offset is too large")
+                        })?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(sections)
+}
+
 /// Give a functionless aggregate-data unit the fragment symbols used by the
 /// GC 4.1 object container. The legacy lowering above this pass remains the
 /// owner of DWARF semantics and bytes; this pass only partitions that record
@@ -338,9 +519,9 @@ impl DataFragmentBoundary {
 fn data_fragment_boundaries(
     unit: &TranslationUnit,
     bytes: &[u8],
-    compile_unit_size: u32,
+    start_offset: u32,
 ) -> Compilation<(Vec<DataFragmentBoundary>, u32, u32, u32)> {
-    let mut cursor = compile_unit_size;
+    let mut cursor = start_offset;
     let mut fragments = Vec::new();
     for item in fragmented_plan(unit)? {
         match item {
@@ -466,26 +647,7 @@ fn debug_fragment_boundaries(
     bytes: &[u8],
     compile_unit_size: u32,
 ) -> Compilation<(Vec<FragmentBoundary>, u32, u32, u32)> {
-    let mut cursor = compile_unit_size;
-    let mut fragments = Vec::with_capacity(unit.functions.len());
-    for function in &unit.functions {
-        let offset = cursor;
-        cursor = advance_record(bytes, cursor)?;
-        if !function.statements.is_empty() {
-            cursor = advance_record(bytes, cursor)?;
-            if read_u32(bytes, cursor)? != 4 {
-                return Err(Diagnostic::error(
-                    "debug-info: invalid GC 4.1 parameter-list terminator",
-                ));
-            }
-            cursor += 4;
-        }
-        fragments.push(FragmentBoundary {
-            name: format!(".dwarf.0006.{}", function.name),
-            offset,
-            size: cursor - offset,
-        });
-    }
+    let (fragments, cursor) = function_fragment_boundaries(unit, bytes, compile_unit_size)?;
     let first_null_offset = cursor;
     if read_u32(bytes, first_null_offset)? != 4 {
         return Err(Diagnostic::error(
@@ -515,6 +677,34 @@ fn debug_fragment_boundaries(
         second_null_offset,
         second_null_size,
     ))
+}
+
+fn function_fragment_boundaries(
+    unit: &TranslationUnit,
+    bytes: &[u8],
+    compile_unit_size: u32,
+) -> Compilation<(Vec<FragmentBoundary>, u32)> {
+    let mut cursor = compile_unit_size;
+    let mut fragments = Vec::with_capacity(unit.functions.len());
+    for function in &unit.functions {
+        let offset = cursor;
+        cursor = advance_record(bytes, cursor)?;
+        if !function.statements.is_empty() {
+            cursor = advance_record(bytes, cursor)?;
+            if read_u32(bytes, cursor)? != 4 {
+                return Err(Diagnostic::error(
+                    "debug-info: invalid GC 4.1 parameter-list terminator",
+                ));
+            }
+            cursor += 4;
+        }
+        fragments.push(FragmentBoundary {
+            name: format!(".dwarf.0006.{}", function.name),
+            offset,
+            size: cursor - offset,
+        });
+    }
+    Ok((fragments, cursor))
 }
 
 fn advance_record(bytes: &[u8], offset: u32) -> Compilation<u32> {

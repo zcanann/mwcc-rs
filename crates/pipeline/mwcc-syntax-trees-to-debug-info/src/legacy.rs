@@ -33,6 +33,8 @@ enum MeasuredShape {
     /// Constant-return leaf functions accompanied by weak read-only objects
     /// retained from otherwise-dropped inline definitions.
     ConstantFunctionsWithInlineStatics,
+    /// GC 4.x constant-return functions followed by aggregate type/data DIEs.
+    FragmentedFunctionsWithAggregateData,
     /// A functionless translation unit containing supported scalar, array, and
     /// aggregate data declarations.
     DataOnly,
@@ -133,7 +135,11 @@ pub(super) fn lower(
             machine_functions,
             &layout,
         )?);
-    } else if shape == MeasuredShape::ConstantFunctions && build.version.0 >= 4 {
+    } else if matches!(
+        shape,
+        MeasuredShape::ConstantFunctions | MeasuredShape::FragmentedFunctionsWithAggregateData
+    ) && build.version.0 >= 4
+    {
         for (machine_index, (_, source)) in source_functions.iter().enumerate() {
             let terminal_return_line = source.terminal_return_line.ok_or_else(|| {
                 Diagnostic::error(
@@ -232,6 +238,33 @@ pub(super) fn lower(
             data::records(unit, &globals, first_global_id, false)?.records
         });
         return finish(line, records, data_only_layout(build));
+    }
+
+    if shape == MeasuredShape::FragmentedFunctionsWithAggregateData {
+        let mut records: Vec<_> = entries.into_iter().map(DebugRecord::Entry).collect();
+        let source_function_refs = source_functions
+            .iter()
+            .map(|(function, _)| *function)
+            .collect::<Vec<_>>();
+        let first_mixed_function_id = DebugEntryId(1);
+        let first_data_id = DebugEntryId(
+            first_mixed_function_id.0
+                + u32::try_from(source_function_refs.len())
+                    .map_err(|_| Diagnostic::error("debug-info: too many fragmented functions"))?,
+        );
+        let data = data::fragmented_records(unit, first_data_id)?;
+        let parameter_registers = vec![Vec::new(); source_function_refs.len()];
+        records.extend(functions::selected_records_followed_by(
+            unit,
+            &source_function_refs,
+            &layout,
+            first_mixed_function_id,
+            &data.aggregate_ids,
+            &parameter_registers,
+            first_data_id,
+        )?);
+        records.extend(data.records);
+        return finish(line, records, DebugLayout::AfterDataGrouped);
     }
 
     if shape == MeasuredShape::VerbatimAsmWithData {
@@ -405,6 +438,9 @@ pub(super) fn lower(
         MeasuredShape::ConstantFunctionsWithInlineStatics => {
             unreachable!("combined data/function units return before legacy function records")
         }
+        MeasuredShape::FragmentedFunctionsWithAggregateData => {
+            unreachable!("fragmented mixed units return before legacy function records")
+        }
         MeasuredShape::DataOnly => unreachable!("data-only units return before function records"),
         MeasuredShape::VerbatimAsmWithData => {
             unreachable!("verbatim asm/data units return before legacy function records")
@@ -506,6 +542,18 @@ fn classify_shape(
             .all(|global| is_retained_inline_static(global));
     if constant_functions_with_inline_statics {
         return Ok(MeasuredShape::ConstantFunctionsWithInlineStatics);
+    }
+
+    let fragmented_functions_with_aggregate_data = build.version.0 >= 4
+        && !globals.is_empty()
+        && globals
+            .iter()
+            .all(|global| matches!(global.declared_type, Type::Struct { .. }))
+        && !unit.functions.is_empty()
+        && unit.functions.len() == machine_functions.len()
+        && unit.functions.iter().all(is_exported_constant_int_function);
+    if fragmented_functions_with_aggregate_data {
+        return Ok(MeasuredShape::FragmentedFunctionsWithAggregateData);
     }
 
     if unit.functions.is_empty() && machine_functions.is_empty() && !globals.is_empty() {
