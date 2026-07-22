@@ -75,6 +75,9 @@ The edit loop's compact output always labels these evidence layers separately.
 In particular, its failure-biased queue is explicitly *not* a parity estimate;
 if the fixed audit has not been run for the current compiler+harness fingerprint,
 the report says so instead of substituting a canary or work-queue pass count.
+Movement against the prior fixed membership is reported separately for the
+configured-source drop-in path and the authoritative whole-object path, and
+only across rows with comparable evidence in both snapshots.
 
 The report also separates `BYTE`, `DIFF`, `DEFER`, `HARNESS`, unsupported builds,
 and untested configurations, with language, compiler-version, and project
@@ -89,7 +92,9 @@ compiler inputs and retained under `target/reference-parity/frontier/`; after a
 compiler change, unresolved work remains in the frontier while observations for
 the new binary are kept separate. Each run executes an immutable copy of the
 fingerprinted compiler, so a concurrent rebuild cannot mix binaries inside one
-cache. Increment `--epoch` to rotate equally ranked work. `tools/gate.sh` remains
+cache. A per-cache writer lock serializes overlapping audit invocations so two
+processes cannot duplicate or interleave measurements. Increment `--epoch` to
+rotate equally ranked work. `tools/gate.sh` remains
 available as an occasional exhaustive regression check, but it is intentionally
 not on this inner loop.
 
