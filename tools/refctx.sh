@@ -372,12 +372,47 @@ if [[ ! -s "$dir/ctx.i" ]]; then
   : > "$dir/ctx.i"
 fi
 
+# Measure the actual project invocation before attempting the optional
+# preprocessed-core comparison.  A generated PCH may make the authoritative
+# source compile runnable while MWCC still rejects decompctx's textual bridge;
+# that bridge failure must not erase an already measurable drop-in result.
+measure_configured_source() {
+  local configured_source="UNAVAILABLE"
+  local -a configured_extra=()
+  if [[ "$oracle_direct" == "RUNNABLE" ]]; then
+    if [[ -n "${pch_root:-}" && -d "${pch_root:-}" ]]; then
+      configured_extra=(-i "$pch_root")
+    fi
+    if (
+      cd "$project" && "$ours" --build "$build" \
+        ${configured_extra[@]+"${configured_extra[@]}"} \
+        ${all_flags[@]+"${all_flags[@]}"} -c "$src" \
+        -o "$dir/our.configured.o"
+    ) >"$dir/our.configured.log" 2>&1; then
+      if cmp -s "$dir/ref.direct.o" "$dir/our.configured.o"; then
+        configured_source="BYTE"
+      else
+        configured_source="DIFF"
+      fi
+    else
+      configured_source="DEFER"
+    fi
+    echo "PARITY_META configured_source=$configured_source"
+  fi
+}
+
+# The initial direct probe may have been rejected before the generated-PCH
+# retry made it runnable.  Persist the final oracle state before any optional
+# bridge step can fail and exit early.
+emit_oracle_meta
+measure_configured_source
+
 # 3a. Compile the compiler-core reference from the exact same bridge handed to
 #     mwcc-rs. Preprocessing is not code-neutral under every flag: legacy `-sym
 #     on` can retain a different local-variable frame when compiling the original
 #     source. Comparing that object to a bridge-compiled candidate manufactures
 #     backend differences. The original object remains authoritative for the
-#     configured-source comparison below.
+#     configured-source comparison above.
 if [[ $direct_ready -eq 1 ]]; then
   if ! (
     cd "$dir/ours" && "$wibo" "$sjis" "$compiler" \
@@ -410,35 +445,6 @@ else
 fi
 cp "$dir/ctx.i" "$dir/ours/$ctx_name"
 fi
-fi
-
-# Measure the actual project invocation separately from the preprocessed-core
-# comparison below.  The bridge remains useful for driving parser/codegen work,
-# but it must not answer the different question "can mwcc-rs replace mwcceppc on
-# this configured source line?"  A generated PCH root recreates the project's
-# build input when the clean checkout omitted its .mch files; mwcc-rs currently
-# ignores access paths, but a future integrated preprocessor must see it.
-configured_source="UNAVAILABLE"
-if [[ "$oracle_direct" == "RUNNABLE" ]]; then
-  configured_extra=()
-  if [[ -n "${pch_root:-}" && -d "${pch_root:-}" ]]; then
-    configured_extra=(-i "$pch_root")
-  fi
-  if (
-    cd "$project" && "$ours" --build "$build" \
-      ${configured_extra[@]+"${configured_extra[@]}"} \
-      ${all_flags[@]+"${all_flags[@]}"} -c "$src" \
-      -o "$dir/our.configured.o"
-  ) >"$dir/our.configured.log" 2>&1; then
-    if cmp -s "$dir/ref.direct.o" "$dir/our.configured.o"; then
-      configured_source="BYTE"
-    else
-      configured_source="DIFF"
-    fi
-  else
-    configured_source="DEFER"
-  fi
-  echo "PARITY_META configured_source=$configured_source"
 fi
 
 # 3b. Our object. Preserve that synthetic basename so our FILE symbol matches.
