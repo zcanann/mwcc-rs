@@ -2121,6 +2121,47 @@ mod tests {
     }
 
     #[test]
+    fn lowers_an_inlined_pointer_parameter_based_on_an_embedded_member_address() {
+        let source = br#"
+            class Status {
+            public:
+                int actor;
+            };
+            class Collider {
+            public:
+                Status* status;
+                void SetStatus(Status* value) { status = value; }
+            };
+            class Actor {
+            public:
+                int prefix;
+                Status status;
+                Collider collider;
+            };
+            void compiled(Actor* actor) {
+                actor->collider.SetStatus(&actor->status);
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::DEFAULT,
+            flags,
+        };
+        let object = compile(
+            source,
+            "embedded-member-pointer.cpp",
+            config,
+            Some(SourceLanguage::Cxx),
+            None,
+            false,
+        )
+        .expect("the substituted pointer parameter should retain its lvalue address");
+        assert!(!object.is_empty());
+    }
+
+    #[test]
     fn reuses_a_guard_member_and_splits_the_selected_arm_pointer() {
         let source = br#"
             class Vec { public: float x; float y; float z; };
