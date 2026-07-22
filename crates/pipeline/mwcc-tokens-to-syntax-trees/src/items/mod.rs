@@ -1529,11 +1529,16 @@ impl Parser {
             let mut is_weak = false;
             let mut declspec_section: Option<String> = None;
             let mut is_inline = false;
+            let mut declaration_const = false;
+            let mut declaration_volatile = false;
             while let Token::Identifier(word) = self.peek() {
                 match word.as_str() {
                     "extern" => is_extern = true,
                     "static" => is_static = true,
                     "inline" | "__inline" => is_inline = true,
+                    "const" => declaration_const = true,
+                    "volatile" => declaration_volatile = true,
+                    "register" => {},
                     // `__declspec(weak)` marks the declared symbol WEAK — on a
                     // prototype it applies to the later definition too.
                     "__declspec" => {
@@ -1974,6 +1979,8 @@ impl Parser {
                 return Ok(());
             }
             let mut return_type = self.parse_type()?;
+            self.last_type_was_const |= declaration_const;
+            self.last_type_was_volatile |= declaration_volatile;
             let declared_source_fundamental = self.last_source_fundamental;
             let declared_is_volatile = self.last_type_was_volatile;
             let parsed_aggregate_reference = self.last_type_was_aggregate_reference;
@@ -3766,11 +3773,15 @@ impl Parser {
             let declaration_line = self.current_location().line;
             let mut is_static = false;
             let mut is_extern = false;
+            let mut declaration_const = false;
+            let mut declaration_volatile = false;
             while let Token::Identifier(word) = self.peek() {
                 match word.as_str() {
                     "static" => is_static = true,
                     "extern" => is_extern = true,
-                    "register" | "auto" => {}
+                    "register" | "auto" => {},
+                    "const" => declaration_const = true,
+                    "volatile" => declaration_volatile = true,
                     _ => break,
                 }
                 self.advance();
@@ -3781,6 +3792,8 @@ impl Parser {
                 break;
             }
             let declared_type = self.parse_type()?;
+            self.last_type_was_const |= declaration_const;
+            self.last_type_was_volatile |= declaration_volatile;
             let is_volatile = self.last_type_was_volatile;
             if is_extern
                 && matches!(self.peek(), Token::Identifier(_))
@@ -4618,7 +4631,7 @@ impl Parser {
                     || self.struct_typedefs.contains_key(word)
                     || self.struct_pointer_typedefs.contains_key(word)
                     || (self.cplusplus
-                        && (matches!(word.as_str(), "bool" | "wchar_t")
+                        && (matches!(word.as_str(), "bool" | "wchar_t" | "class" | "union")
                             || self.enum_types.contains_key(word)
                             || self.resolve_scoped_cxx_class_name(word).is_some()))
             }

@@ -4574,6 +4574,31 @@ blr\n\
     }
 
     #[test]
+    fn accepts_cv_and_storage_specifiers_in_either_order() {
+        let source = r#"
+            const static int global_value = 3;
+            int read(void) {
+                const static int local_value = 4;
+                if (global_value) {
+                    const static int nested_value = 5;
+                }
+                return local_value;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(unit.globals.iter().any(|global| {
+            global.name == "global_value" && global.is_static && global.is_const
+        }));
+    }
+
+    #[test]
     fn samples_skipped_inline_cost_at_each_function_definition() {
         let source = r#"
             static inline int before(void) { return 1; }

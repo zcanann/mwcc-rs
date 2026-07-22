@@ -519,14 +519,23 @@ impl Parser {
         block_locals: &mut Vec<LocalDeclaration>,
         statements: &mut Vec<Statement>,
     ) -> Compilation<()> {
-        let is_static = if matches!(self.peek(), Token::Identifier(word) if word == "static") {
+        let mut is_static = false;
+        let mut declaration_const = false;
+        let mut declaration_volatile = false;
+        while let Token::Identifier(word) = self.peek() {
+            match word.as_str() {
+                "static" => is_static = true,
+                "const" => declaration_const = true,
+                "volatile" => declaration_volatile = true,
+                "register" | "auto" => {},
+                _ => break,
+            }
             self.advance();
-            true
-        } else {
-            false
-        };
+        }
         {
             let declared_type = self.parse_type()?;
+            self.last_type_was_const |= declaration_const;
+            self.last_type_was_volatile |= declaration_volatile;
             let is_volatile = self.last_type_was_volatile;
             // An array-typedef local (`Mtx proj;`) is exactly the flat local array
             // `f32 proj[12];` — reuse that machinery (frame codegen still defers
