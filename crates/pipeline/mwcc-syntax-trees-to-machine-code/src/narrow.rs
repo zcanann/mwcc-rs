@@ -130,7 +130,14 @@ impl Generator {
             return Ok(());
         }
 
-        if let Expression::Variable(_) = expression {
+        if let Expression::Variable(name) = expression {
+            // A file-scope narrow object is already loaded at its declared
+            // width. It has no register location for `leaf_info`, so route it
+            // through the global load owner directly (`u16 f() { return g; }`
+            // is one `lhz` into r3).
+            if self.globals.get(name.as_str()) == Some(&return_type) {
+                return self.emit_global_load(name, result);
+            }
             let (register, variable_width, _) = self.leaf_info(expression)?;
             if register != result {
                 return Err(Diagnostic::error(

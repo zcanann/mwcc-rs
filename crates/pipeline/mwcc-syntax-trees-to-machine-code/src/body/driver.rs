@@ -205,6 +205,9 @@ impl Generator {
         if self.try_volatile_long_long_wait(function)? {
             return Ok(());
         }
+        if self.try_long_long_serial_fold(function)? {
+            return Ok(());
+        }
         // Other long-long LOCALS (which need pair spills), guards, and statements are not modeled yet.
         if !function.locals.is_empty()
             || !function.guards.is_empty()
@@ -1946,6 +1949,9 @@ impl Generator {
         {
             return self.emit_long_long(function);
         }
+        if self.try_saved_global_exchange(function)? {
+            return Ok(());
+        }
         // A non-volatile terminal global store/read pair is one value operation.
         // Canonicalize it to the assignment-expression form that owns mwcc's
         // stored-result reuse before the conservative recomputation gate below.
@@ -3182,6 +3188,11 @@ impl Generator {
             // Critical-section allocator bump: preserve an input and the old
             // global result while updating a pointer cursor and free count.
             if self.try_interrupt_protected_allocator_bump(function)? {
+                return Ok(());
+            }
+            // Build 163's asynchronous state callback interleaves its outer
+            // condition with the linkage prologue and rejoins switch/retry arms.
+            if self.try_async_state_callback(function)? {
                 return Ok(());
             }
             // General structured body with values spanning conditional calls:

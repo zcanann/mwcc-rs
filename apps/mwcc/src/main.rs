@@ -144,11 +144,14 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
             // cancel a standalone `-rostr` (the GC 3.0 project lines use both).
             "-str" => {
                 index += 1;
-                if arguments
-                    .get(index)
-                    .is_some_and(|value| value.split(',').any(|part| part == "readonly"))
-                {
-                    invocation.flags.string_literals_read_only = true;
+                if let Some(value) = arguments.get(index) {
+                    for part in value.split(',') {
+                        match part {
+                            "readonly" => invocation.flags.string_literals_read_only = true,
+                            "noreadonly" => invocation.flags.string_literals_read_only = false,
+                            _ => {}
+                        }
+                    }
                 }
             }
             // Modern command lines spell the same read-only string-pool mode
@@ -2003,6 +2006,14 @@ mod tests {
 
         let modern = parse_invocation(&["-rostr".into(), "-str".into(), "reuse".into()]);
         assert!(modern.flags.string_literals_read_only);
+
+        let writable_override = parse_invocation(&[
+            "-str".into(),
+            "reuse,readonly".into(),
+            "-str".into(),
+            "noreadonly".into(),
+        ]);
+        assert!(!writable_override.flags.string_literals_read_only);
     }
 
     #[test]
