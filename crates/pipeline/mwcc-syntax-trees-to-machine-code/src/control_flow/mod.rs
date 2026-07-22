@@ -11,6 +11,7 @@ mod nested_phi_select;
 mod negated_short_circuit;
 mod passes;
 mod record_condition;
+mod record_mask;
 mod select;
 
 #[allow(unused_imports)]

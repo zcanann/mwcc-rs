@@ -998,19 +998,8 @@ impl Generator {
                 right,
             } = operand.as_ref()
             {
-                if let (Some(register), Some(constant)) = (
-                    leaf_name(left).and_then(|name| self.lookup_general(name)),
-                    constant_value(right),
-                ) {
-                    if let Some((begin, end)) = mask_to_run(constant as u32) {
-                        self.output.instructions.push(Instruction::AndMaskRecord {
-                            a: GENERAL_SCRATCH,
-                            s: register,
-                            begin,
-                            end,
-                        });
-                        return Ok((4, 2)); // bne — skip when the masked bits are set
-                    }
+                if self.try_emit_record_mask_test(left, right)? {
+                    return Ok((4, 2)); // bne — skip when the masked bits are set
                 }
             }
             let register = self.condition_operand_register(operand)?;
@@ -1101,19 +1090,8 @@ impl Generator {
                     right: and_right,
                 } = left.as_ref()
                 {
-                    if let (Some(register), Some(mask)) = (
-                        leaf_name(and_left).and_then(|name| self.lookup_general(name)),
-                        constant_value(and_right),
-                    ) {
-                        if let Some((begin, end)) = mask_to_run(mask as u32) {
-                            self.output.instructions.push(Instruction::AndMaskRecord {
-                                a: GENERAL_SCRATCH,
-                                s: register,
-                                begin,
-                                end,
-                            });
-                            return Ok((4, 2)); // bne — skip when masked bits set
-                        }
+                    if self.try_emit_record_mask_test(and_left, and_right)? {
+                        return Ok((4, 2)); // bne — skip when masked bits set
                     }
                 }
             }
@@ -1503,19 +1481,8 @@ impl Generator {
             right,
         } = condition
         {
-            if let (Some(register), Some(constant)) = (
-                leaf_name(left).and_then(|name| self.lookup_general(name)),
-                constant_value(right),
-            ) {
-                if let Some((begin, end)) = mask_to_run(constant as u32) {
-                    self.output.instructions.push(Instruction::AndMaskRecord {
-                        a: GENERAL_SCRATCH,
-                        s: register,
-                        begin,
-                        end,
-                    });
-                    return Ok((12, 2)); // beq — skip when the masked bits are all zero
-                }
+            if self.try_emit_record_mask_test(left, right)? {
+                return Ok((12, 2)); // beq — skip when the masked bits are all zero
             }
         }
         if self.try_emit_computed_record_condition(condition)? {
