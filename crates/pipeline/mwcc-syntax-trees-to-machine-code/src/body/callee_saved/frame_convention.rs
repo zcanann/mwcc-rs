@@ -332,7 +332,10 @@ impl Generator {
                                 && operand.register == source
                         })
                 });
-            if promoted_parameter_count >= 2 || source_redefined_by_materialization {
+            if promoted_parameter_count >= 2
+                || (self.legacy_inline_expansion_frame_bytes == 0
+                    && source_redefined_by_materialization)
+            {
                 self.output.instructions[index] = Instruction::AddImmediate {
                     d: destination,
                     a: source,

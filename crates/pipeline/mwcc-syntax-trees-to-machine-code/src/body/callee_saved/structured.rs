@@ -293,6 +293,7 @@ impl Generator {
         // otherwise-hidden labels through the later unwind-symbol ordinal.
         self.output.anonymous_label_bump += structured_hidden_label_count(&function.statements);
         self.emit_epilogue_and_return();
+        self.schedule_legacy_inline_expansion_residue();
         Ok(true)
     }
 
