@@ -80,6 +80,6 @@ pub(crate) use mwcc_versions::{
     FixedAddressConstantStoreStyle, FrameConvention, GlobalAddressing,
     GuardedMemberInitializationStyle,
     IntegerComparisonValueStyle, LongLongTimerStyle, NarrowComputedReturnStyle,
-    NestedGlobalDispatchSchedule, PlainLinkageEpilogueStyle, PointerWalkerScheduleStyle,
-    RaiseFamilyStyle, WideConstantAddSchedule,
+    NestedGlobalDispatchSchedule, PlainLinkageEpilogueStyle, PointerCallStoreEpilogueStyle,
+    PointerWalkerScheduleStyle, RaiseFamilyStyle, WideConstantAddSchedule,
 };

@@ -1,5 +1,6 @@
 //! Function definitions and the declarations that make up their bodies.
 
+use crate::aggregate::SourceFundamentalType;
 use crate::expression::Expression;
 use crate::types::Type;
 
@@ -162,6 +163,9 @@ pub enum LoopKind {
 #[derive(Debug, Clone)]
 pub struct GlobalDeclaration {
     pub declared_type: Type,
+    /// Source scalar identity retained after executable lowering has merged
+    /// storage-equivalent types such as `long` and `int`.
+    pub source_fundamental: Option<SourceFundamentalType>,
     pub name: String,
     pub is_extern: bool,
     pub is_static: bool,
@@ -219,6 +223,18 @@ pub struct GlobalDeclaration {
     /// (dolphin's `ATTRIBUTE_ALIGN(n)` on a DMA buffer). The lowering folds it into
     /// the object's alignment (`max` with the natural/array minimum). `None` = none.
     pub attribute_alignment: Option<u16>,
+}
+
+impl GlobalDeclaration {
+    /// Whether this declaration defines storage in the current translation
+    /// unit. An `extern` declaration is normally only a reference, but C treats
+    /// one carrying an initializer as a definition.
+    pub fn is_data_definition(&self) -> bool {
+        !self.is_extern
+            || self.initializer.is_some()
+            || self.data_bytes.is_some()
+            || self.address_initializer.is_some()
+    }
 }
 
 /// One element of a pointer global's initializer.
