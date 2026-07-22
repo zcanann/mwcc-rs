@@ -25,6 +25,7 @@ mod fixed_port_bitfield;
 mod fixed_port_indexed_bitfield;
 mod fixed_port_replay_update;
 mod guards_ifs;
+mod guarded_aggregate_update;
 mod if_else;
 mod indirect_call;
 mod inlined_local_select;
