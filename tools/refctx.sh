@@ -372,11 +372,21 @@ if [[ ! -s "$dir/ctx.i" ]]; then
   : > "$dir/ctx.i"
 fi
 
-# 3a. Preserve the original-TU reference object whenever real MWCC produced
-#     one. The synthetic context is only an input bridge for our compiler; it
-#     must not silently replace authoritative parity evidence.
-if [[ "$oracle_direct" == "RUNNABLE" ]]; then
-  cp "$dir/ref.direct.o" "$dir/ref.o"
+# 3a. Compile the compiler-core reference from the exact same bridge handed to
+#     mwcc-rs. Preprocessing is not code-neutral under every flag: legacy `-sym
+#     on` can retain a different local-variable frame when compiling the original
+#     source. Comparing that object to a bridge-compiled candidate manufactures
+#     backend differences. The original object remains authoritative for the
+#     configured-source comparison below.
+if [[ $direct_ready -eq 1 ]]; then
+  if ! (
+    cd "$dir/ours" && "$wibo" "$sjis" "$compiler" \
+      ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$ctx_name" \
+      -o "$dir/ref.o"
+  ) >"$dir/reference.bridge.log" 2>&1; then
+    printf '%s\n' "$(<"$dir/reference.bridge.log")" >&2
+    exit 1
+  fi
 else
   if ! reference_output="$(
     cd "$dir" && "$wibo" "$sjis" "$compiler" \
@@ -440,8 +450,8 @@ if [[ $direct_ready -eq 1 ]]; then
 else
   echo "PARITY_META comparison_input=SYNTHETIC"
 fi
-if [[ "$oracle_direct" == "RUNNABLE" ]]; then
-  echo "PARITY_META reference_object=DIRECT"
+if [[ $direct_ready -eq 1 ]]; then
+  echo "PARITY_META reference_object=PREPROCESSED"
 else
   echo "PARITY_META reference_object=SYNTHETIC"
 fi
@@ -462,8 +472,8 @@ if ! "$ours" --build "$build" ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$d
     reference_projected=0
     if [[ $direct_ready -eq 1 ]]; then
       if (
-        cd "$project" && "$wibo" "$sjis" "$compiler" \
-          ${all_flags[@]+"${all_flags[@]}"} -sym off -c "$src" \
+        cd "$dir/ours" && "$wibo" "$sjis" "$compiler" \
+          ${compiler_flags[@]+"${compiler_flags[@]}"} -sym off -c "$ctx_name" \
           -o "$dir/reference.projected.o"
       ) >"$dir/reference.projected.log" 2>&1; then
         reference_projected=1
