@@ -15,6 +15,7 @@ use super::structured_entry_alias::{
 };
 use super::structured_frame_assignment::{
     adjacent_byte_pointer_round_up_name, fold_adjacent_byte_pointer_round_up,
+    fold_terminal_pointer_load_alias, is_folded_terminal_pointer_load_alias,
     is_transient_biased_scaled_member_call_local, is_transient_shifted_member_mask_call_local,
     sink_low_mask_parameter_assignment, sink_single_use_parameter_assignment,
 };
@@ -47,6 +48,10 @@ impl Generator {
         let mut normalized = function.clone();
         let mut changed = false;
         if let Some(rewritten) = fold_adjacent_byte_pointer_round_up(&normalized) {
+            normalized = rewritten;
+            changed = true;
+        }
+        if let Some(rewritten) = fold_terminal_pointer_load_alias(&normalized) {
             normalized = rewritten;
             changed = true;
         }
@@ -227,6 +232,11 @@ impl Generator {
         let rounded_byte_pointer = global_member_search_entry
             .then(|| adjacent_byte_pointer_round_up_name(function))
             .flatten();
+        let folded_terminal_pointer_alias = function
+            .statements
+            .iter()
+            .enumerate()
+            .any(|(index, _)| is_folded_terminal_pointer_load_alias(function, index));
 
         let count =
             eager_saved_locals.len() + saved_parameters.len() + deferred_home_plan.group_count;
@@ -342,7 +352,13 @@ impl Generator {
                 let occupied = i32::from(array_offset)
                     + i32::from(local_region_bytes)
                     + i32::try_from(4 * count).unwrap_or(i32::MAX);
-                plan.frame_size = i16::try_from((occupied + 15) / 16 * 16)
+                // The legacy value graph retains the terminal pointer alias as
+                // one scalar slot but only rounds this frame to a doubleword.
+                // Ordinary structured frames retain their 16-byte rounding.
+                let alignment = if folded_terminal_pointer_alias { 8 } else { 16 };
+                plan.frame_size = i16::try_from(
+                    (occupied + alignment - 1) / alignment * alignment,
+                )
                     .map_err(|_| Diagnostic::error("structured legacy frame is too large"))?;
             }
             self.frame_slots.insert(
@@ -991,6 +1007,9 @@ impl Generator {
                     }
                 }
                 Statement::Assign { name, value } => {
+                    if is_folded_terminal_pointer_load_alias(function, statement_index) {
+                        continue;
+                    }
                     let declared_type = function
                         .locals
                         .iter()

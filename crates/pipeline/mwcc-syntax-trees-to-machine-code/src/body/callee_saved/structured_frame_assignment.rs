@@ -8,6 +8,7 @@
 
 #[allow(unused_imports)]
 use super::*;
+use super::structured_locals::body_uses_local;
 
 /// Compose a byte displacement immediately preceding a power-of-two pointer
 /// round-up into the round-up's `addi` bias. MWCC keeps the intermediate pointer
@@ -51,6 +52,94 @@ pub(super) fn fold_adjacent_byte_pointer_round_up(function: &Function) -> Option
         return Some(rewritten);
     }
     None
+}
+
+/// Inline a single-use byte-pointer displacement into the immediately following
+/// dereference. MWCC keeps the rounded base live and selects a displaced load;
+/// retaining the source alias as an independent value instead produces an
+/// unnecessary `addi` and consumes another register.
+pub(super) fn fold_terminal_pointer_load_alias(function: &Function) -> Option<Function> {
+    for index in 0..function.statements.len().saturating_sub(1) {
+        let Statement::Assign {
+            name,
+            value: displaced,
+        } = &function.statements[index]
+        else {
+            continue;
+        };
+        let Statement::Assign {
+            name: destination,
+            value: Expression::Dereference { pointer },
+        } = &function.statements[index + 1]
+        else {
+            continue;
+        };
+        if destination == name
+            || !is_byte_pointer(function, name)
+            || byte_pointer_displacement(displaced).is_none()
+            || count_name_occurrences(pointer, name) != 1
+            || !pointer_is_cast_alias(pointer, name)
+            || body_uses_local(&function.statements[index + 2..], name)
+            || function
+                .return_expression
+                .as_ref()
+                .is_some_and(|expression| expression_reads_name(expression, name))
+        {
+            continue;
+        }
+
+        let mut rewritten = function.clone();
+        let Statement::Assign {
+            value: Expression::Dereference { pointer },
+            ..
+        } = &mut rewritten.statements[index + 1]
+        else {
+            unreachable!("terminal load was classified above")
+        };
+        let Expression::Cast { operand, .. } = pointer.as_mut() else {
+            unreachable!("pointer alias was classified above")
+        };
+        *operand = Box::new(displaced.clone());
+        return Some(rewritten);
+    }
+    None
+}
+
+/// Whether normalization has made this pure alias assignment non-executable.
+/// Keep the statement in the tree so legacy frame-residue accounting still sees
+/// the source local, but do not materialize its now-unused register value.
+pub(super) fn is_folded_terminal_pointer_load_alias(
+    function: &Function,
+    statement_index: usize,
+) -> bool {
+    let Some(Statement::Assign {
+        name,
+        value: displaced,
+    }) = function.statements.get(statement_index)
+    else {
+        return false;
+    };
+    let Some(Statement::Assign {
+        value: Expression::Dereference { pointer },
+        ..
+    }) = function.statements.get(statement_index + 1)
+    else {
+        return false;
+    };
+    is_byte_pointer(function, name)
+        && byte_pointer_displacement(displaced).is_some()
+        && !expression_reads_name(pointer, name)
+        && !body_uses_local(&function.statements[statement_index + 1..], name)
+}
+
+fn pointer_is_cast_alias(expression: &Expression, name: &str) -> bool {
+    matches!(
+        expression,
+        Expression::Cast {
+            target_type: Type::Pointer(_) | Type::StructPointer { .. },
+            operand,
+        } if matches!(operand.as_ref(), Expression::Variable(alias) if alias == name)
+    )
 }
 
 pub(super) fn adjacent_byte_pointer_round_up_name(function: &Function) -> Option<&str> {
