@@ -762,6 +762,46 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(estimate["oracle_runnable_identification_high"], 2 / 3)
         self.assertEqual(estimate["emitted_objects"], 1)
 
+    def test_configured_source_probe_is_a_separate_drop_in_measure(self):
+        rows = [row(source=f"src/{index}.c") for index in range(4)]
+        observations = {
+            rows[0]["configuration_id"]: {
+                "status": "BYTE",
+                "evidence": {
+                    "oracle_direct": "RUNNABLE",
+                    "comparison_input": "DIRECT",
+                    "configured_source": "BYTE",
+                },
+            },
+            rows[1]["configuration_id"]: {
+                "status": "DEFER",
+                "evidence": {
+                    "oracle_direct": "RUNNABLE",
+                    "comparison_input": "SYNTHETIC",
+                    "configured_source": "DEFER",
+                },
+            },
+            rows[2]["configuration_id"]: {
+                "status": "DIFF",
+                "evidence": {
+                    "oracle_direct": "RUNNABLE",
+                    "comparison_input": "SYNTHETIC",
+                    "configured_source": "DIFF",
+                },
+            },
+            rows[3]["configuration_id"]: {
+                "status": "MISSING_DEPENDENCY",
+                "evidence": {"oracle_direct": "REJECTED"},
+            },
+        }
+        estimate = representative_audit(
+            rows, observations, {item["configuration_id"] for item in rows}
+        )["estimate"]
+        self.assertTrue(estimate["configured_source_provenance"])
+        self.assertEqual(estimate["configured_source_exact"], 1)
+        self.assertEqual(estimate["configured_source_known_nonparity"], 2)
+        self.assertEqual(estimate["configured_source_unknown"], 1)
+
     def test_code_diagnostic_has_its_own_measured_denominator(self):
         rows = [row(source=f"src/{index}.c") for index in range(4)]
         observations = {

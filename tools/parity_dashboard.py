@@ -835,6 +835,28 @@ def representative_audit(
         oracle_upper_low, oracle_upper_high = wilson_interval(
             successes + oracle_runnable_unknown, oracle_runnable
         )
+        configured_source_counts = Counter(
+            observation_evidence(observation).get("configured_source", "UNKNOWN")
+            for observation in direct.values()
+        )
+        configured_source_provenance = all(
+            observation_evidence(observation).get("oracle_direct") != "RUNNABLE"
+            or observation_evidence(observation).get("configured_source")
+            in ("BYTE", "DIFF", "DEFER")
+            for observation in direct.values()
+        )
+        configured_source_exact = configured_source_counts["BYTE"]
+        configured_source_known_nonparity = (
+            configured_source_counts["DIFF"] + configured_source_counts["DEFER"]
+        )
+        configured_source_unknown = (
+            len(selected)
+            - configured_source_exact
+            - configured_source_known_nonparity
+        )
+        configured_source_low, configured_source_high = wilson_interval(
+            configured_source_exact, len(selected)
+        )
         code_results = Counter(
             code_status
             for observation in direct.values()
@@ -900,6 +922,38 @@ def representative_audit(
             ),
             "oracle_runnable_upper_interval_low": oracle_upper_low,
             "oracle_runnable_upper_interval_high": oracle_upper_high,
+            # End-to-end drop-in view: unlike the preprocessed-core comparison,
+            # this invokes mwcc-rs on the project's actual configured source.
+            # Keep both layers visible; neither denominator may impersonate the
+            # other.
+            "configured_source_provenance": configured_source_provenance,
+            "configured_source_exact": (
+                configured_source_exact if configured_source_provenance else None
+            ),
+            "configured_source_known_nonparity": (
+                configured_source_known_nonparity
+                if configured_source_provenance
+                else None
+            ),
+            "configured_source_unknown": (
+                configured_source_unknown if configured_source_provenance else None
+            ),
+            "configured_source_confirmed_proportion": (
+                configured_source_exact / len(selected)
+                if configured_source_provenance
+                else None
+            ),
+            "configured_source_confirmed_interval_low": (
+                configured_source_low if configured_source_provenance else None
+            ),
+            "configured_source_confirmed_interval_high": (
+                configured_source_high if configured_source_provenance else None
+            ),
+            "configured_source_identification_high": (
+                (configured_source_exact + configured_source_unknown) / len(selected)
+                if configured_source_provenance
+                else None
+            ),
             "resolved_outcomes": resolved,
             "resolved_proportion": successes / resolved if resolved else None,
             "resolved_confidence": 0.95,
@@ -1064,6 +1118,24 @@ def print_brief(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]]) 
             f"{estimate['invalid_configuration_unknown']}; non-authoritative comparison "
             f"{estimate['non_authoritative_unknown']}"
         )
+        if estimate["configured_source_provenance"]:
+            print(
+                "configured-source drop-in audit — exact "
+                f"{estimate['configured_source_exact']}/{estimate['total']} = "
+                f"{estimate['configured_source_confirmed_proportion']:.1%}; known nonparity "
+                f"{estimate['configured_source_known_nonparity']}/{estimate['total']}; unknown "
+                f"{estimate['configured_source_unknown']}/{estimate['total']}; "
+                f"identification range "
+                f"{estimate['configured_source_confirmed_proportion']:.1%}.."
+                f"{estimate['configured_source_identification_high']:.1%}; "
+                f"95% CI on confirmed share "
+                f"{estimate['configured_source_confirmed_interval_low']:.1%}.."
+                f"{estimate['configured_source_confirmed_interval_high']:.1%}"
+            )
+        else:
+            print(
+                "configured-source drop-in audit — NOT MEASURED for every real-MWCC-runnable row"
+            )
         if estimate["oracle_runnable"]:
             print(
                 "measurement readiness — real MWCC directly runnable for "

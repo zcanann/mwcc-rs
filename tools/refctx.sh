@@ -402,6 +402,35 @@ cp "$dir/ctx.i" "$dir/ours/$ctx_name"
 fi
 fi
 
+# Measure the actual project invocation separately from the preprocessed-core
+# comparison below.  The bridge remains useful for driving parser/codegen work,
+# but it must not answer the different question "can mwcc-rs replace mwcceppc on
+# this configured source line?"  A generated PCH root recreates the project's
+# build input when the clean checkout omitted its .mch files; mwcc-rs currently
+# ignores access paths, but a future integrated preprocessor must see it.
+configured_source="UNAVAILABLE"
+if [[ "$oracle_direct" == "RUNNABLE" ]]; then
+  configured_extra=()
+  if [[ -n "${pch_root:-}" && -d "${pch_root:-}" ]]; then
+    configured_extra=(-i "$pch_root")
+  fi
+  if (
+    cd "$project" && "$ours" --build "$build" \
+      ${configured_extra[@]+"${configured_extra[@]}"} \
+      ${all_flags[@]+"${all_flags[@]}"} -c "$src" \
+      -o "$dir/our.configured.o"
+  ) >"$dir/our.configured.log" 2>&1; then
+    if cmp -s "$dir/ref.direct.o" "$dir/our.configured.o"; then
+      configured_source="BYTE"
+    else
+      configured_source="DIFF"
+    fi
+  else
+    configured_source="DEFER"
+  fi
+  echo "PARITY_META configured_source=$configured_source"
+fi
+
 # 3b. Our object. Preserve that synthetic basename so our FILE symbol matches.
 #     Pass the same flags the real compiler got — our mwcc models the ones it knows
 #     and ignores the rest.
