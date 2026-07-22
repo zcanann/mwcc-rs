@@ -14,7 +14,7 @@ use mwcc_object::{
     DebugSection, DebugSections, DebugSymbol, DebugSymbolBinding, DebugSymbolPlacement,
     FunctionPlacement,
 };
-use mwcc_syntax_trees::TranslationUnit;
+use mwcc_syntax_trees::{AggregateDefinition, TranslationUnit, Type};
 use mwcc_versions::CompilerBuild;
 
 pub(super) fn lower_simple_void_functions(
@@ -45,8 +45,7 @@ pub(super) fn lower_simple_void_functions(
         .collect::<Vec<_>>();
     let function_layout = layout_function_placements(&placements, code_alignment);
     let line_fragments = line_fragment_boundaries(&sections.line, &function_layout)?;
-    if line_fragments.len() != unit.functions.len()
-        || debug_fragments.len() != unit.functions.len()
+    if line_fragments.len() != unit.functions.len() || debug_fragments.len() != unit.functions.len()
     {
         return Err(Diagnostic::error(
             "debug-info: GC 4.1 fragment count does not match emitted functions",
@@ -153,9 +152,7 @@ pub(super) fn lower_simple_void_functions(
     for relocation in &mut sections.debug_relocations {
         relocation.kind = DebugRelocationKind::UnalignedAddress32;
         match &relocation.target {
-            DebugRelocationTarget::Section(name)
-                if name == ".debug" && relocation.offset == 8 =>
-            {
+            DebugRelocationTarget::Section(name) if name == ".debug" && relocation.offset == 8 => {
                 relocation.target = DebugRelocationTarget::Symbol(compile_unit.clone());
             }
             DebugRelocationTarget::Section(name) if name == ".line" => {
@@ -178,9 +175,10 @@ pub(super) fn lower_simple_void_functions(
                 {
                     relocation.target =
                         DebugRelocationTarget::Symbol(unit.functions[index].name.clone());
-                    relocation.addend -= i32::try_from(function_layout.offsets[index]).map_err(
-                        |_| Diagnostic::error("debug-info: GC 4.1 function offset is too large"),
-                    )?;
+                    relocation.addend -=
+                        i32::try_from(function_layout.offsets[index]).map_err(|_| {
+                            Diagnostic::error("debug-info: GC 4.1 function offset is too large")
+                        })?;
                 }
             }
             _ => {}
@@ -188,6 +186,295 @@ pub(super) fn lower_simple_void_functions(
     }
 
     Ok(sections)
+}
+
+/// Give a functionless aggregate-data unit the fragment symbols used by the
+/// GC 4.1 object container. The legacy lowering above this pass remains the
+/// owner of DWARF semantics and bytes; this pass only partitions that record
+/// stream and redirects its relocations through the resulting ELF symbols.
+pub(super) fn lower_aggregate_data_unit(
+    unit: &TranslationUnit,
+    mut sections: DebugSections,
+) -> Compilation<DebugSections> {
+    let compile_unit_size = read_u32(&sections.debug, 0)?;
+    let (fragments, first_null_offset, second_null_offset, second_null_size) =
+        data_fragment_boundaries(unit, &sections.debug, compile_unit_size)?;
+    if sections.line.len() != 18
+        || sections.line[0..4] != (sections.line.len() as u32).to_be_bytes()
+        || first_null_offset + 4 != second_null_offset
+        || second_null_offset + second_null_size != sections.debug.len() as u32
+    {
+        return Err(Diagnostic::error(
+            "debug-info: invalid GC 4.1 aggregate-data fragment boundaries",
+        ));
+    }
+
+    let line_header = ".line..1".to_string();
+    let compile_unit = ".dwarf.0011..3".to_string();
+    sections.layout = DebugLayout::AfterDataGrouped;
+    sections.symbols = vec![
+        symbol(
+            line_header.clone(),
+            DebugSection::Line,
+            0,
+            8,
+            1,
+            DebugSymbolBinding::Local,
+            0,
+            DebugSymbolPlacement::Early,
+        ),
+        symbol(
+            ".line..2".into(),
+            DebugSection::Line,
+            8,
+            10,
+            1,
+            DebugSymbolBinding::Local,
+            0,
+            DebugSymbolPlacement::Early,
+        ),
+        symbol(
+            compile_unit.clone(),
+            DebugSection::Debug,
+            0,
+            compile_unit_size,
+            4,
+            DebugSymbolBinding::Local,
+            0,
+            DebugSymbolPlacement::Early,
+        ),
+        symbol(
+            ".dwarf.0000..4".into(),
+            DebugSection::Debug,
+            first_null_offset,
+            4,
+            1,
+            DebugSymbolBinding::Local,
+            0,
+            DebugSymbolPlacement::Early,
+        ),
+        symbol(
+            ".dwarf.0000..5".into(),
+            DebugSection::Debug,
+            second_null_offset,
+            second_null_size,
+            1,
+            DebugSymbolBinding::Local,
+            0,
+            DebugSymbolPlacement::Early,
+        ),
+    ];
+    for fragment in &fragments {
+        sections.symbols.push(symbol(
+            fragment.name.clone(),
+            DebugSection::Debug,
+            fragment.offset,
+            fragment.size,
+            1,
+            fragment.binding,
+            fragment.comment_flags,
+            DebugSymbolPlacement::Early,
+        ));
+    }
+
+    for relocation in &mut sections.line_relocations {
+        relocation.kind = DebugRelocationKind::UnalignedAddress32;
+    }
+    for relocation in &mut sections.debug_relocations {
+        relocation.kind = DebugRelocationKind::UnalignedAddress32;
+        match &relocation.target {
+            DebugRelocationTarget::Section(name) if name == ".debug" && relocation.offset == 8 => {
+                relocation.target = DebugRelocationTarget::Symbol(compile_unit.clone());
+            }
+            DebugRelocationTarget::Section(name) if name == ".line" => {
+                relocation.target = DebugRelocationTarget::Symbol(line_header.clone());
+            }
+            DebugRelocationTarget::Section(name) if name == ".debug" => {
+                if let Some(fragment) = reference_fragment(
+                    &fragments,
+                    relocation.offset,
+                    u32::try_from(relocation.addend).unwrap_or(u32::MAX),
+                ) {
+                    relocation.target = DebugRelocationTarget::Symbol(fragment.name.clone());
+                    relocation.addend -= fragment.offset as i32;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(sections)
+}
+
+pub(super) fn matches_aggregate_data_unit(unit: &TranslationUnit) -> bool {
+    let globals = emitted_debug_globals(unit);
+    !globals.is_empty()
+        && globals
+            .iter()
+            .all(|global| matches!(global.declared_type, Type::Struct { .. }))
+}
+
+#[derive(Clone, Debug)]
+struct DataFragmentBoundary {
+    name: String,
+    offset: u32,
+    size: u32,
+    binding: DebugSymbolBinding,
+    comment_flags: u32,
+}
+
+impl DataFragmentBoundary {
+    fn contains(&self, offset: u32) -> bool {
+        offset >= self.offset && offset < self.offset + self.size
+    }
+
+    fn contains_including_end(&self, offset: u32) -> bool {
+        offset >= self.offset && offset <= self.offset + self.size
+    }
+}
+
+fn data_fragment_boundaries(
+    unit: &TranslationUnit,
+    bytes: &[u8],
+    compile_unit_size: u32,
+) -> Compilation<(Vec<DataFragmentBoundary>, u32, u32, u32)> {
+    let mut cursor = compile_unit_size;
+    let mut fragments = Vec::new();
+    for global in emitted_debug_globals(unit) {
+        let tag = unit
+            .global_aggregate_tags
+            .get(&global.name)
+            .ok_or_else(|| {
+                Diagnostic::error(format!(
+                    "debug-info: aggregate identity for global '{}' was not retained",
+                    global.name
+                ))
+            })?;
+        let mut definitions = Vec::new();
+        collect_aggregate_postorder(unit, tag, &mut Vec::new(), &mut definitions)?;
+        for definition in definitions {
+            let offset = cursor;
+            cursor = advance_record(bytes, cursor)?;
+            for _ in &definition.members {
+                cursor = advance_record(bytes, cursor)?;
+            }
+            if read_u32(bytes, cursor)? != 4 {
+                return Err(Diagnostic::error(
+                    "debug-info: invalid GC 4.1 aggregate-children terminator",
+                ));
+            }
+            cursor += 4;
+            let tag = if definition.is_union { "0017" } else { "0013" };
+            let name = definition.source_tag.as_deref().unwrap_or(&definition.name);
+            fragments.push(DataFragmentBoundary {
+                name: format!(".dwarf.{tag}.{name}"),
+                offset,
+                size: cursor - offset,
+                binding: DebugSymbolBinding::Weak,
+                comment_flags: 0x0d00_0000,
+            });
+        }
+        let offset = cursor;
+        cursor = advance_record(bytes, cursor)?;
+        fragments.push(DataFragmentBoundary {
+            name: format!(".dwarf.0007.{}", global.name),
+            offset,
+            size: cursor - offset,
+            binding: if global.is_weak {
+                DebugSymbolBinding::Weak
+            } else {
+                DebugSymbolBinding::Global
+            },
+            comment_flags: if global.is_weak { 0x0d00_0000 } else { 0 },
+        });
+    }
+
+    let first_null_offset = cursor;
+    if read_u32(bytes, first_null_offset)? != 4 {
+        return Err(Diagnostic::error(
+            "debug-info: invalid GC 4.1 data-list terminator",
+        ));
+    }
+    let second_null_offset = first_null_offset + 4;
+    let second_null_size = u32::try_from(bytes.len())
+        .ok()
+        .and_then(|length| length.checked_sub(second_null_offset))
+        .filter(|size| *size >= 4)
+        .ok_or_else(|| Diagnostic::error("debug-info: invalid GC 4.1 unit terminator"))?;
+    if read_u32(bytes, second_null_offset)? != 4 {
+        return Err(Diagnostic::error(
+            "debug-info: invalid GC 4.1 unit terminator",
+        ));
+    }
+    Ok((
+        fragments,
+        first_null_offset,
+        second_null_offset,
+        second_null_size,
+    ))
+}
+
+fn emitted_debug_globals(unit: &TranslationUnit) -> Vec<&mwcc_syntax_trees::GlobalDeclaration> {
+    unit.globals
+        .iter()
+        .filter(|global| !global.is_extern && !global.is_static && !global.name.is_empty())
+        .collect()
+}
+
+fn collect_aggregate_postorder<'a>(
+    unit: &'a TranslationUnit,
+    tag: &str,
+    visited: &mut Vec<String>,
+    output: &mut Vec<&'a AggregateDefinition>,
+) -> Compilation<()> {
+    if visited.iter().any(|seen| seen == tag) {
+        return Ok(());
+    }
+    visited.push(tag.to_string());
+    let definition = unit.aggregate_definitions.get(tag).ok_or_else(|| {
+        Diagnostic::error(format!(
+            "debug-info: aggregate definition '{tag}' was not retained"
+        ))
+    })?;
+    for member in &definition.members {
+        if matches!(member.declared_type, Type::Struct { .. }) {
+            let member_tag = member.aggregate_tag.as_deref().ok_or_else(|| {
+                Diagnostic::error(format!(
+                    "debug-info: aggregate identity for member '{}.{}' was not retained",
+                    definition.name, member.name
+                ))
+            })?;
+            collect_aggregate_postorder(unit, member_tag, visited, output)?;
+        }
+    }
+    output.push(definition);
+    Ok(())
+}
+
+fn reference_fragment<'a>(
+    fragments: &'a [DataFragmentBoundary],
+    relocation_offset: u32,
+    target_offset: u32,
+) -> Option<&'a DataFragmentBoundary> {
+    // A sibling reference to the byte immediately after a fragment still
+    // binds through that source fragment. Prefer this relationship before an
+    // exact-start match with the following fragment.
+    if let Some(source) = fragments
+        .iter()
+        .find(|fragment| fragment.contains(relocation_offset))
+    {
+        if source.contains_including_end(target_offset) {
+            return Some(source);
+        }
+    }
+    fragments
+        .iter()
+        .find(|fragment| fragment.offset == target_offset)
+        .or_else(|| {
+            fragments
+                .iter()
+                .find(|fragment| fragment.contains(target_offset))
+        })
 }
 
 #[derive(Clone, Debug)]
@@ -252,10 +539,7 @@ fn debug_fragment_boundaries(
     } else {
         false
     };
-    if second_null_size < 4
-        || read_u32(bytes, second_null_offset)? != 4
-        || !padded_tail_is_valid
-    {
+    if second_null_size < 4 || read_u32(bytes, second_null_offset)? != 4 || !padded_tail_is_valid {
         return Err(Diagnostic::error(
             "debug-info: invalid GC 4.1 padded unit terminator",
         ));

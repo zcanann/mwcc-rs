@@ -10,9 +10,7 @@ mod legacy;
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_dwarf1::{DebugEntryId, RelocationTarget};
 use mwcc_machine_code::MachineFunction;
-use mwcc_object::{
-    DebugRelocation, DebugRelocationKind, DebugRelocationTarget, DebugSections,
-};
+use mwcc_object::{DebugRelocation, DebugRelocationKind, DebugRelocationTarget, DebugSections};
 use mwcc_syntax_trees::TranslationUnit;
 use mwcc_versions::CompilerBuild;
 use std::collections::HashMap;
@@ -52,15 +50,16 @@ pub fn lower_debug_info(
     // `.dwarf.*` symbols first appear in the 4.x generation. GC/1.3.2 build 81
     // instead keeps the monolithic grouped stream used by the legacy lowering.
     let monolithic_data_unit = unit.functions.is_empty() && machine_functions.is_empty();
-    if fragmented_generation && !monolithic_data_unit {
+    if fragmented_generation && monolithic_data_unit {
+        if fragmented::matches_aggregate_data_unit(unit) {
+            let grouped =
+                legacy::lower(unit, machine_functions, source_name, build, code_alignment)?;
+            return fragmented::lower_aggregate_data_unit(unit, grouped).map(Some);
+        }
+    } else if fragmented_generation {
         if !has_emitted_data && legacy::matches_simple_void_functions(unit, machine_functions) {
-            let grouped = legacy::lower(
-                unit,
-                machine_functions,
-                source_name,
-                build,
-                code_alignment,
-            )?;
+            let grouped =
+                legacy::lower(unit, machine_functions, source_name, build, code_alignment)?;
             return fragmented::lower_simple_void_functions(
                 unit,
                 machine_functions,
@@ -90,9 +89,7 @@ fn convert_relocations(
                 RelocationTarget::External(name) if name.starts_with('.') => {
                     (DebugRelocationTarget::Section(name), 0)
                 }
-                RelocationTarget::External(name) => {
-                    (DebugRelocationTarget::Symbol(name), 0)
-                }
+                RelocationTarget::External(name) => (DebugRelocationTarget::Symbol(name), 0),
                 RelocationTarget::DebugEntry(id) => (
                     DebugRelocationTarget::Section(".debug".into()),
                     debug_offsets[&id] as i32,
