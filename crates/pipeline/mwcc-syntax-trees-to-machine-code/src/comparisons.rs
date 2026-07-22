@@ -1319,8 +1319,18 @@ impl Generator {
         let left_load = self.is_float_operand(left) && !self.is_float_leaf(left) && !left_literal;
         let right_load =
             self.is_float_operand(right) && !self.is_float_leaf(right) && !right_literal;
-        let left_is_float = self.is_float_operand(left);
-        let right_is_float = self.is_float_operand(right);
+        let mut left_is_float = self.is_float_operand(left);
+        let mut right_is_float = self.is_float_operand(right);
+        // An unsuffixed integer constant in a comparison with a floating value
+        // undergoes the usual arithmetic conversion. Keep nonconstant integer
+        // operands on the measured magic-bias paths below, but let pool-literal
+        // placement handle `float_value < 0` and its mirrored spelling.
+        if left_is_float && matches!(right, Expression::IntegerLiteral(_)) {
+            right_is_float = true;
+        }
+        if right_is_float && matches!(left, Expression::IntegerLiteral(_)) {
+            left_is_float = true;
+        }
         let (a, b) = if !left_is_float && right_is_float {
             // Usual arithmetic conversions promote the integer side to the
             // floating side's precision. A memory integer is first loaded into
@@ -1422,6 +1432,14 @@ impl Generator {
             } else {
                 return Err(Diagnostic::error("this floating-point == comparison needs the value register allocator (roadmap)"));
             }
+        } else if left_load && !right_load {
+            let b = self.float_register_of_leaf(right)?;
+            self.evaluate_float(left, FLOAT_SCRATCH)?;
+            (FLOAT_SCRATCH, b)
+        } else if right_load && !left_load {
+            let a = self.float_register_of_leaf(left)?;
+            self.evaluate_float(right, FLOAT_SCRATCH)?;
+            (a, FLOAT_SCRATCH)
         } else if right_literal && !left_literal {
             // One operand is a pool literal and the other a value that must be loaded (a
             // float member or global): mwcc loads the constant into f0 first, then the
