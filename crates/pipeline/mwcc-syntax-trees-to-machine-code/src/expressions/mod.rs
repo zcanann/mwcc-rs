@@ -27,6 +27,7 @@ mod punned_displacement;
 mod shifted_member_mask;
 mod stores;
 mod strings;
+mod xnor_feedback_update;
 
 pub(crate) use members::embedded_member_address_base;
 #[allow(unused_imports)]
