@@ -354,6 +354,7 @@ impl Generator {
         let mut carried_condition_cache_restore = None;
         let mut scheduled_float_store = None;
         for (statement_index, statement) in statements.iter().enumerate() {
+            let emitted_start = self.output.instructions.len();
             match statement {
                 Statement::If {
                     condition,
@@ -522,6 +523,12 @@ impl Generator {
                     diagnostic
                 })?,
             }
+            self.schedule_dying_structured_local_argument(
+                statement,
+                &statements[statement_index + 1..],
+                function,
+                emitted_start,
+            );
             if let Some(store_index) = scheduled_float_store.take() {
                 self.swap_structured_float_store_with_guard_test(store_index)?;
             }
