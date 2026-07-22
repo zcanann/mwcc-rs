@@ -385,6 +385,18 @@ impl Generator {
         }) else {
             return;
         };
+        let restored_stack_link_load = self.behavior.plain_linkage_epilogue_style
+            == PlainLinkageEpilogueStyle::StackRestoreBeforeReload;
+        let stack_restore = self.output.instructions.iter().position(|instruction| {
+            matches!(
+                instruction,
+                Instruction::AddImmediate {
+                    d: 1,
+                    a: 1,
+                    immediate: 16
+                }
+            )
+        });
         let has_other_stack_reference = self.output.instructions.iter().enumerate().any(
             |(index, instruction)| match instruction {
                 Instruction::StoreWordWithUpdate {
@@ -407,6 +419,15 @@ impl Generator {
                     a: 1,
                     immediate: 16,
                 } => false,
+                Instruction::LoadWord {
+                    d: 0,
+                    a: 1,
+                    offset: 4,
+                } if restored_stack_link_load
+                    && stack_restore.is_some_and(|restore| restore < index) =>
+                {
+                    false
+                }
                 Instruction::StoreWord { a: 1, .. }
                 | Instruction::StoreByte { a: 1, .. }
                 | Instruction::StoreHalfword { a: 1, .. }
