@@ -435,7 +435,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--code-projection",
         action="store_true",
-        help="retry debug-deferred rows with -sym off for diagnostic code metrics",
+        help=(
+            "retry deferred rows with -sym off for diagnostic code metrics; "
+            "backend-deferred TUs use parity keep-going to retain lowerable functions"
+        ),
     )
     parser.add_argument(
         "--configured-only",

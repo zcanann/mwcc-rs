@@ -198,7 +198,9 @@ def run_refctx_fixture(project: Path, ffcc: Path, compiler: Path):
     )
 
 
-def run_configured_only_refctx_fixture(project: Path, ffcc: Path, compiler: Path):
+def run_configured_only_refctx_fixture(
+    project: Path, ffcc: Path, compiler: Path, *, code_projection: bool = False
+):
     environment = os.environ.copy()
     environment.update(
         {
@@ -208,6 +210,8 @@ def run_configured_only_refctx_fixture(project: Path, ffcc: Path, compiler: Path
             "REFCTX_CONFIGURED_ONLY": "1",
         }
     )
+    if code_projection:
+        environment["REFCTX_CODE_PROJECTION"] = "1"
     return subprocess.run(
         [
             "bash",
@@ -327,6 +331,40 @@ class IdentityTests(unittest.TestCase):
             )
             self.assertIn("BYTE   src/test.c", completed.stdout)
             self.assertNotIn("direct_bridge", completed.stdout)
+
+    def test_configured_defer_can_emit_a_partial_function_projection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project, ffcc, ours = refctx_fixture(Path(directory))
+            # The reference compiler was copied by the fixture before replacing
+            # the drop-in candidate with one that only accepts diagnostic mode.
+            ours.write_text(
+                "#!/bin/sh\n"
+                "output=\n"
+                "partial=0\n"
+                "while [ \"$#\" -gt 0 ]; do\n"
+                "  case \"$1\" in\n"
+                "    --parity-keep-going) partial=1; shift ;;\n"
+                "    -o) output=$2; shift 2 ;;\n"
+                "    *) shift ;;\n"
+                "  esac\n"
+                "done\n"
+                "if [ \"$partial\" -eq 0 ]; then\n"
+                "  echo \"mwcc: unsupported body (in function 'bad')\" >&2\n"
+                "  exit 1\n"
+                "fi\n"
+                "printf 'partial object\\n' > \"$output\"\n",
+                encoding="utf-8",
+            )
+            ours.chmod(0o755)
+            completed = run_configured_only_refctx_fixture(
+                project, ffcc, ours, code_projection=True
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            metadata = parity_metadata(completed.stdout)
+            self.assertEqual(metadata["configured_source"], "DEFER")
+            self.assertEqual(metadata["configured_partial"], "RUNNABLE")
+            self.assertEqual(metadata["function_projection"], "PARTIAL")
+            self.assertIn("CODE EMPTY", completed.stdout)
 
     def test_configured_only_refctx_attributes_oracle_rejection_to_configuration(self):
         with tempfile.TemporaryDirectory() as directory:

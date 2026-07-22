@@ -128,6 +128,7 @@ done
 # preprocessing branch: directly preprocessable rows need the same configured
 # source evidence as generated-PCH and decompctx-backed rows.
 configured_source="UNAVAILABLE"
+configured_partial="UNAVAILABLE"
 measure_configured_source() {
   local -a configured_extra=()
   if [[ "$oracle_direct" == "RUNNABLE" ]]; then
@@ -147,8 +148,32 @@ measure_configured_source() {
       fi
     else
       configured_source="DEFER"
+      if [[ "${REFCTX_CODE_PROJECTION:-0}" == 1 ]]; then
+        reference_partial=0
+        if (
+          cd "$project" && "$wibo" "$sjis" "$compiler" \
+            ${configured_extra[@]+"${configured_extra[@]}"} \
+            ${all_flags[@]+"${all_flags[@]}"} -sym off -c "$src" \
+            -o "$dir/ref.partial.o"
+        ) >"$dir/ref.partial.log" 2>&1; then
+          reference_partial=1
+        fi
+        if [[ $reference_partial -eq 1 ]] && (
+          cd "$project" && "$ours" --build "$build" --parity-keep-going \
+            ${configured_extra[@]+"${configured_extra[@]}"} \
+            ${all_flags[@]+"${all_flags[@]}"} -sym off -c "$src" \
+            -o "$dir/our.partial.o"
+        ) >"$dir/our.partial.log" 2>&1; then
+          configured_partial="RUNNABLE"
+        else
+          configured_partial="DEFER"
+        fi
+      fi
     fi
     echo "PARITY_META configured_source=$configured_source"
+    if [[ "$configured_partial" != "UNAVAILABLE" ]]; then
+      echo "PARITY_META configured_partial=$configured_partial"
+    fi
   fi
 }
 
@@ -173,6 +198,10 @@ emit_configured_source_verdict() {
       configured_detail="$(sed -n 's/^mwcc: //p' "$dir/our.configured.log" | tail -1)"
       [[ -n "$configured_detail" ]] || configured_detail="$(tail -1 "$dir/our.configured.log")"
       echo "DEFER  $src — $configured_detail"
+      if [[ "$configured_partial" == "RUNNABLE" ]]; then
+        echo "PARITY_META function_projection=PARTIAL"
+        python3 "$code_metrics" "$objdump" "$dir/ref.partial.o" "$dir/our.partial.o"
+      fi
       ;;
   esac
 }

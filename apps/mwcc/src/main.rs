@@ -46,6 +46,9 @@ struct Invocation {
     preprocessor_definitions: std::collections::HashMap<String, String>,
     /// Codegen-affecting flags parsed from the real build line.
     flags: mwcc_versions::Flags,
+    /// Diagnostic parity mode: emit every independently lowerable function and
+    /// skip backend-deferred definitions instead of aborting the whole object.
+    parity_keep_going: bool,
 }
 
 fn parse_invocation(arguments: &[String]) -> Invocation {
@@ -59,10 +62,12 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
         include_paths: Vec::new(),
         preprocessor_definitions: std::collections::HashMap::new(),
         flags: mwcc_versions::Flags::default(),
+        parity_keep_going: false,
     };
     let mut index = 0;
     while index < arguments.len() {
         match arguments[index].as_str() {
+            "--parity-keep-going" => invocation.parity_keep_going = true,
             "-c" => {
                 index += 1;
                 invocation.input = arguments.get(index).cloned();
@@ -412,6 +417,7 @@ fn main() -> ExitCode {
         config,
         invocation.source_language,
         invocation.artifacts_directory.as_deref(),
+        invocation.parity_keep_going,
     ) {
         Ok(object) => {
             if let Err(error) = std::fs::write(&output, object) {
@@ -471,6 +477,7 @@ fn compile(
     config: mwcc_versions::CompilerConfig,
     source_language: Option<SourceLanguage>,
     artifacts: Option<&str>,
+    parity_keep_going: bool,
 ) -> Compilation<Vec<u8>> {
     let located_tokens = mwcc_source_to_tokens::tokenize_bytes_located(source)?;
     let tokens: Vec<mwcc_tokens::Token> = located_tokens
@@ -665,6 +672,13 @@ fn compile(
                     diagnostic
                         .message
                         .push_str(&format!(" (while lowering '{}')", function.name));
+                }
+                if parity_keep_going {
+                    eprintln!(
+                        "mwcc: parity skipped function '{}': {}",
+                        function.name, diagnostic
+                    );
+                    continue;
                 }
                 return Err(diagnostic);
             }
@@ -1992,8 +2006,33 @@ fn compile(
 
 #[cfg(test)]
 mod tests {
-    use super::{global_alignments, parse_invocation, GlobalAlignments, SourceLanguage};
+    use super::{compile, global_alignments, parse_invocation, GlobalAlignments, SourceLanguage};
     use mwcc_versions::{EnumStorage, GlobalAddressing};
+
+    #[test]
+    fn parity_keep_going_is_an_explicit_diagnostic_flag() {
+        let ordinary = parse_invocation(&[]);
+        let diagnostic = parse_invocation(&["--parity-keep-going".into()]);
+        assert!(!ordinary.parity_keep_going);
+        assert!(diagnostic.parity_keep_going);
+    }
+
+    #[test]
+    fn parity_keep_going_emits_prior_functions_after_a_backend_defer() {
+        let source = b"int good(void) { return 1; }\nint bad(void) { return missing; }\n";
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::DEFAULT,
+            flags,
+        };
+        let ordinary = compile(source, "partial.c", config, Some(SourceLanguage::C), None, false);
+        assert!(ordinary.is_err());
+        let partial = compile(source, "partial.c", config, Some(SourceLanguage::C), None, true)
+            .expect("diagnostic mode should serialize the lowerable prefix");
+        assert!(!partial.is_empty());
+    }
 
     #[test]
     fn scalar_array_layout_and_comment_alignment_are_independent() {
