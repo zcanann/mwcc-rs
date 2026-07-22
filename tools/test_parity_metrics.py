@@ -107,6 +107,19 @@ class IdentityTests(unittest.TestCase):
         )
         self.assertEqual(parity_metadata(output), {"oracle_direct": "RUNNABLE"})
 
+    def test_pch_retry_preserves_configured_result_before_bridge_failure(self):
+        output = (
+            "PARITY_META oracle_direct=REJECTED\n"
+            "PARITY_META oracle_direct=RUNNABLE\n"
+            "PARITY_META configured_source=DEFER\n"
+            "### mwcceppc.exe Compiler:\n"
+            "# bridge-only declaration syntax error"
+        )
+        self.assertEqual(
+            parity_metadata(output),
+            {"oracle_direct": "RUNNABLE", "configured_source": "DEFER"},
+        )
+
     def test_runner_code_layer_requires_explicit_projection_or_exact_object(self):
         self.assertEqual(code_verdict("BYTE src/test.c — exact", "BYTE"), "BYTE")
         self.assertEqual(
