@@ -5,14 +5,16 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import fcntl
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, TextIO
 
 from reference_parity import (
     harness_fingerprint,
@@ -22,6 +24,41 @@ from reference_parity import (
 
 
 INVENTORY_SCHEMA_VERSION = 5
+
+
+def acquire_state_lock(state: Path) -> TextIO:
+    """Exclusively own one parity state directory for this invocation.
+
+    The frontier and fixed audit share manifests and append-only result caches.
+    Two loops targeting the same state directory would duplicate expensive
+    compilations and can interleave cache writes, so fail fast instead of
+    pretending that concurrency is useful here. ``flock`` releases the lock
+    automatically if the process exits or is interrupted.
+    """
+
+    path = state / ".parity-loop.lock"
+    handle = path.open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        handle.seek(0)
+        owner = handle.read().strip() or "owner metadata unavailable"
+        handle.close()
+        raise RuntimeError(f"parity state is already active ({owner})") from error
+
+    handle.seek(0)
+    handle.truncate()
+    json.dump(
+        {
+            "pid": os.getpid(),
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        },
+        handle,
+        sort_keys=True,
+    )
+    handle.write("\n")
+    handle.flush()
+    return handle
 
 
 def sha256_file(path: Path) -> str:
@@ -209,6 +246,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     snapshots = state / "snapshots"
     compiler_images = state / "compiler-images"
     state.mkdir(parents=True, exist_ok=True)
+    try:
+        state_lock = acquire_state_lock(state)
+    except (OSError, RuntimeError) as error:
+        print(error, file=sys.stderr)
+        return 2
     runs.mkdir(exist_ok=True)
     snapshots.mkdir(exist_ok=True)
     compiler_images.mkdir(exist_ok=True)
@@ -393,6 +435,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     snapshot.write_text(captured.stdout, encoding="utf-8")
     print(f"snapshot: {snapshot}")
     print("nonpassing results are expected; only harness/tool failures make this command fail")
+    state_lock.close()
     return 0
 
 

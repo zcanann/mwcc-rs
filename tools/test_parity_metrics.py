@@ -33,6 +33,7 @@ from parity_dashboard import (
 from parity_frontier import build_frontier
 from parity_identity import configuration_id
 from parity_loop import (
+    acquire_state_lock,
     most_comparable_other_tool,
     parse_args as parse_loop_args,
     persistent_compiler_image,
@@ -160,6 +161,19 @@ class IdentityTests(unittest.TestCase):
         self.assertTrue(parse_loop_args(["--with-audit"]).with_audit)
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parse_loop_args(["--work-only", "--audit-only"])
+
+    def test_parity_loop_rejects_duplicate_state_owners(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            first = acquire_state_lock(state)
+            try:
+                with self.assertRaisesRegex(RuntimeError, "already active"):
+                    acquire_state_lock(state)
+            finally:
+                first.close()
+
+            replacement = acquire_state_lock(state)
+            replacement.close()
 
     def test_reference_runner_parallelism_is_explicit_and_bounded(self):
         defaults = parse_reference_args([])
