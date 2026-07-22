@@ -423,20 +423,45 @@ pub(crate) fn normalize_constructor_declarators(
             }
             _ => {}
         }
-        let constructor = declaration_scopes.iter().all(|scope| *scope)
-            && matches!((&tokens[index].token, &tokens[index + 3].token),
-                (Token::Identifier(scope), Token::Identifier(name)) if scope == name)
-            && tokens[index + 1].token == Token::Colon
-            && tokens[index + 2].token == Token::Colon
-            && tokens[index + 4].token == Token::ParenOpen;
-        let destructor = index + 5 < tokens.len()
-            && declaration_scopes.iter().all(|scope| *scope)
-            && matches!((&tokens[index].token, &tokens[index + 4].token),
-                (Token::Identifier(scope), Token::Identifier(name)) if scope == name)
-            && tokens[index + 1].token == Token::Colon
-            && tokens[index + 2].token == Token::Colon
-            && tokens[index + 3].token == Token::Tilde
-            && tokens[index + 5].token == Token::ParenOpen;
+        // Scan a complete qualified declarator prefix. Besides `C::C()`, a
+        // definition may be written at global scope as `N::C::C()` (and with
+        // arbitrarily many namespace components). The final class and member
+        // names identify a constructor; `N::C::~C()` identifies a destructor.
+        let mut names = Vec::new();
+        let mut cursor = index;
+        if let Token::Identifier(name) = &tokens[cursor].token {
+            names.push(name.clone());
+            cursor += 1;
+            while cursor + 2 < tokens.len()
+                && tokens[cursor].token == Token::Colon
+                && tokens[cursor + 1].token == Token::Colon
+                && matches!(tokens[cursor + 2].token, Token::Identifier(_))
+            {
+                let Token::Identifier(name) = &tokens[cursor + 2].token else {
+                    unreachable!();
+                };
+                names.push(name.clone());
+                cursor += 3;
+            }
+        }
+        let at_declaration_scope = declaration_scopes.iter().all(|scope| *scope);
+        let constructor = at_declaration_scope
+            && names.len() >= 2
+            && names[names.len() - 2] == names[names.len() - 1]
+            && tokens.get(cursor).is_some_and(|token| token.token == Token::ParenOpen);
+        let destructor = at_declaration_scope
+            && !names.is_empty()
+            && tokens.get(cursor).is_some_and(|token| token.token == Token::Colon)
+            && tokens
+                .get(cursor + 1)
+                .is_some_and(|token| token.token == Token::Colon)
+            && tokens
+                .get(cursor + 2)
+                .is_some_and(|token| token.token == Token::Tilde)
+            && matches!(tokens.get(cursor + 3).map(|token| &token.token), Some(Token::Identifier(name)) if name == names.last().unwrap())
+            && tokens
+                .get(cursor + 4)
+                .is_some_and(|token| token.token == Token::ParenOpen);
         if constructor {
             let location = tokens[index].location;
             tokens.insert(
@@ -446,11 +471,11 @@ pub(crate) fn normalize_constructor_declarators(
                     location,
                 },
             );
-            index += 6;
+            index = cursor + 2;
         } else if destructor {
             let location = tokens[index].location;
-            tokens[index + 3].token = Token::Identifier("__dt".to_string());
-            tokens.remove(index + 4);
+            tokens[cursor + 2].token = Token::Identifier("__dt".to_string());
+            tokens.remove(cursor + 3);
             tokens.insert(
                 index,
                 LocatedToken {
@@ -458,7 +483,7 @@ pub(crate) fn normalize_constructor_declarators(
                     location,
                 },
             );
-            index += 6;
+            index = cursor + 4;
         } else {
             index += 1;
         }
@@ -3681,5 +3706,47 @@ mod tests {
                 && window[2] == Token::Colon
                 && window[3] == Token::Colon
         }));
+    }
+
+    #[test]
+    fn adds_internal_return_type_to_fully_qualified_special_members() {
+        let tokens = vec![
+            Token::Identifier("zen".to_string()),
+            Token::Colon,
+            Token::Colon,
+            Token::Identifier("AlphaWipe".to_string()),
+            Token::Colon,
+            Token::Colon,
+            Token::Identifier("AlphaWipe".to_string()),
+            Token::ParenOpen,
+            Token::ParenClose,
+            Token::BraceOpen,
+            Token::BraceClose,
+            Token::Identifier("zen".to_string()),
+            Token::Colon,
+            Token::Colon,
+            Token::Identifier("AlphaWipe".to_string()),
+            Token::Colon,
+            Token::Colon,
+            Token::Tilde,
+            Token::Identifier("AlphaWipe".to_string()),
+            Token::ParenOpen,
+            Token::ParenClose,
+            Token::BraceOpen,
+            Token::BraceClose,
+            Token::EndOfFile,
+        ];
+        let normalized = strip(normalize_constructor_declarators(locate(tokens)));
+        assert_eq!(
+            normalized
+                .iter()
+                .filter(|token| **token == Token::KeywordVoid)
+                .count(),
+            2
+        );
+        assert!(normalized
+            .iter()
+            .any(|token| matches!(token, Token::Identifier(name) if name == "__dt")));
+        assert!(!normalized.iter().any(|token| *token == Token::Tilde));
     }
 }
