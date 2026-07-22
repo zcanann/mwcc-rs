@@ -9,6 +9,7 @@ use super::structured_locals::{
     is_definitely_assigned_before_reads, plan_deferred_saved_homes, plan_ephemeral_locals,
 };
 use super::structured_entry_alias::{plan_first_call_alias, EntryAliasBoundary, EntryParameterAlias};
+use super::structured_prologue::saved_home_stores_precede_initialization;
 #[allow(unused_imports)]
 use super::*;
 
@@ -109,16 +110,57 @@ impl Generator {
             },
         ]);
 
+        let batched_saved_home_stores = saved_home_stores_precede_initialization(
+            self.behavior.frame_convention,
+            eager_saved_locals.len(),
+            saved_parameters.len(),
+            deferred_home_plan.group_count,
+        );
+
+        let saved_parameter_base = eager_saved_locals.len();
+        let mut saved_parameter_homes = Vec::with_capacity(saved_parameters.len());
+        for (parameter_index, parameter) in saved_parameters.iter().enumerate() {
+            let home = homes[saved_parameter_base + parameter_index];
+            let incoming = self
+                .locations
+                .get(&parameter.name)
+                .expect("eligibility checked")
+                .register;
+            saved_parameter_homes.push((parameter.name.clone(), home, incoming));
+        }
+        let deferred_home_base = saved_parameter_base + saved_parameter_homes.len();
+        if batched_saved_home_stores {
+            self.emit_structured_saved_home_store_range(
+                &homes[..saved_parameter_base],
+                0,
+                plan.frame_size,
+            );
+            for (parameter_index, (_, home, incoming)) in
+                saved_parameter_homes.iter().enumerate()
+            {
+                self.emit_structured_saved_home_store(
+                    *home,
+                    saved_parameter_base + parameter_index,
+                    plan.frame_size,
+                );
+                self.output
+                    .instructions
+                    .push(Instruction::move_register(*home, *incoming));
+            }
+            self.emit_structured_saved_home_store_range(
+                &homes[deferred_home_base..],
+                deferred_home_base,
+                plan.frame_size,
+            );
+        }
+
         let mut home_index = 0;
         for local in eager_saved_locals {
             let home = homes[home_index];
             home_index += 1;
-            let slot = home_index as i16;
-            self.output.instructions.push(Instruction::StoreWord {
-                s: home,
-                a: 1,
-                offset: plan.frame_size - 4 * slot,
-            });
+            if !batched_saved_home_stores {
+                self.emit_structured_saved_home_store(home, home_index - 1, plan.frame_size);
+            }
             self.evaluate(
                 local.initializer.as_ref().expect("partitioned as eager"),
                 local.declared_type,
@@ -139,35 +181,22 @@ impl Generator {
                 },
             );
         }
-        let mut saved_parameter_homes = Vec::new();
-        for parameter in saved_parameters {
-            let home = homes[home_index];
+        for (_, home, incoming) in &saved_parameter_homes {
             home_index += 1;
-            let incoming = self
-                .locations
-                .get(&parameter.name)
-                .expect("eligibility checked")
-                .register;
-            let slot = home_index as i16;
-            self.output.instructions.push(Instruction::StoreWord {
-                s: home,
-                a: 1,
-                offset: plan.frame_size - 4 * slot,
-            });
-            self.output
-                .instructions
-                .push(Instruction::move_register(home, incoming));
-            saved_parameter_homes.push((parameter.name.clone(), home, incoming));
+            if !batched_saved_home_stores {
+                self.emit_structured_saved_home_store(*home, home_index - 1, plan.frame_size);
+                self.output
+                    .instructions
+                    .push(Instruction::move_register(*home, *incoming));
+            }
         }
-        let deferred_home_base = home_index;
+        debug_assert_eq!(home_index, deferred_home_base);
         for group in 0..deferred_home_plan.group_count {
             let slot_index = deferred_home_base + group;
             let home = homes[slot_index];
-            self.output.instructions.push(Instruction::StoreWord {
-                s: home,
-                a: 1,
-                offset: plan.frame_size - 4 * (slot_index as i16 + 1),
-            });
+            if !batched_saved_home_stores {
+                self.emit_structured_saved_home_store(home, slot_index, plan.frame_size);
+            }
         }
         for local in deferred_saved_locals {
             let group = deferred_home_plan.group(&local.name);
