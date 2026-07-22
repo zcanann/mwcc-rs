@@ -108,9 +108,8 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
             while position < bytes.len() && bytes[position] != b'\n' {
                 position += 1;
             }
-            // `#pragma cplusplus on/off` and the `push`/`pop` scoping around it
-            // switch the LANGUAGE for the enclosed declarations (their symbol
-            // names mangle) — surface those; every other directive is skipped.
+            // Surface the stateful pragmas modeled by the parser. Every other
+            // directive is skipped after preprocessing.
             if let Ok(line) = std::str::from_utf8(&bytes[line_start..position]) {
                 let directive = line.trim().trim_start_matches('#').trim();
                 if let Some(rest) = directive.strip_prefix("pragma ") {
