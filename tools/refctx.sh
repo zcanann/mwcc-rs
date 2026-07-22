@@ -39,6 +39,7 @@ here="$(cd "$(dirname "$0")/.." && pwd)"
 ours="${MWCC_BIN:-$here/target/release/mwcc}"
 code_metrics="$here/tools/object_code_metrics.py"
 pch_scanner="$here/tools/refctx_pch.py"
+pragma_bridge="$here/tools/refctx_pragmas.py"
 
 project="$(cd "$project" && pwd)"
 # Resolve the real compiler independently from the tools checkout. Some builds
@@ -139,11 +140,22 @@ if direct_reference_output="$(
 )"; then
   oracle_direct="RUNNABLE"
   cp "$dir/ref.o" "$dir/ref.direct.o"
+  # MWCC's `-E` deletes stateful pragmas. Preprocess a scratch copy whose
+  # modeled pragmas are inert declarations, then restore them in the emitted
+  # token stream. Mirroring the source directory preserves quoted sibling
+  # includes without modifying the reference checkout.
+  direct_source_dir="$dir/direct-source/$(dirname "$src")"
+  mkdir -p "$direct_source_dir"
+  for source_sibling in "$project/$(dirname "$src")"/*; do
+    ln -s "$source_sibling" "$direct_source_dir/${source_sibling##*/}"
+  done
+  unlink "$direct_source_dir/$source_name"
+  python3 "$pragma_bridge" mark "$project/$src" "$direct_source_dir/$source_name"
   direct_preprocess_ok=0
   if direct_preprocess_output="$(
     cd "$project" && "$wibo" "$sjis" "$compiler" \
       ${all_flags[@]+"${all_flags[@]}"} -pragma "line_prepdump on" \
-      -E "$src" -o "$dir/ours/$source_name" 2>&1
+      -E "$direct_source_dir/$source_name" -o "$dir/ours/$source_name.marked" 2>&1
   )"; then
     direct_preprocess_ok=1
   # The 2.3.3 standalone preprocessor rejects C++'s `or` alternative token in
@@ -156,23 +168,18 @@ if direct_reference_output="$(
       && direct_preprocess_output="$(
         cd "$project" && "$wibo" "$sjis" "$compiler" \
           ${all_flags[@]+"${all_flags[@]}"} "-Dor=||" \
-          -pragma "line_prepdump on" -E "$src" \
-          -o "$dir/ours/$source_name" 2>&1
+          -pragma "line_prepdump on" -E "$direct_source_dir/$source_name" \
+          -o "$dir/ours/$source_name.marked" 2>&1
       )"; then
     direct_preprocess_ok=1
   fi
   if [[ $direct_preprocess_ok -eq 1 ]]; then
     # MWCC emits no preprocessed file for an empty translation unit.
-    [[ -f "$dir/ours/$source_name" ]] || : > "$dir/ours/$source_name"
-    # `-E` drops `#pragma peephole`, but it changes the emitted control-flow graph. Route those
-    # sources through the sentinel-preserving self-contained path below so both compilers see the
-    # same pragma state. The direct reference object above remains the authoritative compile.
-    if grep -Eq '^[[:space:]]*#pragma[[:space:]]+peephole[[:space:]]+(on|off|reset)' "$project/$src"; then
-      direct_ready=0
-    else
-      direct_ready=1
-      ctx_name="$source_name"
-    fi
+    [[ -f "$dir/ours/$source_name.marked" ]] || : > "$dir/ours/$source_name.marked"
+    python3 "$pragma_bridge" restore "$dir/ours/$source_name.marked" \
+      "$dir/ours/$source_name"
+    direct_ready=1
+    ctx_name="$source_name"
   fi
 fi
 # Emit the direct probe immediately so timeouts and every early harness exit
@@ -335,32 +342,14 @@ fi
 #    restore them afterward at their original positions. This matters for MSL
 #    headers whose inline-local symbols mangle only inside `cplusplus` scopes.
 preprocess_name="preprocess_$ctx_name"
-sed -E \
-  -e 's/^[[:space:]]*#pragma[[:space:]]+push[[:space:]]*$/extern int __mwcc_refctx_pragma_push;/' \
-  -e 's/^[[:space:]]*#pragma[[:space:]]+pop[[:space:]]*$/extern int __mwcc_refctx_pragma_pop;/' \
-  -e 's/^[[:space:]]*#pragma[[:space:]]+cplusplus[[:space:]]+on[[:space:]]*$/extern int __mwcc_refctx_pragma_cplusplus_on;/' \
-  -e 's/^[[:space:]]*#pragma[[:space:]]+cplusplus[[:space:]]+off[[:space:]]*$/extern int __mwcc_refctx_pragma_cplusplus_off;/' \
-  -e 's/^[[:space:]]*#pragma[[:space:]]+cplusplus[[:space:]]+reset[[:space:]]*$/extern int __mwcc_refctx_pragma_cplusplus_reset;/' \
-  -e 's/^[[:space:]]*#pragma[[:space:]]+peephole[[:space:]]+on[[:space:]]*$/extern int __mwcc_refctx_pragma_peephole_on;/' \
-  -e 's/^[[:space:]]*#pragma[[:space:]]+peephole[[:space:]]+off[[:space:]]*$/extern int __mwcc_refctx_pragma_peephole_off;/' \
-  -e 's/^[[:space:]]*#pragma[[:space:]]+peephole[[:space:]]+reset[[:space:]]*$/extern int __mwcc_refctx_pragma_peephole_reset;/' \
-  "$dir/$ctx_name" > "$dir/$preprocess_name"
+python3 "$pragma_bridge" mark "$dir/$ctx_name" "$dir/$preprocess_name"
 # decompctx_runner populates generated `.mch` include arms from their textual
 # `.pch` sources, so the real preprocessor can retain its normal `__MWERKS__`
 # branch selection while operating on a clean checkout.
 ( cd "$dir" && "$wibo" "$sjis" "$compiler" \
     ${compiler_flags[@]+"${compiler_flags[@]}"} -pragma "line_prepdump on" \
     -E "$preprocess_name" -o ctx.marked.i ) 2>/dev/null
-sed -E \
-  -e 's/^[[:space:]]*extern int __mwcc_refctx_pragma_push;[[:space:]]*$/#pragma push/' \
-  -e 's/^[[:space:]]*extern int __mwcc_refctx_pragma_pop;[[:space:]]*$/#pragma pop/' \
-  -e 's/^[[:space:]]*extern int __mwcc_refctx_pragma_cplusplus_on;[[:space:]]*$/#pragma cplusplus on/' \
-  -e 's/^[[:space:]]*extern int __mwcc_refctx_pragma_cplusplus_off;[[:space:]]*$/#pragma cplusplus off/' \
-  -e 's/^[[:space:]]*extern int __mwcc_refctx_pragma_cplusplus_reset;[[:space:]]*$/#pragma cplusplus reset/' \
-  -e 's/^[[:space:]]*extern int __mwcc_refctx_pragma_peephole_on;[[:space:]]*$/#pragma peephole on/' \
-  -e 's/^[[:space:]]*extern int __mwcc_refctx_pragma_peephole_off;[[:space:]]*$/#pragma peephole off/' \
-  -e 's/^[[:space:]]*extern int __mwcc_refctx_pragma_peephole_reset;[[:space:]]*$/#pragma peephole reset/' \
-  "$dir/ctx.marked.i" > "$dir/ctx.i"
+python3 "$pragma_bridge" restore "$dir/ctx.marked.i" "$dir/ctx.i"
 if [[ ! -s "$dir/ctx.i" ]]; then
   # An effectively EMPTY TU (sunshine's exponentialsf.c is a single
   # newline): mwcc -E emits nothing, but both compilers produce the

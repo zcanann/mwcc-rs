@@ -127,6 +127,8 @@ impl Generator {
         let Expression::IntegerLiteral(setup_value) = setup_arguments[1] else {
             unreachable!()
         };
+        let style = self.behavior.call_dispatcher_style;
+        let packed_strings = style == CallDispatcherStyle::Packed41;
         let first_string_index = self.intern_string_literal(first_string);
         let final_string_index = self.intern_string_literal(final_string);
         let final_string_offset: usize = self.output.string_literals
@@ -142,7 +144,13 @@ impl Generator {
         self.frame_size = 16;
         self.callee_saved = vec![31, 30];
         self.output.pre_scheduled = true;
-        self.output.packed_string_literals = true;
+        self.output.packed_string_literals = packed_strings;
+        if style == CallDispatcherStyle::Legacy24x {
+            // The 2.4.x optimizer completes two labels per arm plus the
+            // dispatch/join pair before allocating either string or the table.
+            // The table itself then immediately follows the two string slots.
+            self.output.anonymous_label_bump += call_arms.len() as u32 * 2 + 2;
+        }
         self.output
             .instructions
             .push(Instruction::StoreWordWithUpdate {
@@ -180,10 +188,11 @@ impl Generator {
         self.emit_dispatcher_call(setup_callee);
 
         let first_placeholder = format!("@@str{first_string_index}");
+        let string_base_register = if packed_strings { 4 } else { 3 };
         self.record_relocation(RelocationKind::Addr16Ha, &first_placeholder);
         self.output
             .instructions
-            .push(Instruction::load_immediate_shifted(4, 0));
+            .push(Instruction::load_immediate_shifted(string_base_register, 0));
         self.output.instructions.push(Instruction::LoadByteZero {
             d: 5,
             a: 30,
@@ -192,7 +201,7 @@ impl Generator {
         self.record_relocation(RelocationKind::Addr16Lo, &first_placeholder);
         self.output.instructions.push(Instruction::AddImmediate {
             d: 4,
-            a: 4,
+            a: string_base_register,
             immediate: 0,
         });
         self.output
@@ -214,28 +223,37 @@ impl Generator {
         self.record_relocation(RelocationKind::Addr16Ha, &final_placeholder);
         self.output
             .instructions
-            .push(Instruction::load_immediate_shifted(4, 0));
+            .push(Instruction::load_immediate_shifted(string_base_register, 0));
         self.output
             .instructions
             .push(Instruction::move_register(5, 31));
         self.record_relocation(RelocationKind::Addr16Lo, &final_placeholder);
         self.output.instructions.push(Instruction::AddImmediate {
             d: 4,
-            a: 4,
+            a: string_base_register,
             immediate: 0,
         });
         self.output
             .instructions
             .push(Instruction::load_immediate(3, *final_trace_level as i16));
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: 4,
-            a: 4,
-            immediate: final_string_offset as i16,
-        });
+        if packed_strings {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 4,
+                a: 4,
+                immediate: final_string_offset as i16,
+            });
+        }
         self.output
             .instructions
             .push(Instruction::ConditionRegisterClear { d: 6 });
         self.emit_dispatcher_call(final_trace_callee);
+        if style == CallDispatcherStyle::Legacy24x {
+            self.output.instructions.push(Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: 20,
+            });
+        }
         self.output
             .instructions
             .push(Instruction::move_register(3, 31));
@@ -249,11 +267,13 @@ impl Generator {
             a: 1,
             offset: 8,
         });
-        self.output.instructions.push(Instruction::LoadWord {
-            d: 0,
-            a: 1,
-            offset: 20,
-        });
+        if style == CallDispatcherStyle::Packed41 {
+            self.output.instructions.push(Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: 20,
+            });
+        }
         self.output
             .instructions
             .push(Instruction::MoveToLinkRegister { s: 0 });

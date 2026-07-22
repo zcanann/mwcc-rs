@@ -46,9 +46,11 @@ mod queue_service;
 mod queue_transactions;
 mod result_call_forward;
 mod structured;
+mod structured_call_schedule;
 mod structured_entry_alias;
 mod structured_float_compare;
 mod structured_inline_residue;
+mod structured_inline_assertion;
 mod structured_locals;
 mod structured_prologue;
 mod structured_store_schedule;
@@ -684,7 +686,8 @@ impl Generator {
         let saved = self.fresh_virtual_general();
         self.callee_saved = vec![saved];
         self.epilogue_lr_first = self.behavior.schedule_latency_slots
-            && self.behavior.saved_pointer_call_store_lr_first;
+            && self.behavior.pointer_call_store_epilogue_style
+                == PointerCallStoreEpilogueStyle::LinkRegisterFirst;
         // The interleaved save+move prologue, from the FRAME BUILDER.
         self.output
             .instructions

@@ -27,6 +27,15 @@ pub enum PlainLinkageEpilogueStyle {
     StackRestoreBeforeReload,
 }
 
+/// Restore order after a call result is stored through a saved pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerCallStoreEpilogueStyle {
+    /// 2.4.x reloads the saved LR before the pointer's callee-saved GPR.
+    LinkRegisterFirst,
+    /// GC 4.1 reloads the pointer's callee-saved GPR before the saved LR.
+    SavedPointerFirst,
+}
+
 /// Placement of a bare floating-point comparison relative to non-leaf linkage
 /// when a following `cror` folds equality for `<=` or `>=`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -647,6 +656,20 @@ pub enum IntCallResultConversionStyle {
     LegacyBiasFirst,
 }
 
+/// Register, literal-pool, and epilogue family used by a dense switch whose
+/// arms all call through to a shared result. The 4.1 optimizer changed these
+/// decisions together; keeping them as one measured family prevents the
+/// specialized lowering from accumulating unrelated build checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallDispatcherStyle {
+    /// GameCube 2.4.x keeps each literal as an independent anonymous object,
+    /// uses r0 for the loaded jump-table entry, and reloads LR early.
+    Legacy24x,
+    /// The 4.1 optimizer packs the function's literals behind one base, uses
+    /// r3 for both the table base and loaded entry, and reloads LR late.
+    Packed41,
+}
+
 /// The version-varying codegen decisions. Every method defaults to the GameCube
 /// 2.4.x mainline (mwcceppc build 81 through 2.4.7 build 108); a build that
 /// diverges implements this trait and overrides just the differing methods.
@@ -677,10 +700,17 @@ pub trait CodegenProfile: core::fmt::Debug {
         0
     }
 
-    /// Hidden labels retained by the optimizer around a call-dispatch jump
-    /// table, independent of labels attributed to individual case arms.
-    fn call_dispatcher_hidden_label_bump(&self) -> u8 {
-        0
+    /// Lowering family for dense call-dispatch switches.
+    fn call_dispatcher_style(&self) -> CallDispatcherStyle {
+        CallDispatcherStyle::Legacy24x
+    }
+
+    /// Anonymous ordinals contributed by a source-leading leaf when deferred
+    /// compilation emits a later anonymous-object owner first. The legacy
+    /// optimizer carries three internal labels; 4.x carries the full ordinary
+    /// four-slot post-function gap.
+    fn deferred_transparent_leaf_bump(&self) -> u8 {
+        3
     }
 
     /// Whether plain `char` (no `signed`/`unsigned` qualifier) is signed. The one
@@ -835,11 +865,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         PlainLinkageEpilogueStyle::ReloadBeforeStackRestore
     }
 
-    /// Whether an O4 call-result store through a saved pointer reloads LR before
-    /// that pointer. The 2.4.x scheduler fills this teardown slot; the 4.x
-    /// scheduler keeps the saved GPR first.
-    fn saved_pointer_call_store_lr_first(&self) -> bool {
-        true
+    /// Restore order for a call-result store through a saved pointer when the
+    /// O4 latency scheduler is active.
+    fn pointer_call_store_epilogue_style(&self) -> PointerCallStoreEpilogueStyle {
+        PointerCallStoreEpilogueStyle::LinkRegisterFirst
     }
 
     /// Whether a terminal call through a function pointer is lowered as an
@@ -1169,8 +1198,8 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
-    fn saved_pointer_call_store_lr_first(&self) -> bool {
-        false
+    fn pointer_call_store_epilogue_style(&self) -> PointerCallStoreEpilogueStyle {
+        PointerCallStoreEpilogueStyle::SavedPointerFirst
     }
 
     fn guarded_byte_copy_style(&self) -> GuardedByteCopyStyle {
@@ -1193,8 +1222,12 @@ impl CodegenProfile for Gc41Build51213 {
         1
     }
 
-    fn call_dispatcher_hidden_label_bump(&self) -> u8 {
-        3
+    fn call_dispatcher_style(&self) -> CallDispatcherStyle {
+        CallDispatcherStyle::Packed41
+    }
+
+    fn deferred_transparent_leaf_bump(&self) -> u8 {
+        4
     }
 
     fn folded_float_guard_label_bump(&self) -> u8 {
@@ -1283,8 +1316,8 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
-    fn saved_pointer_call_store_lr_first(&self) -> bool {
-        false
+    fn pointer_call_store_epilogue_style(&self) -> PointerCallStoreEpilogueStyle {
+        PointerCallStoreEpilogueStyle::SavedPointerFirst
     }
 
     fn guarded_byte_copy_style(&self) -> GuardedByteCopyStyle {
@@ -1337,6 +1370,10 @@ impl CodegenProfile for Wii43Build145 {
 
     fn deferred_call_dispatcher_labels_per_case(&self) -> u8 {
         1
+    }
+
+    fn deferred_transparent_leaf_bump(&self) -> u8 {
+        4
     }
 
     fn fixed_address_parameterized_rmw_style(&self) -> FixedAddressParameterizedRmwStyle {

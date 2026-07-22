@@ -232,14 +232,28 @@ pub(crate) fn statement_calls(
 
 impl Parser {
     /// Consume surfaced file-scope pragmas and update parser state. Keeping this
-    /// at translation-unit level lets a language pragma affect the namespace or
-    /// declaration that follows it instead of being mistaken for part of that item.
+    /// at translation-unit level lets stateful pragmas affect the declaration
+    /// that follows instead of being mistaken for part of that item.
     fn consume_top_level_pragmas(&mut self) {
         while let Token::Pragma(directive) = self.peek() {
             match directive.as_str() {
-                "push" => self.cplusplus_stack.push(self.cplusplus),
+                "push" => self.pragma_stack.push(crate::parser::PragmaState {
+                    cplusplus: self.cplusplus,
+                    defer_codegen: self.defer_codegen,
+                    force_active: self.force_active,
+                    peephole_disabled: self.peephole_disabled,
+                }),
                 "pop" => {
-                    self.cplusplus = self.cplusplus_stack.pop().unwrap_or(self.default_cplusplus)
+                    let state = self.pragma_stack.pop().unwrap_or(crate::parser::PragmaState {
+                        cplusplus: self.default_cplusplus,
+                        defer_codegen: false,
+                        force_active: false,
+                        peephole_disabled: false,
+                    });
+                    self.cplusplus = state.cplusplus;
+                    self.defer_codegen = state.defer_codegen;
+                    self.force_active = state.force_active;
+                    self.peephole_disabled = state.peephole_disabled;
                 }
                 "cplusplus on" => self.cplusplus = true,
                 "cplusplus off" => self.cplusplus = false,

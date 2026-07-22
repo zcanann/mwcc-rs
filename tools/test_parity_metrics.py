@@ -56,6 +56,7 @@ from reference_parity import (
     verdict_line,
 )
 from refctx_pch import generated_pch_paths
+from refctx_pragmas import mark_pragmas, restore_pragmas
 
 
 def row(**overrides):
@@ -136,6 +137,7 @@ class IdentityTests(unittest.TestCase):
         names = (
             "refctx.sh",
             "refctx_pch.py",
+            "refctx_pragmas.py",
             "reference_parity.py",
             "parity_identity.py",
             "decompctx_runner.py",
@@ -161,6 +163,21 @@ class IdentityTests(unittest.TestCase):
             'int declaration;\n'
         )
         self.assertEqual(generated_pch_paths(context.splitlines()), ["d/dolzel_rel.mch"])
+
+    def test_modeled_pragmas_survive_preprocessor_sentinels(self):
+        source = (
+            b"#pragma push\r\n"
+            b"#pragma force_active on\r\n"
+            b"#pragma peephole off\n"
+            b"#pragma pop\n"
+            b"#pragma unknown on\n"
+        )
+        marked = mark_pragmas(source.splitlines(keepends=True))
+        self.assertNotIn(b"#pragma force_active on\r\n", marked)
+        self.assertEqual(
+            b"".join(restore_pragmas(marked)),
+            source,
+        )
 
     def test_parity_loop_separates_fast_work_from_periodic_audit(self):
         default = parse_loop_args([])

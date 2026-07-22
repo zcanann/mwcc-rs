@@ -69,6 +69,42 @@ pub(super) fn plan_first_call_alias(
     })
 }
 
+/// Fold the saved-home copy and an immediately following zero test into the
+/// record form MWCC uses for an entry guard (`mr. r31,r3`). Keeping this beside
+/// entry-alias planning prevents a general peephole from changing unrelated
+/// copies whose CR0 side effect is not source-proven dead or consumed here.
+pub(super) fn fold_entry_alias_zero_test(
+    instructions: &mut Vec<Instruction>,
+    alias: &EntryParameterAlias,
+) -> bool {
+    let [prefix @ .., copy, compare] = instructions.as_mut_slice() else {
+        return false;
+    };
+    let _ = prefix;
+    let incoming = match copy {
+        Instruction::Or { a, s, b }
+            if *a == alias.home && *s == *b => *s,
+        _ => return false,
+    };
+    let compares_incoming_to_zero = matches!(
+        compare,
+        Instruction::CompareWordImmediate { a, immediate: 0 }
+            | Instruction::CompareLogicalWordImmediate { a, immediate: 0 }
+            if *a == incoming
+    );
+    if !compares_incoming_to_zero {
+        return false;
+    }
+
+    *copy = Instruction::OrRecord {
+        a: alias.home,
+        s: incoming,
+        b: incoming,
+    };
+    instructions.pop();
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,5 +168,24 @@ mod tests {
         let alias = plan_first_call_alias(&statements, &saved).expect("eligible alias");
 
         assert_eq!(alias.boundary, EntryAliasBoundary::AfterFirstConditionTerm);
+    }
+
+    #[test]
+    fn folds_an_adjacent_entry_copy_and_zero_test() {
+        let alias = EntryParameterAlias {
+            name: "pointer".into(),
+            home: 31,
+            boundary: EntryAliasBoundary::AfterFirstConditionTerm,
+        };
+        let mut instructions = vec![
+            Instruction::move_register(31, 3),
+            Instruction::CompareLogicalWordImmediate { a: 3, immediate: 0 },
+        ];
+
+        assert!(fold_entry_alias_zero_test(&mut instructions, &alias));
+        assert!(matches!(
+            instructions.as_slice(),
+            [Instruction::OrRecord { a: 31, s: 3, b: 3 }]
+        ));
     }
 }

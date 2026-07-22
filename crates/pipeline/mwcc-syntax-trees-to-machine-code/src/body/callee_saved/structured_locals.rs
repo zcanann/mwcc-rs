@@ -278,7 +278,7 @@ fn assignment_flow(
     })
 }
 
-fn body_uses_local(statements: &[Statement], name: &str) -> bool {
+pub(super) fn body_uses_local(statements: &[Statement], name: &str) -> bool {
     statements.iter().any(|statement| match statement {
         Statement::Store { target, value } => {
             expression_reads_name(target, name) || expression_reads_name(value, name)

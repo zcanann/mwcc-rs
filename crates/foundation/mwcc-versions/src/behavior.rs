@@ -15,9 +15,9 @@ use crate::config::CompilerConfig;
 use crate::flags::{GlobalAddressing, Optimization};
 use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
-    CoefficientTableRelocationStyle, CommaValuePlacementStyle, ComputedStoreIssueStyle,
-    ConstantStoreScheduleStyle, DataSectionRelocationStyle, FieldMergeStyle,
-    FixedAddressConstantStoreStyle, FixedAddressParameterizedRmwStyle,
+    CallDispatcherStyle, CoefficientTableRelocationStyle, CommaValuePlacementStyle,
+    ComputedStoreIssueStyle, ConstantStoreScheduleStyle, DataSectionRelocationStyle,
+    FieldMergeStyle, FixedAddressConstantStoreStyle, FixedAddressParameterizedRmwStyle,
     FixedAddressPollAddressStyle, FixedAddressRmwStyle, FoldedFloatCompareLinkageStyle,
     FrameConvention, FrexpFamilyStyle, FunctionOrdinalAccountingStyle, GlobalArrayDecayStoreStyle,
     GlobalArrayIndexStyle, GuardedByteCopyStyle, GuardedMemberInitializationStyle,
@@ -27,9 +27,9 @@ use crate::profile::{
     MaterializationCopyStyle, MemCopyRemainderMaskStyle, MemCopyWordScheduleStyle,
     NarrowCompoundShiftStyle, NarrowComputedReturnStyle, NarrowGuardScheduleStyle,
     NarrowStoreConversionStyle, NegativePowerOfTwoMultiplyStyle, NestedGlobalDispatchSchedule,
-    PlainLinkageEpilogueStyle, PunnedConditionalWritebackStyle, PunnedFloatFrameConvention,
-    PunnedShiftWritebackStyle, QueueServiceInliningStyle, RaiseFamilyStyle,
-    ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle, SharedFloatDagStyle,
+    PlainLinkageEpilogueStyle, PointerCallStoreEpilogueStyle, PunnedConditionalWritebackStyle,
+    PunnedFloatFrameConvention, PunnedShiftWritebackStyle, QueueServiceInliningStyle,
+    RaiseFamilyStyle, ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle, SharedFloatDagStyle,
     SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, StoredGlobalReadStyle,
     SymbolTraversalStyle, TrigDispatcherStyle, TrigZeroConstantPlacement, VaArgScheduleStyle,
     ValueTrackedMutationStyle, WideConstantAddSchedule,
@@ -193,6 +193,8 @@ pub enum Quirk {
     LegacyCompareFirstNarrowGuards,
     LegacySerialVaArgSchedule,
     Gc11PatchPlainLinkageReload,
+    LaterSavedPointerFirstEpilogue,
+    LaterPackedCallDispatcher,
     LaterTerminalIndirectTailCall,
 }
 
@@ -268,6 +270,8 @@ impl Quirk {
             Quirk::LegacyCompareFirstNarrowGuards => QuirkKind::Intentional,
             Quirk::LegacySerialVaArgSchedule => QuirkKind::Intentional,
             Quirk::Gc11PatchPlainLinkageReload => QuirkKind::Intentional,
+            Quirk::LaterSavedPointerFirstEpilogue => QuirkKind::Intentional,
+            Quirk::LaterPackedCallDispatcher => QuirkKind::Intentional,
             Quirk::LaterTerminalIndirectTailCall => QuirkKind::Intentional,
         }
     }
@@ -471,6 +475,12 @@ impl Quirk {
             Quirk::Gc11PatchPlainLinkageReload => {
                 "GC/1.1p1 restores r1 before reloading LR from the caller linkage area"
             }
+            Quirk::LaterSavedPointerFirstEpilogue => {
+                "GC 4.1 restores a saved store pointer before reloading the link register"
+            }
+            Quirk::LaterPackedCallDispatcher => {
+                "GC 4.1 packs call-dispatch strings and uses its later register/epilogue schedule"
+            }
             Quirk::LaterTerminalIndirectTailCall => {
                 "later compilers lower terminal indirect calls as unlinked sibling branches"
             }
@@ -489,9 +499,10 @@ pub struct Behavior {
     /// below, but source-local allocation is itself observable at `-O0` and needs
     /// the actual stage boundary rather than inferring it from an unrelated knob.
     pub optimization: Optimization,
-    /// Hidden labels retained around a call-dispatch jump table, separate from
-    /// labels attributed to its individual arms.
-    pub call_dispatcher_hidden_label_bump: u8,
+    /// Register, literal-pool, and epilogue family for dense call dispatchers.
+    pub call_dispatcher_style: CallDispatcherStyle,
+    /// Ordinals carried across a source-leading leaf by deferred emission.
+    pub deferred_transparent_leaf_bump: u8,
     /// Hidden deferred-inlining labels retained per call-dispatch switch arm.
     /// Zero for ordinary compilation and for unmeasured compiler generations.
     pub deferred_call_dispatcher_labels_per_case: u8,
@@ -575,9 +586,8 @@ pub struct Behavior {
     pub frame_convention: FrameConvention,
     /// Saved-LR reload order for a linkage-first frame with no saved GPRs.
     pub plain_linkage_epilogue_style: PlainLinkageEpilogueStyle,
-    /// Whether an O4 call-result store through a saved pointer reloads LR before
-    /// that pointer. This latency slot changed in the 4.x optimizer generation.
-    pub saved_pointer_call_store_lr_first: bool,
+    /// Restore order after storing a call result through a saved pointer.
+    pub pointer_call_store_epilogue_style: PointerCallStoreEpilogueStyle,
     /// Whether stack-using leaf functions carry unwind-table entries.
     pub emit_leaf_frame_unwind: bool,
     /// Whether constant non-leaf join returns precede the saved-LR reload.
@@ -755,10 +765,11 @@ impl Behavior {
     pub fn resolve(config: &CompilerConfig) -> Self {
         Behavior {
             optimization: config.flags.optimization,
-            call_dispatcher_hidden_label_bump: config
+            call_dispatcher_style: config.build.profile.call_dispatcher_style(),
+            deferred_transparent_leaf_bump: config
                 .build
                 .profile
-                .call_dispatcher_hidden_label_bump(),
+                .deferred_transparent_leaf_bump(),
             deferred_call_dispatcher_labels_per_case: if config.flags.inline_deferred {
                 config
                     .build
@@ -860,10 +871,10 @@ impl Behavior {
             frexp_scale_before_eptr_store: config.build.profile.frexp_scale_before_eptr_store(),
             frame_convention: config.build.profile.frame_convention(),
             plain_linkage_epilogue_style: config.build.profile.plain_linkage_epilogue_style(),
-            saved_pointer_call_store_lr_first: config
+            pointer_call_store_epilogue_style: config
                 .build
                 .profile
-                .saved_pointer_call_store_lr_first(),
+                .pointer_call_store_epilogue_style(),
             emit_leaf_frame_unwind: config.build.profile.emit_leaf_frame_unwind(),
             constant_join_return_precedes_lr_reload: config
                 .build
@@ -1281,6 +1292,14 @@ impl Behavior {
         {
             quirks.push(ActiveQuirk::of(Quirk::Gc11PatchPlainLinkageReload));
         }
+        if self.pointer_call_store_epilogue_style
+            == PointerCallStoreEpilogueStyle::SavedPointerFirst
+        {
+            quirks.push(ActiveQuirk::of(Quirk::LaterSavedPointerFirstEpilogue));
+        }
+        if self.call_dispatcher_style == CallDispatcherStyle::Packed41 {
+            quirks.push(ActiveQuirk::of(Quirk::LaterPackedCallDispatcher));
+        }
         if self.terminal_indirect_tail_call {
             quirks.push(ActiveQuirk::of(Quirk::LaterTerminalIndirectTailCall));
         }
@@ -1343,11 +1362,17 @@ mod tests {
     #[test]
     fn four_x_profiles_keep_saved_pointer_ahead_of_link_reload() {
         for compiler_build in [build::GC_3_0A3, build::GC_3_0A3P1, build::WII_1_0] {
-            assert!(!Behavior::resolve(&CompilerConfig::new(compiler_build))
-                .saved_pointer_call_store_lr_first);
+            assert_eq!(
+                Behavior::resolve(&CompilerConfig::new(compiler_build))
+                    .pointer_call_store_epilogue_style,
+                PointerCallStoreEpilogueStyle::SavedPointerFirst
+            );
         }
-        assert!(Behavior::resolve(&CompilerConfig::new(build::GC_2_7))
-            .saved_pointer_call_store_lr_first);
+        assert_eq!(
+            Behavior::resolve(&CompilerConfig::new(build::GC_2_7))
+                .pointer_call_store_epilogue_style,
+            PointerCallStoreEpilogueStyle::LinkRegisterFirst
+        );
     }
 
     #[test]
@@ -1681,6 +1706,25 @@ mod tests {
     }
 
     #[test]
+    fn gc41_reverses_saved_pointer_and_link_register_restores() {
+        let gc132 = Behavior::resolve(&CompilerConfig::new(build::GC_1_3_2));
+        let gc41 = Behavior::resolve(&CompilerConfig::new(build::GC_3_0A3P1));
+
+        assert_eq!(
+            gc132.pointer_call_store_epilogue_style,
+            PointerCallStoreEpilogueStyle::LinkRegisterFirst
+        );
+        assert_eq!(
+            gc41.pointer_call_store_epilogue_style,
+            PointerCallStoreEpilogueStyle::SavedPointerFirst
+        );
+        assert!(gc41
+            .active_quirks()
+            .iter()
+            .any(|active| active.quirk == Quirk::LaterSavedPointerFirstEpilogue));
+    }
+
+    #[test]
     fn lmw_stmw_flag_resolves_to_codegen_behavior() {
         let plain = Behavior::resolve(&CompilerConfig::new(build::GC_1_3));
         assert!(!plain.use_lmw_stmw);
@@ -1745,8 +1789,17 @@ mod tests {
         assert_eq!(gc41.cxx_rtti_virtual_method_label_weight, 5);
         assert_eq!(gc41.cxx_rtti_virtual_destructor_label_weight, 9);
         assert_eq!(gc41.cxx_rtti_inherited_virtual_destructor_label_bump, 4);
-        assert_eq!(mainline.call_dispatcher_hidden_label_bump, 0);
-        assert_eq!(gc41.call_dispatcher_hidden_label_bump, 3);
+        assert_eq!(mainline.deferred_transparent_leaf_bump, 3);
+        assert_eq!(gc41.deferred_transparent_leaf_bump, 4);
+        assert_eq!(
+            mainline.call_dispatcher_style,
+            CallDispatcherStyle::Legacy24x
+        );
+        assert_eq!(gc41.call_dispatcher_style, CallDispatcherStyle::Packed41);
+        assert!(gc41
+            .active_quirks()
+            .iter()
+            .any(|active| active.quirk == Quirk::LaterPackedCallDispatcher));
 
         let mut gc41_deferred_config = CompilerConfig::new(build::GC_3_0A3P1);
         gc41_deferred_config.flags.inline_deferred = true;
@@ -1758,7 +1811,7 @@ mod tests {
         let mut wii_deferred_config = CompilerConfig::new(build::WII_1_0);
         wii_deferred_config.flags.inline_deferred = true;
         let wii_deferred = Behavior::resolve(&wii_deferred_config);
-        assert_eq!(wii_deferred.call_dispatcher_hidden_label_bump, 0);
+        assert_eq!(wii_deferred.deferred_transparent_leaf_bump, 4);
         assert_eq!(wii_deferred.deferred_call_dispatcher_labels_per_case, 1);
         assert!(wii_deferred_config
             .build

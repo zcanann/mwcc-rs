@@ -134,6 +134,20 @@ pub(crate) fn expression_reads_name(expression: &Expression, name: &str) -> bool
     reads_register(expression, &single)
 }
 
+/// Whether evaluating `expression` can read `name` after a real call has
+/// completed. `prior_call` carries call state from the enclosing statement
+/// sequence; calls nested inside the expression are evaluated in the order
+/// modeled by [`reads_register_after_call`].
+pub(crate) fn expression_reads_name_across_call(
+    expression: &Expression,
+    name: &str,
+    prior_call: bool,
+) -> bool {
+    let mut single = HashSet::new();
+    single.insert(name);
+    expression_reads_across_call(expression, prior_call, &single)
+}
+
 /// Count every textual read of the variable `name` within `expression` (not de-duplicated).
 /// Used to detect a value that would be materialized at more than one site if inlined.
 pub(crate) fn count_name_occurrences(expression: &Expression, name: &str) -> usize {
@@ -1867,6 +1881,39 @@ mod tests {
             &clobbered_before_read,
             false,
             &registers
+        ));
+    }
+
+    #[test]
+    fn comma_read_after_conditional_call_is_a_cross_call_survivor() {
+        let assertion = Expression::Conditional {
+            condition: Box::new(var("object")),
+            when_true: Box::new(Expression::IntegerLiteral(0)),
+            when_false: Box::new(Expression::Call {
+                name: "__assert".into(),
+                arguments: Vec::new(),
+            }),
+            origin: mwcc_syntax_trees::ConditionalOrigin::Ternary,
+        };
+        let expanded_inline_body = Expression::Comma {
+            left: Box::new(assertion),
+            right: Box::new(Expression::Member {
+                base: Box::new(var("object")),
+                offset: 0,
+                member_type: Type::UnsignedInt,
+                index_stride: None,
+            }),
+        };
+
+        assert!(expression_reads_name_across_call(
+            &expanded_inline_body,
+            "object",
+            false
+        ));
+        assert!(!expression_reads_name_across_call(
+            &expanded_inline_body,
+            "unrelated",
+            false
         ));
     }
 }
