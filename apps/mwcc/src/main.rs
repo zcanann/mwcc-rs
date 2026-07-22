@@ -639,6 +639,8 @@ fn compile(
         match mwcc_syntax_trees_to_machine_code::lower_function(
             function,
             &unit.globals,
+            &unit.aggregate_definitions,
+            &unit.function_return_aggregate_tags,
             &call_return_types,
             &call_parameter_types,
             &unit.skipped_inline_names,

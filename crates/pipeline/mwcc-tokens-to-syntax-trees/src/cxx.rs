@@ -1331,6 +1331,9 @@ impl Parser {
             .cloned()
             .zip(self.locations[declaration_start..=body_end].iter().copied())
             .collect();
+        let is_virtual = source.iter().any(
+            |(token, _)| matches!(token, Token::Identifier(word) if word == "virtual"),
+        );
         while matches!(source.first(), Some((Token::Identifier(word), _)) if matches!(word.as_str(), "virtual" | "explicit" | "inline"))
         {
             source.remove(0);
@@ -1393,7 +1396,20 @@ impl Parser {
         if parsed.is_ok() && functions.len() == 1 {
             let source = probe.function_sources.pop().flatten();
             let mut function = functions.pop().expect("length checked");
-            if destructor {
+            if matches!(function.return_type, Type::Struct { .. }) {
+                let return_tag = self
+                    .cxx_classes
+                    .get(class)
+                    .and_then(|layout| layout.methods.get(&member_name))
+                    .into_iter()
+                    .flatten()
+                    .find_map(|method| method.return_struct_tag.clone());
+                if let Some(return_tag) = return_tag {
+                    self.function_return_structs
+                        .insert(function.name.clone(), return_tag);
+                }
+            }
+            if destructor || is_virtual {
                 function.is_weak = true;
                 if !self
                     .cxx_inline_materializations

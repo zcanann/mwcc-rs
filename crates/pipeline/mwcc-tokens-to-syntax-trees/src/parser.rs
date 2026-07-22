@@ -225,6 +225,10 @@ pub(crate) struct Parser {
     /// retaining it lets debug lowering describe compiler-emitted weak bodies.
     pub(crate) cxx_inline_materialization_sources:
         HashMap<String, mwcc_syntax_trees::FunctionSource>,
+    /// Inline virtual bodies requested by calls in the function currently
+    /// being parsed. MWCC emits their weak fallback bodies immediately after
+    /// that first caller, rather than at the declaration's header position.
+    pub(crate) cxx_inline_materialization_requests: Vec<String>,
     /// Static class-member overloads recovered from aggregate declarations,
     /// keyed by fully-qualified `(class, member)` name. Calls carry no implicit
     /// `this`, but still require CodeWarrior member-function mangling.

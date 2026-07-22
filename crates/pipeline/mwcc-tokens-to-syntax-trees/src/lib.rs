@@ -169,6 +169,7 @@ pub fn parse_located_translation_unit_with_enum_min(
         inline_cxx_members: std::collections::HashSet::new(),
         cxx_inline_materializations: Vec::new(),
         cxx_inline_materialization_sources: std::collections::HashMap::new(),
+        cxx_inline_materialization_requests: Vec::new(),
         cxx_static_methods: HashMap::new(),
         cxx_constructors: HashMap::new(),
         cxx_free_functions: HashMap::new(),
@@ -2820,6 +2821,46 @@ blr\n\
             .skipped_inline_definitions
             .iter()
             .any(|function| function.name == "horizontalPosition__8CreatureFv"));
+    }
+
+    #[test]
+    fn emits_used_inline_virtual_aggregate_return_after_its_first_caller() {
+        let source = r#"
+            struct Vec { float x; float y; float z; };
+            struct Creature {
+                Vec position;
+                virtual Vec getPosition() { return position; }
+            };
+            void use(Creature* creature) {
+                Vec position = creature->getPosition();
+            }
+            void later() {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(
+            unit.functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            ["use__FP8Creature", "getPosition__8CreatureFv", "later__Fv"]
+        );
+        assert!(unit.functions[1].is_weak);
+        assert!(unit
+            .weak_materialized
+            .contains(&"getPosition__8CreatureFv".to_string()));
+        assert_eq!(
+            unit.function_return_aggregate_tags
+                .get("getPosition__8CreatureFv")
+                .map(String::as_str),
+            Some("Vec")
+        );
     }
 
     #[test]

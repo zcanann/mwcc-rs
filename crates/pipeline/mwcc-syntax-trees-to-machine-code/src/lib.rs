@@ -80,6 +80,8 @@ pub fn lower_vtable_adjustor_thunks(
 pub fn lower_function(
     function: &Function,
     globals: &[GlobalDeclaration],
+    aggregate_definitions: &HashMap<String, mwcc_syntax_trees::AggregateDefinition>,
+    function_return_aggregate_tags: &HashMap<String, String>,
     call_return_types: &HashMap<String, mwcc_syntax_trees::Type>,
     call_parameter_types: &HashMap<String, Vec<mwcc_syntax_trees::Type>>,
     skipped_inline_names: &std::collections::HashSet<String>,
@@ -97,6 +99,13 @@ pub fn lower_function(
     // scheduling, or optimizer — so it bypasses the ordinary codegen path entirely.
     if function.asm_body.is_some() {
         return asm::assemble_asm_function(function, Behavior::resolve(&config));
+    }
+    if let Some(output) = cxx_abi::lower_aggregate_member_return(
+        function,
+        aggregate_definitions,
+        function_return_aggregate_tags,
+    ) {
+        return Ok(output);
     }
     let expanded_constructor = function
         .name

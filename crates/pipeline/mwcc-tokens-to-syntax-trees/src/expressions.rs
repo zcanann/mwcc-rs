@@ -743,9 +743,17 @@ impl Parser {
                             dispatch,
                             return_struct_tag,
                             this_adjustment,
-                            ..
+                            direct_name,
+                            direct_is_inline,
                         } => {
                             self.expression_struct_tag = return_struct_tag;
+                            if direct_is_inline {
+                                if let Some(name) = direct_name {
+                                    if !self.cxx_inline_materialization_requests.contains(&name) {
+                                        self.cxx_inline_materialization_requests.push(name);
+                                    }
+                                }
+                            }
                             let object = adjust_cxx_object(
                                 Expression::Variable("this".to_string()),
                                 this_adjustment,
@@ -1476,6 +1484,13 @@ impl Parser {
                     arguments.insert(0, adjust_cxx_object(object, this_adjustment));
                     Expression::Call { name, arguments }
                 } else {
+                    if direct_is_inline {
+                        if let Some(name) = direct_name {
+                            if !self.cxx_inline_materialization_requests.contains(&name) {
+                                self.cxx_inline_materialization_requests.push(name);
+                            }
+                        }
+                    }
                     Expression::VirtualCall {
                         object: Box::new(adjust_cxx_object(object, this_adjustment)),
                         vptr_offset: dispatch.vptr_offset,

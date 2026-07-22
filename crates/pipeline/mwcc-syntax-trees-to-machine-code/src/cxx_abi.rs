@@ -13,8 +13,182 @@ use crate::InlineSummaries;
 use mwcc_machine_code::{
     FrameInfo, Instruction, MachineFunction, Relocation, RelocationKind, RelocationTarget,
 };
-use mwcc_syntax_trees::{BinaryOperator, Expression, Function, GlobalDeclaration, Statement, Type};
+use mwcc_syntax_trees::{
+    AggregateDefinition, BinaryOperator, Expression, Function, GlobalDeclaration, Statement, Type,
+};
 use mwcc_versions::{Behavior, CompilerConfig, FrameConvention};
+
+/// Lower a leaf function that returns one aggregate member by value through
+/// the EABI hidden-result pointer. The source aggregate graph supplies the
+/// scalar field classes erased from [`Type::Struct`], so a vector of floats is
+/// copied with `lfs`/`stfs` rather than an unsafe raw-word approximation.
+pub(crate) fn lower_aggregate_member_return(
+    function: &Function,
+    aggregate_definitions: &std::collections::HashMap<String, AggregateDefinition>,
+    function_return_aggregate_tags: &std::collections::HashMap<String, String>,
+) -> Option<MachineFunction> {
+    let Type::Struct { size, .. } = function.return_type else {
+        return None;
+    };
+    // Aggregates larger than eight bytes use r3 as a caller-provided result
+    // address. Small aggregate register returns remain a separate ABI family.
+    if size <= 8
+        || function.parameters.len() != 1
+        || !matches!(function.parameters[0].parameter_type, Type::StructPointer { .. })
+        || !function.locals.is_empty()
+        || !function.statements.is_empty()
+        || !function.guards.is_empty()
+    {
+        return None;
+    }
+    let Some(Expression::Member {
+        base,
+        offset: source_offset,
+        member_type,
+        index_stride: None,
+    }) = function.return_expression.as_ref()
+    else {
+        return None;
+    };
+    if *member_type != function.return_type
+        || !matches!(base.as_ref(), Expression::Variable(name) if name == &function.parameters[0].name)
+    {
+        return None;
+    }
+    let aggregate_tag = function_return_aggregate_tags.get(&function.name)?;
+    let definition = aggregate_definitions.get(aggregate_tag)?;
+    if definition.byte_size != size {
+        return None;
+    }
+
+    let mut output = MachineFunction::new(function.name.clone());
+    emit_hidden_result_fields(
+        &mut output.instructions,
+        definition,
+        aggregate_definitions,
+        *source_offset,
+        0,
+    )?;
+    output.instructions.push(Instruction::BranchToLinkRegister);
+    output.is_static = function.is_static;
+    output.is_weak = function.is_weak;
+    output.section = function.section.clone();
+    Some(output)
+}
+
+/// Copy one aggregate's declared fields from `source_offset(r4)` to
+/// `destination_offset(r3)`. Padding is deliberately untouched: C++ value
+/// return copies members, and MWCC likewise omits padding traffic.
+fn emit_hidden_result_fields(
+    instructions: &mut Vec<Instruction>,
+    definition: &AggregateDefinition,
+    aggregate_definitions: &std::collections::HashMap<String, AggregateDefinition>,
+    source_offset: u32,
+    destination_offset: u32,
+) -> Option<()> {
+    if definition.is_union {
+        return None;
+    }
+    for member in &definition.members {
+        if member.array_length.is_some() || member.bit_field.is_some() {
+            return None;
+        }
+        let source = i16::try_from(source_offset.checked_add(member.offset)?).ok()?;
+        let destination =
+            i16::try_from(destination_offset.checked_add(member.offset)?).ok()?;
+        match member.declared_type {
+            Type::Float => {
+                instructions.push(Instruction::LoadFloatSingle {
+                    d: 0,
+                    a: 4,
+                    offset: source,
+                });
+                instructions.push(Instruction::StoreFloatSingle {
+                    s: 0,
+                    a: 3,
+                    offset: destination,
+                });
+            }
+            Type::Double => {
+                instructions.push(Instruction::LoadFloatDouble {
+                    d: 0,
+                    a: 4,
+                    offset: source,
+                });
+                instructions.push(Instruction::StoreFloatDouble {
+                    s: 0,
+                    a: 3,
+                    offset: destination,
+                });
+            }
+            Type::Char | Type::UnsignedChar => {
+                instructions.push(Instruction::LoadByteZero {
+                    d: 0,
+                    a: 4,
+                    offset: source,
+                });
+                instructions.push(Instruction::StoreByte {
+                    s: 0,
+                    a: 3,
+                    offset: destination,
+                });
+            }
+            Type::Short | Type::UnsignedShort => {
+                instructions.push(Instruction::LoadHalfwordZero {
+                    d: 0,
+                    a: 4,
+                    offset: source,
+                });
+                instructions.push(Instruction::StoreHalfword {
+                    s: 0,
+                    a: 3,
+                    offset: destination,
+                });
+            }
+            Type::Int
+            | Type::UnsignedInt
+            | Type::Pointer(_)
+            | Type::StructPointer { .. } => {
+                instructions.push(Instruction::LoadWord {
+                    d: 0,
+                    a: 4,
+                    offset: source,
+                });
+                instructions.push(Instruction::StoreWord {
+                    s: 0,
+                    a: 3,
+                    offset: destination,
+                });
+            }
+            Type::LongLong | Type::UnsignedLongLong => {
+                for word_offset in [0i16, 4] {
+                    instructions.push(Instruction::LoadWord {
+                        d: 0,
+                        a: 4,
+                        offset: source.checked_add(word_offset)?,
+                    });
+                    instructions.push(Instruction::StoreWord {
+                        s: 0,
+                        a: 3,
+                        offset: destination.checked_add(word_offset)?,
+                    });
+                }
+            }
+            Type::Struct { .. } => {
+                let nested = aggregate_definitions.get(member.aggregate_tag.as_ref()?)?;
+                emit_hidden_result_fields(
+                    instructions,
+                    nested,
+                    aggregate_definitions,
+                    source_offset.checked_add(member.offset)?,
+                    destination_offset.checked_add(member.offset)?,
+                )?;
+            }
+            Type::Void => return None,
+        }
+    }
+    Some(())
+}
 
 /// Lower a constructor composed from non-virtual base calls, a complete vtable
 /// group installation, and call-valued member stores. These values all depend
@@ -1220,4 +1394,55 @@ pub(crate) fn lower_virtual_destructor(
         });
     }
     Some(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mwcc_syntax_trees::AggregateMember;
+
+    #[test]
+    fn copies_float_aggregate_fields_through_hidden_result_registers() {
+        let definition = AggregateDefinition {
+            source_tag: Some("Vec".to_string()),
+            name: "Vec".to_string(),
+            byte_size: 12,
+            alignment: 4,
+            is_union: false,
+            members: ["x", "y", "z"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, name)| AggregateMember {
+                    name: name.to_string(),
+                    declared_type: Type::Float,
+                    source_fundamental: None,
+                    offset: index as u32 * 4,
+                    aggregate_tag: None,
+                    array_length: None,
+                    bit_field: None,
+                })
+                .collect(),
+        };
+        let mut instructions = Vec::new();
+        emit_hidden_result_fields(
+            &mut instructions,
+            &definition,
+            &std::collections::HashMap::new(),
+            396,
+            0,
+        )
+        .expect("flat float aggregate is supported");
+
+        assert_eq!(
+            instructions,
+            vec![
+                Instruction::LoadFloatSingle { d: 0, a: 4, offset: 396 },
+                Instruction::StoreFloatSingle { s: 0, a: 3, offset: 0 },
+                Instruction::LoadFloatSingle { d: 0, a: 4, offset: 400 },
+                Instruction::StoreFloatSingle { s: 0, a: 3, offset: 4 },
+                Instruction::LoadFloatSingle { d: 0, a: 4, offset: 404 },
+                Instruction::StoreFloatSingle { s: 0, a: 3, offset: 8 },
+            ]
+        );
+    }
 }

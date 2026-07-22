@@ -312,6 +312,11 @@ pub struct TranslationUnit {
     /// resolved pointer width/stride; legacy DWARF needs the declaration graph.
     pub function_parameter_aggregate_tags:
         std::collections::HashMap<(String, String), String>,
+    /// Source aggregate identity for each struct-returning function. The
+    /// compact return [`Type`] retains ABI size/alignment; hidden-result
+    /// lowering uses this parallel tag to copy fields with their real scalar
+    /// load/store classes.
+    pub function_return_aggregate_tags: std::collections::HashMap<String, String>,
     /// Function prototypes (`type name(params);`) by name, return type, and
     /// parameter types, so a call to an externally-defined function knows its
     /// result type (e.g. a `double`-returning math routine) and its parameter

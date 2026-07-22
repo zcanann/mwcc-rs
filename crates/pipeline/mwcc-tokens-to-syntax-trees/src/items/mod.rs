@@ -682,6 +682,8 @@ impl Parser {
             let functions_before = functions.len();
             let globals_before = globals.len();
             let bump_before_item = self.skipped_inline_functions;
+            let materialization_requests_before =
+                self.cxx_inline_materialization_requests.len();
             let item_result = if skippable_inline_member {
                 // Route definitions whose inherited inline status was proven by
                 // declaration recovery through the same dropped-inline accounting
@@ -693,6 +695,8 @@ impl Parser {
                 self.parse_top_level_item(&mut globals, &mut functions, &mut prototypes)
             };
             if let Err(error) = item_result {
+                self.cxx_inline_materialization_requests
+                    .truncate(materialization_requests_before);
                 if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() {
                     eprintln!(
                         "skipped top-level item at token {start} ({:?}): {error}",
@@ -829,6 +833,27 @@ impl Parser {
                 self.capture_skipped_struct_template();
                 self.capture_skipped_typedef();
                 self.skip_top_level_declaration();
+            }
+            if functions.len() > functions_before {
+                let requests = self
+                    .cxx_inline_materialization_requests
+                    .split_off(materialization_requests_before);
+                for name in requests {
+                    let Some(position) = self
+                        .cxx_inline_materializations
+                        .iter()
+                        .position(|candidate| candidate.name == name)
+                    else {
+                        continue;
+                    };
+                    let function = self.cxx_inline_materializations.remove(position);
+                    let source = self
+                        .cxx_inline_materialization_sources
+                        .remove(&function.name);
+                    self.weak_materialized.push(function.name.clone());
+                    functions.push(function);
+                    self.function_sources.push(source);
+                }
             }
             if functions.len() > functions_before {
                 seen_function = true;
@@ -991,6 +1016,7 @@ impl Parser {
             aggregate_definitions,
             global_aggregate_tags: std::mem::take(&mut self.global_structs),
             function_parameter_aggregate_tags: std::mem::take(&mut self.function_parameter_structs),
+            function_return_aggregate_tags: std::mem::take(&mut self.function_return_structs),
             prototypes,
             named_prototype_parameters: self.named_prototype_parameters,
             inline_asm_symbols: std::mem::take(&mut self.inline_asm_symbols),
