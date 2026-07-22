@@ -427,7 +427,13 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
             // `@2` or a reloc suffix `sym@ha`). Tokenize it so one asm-bodied function
             // does not turn the whole file into a lex-error; the asm function defers.
             '@' => Token::At,
-            other => return Err(Diagnostic::error(format!("unexpected character '{other}'"))),
+            other => {
+                let location = source_location(&line_starts, &logical_lines, position);
+                return Err(Diagnostic::error(format!(
+                    "unexpected character '{other}' (byte 0x{:02x}, offset {}, line {}, column {})",
+                    bytes[position], location.byte_offset, location.line, location.column
+                )));
+            }
         };
         push_token!(punctuation, position);
         position += 1;
