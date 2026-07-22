@@ -372,6 +372,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             str(args.jobs),
             "--timeout",
             str(args.timeout),
+            "--configured-only",
             *filters,
         ]
         if args.rerun:

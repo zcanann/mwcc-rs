@@ -450,6 +450,9 @@ fi
 emit_oracle_meta
 measure_configured_source
 emit_configured_source_verdict
+if [[ "${REFCTX_CONFIGURED_ONLY:-0}" == 1 && "$configured_source" != "UNAVAILABLE" ]]; then
+  exit 0
+fi
 
 # Directly preprocessable rows bypassed the fallback block above. Compile the
 # compiler-core reference from the exact same preprocessed bridge handed to

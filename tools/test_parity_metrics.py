@@ -186,6 +186,31 @@ def run_refctx_fixture(project: Path, ffcc: Path, compiler: Path):
     )
 
 
+def run_configured_only_refctx_fixture(project: Path, ffcc: Path, compiler: Path):
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "FFCC": str(ffcc),
+            "MWCC_BIN": str(compiler),
+            "REFCTX_EMPTY_BASE": "1",
+            "REFCTX_CONFIGURED_ONLY": "1",
+        }
+    )
+    return subprocess.run(
+        [
+            "bash",
+            str(Path(__file__).with_name("refctx.sh")),
+            str(project),
+            "src/test.c",
+            "GC/2.6",
+        ],
+        text=True,
+        capture_output=True,
+        env=environment,
+        timeout=10,
+    )
+
+
 class IdentityTests(unittest.TestCase):
     def test_reason_normalization_accepts_preserved_source_basenames(self):
         self.assertEqual(
@@ -246,6 +271,25 @@ class IdentityTests(unittest.TestCase):
                 },
             )
             self.assertIn("BYTE   src/test.c", completed.stdout)
+
+    def test_configured_only_refctx_skips_the_diagnostic_bridge(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project, ffcc, fake_compiler = refctx_fixture(root)
+            completed = run_configured_only_refctx_fixture(
+                project, ffcc, fake_compiler
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(
+                parity_metadata(completed.stdout),
+                {
+                    "oracle_direct": "RUNNABLE",
+                    "configured_source": "BYTE",
+                    "verdict_input": "CONFIGURED",
+                },
+            )
+            self.assertIn("BYTE   src/test.c", completed.stdout)
+            self.assertNotIn("direct_bridge", completed.stdout)
 
     def test_refctx_rejected_direct_bridge_falls_back_to_labeled_synthetic_input(self):
         with tempfile.TemporaryDirectory() as directory:

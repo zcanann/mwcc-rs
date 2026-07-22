@@ -314,6 +314,7 @@ def run_row(
     compiler: Path,
     timeout: int,
     code_projection: bool,
+    configured_only: bool = False,
 ) -> Tuple[str, str]:
     project = reference_root / row["project"]
     command = [
@@ -328,6 +329,7 @@ def run_row(
     environment["MWCC_BIN"] = str(compiler)
     environment["MWCC_EXPERIMENTAL_BUILDS"] = "1"
     environment["REFCTX_CODE_PROJECTION"] = "1" if code_projection else "0"
+    environment["REFCTX_CONFIGURED_ONLY"] = "1" if configured_only else "0"
     process = subprocess.Popen(
         command,
         text=True,
@@ -409,6 +411,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--code-projection",
         action="store_true",
         help="retry debug-deferred rows with -sym off for diagnostic code metrics",
+    )
+    parser.add_argument(
+        "--configured-only",
+        action="store_true",
+        help="stop after the authoritative configured-source A/B result when available",
     )
     parser.add_argument(
         "--jobs",
@@ -533,6 +540,7 @@ def main() -> int:
                 compiler,
                 args.timeout,
                 args.code_projection,
+                args.configured_only,
             )
         else:
             status, detail = "UNSUPPORTED_BUILD", support_detail
