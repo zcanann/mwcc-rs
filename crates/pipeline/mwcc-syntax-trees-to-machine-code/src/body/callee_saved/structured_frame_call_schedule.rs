@@ -11,9 +11,12 @@ use super::*;
 
 impl Generator {
     pub(super) fn schedule_structured_frame_store_call(&mut self) {
-        let Some(store) = self.output.instructions.iter().position(|instruction| {
-            matches!(instruction, Instruction::StoreByte { a: 1, .. })
-        }) else {
+        let Some(store) = self
+            .output
+            .instructions
+            .iter()
+            .position(|instruction| matches!(instruction, Instruction::StoreByte { a: 1, .. }))
+        else {
             return;
         };
         let Some(call) = self.output.instructions[store + 1..]
@@ -61,20 +64,48 @@ impl Generator {
         self.output.instructions.splice(store..call, scheduled);
     }
 
-    /// Linkage-first MWCC spells saved-register forwards into call argument
-    /// registers as `addi ..., 0`; the newer allocator uses the `mr` alias.
+    /// Linkage-first MWCC spells both saved-register forwards and values parked
+    /// in saved homes as `addi ..., 0`; the newer allocator uses the `mr` alias.
     /// Keep that generation-specific materialization local to dense frames.
     pub(super) fn normalize_structured_frame_argument_copies(&mut self, first_saved: u8) {
         for instruction in &mut self.output.instructions {
             let Instruction::Or { a, s, b } = instruction else {
                 continue;
             };
-            if *s == *b && (3..=8).contains(a) && *s >= first_saved {
+            let saved_to_argument = (3..=8).contains(a) && *s >= first_saved;
+            let value_to_saved_home = *a >= first_saved;
+            if *s == *b && (saved_to_argument || value_to_saved_home) {
                 *instruction = Instruction::AddImmediate {
                     d: *a,
                     a: *s,
                     immediate: 0,
                 };
+            }
+        }
+
+        // When a saved value and a frame address are the final independent
+        // arguments of a dense-frame call, build 163 forwards the saved value
+        // first. Selection discovers the frame address first from source order;
+        // rotate only this dependency-free adjacent pair.
+        let mut index = 0;
+        while index + 1 < self.output.instructions.len() {
+            let frame_address = matches!(
+                self.output.instructions[index],
+                Instruction::AddImmediate { d: 3..=8, a: 1, .. }
+            );
+            let saved_forward = matches!(
+                self.output.instructions[index + 1],
+                Instruction::AddImmediate {
+                    d: 3..=8,
+                    a,
+                    immediate: 0
+                } if a >= first_saved
+            );
+            if frame_address && saved_forward {
+                self.output.instructions.swap(index, index + 1);
+                index += 2;
+            } else {
+                index += 1;
             }
         }
     }

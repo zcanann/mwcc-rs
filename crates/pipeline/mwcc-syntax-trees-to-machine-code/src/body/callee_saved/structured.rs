@@ -5,23 +5,24 @@
 //! statement is representable by the shared store/call emitter plus forward
 //! `if` branches; unsupported control flow declines before emitting anything.
 
-use super::structured_entry_alias::{
-    fold_entry_alias_zero_test, plan_first_call_alias, EntryAliasBoundary, EntryParameterAlias,
-};
 use super::guarded_computed_survivor::emit_scaled_index;
 use super::structured_call_accumulator::{
     call_accumulator_assignment_count, call_accumulator_names,
     fold_zero_initialized_call_accumulator, in_place_call_combined_return_name,
 };
-use super::structured_frame_entry::structured_dense_frame_entry_index;
+use super::structured_entry_alias::{
+    fold_entry_alias_zero_test, plan_first_call_alias, EntryAliasBoundary, EntryParameterAlias,
+};
 use super::structured_frame_assignment::{
+    adjacent_byte_pointer_round_up_name, fold_adjacent_byte_pointer_round_up,
     sink_low_mask_parameter_assignment, sink_single_use_parameter_assignment,
 };
+use super::structured_frame_entry::structured_dense_frame_entry_index;
+use super::structured_liveness::read_after_possible_call;
 use super::structured_locals::{
     body_uses_local, dead_ephemeral_float_locals, is_definitely_assigned_before_reads,
     plan_deferred_saved_homes, plan_ephemeral_locals,
 };
-use super::structured_liveness::read_after_possible_call;
 use super::structured_prologue::saved_home_stores_precede_initialization;
 #[allow(unused_imports)]
 use super::*;
@@ -44,6 +45,10 @@ impl Generator {
     ) -> Compilation<bool> {
         let mut normalized = function.clone();
         let mut changed = false;
+        if let Some(rewritten) = fold_adjacent_byte_pointer_round_up(&normalized) {
+            normalized = rewritten;
+            changed = true;
+        }
         if self.behavior.frame_convention == FrameConvention::Predecrement {
             if let Some(rewritten) = sink_low_mask_parameter_assignment(&normalized) {
                 normalized = rewritten;
@@ -52,7 +57,7 @@ impl Generator {
                 normalized = rewritten;
                 changed = true;
             }
-            }
+        }
         if let Some(rewritten) = fold_zero_initialized_call_accumulator(&normalized) {
             normalized = rewritten;
             changed = true;
@@ -60,8 +65,8 @@ impl Generator {
         if changed {
             self.try_callee_saved_structured_body_impl(&normalized, true)
         } else {
-        self.try_callee_saved_structured_body_impl(function, true)
-    }
+            self.try_callee_saved_structured_body_impl(function, true)
+        }
     }
 
     fn try_callee_saved_structured_body_impl(
@@ -85,8 +90,9 @@ impl Generator {
                 || array.initializer.is_some()
                 || array.data_bytes.is_some()
                 || !matches!(array.declared_type, Type::Char | Type::UnsignedChar)
-                || !matches!(function.return_type, Type::Int | Type::UnsignedInt)
-                || function.return_expression.is_none()
+                || !((function.return_type == Type::Void && function.return_expression.is_none())
+                    || (matches!(function.return_type, Type::Int | Type::UnsignedInt)
+                        && function.return_expression.is_some()))
             {
                 return Ok(false);
             }
@@ -99,15 +105,39 @@ impl Generator {
             || (matches!(function.return_type, Type::Int | Type::UnsignedInt)
                 && function.return_expression.is_some());
         if (!with_frame_array && !supported_plain_return)
-            || !supports_statements(&function.statements, function)
+            || !supports_statements(
+                &function.statements,
+                function,
+                &self.global_array_sizes,
+                with_frame_array,
+            )
         {
+            return Ok(false);
+        }
+
+        let address_taken = crate::frame::collect_address_taken(function);
+        let frame_scalar_locals: Vec<&LocalDeclaration> = function
+            .locals
+            .iter()
+            .filter(|local| {
+                local.array_length.is_none() && address_taken.contains(local.name.as_str())
+            })
+            .collect();
+        if frame_scalar_locals.iter().any(|local| {
+            local.is_static
+                || local.initializer.is_some()
+                || class_of(local.declared_type).ok() != Some(ValueClass::General)
+                || local.declared_type.width() > 32
+        }) {
             return Ok(false);
         }
 
         let candidates: Vec<&str> = function
             .locals
             .iter()
-            .filter(|local| local.array_length.is_none())
+            .filter(|local| {
+                local.array_length.is_none() && !address_taken.contains(local.name.as_str())
+            })
             .map(|local| local.name.as_str())
             .chain(
                 function
@@ -121,9 +151,10 @@ impl Generator {
             .filter(|name| {
                 read_after_possible_call(&function.statements, name, false).read_after_call
                     || (function_makes_call(function)
-                        && function.return_expression.as_ref().is_some_and(|expression| {
-                            expression_reads_name(expression, name)
-                        }))
+                        && function
+                            .return_expression
+                            .as_ref()
+                            .is_some_and(|expression| expression_reads_name(expression, name)))
             })
             .collect();
         let call_accumulators = call_accumulator_names(function);
@@ -161,7 +192,8 @@ impl Generator {
         }) {
             return Ok(false);
         }
-        let Some(ephemeral_locals) = plan_ephemeral_locals(function, &survivors) else {
+        let Some(ephemeral_locals) = plan_ephemeral_locals(function, &survivors, &address_taken)
+        else {
             return Ok(false);
         };
         let (eager_saved_locals, deferred_saved_locals): (Vec<_>, Vec<_>) = saved_locals
@@ -185,18 +217,70 @@ impl Generator {
         } else {
             0
         };
+        let global_member_search_entry = function.statements.first().is_some_and(|statement| {
+            super::super::global_struct_member_search::is_global_struct_member_search_loop(
+                statement,
+                &self.global_array_sizes,
+            )
+        });
+        let rounded_byte_pointer = global_member_search_entry
+            .then(|| adjacent_byte_pointer_round_up_name(function))
+            .flatten();
 
         let count =
             eager_saved_locals.len() + saved_parameters.len() + deferred_home_plan.group_count;
         let first_saved = 32usize.saturating_sub(count);
         let dense_entry_prefix = with_frame_array
+            && !global_member_search_entry
             && structured_dense_frame_entry_index(function).is_some_and(|index| index != 0);
+        let search_result = function.statements.first().and_then(|statement| {
+            super::super::global_struct_member_search::global_struct_member_search_result(statement)
+        });
+        let search_result_is_keystone = search_result.is_some_and(|name| {
+            function
+                .statements
+                .iter()
+                .skip(1)
+                .filter(|statement| statement_references_name(statement, name))
+                .count()
+                >= 6
+        });
+        let mut global_group_order = Vec::new();
+        if global_member_search_entry {
+            if search_result_is_keystone {
+                if let Some(result) = search_result {
+                    if let Some(local) = deferred_saved_locals
+                        .iter()
+                        .find(|local| local.name == result)
+                    {
+                        global_group_order.push(deferred_home_plan.group(&local.name));
+                    }
+                }
+            }
+            for local in &function.locals {
+                if deferred_saved_locals
+                    .iter()
+                    .any(|saved| saved.name == local.name)
+                {
+                    let group = deferred_home_plan.group(&local.name);
+                    if !global_group_order.contains(&group) {
+                        global_group_order.push(group);
+                    }
+                }
+            }
+        }
+        let deferred_preference_base = eager_saved_locals.len() + saved_parameters.len();
         let homes: Vec<u8> = (0..count)
             .map(|home_index| {
-                if with_frame_array && eager_saved_locals.is_empty() && count <= 18 {
-                    let preferred = if dense_entry_prefix
-                        && deferred_home_plan.group_count == 1
-                    {
+                if global_member_search_entry && home_index >= deferred_preference_base {
+                    let group = home_index - deferred_preference_base;
+                    let rank = global_group_order
+                        .iter()
+                        .position(|candidate| *candidate == group)
+                        .unwrap_or(group);
+                    self.fresh_virtual_general_preferring(31u8.saturating_sub(rank as u8))
+                } else if with_frame_array && eager_saved_locals.is_empty() && count <= 18 {
+                    let preferred = if dense_entry_prefix && deferred_home_plan.group_count == 1 {
                         if home_index < saved_parameters.len() {
                             let source_index = saved_parameters.len() - 1 - home_index;
                             first_saved + (source_index + 2) % count
@@ -224,13 +308,22 @@ impl Generator {
                         && !deferred_saved_locals
                             .iter()
                             .any(|saved| saved.name == local.name)
-                        && !eager_saved_locals.iter().any(|saved| saved.name == local.name)
+                        && !eager_saved_locals
+                            .iter()
+                            .any(|saved| saved.name == local.name)
+                        && pure_local_alias(local).is_none()
+                        && !is_call_result_local(&function.statements, &local.name)
+                        && body_uses_local(&function.statements, &local.name)
                 })
                 .count();
             let array_offset = match self.behavior.frame_convention {
                 FrameConvention::Predecrement => 8,
                 FrameConvention::LinkageFirst => {
-                    let words = self.entry_parameter_words + extra_scalar_words;
+                    let words = if global_member_search_entry {
+                        extra_scalar_words
+                    } else {
+                        self.entry_parameter_words + extra_scalar_words
+                    };
                     8 + i16::try_from(words * 4).map_err(|_| {
                         Diagnostic::error("structured legacy local table is too large")
                     })?
@@ -240,9 +333,8 @@ impl Generator {
                 let occupied = i32::from(array_offset)
                     + i32::from(local_region_bytes)
                     + i32::try_from(4 * count).unwrap_or(i32::MAX);
-                plan.frame_size = i16::try_from((occupied + 15) / 16 * 16).map_err(|_| {
-                    Diagnostic::error("structured legacy frame is too large")
-                })?;
+                plan.frame_size = i16::try_from((occupied + 15) / 16 * 16)
+                    .map_err(|_| Diagnostic::error("structured legacy frame is too large"))?;
             }
             self.frame_slots.insert(
                 array.name.clone(),
@@ -254,6 +346,20 @@ impl Generator {
                     is_array: true,
                 },
             );
+            let mut scalar_offset = array_offset;
+            for local in &frame_scalar_locals {
+                scalar_offset -= 4;
+                self.frame_slots.insert(
+                    local.name.clone(),
+                    FrameSlot {
+                        offset: scalar_offset,
+                        class: ValueClass::General,
+                        size: 4,
+                        parameter_register: None,
+                        is_array: false,
+                    },
+                );
+            }
             let pointee = match array.declared_type {
                 Type::Char => Pointee::Char,
                 Type::UnsignedChar => Pointee::UnsignedChar,
@@ -278,12 +384,12 @@ impl Generator {
             LegacyCalleeSavedFrameLayout::RetainEntryParameterTable;
         let dense_frame = with_frame_array
             && eager_saved_locals.is_empty()
-            && count >= 5
-            && count <= 18;
+            && count <= 18
+            && (count >= 5 || (global_member_search_entry && count >= 4));
         let dense_save_helper =
             dense_frame && self.behavior.frame_convention == FrameConvention::Predecrement;
-        let dense_inline_save = dense_frame
-            && self.behavior.frame_convention == FrameConvention::LinkageFirst;
+        let dense_inline_save =
+            dense_frame && self.behavior.frame_convention == FrameConvention::LinkageFirst;
         if dense_frame {
             self.output.pre_scheduled = true;
         }
@@ -314,19 +420,19 @@ impl Generator {
                 },
             ]);
         } else {
-        self.output.instructions.extend([
-            Instruction::StoreWordWithUpdate {
-                s: 1,
-                a: 1,
-                offset: -plan.frame_size,
-            },
-            Instruction::MoveFromLinkRegister { d: 0 },
-            Instruction::StoreWord {
-                s: 0,
-                a: 1,
-                offset: plan.frame_size + 4,
-            },
-        ]);
+            self.output.instructions.extend([
+                Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -plan.frame_size,
+                },
+                Instruction::MoveFromLinkRegister { d: 0 },
+                Instruction::StoreWord {
+                    s: 0,
+                    a: 1,
+                    offset: plan.frame_size + 4,
+                },
+            ]);
         }
         if dense_save_helper {
             self.output.instructions.push(Instruction::AddImmediate {
@@ -413,16 +519,12 @@ impl Generator {
             home_index += 1;
             if !batched_saved_home_stores {
                 if !dense_frame {
-                    self.emit_structured_saved_home_store(
-                        *home,
-                        home_index - 1,
-                        plan.frame_size,
-                    );
-                self.output
-                    .instructions
-                    .push(Instruction::move_register(*home, *incoming));
+                    self.emit_structured_saved_home_store(*home, home_index - 1, plan.frame_size);
+                    self.output
+                        .instructions
+                        .push(Instruction::move_register(*home, *incoming));
+                }
             }
-        }
         }
         debug_assert_eq!(home_index, deferred_home_base);
         for group in 0..deferred_home_plan.group_count {
@@ -457,14 +559,23 @@ impl Generator {
         // and switches subsequent body uses to the home only after declarations.
         for local in &ephemeral_locals {
             let class = class_of(local.declared_type).expect("eligibility checked");
-            let temporary = match class {
+            let alias = pure_local_alias(local)
+                .and_then(|name| self.locations.get(name))
+                .filter(|location| location.class == class)
+                .map(|location| location.register);
+            let temporary = alias.unwrap_or_else(|| match class {
+                ValueClass::General if rounded_byte_pointer == Some(local.name.as_str()) => {
+                    self.fresh_virtual_general_preferring(Eabi::general_result().number)
+                }
                 ValueClass::General => self.fresh_virtual_general(),
                 ValueClass::Float => self.fresh_virtual_float_preferring(
                     self.ephemeral_float_home_preference(function, &ephemeral_locals),
                 ),
-            };
-            if let Some(initializer) = &local.initializer {
-                self.evaluate(initializer, local.declared_type, temporary)?;
+            });
+            if alias.is_none() {
+                if let Some(initializer) = &local.initializer {
+                    self.evaluate(initializer, local.declared_type, temporary)?;
+                }
             }
             self.locations.insert(
                 local.name.clone(),
@@ -483,12 +594,16 @@ impl Generator {
         }
         self.plan_structured_float_handoff(function, &ephemeral_locals);
         let dense_statement_start = if dense_frame {
-            self.emit_structured_dense_frame_entry(function, &saved_parameter_homes)?
-                .ok_or_else(|| {
-                    Diagnostic::error(
-                    "a dense structured frame needs a schedulable entry definition",
-                    )
-                })?
+            if global_member_search_entry {
+                0
+            } else {
+                self.emit_structured_dense_frame_entry(function, &saved_parameter_homes)?
+                    .ok_or_else(|| {
+                        Diagnostic::error(
+                            "a dense structured frame needs a schedulable entry definition",
+                        )
+                    })?
+            }
         } else {
             0
         };
@@ -601,11 +716,11 @@ impl Generator {
                     immediate: 0,
                 });
             } else {
-            self.evaluate(return_expression, function.return_type, result)?;
+                self.evaluate(return_expression, function.return_type, result)?;
+            }
         }
-        }
-        let lowered_accumulator_return = !call_accumulators.is_empty()
-            && self.lower_structured_call_accumulator_return();
+        let lowered_accumulator_return =
+            !call_accumulators.is_empty() && self.lower_structured_call_accumulator_return();
         let epilogue = self.output.instructions.len();
         for branch in return_branches {
             if let Instruction::Branch { target } = &mut self.output.instructions[branch] {
@@ -673,7 +788,7 @@ impl Generator {
                 Instruction::BranchToLinkRegister,
             ]);
         } else {
-        self.emit_epilogue_and_return();
+            self.emit_epilogue_and_return();
         }
         self.schedule_legacy_inline_expansion_residue();
         Ok(true)
@@ -746,10 +861,10 @@ impl Generator {
                                 Some(condition) => condition,
                                 None => {
                                     self.emit_condition_test(term).map_err(|mut diagnostic| {
-                                    diagnostic.message.push_str(&format!(
-                                        " (in structured if condition {statement_index})"
-                                    ));
-                                    diagnostic
+                                        diagnostic.message.push_str(&format!(
+                                            " (in structured if condition {statement_index})"
+                                        ));
+                                        diagnostic
                                     })?
                                 }
                             };
@@ -781,12 +896,12 @@ impl Generator {
                         Ok(branches)
                     })();
                     let carry_fallthrough_cache = matches!(
-                            then_body.last(),
-                            Some(Statement::Return(None) | Statement::Goto(_))
+                        then_body.last(),
+                        Some(Statement::Return(None) | Statement::Goto(_))
                     ) && matches!(
-                                statements.get(statement_index + 1),
-                                Some(Statement::If { else_body, .. }) if else_body.is_empty()
-                            );
+                        statements.get(statement_index + 1),
+                        Some(Statement::If { else_body, .. }) if else_body.is_empty()
+                    );
                     let continuation_cache = carry_fallthrough_cache.then(|| {
                         (
                             self.condition_global_values.clone(),
@@ -890,7 +1005,12 @@ impl Generator {
                             .locals
                             .iter()
                             .map(|local| local.name.as_str())
-                            .chain(function.parameters.iter().map(|parameter| parameter.name.as_str()))
+                            .chain(
+                                function
+                                    .parameters
+                                    .iter()
+                                    .map(|parameter| parameter.name.as_str()),
+                            )
                             .filter(|candidate| *candidate != name)
                             .find_map(|candidate| {
                                 (expression_reads_name(value, candidate)
@@ -904,9 +1024,7 @@ impl Generator {
                                     (location.register >= mwcc_vreg::VIRTUAL_BASE)
                                         .then(|| location.register - mwcc_vreg::VIRTUAL_BASE)
                                 })
-                                .and_then(|id| {
-                                    self.register_prefer.get(&u32::from(id)).copied()
-                                })
+                                .and_then(|id| self.register_prefer.get(&u32::from(id)).copied())
                             })
                     });
                     let accumulator = self.try_emit_structured_call_accumulator(
@@ -940,11 +1058,10 @@ impl Generator {
                         } else {
                             previous
                         };
-                        let handled_wide_initializer = self
-                            .try_emit_structured_wide_saved_initializer(value, destination);
+                        let handled_wide_initializer =
+                            self.try_emit_structured_wide_saved_initializer(value, destination);
                         let handled_call_combine = !handled_wide_initializer
-                            && self
-                            .try_emit_structured_in_place_call_combine(
+                            && self.try_emit_structured_in_place_call_combine(
                                 name,
                                 value,
                                 destination,
@@ -952,42 +1069,50 @@ impl Generator {
                         let handled_computed_address = if !handled_wide_initializer
                             && !handled_call_combine
                         {
-                        if let (
-                            Type::StructPointer { element_size },
-                            Expression::AddressOf { operand },
-                        ) = (declared_type, value)
-                        {
-                            if let Expression::Index { base, index } = operand.as_ref() {
-                                if let (
-                                    Expression::Variable(global),
-                                    Expression::Variable(index_name),
-                                ) = (base.as_ref(), index.as_ref())
-                                {
-                                    if self.global_array_sizes.contains_key(global) {
-                                        let index_register = self.lookup_general(index_name).ok_or_else(|| {
+                            if let (
+                                Type::StructPointer { element_size },
+                                Expression::AddressOf { operand },
+                            ) = (declared_type, value)
+                            {
+                                if let Expression::Index { base, index } = operand.as_ref() {
+                                    if let (
+                                        Expression::Variable(global),
+                                        Expression::Variable(index_name),
+                                    ) = (base.as_ref(), index.as_ref())
+                                    {
+                                        if self.global_array_sizes.contains_key(global) {
+                                            let index_register = self.lookup_general(index_name).ok_or_else(|| {
                                             Diagnostic::error("structured computed address index has no register")
                                         })?;
-                                        let high = self.fresh_virtual_general();
-                                        let scaled = self.fresh_virtual_general();
-                                        self.emit_address_high(high, global);
-                                        emit_scaled_index(
-                                            &mut self.output.instructions,
-                                            scaled,
-                                            index_register,
-                                            element_size,
-                                        )?;
-                                        self.record_relocation(RelocationKind::Addr16Lo, global);
-                                        self.output.instructions.push(Instruction::AddImmediate {
-                                            d: GENERAL_SCRATCH,
-                                            a: high,
-                                            immediate: 0,
-                                        });
-                                        self.output.instructions.push(Instruction::Add {
-                                            d: destination,
-                                            a: GENERAL_SCRATCH,
-                                            b: scaled,
-                                        });
-                                        true
+                                            let high = self.fresh_virtual_general();
+                                            let scaled = self.fresh_virtual_general();
+                                            self.emit_address_high(high, global);
+                                            emit_scaled_index(
+                                                &mut self.output.instructions,
+                                                scaled,
+                                                index_register,
+                                                element_size,
+                                            )?;
+                                            self.record_relocation(
+                                                RelocationKind::Addr16Lo,
+                                                global,
+                                            );
+                                            self.output.instructions.push(
+                                                Instruction::AddImmediate {
+                                                    d: GENERAL_SCRATCH,
+                                                    a: high,
+                                                    immediate: 0,
+                                                },
+                                            );
+                                            self.output.instructions.push(Instruction::Add {
+                                                d: destination,
+                                                a: GENERAL_SCRATCH,
+                                                b: scaled,
+                                            });
+                                            true
+                                        } else {
+                                            false
+                                        }
                                     } else {
                                         false
                                     }
@@ -999,18 +1124,15 @@ impl Generator {
                             }
                         } else {
                             false
-                        }
-                        } else {
-                            false
                         };
                         if handled_wide_initializer
                             || handled_call_combine
                             || handled_computed_address
                         {
-                        Ok(())
-                    } else {
-                        self.evaluate(value, declared_type, destination)
-                    }
+                            Ok(())
+                        } else {
+                            self.evaluate(value, declared_type, destination)
+                        }
                         .map_err(|mut diagnostic| {
                             diagnostic.message.push_str(&format!(
                                 " (in structured assignment statement {statement_index})"
@@ -1023,7 +1145,17 @@ impl Generator {
                                 .expect("structured assignment home")
                                 .register = destination;
                         }
+                    }
                 }
+                Statement::Loop { .. } => {
+                    if !self.try_emit_global_struct_member_search_loop_in_function(
+                        statement,
+                        Some(function),
+                    )? {
+                        return Err(Diagnostic::error(
+                            "structured loop has no matching semantic owner",
+                        ));
+                    }
                 }
                 _ => self.emit_statement(statement).map_err(|mut diagnostic| {
                     diagnostic.message.push_str(&format!(
@@ -1073,7 +1205,12 @@ impl Generator {
     }
 }
 
-fn supports_statements(statements: &[Statement], function: &Function) -> bool {
+fn supports_statements(
+    statements: &[Statement],
+    function: &Function,
+    global_array_sizes: &std::collections::HashMap<String, u32>,
+    allow_global_search_loop: bool,
+) -> bool {
     statements.iter().all(|statement| match statement {
         Statement::Store { .. }
         | Statement::Expression(_)
@@ -1093,10 +1230,47 @@ fn supports_statements(statements: &[Statement], function: &Function) -> bool {
             else_body,
             ..
         } => {
-            supports_statements(then_body, function)
-                && supports_statements(else_body, function)
+            supports_statements(
+                then_body,
+                function,
+                global_array_sizes,
+                allow_global_search_loop,
+            ) && supports_statements(
+                else_body,
+                function,
+                global_array_sizes,
+                allow_global_search_loop,
+            )
+        }
+        Statement::Loop { .. } => {
+            allow_global_search_loop
+                && super::super::global_struct_member_search::is_global_struct_member_search_loop(
+                    statement,
+                    global_array_sizes,
+                )
         }
         _ => false,
+    })
+}
+
+fn pure_local_alias(local: &LocalDeclaration) -> Option<&str> {
+    let mut expression = local.initializer.as_ref()?;
+    while let Expression::Cast { operand, .. } = expression {
+        expression = operand;
+    }
+    match expression {
+        Expression::Variable(name) => Some(name),
+        _ => None,
+    }
+}
+
+fn is_call_result_local(statements: &[Statement], candidate: &str) -> bool {
+    statements.iter().any(|statement| {
+        matches!(statement,
+            Statement::Assign {
+                name,
+                value: Expression::Call { .. },
+            } if name == candidate)
     })
 }
 

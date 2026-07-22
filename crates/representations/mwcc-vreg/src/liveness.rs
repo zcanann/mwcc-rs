@@ -54,7 +54,8 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
 
     let mut calls: Vec<usize> = Vec::new();
     for (index, instruction) in instructions.iter().enumerate() {
-        if matches!(instruction, Instruction::BranchAndLink { .. } | Instruction::BranchToLinkRegisterAndLink | Instruction::BranchToCountRegisterAndLink) {
+        let is_call = matches!(instruction, Instruction::BranchAndLink { .. } | Instruction::BranchToLinkRegisterAndLink | Instruction::BranchToCountRegisterAndLink);
+        if is_call {
             calls.push(index);
         }
         let operands = register_operands(instruction);
@@ -65,18 +66,54 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
                 .map(|operand| (operand.class, operand.register))
                 .collect::<HashSet<_>>(),
         );
-        definitions_by_instruction.push(
+        let mut definitions =
             operands
                 .iter()
                 .filter(|operand| operand.role == RegisterRole::Define)
                 .map(|operand| (operand.class, operand.register))
-                .collect::<HashSet<_>>(),
-        );
+                .collect::<HashSet<_>>();
+        if is_call {
+            // Calls are an implicit definition boundary for the EABI volatile
+            // register set even though the branch instruction has no explicit
+            // register operands. This prevents an incoming r3 occupancy from
+            // being fused with a later r3 call result in the allocator's view.
+            definitions.extend(
+                [0_u8]
+                    .into_iter()
+                    .chain(3..=12)
+                    .map(|register| (Class::General, register)),
+            );
+            definitions.extend((0..=13).map(|register| (Class::Float, register)));
+        }
+        definitions_by_instruction.push(definitions);
         // Uses first: extend the open range (opening one from entry if this is a
         // parameter's first appearance).
         for operand in operands.iter().filter(|operand| operand.role == RegisterRole::Use) {
             let entry = open.entry((operand.class, operand.register)).or_insert((0, index));
             entry.1 = index;
+        }
+        if is_call {
+            let clobbered: Vec<_> = open
+                .keys()
+                .copied()
+                .filter(|(class, register)| {
+                    !Reg::is_virtual_field(*register)
+                        && match class {
+                            Class::General => *register == 0 || (3..=12).contains(register),
+                            Class::Float => *register <= 13,
+                        }
+                })
+                .collect();
+            for key in clobbered {
+                if let Some((start, end)) = open.remove(&key) {
+                    ranges.push((key, start, end));
+                }
+            }
+            // The ABI result registers become new physical values at the call.
+            // Unused results form harmless zero-length occupancies; used results
+            // now begin here instead of being treated as live from function entry.
+            open.insert((Class::General, 3), (index, index));
+            open.insert((Class::Float, 1), (index, index));
         }
         // Then definitions: a PHYSICAL register's old value ends and a new range
         // begins (the classic r3 parameter/temporary/result reuse). A VIRTUAL
@@ -293,6 +330,33 @@ mod tests {
         let home1 = allocation.physical(VirtualRegister::new(1, Class::General)).unwrap();
         assert_ne!(home0, home1);
         assert!(home0 < home1, "the earlier-defined base takes the lower register");
+    }
+
+    #[test]
+    fn a_call_splits_an_incoming_register_from_its_result() {
+        let stream = [
+            Instruction::AddImmediate { d: 0, a: 3, immediate: 1 },
+            Instruction::AddImmediate { d: v(0), a: 4, immediate: 2 },
+            Instruction::Or { a: 5, s: v(0), b: v(0) },
+            Instruction::BranchAndLink { target: "produce".into() },
+            Instruction::AddImmediate { d: 31, a: 3, immediate: 0 },
+        ];
+        let liveness = analyze(&stream);
+        let r3: Vec<_> = liveness
+            .pinned
+            .iter()
+            .filter(|occupancy| occupancy.class == Class::General && occupancy.register == 3)
+            .map(|occupancy| (occupancy.start, occupancy.end))
+            .collect();
+        assert_eq!(r3, [(0, 0), (3, 4)]);
+
+        let constraints = RegisterConstraints::gekko();
+        let allocation = LinearScan.allocate(&liveness.intervals, &liveness.pinned, &liveness.calls, &constraints).unwrap();
+        assert_eq!(
+            allocation.physical(Reg::general(0).virtual_register().unwrap()),
+            Some(3),
+            "the dead incoming r3 is reusable before the call result redefines it"
+        );
     }
 
     #[test]

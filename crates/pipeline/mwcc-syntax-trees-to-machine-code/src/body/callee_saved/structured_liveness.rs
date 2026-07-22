@@ -48,8 +48,7 @@ fn flow(
             seen_labels.insert(label.clone());
             let incoming = pending_gotos.remove(label).unwrap_or_default();
             if falls_through || !incoming.is_empty() {
-                prior_call = (falls_through && prior_call)
-                    || incoming.into_iter().any(|call| call);
+                prior_call = (falls_through && prior_call) || incoming.into_iter().any(|call| call);
                 falls_through = true;
             }
             continue;
@@ -108,8 +107,10 @@ fn flow(
             } => {
                 read_after |= expression_reads_name_across_call(value, name, prior_call);
                 if assigned_name == name {
-                    prior_call = expression_has_call(value)
-                        || (prior_call && expression_reads_name(value, name));
+                    // The assignment's new value is defined only after every
+                    // call in its right-hand side has returned. It has not yet
+                    // crossed a call; a later statement must introduce one.
+                    prior_call = false;
                 } else {
                     prior_call |= statement_has_call(statement);
                 }
@@ -213,6 +214,40 @@ mod tests {
             Statement::Expression(Expression::Variable("value".into())),
         ];
         assert!(!read_after_possible_call(&statements, "value", false).read_after_call);
+    }
+
+    #[test]
+    fn a_call_result_read_before_the_next_call_stays_volatile() {
+        let statements = vec![
+            Statement::Assign {
+                name: "value".into(),
+                value: Expression::Call {
+                    name: "produce".into(),
+                    arguments: vec![],
+                },
+            },
+            Statement::Assign {
+                name: "copy".into(),
+                value: Expression::Variable("value".into()),
+            },
+        ];
+        assert!(!read_after_possible_call(&statements, "value", false).read_after_call);
+    }
+
+    #[test]
+    fn a_call_result_read_after_another_call_needs_a_saved_home() {
+        let statements = vec![
+            Statement::Assign {
+                name: "value".into(),
+                value: Expression::Call {
+                    name: "produce".into(),
+                    arguments: vec![],
+                },
+            },
+            call("intervening"),
+            Statement::Expression(Expression::Variable("value".into())),
+        ];
+        assert!(read_after_possible_call(&statements, "value", false).read_after_call);
     }
 
     #[test]

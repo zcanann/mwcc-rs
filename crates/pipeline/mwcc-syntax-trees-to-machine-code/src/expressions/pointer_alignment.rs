@@ -2,12 +2,14 @@
 
 use super::*;
 
-/// Recognize `(pointer_type)(((word)source + alignment - 1) & -alignment)`.
+/// Recognize `(pointer_type)(((word)source + bias) & -alignment)`.
 ///
 /// The casts are semantically important: this is integer address alignment,
 /// not scaled pointer arithmetic. Keep the recognizer narrow so unrelated
-/// add-and-mask expressions continue through the general arithmetic paths.
-fn round_up_parts(expression: &Expression) -> Option<(&Expression, u8)> {
+/// add-and-mask expressions continue through the general arithmetic paths. The
+/// bias is normally `alignment - 1`, but can also contain a preceding byte
+/// displacement folded into the same `addi` by MWCC.
+fn round_up_parts(expression: &Expression) -> Option<(&Expression, i16, u8)> {
     let Expression::Cast {
         target_type: Type::Pointer(_) | Type::StructPointer { .. },
         operand: masked,
@@ -43,17 +45,15 @@ fn round_up_parts(expression: &Expression) -> Option<(&Expression, u8)> {
         (right.as_ref(), constant_value(left)?)
     };
 
-    let alignment = bias.checked_add(1)?;
-    if !(2..=32768).contains(&alignment) {
+    let mask = mask as i32 as u32;
+    let cleared_bits = mask.trailing_zeros();
+    if !(1..=15).contains(&cleared_bits)
+        || mask != u32::MAX << cleared_bits
+        || bias < i64::from((1_u32 << cleared_bits) - 1)
+    {
         return None;
     }
-    let alignment = u32::try_from(alignment).ok()?;
-    if !alignment.is_power_of_two() {
-        return None;
-    }
-    if (mask as i32 as u32) != !(alignment - 1) {
-        return None;
-    }
+    let bias = i16::try_from(bias).ok()?;
 
     let source = match source {
         Expression::Cast {
@@ -66,7 +66,7 @@ fn round_up_parts(expression: &Expression) -> Option<(&Expression, u8)> {
         return None;
     }
 
-    Some((source, alignment.trailing_zeros() as u8))
+    Some((source, bias, cleared_bits as u8))
 }
 
 impl Generator {
@@ -78,14 +78,14 @@ impl Generator {
         expression: &Expression,
         destination: u8,
     ) -> Compilation<bool> {
-        let Some((source, cleared_bits)) = round_up_parts(expression) else {
+        let Some((source, bias, cleared_bits)) = round_up_parts(expression) else {
             return Ok(false);
         };
         let source = self.general_register_of_leaf(source)?;
         self.output.instructions.push(Instruction::AddImmediate {
             d: GENERAL_SCRATCH,
             a: source,
-            immediate: ((1_u32 << cleared_bits) - 1) as i16,
+            immediate: bias,
         });
         self.output
             .instructions

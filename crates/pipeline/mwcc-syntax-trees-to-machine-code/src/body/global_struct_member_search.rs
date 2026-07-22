@@ -134,6 +134,23 @@ fn classify<'a>(
     })
 }
 
+pub(super) fn is_global_struct_member_search_loop(
+    statement: &Statement,
+    global_array_sizes: &std::collections::HashMap<String, u32>,
+) -> bool {
+    classify(statement, global_array_sizes).is_some()
+}
+
+pub(super) fn global_struct_member_search_result(statement: &Statement) -> Option<&str> {
+    let Statement::Loop { body, .. } = statement else {
+        return None;
+    };
+    match body.first() {
+        Some(Statement::Assign { name, .. }) => Some(name),
+        _ => None,
+    }
+}
+
 impl Generator {
     /// Emit the CARD-style `for` scan if `statement` has the measured semantic
     /// shape. Returns false without changing generator state for every other loop.
@@ -177,7 +194,17 @@ impl Generator {
         // preceding statement has already extended the three-instruction frame
         // prefix; a later-position scan needs its own independently measured
         // block-boundary schedule.
-        if !self.non_leaf || self.output.instructions.len() != 3 {
+        let legacy_dense = self.behavior.frame_convention == FrameConvention::LinkageFirst
+            && matches!(
+                self.output.instructions.as_slice(),
+                [
+                    Instruction::MoveFromLinkRegister { d: 0 },
+                    Instruction::StoreWord { s: 0, a: 1, .. },
+                    Instruction::StoreWordWithUpdate { s: 1, a: 1, .. },
+                    Instruction::StoreMultipleWord { a: 1, .. }
+                ]
+            );
+        if !self.non_leaf || (self.output.instructions.len() != 3 && !legacy_dense) {
             return Ok(false);
         }
         let prefix_matches = match self.behavior.frame_convention {
@@ -185,6 +212,7 @@ impl Generator {
                 self.output.instructions.last(),
                 Some(Instruction::StoreWord { s: 0, a: 1, .. })
             ),
+            FrameConvention::LinkageFirst if legacy_dense => true,
             FrameConvention::LinkageFirst => matches!(
                 self.output.instructions.as_slice(),
                 [
@@ -202,11 +230,27 @@ impl Generator {
         // the allocator to move the scan around incoming/live values in a larger
         // function. The address high half dies when `base` is formed, so `record`
         // can legally recycle its preferred r4 home at the loop head.
+        let search_result_is_keystone = function.is_some_and(|function| {
+            function
+                .statements
+                .iter()
+                .skip(1)
+                .filter(|statement| statement_references_name(statement, search.result))
+                .count()
+                >= 6
+        });
         let address_high = self.fresh_virtual_general_preferring(4);
-        let base = self.fresh_virtual_general_preferring(6);
-        let counter = self.fresh_virtual_general_preferring(7);
-        let displacement = self.fresh_virtual_general_preferring(5);
-        let record = self.fresh_virtual_general_preferring(4);
+        let base = self.fresh_virtual_general_preferring(if legacy_dense { 5 } else { 6 });
+        let counter = self
+            .lookup_general(search.counter)
+            .unwrap_or_else(|| self.fresh_virtual_general_preferring(7));
+        let displacement = self.fresh_virtual_general_preferring(if legacy_dense { 4 } else { 5 });
+        let record_home = self.lookup_general(search.result);
+        let record = if legacy_dense && !search_result_is_keystone {
+            self.fresh_virtual_general_preferring(6)
+        } else {
+            record_home.unwrap_or_else(|| self.fresh_virtual_general_preferring(4))
+        };
 
         // Both linkage conventions have emitted their three-instruction frame
         // prefix before statements begin. MWCC overlaps the invariant setup with
@@ -214,6 +258,12 @@ impl Generator {
         // build 163. Delay that instruction here so branch-bearing functions get
         // the measured schedule even though the general scheduler conservatively
         // leaves control-flow functions untouched.
+        let delayed_save_multiple = legacy_dense.then(|| {
+            self.output
+                .instructions
+                .pop()
+                .expect("dense prefix includes stmw")
+        });
         let mut delayed_prefix = Some(self.output.instructions.pop().ok_or_else(|| {
             Diagnostic::error("global struct member search is missing its frame prefix")
         })?);
@@ -240,7 +290,7 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::load_immediate(GENERAL_SCRATCH, search.bound));
-        if self.behavior.frame_convention == FrameConvention::LinkageFirst {
+        if self.behavior.frame_convention == FrameConvention::LinkageFirst && !legacy_dense {
             self.output
                 .instructions
                 .push(Instruction::MoveToCountRegister { s: GENERAL_SCRATCH });
@@ -251,6 +301,11 @@ impl Generator {
             a: address_high,
             immediate: 0,
         });
+        if legacy_dense {
+            self.output
+                .instructions
+                .push(Instruction::MoveToCountRegister { s: GENERAL_SCRATCH });
+        }
         if self.behavior.frame_convention == FrameConvention::LinkageFirst {
             self.output
                 .instructions
@@ -262,6 +317,9 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::load_immediate(displacement, 0));
+        if let Some(save_multiple) = delayed_save_multiple {
+            self.output.instructions.push(save_multiple);
+        }
         if self.behavior.frame_convention == FrameConvention::Predecrement {
             self.output
                 .instructions
@@ -273,6 +331,20 @@ impl Generator {
                 s: GENERAL_SCRATCH,
                 immediate: 0,
             });
+        }
+        if legacy_dense {
+            // In the dense linkage-first frame the counter initialization fills
+            // the final save's latency slot immediately before the loop head.
+            let counter_init = self
+                .output
+                .instructions
+                .iter()
+                .rposition(|instruction| {
+                    matches!(instruction, Instruction::AddImmediate { d, a: 0, immediate: 0 } if *d == counter)
+                })
+                .expect("counter initializer was emitted");
+            let instruction = self.output.instructions.remove(counter_init);
+            self.output.instructions.push(instruction);
         }
         debug_assert!(delayed_prefix.is_none());
         debug_assert!(legacy_link_store.is_none());
@@ -296,6 +368,9 @@ impl Generator {
                 a: GENERAL_SCRATCH,
                 b: needle,
             });
+        if let Some(home) = record_home.filter(|home| *home != record) {
+            self.emit_callee_saved_home_copy(home, record);
+        }
         self.emit_branch_conditional_to(12, 2, done); // beq
         self.output.instructions.push(Instruction::AddImmediate {
             d: counter,
@@ -325,7 +400,7 @@ impl Generator {
             search.result.to_string(),
             Location {
                 class: ValueClass::General,
-                register: record,
+                register: record_home.unwrap_or(record),
                 signed: false,
                 width: 32,
                 pointee: None,

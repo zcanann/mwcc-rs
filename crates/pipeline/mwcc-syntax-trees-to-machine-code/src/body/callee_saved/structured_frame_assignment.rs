@@ -9,6 +9,238 @@
 #[allow(unused_imports)]
 use super::*;
 
+/// Compose a byte displacement immediately preceding a power-of-two pointer
+/// round-up into the round-up's `addi` bias. MWCC keeps the intermediate pointer
+/// in one register, but selects `load; addi combined_bias; clrrwi` rather than
+/// materializing the source displacement separately.
+pub(super) fn fold_adjacent_byte_pointer_round_up(function: &Function) -> Option<Function> {
+    for index in 0..function.statements.len().saturating_sub(1) {
+        let Statement::Assign {
+            name,
+            value: displaced,
+        } = &function.statements[index]
+        else {
+            continue;
+        };
+        let Statement::Assign {
+            name: rounded_name,
+            value: rounded,
+        } = &function.statements[index + 1]
+        else {
+            continue;
+        };
+        if name != rounded_name || !is_byte_pointer(function, name) {
+            continue;
+        }
+        let Some((base, displacement)) = byte_pointer_displacement(displaced) else {
+            continue;
+        };
+        let Some(composed_round_up) = compose_round_up_bias(rounded, name, displacement) else {
+            continue;
+        };
+
+        let mut rewritten = function.clone();
+        let Statement::Assign { value, .. } = &mut rewritten.statements[index] else {
+            unreachable!("assignment was classified above")
+        };
+        *value = base.clone();
+        let Statement::Assign { value, .. } = &mut rewritten.statements[index + 1] else {
+            unreachable!("assignment was classified above")
+        };
+        *value = composed_round_up;
+        return Some(rewritten);
+    }
+    None
+}
+
+pub(super) fn adjacent_byte_pointer_round_up_name(function: &Function) -> Option<&str> {
+    function
+        .statements
+        .windows(2)
+        .find_map(|statements| match statements {
+            [Statement::Assign {
+                name,
+                value: displaced,
+            }, Statement::Assign {
+                name: rounded_name,
+                value: rounded,
+            }] if name == rounded_name && is_byte_pointer(function, name) => {
+                let foldable = byte_pointer_displacement(displaced)
+                    .and_then(|(_, displacement)| {
+                        compose_round_up_bias(rounded, name, displacement)
+                    })
+                    .is_some();
+                (foldable || has_composed_round_up_bias(rounded, name)).then_some(name.as_str())
+            }
+            _ => None,
+        })
+}
+
+fn has_composed_round_up_bias(expression: &Expression, name: &str) -> bool {
+    let Expression::Cast {
+        target_type: Type::Pointer(_) | Type::StructPointer { .. },
+        operand: masked,
+    } = expression
+    else {
+        return false;
+    };
+    let Expression::Binary {
+        operator: BinaryOperator::BitAnd,
+        left,
+        right,
+    } = masked.as_ref()
+    else {
+        return false;
+    };
+    let (sum, mask) = if constant_value(right).is_some() {
+        (left.as_ref(), right.as_ref())
+    } else {
+        (right.as_ref(), left.as_ref())
+    };
+    let Some(mask) = constant_value(mask).map(|value| value as i32 as u32) else {
+        return false;
+    };
+    let Expression::Binary {
+        operator: BinaryOperator::Add,
+        left,
+        right,
+    } = sum
+    else {
+        return false;
+    };
+    let (source, bias) = if let Some(bias) = constant_value(right) {
+        (left.as_ref(), bias)
+    } else if let Some(bias) = constant_value(left) {
+        (right.as_ref(), bias)
+    } else {
+        return false;
+    };
+    let source_name = match source {
+        Expression::Variable(source_name) => source_name.as_str(),
+        Expression::Cast {
+            target_type: Type::Int | Type::UnsignedInt,
+            operand,
+        } => match operand.as_ref() {
+            Expression::Variable(source_name) => source_name.as_str(),
+            _ => return false,
+        },
+        _ => return false,
+    };
+    let cleared_bits = mask.trailing_zeros();
+    source_name == name
+        && (1..=15).contains(&cleared_bits)
+        && mask == u32::MAX << cleared_bits
+        && bias > i64::from((1_u32 << cleared_bits) - 1)
+}
+
+fn is_byte_pointer(function: &Function, name: &str) -> bool {
+    function
+        .locals
+        .iter()
+        .find(|local| local.name == name)
+        .map(|local| local.declared_type)
+        .or_else(|| {
+            function
+                .parameters
+                .iter()
+                .find(|parameter| parameter.name == name)
+                .map(|parameter| parameter.parameter_type)
+        })
+        .is_some_and(|ty| matches!(ty, Type::Pointer(Pointee::Char | Pointee::UnsignedChar)))
+}
+
+fn byte_pointer_displacement(expression: &Expression) -> Option<(&Expression, i64)> {
+    let Expression::Binary {
+        operator: BinaryOperator::Add,
+        left,
+        right,
+    } = expression
+    else {
+        return None;
+    };
+    let (base, displacement) = if let Some(displacement) = constant_value(right) {
+        (left.as_ref(), displacement)
+    } else {
+        (right.as_ref(), constant_value(left)?)
+    };
+    (displacement > 0).then_some((base, displacement))
+}
+
+fn compose_round_up_bias(
+    expression: &Expression,
+    name: &str,
+    displacement: i64,
+) -> Option<Expression> {
+    let Expression::Cast {
+        target_type: target_type @ (Type::Pointer(_) | Type::StructPointer { .. }),
+        operand: masked,
+    } = expression
+    else {
+        return None;
+    };
+    let Expression::Binary {
+        operator: BinaryOperator::BitAnd,
+        left,
+        right,
+    } = masked.as_ref()
+    else {
+        return None;
+    };
+    let (sum, mask) = if constant_value(right).is_some() {
+        (left.as_ref(), right.as_ref())
+    } else {
+        (right.as_ref(), left.as_ref())
+    };
+    let mask_value = constant_value(mask)? as i32 as u32;
+    let Expression::Binary {
+        operator: BinaryOperator::Add,
+        left,
+        right,
+    } = sum
+    else {
+        return None;
+    };
+    let (source, bias) = if let Some(bias) = constant_value(right) {
+        (left.as_ref(), bias)
+    } else {
+        (right.as_ref(), constant_value(left)?)
+    };
+    let source_name = match source {
+        Expression::Variable(source_name) => source_name,
+        Expression::Cast {
+            target_type: Type::Int | Type::UnsignedInt,
+            operand,
+        } => match operand.as_ref() {
+            Expression::Variable(source_name) => source_name,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let alignment = bias.checked_add(1)?;
+    if source_name != name
+        || !(2..=32768).contains(&alignment)
+        || !u32::try_from(alignment).ok()?.is_power_of_two()
+        || mask_value != !(u32::try_from(alignment).ok()? - 1)
+    {
+        return None;
+    }
+    let composed_bias = bias.checked_add(displacement)?;
+    i16::try_from(composed_bias).ok()?;
+
+    Some(Expression::Cast {
+        target_type: *target_type,
+        operand: Box::new(Expression::Binary {
+            operator: BinaryOperator::BitAnd,
+            left: Box::new(Expression::Binary {
+                operator: BinaryOperator::Add,
+                left: Box::new(source.clone()),
+                right: Box::new(Expression::IntegerLiteral(composed_bias)),
+            }),
+            right: Box::new(mask.clone()),
+        }),
+    })
+}
+
 /// Sink a low-bit-clearing parameter assignment through uses which cannot
 /// observe those bits. High right-shifts keep reading the original saved value;
 /// a raw call argument receives the mask at that use. This is the SSA form MWCC
@@ -28,7 +260,10 @@ pub(super) fn sink_low_mask_parameter_assignment(function: &Function) -> Option<
         else {
             continue;
         };
-        if !function.parameters.iter().any(|parameter| &parameter.name == name)
+        if !function
+            .parameters
+            .iter()
+            .any(|parameter| &parameter.name == name)
             || !matches!(left.as_ref(), Expression::Variable(read) if read == name)
         {
             continue;
@@ -152,7 +387,10 @@ pub(super) fn sink_single_use_parameter_assignment(function: &Function) -> Optio
         let Statement::Assign { name, value } = statement else {
             continue;
         };
-        if !function.parameters.iter().any(|parameter| &parameter.name == name)
+        if !function
+            .parameters
+            .iter()
+            .any(|parameter| &parameter.name == name)
             || !is_pure_parameter_rewrite(value, name)
             || function
                 .return_expression
@@ -189,10 +427,7 @@ pub(super) fn sink_single_use_parameter_assignment(function: &Function) -> Optio
                 rejected = true;
                 break;
             };
-            if use_site
-                .replace((later_index, *argument_index))
-                .is_some()
-            {
+            if use_site.replace((later_index, *argument_index)).is_some() {
                 rejected = true;
                 break;
             }
@@ -231,8 +466,12 @@ fn statement_reads_name(statement: &Statement, name: &str) -> bool {
             else_body,
         } => {
             expression_reads_name(condition, name)
-                || then_body.iter().any(|statement| statement_reads_name(statement, name))
-                || else_body.iter().any(|statement| statement_reads_name(statement, name))
+                || then_body
+                    .iter()
+                    .any(|statement| statement_reads_name(statement, name))
+                || else_body
+                    .iter()
+                    .any(|statement| statement_reads_name(statement, name))
         }
         Statement::Switch { .. } | Statement::Loop { .. } => true,
         Statement::Return(None)

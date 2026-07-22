@@ -100,7 +100,25 @@ fn collect_deferred_interval(
             | Statement::Continue
             | Statement::Goto(_)
             | Statement::Label(_) => false,
-            Statement::Switch { .. } | Statement::Loop { .. } => return None,
+            Statement::Loop {
+                initializer,
+                condition,
+                step,
+                ..
+            } => initializer.as_ref().is_some_and(|expression| {
+                match expression {
+                    Expression::Assign { target, value }
+                        if matches!(target.as_ref(), Expression::Variable(assigned) if assigned == name) =>
+                    {
+                        expression_reads_name(value, name)
+                    }
+                    _ => expression_reads_name(expression, name),
+                }
+            }) || condition
+                .iter()
+                .chain(step)
+                .any(|expression| expression_reads_name(expression, name)),
+            Statement::Switch { .. } => return None,
         };
         if reads {
             interval.last_read = Some(position);
@@ -108,6 +126,24 @@ fn collect_deferred_interval(
         if matches!(statement, Statement::Assign { name: assigned, .. } if assigned == name) {
             interval.assignment_count += 1;
             interval.first_assignment.get_or_insert(position);
+        }
+        if let Statement::Loop {
+            initializer,
+            body,
+            step,
+            ..
+        } = statement
+        {
+            for expression in initializer.iter().chain(step) {
+                if matches!(expression,
+                    Expression::Assign { target, .. }
+                        if matches!(target.as_ref(), Expression::Variable(assigned) if assigned == name))
+                {
+                    interval.assignment_count += 1;
+                    interval.first_assignment.get_or_insert(position);
+                }
+            }
+            collect_deferred_interval(body, name, cursor, interval)?;
         }
         if let Statement::If {
             then_body,
@@ -125,6 +161,7 @@ fn collect_deferred_interval(
 pub(super) fn plan_ephemeral_locals<'a>(
     function: &'a Function,
     survivors: &std::collections::HashSet<&str>,
+    frame_locals: &std::collections::HashSet<String>,
 ) -> Option<Vec<&'a LocalDeclaration>> {
     let mut live: std::collections::HashSet<&str> = function
         .locals
@@ -155,6 +192,7 @@ pub(super) fn plan_ephemeral_locals<'a>(
             local.array_length.is_none()
                 && live.contains(local.name.as_str())
                 && !survivors.contains(local.name.as_str())
+                && !frame_locals.contains(local.name.as_str())
         })
         .collect();
     if ephemeral.iter().any(|local| {
@@ -229,8 +267,8 @@ fn assignment_flow(
             seen_labels.insert(label.clone());
             let incoming = pending_gotos.remove(label).unwrap_or_default();
             if falls_through || !incoming.is_empty() {
-                initialized = (!falls_through || initialized)
-                    && incoming.into_iter().all(|state| state);
+                initialized =
+                    (!falls_through || initialized) && incoming.into_iter().all(|state| state);
                 falls_through = true;
             }
             continue;
@@ -255,7 +293,29 @@ fn assignment_flow(
             | Statement::Continue
             | Statement::Goto(_)
             | Statement::Label(_) => false,
-            Statement::Switch { .. } | Statement::Loop { .. } => return None,
+            Statement::Loop {
+                initializer,
+                condition,
+                step,
+                ..
+            } => {
+                let initialized_here = initializer
+                    .as_ref()
+                    .is_some_and(|expression| expression_assigns_name(expression, name));
+                initializer.as_ref().is_some_and(|expression| match expression {
+                    Expression::Assign { target, value }
+                        if matches!(target.as_ref(), Expression::Variable(assigned) if assigned == name) =>
+                    {
+                        expression_reads_name(value, name)
+                    }
+                    _ => expression_reads_name(expression, name),
+                }) || (!initialized_here
+                    && condition
+                        .iter()
+                        .chain(step)
+                        .any(|expression| expression_reads_name(expression, name)))
+            }
+            Statement::Switch { .. } => return None,
         };
         if reads_before_assignment && !initialized {
             return None;
@@ -274,20 +334,10 @@ fn assignment_flow(
                 else_body,
                 ..
             } => {
-                let then_flow = assignment_flow(
-                    then_body,
-                    name,
-                    initialized,
-                    pending_gotos,
-                    seen_labels,
-                )?;
-                let else_flow = assignment_flow(
-                    else_body,
-                    name,
-                    initialized,
-                    pending_gotos,
-                    seen_labels,
-                )?;
+                let then_flow =
+                    assignment_flow(then_body, name, initialized, pending_gotos, seen_labels)?;
+                let else_flow =
+                    assignment_flow(else_body, name, initialized, pending_gotos, seen_labels)?;
                 assigned |= then_flow.assigned || else_flow.assigned;
                 initialized = match (then_flow.falls_through, else_flow.falls_through) {
                     (true, true) => then_flow.initialized && else_flow.initialized,
@@ -302,6 +352,29 @@ fn assignment_flow(
                     }
                 };
             }
+            Statement::Loop {
+                kind: LoopKind::For,
+                initializer: Some(initializer),
+                condition: Some(condition),
+                step,
+                body,
+            } if loop_executes_at_least_once(initializer, condition) => {
+                if expression_assigns_name(initializer, name) {
+                    initialized = true;
+                    assigned = true;
+                }
+                let body_flow =
+                    assignment_flow(body, name, initialized, pending_gotos, seen_labels)?;
+                initialized = body_flow.initialized;
+                assigned |= body_flow.assigned;
+                if step
+                    .as_ref()
+                    .is_some_and(|step| expression_assigns_name(step, name))
+                {
+                    initialized = true;
+                    assigned = true;
+                }
+            }
             Statement::Goto(label) => {
                 if seen_labels.contains(label) {
                     return None;
@@ -312,9 +385,7 @@ fn assignment_flow(
                     .push(initialized);
                 falls_through = false;
             }
-            Statement::Return(_) | Statement::Break | Statement::Continue => {
-                falls_through = false
-            }
+            Statement::Return(_) | Statement::Break | Statement::Continue => falls_through = false,
             _ => {}
         }
     }
@@ -346,13 +417,52 @@ pub(super) fn body_uses_local(statements: &[Statement], name: &str) -> bool {
                 || body_uses_local(then_body, name)
                 || body_uses_local(else_body, name)
         }
-        Statement::Switch { .. } | Statement::Loop { .. } => true,
+        Statement::Loop {
+            initializer,
+            condition,
+            step,
+            body,
+            ..
+        } => {
+            initializer
+                .iter()
+                .chain(condition)
+                .chain(step)
+                .any(|expression| expression_reads_name(expression, name))
+                || body_uses_local(body, name)
+        }
+        Statement::Switch { .. } => true,
         Statement::Return(None)
         | Statement::Break
         | Statement::Continue
         | Statement::Goto(_)
         | Statement::Label(_) => false,
     })
+}
+
+fn expression_assigns_name(expression: &Expression, name: &str) -> bool {
+    matches!(expression,
+        Expression::Assign { target, .. }
+            if matches!(target.as_ref(), Expression::Variable(assigned) if assigned == name))
+}
+
+fn loop_executes_at_least_once(initializer: &Expression, condition: &Expression) -> bool {
+    let Expression::Assign { target, value } = initializer else {
+        return false;
+    };
+    let Some(initial) = constant_value(value) else {
+        return false;
+    };
+    let Expression::Variable(counter) = target.as_ref() else {
+        return false;
+    };
+    matches!(condition,
+        Expression::Binary {
+            operator: BinaryOperator::Less,
+            left,
+            right,
+        } if matches!(left.as_ref(), Expression::Variable(name) if name == counter)
+            && constant_value(right).is_some_and(|bound| initial < bound))
 }
 
 #[cfg(test)]
@@ -400,7 +510,9 @@ mod tests {
             peephole_disabled: false,
         };
         let survivors = std::collections::HashSet::new();
-        let planned = plan_ephemeral_locals(&function, &survivors).unwrap();
+        let planned =
+            plan_ephemeral_locals(&function, &survivors, &std::collections::HashSet::new())
+                .unwrap();
         assert_eq!(
             planned
                 .iter()
@@ -446,8 +558,12 @@ mod tests {
             peephole_disabled: false,
         };
 
-        let planned = plan_ephemeral_locals(&function, &std::collections::HashSet::new())
-            .expect("the branch-local float lifetime is valid");
+        let planned = plan_ephemeral_locals(
+            &function,
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+        )
+        .expect("the branch-local float lifetime is valid");
         assert_eq!(planned.len(), 1);
     }
 
@@ -511,7 +627,12 @@ mod tests {
             value: Expression::IntegerLiteral(1),
         });
 
-        assert!(plan_ephemeral_locals(&function, &std::collections::HashSet::new()).is_none());
+        assert!(plan_ephemeral_locals(
+            &function,
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+        )
+        .is_none());
     }
 
     #[test]
@@ -556,7 +677,10 @@ mod tests {
     fn rejects_a_label_target_read_before_assignment() {
         let statements = vec![
             Statement::Goto("error".into()),
-            Statement::Assign { name: "value".into(), value: Expression::IntegerLiteral(1) },
+            Statement::Assign {
+                name: "value".into(),
+                value: Expression::IntegerLiteral(1),
+            },
             Statement::Label("error".into()),
             Statement::Expression(Expression::Variable("value".into())),
         ];
