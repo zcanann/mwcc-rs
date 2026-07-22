@@ -1008,6 +1008,36 @@ class DashboardTests(unittest.TestCase):
         self.assertAlmostEqual(summary["exact_function_proportion"], 12 / 32)
         self.assertAlmostEqual(summary["exact_reference_byte_proportion"], 356 / 3536)
 
+    def test_snapshot_separates_partial_tu_projection_coverage(self):
+        rows = [row(source="src/a.c"), row(source="src/b.c"), row(source="src/c.c")]
+        observations = {
+            rows[0]["configuration_id"]: {
+                "status": "DEFER",
+                "evidence": {"function_projection": "PARTIAL"},
+                "output": "DEFER src/a.c\nCODE BYTE — projected code matches",
+            },
+            rows[1]["configuration_id"]: {
+                "status": "DEFER",
+                "evidence": {"function_projection": "PARTIAL"},
+                "output": "DEFER src/b.c\nCODE EMPTY — no lowerable functions",
+            },
+            rows[2]["configuration_id"]: {
+                "status": "DEFER",
+                "evidence": {"configured_partial": "DEFER"},
+                "output": "DEFER src/c.c",
+            },
+        }
+        estimate = representative_audit(
+            rows,
+            observations,
+            {item["configuration_id"] for item in rows},
+        )["estimate"]
+        self.assertEqual(estimate["partial_projection_objects"], 2)
+        self.assertEqual(estimate["partial_projection_measured"], 1)
+        self.assertEqual(estimate["partial_projection_exact"], 1)
+        self.assertEqual(estimate["partial_projection_empty"], 1)
+        self.assertEqual(estimate["partial_projection_failed"], 1)
+
     def test_snapshot_keeps_untested_in_the_denominator(self):
         rows = [row(source="src/a.c"), row(source="src/b.c"), row(source="src/missing.c", source_exists=False)]
         observations = {

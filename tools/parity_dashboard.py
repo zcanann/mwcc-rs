@@ -1038,6 +1038,20 @@ def representative_audit(
             "text": function_metric_summary(direct.values(), "FUNCTION_TEXT"),
             "code": function_metric_summary(direct.values(), "FUNCTION_CODE"),
         }
+        partial_projection_observations = [
+            observation
+            for observation in direct.values()
+            if observation_evidence(observation).get("function_projection") == "PARTIAL"
+        ]
+        partial_projection_results = Counter(
+            code_status
+            for observation in partial_projection_observations
+            if (code_status := code_result(observation)) is not None
+        )
+        partial_projection_failed = sum(
+            observation_evidence(observation).get("configured_partial") == "DEFER"
+            for observation in direct.values()
+        )
         anonymous_ordinal_only_mismatches = sum(
             code_component_result(observation, "ANON_ORDINALS") == "DIFF"
             for observation in direct.values()
@@ -1165,6 +1179,16 @@ def representative_audit(
             "code_exact_confidence": 0.95,
             "code_exact_interval_low": code_exact_low,
             "code_exact_interval_high": code_exact_high,
+            "partial_projection_objects": len(partial_projection_observations),
+            "partial_projection_measured": (
+                partial_projection_results["BYTE"]
+                + partial_projection_results["DIFF"]
+            ),
+            "partial_projection_exact": partial_projection_results["BYTE"],
+            "partial_projection_wrong": partial_projection_results["DIFF"],
+            "partial_projection_empty": partial_projection_results["EMPTY"],
+            "partial_projection_deferred": partial_projection_results["DEFER"],
+            "partial_projection_failed": partial_projection_failed,
             "code_components": code_components,
             "function_components": function_components,
             "anonymous_ordinal_only_mismatches": anonymous_ordinal_only_mismatches,
@@ -1368,7 +1392,19 @@ def print_brief(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]]) 
                 f"{estimate['code_exact']}/{estimate['code_measured']} = "
                 f"{estimate['code_exact_proportion']:.1%}; wrong "
                 f"{estimate['code_wrong']}/{estimate['code_measured']}; "
-                f"projection-deferred {estimate['code_deferred']}"
+                f"comparison-deferred {estimate['code_deferred']}"
+            )
+        if estimate["partial_projection_objects"] or estimate["partial_projection_failed"]:
+            print(
+                "partial-TU projection — code measured "
+                f"{estimate['partial_projection_measured']}/"
+                f"{estimate['partial_projection_objects']} emitted objects; exact "
+                f"{estimate['partial_projection_exact']}/"
+                f"{estimate['partial_projection_measured']}; wrong "
+                f"{estimate['partial_projection_wrong']}/"
+                f"{estimate['partial_projection_measured']}; empty "
+                f"{estimate['partial_projection_empty']}; failed to emit "
+                f"{estimate['partial_projection_failed']}"
             )
         function_code = estimate["function_components"]["code"]
         if function_code["objects_measured"]:
@@ -1663,9 +1699,22 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
                     f"{estimate['code_exact_proportion']:.1%}; "
                     f"wrong {estimate['code_wrong']}/{estimate['code_measured']}; "
                     f"empty-code rows {estimate['code_empty']}; "
-                    f"unmeasured-after-projection {estimate['code_deferred']}; "
+                    f"comparison-deferred {estimate['code_deferred']}; "
                     f"exact-share 95% CI {estimate['code_exact_interval_low']:.1%}.."
                     f"{estimate['code_exact_interval_high']:.1%}"
+                )
+            if estimate["partial_projection_objects"] or estimate["partial_projection_failed"]:
+                print(
+                    "partial-TU projection: code measured "
+                    f"{estimate['partial_projection_measured']}/"
+                    f"{estimate['partial_projection_objects']} emitted objects; exact "
+                    f"{estimate['partial_projection_exact']}/"
+                    f"{estimate['partial_projection_measured']}; wrong "
+                    f"{estimate['partial_projection_wrong']}/"
+                    f"{estimate['partial_projection_measured']}; empty "
+                    f"{estimate['partial_projection_empty']}; comparison-deferred "
+                    f"{estimate['partial_projection_deferred']}; failed to emit "
+                    f"{estimate['partial_projection_failed']}"
                 )
             for component, label in (
                 ("text_bytes", "raw .text bytes"),

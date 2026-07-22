@@ -547,6 +547,10 @@ def main() -> int:
     counts = {status: 0 for status in STATUSES}
     code_counts = {status: 0 for status in ("BYTE", "DIFF", "DEFER", "EMPTY")}
     code_unmeasured = 0
+    partial_projection_counts = {
+        status: 0 for status in ("BYTE", "DIFF", "DEFER", "EMPTY")
+    }
+    partial_projection_failed = 0
     reused = 0
 
     def observe(row: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
@@ -611,10 +615,16 @@ def main() -> int:
                 cache_output.flush()
             counts[status] = counts.get(status, 0) + 1
             code_status = code_verdict(detail, status)
+            metadata = parity_metadata(detail)
             if code_status is None:
                 code_unmeasured += 1
             else:
                 code_counts[code_status] += 1
+            if metadata.get("function_projection") == "PARTIAL":
+                if code_status is not None:
+                    partial_projection_counts[code_status] += 1
+            elif metadata.get("configured_partial") == "DEFER":
+                partial_projection_failed += 1
             first_detail = verdict_line(detail)
             print(
                 f'[{completed}/{len(rows)}; row {source_index}] {status:<17} {row["project"]} '
@@ -628,9 +638,23 @@ def main() -> int:
         f"layers: whole-object exact {counts['BYTE']}/{len(rows)} configured; "
         f"code exact {code_counts['BYTE']}/{code_measured} measured, "
         f"wrong {code_counts['DIFF']}/{code_measured}, "
-        f"projection-deferred {code_counts['DEFER']}, empty {code_counts['EMPTY']}, "
+        f"code-comparison-deferred {code_counts['DEFER']}, empty {code_counts['EMPTY']}, "
         f"unmeasured {code_unmeasured}"
     )
+    partial_projection_objects = sum(partial_projection_counts.values())
+    partial_projection_measured = (
+        partial_projection_counts["BYTE"] + partial_projection_counts["DIFF"]
+    )
+    if partial_projection_objects or partial_projection_failed:
+        print(
+            "partial-TU projection: "
+            f"code measured {partial_projection_measured}/{partial_projection_objects} "
+            f"emitted objects; exact {partial_projection_counts['BYTE']}/"
+            f"{partial_projection_measured}, wrong {partial_projection_counts['DIFF']}/"
+            f"{partial_projection_measured}, empty {partial_projection_counts['EMPTY']}, "
+            f"comparison-deferred {partial_projection_counts['DEFER']}, "
+            f"failed to emit {partial_projection_failed}"
+        )
     print(f"cache: {cache}")
     fcntl.flock(cache_lock.fileno(), fcntl.LOCK_UN)
     cache_lock.close()
