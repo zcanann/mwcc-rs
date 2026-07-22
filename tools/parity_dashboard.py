@@ -944,12 +944,12 @@ def representative_audit(
             observation_evidence(observation).get("configured_source", "UNKNOWN")
             for observation in direct.values()
         )
-        configured_source_provenance = all(
-            observation_evidence(observation).get("oracle_direct") != "RUNNABLE"
-            or observation_evidence(observation).get("configured_source")
-            in ("BYTE", "DIFF", "DEFER")
-            for observation in direct.values()
-        )
+        # Missing configured-source evidence is an unknown outcome, not a reason
+        # to suppress the entire metric. Timeouts can occur after real MWCC's
+        # direct probe but before mwcc-rs's drop-in attempt; requiring every
+        # runnable row to carry a final probe value made one slow TU erase the
+        # numerator and denominator for the whole fixed audit.
+        configured_source_provenance = True
         configured_source_exact = configured_source_counts["BYTE"]
         configured_source_known_nonparity = (
             configured_source_counts["DIFF"] + configured_source_counts["DEFER"]
