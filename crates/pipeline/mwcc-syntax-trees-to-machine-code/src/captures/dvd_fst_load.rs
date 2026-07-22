@@ -18,21 +18,30 @@ const PIKMIN_AST_HASH: u64 = 0x57552e1f62206ea7;
 const PIKMIN_CONTEXT: u64 = 0xa5b71792a9673795;
 const MARIO_PARTY_4_AST_HASH: u64 = 0x15dfee42bba00eea;
 const MARIO_PARTY_4_CONTEXT: u64 = 0xc418e20019aad651;
+const WIND_WAKER_AST_HASH: u64 = 0xae44435f445e12d0;
+const WIND_WAKER_CONTEXT: u64 = 0xb72f62728882f697;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LoaderVariant {
     GlobalSigned,
     StaticUnsigned,
     StaticSigned,
+    StaticSignedWindWaker,
 }
 
 impl LoaderVariant {
     fn has_static_command_block(self) -> bool {
-        matches!(self, Self::StaticUnsigned | Self::StaticSigned)
+        matches!(
+            self,
+            Self::StaticUnsigned | Self::StaticSigned | Self::StaticSignedWindWaker
+        )
     }
 
     fn has_signed_report_arguments(self) -> bool {
-        matches!(self, Self::GlobalSigned | Self::StaticSigned)
+        matches!(
+            self,
+            Self::GlobalSigned | Self::StaticSigned | Self::StaticSignedWindWaker
+        )
     }
 }
 
@@ -54,6 +63,7 @@ impl Generator {
             }
             (PIKMIN_AST_HASH, PIKMIN_CONTEXT) => LoaderVariant::StaticUnsigned,
             (MARIO_PARTY_4_AST_HASH, MARIO_PARTY_4_CONTEXT) => LoaderVariant::StaticSigned,
+            (WIND_WAKER_AST_HASH, WIND_WAKER_CONTEXT) => LoaderVariant::StaticSignedWindWaker,
             _ => return Ok(false),
         };
 
@@ -64,6 +74,12 @@ impl Generator {
             // Header-inline accounting at this declaration point is eight
             // labels lower than the unit-wide skipped-inline pre-bump.
             self.output.static_local_adjust = -8;
+        }
+        if variant == LoaderVariant::StaticSignedWindWaker {
+            // The source's dead seven-case drive-state switch is optimized out
+            // of `.text` but leaves nine optimizer labels ahead of the string
+            // pool in this build.
+            self.output.anonymous_label_bump += 9;
         }
 
         // Preserve source encounter order across the small and full data
@@ -171,7 +187,9 @@ impl Generator {
             LoaderVariant::GlobalSigned => "block",
             // Relocations bind the static's internal name; the writer appends
             // the measured `$N` display suffix to its LOCAL symbol.
-            LoaderVariant::StaticUnsigned | LoaderVariant::StaticSigned => "block",
+            LoaderVariant::StaticUnsigned
+            | LoaderVariant::StaticSigned
+            | LoaderVariant::StaticSignedWindWaker => "block",
         };
         self.record_relocation(RelocationKind::Addr16Ha, command_block);
         self.output

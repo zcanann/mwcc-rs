@@ -94,7 +94,7 @@ fn rounded_member(expression: &Expression, base_name: &str) -> Option<i16> {
     else {
         return None;
     };
-    if constant_value(right) != Some(-32) {
+    if constant_value(right).map(|value| value as u32) != Some(!31u32) {
         return None;
     }
     let Expression::Binary {
@@ -113,6 +113,17 @@ fn rounded_member(expression: &Expression, base_name: &str) -> Option<i16> {
         other => other,
     };
     member(member_expression, base_name)
+}
+
+fn is_void_return_body(body: &[Statement]) -> bool {
+    matches!(body, [Statement::Return(None)])
+}
+
+fn without_void_return(body: &[Statement]) -> &[Statement] {
+    match body.split_last() {
+        Some((Statement::Return(None), prefix)) => prefix,
+        _ => body,
+    }
 }
 
 fn recognize(function: &Function) -> Option<AsyncStateCallback<'_>> {
@@ -134,13 +145,27 @@ fn recognize(function: &Function) -> Option<AsyncStateCallback<'_>> {
     {
         return None;
     }
-    let [Statement::If {
-        condition: positive_condition,
-        then_body,
-        else_body,
-    }] = function.statements.as_slice()
-    else {
-        return None;
+    let (positive_condition, then_body, recovery) = match function.statements.as_slice() {
+        [Statement::If {
+            condition,
+            then_body,
+            else_body,
+        }] => {
+            let [recovery] = else_body.as_slice() else {
+                return None;
+            };
+            (condition, then_body, recovery)
+        }
+        [Statement::If {
+            condition,
+            then_body,
+            else_body,
+        }, recovery @ Statement::If { .. }]
+            if else_body.is_empty() =>
+        {
+            (condition, then_body, recovery)
+        }
+        _ => return None,
     };
     if !comparison(
         positive_condition,
@@ -153,7 +178,7 @@ fn recognize(function: &Function) -> Option<AsyncStateCallback<'_>> {
     let [Statement::Switch {
         scrutinee,
         arms,
-        default: None,
+        default,
     }] = then_body.as_slice()
     else {
         return None;
@@ -161,21 +186,29 @@ fn recognize(function: &Function) -> Option<AsyncStateCallback<'_>> {
     if arms.len() != 2 {
         return None;
     }
+    let terminal_default = match default {
+        None => false,
+        Some(ArmBody::Statements(body)) if is_void_return_body(body) => true,
+        _ => return None,
+    };
     let mut zero_body = None;
     let mut one_body = None;
     for (arm_index, arm) in arms.iter().enumerate() {
         // Falling out of the final case is semantically the same as an
         // explicit break. Only fallthrough into another case changes this
         // two-state shape.
-        if arm.falls_through && arm_index + 1 != arms.len() {
+        if arm.falls_through
+            && (arm_index + 1 != arms.len() || default.is_some() && !terminal_default)
+        {
             return None;
         }
         let ArmBody::Statements(body) = &arm.body else {
             return None;
         };
+        let body = without_void_return(body);
         match arm.value {
-            0 if zero_body.is_none() => zero_body = Some(body.as_slice()),
-            1 if one_body.is_none() => one_body = Some(body.as_slice()),
+            0 if zero_body.is_none() => zero_body = Some(body),
+            1 if one_body.is_none() => one_body = Some(body),
             _ => return None,
         }
     }
@@ -217,15 +250,15 @@ fn recognize(function: &Function) -> Option<AsyncStateCallback<'_>> {
     let length_member = rounded_member(one_length, request)?;
     let offset_member = member(one_offset, request)?;
 
-    let [Statement::If {
+    let Statement::If {
         condition: ignored_condition,
         then_body: ignored_body,
         else_body: retry_else,
-    }] = else_body.as_slice()
+    } = recovery
     else {
         return None;
     };
-    if !ignored_body.is_empty()
+    if !(ignored_body.is_empty() || is_void_return_body(ignored_body))
         || !comparison(
             ignored_condition,
             &condition_parameter.name,

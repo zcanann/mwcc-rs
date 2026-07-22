@@ -4557,4 +4557,72 @@ blr\n\
             Some(Expression::Variable(name)) if name == "previous"
         ));
     }
+
+    #[test]
+    fn parses_bare_void_returns_at_switch_arm_boundaries() {
+        let source = r#"
+            void work(void);
+            void callback(int state) {
+                switch (state) {
+                case 0:
+                    work();
+                    return;
+                default:
+                    return;
+                }
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let Statement::Switch { arms, default, .. } = &unit.functions[0].statements[0] else {
+            panic!("{:#?}", unit.functions[0]);
+        };
+        assert!(matches!(
+            &arms[0].body,
+            mwcc_syntax_trees::ArmBody::Statements(statements)
+                if matches!(statements.last(), Some(Statement::Return(None)))
+        ));
+        assert!(matches!(
+            default,
+            Some(mwcc_syntax_trees::ArmBody::Statements(statements))
+                if matches!(statements.as_slice(), [Statement::Return(None)])
+        ));
+    }
+
+    #[test]
+    fn preserves_else_if_after_a_bare_void_return() {
+        let source = r#"
+            void work(void);
+            void callback(int result) {
+                if (result == -1) {
+                    return;
+                } else if (result == -4) {
+                    work();
+                }
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [Statement::If {
+                then_body,
+                else_body,
+                ..
+            }] if matches!(then_body.as_slice(), [Statement::Return(None)])
+                && matches!(else_body.as_slice(), [Statement::If { .. }])
+        ));
+    }
 }

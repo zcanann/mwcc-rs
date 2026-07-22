@@ -490,7 +490,7 @@ impl Parser {
     ) -> Compilation<(mwcc_syntax_trees::ArmBody, bool)> {
         use mwcc_syntax_trees::ArmBody;
         let braced = self.eat_keyword(Token::BraceOpen);
-        if *self.peek() == Token::KeywordReturn {
+        if *self.peek() == Token::KeywordReturn && *self.peek_at(1) != Token::Semicolon {
             self.advance();
             let result = self.expression()?;
             self.expect(Token::Semicolon)?;
@@ -4227,10 +4227,19 @@ impl Parser {
                             else_body: Vec::new(),
                         });
                     }
+                    let else_body = if self.eat_word("else") {
+                        if *self.peek() == Token::KeywordIf {
+                            vec![self.parse_if_statement(&mut local_names, &mut block_locals)?]
+                        } else {
+                            self.parse_block_or_statement(&mut local_names, &mut block_locals)?
+                        }
+                    } else {
+                        Vec::new()
+                    };
                     statements.push(Statement::If {
                         condition,
                         then_body: vec![Statement::Return(None)],
-                        else_body: Vec::new(),
+                        else_body,
                     });
                     continue 'body;
                 };
