@@ -3,6 +3,7 @@
 //! Split by family (fire 547); behavior-identical.
 
 mod combine;
+mod async_state_callback;
 mod bitmask_call_chain;
 mod bounded_buffer_append;
 mod bounded_buffer_read;

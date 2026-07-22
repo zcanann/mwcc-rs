@@ -3178,6 +3178,11 @@ impl Generator {
             if self.try_interrupt_protected_allocator_bump(function)? {
                 return Ok(());
             }
+            // Build 163's asynchronous state callback interleaves its outer
+            // condition with the linkage prologue and rejoins switch/retry arms.
+            if self.try_async_state_callback(function)? {
+                return Ok(());
+            }
             // General structured body with values spanning conditional calls:
             // assign virtual callee-saved homes once, then lower its forward
             // branches through the ordinary expression/store emitters.
