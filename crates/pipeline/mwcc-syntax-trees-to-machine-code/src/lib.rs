@@ -89,6 +89,7 @@ pub fn lower_function(
     fixed_address_objects: &HashMap<String, i64>,
     inline_bodies: &InlineBodySet,
     inline_summaries: &InlineSummaries,
+    inline_expansion_facts: mwcc_syntax_trees::InlineExpansionFacts,
     config: CompilerConfig,
 ) -> Compilation<MachineFunction> {
     // An inline-`asm` function is emitted verbatim — no register allocation,
@@ -320,6 +321,10 @@ pub fn lower_function(
         legacy_callee_saved_frame_layout:
             generator::LegacyCalleeSavedFrameLayout::InferFromValueOrigin,
         legacy_discarded_call_locals: 0,
+        legacy_inline_expansion_frame_bytes: inline_expansion::legacy_frame_residue_bytes(
+            function,
+            inline_expansion_facts,
+        ),
         epilogue_lr_first: false,
         epilogue_lr_before_gprs: false,
         narrow_truncation_context: false,

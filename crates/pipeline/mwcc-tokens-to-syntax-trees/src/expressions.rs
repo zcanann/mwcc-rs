@@ -772,6 +772,7 @@ impl Parser {
                                 .map(String::as_str)
                                 .zip(arguments.iter())
                                 .collect();
+                            self.inline_substitution_count += 1;
                             substitute_variables(body, &map)
                         }
                         _ => {

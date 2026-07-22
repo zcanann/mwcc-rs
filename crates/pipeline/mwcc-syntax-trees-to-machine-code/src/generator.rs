@@ -352,6 +352,9 @@ pub(crate) struct Generator {
     /// Dead call-initializer locals removed from the semantic body. Build 163
     /// still counts their discarded values while sizing callee-saved frame lanes.
     pub(crate) legacy_discarded_call_locals: usize,
+    /// Allocator bookkeeping retained after value-returning inline calls have
+    /// been expanded away. The linkage-first frame policy owns its placement.
+    pub(crate) legacy_inline_expansion_frame_bytes: usize,
     /// Emit the saved-LR reload BEFORE the callee-saved GPR reloads in the epilogue. mwcc
     /// orders it this way for a callee-saved STORE sink (`foo(); gi = a;` — the saved value
     /// is stored after the call, then `lwz r0,20; lwz r31,12; mtlr`), as opposed to the

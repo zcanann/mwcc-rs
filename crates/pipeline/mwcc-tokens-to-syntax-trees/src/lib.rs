@@ -142,6 +142,8 @@ pub fn parse_located_translation_unit_with_enum_min(
         skipped_inline_definitions: Vec::new(),
         recover_skipped_inline_definition: false,
         inline_bodies: std::collections::HashMap::new(),
+        inline_substitution_count: 0,
+        inline_expansion_facts: std::collections::HashMap::new(),
         cxx_delete_forwarder: None,
         default_cplusplus: cplusplus,
         cplusplus,
@@ -985,6 +987,10 @@ blr\n\
                 )
             ),
             "unexpected accessor expansion: {initializer:#?}"
+        );
+        assert_eq!(
+            unit.inline_expansion_facts["compiled"].leading_initializer_substitutions,
+            1
         );
     }
 

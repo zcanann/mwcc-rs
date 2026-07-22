@@ -479,6 +479,12 @@ pub(crate) struct Parser {
     /// substituted at call sites with pure arguments (mwcc -inline auto).
     pub(crate) inline_bodies:
         std::collections::HashMap<String, (Vec<String>, mwcc_syntax_trees::Expression)>,
+    /// Number of single-return inline substitutions made in the function body
+    /// currently being parsed.
+    pub(crate) inline_substitution_count: usize,
+    /// Per-function provenance retained after those calls disappear from ASTs.
+    pub(crate) inline_expansion_facts:
+        std::collections::HashMap<String, mwcc_syntax_trees::InlineExpansionFacts>,
     /// Direct callee of a translation-unit inline scalar `operator delete`
     /// wrapper. Compiler-generated deleting destructors inline this body.
     pub(crate) cxx_delete_forwarder: Option<String>,

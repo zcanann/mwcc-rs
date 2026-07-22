@@ -259,6 +259,16 @@ pub struct CxxInlineOrdinalFacts {
     pub control_flow_labels: usize,
 }
 
+/// Source-to-AST inline substitutions whose syntax no longer exists in the
+/// lowered [`Function`]. Optimizer generations may still consume this
+/// provenance for allocation and scheduling decisions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InlineExpansionFacts {
+    /// Single-return inline calls substituted while parsing leading automatic
+    /// local initializers.
+    pub leading_initializer_substitutions: usize,
+}
+
 /// A translation unit: file-scope globals (and skipped prototypes) interleaved
 /// with one or more function definitions, in source order.
 #[derive(Debug, Clone)]
@@ -300,6 +310,8 @@ pub struct TranslationUnit {
     pub skipped_inline_functions: usize,
     /// Structural facts for version-specific C++ inline ordinal accounting.
     pub cxx_inline_ordinal_facts: CxxInlineOrdinalFacts,
+    /// Inline-substitution provenance keyed by emitted function name.
+    pub inline_expansion_facts: std::collections::HashMap<String, InlineExpansionFacts>,
     /// Names of VARIADIC function declarations/definitions in this unit. Kept
     /// OUTSIDE `Function` so capture AST hashes stay stable. Definitions still
     /// defer in general lowering; call sites use this to emit the EABI CR marker.

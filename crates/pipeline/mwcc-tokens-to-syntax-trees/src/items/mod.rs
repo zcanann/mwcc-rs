@@ -975,6 +975,7 @@ impl Parser {
             plain_inline_asm_helpers: std::mem::take(&mut self.plain_inline_asm_helpers),
             skipped_inline_functions: self.skipped_inline_functions,
             cxx_inline_ordinal_facts: self.cxx_inline_ordinal_facts,
+            inline_expansion_facts: std::mem::take(&mut self.inline_expansion_facts),
             static_local_prebumps: std::mem::take(&mut self.static_local_prebumps),
             implicitly_materialized: std::mem::take(&mut self.implicitly_materialized),
             materialized_inline_candidates: std::mem::take(
@@ -3613,6 +3614,7 @@ impl Parser {
         is_static: bool,
         parameters: Vec<Parameter>,
     ) -> Compilation<Function> {
+        self.inline_substitution_count = 0;
         let body_start_line = self.current_location().line;
         self.expect(Token::BraceOpen)?;
         // A redundant WHOLE-BODY block `int f() { { ... } }` (a macro
@@ -4071,6 +4073,7 @@ impl Parser {
             }
             self.expect(Token::Semicolon)?;
         }
+        let leading_initializer_substitutions = self.inline_substitution_count;
 
         // Zero or more statements: a store `*p = v;` / `p[i] = v;`, or a bare
         // expression evaluated for effect like a call `g();`.
@@ -4356,6 +4359,12 @@ impl Parser {
                 terminal_return_line,
                 body_end_line,
             }));
+        self.inline_expansion_facts.insert(
+            name.clone(),
+            mwcc_syntax_trees::InlineExpansionFacts {
+                leading_initializer_substitutions,
+            },
+        );
         Ok(Function {
             return_type,
             name,

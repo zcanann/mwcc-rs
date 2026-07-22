@@ -13,8 +13,8 @@ pub use expression::{ConditionalOrigin, Expression};
 pub use function::{
     ArmBody, AsmInstruction, AsmItem, AsmOperand, AsmRelocSuffix, CxxAbiBase, CxxAbiClass,
     CxxAbiVtableComponent, CxxInlineOrdinalFacts, Function, FunctionSource, GlobalDeclaration,
-    GuardedReturn, LocalDeclaration, LoopKind, Parameter, PointerElement, Statement, SwitchArm,
-    TranslationUnit,
+    GuardedReturn, InlineExpansionFacts, LocalDeclaration, LoopKind, Parameter, PointerElement,
+    Statement, SwitchArm, TranslationUnit,
 };
 pub use operators::{BinaryOperator, UnaryOperator};
 pub use types::{Pointee, Type};

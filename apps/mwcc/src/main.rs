@@ -552,6 +552,10 @@ fn compile(
             &unit.fixed_address_objects,
             &inline_bodies,
             &inline_summaries,
+            unit.inline_expansion_facts
+                .get(&function.name)
+                .copied()
+                .unwrap_or_default(),
             config,
         ) {
             Ok(machine_function) => machine_functions.push(machine_function),

@@ -8,6 +8,7 @@
 //! alpha-renamed and initialized at the call site rather than caller entry.
 
 mod call_sites;
+mod frame_residue;
 mod returns;
 mod safety;
 mod substitution;
@@ -26,6 +27,13 @@ use value_body::ValueInlineBody;
 pub struct InlineBodySet {
     bodies: HashMap<String, Function>,
     values: HashMap<String, ValueInlineBody>,
+}
+
+pub(crate) fn legacy_frame_residue_bytes(
+    function: &Function,
+    facts: mwcc_syntax_trees::InlineExpansionFacts,
+) -> usize {
+    frame_residue::legacy_frame_residue_bytes(function, facts)
 }
 
 impl InlineBodySet {

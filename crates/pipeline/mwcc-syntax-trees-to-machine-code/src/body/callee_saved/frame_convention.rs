@@ -229,7 +229,10 @@ impl Generator {
             (promoted_values + self.legacy_discarded_call_locals).div_ceil(2)
         };
         let base_size = old_size
-            .saturating_add(i16::try_from(extra_lane_count * 8).unwrap_or(i16::MAX));
+            .saturating_add(i16::try_from(extra_lane_count * 8).unwrap_or(i16::MAX))
+            .saturating_add(
+                i16::try_from(self.legacy_inline_expansion_frame_bytes).unwrap_or(i16::MAX),
+            );
         let conversion_size = if self.callee_saved_conversion_bytes == 0 {
             old_size
         } else {
