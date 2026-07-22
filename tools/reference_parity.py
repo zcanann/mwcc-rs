@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
+import fcntl
 import hashlib
 import json
 import os
@@ -447,6 +448,13 @@ def main() -> int:
             compiler_hash, harness_hash
         )
     cache.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = cache.with_suffix(cache.suffix + ".lock")
+    cache_lock = lock_path.open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(cache_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print(f"waiting for active cache writer: {cache}", file=sys.stderr)
+        fcntl.flock(cache_lock.fileno(), fcntl.LOCK_EX)
     cached = {} if args.rerun else load_cache(cache)
     build_support: Dict[str, Tuple[bool, str]] = {
         build: build_supported(compiler, build)
@@ -543,6 +551,8 @@ def main() -> int:
         f"unmeasured {code_unmeasured}"
     )
     print(f"cache: {cache}")
+    fcntl.flock(cache_lock.fileno(), fcntl.LOCK_UN)
+    cache_lock.close()
     return 1 if any(
         counts[status]
         for status in (
