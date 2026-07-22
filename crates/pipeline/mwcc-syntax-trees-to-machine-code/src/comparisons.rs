@@ -1454,6 +1454,7 @@ impl Generator {
             if self.behavior.float_compare_value_before_const {
                 let a = self.place_float_compare_value(left)?;
                 let b = self.place_float_compare_operand(right, double)?;
+                self.schedule_float_literal_in_dependent_load_gap();
                 (a, b)
             } else {
                 let b = self.place_float_compare_operand(right, double)?;
@@ -1464,6 +1465,7 @@ impl Generator {
             if self.behavior.float_compare_value_before_const {
                 let b = self.place_float_compare_value(right)?;
                 let a = self.place_float_compare_operand(left, double)?;
+                self.schedule_float_literal_in_dependent_load_gap();
                 (a, b)
             } else {
                 let a = self.place_float_compare_operand(left, double)?;

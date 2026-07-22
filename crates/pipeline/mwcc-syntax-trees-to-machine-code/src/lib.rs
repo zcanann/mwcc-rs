@@ -25,6 +25,7 @@ mod dag_emitter;
 mod division;
 mod expressions;
 mod float;
+mod float_compare_schedules;
 mod floats;
 mod frame;
 mod frexp_family;
