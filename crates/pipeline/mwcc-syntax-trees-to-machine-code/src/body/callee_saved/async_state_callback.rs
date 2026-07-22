@@ -97,18 +97,35 @@ fn rounded_member(expression: &Expression, base_name: &str) -> Option<i16> {
     if constant_value(right).map(|value| value as u32) != Some(!31u32) {
         return None;
     }
-    let Expression::Binary {
-        operator: BinaryOperator::Add,
-        left,
-        right,
-    } = left.as_ref()
-    else {
-        return None;
+    let rounded_base = match left.as_ref() {
+        Expression::Binary {
+            operator: BinaryOperator::Add,
+            left,
+            right,
+        } if constant_value(right) == Some(31) => left.as_ref(),
+        // Some SDK headers spell `x + 0x20 - 1`; retain that source AST
+        // identity while recognizing the same round-up operation.
+        Expression::Binary {
+            operator: BinaryOperator::Subtract,
+            left,
+            right,
+        } if constant_value(right) == Some(1) => {
+            let Expression::Binary {
+                operator: BinaryOperator::Add,
+                left,
+                right,
+            } = left.as_ref()
+            else {
+                return None;
+            };
+            if constant_value(right) != Some(32) {
+                return None;
+            }
+            left.as_ref()
+        }
+        _ => return None,
     };
-    if constant_value(right) != Some(31) {
-        return None;
-    }
-    let member_expression = match left.as_ref() {
+    let member_expression = match rounded_base {
         Expression::Cast { operand, .. } => operand.as_ref(),
         other => other,
     };
