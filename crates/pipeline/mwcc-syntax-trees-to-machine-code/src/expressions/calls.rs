@@ -682,7 +682,11 @@ impl Generator {
                 folded_integer,
             } = placement
             {
-                if let Some(value) = folded_integer {
+                let constant = folded_integer.or_else(|| match argument {
+                    Expression::FloatLiteral(value) => Some(*value),
+                    _ => None,
+                });
+                if let Some(value) = constant {
                     let double = parameter_type == Type::Double;
                     let bits = if double {
                         value.to_bits()
