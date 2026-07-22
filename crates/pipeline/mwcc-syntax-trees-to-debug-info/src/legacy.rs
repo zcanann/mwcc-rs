@@ -409,9 +409,10 @@ pub(super) fn lookup_capture(
     unit: &TranslationUnit,
     machine_functions: &[MachineFunction],
     source_name: &str,
+    source: &[u8],
     build: CompilerBuild,
 ) -> Compilation<Option<DebugSections>> {
-    captures::lookup(unit, machine_functions, source_name, build)
+    captures::lookup(unit, machine_functions, source_name, source, build)
 }
 
 fn finish(

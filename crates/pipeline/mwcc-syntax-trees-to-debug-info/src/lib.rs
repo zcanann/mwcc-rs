@@ -23,6 +23,7 @@ pub fn lower_debug_info(
     machine_functions: &[MachineFunction],
     has_emitted_data: bool,
     source_name: &str,
+    source: &[u8],
     build: CompilerBuild,
     code_alignment: u32,
 ) -> Compilation<Option<DebugSections>> {
@@ -38,7 +39,9 @@ pub fn lower_debug_info(
     // Exact captures are generation-independent semantic debug payloads. Give
     // them first refusal before routing uncaptured units to a format-specific
     // synthesizer; the object writer still owns section/symbol/relocation layout.
-    if let Some(capture) = legacy::lookup_capture(unit, machine_functions, source_name, build)? {
+    if let Some(capture) =
+        legacy::lookup_capture(unit, machine_functions, source_name, source, build)?
+    {
         return Ok(Some(capture));
     }
     let fragmented_generation = build.version.0 >= 4;

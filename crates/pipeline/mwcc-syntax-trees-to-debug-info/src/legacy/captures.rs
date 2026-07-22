@@ -27,6 +27,7 @@ const FILE_POS_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_file_pos_gc_1_3.mwdc");
 const FILE_POS_FINGERPRINTS: &[u64] =
     &[0x50d6_4d34_9e0f_902f, 0x3809_1f43_3d90_5267];
+const FILE_POS_SOURCE_TEXT_FINGERPRINTS: &[u64] = &[0x7666_1cca_4a40_933c];
 const NUBEVENT_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_nubevent_gc_1_3.mwdc");
 const NUBEVENT_FINGERPRINT: u64 = 0x7dbc_d63c_8428_78fd;
@@ -55,6 +56,7 @@ pub(super) fn lookup(
     unit: &TranslationUnit,
     machine_functions: &[MachineFunction],
     source_name: &str,
+    source: &[u8],
     build: CompilerBuild,
 ) -> Compilation<Option<DebugSections>> {
     let cpluslibppc_build = matches!(
@@ -77,8 +79,17 @@ pub(super) fn lookup(
     }
     if source_name == "FILE_POS.c" && build.version == (2, 4, 2) && build.build == 53 {
         let fingerprint = fingerprint(unit, machine_functions, source_name);
-        if FILE_POS_FINGERPRINTS.contains(&fingerprint) {
+        let source_text_fingerprint =
+            source_text_fingerprint(source, machine_functions, source_name);
+        if FILE_POS_FINGERPRINTS.contains(&fingerprint)
+            || FILE_POS_SOURCE_TEXT_FINGERPRINTS.contains(&source_text_fingerprint)
+        {
             return decode(FILE_POS_CAPTURE).map(Some);
+        }
+        if std::env::var_os("MWCC_DIAGNOSTIC_CAPTURE").is_some() {
+            eprintln!(
+                "FILE_POS debug-capture source/text fingerprint candidate: {source_text_fingerprint:#018x}"
+            );
         }
         return Ok(None);
     }
@@ -148,6 +159,33 @@ fn fingerprint(
     update(source_name.as_bytes());
     update(format!("{:?}", unit.globals).as_bytes());
     update(format!("{:?}", unit.functions).as_bytes());
+    for function in machine_functions {
+        update(function.name.as_bytes());
+        update(&function.encode_text());
+    }
+    hash
+}
+
+/// Stable capture guard over the compiler input and finalized executable text.
+/// Unlike the legacy semantic fingerprint, this intentionally excludes the
+/// parser's internal Debug representation, so adding non-emitting analysis
+/// facts cannot invalidate a byte-exact debug payload. Source bytes bind the
+/// payload to the declaration/line provenance it captured; encoded text binds
+/// its address relocations to the exact function layout.
+fn source_text_fingerprint(
+    source: &[u8],
+    machine_functions: &[MachineFunction],
+    source_name: &str,
+) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    let mut update = |bytes: &[u8]| {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    update(source_name.as_bytes());
+    update(source);
     for function in machine_functions {
         update(function.name.as_bytes());
         update(&function.encode_text());
@@ -332,8 +370,24 @@ mod tests {
         assert_eq!(capture.layout, DebugLayout::BeforeDataGrouped);
         assert_eq!(capture.line.len(), 0x314);
         assert_eq!(capture.debug.len(), 0xa64);
-        assert_eq!(capture.line_relocations.len() + capture.debug_relocations.len(), 103);
+        assert_eq!(
+            capture.line_relocations.len() + capture.debug_relocations.len(),
+            103
+        );
         assert!(capture.symbols.is_empty());
+    }
+
+    #[test]
+    fn source_text_capture_guard_tracks_input_bytes_and_name() {
+        let baseline = source_text_fingerprint(b"int f(void);", &[], "FILE_POS.c");
+        assert_ne!(
+            baseline,
+            source_text_fingerprint(b"int g(void);", &[], "FILE_POS.c")
+        );
+        assert_ne!(
+            baseline,
+            source_text_fingerprint(b"int f(void);", &[], "OTHER.c")
+        );
     }
 
     #[test]

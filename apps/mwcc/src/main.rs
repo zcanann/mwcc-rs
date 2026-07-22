@@ -1799,6 +1799,7 @@ fn compile(
             &machine_functions,
             !defined_globals.is_empty(),
             source_name,
+            source,
             config.build,
             code_alignment,
         )?
