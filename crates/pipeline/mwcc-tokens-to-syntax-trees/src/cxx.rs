@@ -3509,6 +3509,167 @@ impl Parser {
         }
     }
 
+    /// Materialize the compiler-generated default constructor needed by a
+    /// placement-new expression. C++ suppresses this constructor when any
+    /// source constructor is declared; otherwise its observable work is the
+    /// ordered construction of bases and aggregate members followed by this
+    /// class's vptr installation. Keeping the generated body in the ordinary
+    /// inline-definition pool lets the existing inliner schedule the calls and
+    /// stores exactly like a source-written inline constructor.
+    pub(crate) fn ensure_implicit_default_constructor(
+        &mut self,
+        class_name: &str,
+    ) -> Compilation<Option<String>> {
+        let mut visiting = std::collections::HashSet::new();
+        self.ensure_implicit_default_constructor_inner(class_name, &mut visiting)
+    }
+
+    fn ensure_implicit_default_constructor_inner(
+        &mut self,
+        class_name: &str,
+        visiting: &mut std::collections::HashSet<String>,
+    ) -> Compilation<Option<String>> {
+        let resolved = self
+            .resolve_scoped_cxx_class_name(class_name)
+            .unwrap_or_else(|| class_name.to_owned());
+        let scopes = resolved.split("::").collect::<Vec<_>>();
+        let mangled = mangle_qualified_member_function_typed(&scopes, "__ct", &[])?;
+        if self.skipped_inline_names.contains(&mangled) {
+            return Ok(Some(mangled));
+        }
+        if !visiting.insert(resolved.clone()) {
+            return Err(Diagnostic::error(format!(
+                "recursive implicit default construction for '{resolved}'"
+            )));
+        }
+
+        let class = self.cxx_classes.get(&resolved).cloned().ok_or_else(|| {
+            Diagnostic::error(format!(
+                "class layout for implicit constructor '{resolved}' was not recovered"
+            ))
+        })?;
+        let source_constructors = self
+            .cxx_constructors
+            .get(&resolved)
+            .map_or(false, |constructors| !constructors.is_empty());
+        if !class.constructors.is_empty() || source_constructors {
+            visiting.remove(&resolved);
+            return Ok(None);
+        }
+        let layout = self.structs.get(&resolved).cloned().ok_or_else(|| {
+            Diagnostic::error(format!(
+                "aggregate layout for implicit constructor '{resolved}' was not recovered"
+            ))
+        })?;
+
+        let adjusted_this = |offset: u32| {
+            if offset == 0 {
+                Expression::Variable("this".to_string())
+            } else {
+                Expression::MemberAddress {
+                    base: Box::new(Expression::Variable("this".to_string())),
+                    offset,
+                    element: Pointee::UnsignedChar,
+                    index_stride: None,
+                }
+            }
+        };
+        let mut statements = Vec::new();
+        for base in &class.bases {
+            let constructor = if self.has_declared_default_constructor(&base.name) {
+                Some(self.resolve_placement_constructor(&base.name, &[])?)
+            } else {
+                self.ensure_implicit_default_constructor_inner(&base.name, visiting)?
+            };
+            if let Some(name) = constructor {
+                statements.push(Statement::Expression(Expression::Call {
+                    name,
+                    arguments: vec![adjusted_this(base.offset)],
+                }));
+            }
+        }
+        for field_name in &class.fields {
+            let Some(field) = layout.fields.get(field_name) else {
+                continue;
+            };
+            let Some(field_class) = field.struct_tag.as_deref() else {
+                continue;
+            };
+            if !self.cxx_classes.contains_key(field_class) {
+                continue;
+            }
+            let constructor = if self.has_declared_default_constructor(field_class) {
+                Some(self.resolve_placement_constructor(field_class, &[])?)
+            } else {
+                self.ensure_implicit_default_constructor_inner(field_class, visiting)?
+            };
+            if let Some(name) = constructor {
+                statements.push(Statement::Expression(Expression::Call {
+                    name,
+                    arguments: vec![adjusted_this(field.offset)],
+                }));
+            }
+        }
+
+        if !class.vtable_components.is_empty() {
+            let vtable = format!("__vt__{}", encode_qualified_scope(&scopes)?);
+            let mut table_offset = 0u32;
+            for component in &class.vtable_components {
+                let address = Expression::AddressOf {
+                    operand: Box::new(Expression::Variable(vtable.clone())),
+                };
+                let value = if table_offset == 0 {
+                    address
+                } else {
+                    Expression::MemberAddress {
+                        base: Box::new(address),
+                        offset: table_offset,
+                        element: Pointee::UnsignedChar,
+                        index_stride: None,
+                    }
+                };
+                statements.push(Statement::Store {
+                    target: Expression::Member {
+                        base: Box::new(Expression::Variable("this".to_string())),
+                        offset: component.vptr_offset,
+                        member_type: Type::UnsignedInt,
+                        index_stride: None,
+                    },
+                    value,
+                });
+                table_offset += 8 + component.virtual_slots.max(1) as u32 * 4;
+            }
+        }
+
+        visiting.remove(&resolved);
+        if statements.is_empty() {
+            return Ok(None);
+        }
+        let element_size = layout.size;
+        self.skipped_inline_names.insert(mangled.clone());
+        self.skipped_inline_definitions.push(Function {
+            return_type: Type::StructPointer { element_size },
+            name: mangled.clone(),
+            is_static: false,
+            is_weak: false,
+            parameters: vec![Parameter {
+                parameter_type: Type::StructPointer { element_size },
+                name: "this".to_string(),
+            }],
+            locals: Vec::new(),
+            statements,
+            guards: Vec::new(),
+            return_expression: Some(Expression::Variable("this".to_string())),
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        });
+        Ok(Some(mangled))
+    }
+
     /// Convert concrete aggregate lvalues passed to reference constructor
     /// parameters into their EABI addresses. Source syntax omits `&`, but the
     /// semantic inliner must see the pointer value or it will try to bind an

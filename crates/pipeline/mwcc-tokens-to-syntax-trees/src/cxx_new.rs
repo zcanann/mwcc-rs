@@ -127,7 +127,13 @@ impl Parser {
                 placement_arguments.len()
             )));
         }
-        let constructor = self.resolve_placement_constructor(&class_name, &arguments)?;
+        let constructor = if arguments.is_empty() {
+            self.ensure_implicit_default_constructor(&class_name)?
+                .map(Ok)
+                .unwrap_or_else(|| self.resolve_placement_constructor(&class_name, &arguments))?
+        } else {
+            self.resolve_placement_constructor(&class_name, &arguments)?
+        };
         let mut call_arguments = placement_arguments;
         call_arguments.extend(arguments);
         self.expression_struct_tag = Some(class_name);

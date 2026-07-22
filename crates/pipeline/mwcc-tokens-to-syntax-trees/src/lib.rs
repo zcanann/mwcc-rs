@@ -1325,6 +1325,38 @@ blr\n\
     }
 
     #[test]
+    fn placement_new_synthesizes_implicit_member_constructor_graph() {
+        let source = r#"
+            struct Base { Base(); int base_value; };
+            struct Member { Member(); int member_value; };
+            struct Derived : public Base { Member member; };
+            void construct(Derived* destination) {
+                new (destination) Derived();
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let implicit = unit
+            .skipped_inline_definitions
+            .iter()
+            .find(|function| function.name == "__ct__7DerivedFv")
+            .expect("the implicit constructor should be synthesized");
+        assert!(matches!(implicit.statements.as_slice(), [
+            Statement::Expression(Expression::Call { name: base, arguments: base_arguments }),
+            Statement::Expression(Expression::Call { name: member, arguments: member_arguments }),
+        ] if base == "__ct__4BaseFv"
+            && member == "__ct__6MemberFv"
+            && matches!(base_arguments.as_slice(), [Expression::Variable(this)] if this == "this")
+            && matches!(member_arguments.as_slice(), [Expression::MemberAddress { offset: 4, .. }])));
+    }
+
+    #[test]
     fn skips_primary_templates_with_default_arguments() {
         let source = r#"
             template <typename T, typename Pointer = T*>
