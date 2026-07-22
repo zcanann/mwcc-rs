@@ -545,6 +545,8 @@ impl Generator {
             saved_parameter_homes.push((parameter.name.clone(), home, incoming));
         }
         let deferred_home_base = saved_parameter_base + saved_parameter_homes.len();
+        let stagger_dense_parameter_copies =
+            dense_frame && saved_parameter_base != 0 && saved_parameter_homes.len() >= 2;
         if batched_saved_home_stores {
             if !dense_frame {
                 self.emit_structured_saved_home_store_range(
@@ -553,17 +555,32 @@ impl Generator {
                     plan.frame_size,
                 );
             }
-            for (parameter_index, (_, home, incoming)) in saved_parameter_homes.iter().enumerate() {
-                if !dense_frame {
-                    self.emit_structured_saved_home_store(
-                        *home,
-                        saved_parameter_base + parameter_index,
-                        plan.frame_size,
-                    );
-                }
+            if stagger_dense_parameter_copies {
+                let (name, home, incoming) = saved_parameter_homes
+                    .last()
+                    .expect("staggered copies require saved parameters");
                 self.output
                     .instructions
                     .push(Instruction::move_register(*home, *incoming));
+                self.locations
+                    .get_mut(name)
+                    .expect("eligibility checked")
+                    .register = *home;
+            } else {
+                for (parameter_index, (_, home, incoming)) in
+                    saved_parameter_homes.iter().enumerate()
+                {
+                    if !dense_frame {
+                        self.emit_structured_saved_home_store(
+                            *home,
+                            saved_parameter_base + parameter_index,
+                            plan.frame_size,
+                        );
+                    }
+                    self.output
+                        .instructions
+                        .push(Instruction::move_register(*home, *incoming));
+                }
             }
             if !dense_frame {
                 self.emit_structured_saved_home_store_range(
@@ -582,8 +599,20 @@ impl Generator {
                 self.emit_structured_saved_home_store(home, home_index - 1, plan.frame_size);
             }
             let initializer = local.initializer.as_ref().expect("partitioned as eager");
+            let initializer_start = self.output.instructions.len();
             if !self.try_emit_structured_wide_saved_initializer(initializer, home) {
                 self.evaluate(initializer, local.declared_type, home)?;
+            }
+            if stagger_dense_parameter_copies && home_index == 1 {
+                self.schedule_dense_eager_initializer(initializer_start);
+                for (_, home, incoming) in saved_parameter_homes
+                    .iter()
+                    .take(saved_parameter_homes.len() - 1)
+                {
+                    self.output
+                        .instructions
+                        .push(Instruction::move_register(*home, *incoming));
+                }
             }
             self.locations.insert(
                 local.name.clone(),

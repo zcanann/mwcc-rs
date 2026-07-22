@@ -40,6 +40,26 @@ pub(super) fn uses_dense_saved_register_range(
 }
 
 impl Generator {
+    pub(super) fn schedule_dense_eager_initializer(&mut self, start: usize) {
+        if !matches!(
+            self.output.instructions.get(start),
+            Some(Instruction::MultiplyImmediate { .. })
+        ) || !matches!(
+            self.output.instructions.get(start + 1),
+            Some(Instruction::AddImmediateShifted { a: 0, .. })
+        ) {
+            return;
+        }
+        self.output.instructions.swap(start, start + 1);
+        for relocation in &mut self.output.relocations {
+            relocation.instruction_index = match relocation.instruction_index {
+                index if index == start => start + 1,
+                index if index == start + 1 => start,
+                index => index,
+            };
+        }
+    }
+
     pub(super) fn try_emit_structured_wide_saved_initializer(
         &mut self,
         initializer: &Expression,
