@@ -123,6 +123,35 @@ for ((flag_index=0; flag_index<${#all_flags[@]}; flag_index++)); do
   esac
 done
 
+# Measure the actual project invocation independently from the optional
+# compiler-core bridge comparison. Keep this function outside the fallback
+# preprocessing branch: directly preprocessable rows need the same configured
+# source evidence as generated-PCH and decompctx-backed rows.
+measure_configured_source() {
+  local configured_source="UNAVAILABLE"
+  local -a configured_extra=()
+  if [[ "$oracle_direct" == "RUNNABLE" ]]; then
+    if [[ -n "${pch_root:-}" && -d "${pch_root:-}" ]]; then
+      configured_extra=(-i "$pch_root")
+    fi
+    if (
+      cd "$project" && "$ours" --build "$build" \
+        ${configured_extra[@]+"${configured_extra[@]}"} \
+        ${all_flags[@]+"${all_flags[@]}"} -c "$src" \
+        -o "$dir/our.configured.o"
+    ) >"$dir/our.configured.log" 2>&1; then
+      if cmp -s "$dir/ref.direct.o" "$dir/our.configured.o"; then
+        configured_source="BYTE"
+      else
+        configured_source="DIFF"
+      fi
+    else
+      configured_source="DEFER"
+    fi
+    echo "PARITY_META configured_source=$configured_source"
+  fi
+}
+
 # Prefer the authoritative project input. Real MWCC can resolve most projects'
 # exact access paths directly; preprocessing that source preserves conditional
 # include order, macro state, and include guards that decompctx cannot model.
@@ -361,47 +390,41 @@ if [[ ! -s "$dir/ctx.i" ]]; then
   : > "$dir/ctx.i"
 fi
 
-# Measure the actual project invocation before attempting the optional
-# preprocessed-core comparison.  A generated PCH may make the authoritative
-# source compile runnable while MWCC still rejects decompctx's textual bridge;
-# that bridge failure must not erase an already measurable drop-in result.
-measure_configured_source() {
-  local configured_source="UNAVAILABLE"
-  local -a configured_extra=()
-  if [[ "$oracle_direct" == "RUNNABLE" ]]; then
-    if [[ -n "${pch_root:-}" && -d "${pch_root:-}" ]]; then
-      configured_extra=(-i "$pch_root")
-    fi
-    if (
-      cd "$project" && "$ours" --build "$build" \
-        ${configured_extra[@]+"${configured_extra[@]}"} \
-        ${all_flags[@]+"${all_flags[@]}"} -c "$src" \
-        -o "$dir/our.configured.o"
-    ) >"$dir/our.configured.log" 2>&1; then
-      if cmp -s "$dir/ref.direct.o" "$dir/our.configured.o"; then
-        configured_source="BYTE"
-      else
-        configured_source="DIFF"
-      fi
-    else
-      configured_source="DEFER"
-    fi
-    echo "PARITY_META configured_source=$configured_source"
+# 3a. Compile the fallback compiler-core reference from the same synthetic
+# bridge that will be handed to mwcc-rs.
+if ! reference_output="$(
+  cd "$dir" && "$wibo" "$sjis" "$compiler" \
+    ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$ctx_name" -o ref.o 2>&1
+)"; then
+  if [[ ${#missing_dependencies[@]} -gt 0 ]]; then
+    emit_oracle_meta
+    echo "MISSING_DEPENDENCY  $src — ${missing_dependencies[0]}"
+    exit 0
   fi
-}
+  if grep -q 'Unknown option' <<<"$reference_output"; then
+    invalid_detail="$(grep -m1 'Unknown option' <<<"$reference_output" | sed 's/^[#[:space:]]*//')"
+    emit_oracle_meta
+    echo "INVALID_CONFIGURATION  $src — $invalid_detail"
+    exit 0
+  fi
+  printf '%s\n' "$reference_output" >&2
+  exit 1
+fi
+[[ -f "$dir/ref.o" ]] || { echo "real mwcc rejected $ctx_name"; exit 1; }
+cp "$dir/ctx.i" "$dir/ours/$ctx_name"
+fi
+fi
 
-# The initial direct probe may have been rejected before the generated-PCH
-# retry made it runnable.  Persist the final oracle state before any optional
-# bridge step can fail and exit early.
+# The initial direct probe may have been rejected before a generated-PCH retry
+# made it runnable. Persist the final oracle state and configured-source result
+# before any optional bridge step can fail and exit early.
 emit_oracle_meta
 measure_configured_source
 
-# 3a. Compile the compiler-core reference from the exact same bridge handed to
-#     mwcc-rs. Preprocessing is not code-neutral under every flag: legacy `-sym
-#     on` can retain a different local-variable frame when compiling the original
-#     source. Comparing that object to a bridge-compiled candidate manufactures
-#     backend differences. The original object remains authoritative for the
-#     configured-source comparison above.
+# Directly preprocessable rows bypassed the fallback block above. Compile the
+# compiler-core reference from the exact same preprocessed bridge handed to
+# mwcc-rs. The original direct object remains in ref.direct.o for the configured
+# source comparison.
 if [[ $direct_ready -eq 1 ]]; then
   if ! (
     cd "$dir/ours" && "$wibo" "$sjis" "$compiler" \
@@ -411,29 +434,6 @@ if [[ $direct_ready -eq 1 ]]; then
     printf '%s\n' "$(<"$dir/reference.bridge.log")" >&2
     exit 1
   fi
-else
-  if ! reference_output="$(
-    cd "$dir" && "$wibo" "$sjis" "$compiler" \
-      ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$ctx_name" -o ref.o 2>&1
-  )"; then
-    if [[ ${#missing_dependencies[@]} -gt 0 ]]; then
-      emit_oracle_meta
-      echo "MISSING_DEPENDENCY  $src — ${missing_dependencies[0]}"
-      exit 0
-    fi
-    if grep -q 'Unknown option' <<<"$reference_output"; then
-      invalid_detail="$(grep -m1 'Unknown option' <<<"$reference_output" | sed 's/^[#[:space:]]*//')"
-      emit_oracle_meta
-      echo "INVALID_CONFIGURATION  $src — $invalid_detail"
-      exit 0
-    fi
-    printf '%s\n' "$reference_output" >&2
-    exit 1
-  fi
-  [[ -f "$dir/ref.o" ]] || { echo "real mwcc rejected $ctx_name"; exit 1; }
-fi
-cp "$dir/ctx.i" "$dir/ours/$ctx_name"
-fi
 fi
 
 # 3b. Our object. Preserve that synthetic basename so our FILE symbol matches.

@@ -121,6 +121,94 @@ class IdentityTests(unittest.TestCase):
             {"oracle_direct": "RUNNABLE", "configured_source": "DEFER"},
         )
 
+    def test_refctx_direct_ready_records_configured_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            source = project / "src" / "test.c"
+            source.parent.mkdir(parents=True)
+            source.write_text("int value;\n", encoding="utf-8")
+
+            ffcc = root / "ffcc"
+            tools = ffcc / "build" / "tools"
+            compiler_dir = ffcc / "build" / "compilers" / "GC" / "2.6"
+            binutils = ffcc / "build" / "binutils"
+            tools.mkdir(parents=True)
+            compiler_dir.mkdir(parents=True)
+            binutils.mkdir(parents=True)
+
+            wibo = tools / "wibo"
+            wibo.write_text(
+                "#!/bin/sh\nshift\nexec \"$@\"\n",
+                encoding="utf-8",
+            )
+            wibo.chmod(0o755)
+            (tools / "sjiswrap.exe").write_text("", encoding="utf-8")
+
+            fake_compiler = root / "fake-compiler"
+            fake_compiler.write_text(
+                "#!/bin/sh\n"
+                "output=\n"
+                "input=\n"
+                "preprocess=0\n"
+                "while [ \"$#\" -gt 0 ]; do\n"
+                "  case \"$1\" in\n"
+                "    -o) output=$2; shift 2 ;;\n"
+                "    -E) preprocess=1; input=$2; shift 2 ;;\n"
+                "    -c) input=$2; shift 2 ;;\n"
+                "    *) shift ;;\n"
+                "  esac\n"
+                "done\n"
+                "mkdir -p \"$(dirname \"$output\")\"\n"
+                "if [ \"$preprocess\" -eq 1 ]; then\n"
+                "  cp \"$input\" \"$output\"\n"
+                "else\n"
+                "  printf 'object\\n' > \"$output\"\n"
+                "fi\n",
+                encoding="utf-8",
+            )
+            fake_compiler.chmod(0o755)
+            reference_compiler = compiler_dir / "mwcceppc.exe"
+            reference_compiler.write_bytes(fake_compiler.read_bytes())
+            reference_compiler.chmod(0o755)
+
+            objdump = binutils / "powerpc-eabi-objdump"
+            objdump.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            objdump.chmod(0o755)
+
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "FFCC": str(ffcc),
+                    "MWCC_BIN": str(fake_compiler),
+                    "REFCTX_EMPTY_BASE": "1",
+                }
+            )
+            completed = subprocess.run(
+                [
+                    "bash",
+                    str(Path(__file__).with_name("refctx.sh")),
+                    str(project),
+                    "src/test.c",
+                    "GC/2.6",
+                ],
+                text=True,
+                capture_output=True,
+                env=environment,
+                timeout=10,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(
+                parity_metadata(completed.stdout),
+                {
+                    "oracle_direct": "RUNNABLE",
+                    "configured_source": "BYTE",
+                    "comparison_input": "DIRECT",
+                    "reference_object": "PREPROCESSED",
+                },
+            )
+            self.assertIn("BYTE   src/test.c", completed.stdout)
+
     def test_runner_code_layer_requires_explicit_projection_or_exact_object(self):
         self.assertEqual(code_verdict("BYTE src/test.c — exact", "BYTE"), "BYTE")
         self.assertEqual(
@@ -959,6 +1047,29 @@ class DashboardTests(unittest.TestCase):
         self.assertTrue(estimate["configured_source_provenance"])
         self.assertEqual(estimate["configured_source_exact"], 1)
         self.assertEqual(estimate["configured_source_known_nonparity"], 2)
+        self.assertEqual(estimate["configured_source_unknown"], 1)
+
+    def test_missing_configured_probe_is_unknown_without_erasing_metric(self):
+        rows = [row(source="src/exact.c"), row(source="src/timeout.c")]
+        observations = {
+            rows[0]["configuration_id"]: {
+                "status": "BYTE",
+                "evidence": {
+                    "oracle_direct": "RUNNABLE",
+                    "configured_source": "BYTE",
+                },
+            },
+            rows[1]["configuration_id"]: {
+                "status": "HARNESS",
+                "evidence": {"oracle_direct": "RUNNABLE"},
+            },
+        }
+        estimate = representative_audit(
+            rows, observations, {item["configuration_id"] for item in rows}
+        )["estimate"]
+        self.assertTrue(estimate["configured_source_provenance"])
+        self.assertEqual(estimate["configured_source_exact"], 1)
+        self.assertEqual(estimate["configured_source_known_nonparity"], 0)
         self.assertEqual(estimate["configured_source_unknown"], 1)
 
     def test_code_diagnostic_has_its_own_measured_denominator(self):
