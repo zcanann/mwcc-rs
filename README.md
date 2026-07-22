@@ -195,7 +195,11 @@ the `extab`/`extabindex`/`.mwcats` sections), and the **C++** frontend.
 
 ## Roadmap
 
-Each milestone is a canary tier that must stay 100% byte-exact before the next begins.
+Milestones organize capability; they are not permanently green gates. Inner-loop
+work attacks real nonpassing rows, and a regressed match simply re-enters that
+queue. The frozen representative audit and occasional exhaustive gate measure
+regressions at explicit checkpoints, so every compiler edit does not pay the
+cost of recompiling the historical corpus.
 
 - **M1 — locals, stack frames, the register allocator.** Prologue/epilogue (`stwu` / `mflr` / `stw…` / `lwz` / `mtlr` / `blr`), a spill model, and the allocator. This is the core research target: matching mwcc's exact register coloring is the single hardest part of the whole project.
 - **M2 — control flow and the instruction scheduler.** `if` / `while` / `for`, comparisons and conditional branches, and the scheduler that decides instruction order.
