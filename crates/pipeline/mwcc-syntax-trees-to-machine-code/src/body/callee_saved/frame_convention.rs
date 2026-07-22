@@ -347,6 +347,7 @@ impl Generator {
         // [stwu, mflr, scheduled gap..., stw LR] ->
         // [mflr, scheduled gap..., stw LR, stwu].
         self.output.instructions[..=link_store].rotate_left(1);
+        remap_prefix_rotate_left(&mut self.output.relocations, link_store);
         self.schedule_linkage_first_entry_arguments();
         // The same linkage-first convention tears down in the inverse order:
         // restore SP before writing LR. Most allocator-owned epilogues already
@@ -858,5 +859,46 @@ impl Generator {
                 self.output.instructions.len() - 2
             }
         }
+    }
+}
+
+/// Remap instruction-index relocations after `[0..=end]` rotates left once.
+fn remap_prefix_rotate_left(
+    relocations: &mut [mwcc_machine_code::Relocation],
+    end: usize,
+) {
+    for relocation in relocations {
+        relocation.instruction_index = match relocation.instruction_index {
+            0 => end,
+            index if index <= end => index - 1,
+            index => index,
+        };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mwcc_machine_code::{Relocation, RelocationKind, RelocationTarget};
+
+    #[test]
+    fn prefix_rotation_keeps_relocations_on_their_instructions() {
+        let mut relocations = (0..5)
+            .map(|instruction_index| Relocation {
+                instruction_index,
+                kind: RelocationKind::Addr16Ha,
+                target: RelocationTarget::External("symbol".to_string()),
+            })
+            .collect::<Vec<_>>();
+
+        remap_prefix_rotate_left(&mut relocations, 3);
+
+        assert_eq!(
+            relocations
+                .iter()
+                .map(|relocation| relocation.instruction_index)
+                .collect::<Vec<_>>(),
+            [3, 0, 1, 2, 4]
+        );
     }
 }

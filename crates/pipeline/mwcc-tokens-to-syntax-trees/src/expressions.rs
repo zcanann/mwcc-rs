@@ -827,6 +827,11 @@ impl Parser {
                     Expression::Variable(mangled)
                 } else if let Some(&value) = self.enum_constants.get(&name) {
                     Expression::IntegerLiteral(value)
+                } else if self.cplusplus {
+                    Expression::Variable(
+                        self.resolve_free_cxx_function_address(&name)
+                            .unwrap_or(resolved),
+                    )
                 } else {
                     Expression::Variable(resolved)
                 }

@@ -485,6 +485,7 @@ pub fn lower_function(
     generator.normalize_linkage_first_indirect_call_schedule();
     generator.normalize_linkage_first_conversion_frame();
     generator.normalize_scratch_copy_convention();
+    generator.schedule_linkage_first_function_address();
 
     ordinal_accounting::apply(
         function,

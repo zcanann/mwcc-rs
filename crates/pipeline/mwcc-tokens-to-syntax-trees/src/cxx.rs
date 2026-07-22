@@ -650,6 +650,18 @@ impl Parser {
         }
     }
 
+    /// Resolve a bare free-function name used as a value (typically a callback
+    /// argument). Without an expected function-pointer signature, only a single
+    /// recovered overload is unambiguous; overloaded names remain unresolved.
+    pub(crate) fn resolve_free_cxx_function_address(&self, source_name: &str) -> Option<String> {
+        let key = self.free_cxx_source_name(source_name);
+        let candidates = self.cxx_free_functions.get(&key)?;
+        match candidates.as_slice() {
+            [method] => Some(method.mangled.clone()),
+            _ => None,
+        }
+    }
+
     pub(crate) fn resolve_qualified_free_cxx_call(
         &self,
         scope: &str,
