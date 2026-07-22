@@ -3729,10 +3729,51 @@ impl Parser {
                 .iter()
                 .filter(|signature| signature.parameters.len() == arguments.len())
                 .collect();
-            // A base with no declared constructor is trivially default-
-            // constructed and emits no call. Written arguments still require
-            // an exact declaration.
+            // A non-polymorphic base with no declared constructor is trivially
+            // default-constructed and emits no call. A polymorphic base still
+            // has a compiler-generated default constructor whose observable
+            // work installs its vptr; materialize that work directly so inline
+            // expansion does not silently drop the base construction.
             if candidates.is_empty() && arguments.is_empty() {
+                let base_class = self.cxx_classes.get(&base.name).ok_or_else(|| {
+                    Diagnostic::error(format!(
+                        "base class layout for '{}' was not recovered",
+                        base.name
+                    ))
+                })?;
+                if !base.is_virtual && !base_class.vtable_components.is_empty() {
+                    let scopes: Vec<&str> = base.name.split("::").collect();
+                    let vtable = format!(
+                        "__vt__{}",
+                        crate::cxx::encode_qualified_scope(&scopes)?
+                    );
+                    let mut table_offset = 0u32;
+                    for component in &base_class.vtable_components {
+                        let address = Expression::AddressOf {
+                            operand: Box::new(Expression::Variable(vtable.clone())),
+                        };
+                        let value = if table_offset == 0 {
+                            address
+                        } else {
+                            Expression::MemberAddress {
+                                base: Box::new(address),
+                                offset: table_offset,
+                                element: Pointee::UnsignedChar,
+                                index_stride: None,
+                            }
+                        };
+                        statements.push(Statement::Store {
+                            target: Expression::Member {
+                                base: Box::new(Expression::Variable("this".to_string())),
+                                offset: base.offset + component.vptr_offset,
+                                member_type: Type::UnsignedInt,
+                                index_stride: None,
+                            },
+                            value,
+                        });
+                        table_offset += 8 + component.virtual_slots.max(1) as u32 * 4;
+                    }
+                }
                 continue;
             }
             if candidates.len() != 1 {

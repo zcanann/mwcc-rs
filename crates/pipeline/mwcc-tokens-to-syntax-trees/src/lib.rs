@@ -2945,6 +2945,38 @@ blr\n\
     }
 
     #[test]
+    fn synthesizes_the_vptr_for_an_implicit_polymorphic_base_constructor() {
+        let source = r#"
+            struct Base { virtual void act() = 0; };
+            struct Derived : public Base { Derived() {} };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let constructor = unit
+            .skipped_inline_definitions
+            .iter()
+            .find(|function| function.name == "__ct__7DerivedFv")
+            .expect("the inline constructor should be retained");
+        assert!(matches!(constructor.statements.as_slice(), [
+            Statement::Store {
+                value: Expression::AddressOf { operand: base_vtable },
+                ..
+            },
+            Statement::Store {
+                value: Expression::AddressOf { operand: derived_vtable },
+                ..
+            },
+        ] if matches!(base_vtable.as_ref(), Expression::Variable(name) if name == "__vt__4Base")
+            && matches!(derived_vtable.as_ref(), Expression::Variable(name) if name == "__vt__7Derived")));
+    }
+
+    #[test]
     fn resolves_local_typeof_aliases_for_anonymous_member_elements() {
         let source = r#"
             struct Asset {
