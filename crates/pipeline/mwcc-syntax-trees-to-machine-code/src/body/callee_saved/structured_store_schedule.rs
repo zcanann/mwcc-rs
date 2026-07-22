@@ -17,7 +17,7 @@ impl Generator {
         if self.behavior.frame_convention != FrameConvention::Predecrement {
             return;
         }
-        let Some(start) = self.output.instructions.windows(8).position(|window| {
+        if let Some(start) = self.output.instructions.windows(8).position(|window| {
             matches!(window, [
                 Instruction::LoadFloatSingle { d: loaded, .. },
                 Instruction::StoreFloatSingle { s: first, a: first_base, .. },
@@ -34,11 +34,23 @@ impl Generator {
                 && second_base == third_base
                 && receiver == first_base
                 && b == receiver)
-        }) else {
-            return;
-        };
-        for offset in 0..3 {
-            self.move_instruction_before(start + 4 + offset, start + 1 + offset);
+        }) {
+            for offset in 0..3 {
+                self.move_instruction_before(start + 4 + offset, start + 1 + offset);
+            }
+        }
+
+        // The one-store sibling fills the load-to-store latency slot with the
+        // receiver copy for the immediately following call.
+        if let Some(start) = self.output.instructions.windows(4).position(|window| {
+            matches!(window, [
+                Instruction::LoadFloatSingle { d: loaded, .. },
+                Instruction::StoreFloatSingle { s: stored, a: store_base, .. },
+                Instruction::Or { a: 3, s: receiver, b },
+                Instruction::BranchAndLink { .. },
+            ] if loaded == stored && store_base == receiver && b == receiver)
+        }) {
+            self.move_instruction_before(start + 2, start + 1);
         }
     }
 
