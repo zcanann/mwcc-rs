@@ -1998,22 +1998,6 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         );
         comment_values.push((0, 0));
     }
-    for name in input.early_undefined_externals {
-        if global_symbols.contains_key(name.as_str()) {
-            continue;
-        }
-        global_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
-        write_symbol(
-            &mut symtab,
-            strtab.add(name),
-            0,
-            0,
-            STB_GLOBAL_NOTYPE,
-            0,
-            SHN_UNDEF,
-        );
-        comment_values.push((0, 0));
-    }
     // One initialized exported object's symbol plus its pointer-relocation
     // targets (reverse element order) — shared by the up-front run and the
     // source-position interleaved runs below.
@@ -2181,6 +2165,33 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 ".sdata" | ".data" | ".sdata2" | ".rodata" | ".ctors" | ".dtors"
             ) || (section_name == ".sbss" && object.is_explicit_zero))
     };
+    // Retained weak inline statics are registered while parsing headers before
+    // section-attributed asm prototypes. Build 163 emits that leading weak run
+    // first, then the otherwise-early UND prototypes, then ordinary initialized
+    // source objects (CARDNet: sqrtf constants, __init_hardware/__flush_cache,
+    // __CARDVendorID). Keep the prefix narrow so ordinary declaration ordering
+    // is unchanged once a non-weak object has been encountered.
+    for object in input.data_objects.iter().take_while(|object| {
+        object.is_weak && is_initialized_run_object(object) && object.functions_before == 0
+    }) {
+        emit_initialized_object!(object);
+    }
+    for name in input.early_undefined_externals {
+        if global_symbols.contains_key(name.as_str()) {
+            continue;
+        }
+        global_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
+        write_symbol(
+            &mut symtab,
+            strtab.add(name),
+            0,
+            0,
+            STB_GLOBAL_NOTYPE,
+            0,
+            SHN_UNDEF,
+        );
+        comment_values.push((0, 0));
+    }
     // The always-present initialized sections (`.sdata`/`.data`, and the read-only
     // `.sdata2`/`.rodata`) emit their symbols up front in declaration order; the
     // zero `.sbss`/`.bss` objects instead follow reference order (handled below).
