@@ -1228,8 +1228,28 @@ impl Generator {
                     return Ok(result);
                 }
             }
-            self.evaluate_float(value, FLOAT_SCRATCH)?;
-            return Ok(FLOAT_SCRATCH);
+            // A memory operand combined with a literal needs two FPRs: the
+            // computed value cannot share f0 with the pool constant/load.
+            // Give the result a virtual home and let allocation coalesce it to
+            // the measured free FPR; the ordinary single-operand store keeps
+            // using f0.
+            let destination = if matches!(
+                value,
+                Expression::Binary {
+                    left,
+                    right,
+                    ..
+                } if (matches!(left.as_ref(), Expression::Member { .. } | Expression::Dereference { .. } | Expression::Index { .. })
+                    && matches!(right.as_ref(), Expression::FloatLiteral(_)))
+                    || (matches!(right.as_ref(), Expression::Member { .. } | Expression::Dereference { .. } | Expression::Index { .. })
+                        && matches!(left.as_ref(), Expression::FloatLiteral(_)))
+            ) {
+                self.fresh_virtual_float()
+            } else {
+                FLOAT_SCRATCH
+            };
+            self.evaluate_float(value, destination)?;
+            return Ok(destination);
         }
         // A float VALUE stored to a NON-float (integer) target — `int g; g = *p;` with a
         // float `*p`, or `g = s->fx` — needs a float->int conversion (fctiwz + frame bounce)

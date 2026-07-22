@@ -326,6 +326,144 @@ pub(crate) fn inline_immutable_pointer_aliases(function: &Function) -> Option<Fu
     })
 }
 
+/// Scalarize an aggregate temporary that snapshots an object subobject, mutates
+/// selected scalar fields, and copies the whole value back to the same place.
+/// Unmodified fields cancel; each verified field update can operate directly on
+/// the original subobject. This is the C++ `Vec v = object->velocity; v.x *= c;
+/// object->velocity = v;` copy-propagation performed by MWCC at -O4.
+pub(crate) fn scalarize_in_place_aggregate_local(function: &Function) -> Option<Function> {
+    fn projected_member(source: &Expression, field: &Expression) -> Option<Expression> {
+        let Expression::Member {
+            base: source_base,
+            offset: source_offset,
+            member_type: Type::Struct { .. },
+            index_stride: None,
+        } = source
+        else {
+            return None;
+        };
+        let Expression::Member {
+            offset: field_offset,
+            member_type,
+            index_stride: None,
+            ..
+        } = field
+        else {
+            return None;
+        };
+        Some(Expression::Member {
+            base: source_base.clone(),
+            offset: source_offset.checked_add(*field_offset)?,
+            member_type: *member_type,
+            index_stride: None,
+        })
+    }
+
+    fn mutation(statement: &Statement, local: &str, source: &Expression) -> Option<Statement> {
+        let Statement::Store { target, value } = statement else {
+            return None;
+        };
+        let Expression::Member { base, .. } = target else {
+            return None;
+        };
+        if !matches!(base.as_ref(), Expression::Variable(name) if name == local) {
+            return None;
+        }
+        let Expression::Binary {
+            operator,
+            left,
+            right,
+        } = value
+        else {
+            return None;
+        };
+        if !structurally_equal(left, target)
+            || count_name_occurrences(right, local) != 0
+            || expression_has_call(right)
+        {
+            return None;
+        }
+        let target = projected_member(source, target)?;
+        Some(Statement::Store {
+            value: Expression::Binary {
+                operator: *operator,
+                left: Box::new(target.clone()),
+                right: right.clone(),
+            },
+            target,
+        })
+    }
+
+    fn rewrite_block(statements: &mut Vec<Statement>, local: &str) -> bool {
+        for statement in statements.iter_mut() {
+            if let Statement::If {
+                then_body,
+                else_body,
+                ..
+            } = statement
+            {
+                if rewrite_block(then_body, local) || rewrite_block(else_body, local) {
+                    return true;
+                }
+            }
+        }
+        for start in 0..statements.len() {
+            let Statement::Assign { name, value: source } = &statements[start] else {
+                continue;
+            };
+            if name != local || !matches!(source, Expression::Member { member_type: Type::Struct { .. }, index_stride: None, .. }) {
+                continue;
+            }
+            let source = source.clone();
+            let mut rewritten = Vec::new();
+            let mut end = start + 1;
+            while end < statements.len() {
+                if let Some(statement) = mutation(&statements[end], local, &source) {
+                    rewritten.push(statement);
+                    end += 1;
+                    continue;
+                }
+                break;
+            }
+            if rewritten.is_empty() || end >= statements.len() {
+                continue;
+            }
+            let closes_copy = matches!(
+                &statements[end],
+                Statement::Store {
+                    target,
+                    value: Expression::Variable(name),
+                } if name == local && structurally_equal(target, &source)
+            );
+            if !closes_copy {
+                continue;
+            }
+            statements.splice(start..=end, rewritten);
+            return true;
+        }
+        false
+    }
+
+    for local in &function.locals {
+        if local.is_static
+            || local.initializer.is_some()
+            || local.array_length.is_some()
+            || !matches!(local.declared_type, Type::Struct { .. })
+        {
+            continue;
+        }
+        let mut rewritten = function.clone();
+        if !rewrite_block(&mut rewritten.statements, &local.name) {
+            continue;
+        }
+        rewritten.locals.retain(|candidate| candidate.name != local.name);
+        if !function_uses_name(&rewritten, &local.name) {
+            return Some(rewritten);
+        }
+    }
+    None
+}
+
 /// A DEAD trailing local whose initializer has a side effect (`int x = g();` where x is never read):
 /// mwcc keeps the call but discards the result. Convert it to a leading expression statement so the
 /// ordinary call/return paths emit it — `int x=g(); return a+b;` becomes `g(); return a+b;`. Keeping
@@ -1882,6 +2020,85 @@ mod tests {
             ] if matches!(arguments.as_slice(), [Expression::Variable(name)] if name == "base")
                 && matches!(object.as_ref(), Expression::Variable(name) if name == "base")
                 && matches!(base.as_ref(), Expression::Variable(name) if name == "base")
+        ));
+    }
+
+    #[test]
+    fn aggregate_snapshot_mutations_scalarize_into_the_original_subobject() {
+        let aggregate = Type::Struct { size: 12, align: 4 };
+        let source = Expression::Member {
+            base: Box::new(Expression::Variable("object".into())),
+            offset: 468,
+            member_type: aggregate,
+            index_stride: None,
+        };
+        let field = |offset| Expression::Member {
+            base: Box::new(Expression::Variable("copy".into())),
+            offset,
+            member_type: Type::Float,
+            index_stride: None,
+        };
+        let function = Function {
+            return_type: Type::Void,
+            name: "dampen".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: vec![Parameter {
+                parameter_type: Type::StructPointer { element_size: 712 },
+                name: "object".into(),
+            }],
+            locals: vec![automatic_local("copy", aggregate, None)],
+            statements: vec![Statement::If {
+                condition: Expression::IntegerLiteral(1),
+                then_body: vec![
+                    Statement::Assign {
+                        name: "copy".into(),
+                        value: source.clone(),
+                    },
+                    Statement::Store {
+                        target: field(0),
+                        value: Expression::Binary {
+                            operator: BinaryOperator::Multiply,
+                            left: Box::new(field(0)),
+                            right: Box::new(Expression::FloatLiteral(0.95)),
+                        },
+                    },
+                    Statement::Store {
+                        target: field(8),
+                        value: Expression::Binary {
+                            operator: BinaryOperator::Multiply,
+                            left: Box::new(field(8)),
+                            right: Box::new(Expression::FloatLiteral(0.95)),
+                        },
+                    },
+                    Statement::Store {
+                        target: source,
+                        value: Expression::Variable("copy".into()),
+                    },
+                ],
+                else_body: Vec::new(),
+            }],
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+
+        let scalarized = scalarize_in_place_aggregate_local(&function)
+            .expect("the aggregate copy round trip should cancel");
+        assert!(scalarized.locals.is_empty());
+        assert!(matches!(
+            scalarized.statements.as_slice(),
+            [Statement::If { then_body, .. }]
+                if matches!(then_body.as_slice(),
+                    [
+                        Statement::Store { target: Expression::Member { offset: 468, .. }, .. },
+                        Statement::Store { target: Expression::Member { offset: 476, .. }, .. },
+                    ])
         ));
     }
 

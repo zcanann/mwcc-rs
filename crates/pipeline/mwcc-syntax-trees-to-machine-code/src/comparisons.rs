@@ -1325,10 +1325,20 @@ impl Generator {
         // undergoes the usual arithmetic conversion. Keep nonconstant integer
         // operands on the measured magic-bias paths below, but let pool-literal
         // placement handle `float_value < 0` and its mirrored spelling.
-        if left_is_float && matches!(right, Expression::IntegerLiteral(_)) {
+        if left_is_float
+            && matches!(
+                right,
+                Expression::FloatLiteral(_) | Expression::IntegerLiteral(_)
+            )
+        {
             right_is_float = true;
         }
-        if right_is_float && matches!(left, Expression::IntegerLiteral(_)) {
+        if right_is_float
+            && matches!(
+                left,
+                Expression::FloatLiteral(_) | Expression::IntegerLiteral(_)
+            )
+        {
             left_is_float = true;
         }
         let dual_legacy = self.try_emit_legacy_dual_float_condition(left, right, double)?;

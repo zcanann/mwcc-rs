@@ -1153,6 +1153,9 @@ impl Generator {
         if let Some(inlined) = inline_immutable_pointer_aliases(function) {
             return self.evaluate_body(&inlined);
         }
+        if let Some(scalarized) = scalarize_in_place_aggregate_local(function) {
+            return self.evaluate_body(&scalarized);
+        }
         // A dead trailing local with a side-effecting (call) initializer becomes a leading statement,
         // so the call is emitted for effect rather than dropped (`int x=g(); return a+b;` → `g();
         // return a+b;`).
