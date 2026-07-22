@@ -3104,7 +3104,15 @@ impl Parser {
 
         let mut statements = Vec::new();
         for base in bases {
-            let arguments = initializers.remove(&base.name).unwrap_or_default();
+            let arguments = initializers
+                .remove(&base.name)
+                .or_else(|| {
+                    let unqualified = base.name.rsplit("::").next()?;
+                    (unqualified != base.name)
+                        .then(|| initializers.remove(unqualified))
+                        .flatten()
+                })
+                .unwrap_or_default();
             let signatures = &self
                 .cxx_classes
                 .get(&base.name)

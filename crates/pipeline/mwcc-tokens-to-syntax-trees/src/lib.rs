@@ -2300,6 +2300,33 @@ blr\n\
     }
 
     #[test]
+    fn resolves_an_unqualified_initializer_for_a_qualified_base() {
+        let source = r#"
+            namespace Scene { struct Base { Base(int); }; }
+            struct Derived : public Scene::Base { Derived(int); };
+            Derived::Derived(int value) : Base(value) {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Call { name, arguments }
+            )] if name == "__ct__Q25Scene4BaseFi"
+                && matches!(arguments.as_slice(), [
+                    mwcc_syntax_trees::Expression::Variable(this),
+                    mwcc_syntax_trees::Expression::Variable(value),
+                ] if this == "this" && value == "value")
+        ));
+    }
+
+    #[test]
     fn groups_inherited_vptrs_after_base_construction() {
         let source = r#"
             class Primary { int first; public: Primary(); virtual ~Primary(); };
