@@ -165,7 +165,19 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
                     }
                 }
             }
-            push_token!(Token::StringLiteral(content), token_start);
+            // Translation phase 6 concatenates adjacent string-literal tokens,
+            // including literals made adjacent by macro expansion and separated
+            // by whitespace/comments. Preserve the first token's location while
+            // appending the exact payload bytes of every following fragment.
+            if let Some(LocatedToken {
+                token: Token::StringLiteral(previous),
+                ..
+            }) = tokens.last_mut()
+            {
+                previous.extend(content);
+            } else {
+                push_token!(Token::StringLiteral(content), token_start);
+            }
             continue;
         }
         // A wide literal's `L` prefix (`L'\0'`, `L"..."`) is transparent to the
@@ -515,6 +527,22 @@ mod tests {
         assert!(tokens.contains(&Token::StringLiteral(vec![
             0x83, 0x8a, 0x83, 0x93, 0x83, 0x4e,
         ])));
+    }
+
+    #[test]
+    fn adjacent_string_literals_concatenate_across_trivia() {
+        let tokens = tokenize_bytes(
+            b"char *version = \"release build: \" /* expanded macro */ \"Sep 21 2006\" \" \" \"14:32:13\";",
+        )
+        .unwrap();
+        let literals: Vec<_> = tokens
+            .iter()
+            .filter_map(|token| match token {
+                Token::StringLiteral(bytes) => Some(bytes.as_slice()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(literals, [b"release build: Sep 21 2006 14:32:13".as_slice()]);
     }
 
     #[test]
