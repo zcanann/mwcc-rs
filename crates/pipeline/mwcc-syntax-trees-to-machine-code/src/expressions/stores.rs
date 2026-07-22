@@ -107,6 +107,20 @@ impl Generator {
                 self.written_slots.insert(slot.offset);
                 return Ok(());
             }
+            if let Some((class, register, width)) = self
+                .locations
+                .get(name)
+                .map(|location| (location.class, location.register, location.width))
+            {
+                return match class {
+                    ValueClass::General => self.evaluate_general(value, register),
+                    ValueClass::Float => self.evaluate(
+                        value,
+                        if width == 64 { Type::Double } else { Type::Float },
+                        register,
+                    ),
+                };
+            }
         }
         // `*(T *)0xADDR = v` — a constant-address store (memory-mapped registers, the GX FIFO).
         // mwcc materializes the address base before the value (`lis base, hi`), keeping the base
@@ -895,6 +909,45 @@ impl Generator {
         target: &Expression,
         value: &Expression,
     ) -> Compilation<bool> {
+        if let (
+            Expression::Variable(target_name),
+            Expression::VirtualCall {
+                object,
+                vptr_offset,
+                slot_offset,
+                return_type: Type::Struct { size, .. },
+                variadic,
+                arguments,
+            },
+        ) = (target, value)
+        {
+            if let Some(slot) = self.frame_slots.get(target_name).copied() {
+                if matches!(slot.value_type, Type::Struct { size: slot_size, .. } if slot_size == *size)
+                    && !slot.is_array
+                {
+                    let result_address = Expression::AddressOf {
+                        operand: Box::new(target.clone()),
+                    };
+                    self.emit_virtual_call_with_aggregate_result(
+                        object,
+                        *vptr_offset,
+                        *slot_offset,
+                        *variadic,
+                        arguments,
+                        &result_address,
+                    )?;
+                    for offset in (0..*size).step_by(4) {
+                        let offset = i16::try_from(offset).map_err(|_| {
+                            Diagnostic::error("frame aggregate result is too large")
+                        })?;
+                        self.written_slots.insert(slot.offset.checked_add(offset).ok_or_else(
+                            || Diagnostic::error("frame aggregate result is out of range"),
+                        )?);
+                    }
+                    return Ok(true);
+                }
+            }
+        }
         let Expression::Variable(source_name) = value else {
             return Ok(false);
         };
@@ -998,11 +1051,15 @@ impl Generator {
             offset: u32,
             value_type: Type,
         ) -> Option<(Pointee, i16)> {
-            let Expression::AddressOf { operand } = base else {
-                return None;
-            };
-            let Expression::Variable(name) = operand.as_ref() else {
-                return None;
+            let name = match base {
+                Expression::Variable(name) => name,
+                Expression::AddressOf { operand } => {
+                    let Expression::Variable(name) = operand.as_ref() else {
+                        return None;
+                    };
+                    name
+                }
+                _ => return None,
             };
             let slot = generator.frame_slots.get(name)?;
             if !matches!(slot.value_type, Type::Struct { .. }) || slot.is_array {
@@ -1060,12 +1117,6 @@ impl Generator {
     /// comma recurses. A side effect in a form not modeled here defers rather than
     /// silently dropping it.
     pub(crate) fn emit_comma_side_effect(&mut self, expression: &Expression) -> Compilation<()> {
-        // A call in the discarded left operand clobbers the caller-saved register holding
-        // the comma's surviving right value (`gi = (h(), b)` would store h()'s result, not
-        // b). Preserving it needs the callee-saved allocator, so defer over miscompiling.
-        if expression_has_call(expression) {
-            return Err(Diagnostic::error("a comma-operator call side effect is not supported yet (needs the callee-saved allocator)"));
-        }
         match expression {
             Expression::Variable(_)
             | Expression::IntegerLiteral(_)
@@ -1075,20 +1126,80 @@ impl Generator {
                 self.emit_comma_side_effect(left)?;
                 self.emit_comma_side_effect(right)
             }
-            // A simple `name = leaf/const` store is a single instruction that never
-            // reorders against the comma's surviving store. An indexed/member target or a
-            // computed value schedules ambiguously against it (mwcc reorders), so defer.
+            // Inline composition represents `if (condition) local = value;` as
+            // a discarded conditional expression. Preserve its control flow:
+            // branch around the true side effect, and emit an else block only
+            // when the false arm itself is effectful.
+            Expression::Conditional {
+                condition,
+                when_true,
+                when_false,
+                ..
+            } => {
+                let (options, condition_bit) = self.emit_condition_test(condition)?;
+                let else_label = self.fresh_label();
+                self.emit_branch_conditional_to(options, condition_bit, else_label);
+                self.emit_comma_side_effect(when_true)?;
+                if expression_has_side_effect(when_false) {
+                    let end = self.fresh_label();
+                    self.emit_branch_to(end);
+                    self.bind_label(else_label);
+                    self.emit_comma_side_effect(when_false)?;
+                    self.bind_label(end);
+                } else {
+                    self.bind_label(else_label);
+                }
+                Ok(())
+            }
+            Expression::Call { name, arguments } => {
+                self.emit_call(name, arguments, None, false)
+            }
+            Expression::VirtualCall {
+                object,
+                vptr_offset,
+                slot_offset,
+                variadic,
+                arguments,
+                ..
+            } => self.emit_virtual_call(
+                object,
+                *vptr_offset,
+                *slot_offset,
+                *variadic,
+                arguments,
+                None,
+                false,
+            ),
+            // A register-resident local has an allocator-owned home, so a computed
+            // assignment can be evaluated directly into that home without creating a
+            // memory-store scheduling choice.
             Expression::Assign { target, value }
-                if matches!(target.as_ref(), Expression::Variable(_))
-                    && matches!(
-                        value.as_ref(),
-                        Expression::Variable(_)
-                            | Expression::IntegerLiteral(_)
-                            | Expression::FloatLiteral(_)
-                    ) =>
+                if match target.as_ref() {
+                    Expression::Variable(name) => {
+                        self.locations.contains_key(name) || self.frame_slots.contains_key(name)
+                    }
+                    Expression::Member {
+                        base,
+                        index_stride: None,
+                        ..
+                    } => matches!(base.as_ref(), Expression::Variable(name)
+                        if self.frame_slots.contains_key(name)),
+                    _ => false,
+                } =>
             {
                 self.emit_store(target, value)
             }
+            // A free-standing call or a call feeding memory still needs an explicit
+            // clobber schedule. The register-local arm above is safe because structured
+            // lowering assigned the target an allocator-owned home and evaluates the
+            // result directly into it.
+            _ if expression_has_call(expression) => Err(Diagnostic::error(
+                "a comma-operator call side effect is not supported yet (needs an allocator-owned result home)",
+            )),
+            // With no call in the expression, the ordinary store emitter owns
+            // address/value placement and rejects any schedule it cannot prove.
+            // The comma layer only needs to preserve ordering between effects.
+            Expression::Assign { target, value } => self.emit_store(target, value),
             _ => Err(Diagnostic::error(
                 "a comma-operator side effect of this form is not supported yet (roadmap)",
             )),

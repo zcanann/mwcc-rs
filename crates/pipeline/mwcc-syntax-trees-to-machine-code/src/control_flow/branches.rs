@@ -984,6 +984,13 @@ impl Generator {
     /// comparison condition uses `cmpw`/`cmpwi` with the negated relation; any
     /// other expression is tested against zero (`!= 0`).
     pub(crate) fn emit_condition_test(&mut self, condition: &Expression) -> Compilation<(u8, u8)> {
+        // Inline composition prefixes a condition with ordered local
+        // initializations via the comma operator. Emit those effects before
+        // selecting instructions for the condition's surviving right value.
+        if let Expression::Comma { left, right } = condition {
+            self.emit_comma_side_effect(left)?;
+            return self.emit_condition_test(right);
+        }
         // `!x` as a condition is `x == 0`: skip the guarded code when x != 0.
         if let Expression::Unary {
             operator: UnaryOperator::LogicalNot,

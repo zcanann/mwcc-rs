@@ -362,6 +362,10 @@ pub struct TranslationUnit {
     /// Parsed semantic bodies for skipped inline definitions. They are excluded
     /// from object emission and exist only for verified interprocedural summaries.
     pub skipped_inline_definitions: Vec<Function>,
+    /// Callable types retained even when a skipped inline body cannot be
+    /// recovered for semantic expansion. Calls still require the definition's
+    /// declared return and parameter classes for ABI argument placement.
+    pub skipped_inline_signatures: Vec<(String, Type, Vec<Type>)>,
     /// Functions defined under `#pragma defer_codegen on`, in definition order.
     /// mwcc code-generates these LAST, in REVERSE definition order (measured:
     /// melee mem_funcs — its whole .text is reversed). The unit assembly

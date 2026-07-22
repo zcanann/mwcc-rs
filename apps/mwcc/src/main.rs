@@ -501,6 +501,16 @@ fn compile(
                 .iter()
                 .map(|function| (function.name.clone(), function.return_type)),
         )
+        .chain(
+            unit.skipped_inline_definitions
+                .iter()
+                .map(|function| (function.name.clone(), function.return_type)),
+        )
+        .chain(
+            unit.skipped_inline_signatures
+                .iter()
+                .map(|(name, return_type, _)| (name.clone(), *return_type)),
+        )
         .collect();
     // Every callable's parameter types (prototypes + definitions) so a call places
     // each argument in the register the parameter's type requires (int vs float).
@@ -518,6 +528,19 @@ fn compile(
                         .collect(),
                 )
             }))
+            .chain(unit.skipped_inline_definitions.iter().map(|function| {
+                (
+                    function.name.clone(),
+                    function
+                        .parameters
+                        .iter()
+                        .map(|parameter| parameter.parameter_type)
+                        .collect(),
+                )
+            }))
+            .chain(unit.skipped_inline_signatures.iter().map(
+                |(name, _, parameter_types)| (name.clone(), parameter_types.clone()),
+            ))
             .collect();
     // An IMPLICITLY-materialized inline (ww uart) was unknown at its call
     // sites: mwcc compiled those calls under the K&R implicit-int rule and

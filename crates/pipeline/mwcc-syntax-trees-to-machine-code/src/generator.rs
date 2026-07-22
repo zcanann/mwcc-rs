@@ -913,9 +913,9 @@ impl Generator {
     pub(crate) fn float_register_of_leaf(&self, expression: &Expression) -> Compilation<u8> {
         match expression {
             Expression::Variable(name) => self.float_register_of(name),
-            _ => Err(Diagnostic::error(
-                "v0: a float leaf operand must be a variable",
-            )),
+            _ => Err(Diagnostic::error(format!(
+                "a float leaf operand must be a variable: {expression:?}"
+            ))),
         }
     }
 

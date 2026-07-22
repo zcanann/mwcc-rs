@@ -647,6 +647,42 @@ impl Generator {
         if self.is_float_located(left) || self.is_float_located(right) {
             return self.place_float_located_operands(operator, left, right, destination, double);
         }
+        // A literal paired with a computed operand needs two registers just as
+        // two computed subtrees do. Evaluate the subtree into the result when
+        // possible (otherwise a fresh virtual), then materialize the literal in
+        // the scratch. Keeping the literal as the first commutative source
+        // matches the ordinary literal/leaf path below while preserving source
+        // order for subtraction and division.
+        if let Expression::FloatLiteral(value) = left {
+            if is_complex(right)
+                || self.is_float_call_value(right)
+                || matches!(right, Expression::Comma { .. } | Expression::Assign { .. })
+            {
+                let computed = if destination == FLOAT_SCRATCH {
+                    self.fresh_virtual_float()
+                } else {
+                    destination
+                };
+                self.evaluate_float(right, computed)?;
+                self.load_float_literal(FLOAT_SCRATCH, *value, double);
+                return Operands::ordered(FLOAT_SCRATCH, computed);
+            }
+        }
+        if let Expression::FloatLiteral(value) = right {
+            if is_complex(left)
+                || self.is_float_call_value(left)
+                || matches!(left, Expression::Comma { .. } | Expression::Assign { .. })
+            {
+                let computed = if destination == FLOAT_SCRATCH {
+                    self.fresh_virtual_float()
+                } else {
+                    destination
+                };
+                self.evaluate_float(left, computed)?;
+                self.load_float_literal(FLOAT_SCRATCH, *value, double);
+                return Operands::reversed(computed, FLOAT_SCRATCH);
+            }
+        }
         // A float constant operand is loaded from `.sdata2` into the scratch
         // register (an 8-byte `lfd` in a double op, a 4-byte `lfs` otherwise); the
         // other (leaf-variable) operand stays in place. mwcc emits the constant as
@@ -665,7 +701,29 @@ impl Generator {
                 return Operands::ordered(FLOAT_SCRATCH, right_register);
             }
         }
-        match (is_complex(left), is_complex(right)) {
+        let left_computed = is_complex(left)
+            || self.is_float_call_value(left)
+            || matches!(left, Expression::Comma { .. } | Expression::Assign { .. });
+        let right_computed = is_complex(right)
+            || self.is_float_call_value(right)
+            || matches!(right, Expression::Comma { .. } | Expression::Assign { .. });
+        if expression_has_call(right)
+            && !left_computed
+            && !self.float_location_survives_call(left)
+        {
+            return Err(Diagnostic::error(
+                "a float leaf live across a right-hand call needs a callee-saved home",
+            ));
+        }
+        if expression_has_call(left)
+            && !right_computed
+            && !self.float_location_survives_call(right)
+        {
+            return Err(Diagnostic::error(
+                "a float leaf live across a left-hand call needs a callee-saved home",
+            ));
+        }
+        match (left_computed, right_computed) {
             (false, false) => Operands::ordered(
                 self.float_register_of_leaf(left)?,
                 self.float_register_of_leaf(right)?,

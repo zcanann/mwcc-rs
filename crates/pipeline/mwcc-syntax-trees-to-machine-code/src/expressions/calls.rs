@@ -345,6 +345,45 @@ impl Generator {
                 return Ok(());
             }
         }
+        // Two floating arguments use an independent FPR sequence. When the
+        // first value already has a callee-saved home, a call-bearing second
+        // argument can be evaluated right-first into f2 and the first restored
+        // into f1 afterward. This is the nested `angDist(saved, roundAng(...))`
+        // schedule; no caller-saved value remains live across the nested call.
+        if let [first @ Expression::Variable(first_name), second] = arguments {
+            let both_float = self.call_parameter_types.get(name).is_some_and(|types| {
+                types.len() >= 2
+                    && matches!(types[0], Type::Float | Type::Double)
+                    && matches!(types[1], Type::Float | Type::Double)
+            });
+            let first_survives_call = self
+                .locations
+                .get(first_name.as_str())
+                .is_some_and(|location| {
+                    location.class == ValueClass::Float && location.register >= 14
+                });
+            if both_float
+                && first_survives_call
+                && self.is_float_value(second)
+                && expression_has_call(second)
+            {
+                self.evaluate_float(second, Eabi::FIRST_FLOAT_ARGUMENT + 1)
+                    .map_err(|mut diagnostic| {
+                        diagnostic.message.push_str(&format!(
+                            " (while scheduling call-bearing second float argument to '{name}')"
+                        ));
+                        diagnostic
+                    })?;
+                self.evaluate_float(first, Eabi::FIRST_FLOAT_ARGUMENT)
+                    .map_err(|mut diagnostic| {
+                        diagnostic.message.push_str(&format!(
+                            " (while restoring first float argument to '{name}')"
+                        ));
+                        diagnostic
+                    })?;
+                return Ok(());
+            }
+        }
         // `h(gg, g())` / `h(arr, g())` — a GLOBAL first argument and an argument-free call
         // as the SECOND. The global is reloadable (it lives in memory), so mwcc needs no
         // callee-saved register: it evaluates the call FIRST (its result in r3), then
@@ -400,7 +439,15 @@ impl Generator {
             }
         }
         if arguments.iter().skip(1).any(expression_has_call) {
-            return Err(Diagnostic::error("a call in a non-first argument needs the callee-saved argument scheduler (roadmap)"));
+            let index = arguments
+                .iter()
+                .enumerate()
+                .skip(1)
+                .find_map(|(index, argument)| expression_has_call(argument).then_some(index))
+                .expect("the guard found a call-bearing argument");
+            return Err(Diagnostic::error(format!(
+                "a call in argument {index} to '{name}' needs the callee-saved argument scheduler (roadmap)"
+            )));
         }
         // The SAME global read in two argument positions loads once in mwcc, which copies it to the
         // second register (`lwz r3,g; mr r4,r3`); our per-argument evaluation loads it in each — wrong
@@ -797,7 +844,13 @@ impl Generator {
                 parameter_type,
                 self.is_float_value(argument),
                 constant_value(argument),
-            )?;
+            )
+            .map_err(|mut diagnostic| {
+                diagnostic.message.push_str(&format!(
+                    " (argument {index} to '{name}', parameter {parameter_type:?})"
+                ));
+                diagnostic
+            })?;
             if let CallArgumentPlacement::Floating {
                 parameter_type,
                 folded_integer,
@@ -830,7 +883,13 @@ impl Generator {
                         folded_float_arguments.push((bits, double, next_float));
                     }
                 } else {
-                    self.evaluate(argument, parameter_type, next_float)?;
+                    self.evaluate(argument, parameter_type, next_float)
+                        .map_err(|mut diagnostic| {
+                            diagnostic.message.push_str(&format!(
+                                " (while evaluating floating argument {index} to '{name}')"
+                            ));
+                            diagnostic
+                        })?;
                 }
                 next_float += 1;
             } else {

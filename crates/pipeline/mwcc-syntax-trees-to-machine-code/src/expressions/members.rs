@@ -698,9 +698,9 @@ impl Generator {
             // A bare `get()->field` is handled in emit_member_load (single-load, byte-exact); any
             // OTHER call context reaching here (a nested `get()->b->c`, an indexed `get()->a[i]`, a
             // member store) has a post-call schedule mwcc places differently — defer.
-            _ => Err(Diagnostic::error(
-                "struct member base must be a pointer variable (roadmap)",
-            )),
+            _ => Err(Diagnostic::error(format!(
+                "struct member base must be a pointer variable (roadmap): {base:?}"
+            ))),
         }
     }
 

@@ -609,29 +609,30 @@ impl Generator {
                         }
                     }
                 }
-                // A comma operand with a side-effect-free left is equivalent to its right
-                // value; peel it so the right keeps its natural register (`(a,b)+1` == `b+1`,
-                // no spurious move). Only a flat arithmetic binary of leaves/constants is
-                // provably byte-exact this way — comparisons and computed operands route to
-                // codegen shapes with pre-existing gaps, so those (and a side-effecting left)
-                // defer rather than ship a guess.
+                // A comma operand's prefix is sequenced before its surviving
+                // right value. Inline composition uses that prefix for hygienic
+                // local initialization, so emit it explicitly and retain the
+                // leaf/constant value in its natural home. Restrict the survivors
+                // to leaves/constants: no delayed computation can move across the
+                // opposite operand's prefix.
                 if matches!(left.as_ref(), Expression::Comma { .. }) || matches!(right.as_ref(), Expression::Comma { .. }) {
-                    let peel = |operand: &Expression| -> Compilation<Expression> {
+                    fn peel(
+                        generator: &mut Generator,
+                        operand: &Expression,
+                    ) -> Compilation<Expression> {
                         let mut current = operand;
                         while let Expression::Comma { left, right } = current {
-                            if expression_has_side_effect(left) {
-                                return Err(Diagnostic::error("a comma operand with a side effect is not supported yet (roadmap)"));
-                            }
+                            generator.emit_comma_side_effect(left)?;
                             current = right;
                         }
                         Ok(current.clone())
-                    };
-                    let (peeled_left, peeled_right) = (peel(left)?, peel(right)?);
+                    }
+                    let peeled_left = peel(self, left)?;
+                    let peeled_right = peel(self, right)?;
                     let is_simple = |operand: &Expression| {
                         matches!(operand, Expression::Variable(_) | Expression::IntegerLiteral(_) | Expression::FloatLiteral(_))
                     };
-                    if is_comparison(*operator)
-                        || matches!(operator, BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr)
+                    if matches!(operator, BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr)
                         || !is_simple(&peeled_left)
                         || !is_simple(&peeled_right)
                     {
@@ -993,6 +994,13 @@ impl Generator {
         match expression {
             Expression::FloatLiteral(_) => true,
             Expression::Variable(_) => self.is_float_leaf(expression),
+            Expression::Call { name, .. } => matches!(
+                self.call_return_types.get(name),
+                Some(Type::Float | Type::Double)
+            ),
+            Expression::VirtualCall { return_type, .. } => {
+                matches!(return_type, Type::Float | Type::Double)
+            }
             Expression::Dereference { pointer } => matches!(
                 self.pointee_of(pointer),
                 Ok(Pointee::Float | Pointee::Double)
@@ -1011,6 +1019,26 @@ impl Generator {
             // non-float type is not, regardless of the operand.
             Expression::Cast { target_type, .. } => {
                 matches!(target_type, Type::Float | Type::Double)
+            }
+            Expression::Binary {
+                operator,
+                left,
+                right,
+            } => {
+                !is_comparison(*operator)
+                    && (self.is_float_value(left) || self.is_float_value(right))
+            }
+            Expression::Unary { operand, .. }
+            | Expression::IndexedUpdateValue { value: operand } => {
+                self.is_float_value(operand)
+            }
+            Expression::Conditional {
+                when_true,
+                when_false,
+                ..
+            } => self.is_float_value(when_true) || self.is_float_value(when_false),
+            Expression::Assign { value, .. } | Expression::Comma { right: value, .. } => {
+                self.is_float_value(value)
             }
             _ => false,
         }

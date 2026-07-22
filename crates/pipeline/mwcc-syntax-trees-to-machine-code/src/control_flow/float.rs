@@ -188,7 +188,24 @@ impl Generator {
             self.emit_float_select_tail(destination, true_register, true_negate);
             return Ok(());
         }
-        Err(Diagnostic::error("non-tail float select not yet supported"))
+        if !tail {
+            let false_arm = self.fresh_label();
+            let join = self.fresh_label();
+            self.emit_branch_conditional_to(
+                positive_options ^ 8,
+                condition_bit,
+                false_arm,
+            );
+            self.emit_float_select_tail(destination, true_register, true_negate);
+            self.emit_branch_to(join);
+            self.bind_label(false_arm);
+            self.emit_float_select_tail(destination, false_register, false_negate);
+            self.bind_label(join);
+            return Ok(());
+        }
+        Err(Diagnostic::error(
+            "tail float select has no result-register arm",
+        ))
     }
 
     /// Classify a float select arm: a plain leaf (`(register, false)`) or the negation of a leaf

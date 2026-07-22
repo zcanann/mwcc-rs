@@ -95,29 +95,67 @@ impl Generator {
         function: &Function,
         with_frame_array: bool,
     ) -> Compilation<bool> {
-        if !self.frame_slots.is_empty() || !function.guards.is_empty() {
-            return Ok(false);
+        let capture = std::env::var_os("MWCC_CAPTURE_FUNCTION")
+            .is_some_and(|name| name == std::ffi::OsStr::new(&function.name));
+        macro_rules! decline {
+            ($reason:expr) => {{
+                if capture {
+                    eprintln!(
+                        "structured body declined (frame_mode={with_frame_array}): {}",
+                        $reason
+                    );
+                }
+                return Ok(false);
+            }};
         }
+        if !function.guards.is_empty()
+            || self.frame_slots.values().any(|slot| {
+                slot.is_array
+                    || slot.parameter_register.is_some()
+                    || !matches!(slot.value_type, Type::Struct { .. })
+            })
+        {
+            decline!(format!(
+                "pre-existing frame slots={}, guards={}",
+                self.frame_slots.len(),
+                function.guards.len()
+            ));
+        }
+        let aggregate_frame_locals: Vec<_> = if with_frame_array {
+            function
+                .locals
+                .iter()
+                .filter(|local| {
+                    matches!(local.declared_type, Type::Struct { .. })
+                        && body_uses_local(&function.statements, &local.name)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let frame_array = if with_frame_array {
             let mut arrays = function
                 .locals
                 .iter()
                 .filter(|local| local.array_length.is_some());
-            let Some(array) = arrays.next() else {
-                return Ok(false);
-            };
+            let array = arrays.next();
+            if array.is_none() && aggregate_frame_locals.is_empty() {
+                decline!("frame mode requires an automatic array or aggregate slot");
+            }
             if arrays.next().is_some()
-                || array.is_static
-                || array.initializer.is_some()
-                || array.data_bytes.is_some()
-                || !matches!(array.declared_type, Type::Char | Type::UnsignedChar)
+                || array.is_some_and(|array| {
+                    array.is_static
+                        || array.initializer.is_some()
+                        || array.data_bytes.is_some()
+                        || !matches!(array.declared_type, Type::Char | Type::UnsignedChar)
+                })
                 || !((function.return_type == Type::Void && function.return_expression.is_none())
                     || (matches!(function.return_type, Type::Int | Type::UnsignedInt)
                         && function.return_expression.is_some()))
             {
-                return Ok(false);
+                decline!("automatic array or return shape is unsupported");
             }
-            Some(array)
+            array
         } else {
             None
         };
@@ -133,7 +171,7 @@ impl Generator {
                 with_frame_array,
             )
         {
-            return Ok(false);
+            decline!("statement or return shape is unsupported");
         }
 
         let address_taken = crate::frame::collect_address_taken(function);
@@ -150,7 +188,7 @@ impl Generator {
                 || class_of(local.declared_type).ok() != Some(ValueClass::General)
                 || local.declared_type.width() > 32
         }) {
-            return Ok(false);
+            decline!("an address-taken scalar cannot use the structured frame");
         }
 
         let candidates: Vec<&str> = function
@@ -199,11 +237,34 @@ impl Generator {
         if saved_locals.iter().any(|local| {
             local.is_static
                 || local.array_length.is_some()
-                || class_of(local.declared_type).ok() != Some(ValueClass::General)
+                || !matches!(
+                    class_of(local.declared_type),
+                    Ok(ValueClass::General | ValueClass::Float)
+                )
                 || (local.initializer.is_none()
                     && !is_definitely_assigned_before_reads(&function.statements, &local.name))
         }) {
-            return Ok(false);
+            decline!(format!(
+                "a saved local is unsupported: {}",
+                saved_locals
+                    .iter()
+                    .filter(|local| {
+                        local.is_static
+                            || local.array_length.is_some()
+                            || !matches!(
+                                class_of(local.declared_type),
+                                Ok(ValueClass::General | ValueClass::Float)
+                            )
+                            || (local.initializer.is_none()
+                                && !is_definitely_assigned_before_reads(
+                                    &function.statements,
+                                    &local.name,
+                                ))
+                    })
+                    .map(|local| format!("{}:{:?}", local.name, local.declared_type))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
         }
         let saved_parameters: Vec<_> = function
             .parameters
@@ -216,21 +277,60 @@ impl Generator {
                 .get(&parameter.name)
                 .is_none_or(|location| location.class != ValueClass::General)
         }) {
-            return Ok(false);
+            decline!("a saved parameter is not a general-register value");
         }
         let Some(ephemeral_locals) = plan_ephemeral_locals(function, &survivors, &address_taken)
         else {
-            return Ok(false);
+            decline!("ephemeral-local planning rejected the body");
         };
+        let (saved_float_locals, saved_locals): (Vec<_>, Vec<_>) = saved_locals
+            .into_iter()
+            .partition(|local| class_of(local.declared_type).ok() == Some(ValueClass::Float));
+        if saved_float_locals
+            .iter()
+            .any(|local| local.initializer.is_some())
+        {
+            decline!("an entry-initialized saved float local is unsupported");
+        }
+        let Some(saved_float_plan) = plan_deferred_saved_homes(function, &saved_float_locals)
+        else {
+            decline!("saved float-home planning rejected the body");
+        };
+        if saved_float_plan.group_count > 18 {
+            decline!("more than eighteen overlapping saved float values are live");
+        }
         let (eager_saved_locals, deferred_saved_locals): (Vec<_>, Vec<_>) = saved_locals
             .into_iter()
             .partition(|local| local.initializer.is_some());
         let Some(deferred_home_plan) = plan_deferred_saved_homes(function, &deferred_saved_locals)
         else {
-            return Ok(false);
+            decline!("deferred saved-home planning rejected the body");
         };
 
-        let local_region_bytes = if let Some(array) = frame_array {
+        let local_region_bytes = if !aggregate_frame_locals.is_empty() {
+            let mut end = 8u32;
+            for local in aggregate_frame_locals.iter().rev() {
+                let Type::Struct { size, align } = local.declared_type else {
+                    unreachable!("aggregate frame locals were filtered")
+                };
+                let align = u32::from(align.max(1));
+                end = end.div_ceil(align) * align;
+                end = end
+                    .checked_add(size)
+                    .ok_or_else(|| Diagnostic::error("structured aggregate frame is too large"))?;
+            }
+            i16::try_from(end.saturating_sub(8))
+                .map_err(|_| Diagnostic::error("structured aggregate frame is too large"))?
+        } else if !self.frame_slots.is_empty() {
+            let end = self
+                .frame_slots
+                .values()
+                .map(|slot| i32::from(slot.offset) + i32::from(slot.size))
+                .max()
+                .unwrap_or(8);
+            i16::try_from(end.saturating_sub(8))
+                .map_err(|_| Diagnostic::error("structured aggregate frame is too large"))?
+        } else if let Some(array) = frame_array {
             let length = array.array_length.expect("frame array was gated");
             let Some(bytes) = u16::from(array.declared_type.width() / 8)
                 .checked_mul(length)
@@ -373,6 +473,34 @@ impl Generator {
             })
             .collect();
         let mut plan = mwcc_vreg::FramePlan::with_local_region(homes.clone(), local_region_bytes);
+        if frame_array.is_none() && !aggregate_frame_locals.is_empty() {
+            let mut offset = 8u32;
+            for local in aggregate_frame_locals.iter().rev() {
+                let Type::Struct { size, align } = local.declared_type else {
+                    unreachable!("aggregate frame locals were filtered")
+                };
+                let align = u32::from(align.max(1));
+                offset = offset.div_ceil(align) * align;
+                let slot_offset = i16::try_from(offset)
+                    .map_err(|_| Diagnostic::error("structured aggregate slot is out of range"))?;
+                let slot_size = u8::try_from(size)
+                    .map_err(|_| Diagnostic::error("structured aggregate slot is too large"))?;
+                self.frame_slots.insert(
+                    local.name.clone(),
+                    FrameSlot {
+                        offset: slot_offset,
+                        class: ValueClass::General,
+                        size: slot_size,
+                        value_type: local.declared_type,
+                        parameter_register: None,
+                        is_array: false,
+                    },
+                );
+                offset = offset
+                    .checked_add(size)
+                    .ok_or_else(|| Diagnostic::error("structured aggregate frame is too large"))?;
+            }
+        }
         if let Some(array) = frame_array {
             let extra_scalar_words = function
                 .locals
@@ -729,6 +857,25 @@ impl Generator {
                         _ => None,
                     },
                     stride: pointer_stride(local.declared_type),
+                },
+            );
+        }
+        self.callee_saved_float = self
+            .callee_saved_float
+            .max(u8::try_from(saved_float_plan.group_count).unwrap_or(18));
+        for local in saved_float_locals {
+            let group = saved_float_plan.group(&local.name);
+            let preferred = 31u8.saturating_sub(u8::try_from(group).unwrap_or(17));
+            let home = self.fresh_virtual_float_preferring(preferred);
+            self.locations.insert(
+                local.name.clone(),
+                Location {
+                    class: ValueClass::Float,
+                    register: home,
+                    signed: true,
+                    width: local.declared_type.width(),
+                    pointee: None,
+                    stride: None,
                 },
             );
         }
@@ -1431,6 +1578,16 @@ impl Generator {
                         ));
                     }
                 }
+                Statement::Expression(
+                    expression @ (Expression::Comma { .. }
+                    | Expression::Assign { .. }
+                    | Expression::Conditional { .. }),
+                ) => self.emit_comma_side_effect(expression).map_err(|mut diagnostic| {
+                    diagnostic.message.push_str(&format!(
+                        " (in structured side-effect statement {statement_index})"
+                    ));
+                    diagnostic
+                })?,
                 _ => self.emit_statement(statement).map_err(|mut diagnostic| {
                     diagnostic.message.push_str(&format!(
                         " (in structured body statement {statement_index})"

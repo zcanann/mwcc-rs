@@ -157,14 +157,24 @@ fn collect_deferred_interval(
     for statement in statements {
         *cursor += 1;
         let position = *cursor;
+        let expression = match statement {
+            Statement::Assign { value, .. }
+            | Statement::Expression(value)
+            | Statement::Return(Some(value)) => Some(value),
+            Statement::If { condition, .. } => Some(condition),
+            _ => None,
+        };
+        if let Some(expression) = expression {
+            collect_expression_interval(expression, name, position, interval);
+        }
         let reads = match statement {
             Statement::Store { target, value } => {
                 expression_reads_name(target, name) || expression_reads_name(value, name)
             }
-            Statement::Assign { value, .. }
-            | Statement::Expression(value)
-            | Statement::Return(Some(value)) => expression_reads_name(value, name),
-            Statement::If { condition, .. } => expression_reads_name(condition, name),
+            Statement::Assign { .. }
+            | Statement::Expression(_)
+            | Statement::Return(Some(_))
+            | Statement::If { .. } => false,
             Statement::Return(None)
             | Statement::Break
             | Statement::Continue
@@ -205,13 +215,7 @@ fn collect_deferred_interval(
         } = statement
         {
             for expression in initializer.iter().chain(step) {
-                if matches!(expression,
-                    Expression::Assign { target, .. }
-                        if matches!(target.as_ref(), Expression::Variable(assigned) if assigned == name))
-                {
-                    interval.assignment_count += 1;
-                    interval.first_assignment.get_or_insert(position);
-                }
+                collect_expression_interval(expression, name, position, interval);
             }
             collect_deferred_interval(body, name, cursor, interval)?;
         }
@@ -226,6 +230,93 @@ fn collect_deferred_interval(
         }
     }
     Some(())
+}
+
+fn collect_expression_interval(
+    expression: &Expression,
+    name: &str,
+    position: usize,
+    interval: &mut DeferredInterval,
+) {
+    if expression_reads_name(expression, name) {
+        interval.last_read = Some(position);
+    }
+    let assignments = expression_assignment_count(expression, name);
+    if assignments != 0 {
+        interval.assignment_count += assignments;
+        interval.first_assignment.get_or_insert(position);
+    }
+}
+
+fn expression_assignment_count(expression: &Expression, name: &str) -> usize {
+    match expression {
+        Expression::Assign { target, value } => {
+            usize::from(
+                matches!(target.as_ref(), Expression::Variable(assigned) if assigned == name),
+            ) + expression_assignment_count(target, name)
+                + expression_assignment_count(value, name)
+        }
+        Expression::AggregateLiteral(elements) => elements
+            .iter()
+            .map(|element| expression_assignment_count(element, name))
+            .sum(),
+        Expression::Binary { left, right, .. } | Expression::Comma { left, right } => {
+            expression_assignment_count(left, name) + expression_assignment_count(right, name)
+        }
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+            ..
+        } => {
+            expression_assignment_count(condition, name)
+                + expression_assignment_count(when_true, name)
+                + expression_assignment_count(when_false, name)
+        }
+        Expression::Unary { operand, .. }
+        | Expression::Cast { operand, .. }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
+        }
+        | Expression::IndexedUpdateValue { value: operand }
+        | Expression::PostStep {
+            target: operand, ..
+        }
+        | Expression::Dereference { pointer: operand }
+        | Expression::AddressOf { operand } => expression_assignment_count(operand, name),
+        Expression::Index { base, index } => {
+            expression_assignment_count(base, name) + expression_assignment_count(index, name)
+        }
+        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
+            expression_assignment_count(base, name)
+        }
+        Expression::Call { arguments, .. }
+        | Expression::ConstructedNew { arguments, .. } => arguments
+            .iter()
+            .map(|argument| expression_assignment_count(argument, name))
+            .sum(),
+        Expression::CallThrough { target, arguments } => {
+            expression_assignment_count(target, name)
+                + arguments
+                    .iter()
+                    .map(|argument| expression_assignment_count(argument, name))
+                    .sum::<usize>()
+        }
+        Expression::VirtualCall {
+            object, arguments, ..
+        } => {
+            expression_assignment_count(object, name)
+                + arguments
+                    .iter()
+                    .map(|argument| expression_assignment_count(argument, name))
+                    .sum::<usize>()
+        }
+        Expression::IntegerLiteral(_)
+        | Expression::FloatLiteral(_)
+        | Expression::StringLiteral(_)
+        | Expression::Variable(_)
+        | Expression::CompoundLiteral { .. } => 0,
+    }
 }
 
 pub(super) fn plan_ephemeral_locals<'a>(
@@ -346,6 +437,19 @@ fn assignment_flow(
         if !falls_through {
             continue;
         }
+        let embedded_expression = match statement {
+            Statement::Assign { value, .. }
+            | Statement::Expression(value)
+            | Statement::Return(Some(value)) => Some(value),
+            Statement::If { condition, .. } => Some(condition),
+            _ => None,
+        };
+        if let Some(expression) = embedded_expression {
+            let (next_initialized, expression_assigned) =
+                expression_initialization_flow(expression, name, initialized)?;
+            initialized = next_initialized;
+            assigned |= expression_assigned;
+        }
         let reads_before_assignment = match statement {
             Statement::Assign {
                 name: assigned_name,
@@ -354,10 +458,10 @@ fn assignment_flow(
             Statement::Store { target, value } => {
                 expression_reads_name(target, name) || expression_reads_name(value, name)
             }
-            Statement::Assign { value, .. }
-            | Statement::Expression(value)
-            | Statement::Return(Some(value)) => expression_reads_name(value, name),
-            Statement::If { condition, .. } => expression_reads_name(condition, name),
+            Statement::Assign { .. }
+            | Statement::Expression(_)
+            | Statement::Return(Some(_))
+            | Statement::If { .. } => false,
             Statement::Return(None)
             | Statement::Break
             | Statement::Continue
@@ -464,6 +568,107 @@ fn assignment_flow(
         assigned,
         falls_through,
     })
+}
+
+/// Track assignments embedded in the expression forms introduced by inline
+/// composition. Comma evaluates left-to-right; a conditional guarantees a
+/// definition afterward only when both arms define it. Other expressions do
+/// not define locals and retain the existing conservative read check.
+fn expression_initialization_flow(
+    expression: &Expression,
+    name: &str,
+    initialized: bool,
+) -> Option<(bool, bool)> {
+    fn sequence<'a>(
+        expressions: impl IntoIterator<Item = &'a Expression>,
+        name: &str,
+        mut initialized: bool,
+    ) -> Option<(bool, bool)> {
+        let mut assigned = false;
+        for expression in expressions {
+            let (next_initialized, expression_assigned) =
+                expression_initialization_flow(expression, name, initialized)?;
+            initialized = next_initialized;
+            assigned |= expression_assigned;
+        }
+        Some((initialized, assigned))
+    }
+
+    match expression {
+        Expression::Variable(variable) if variable == name && !initialized => None,
+        Expression::Assign { target, value }
+            if matches!(target.as_ref(), Expression::Variable(assigned) if assigned == name) =>
+        {
+            expression_initialization_flow(value, name, initialized)?;
+            Some((true, true))
+        }
+        Expression::Binary { left, right, .. } | Expression::Comma { left, right } => {
+            sequence([left.as_ref(), right.as_ref()], name, initialized)
+        }
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+            ..
+        } => {
+            let (initialized, condition_assigned) =
+                expression_initialization_flow(condition, name, initialized)?;
+            let (true_initialized, true_assigned) =
+                expression_initialization_flow(when_true, name, initialized)?;
+            let (false_initialized, false_assigned) =
+                expression_initialization_flow(when_false, name, initialized)?;
+            Some((
+                true_initialized && false_initialized,
+                condition_assigned || true_assigned || false_assigned,
+            ))
+        }
+        Expression::AggregateLiteral(elements) => sequence(elements, name, initialized),
+        Expression::Unary { operand, .. }
+        | Expression::Cast { operand, .. }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
+        }
+        | Expression::IndexedUpdateValue { value: operand }
+        | Expression::Dereference { pointer: operand }
+        | Expression::AddressOf { operand } => {
+            expression_initialization_flow(operand, name, initialized)
+        }
+        Expression::PostStep { target, .. } => {
+            let (initialized, assigned) =
+                expression_initialization_flow(target, name, initialized)?;
+            Some((initialized, assigned))
+        }
+        Expression::Index { base, index } => {
+            sequence([base.as_ref(), index.as_ref()], name, initialized)
+        }
+        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
+            expression_initialization_flow(base, name, initialized)
+        }
+        Expression::Call { arguments, .. }
+        | Expression::ConstructedNew { arguments, .. } => sequence(arguments, name, initialized),
+        Expression::CallThrough { target, arguments } => {
+            let (initialized, target_assigned) =
+                expression_initialization_flow(target, name, initialized)?;
+            let (initialized, arguments_assigned) = sequence(arguments, name, initialized)?;
+            Some((initialized, target_assigned || arguments_assigned))
+        }
+        Expression::VirtualCall {
+            object, arguments, ..
+        } => {
+            let (initialized, object_assigned) =
+                expression_initialization_flow(object, name, initialized)?;
+            let (initialized, arguments_assigned) = sequence(arguments, name, initialized)?;
+            Some((initialized, object_assigned || arguments_assigned))
+        }
+        Expression::Assign { target, value } => {
+            sequence([target.as_ref(), value.as_ref()], name, initialized)
+        }
+        Expression::IntegerLiteral(_)
+        | Expression::FloatLiteral(_)
+        | Expression::StringLiteral(_)
+        | Expression::Variable(_)
+        | Expression::CompoundLiteral { .. } => Some((initialized, false)),
+    }
 }
 
 pub(super) fn body_uses_local(statements: &[Statement], name: &str) -> bool {
@@ -635,6 +840,65 @@ mod tests {
         )
         .expect("the branch-local float lifetime is valid");
         assert_eq!(planned.len(), 1);
+    }
+
+    #[test]
+    fn accepts_an_embedded_comma_assignment_before_its_read() {
+        let statements = vec![Statement::Expression(Expression::Binary {
+            operator: BinaryOperator::Add,
+            left: Box::new(Expression::Comma {
+                left: Box::new(Expression::Assign {
+                    target: Box::new(Expression::Variable("temporary".into())),
+                    value: Box::new(Expression::FloatLiteral(1.0)),
+                }),
+                right: Box::new(Expression::Variable("temporary".into())),
+            }),
+            right: Box::new(Expression::FloatLiteral(2.0)),
+        })];
+
+        assert!(is_definitely_assigned_before_reads(
+            &statements,
+            "temporary"
+        ));
+    }
+
+    #[test]
+    fn plans_a_saved_home_for_an_embedded_comma_assignment() {
+        let mut temporary = local("temporary", Expression::FloatLiteral(0.0));
+        temporary.declared_type = Type::Float;
+        temporary.initializer = None;
+        let function = Function {
+            return_type: Type::Void,
+            name: "compiled".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: vec![temporary],
+            statements: vec![Statement::Expression(Expression::Comma {
+                left: Box::new(Expression::Assign {
+                    target: Box::new(Expression::Variable("temporary".into())),
+                    value: Box::new(Expression::FloatLiteral(1.0)),
+                }),
+                right: Box::new(Expression::Call {
+                    name: "consume".into(),
+                    arguments: vec![Expression::Variable("temporary".into())],
+                }),
+            })],
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+        let locals: Vec<_> = function.locals.iter().collect();
+
+        let plan = plan_deferred_saved_homes(&function, &locals)
+            .expect("the embedded assignment establishes a saved value");
+        assert_eq!(plan.group_count, 1);
+        assert_eq!(plan.group("temporary"), 0);
     }
 
     #[test]

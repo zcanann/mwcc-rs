@@ -475,6 +475,9 @@ pub(crate) struct Parser {
     /// emitted, but downstream interprocedural summaries may prove a call-site
     /// expansion from their semantics instead of inferring it from a name.
     pub(crate) skipped_inline_definitions: Vec<mwcc_syntax_trees::Function>,
+    /// Declared types for skipped inline definitions, retained independently of
+    /// whether the speculative semantic-body parser accepts the body.
+    pub(crate) skipped_inline_signatures: Vec<(String, Type, Vec<Type>)>,
     /// A speculative parser clone sets this while recovering one skipped inline
     /// body so the ordinary definition parser does not deliberately reject it.
     pub(crate) recover_skipped_inline_definition: bool,

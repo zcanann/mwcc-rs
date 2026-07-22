@@ -142,6 +142,7 @@ pub fn parse_located_translation_unit_with_enum_min(
         section_prototype_order: Vec::new(),
         skipped_inline_names: std::collections::HashSet::new(),
         skipped_inline_definitions: Vec::new(),
+        skipped_inline_signatures: Vec::new(),
         recover_skipped_inline_definition: false,
         inline_bodies: std::collections::HashMap::new(),
         inline_substitution_count: 0,
@@ -1039,6 +1040,12 @@ blr\n\
         assert_eq!(unit.skipped_inline_definitions.len(), 1);
         assert_eq!(unit.skipped_inline_definitions[0].name, "append_one");
         assert_eq!(unit.skipped_inline_definitions[0].statements.len(), 2);
+        assert!(unit
+            .skipped_inline_signatures
+            .iter()
+            .any(|(name, return_type, parameters)| name == "append_one"
+                && *return_type == Type::Int
+                && parameters.len() == 2));
     }
 
     #[test]
@@ -1062,6 +1069,12 @@ blr\n\
         )
         .unwrap();
         assert!(unit.skipped_inline_names.contains("within__Fff"));
+        assert!(unit
+            .skipped_inline_signatures
+            .iter()
+            .any(|(name, return_type, parameters)| name == "within__Fff"
+                && *return_type == Type::UnsignedChar
+                && parameters == &[Type::Float, Type::Float]));
         assert!(matches!(
             unit.functions[0].return_expression,
             Some(Expression::Call { ref name, .. }) if name == "within__Fff"

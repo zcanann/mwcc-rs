@@ -1010,6 +1010,9 @@ impl Parser {
             skipped_inline_definitions: std::mem::take(
                 &mut self.skipped_inline_definitions,
             ),
+            skipped_inline_signatures: std::mem::take(
+                &mut self.skipped_inline_signatures,
+            ),
             deferred_function_names: std::mem::take(&mut self.deferred_function_names),
             variadic_definitions: std::mem::take(&mut self.variadic_definitions),
             fixed_address_arrays: std::mem::take(&mut self.fixed_address_arrays),
@@ -2992,6 +2995,21 @@ impl Parser {
                 materialize_by_calls =
                     !had_call && is_static && self.body_local_statement_call_count(&tu_local) >= 2;
                 if !had_call && !materialize_by_calls {
+                    let parameter_types = parameters
+                        .iter()
+                        .map(|parameter| parameter.parameter_type)
+                        .collect::<Vec<_>>();
+                    if !self
+                        .skipped_inline_signatures
+                        .iter()
+                        .any(|(existing, _, _)| existing == &name)
+                    {
+                        self.skipped_inline_signatures.push((
+                            name.clone(),
+                            return_type,
+                            parameter_types,
+                        ));
+                    }
                     return Err(Diagnostic::error(
                         "an inline function definition is skipped (inlined at call sites)",
                     ));
