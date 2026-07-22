@@ -66,6 +66,26 @@ impl Generator {
         self.condition_global_values = previous;
     }
 
+    /// Materialize cacheable bases before evaluating the first comparison.
+    /// MWCC hoists these independent pointer loads in source encounter order,
+    /// even when the first member access occurs on a later `&&` term.
+    pub(crate) fn preload_condition_global_cache(
+        &mut self,
+        condition: &Expression,
+    ) -> Compilation<()> {
+        let mut names = Vec::new();
+        collect_member_pointer_base_order(condition, &mut names, &mut HashSet::new());
+        for name in names {
+            if matches!(
+                self.condition_global_values.get(&name),
+                Some(ConditionGlobalValue::Pending)
+            ) {
+                self.condition_global_base(&name)?;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn condition_global_base(&mut self, name: &str) -> Compilation<Option<u8>> {
         match self.condition_global_values.get(name).copied() {
             None => Ok(None),
@@ -78,6 +98,90 @@ impl Generator {
                 Ok(Some(register))
             }
         }
+    }
+}
+
+fn collect_member_pointer_base_order(
+    expression: &Expression,
+    names: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+) {
+    match expression {
+        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
+            if let Expression::Variable(name) = base.as_ref() {
+                if seen.insert(name.clone()) {
+                    names.push(name.clone());
+                }
+            }
+            collect_member_pointer_base_order(base, names, seen);
+        }
+        Expression::Binary { left, right, .. }
+        | Expression::Index {
+            base: left,
+            index: right,
+        }
+        | Expression::Comma { left, right } => {
+            collect_member_pointer_base_order(left, names, seen);
+            collect_member_pointer_base_order(right, names, seen);
+        }
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+            ..
+        } => {
+            collect_member_pointer_base_order(condition, names, seen);
+            collect_member_pointer_base_order(when_true, names, seen);
+            collect_member_pointer_base_order(when_false, names, seen);
+        }
+        Expression::Call { arguments, .. } => {
+            for argument in arguments {
+                collect_member_pointer_base_order(argument, names, seen);
+            }
+        }
+        Expression::CallThrough {
+            target,
+            arguments,
+            ..
+        } => {
+            collect_member_pointer_base_order(target, names, seen);
+            for argument in arguments {
+                collect_member_pointer_base_order(argument, names, seen);
+            }
+        }
+        Expression::VirtualCall {
+            object, arguments, ..
+        } => {
+            collect_member_pointer_base_order(object, names, seen);
+            for argument in arguments {
+                collect_member_pointer_base_order(argument, names, seen);
+            }
+        }
+        Expression::PostStep { target, .. } => {
+            collect_member_pointer_base_order(target, names, seen);
+        }
+        Expression::Assign { target, value, .. } => {
+            collect_member_pointer_base_order(target, names, seen);
+            collect_member_pointer_base_order(value, names, seen);
+        }
+        Expression::Unary { operand, .. }
+        | Expression::Cast { operand, .. }
+        | Expression::Dereference { pointer: operand }
+        | Expression::AddressOf { operand }
+        | Expression::IndexedUpdateValue { value: operand }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
+        } => collect_member_pointer_base_order(operand, names, seen),
+        Expression::AggregateLiteral(values) => {
+            for value in values {
+                collect_member_pointer_base_order(value, names, seen);
+            }
+        }
+        Expression::IntegerLiteral(_)
+        | Expression::FloatLiteral(_)
+        | Expression::StringLiteral(_)
+        | Expression::Variable(_)
+        | Expression::CompoundLiteral { .. } => {}
     }
 }
 
@@ -248,5 +352,21 @@ mod tests {
 
         let counts = cacheable_member_pointer_bases(&condition);
         assert!(!counts.contains_key("limits"));
+    }
+
+    #[test]
+    fn records_first_member_base_occurrences_in_evaluation_order() {
+        let condition = Expression::Binary {
+            operator: mwcc_syntax_trees::BinaryOperator::LogicalAnd,
+            left: Box::new(member("later", 0)),
+            right: Box::new(Expression::Binary {
+                operator: mwcc_syntax_trees::BinaryOperator::LogicalAnd,
+                left: Box::new(member("first", 0)),
+                right: Box::new(member("later", 4)),
+            }),
+        };
+        let mut names = Vec::new();
+        collect_member_pointer_base_order(&condition, &mut names, &mut HashSet::new());
+        assert_eq!(names, ["later", "first"]);
     }
 }

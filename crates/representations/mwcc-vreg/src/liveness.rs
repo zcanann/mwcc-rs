@@ -123,6 +123,12 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
                 class,
                 start,
                 end,
+                live_slots: Some(slots_for_range(
+                    &live_slots,
+                    (class, value),
+                    start,
+                    end,
+                )),
             });
         }
     }
@@ -330,7 +336,7 @@ mod tests {
             Instruction::Or {
                 a: 3,
                 s: v(0),
-                b: v(0),
+                b: 3,
             },
             Instruction::BranchToLinkRegister,
         ];
@@ -354,7 +360,9 @@ mod tests {
             )
             .unwrap();
         let home = allocation.physical(Reg::general(0).virtual_register().unwrap()).unwrap();
-        assert!(constraints.general_pool.contains(&home));
+        // r3 is live at the fallthrough use, while r4 exists only in the
+        // terminating arm. CFG-aware interference therefore reuses r4.
+        assert_eq!(home, 4);
     }
 
     #[test]

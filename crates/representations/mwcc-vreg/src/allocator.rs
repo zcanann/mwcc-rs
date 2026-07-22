@@ -69,12 +69,14 @@ impl LiveInterval {
 /// A physical register held by a pinned value (an ABI parameter or the return
 /// slot) over `[start, end]`. A virtual register whose lifetime overlaps this
 /// cannot be assigned `register`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PinnedOccupancy {
     pub register: u8,
     pub class: Class,
     pub start: usize,
     pub end: usize,
+    /// Control-flow-aware occupancy slots, when produced by liveness analysis.
+    pub live_slots: Option<Vec<usize>>,
 }
 
 /// Whether two live ranges interfere — i.e. cannot share a register. The test is
@@ -86,6 +88,32 @@ pub struct PinnedOccupancy {
 /// diverge from mwcc, which does so aggressively.
 fn interferes(a_start: usize, a_end: usize, b_start: usize, b_end: usize) -> bool {
     a_start < b_end && b_start < a_end
+}
+
+fn slots_interfere(left: &[usize], right: &[usize]) -> bool {
+    let (mut left_index, mut right_index) = (0, 0);
+    while left_index < left.len() && right_index < right.len() {
+        match left[left_index].cmp(&right[right_index]) {
+            std::cmp::Ordering::Less => left_index += 1,
+            std::cmp::Ordering::Greater => right_index += 1,
+            std::cmp::Ordering::Equal => return true,
+        }
+    }
+    false
+}
+
+fn intervals_interfere(left: &LiveInterval, right: &LiveInterval) -> bool {
+    match (&left.live_slots, &right.live_slots) {
+        (Some(left), Some(right)) => slots_interfere(left, right),
+        _ => interferes(left.start, left.end, right.start, right.end),
+    }
+}
+
+fn pinned_interferes(occupancy: &PinnedOccupancy, interval: &LiveInterval) -> bool {
+    match (&occupancy.live_slots, &interval.live_slots) {
+        (Some(pinned), Some(virtual_slots)) => slots_interfere(pinned, virtual_slots),
+        _ => interferes(occupancy.start, occupancy.end, interval.start, interval.end),
+    }
 }
 
 fn crosses_call(interval: &LiveInterval, calls: &[usize]) -> bool {
@@ -179,23 +207,24 @@ impl Allocator for LinearScan {
 
         let mut allocation = Allocation::default();
         // Currently-live assigned intervals: (last-use index, physical register, class).
-        let mut active: Vec<(usize, u8, Class)> = Vec::new();
+        let mut active: Vec<(&LiveInterval, u8)> = Vec::new();
 
         for interval in order {
             let class = interval.vreg.class;
             // Expire intervals whose last use is at or before this definition (a
             // register freed exactly here may be reused — half-open, see `interferes`).
-            active.retain(|(end, _, _)| *end > interval.start);
+            active.retain(|(active_interval, _)| active_interval.end > interval.start);
 
             let mut busy: Vec<u8> = active
                 .iter()
-                .filter(|(_, _, active_class)| *active_class == class)
-                .map(|(_, register, _)| *register)
+                .filter(|(active_interval, _)| {
+                    active_interval.vreg.class == class
+                        && intervals_interfere(active_interval, interval)
+                })
+                .map(|(_, register)| *register)
                 .collect();
             for occupancy in pinned {
-                if occupancy.class == class
-                    && interferes(occupancy.start, occupancy.end, interval.start, interval.end)
-                {
+                if occupancy.class == class && pinned_interferes(occupancy, interval) {
                     busy.push(occupancy.register);
                 }
             }
@@ -234,7 +263,7 @@ impl Allocator for LinearScan {
             };
 
             allocation.assignments.insert(interval.vreg.id, choice);
-            active.push((interval.end, choice, class));
+            active.push((interval, choice));
         }
 
         Ok(allocation)
@@ -266,21 +295,22 @@ impl Allocator for DescendingScan {
         order.sort_by_key(|interval| (interval.start, interval.vreg.id));
 
         let mut allocation = Allocation::default();
-        let mut active: Vec<(usize, u8, Class)> = Vec::new();
+        let mut active: Vec<(&LiveInterval, u8)> = Vec::new();
 
         for interval in order {
             let class = interval.vreg.class;
-            active.retain(|(end, _, _)| *end > interval.start);
+            active.retain(|(active_interval, _)| active_interval.end > interval.start);
 
             let mut busy: Vec<u8> = active
                 .iter()
-                .filter(|(_, _, active_class)| *active_class == class)
-                .map(|(_, register, _)| *register)
+                .filter(|(active_interval, _)| {
+                    active_interval.vreg.class == class
+                        && intervals_interfere(active_interval, interval)
+                })
+                .map(|(_, register)| *register)
                 .collect();
             for occupancy in pinned {
-                if occupancy.class == class
-                    && interferes(occupancy.start, occupancy.end, interval.start, interval.end)
-                {
+                if occupancy.class == class && pinned_interferes(occupancy, interval) {
                     busy.push(occupancy.register);
                 }
             }
@@ -310,7 +340,7 @@ impl Allocator for DescendingScan {
                 .ok_or(AllocationError::OutOfRegisters { class, at: interval.start })?;
 
             allocation.assignments.insert(interval.vreg.id, choice);
-            active.push((interval.end, choice, class));
+            active.push((interval, choice));
         }
 
         Ok(allocation)
@@ -415,6 +445,7 @@ mod tests {
             class: Class::General,
             start: 0,
             end: 5,
+            live_slots: None,
         }];
         let intervals = [gpr(0, 1, 4)];
         let allocation = LinearScan.allocate(&intervals, &pinned, &[], &constraints).unwrap();
@@ -429,6 +460,7 @@ mod tests {
             class: Class::General,
             start: 0,
             end: 2,
+            live_slots: None,
         }];
         let intervals = [gpr(0, 3, 5)]; // starts after the parameter's last use
         let allocation = LinearScan.allocate(&intervals, &pinned, &[], &constraints).unwrap();

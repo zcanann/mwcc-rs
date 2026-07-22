@@ -315,6 +315,7 @@ impl Generator {
                             self.begin_condition_global_cache(condition)
                         };
                     let condition_result = (|| {
+                        self.preload_condition_global_cache(condition)?;
                         let mut branches = Vec::with_capacity(terms.len());
                         for term in terms {
                             let (options, condition_bit) =
