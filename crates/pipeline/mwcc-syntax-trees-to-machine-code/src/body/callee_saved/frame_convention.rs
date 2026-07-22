@@ -486,7 +486,7 @@ impl Generator {
             }
         }
         self.output.instructions[..=link_store].rotate_left(1);
-        self.delay_plain_frame_update_past_narrow_condition(link_store);
+        self.delay_plain_frame_update_past_condition_prefix(link_store);
         for index in 0..self.output.instructions.len().saturating_sub(1) {
             if matches!(
                 self.output.instructions[index],
@@ -508,7 +508,7 @@ impl Generator {
     /// Move a build-163 plain frame's final stack update past a register-only
     /// narrow condition prefix. Memory conditions deliberately stay below the
     /// update because their load uses r0 after LR is safely stored.
-    fn delay_plain_frame_update_past_narrow_condition(&mut self, frame_update: usize) {
+    fn delay_plain_frame_update_past_condition_prefix(&mut self, frame_update: usize) {
         if !matches!(
             self.output.instructions.get(frame_update),
             Some(Instruction::StoreWordWithUpdate {
@@ -562,7 +562,20 @@ impl Generator {
                         | Instruction::CompareLogicalWord { .. }
                 )
             });
-        if contains_narrowing && is_narrow_compare_prefix {
+        // A discarded assertion materializes the result of `a && b` around
+        // this same frame update. Its first compare already precedes the LR
+        // store; the two ready `li` operations fill the second linkage gap.
+        let is_assertion_value_prefix = matches!(
+            (
+                self.output.instructions.get(frame_update.checked_sub(1).unwrap_or(0)),
+                prefix,
+            ),
+            (
+                Some(Instruction::StoreWord { s: 0, a: 1, offset: 4 }),
+                [Instruction::AddImmediate { d: 0, a: 0, immediate: 1 }, Instruction::AddImmediate { d, a: 0, immediate: 0 }]
+            ) if *d != 0
+        );
+        if (contains_narrowing && is_narrow_compare_prefix) || is_assertion_value_prefix {
             self.output.instructions[frame_update..branch].rotate_left(1);
         }
     }

@@ -742,10 +742,27 @@ fn reads_register_after_call(expression: &Expression, registers: &HashSet<&str>)
         | Expression::IntegerLiteral(_)
         | Expression::FloatLiteral(_)
         | Expression::StringLiteral(_) => false,
+        // Short-circuit logical operands have a fixed source order. A call in
+        // the right operand cannot retroactively clobber a value read by the
+        // left condition; only a call in the left can precede right-side reads.
+        Expression::Binary {
+            operator: BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr,
+            left,
+            right,
+        } => {
+            reads_register_after_call(left, registers)
+                || reads_register_after_call(right, registers)
+                || (expression_has_call(left) && reads_register(right, registers))
+        }
         Expression::Binary { left, right, .. } => pair(left, right),
         Expression::Index { base, index } => pair(base, index),
         Expression::Assign { target, value } => pair(target, value),
-        Expression::Comma { left, right } => pair(left, right),
+        // The comma operator is a sequence point: left is complete before right.
+        Expression::Comma { left, right } => {
+            reads_register_after_call(left, registers)
+                || reads_register_after_call(right, registers)
+                || (expression_has_call(left) && reads_register(right, registers))
+        }
         Expression::Unary { operand, .. }
         | Expression::Cast { operand, .. }
         | Expression::BitFieldRead {
@@ -899,6 +916,11 @@ pub(crate) fn expression_has_call(expression: &Expression) -> bool {
             extracted: operand, ..
         }
         | Expression::IndexedUpdateValue { value: operand } => expression_has_call(operand),
+        Expression::Assign { target, value }
+        | Expression::Comma {
+            left: target,
+            right: value,
+        } => expression_has_call(target) || expression_has_call(value),
         Expression::Dereference { pointer } => expression_has_call(pointer),
         Expression::Index { base, index } => {
             expression_has_call(base) || expression_has_call(index)
@@ -1915,6 +1937,38 @@ mod tests {
             "unrelated",
             false
         ));
+    }
+
+    #[test]
+    fn discarded_comma_call_still_makes_a_function_non_leaf() {
+        let assertion = Expression::Cast {
+            target_type: Type::Void,
+            operand: Box::new(Expression::Comma {
+                left: Box::new(Expression::Call {
+                    name: "report".into(),
+                    arguments: Vec::new(),
+                }),
+                right: Box::new(Expression::IntegerLiteral(0)),
+            }),
+        };
+        assert!(expression_has_call(&assertion));
+    }
+
+    #[test]
+    fn right_short_circuit_call_does_not_make_the_left_value_live_across_it() {
+        let registers = HashSet::from(["channel"]);
+        let assertion = Expression::Binary {
+            operator: BinaryOperator::LogicalOr,
+            left: Box::new(var("channel")),
+            right: Box::new(Expression::Comma {
+                left: Box::new(Expression::Call {
+                    name: "report".into(),
+                    arguments: Vec::new(),
+                }),
+                right: Box::new(Expression::IntegerLiteral(0)),
+            }),
+        };
+        assert!(!reads_register_after_call(&assertion, &registers));
     }
 }
 

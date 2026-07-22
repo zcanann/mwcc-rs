@@ -4,12 +4,14 @@
 
 mod call_prologue;
 mod ascii_pointer_compare;
+mod assertion_expression;
 mod bounded_member_cursor;
 mod callee_saved;
 mod comma_operator;
 mod condition_linkage;
 mod conditional;
 mod conditional_member_select_tail;
+mod control_block_unique_copy;
 mod dispatchers;
 mod driver;
 mod enum_remap_member_update;

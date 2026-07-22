@@ -11,6 +11,9 @@ impl Generator {
         &mut self,
         expression: &Expression,
     ) -> Compilation<bool> {
+        if self.try_emit_discarded_assertion(expression)? {
+            return Ok(true);
+        }
         let Expression::Conditional {
             condition,
             when_true,
