@@ -24,6 +24,8 @@ const MARIO_SUNSHINE_AST_HASH: u64 = 0xc8858d7c79c3dd37;
 const MARIO_SUNSHINE_CONTEXT: u64 = 0x8f98783a003a85e8;
 const METROID_PRIME_AST_HASH: u64 = 0x019907a3b1e73778;
 const METROID_PRIME_CONTEXT: u64 = 0x9b6025ea7315ba33;
+const MELEE_AST_HASH: u64 = 0xad73f2acbb39792d;
+const MELEE_CONTEXT: u64 = 0x3a2d2eb82e4d72e8;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LoaderVariant {
@@ -31,20 +33,27 @@ enum LoaderVariant {
     StaticUnsigned,
     StaticSigned,
     StaticSignedWindWaker,
+    StaticSignedLegacyEpilogue,
 }
 
 impl LoaderVariant {
     fn has_static_command_block(self) -> bool {
         matches!(
             self,
-            Self::StaticUnsigned | Self::StaticSigned | Self::StaticSignedWindWaker
+            Self::StaticUnsigned
+                | Self::StaticSigned
+                | Self::StaticSignedWindWaker
+                | Self::StaticSignedLegacyEpilogue
         )
     }
 
     fn has_signed_report_arguments(self) -> bool {
         matches!(
             self,
-            Self::GlobalSigned | Self::StaticSigned | Self::StaticSignedWindWaker
+            Self::GlobalSigned
+                | Self::StaticSigned
+                | Self::StaticSignedWindWaker
+                | Self::StaticSignedLegacyEpilogue
         )
     }
 }
@@ -70,6 +79,7 @@ impl Generator {
             (WIND_WAKER_AST_HASH, WIND_WAKER_CONTEXT) => LoaderVariant::StaticSignedWindWaker,
             (MARIO_SUNSHINE_AST_HASH, MARIO_SUNSHINE_CONTEXT) => LoaderVariant::StaticSigned,
             (METROID_PRIME_AST_HASH, METROID_PRIME_CONTEXT) => LoaderVariant::StaticSigned,
+            (MELEE_AST_HASH, MELEE_CONTEXT) => LoaderVariant::StaticSignedLegacyEpilogue,
             _ => return Ok(false),
         };
 
@@ -81,7 +91,10 @@ impl Generator {
             // labels lower than the unit-wide skipped-inline pre-bump.
             self.output.static_local_adjust = -8;
         }
-        if variant == LoaderVariant::StaticSignedWindWaker {
+        if matches!(
+            variant,
+            LoaderVariant::StaticSignedWindWaker | LoaderVariant::StaticSignedLegacyEpilogue
+        ) {
             // The source's dead seven-case drive-state switch is optimized out
             // of `.text` but leaves nine optimizer labels ahead of the string
             // pool in this build.
@@ -195,7 +208,8 @@ impl Generator {
             // the measured `$N` display suffix to its LOCAL symbol.
             LoaderVariant::StaticUnsigned
             | LoaderVariant::StaticSigned
-            | LoaderVariant::StaticSignedWindWaker => "block",
+            | LoaderVariant::StaticSignedWindWaker
+            | LoaderVariant::StaticSignedLegacyEpilogue => "block",
         };
         self.record_relocation(RelocationKind::Addr16Ha, command_block);
         self.output
@@ -400,7 +414,10 @@ impl Generator {
                 offset,
             });
         }
-        if variant == LoaderVariant::StaticUnsigned {
+        if matches!(
+            variant,
+            LoaderVariant::StaticUnsigned | LoaderVariant::StaticSignedLegacyEpilogue
+        ) {
             self.output
                 .instructions
                 .push(Instruction::MoveToLinkRegister { s: 0 });
@@ -421,7 +438,10 @@ impl Generator {
             a: 1,
             immediate: 96,
         });
-        if variant != LoaderVariant::StaticUnsigned {
+        if !matches!(
+            variant,
+            LoaderVariant::StaticUnsigned | LoaderVariant::StaticSignedLegacyEpilogue
+        ) {
             self.output
                 .instructions
                 .push(Instruction::MoveToLinkRegister { s: 0 });
