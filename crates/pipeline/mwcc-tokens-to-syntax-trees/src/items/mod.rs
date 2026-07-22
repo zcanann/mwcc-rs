@@ -1973,9 +1973,10 @@ impl Parser {
                 self.expect(Token::Semicolon)?;
                 return Ok(());
             }
-            let return_type = self.parse_type()?;
+            let mut return_type = self.parse_type()?;
             let declared_source_fundamental = self.last_source_fundamental;
             let declared_is_volatile = self.last_type_was_volatile;
+            let parsed_aggregate_reference = self.last_type_was_aggregate_reference;
             // Keep the declared aggregate identity before parsing attributes, placement
             // expressions, or initializers: each may contain a cast whose own parse_type call
             // overwrites `last_struct_tag` (notably `T hw : (u32)(void*)ADDRESS`).
@@ -2099,6 +2100,20 @@ impl Parser {
                     attribute_alignment: None,
                 });
                 return Ok(());
+            }
+            // A C++ reference belongs to the DECLARATOR, not the base type:
+            // `T& f()` and `T*& f()` put the `&` immediately before the name.
+            // Aggregate parsing already represents `Aggregate&` as the aggregate's
+            // address. Scalar and pointer references need an address-shaped return
+            // type here so calls use the EABI's word return lane.
+            let declarator_is_reference = self.cplusplus && self.eat_keyword(Token::Ampersand);
+            if declarator_is_reference && !parsed_aggregate_reference {
+                return_type = match return_type {
+                    Type::Pointer(_) | Type::StructPointer { .. } => {
+                        Type::Pointer(Pointee::Pointer)
+                    }
+                    value => Type::Pointer(pointee_of(value)?),
+                };
             }
             let mut name = self.parse_identifier()?;
             // An out-of-class C++ member definition spells its declarator as
@@ -2232,6 +2247,11 @@ impl Parser {
                 self.peek(),
                 Token::Semicolon | Token::Comma | Token::BracketOpen | Token::Equals
             ) {
+                if declarator_is_reference {
+                    return Err(Diagnostic::error(
+                        "a file-scope C++ reference object is not supported yet (roadmap)",
+                    ));
+                }
                 // An array-typedef global (`Mtx g;`) is the whole ARRAY object — as if
                 // `float g[12];` had been written: the declared type becomes the element
                 // and the typedef's total element count seeds the dimensions (explicit

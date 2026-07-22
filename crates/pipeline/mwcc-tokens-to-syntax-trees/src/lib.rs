@@ -3620,6 +3620,31 @@ blr\n\
     }
 
     #[test]
+    fn parses_pointer_reference_return_before_qualified_function_name() {
+        let source = r#"
+            class Owner {
+            public:
+                const char* const& get() const;
+            private:
+                const char* value;
+            };
+            const char* const& Owner::get() const { return value; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(
+            unit.functions[0].return_type,
+            mwcc_syntax_trees::Type::Pointer(mwcc_syntax_trees::Pointee::Pointer)
+        );
+    }
+
+    #[test]
     fn retains_qualified_nested_enum_identity_without_outer_layout() {
         let source = r#"
             class Particle {
