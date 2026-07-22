@@ -1438,6 +1438,11 @@ impl Generator {
                     diagnostic
                 })?,
             }
+            self.stage_legacy_shift_add_call_argument(
+                statement,
+                &statements[statement_index + 1..],
+                emitted_start,
+            );
             self.schedule_dying_structured_local_argument(
                 statement,
                 &statements[statement_index + 1..],

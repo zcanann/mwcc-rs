@@ -71,6 +71,68 @@ fn expression_call_argument_index(expression: &Expression, candidate: &str) -> O
 }
 
 impl Generator {
+    /// Build 163 keeps the power-of-two product in r3 while forming a second
+    /// call argument such as `consume(data, length * 8 + 1)`. The generic
+    /// immediate selector coalesces both operations into the argument home;
+    /// split the producer lifetime so allocation can retain MWCC's intermediate.
+    pub(super) fn stage_legacy_shift_add_call_argument(
+        &mut self,
+        statement: &Statement,
+        remaining: &[Statement],
+        emitted_start: usize,
+    ) {
+        if self.behavior.frame_convention != FrameConvention::LinkageFirst {
+            return;
+        }
+        let Statement::Assign { name, value } = statement else {
+            return;
+        };
+        let Expression::Binary {
+            operator: BinaryOperator::Add,
+            left,
+            right,
+        } = value
+        else {
+            return;
+        };
+        if !matches!(
+            (left.as_ref(), right.as_ref()),
+            (
+                Expression::Binary {
+                    operator: BinaryOperator::Multiply,
+                    right,
+                    ..
+                },
+                Expression::IntegerLiteral(_)
+            ) if crate::analysis::constant_value(right).is_some_and(|factor| {
+                factor > 1 && (factor as u64).is_power_of_two()
+            })
+        ) {
+            return;
+        }
+        if remaining
+            .first()
+            .and_then(|next| statement_call_argument_index(next, name))
+            != Some(1)
+        {
+            return;
+        }
+        let Some(home) = self.lookup_general(name) else {
+            return;
+        };
+        if !is_coalesced_shift_add_window(&self.output.instructions[emitted_start..], home) {
+            return;
+        }
+        let staged = self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT);
+        let [Instruction::ShiftLeftImmediate { a, .. }, Instruction::AddImmediate { a: source, .. }] =
+            &mut self.output.instructions[emitted_start..]
+        else {
+            unreachable!("window checked above");
+        };
+        *a = staged;
+        *source = staged;
+    }
+
     /// Build 163 spells the final multi-argument forwarding of a deferred local
     /// home as `addi d,s,0`, while earlier uses and entry-initialized locals
     /// remain `mr`. Selection cannot infer this provenance from the virtual
@@ -135,9 +197,41 @@ fn dying_first_local_argument<'a>(
     (known_locals.contains(name) && !body_uses_local(remaining, name)).then_some(name)
 }
 
+fn is_coalesced_shift_add_window(instructions: &[Instruction], home: u8) -> bool {
+    matches!(
+        instructions,
+        [
+            Instruction::ShiftLeftImmediate { a, .. },
+            Instruction::AddImmediate {
+                d,
+                a: source,
+                ..
+            }
+        ] if *a == home && *d == home && *source == home
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognizes_a_coalesced_shift_add_argument() {
+        let instructions = [
+            Instruction::ShiftLeftImmediate {
+                a: 40,
+                s: 41,
+                shift: 3,
+            },
+            Instruction::AddImmediate {
+                d: 40,
+                a: 40,
+                immediate: 1,
+            },
+        ];
+        assert!(is_coalesced_shift_add_window(&instructions, 40));
+        assert!(!is_coalesced_shift_add_window(&instructions, 41));
+    }
 
     fn call(arguments: Vec<Expression>) -> Statement {
         Statement::Expression(Expression::Call {
