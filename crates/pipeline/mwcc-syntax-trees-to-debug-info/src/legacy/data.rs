@@ -281,10 +281,7 @@ pub(super) fn fragmented_records(
                 global,
                 *id,
                 sibling,
-                global_type_attribute(
-                    global.declared_type,
-                    aggregate_ids.get(aggregate_key).copied(),
-                )?,
+                global_type_attribute(global, aggregate_ids.get(aggregate_key).copied())?,
             ))),
         }
     }
@@ -392,12 +389,12 @@ pub(super) fn records<'a>(
                     global.name
                 )));
             }
-            fundamental_type(global.declared_type)?;
+            global_fundamental_type(global)?;
             let type_id = allocate(&mut next_id);
             let global_id = allocate(&mut next_id);
             (type_id, global_id, PlanKind::Array { type_id })
         } else {
-            global_type_attribute(global.declared_type, None)?;
+            global_type_attribute(global, None)?;
             let global_id = allocate(&mut next_id);
             (global_id, global_id, PlanKind::Scalar)
         };
@@ -419,7 +416,7 @@ pub(super) fn records<'a>(
                 plan.global,
                 plan.global_id,
                 next,
-                global_type_attribute(plan.global.declared_type, None)?,
+                global_type_attribute(plan.global, None)?,
             ))),
             PlanKind::Array { type_id } => {
                 records.push(DebugRecord::Entry(DebugEntry {
@@ -434,7 +431,7 @@ pub(super) fn records<'a>(
                             AttributeName::SubscriptData,
                                 AttributeValue::Block2(fundamental_subscript_data(
                                 plan.global.array_length.unwrap(),
-                                fundamental_type(plan.global.declared_type)?,
+                                global_fundamental_type(plan.global)?,
                             )),
                         ),
                     ],
@@ -665,10 +662,10 @@ fn global_entry(
 }
 
 fn global_type_attribute(
-    declared_type: Type,
+    global: &GlobalDeclaration,
     aggregate_id: Option<DebugEntryId>,
 ) -> Compilation<Attribute> {
-    match declared_type {
+    match global.declared_type {
         Type::Struct { .. } => aggregate_id
             .map(|id| {
                 attribute(
@@ -681,7 +678,17 @@ fn global_type_attribute(
         Type::StructPointer { .. } => Err(Diagnostic::error(
             "debug-info: a struct pointer needs retained aggregate identity (roadmap)",
         )),
-        other => Ok(fundamental_attribute(fundamental_type(other)?)),
+        _ => Ok(fundamental_attribute(global_fundamental_type(global)?)),
+    }
+}
+
+fn global_fundamental_type(global: &GlobalDeclaration) -> Compilation<FundamentalType> {
+    match (global.declared_type, global.source_fundamental) {
+        (Type::Pointer(_) | Type::StructPointer { .. } | Type::Struct { .. }, _) => {
+            fundamental_type(global.declared_type)
+        }
+        (_, Some(source)) => source_fundamental_type(source),
+        (_, None) => fundamental_type(global.declared_type),
     }
 }
 

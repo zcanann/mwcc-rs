@@ -63,3 +63,37 @@ fn aggregate_array_subscript_uses_a_relocatable_user_type_reference() {
         Address::debug_entry(DebugEntryId(7))
     );
 }
+
+#[test]
+fn scalar_array_subscript_preserves_typedef_source_identity() {
+    let source = br#"
+        typedef unsigned long u32;
+        u32 bitmap[4] = { 1, 2, 3, 4 };
+    "#;
+    let unit = mwcc_tokens_to_syntax_trees::parse_located_translation_unit(
+        mwcc_source_to_tokens::tokenize_bytes_located(source).expect("tokens"),
+        false,
+        false,
+        3,
+        1,
+    )
+    .expect("translation unit");
+    let globals = unit.globals.iter().collect::<Vec<_>>();
+    let lowered = records(&unit, &globals, DebugEntryId(1), false).expect("data records");
+    let subscript = lowered
+        .records
+        .iter()
+        .find_map(|record| match record {
+            DebugRecord::Entry(entry) if entry.tag == Tag::ArrayType => entry
+                .attributes
+                .iter()
+                .find(|attribute| attribute.name == AttributeName::SubscriptData),
+            DebugRecord::Entry(_) | DebugRecord::Marker(_) | DebugRecord::Raw(_) => None,
+        })
+        .expect("array subscript attribute");
+    let AttributeValue::Block2(bytes) = &subscript.value else {
+        panic!("scalar array uses an ordinary block")
+    };
+
+    assert_eq!(&bytes[bytes.len() - 2..], &[0, 0x0c]);
+}
