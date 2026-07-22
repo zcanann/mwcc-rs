@@ -2,6 +2,7 @@
 
 #[allow(unused_imports)]
 use super::*;
+use super::call_argument_types::{classify_call_argument, CallArgumentPlacement};
 use mwcc_versions::FrameConvention;
 
 impl Generator {
@@ -630,26 +631,47 @@ impl Generator {
         }
         let mut next_general = Eabi::FIRST_GENERAL_ARGUMENT;
         let mut next_float = Eabi::FIRST_FLOAT_ARGUMENT;
+        let mut folded_float_arguments: Vec<(u64, bool, u8)> = Vec::new();
         for (index, argument) in arguments.iter().enumerate() {
-            // A call argument whose float-ness does not match the parameter's needs an
-            // int<->float conversion at the call site (the int->float magic-constant
-            // sequence, or fctiwz). That conversion is not modeled, so defer rather than
-            // place the argument in the wrong register file — passing an integer in r3 to a
-            // float parameter that reads f1 (or vice versa) is a miscompile. A parameterless
-            // / variadic position (no recorded type) keeps the argument-driven placement.
-            if let Some(parameter_type) = self
+            let parameter_type = self
                 .call_parameter_types
                 .get(name)
                 .and_then(|types| types.get(index))
+                .copied();
+            let placement = classify_call_argument(
+                parameter_type,
+                self.is_float_value(argument),
+                constant_value(argument),
+            )?;
+            if let CallArgumentPlacement::Floating {
+                parameter_type,
+                folded_integer,
+            } = placement
             {
-                if matches!(parameter_type, Type::Float | Type::Double)
-                    != self.is_float_value(argument)
-                {
-                    return Err(Diagnostic::error("a call argument needs an int<->float conversion to match the parameter type (roadmap)"));
+                if let Some(value) = folded_integer {
+                    let double = parameter_type == Type::Double;
+                    let bits = if double {
+                        value.to_bits()
+                    } else {
+                        u64::from((value as f32).to_bits())
+                    };
+                    if let Some((_, _, source)) = folded_float_arguments
+                        .iter()
+                        .find(|(seen_bits, seen_double, _)| {
+                            *seen_bits == bits && *seen_double == double
+                        })
+                    {
+                        self.output.instructions.push(Instruction::FloatMove {
+                            d: next_float,
+                            b: *source,
+                        });
+                    } else {
+                        self.load_float_literal(next_float, value, double);
+                        folded_float_arguments.push((bits, double, next_float));
+                    }
+                } else {
+                    self.evaluate(argument, parameter_type, next_float)?;
                 }
-            }
-            if self.is_float_value(argument) {
-                self.evaluate_float(argument, next_float)?;
                 next_float += 1;
             } else {
                 // A narrow (char/short) argument to a parameter that is NOT wider is passed

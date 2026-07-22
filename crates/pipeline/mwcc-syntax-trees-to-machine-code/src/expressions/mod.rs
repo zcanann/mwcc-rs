@@ -6,6 +6,7 @@ mod arithmetic;
 mod bit_fields;
 mod bit_field_stores;
 mod call_argument_schedules;
+mod call_argument_types;
 mod calls;
 mod driver;
 mod global_array_decay;
