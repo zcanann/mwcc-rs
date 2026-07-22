@@ -1232,6 +1232,15 @@ def print_brief(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]]) 
             f"95% CI on confirmed share {estimate['confirmed_interval_low']:.1%}.."
             f"{estimate['confirmed_interval_high']:.1%}"
         )
+        raw_outcomes = " / ".join(
+            f"{status} {audit['statuses'].get(status, 0)}"
+            for status in STATUSES
+            if status != "UNTESTED"
+        )
+        print(
+            f"fixed-audit raw outcomes — {raw_outcomes} "
+            f"(N={audit['selected']}; sample rows only)"
+        )
         if estimate["substantive_source_total"]:
             substantive = (
                 "substantive-source audit — whole-object exact "
@@ -1328,6 +1337,18 @@ def print_brief(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]]) 
                 f"+{authoritative['byte_gained']} / -{authoritative['byte_lost']} across "
                 f"{authoritative['common_observations']}/{audit['selected']} comparable sample rows"
             )
+            for label, layer in (
+                ("raw classifications", audit_delta),
+                ("configured source", configured),
+                ("authoritative whole object", authoritative),
+            ):
+                transitions = layer["transitions"]
+                if transitions:
+                    rendered = "; ".join(
+                        f"{transition} {count}"
+                        for transition, count in transitions.items()
+                    )
+                    print(f"fixed-audit transitions ({label}) — {rendered}")
         runtime = audit["runtime"]
         if runtime["measured"]:
             active_wall = (

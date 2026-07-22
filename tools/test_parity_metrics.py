@@ -730,11 +730,76 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("whitespace-only rows excluded 1", rendered)
         self.assertIn("measurement-unknown attribution", rendered)
         self.assertIn("resolved exact 2/3", rendered)
+        self.assertIn(
+            "fixed-audit raw outcomes — BYTE 2 / DIFF 0 / DEFER 1 / HARNESS 1",
+            rendered,
+        )
         self.assertIn("emitted-object quality (conditional, not feature coverage)", rendered)
         self.assertIn("sampled compiler blocker families", rendered)
         self.assertIn("1x ", rendered)
         self.assertIn("audit execution cost", rendered)
         self.assertIn("summed 10.0s", rendered)
+
+    def test_brief_status_prints_the_fixed_panel_transition_matrix(self):
+        rows = [row(source="src/a.c"), row(source="src/b.c")]
+        observations = {
+            rows[0]["configuration_id"]: {
+                "status": "BYTE",
+                "evidence": {
+                    "oracle_direct": "RUNNABLE",
+                    "comparison_input": "DIRECT",
+                    "reference_object": "DIRECT",
+                    "configured_source": "BYTE",
+                },
+            },
+            rows[1]["configuration_id"]: {
+                "status": "DIFF",
+                "evidence": {
+                    "oracle_direct": "RUNNABLE",
+                    "comparison_input": "DIRECT",
+                    "reference_object": "DIRECT",
+                    "configured_source": "DIFF",
+                },
+            },
+        }
+        baseline = {
+            rows[0]["configuration_id"]: {
+                "status": "DEFER",
+                "evidence": {
+                    "oracle_direct": "RUNNABLE",
+                    "comparison_input": "DIRECT",
+                    "reference_object": "DIRECT",
+                    "configured_source": "DEFER",
+                },
+            },
+            rows[1]["configuration_id"]: {
+                "status": "BYTE",
+                "evidence": {
+                    "oracle_direct": "RUNNABLE",
+                    "comparison_input": "DIRECT",
+                    "reference_object": "DIRECT",
+                    "configured_source": "BYTE",
+                },
+            },
+        }
+        report = snapshot({"projects": []}, rows, observations, "fingerprint")
+        audit = representative_audit(
+            rows,
+            observations,
+            {item["configuration_id"] for item in rows},
+        )
+        audit["delta"] = delta(
+            observations,
+            baseline,
+            {item["configuration_id"] for item in rows},
+        )
+        report["representative_audit"] = audit
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            print_brief(report, None)
+        rendered = output.getvalue()
+        self.assertIn("DEFER->BYTE 1", rendered)
+        self.assertIn("BYTE->DIFF 1", rendered)
 
     def test_representative_audit_keeps_sample_diagnostics_separate(self):
         rows = [
