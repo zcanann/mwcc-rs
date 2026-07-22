@@ -366,6 +366,10 @@ fn global_alignments(
     unoptimized: bool,
 ) -> GlobalAlignments {
     let layout = match struct_alignment {
+        // Arrays of aggregate elements receive MWCC's minimum word object
+        // alignment even when the aggregate itself contains only byte members.
+        // A scalar packed/byte-only aggregate retains its natural alignment.
+        Some(alignment) if is_array => alignment.max(4),
         // A struct object uses the alignment established by its layout. This is
         // not necessarily word alignment: packed/byte-only aggregates and
         // compiler-generated C++ type-name records can legitimately align 1.
@@ -1805,11 +1809,21 @@ fn compile(
         post_leaf_function_anonymous_bump: config.build.post_leaf_function_anonymous_bump,
         post_framed_function_anonymous_bump: config.build.post_framed_function_anonymous_bump,
     };
+    // Debug lowering describes only source declarations that actually survived
+    // data materialization. In particular, `extern T x = {...}` is a definition,
+    // while an unused folded `static const` is not. Keep that object-emission
+    // decision in the driver and pass the semantic debug stage a name set rather
+    // than making it duplicate every data-elision rule above.
+    let emitted_data_symbols: std::collections::HashSet<String> = defined_globals
+        .iter()
+        .map(|global| global.name.clone())
+        .collect();
     let debug = if config.flags.debug_info {
         mwcc_syntax_trees_to_debug_info::lower_debug_info(
             &unit,
             &machine_functions,
             !defined_globals.is_empty(),
+            &emitted_data_symbols,
             source_name,
             source,
             config.build,
@@ -1886,6 +1900,13 @@ mod tests {
             GlobalAlignments {
                 layout: 1,
                 comment: 1,
+            }
+        );
+        assert_eq!(
+            global_alignments(4, Some(1), true, 1, false),
+            GlobalAlignments {
+                layout: 4,
+                comment: 4,
             }
         );
     }

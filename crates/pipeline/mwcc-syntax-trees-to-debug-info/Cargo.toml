@@ -12,5 +12,9 @@ mwcc-object.workspace = true
 mwcc-syntax-trees.workspace = true
 mwcc-versions.workspace = true
 
+[dev-dependencies]
+mwcc-source-to-tokens.workspace = true
+mwcc-tokens-to-syntax-trees.workspace = true
+
 [lints.rust]
 unsafe_code = "forbid"
