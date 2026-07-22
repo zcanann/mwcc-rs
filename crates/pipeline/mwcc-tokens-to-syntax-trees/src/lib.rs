@@ -3114,6 +3114,54 @@ blr\n\
     }
 
     #[test]
+    fn normalizes_aligned_placement_array_new_to_the_eabi_allocator() {
+        let source = r#"
+            void* operator new[](unsigned long, int);
+            unsigned char* create(unsigned count) {
+                return new (32) unsigned char[count];
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Call { name, arguments })
+                if name == "__nwa__FUli" && arguments.len() == 2
+        ));
+    }
+
+    #[test]
+    fn normalizes_heap_placement_array_new_to_the_eabi_allocator() {
+        let source = r#"
+            class JKRHeap;
+            class JKRSolidHeap;
+            extern JKRSolidHeap* JASDram;
+            unsigned char* create(unsigned count) {
+                return new (JASDram, 32) unsigned char[count];
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Call { name, arguments })
+                if name == "__nwa__FUlP7JKRHeapi" && arguments.len() == 3
+        ));
+    }
+
+    #[test]
     fn elaborated_class_value_members_retain_their_nested_layout() {
         let source = r#"
             struct Vector { struct { float x; float y; float z; } f; };

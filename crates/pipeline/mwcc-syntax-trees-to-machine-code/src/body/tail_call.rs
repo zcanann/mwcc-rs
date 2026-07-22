@@ -138,6 +138,6 @@ impl Generator {
 /// The EABI allocators return `void*`, which is ABI-identical to every object
 /// pointer return even though the source-level pointee type differs.
 fn allocator_pointer_return_is_compatible(name: &str, return_type: Type) -> bool {
-    matches!(name, "__nw__FUl" | "__nwa__FUl")
+    crate::allocation_operator_returns_pointer(name)
         && matches!(return_type, Type::Pointer(_) | Type::StructPointer { .. })
 }

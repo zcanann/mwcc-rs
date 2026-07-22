@@ -359,6 +359,8 @@ pub fn lower_function(
             .chain([
                 "__nw__FUl".to_owned(),
                 "__nwa__FUl".to_owned(),
+                "__nwa__FUli".to_owned(),
+                "__nwa__FUlP7JKRHeapi".to_owned(),
                 "memcpy".to_owned(),
             ])
             .collect(),
@@ -425,7 +427,7 @@ pub fn lower_function(
         .iter()
         .filter(|name| {
             generator.call_return_types.contains_key(name.as_str())
-                || matches!(name.as_str(), "__nw__FUl" | "__nwa__FUl")
+                || allocation_operator_returns_pointer(name)
         })
         .cloned()
         .collect();
@@ -534,6 +536,10 @@ pub fn lower_function(
         });
     }
     Ok(generator.output)
+}
+
+pub(crate) fn allocation_operator_returns_pointer(name: &str) -> bool {
+    name.starts_with("__nw__F") || name.starts_with("__nwa__F")
 }
 
 /// The register-allocation pass: resolve any virtual registers the selection

@@ -726,7 +726,7 @@ impl Parser {
         }
     }
 
-    fn cxx_expression_type(&self, expression: &Expression) -> Option<Type> {
+    pub(crate) fn cxx_expression_type(&self, expression: &Expression) -> Option<Type> {
         match expression {
             Expression::Variable(name) => self
                 .variable_types
@@ -751,7 +751,10 @@ impl Parser {
         }
     }
 
-    fn cxx_expression_struct_tag<'a>(&'a self, expression: &'a Expression) -> Option<&'a str> {
+    pub(crate) fn cxx_expression_struct_tag<'a>(
+        &'a self,
+        expression: &'a Expression,
+    ) -> Option<&'a str> {
         match expression {
             Expression::Variable(name) => self
                 .variable_structs
