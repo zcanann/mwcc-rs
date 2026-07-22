@@ -109,6 +109,15 @@ pub(super) fn stable_arguments(
     let [unstable_index] = unstable.as_slice() else {
         return false;
     };
+    // A direct-return accessor with one use of the argument has no intervening
+    // body effects and does not duplicate evaluation. This admits an automatic
+    // local assigned earlier in the caller without treating all assigned locals
+    // as globally stable across arbitrary inline bodies.
+    if function.locals.is_empty() && function.statements.is_empty() {
+        return function.return_expression.as_ref().is_some_and(|value| {
+            expression_use_count(value, &function.parameters[*unstable_index].name) == 1
+        });
+    }
     let [Statement::Store { target, value }] = function.statements.as_slice() else {
         return false;
     };

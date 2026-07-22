@@ -83,12 +83,17 @@ impl InlineBodySet {
                 .entry(function.name.clone())
                 .or_insert_with(|| function.clone());
         }
-        let values = skipped
+        let mut values: HashMap<_, _> = skipped
             .iter()
             .filter_map(|function| {
                 value_body::summarize(function).map(|body| (function.name.clone(), body))
             })
             .collect();
+        for function in definitions {
+            if let Some(body) = value_body::summarize_automatic(function) {
+                values.entry(function.name.clone()).or_insert(body);
+            }
+        }
         Self { bodies, values }
     }
 

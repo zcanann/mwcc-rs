@@ -62,6 +62,7 @@ mod structured_if_else;
 mod structured_inline_residue;
 mod structured_inline_assertion;
 mod structured_locals;
+mod structured_liveness;
 mod structured_prologue;
 mod structured_store_schedule;
 mod pointer_state_call_loop;

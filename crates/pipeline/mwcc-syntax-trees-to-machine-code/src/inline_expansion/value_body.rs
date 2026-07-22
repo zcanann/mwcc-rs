@@ -22,6 +22,16 @@ pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
     {
         return None;
     }
+    // A direct scalar/member return is the smallest value-inline body. Keep it
+    // before the result-local pattern below: ordinary (non-inline) definitions
+    // use this shape too, and mwcc's automatic inliner substitutes sufficiently
+    // small accessors while still emitting their external definition.
+    if function.locals.is_empty() && function.statements.is_empty() {
+        return Some(ValueInlineBody {
+            source: function.clone(),
+            expression: function.return_expression.clone()?,
+        });
+    }
     let [result] = function.locals.as_slice() else {
         return None;
     };
@@ -92,6 +102,16 @@ pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
     })
 }
 
+/// Ordinary definitions are eligible for automatic value inlining only when
+/// they are a direct expression body. More involved selection summaries remain
+/// limited to definitions the frontend identified as explicitly/skipped inline.
+pub(super) fn summarize_automatic(function: &Function) -> Option<ValueInlineBody> {
+    if !function.locals.is_empty() || !function.statements.is_empty() {
+        return None;
+    }
+    summarize(function)
+}
+
 fn is_boolean_expression(expression: &Expression) -> bool {
     match expression {
         Expression::Binary { operator, .. } => matches!(
@@ -117,6 +137,44 @@ fn is_boolean_expression(expression: &Expression) -> bool {
 mod tests {
     use super::*;
     use mwcc_syntax_trees::{BinaryOperator, LocalDeclaration, Parameter};
+
+    fn empty_function(name: &str, return_type: Type) -> Function {
+        Function {
+            return_type,
+            name: name.into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: Vec::new(),
+            statements: Vec::new(),
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        }
+    }
+
+    #[test]
+    fn summarizes_a_direct_member_accessor_for_automatic_inlining() {
+        let mut function = empty_function("get", Type::Pointer(mwcc_syntax_trees::Pointee::Int));
+        function.parameters.push(Parameter {
+            parameter_type: Type::StructPointer { element_size: 16 },
+            name: "object".into(),
+        });
+        function.return_expression = Some(Expression::Member {
+            base: Box::new(Expression::Variable("object".into())),
+            offset: 4,
+            member_type: Type::Pointer(mwcc_syntax_trees::Pointee::Int),
+            index_stride: None,
+        });
+
+        let summary = summarize_automatic(&function).expect("direct accessor");
+        assert!(matches!(summary.expression, Expression::Member { offset: 4, .. }));
+    }
 
     #[test]
     fn summarizes_an_asserted_integer_selection() {

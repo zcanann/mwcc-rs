@@ -467,7 +467,13 @@ pub fn lower_function(
     // dependencies that block a hoist, and allocation then colors the scheduled
     // order — reproducing mwcc's interleaving of the two phases.
     schedule_instructions(&mut generator);
-    allocate_registers(&mut generator)?;
+    allocate_registers(&mut generator).map_err(|mut diagnostic| {
+        let context = format!("function '{}'", function.name);
+        if !diagnostic.message.contains(&context) {
+            diagnostic.message.push_str(&format!(" (in {context})"));
+        }
+        diagnostic
+    })?;
     // Coalesce away `mr rX,rX` self-moves the allocator leaves when it colors a value's
     // virtual home to the register the value already holds (mwcc coalesces them).
     coalesce_self_moves(&mut generator);
