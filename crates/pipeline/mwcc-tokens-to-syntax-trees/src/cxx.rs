@@ -180,7 +180,7 @@ pub(crate) enum ImplicitMemberCall {
 /// distinguish `A*` from `B*`, or a reference from its pointer-shaped calling
 /// convention. Name mangling needs those distinctions, so they live in this
 /// declaration-only companion instead of leaking into C code generation.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct CxxParameterType {
     source_type: Type,
     source_fundamental: Option<SourceFundamentalType>,
@@ -201,7 +201,7 @@ pub(crate) struct CxxParameterType {
 /// every symbol that mentions it. Keeping that declaration-only identity here
 /// avoids widening storage/codegen types while preserving enough information
 /// for nested `P F <arguments> _ <return>` mangling.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct CxxFunctionType {
     return_type: CxxParameterType,
     parameters: Vec<CxxParameterType>,
@@ -2664,7 +2664,7 @@ impl Parser {
         &self,
         class: &ClassLayout,
         member: &str,
-        parameters: &[Type],
+        parameters: &[CxxParameterType],
         is_const_member: bool,
     ) -> Compilation<Option<VirtualDispatch>> {
         let mut primary = class
@@ -2680,7 +2680,12 @@ impl Parser {
                 let candidates = methods
                     .iter()
                     .filter(|method| {
-                        method.parameters == parameters
+                        // Storage types intentionally erase aggregate identity:
+                        // two `const T&` parameters are both one-word struct
+                        // pointers. Override resolution must use the retained
+                        // C++ source identities or an overload set of unrelated
+                        // aggregate references appears ambiguous.
+                        method.cxx_parameters == parameters
                             && method.is_const_member == is_const_member
                             && method.virtual_dispatch.is_some()
                     })
@@ -3140,7 +3145,7 @@ impl Parser {
                         self.resolve_primary_base_virtual_override(
                             &class,
                             &field_name,
-                            &signature.parameters,
+                            &signature.cxx_parameters,
                             is_const_member,
                         )
                     })

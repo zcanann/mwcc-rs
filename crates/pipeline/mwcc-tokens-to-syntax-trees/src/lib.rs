@@ -1298,6 +1298,33 @@ blr\n\
     }
 
     #[test]
+    fn virtual_override_resolution_keeps_aggregate_parameter_identity() {
+        let source = r#"
+            class Point;
+            class Sphere;
+            class Shape {
+            public:
+                virtual bool cross(Point const&) const;
+                virtual bool cross(Sphere const&) const;
+            };
+            class SphereShape : public Shape {
+            public:
+                virtual bool cross(Point const&) const;
+            };
+            int compiled(void) { return sizeof(SphereShape); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.aggregate_definitions["SphereShape"].byte_size, 4);
+    }
+
+    #[test]
     fn skips_primary_templates_with_default_arguments() {
         let source = r#"
             template <typename T, typename Pointer = T*>
