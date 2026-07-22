@@ -80,15 +80,13 @@ impl Generator {
         let (eager_saved_locals, deferred_saved_locals): (Vec<_>, Vec<_>) = saved_locals
             .into_iter()
             .partition(|local| local.initializer.is_some());
-        let Some(deferred_home_plan) =
-            plan_deferred_saved_homes(function, &deferred_saved_locals)
+        let Some(deferred_home_plan) = plan_deferred_saved_homes(function, &deferred_saved_locals)
         else {
             return Ok(false);
         };
 
-        let count = eager_saved_locals.len()
-            + saved_parameters.len()
-            + deferred_home_plan.group_count;
+        let count =
+            eager_saved_locals.len() + saved_parameters.len() + deferred_home_plan.group_count;
         let homes: Vec<u8> = (0..count).map(|_| self.fresh_virtual_general()).collect();
         let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
         self.non_leaf = true;
@@ -272,6 +270,10 @@ impl Generator {
         label_positions: &mut std::collections::HashMap<String, usize>,
         pending_gotos: &mut Vec<(usize, String)>,
     ) -> Compilation<()> {
+        // An early-return guard has no join from its call-making arm. Preserve
+        // condition values only along that guard's fallthrough edge, then let
+        // the next condition retain the intersection it also reads.
+        let mut carried_condition_cache_restore = None;
         for (statement_index, statement) in statements.iter().enumerate() {
             match statement {
                 Statement::If {
@@ -280,7 +282,13 @@ impl Generator {
                     else_body,
                 } if else_body.is_empty() => {
                     let terms = logical_and_terms(condition);
-                    let previous_cache = self.begin_condition_global_cache(condition);
+                    let previous_cache =
+                        if let Some(previous) = carried_condition_cache_restore.take() {
+                            self.continue_condition_global_cache(condition);
+                            previous
+                        } else {
+                            self.begin_condition_global_cache(condition)
+                        };
                     let condition_result = (|| {
                         let mut branches = Vec::with_capacity(terms.len());
                         for term in terms {
@@ -302,6 +310,14 @@ impl Generator {
                         }
                         Ok(branches)
                     })();
+                    let carry_fallthrough_cache =
+                        matches!(then_body.last(), Some(Statement::Return(None)))
+                            && matches!(
+                                statements.get(statement_index + 1),
+                                Some(Statement::If { else_body, .. }) if else_body.is_empty()
+                            );
+                    let continuation_cache =
+                        carry_fallthrough_cache.then(|| self.condition_global_values.clone());
                     self.restore_condition_global_cache(previous_cache);
                     let branches = condition_result?;
                     self.commit_structured_float_handoff();
@@ -327,6 +343,10 @@ impl Generator {
                         {
                             *branch_target = target;
                         }
+                    }
+                    if let Some(cache) = continuation_cache {
+                        let previous = std::mem::replace(&mut self.condition_global_values, cache);
+                        carried_condition_cache_restore = Some(previous);
                     }
                 }
                 Statement::Return(None) => {
@@ -380,6 +400,9 @@ impl Generator {
                     diagnostic
                 })?,
             }
+        }
+        if let Some(previous) = carried_condition_cache_restore {
+            self.restore_condition_global_cache(previous);
         }
         Ok(())
     }
@@ -462,11 +485,7 @@ struct Flow {
 /// in an arm that returns does not contaminate the continuation, while a call in
 /// the condition reaches either arm and can make their reads require a saved
 /// home.
-fn read_after_possible_call(
-    statements: &[Statement],
-    name: &str,
-    mut prior_call: bool,
-) -> Flow {
+fn read_after_possible_call(statements: &[Statement], name: &str, mut prior_call: bool) -> Flow {
     let mut read_after = false;
     for statement in statements {
         match statement {
@@ -480,8 +499,12 @@ fn read_after_possible_call(
                 let then_flow = read_after_possible_call(then_body, name, branch_entry_call);
                 let else_flow = read_after_possible_call(else_body, name, branch_entry_call);
                 read_after |= then_flow.read_after_call || else_flow.read_after_call;
-                let then_reaches = then_flow.falls_through.then_some(then_flow.call_on_fallthrough);
-                let else_reaches = else_flow.falls_through.then_some(else_flow.call_on_fallthrough);
+                let then_reaches = then_flow
+                    .falls_through
+                    .then_some(then_flow.call_on_fallthrough);
+                let else_reaches = else_flow
+                    .falls_through
+                    .then_some(else_flow.call_on_fallthrough);
                 match (then_reaches, else_reaches) {
                     (None, None) => {
                         return Flow {

@@ -34,12 +34,23 @@ pub struct LiveInterval {
     /// a prefers r3, b prefers r0), taken when free at allocation, else the pool
     /// order proceeds. `None` (the default) is the plain lowest-free behavior.
     pub prefer: Option<u8>,
+    /// Control-flow-aware live slots (`2*i` before instruction `i`, `2*i+1`
+    /// after it). `None` preserves the interval-only behavior for hand-authored
+    /// allocator inputs; liveness analysis always supplies these slots.
+    pub live_slots: Option<Vec<usize>>,
 }
 
 impl LiveInterval {
     pub fn new(vreg: VirtualRegister, start: usize, end: usize) -> Self {
         debug_assert!(start <= end, "an interval ends no earlier than it starts");
-        LiveInterval { vreg, start, end, avoid: Vec::new(), prefer: None }
+        LiveInterval {
+            vreg,
+            start,
+            end,
+            avoid: Vec::new(),
+            prefer: None,
+            live_slots: None,
+        }
     }
 
     /// The same interval with a set of registers it must avoid.
@@ -75,6 +86,18 @@ pub struct PinnedOccupancy {
 /// diverge from mwcc, which does so aggressively.
 fn interferes(a_start: usize, a_end: usize, b_start: usize, b_end: usize) -> bool {
     a_start < b_end && b_start < a_end
+}
+
+fn crosses_call(interval: &LiveInterval, calls: &[usize]) -> bool {
+    match &interval.live_slots {
+        Some(slots) => calls.iter().any(|call| {
+            slots.binary_search(&(2 * call)).is_ok()
+                && slots.binary_search(&(2 * call + 1)).is_ok()
+        }),
+        None => calls
+            .iter()
+            .any(|call| interval.start < *call && *call < interval.end),
+    }
 }
 
 /// The result of allocation: each virtual register's physical home.
@@ -182,7 +205,7 @@ impl Allocator for LinearScan {
             // the callee: it draws from the callee-saved pool, highest first (r31, r30,
             // …), exactly mwcc's assignment order. Floats keep the volatile pool until
             // an FPR callee-saved case is captured.
-            let crosses_call = calls.iter().any(|call| interval.start < *call && *call < interval.end);
+            let crosses_call = crosses_call(interval, calls);
             let pool: &[u8] = if crosses_call && class == Class::General {
                 &constraints.general_callee_saved
             } else {
@@ -262,7 +285,7 @@ impl Allocator for DescendingScan {
                 }
             }
 
-            let crosses_call = calls.iter().any(|call| interval.start < *call && *call < interval.end);
+            let crosses_call = crosses_call(interval, calls);
             let pool: Vec<u8> = if crosses_call && class == Class::General {
                 constraints.general_callee_saved.clone()
             } else {
@@ -387,7 +410,12 @@ mod tests {
     fn a_virtual_avoids_a_pinned_abi_register_it_outlives() {
         let constraints = RegisterConstraints::gekko();
         // A parameter pinned to r3 over [0, 5]; a virtual live across it.
-        let pinned = [PinnedOccupancy { register: 3, class: Class::General, start: 0, end: 5 }];
+        let pinned = [PinnedOccupancy {
+            register: 3,
+            class: Class::General,
+            start: 0,
+            end: 5,
+        }];
         let intervals = [gpr(0, 1, 4)];
         let allocation = LinearScan.allocate(&intervals, &pinned, &[], &constraints).unwrap();
         assert_eq!(allocation.physical(phys(0)), Some(4)); // r3 is taken by the parameter
@@ -396,7 +424,12 @@ mod tests {
     #[test]
     fn a_virtual_may_reuse_a_pinned_register_once_it_is_free() {
         let constraints = RegisterConstraints::gekko();
-        let pinned = [PinnedOccupancy { register: 3, class: Class::General, start: 0, end: 2 }];
+        let pinned = [PinnedOccupancy {
+            register: 3,
+            class: Class::General,
+            start: 0,
+            end: 2,
+        }];
         let intervals = [gpr(0, 3, 5)]; // starts after the parameter's last use
         let allocation = LinearScan.allocate(&intervals, &pinned, &[], &constraints).unwrap();
         assert_eq!(allocation.physical(phys(0)), Some(3));

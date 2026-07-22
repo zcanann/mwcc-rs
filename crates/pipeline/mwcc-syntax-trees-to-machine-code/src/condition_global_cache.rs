@@ -8,7 +8,7 @@
 use crate::generator::Generator;
 use mwcc_core::Compilation;
 use mwcc_syntax_trees::{Expression, Type};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy)]
 pub(crate) enum ConditionGlobalValue {
@@ -22,22 +22,41 @@ impl Generator {
         condition: &Expression,
     ) -> HashMap<String, ConditionGlobalValue> {
         let previous = std::mem::take(&mut self.condition_global_values);
-        let mut counts = HashMap::new();
-        if collect_member_pointer_bases(condition, &mut counts) {
-            self.condition_global_values = counts
-                .into_iter()
-                .filter(|(name, count)| {
-                    *count >= 2
-                        && !self.volatile_globals.contains(name.as_str())
-                        && matches!(
-                            self.globals.get(name.as_str()),
-                            Some(Type::Pointer(_) | Type::StructPointer { .. })
-                        )
-                })
-                .map(|(name, _)| (name, ConditionGlobalValue::Pending))
-                .collect();
-        }
+        self.condition_global_values = self.condition_global_cache_for(condition, None);
         previous
+    }
+
+    /// Advance a cache carried along the fallthrough edge of a prior early-
+    /// return guard. Eligible names keep their existing register; names first
+    /// used by this condition begin pending as usual.
+    pub(crate) fn continue_condition_global_cache(&mut self, condition: &Expression) {
+        let previous = std::mem::take(&mut self.condition_global_values);
+        self.condition_global_values = self.condition_global_cache_for(condition, Some(&previous));
+    }
+
+    fn condition_global_cache_for(
+        &self,
+        condition: &Expression,
+        reusable: Option<&HashMap<String, ConditionGlobalValue>>,
+    ) -> HashMap<String, ConditionGlobalValue> {
+        cacheable_member_pointer_bases(condition)
+            .into_iter()
+            .filter(|(name, count)| {
+                *count >= 2
+                    && !self.volatile_globals.contains(name.as_str())
+                    && matches!(
+                        self.globals.get(name.as_str()),
+                        Some(Type::Pointer(_) | Type::StructPointer { .. })
+                    )
+            })
+            .map(|(name, _)| {
+                let value = reusable
+                    .and_then(|values| values.get(&name))
+                    .copied()
+                    .unwrap_or(ConditionGlobalValue::Pending);
+                (name, value)
+            })
+            .collect()
     }
 
     pub(crate) fn restore_condition_global_cache(
@@ -62,23 +81,46 @@ impl Generator {
     }
 }
 
-/// Count global-pointer member bases in evaluation order. `false` rejects the
-/// entire condition when a call or mutation occurs; those are cache barriers.
+/// Count global-pointer member bases in the pure prefix of an expression.
+/// Calls and mutations are evaluation-order barriers: a name read again after
+/// one is removed entirely, while values used only before the barrier remain
+/// safe to reuse. This models `a->x && a->y && call()` without extending `a`
+/// across the call or allowing `call() && a->x` to consume a stale value.
+fn cacheable_member_pointer_bases(expression: &Expression) -> HashMap<String, usize> {
+    let mut counts = HashMap::new();
+    let mut after_barrier = HashSet::new();
+    let mut barrier_seen = false;
+    collect_member_pointer_bases(
+        expression,
+        &mut counts,
+        &mut after_barrier,
+        &mut barrier_seen,
+    );
+    counts.retain(|name, _| !after_barrier.contains(name));
+    counts
+}
+
 fn collect_member_pointer_bases(
     expression: &Expression,
     counts: &mut HashMap<String, usize>,
-) -> bool {
+    after_barrier: &mut HashSet<String>,
+    barrier_seen: &mut bool,
+) {
     match expression {
         Expression::Call { .. }
         | Expression::CallThrough { .. }
         | Expression::VirtualCall { .. }
         | Expression::PostStep { .. }
-        | Expression::Assign { .. } => false,
+        | Expression::Assign { .. } => *barrier_seen = true,
         Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
             if let Expression::Variable(name) = base.as_ref() {
-                *counts.entry(name.clone()).or_default() += 1;
+                if *barrier_seen {
+                    after_barrier.insert(name.clone());
+                } else {
+                    *counts.entry(name.clone()).or_default() += 1;
+                }
             }
-            collect_member_pointer_bases(base, counts)
+            collect_member_pointer_bases(base, counts, after_barrier, barrier_seen);
         }
         Expression::Binary { left, right, .. }
         | Expression::Index {
@@ -86,8 +128,8 @@ fn collect_member_pointer_bases(
             index: right,
         }
         | Expression::Comma { left, right } => {
-            collect_member_pointer_bases(left, counts)
-                && collect_member_pointer_bases(right, counts)
+            collect_member_pointer_bases(left, counts, after_barrier, barrier_seen);
+            collect_member_pointer_bases(right, counts, after_barrier, barrier_seen);
         }
         Expression::Conditional {
             condition,
@@ -95,28 +137,33 @@ fn collect_member_pointer_bases(
             when_false,
             ..
         } => {
-            collect_member_pointer_bases(condition, counts)
-                && collect_member_pointer_bases(when_true, counts)
-                && collect_member_pointer_bases(when_false, counts)
+            collect_member_pointer_bases(condition, counts, after_barrier, barrier_seen);
+            // The arms are mutually exclusive. Treat their join as a barrier
+            // so no register value is inferred to flow from one arm to the other.
+            *barrier_seen = true;
+            collect_member_pointer_bases(when_true, counts, after_barrier, barrier_seen);
+            collect_member_pointer_bases(when_false, counts, after_barrier, barrier_seen);
         }
         Expression::Unary { operand, .. }
         | Expression::Cast { operand, .. }
         | Expression::Dereference { pointer: operand }
         | Expression::AddressOf { operand }
         | Expression::IndexedUpdateValue { value: operand } => {
-            collect_member_pointer_bases(operand, counts)
+            collect_member_pointer_bases(operand, counts, after_barrier, barrier_seen);
         }
         Expression::BitFieldRead { extracted, .. } => {
-            collect_member_pointer_bases(extracted, counts)
+            collect_member_pointer_bases(extracted, counts, after_barrier, barrier_seen);
         }
-        Expression::AggregateLiteral(values) => values
-            .iter()
-            .all(|value| collect_member_pointer_bases(value, counts)),
+        Expression::AggregateLiteral(values) => {
+            for value in values {
+                collect_member_pointer_bases(value, counts, after_barrier, barrier_seen);
+            }
+        }
         Expression::IntegerLiteral(_)
         | Expression::FloatLiteral(_)
         | Expression::StringLiteral(_)
         | Expression::Variable(_)
-        | Expression::CompoundLiteral { .. } => true,
+        | Expression::CompoundLiteral { .. } => {}
     }
 }
 
@@ -140,8 +187,7 @@ mod tests {
             left: Box::new(member("limits", 0)),
             right: Box::new(member("limits", 4)),
         };
-        let mut counts = HashMap::new();
-        assert!(collect_member_pointer_bases(&condition, &mut counts));
+        let counts = cacheable_member_pointer_bases(&condition);
         assert_eq!(counts.get("limits"), Some(&2));
     }
 
@@ -155,7 +201,52 @@ mod tests {
                 arguments: vec![member("limits", 4)],
             }),
         };
-        let mut counts = HashMap::new();
-        assert!(!collect_member_pointer_bases(&condition, &mut counts));
+        let counts = cacheable_member_pointer_bases(&condition);
+        assert_eq!(counts.get("limits"), Some(&1));
+    }
+
+    #[test]
+    fn retains_a_repeated_pure_prefix_before_a_trailing_call() {
+        let pure_prefix = Expression::Binary {
+            operator: mwcc_syntax_trees::BinaryOperator::LogicalAnd,
+            left: Box::new(member("limits", 0)),
+            right: Box::new(member("limits", 4)),
+        };
+        let condition = Expression::Binary {
+            operator: mwcc_syntax_trees::BinaryOperator::LogicalAnd,
+            left: Box::new(pure_prefix),
+            right: Box::new(Expression::Call {
+                name: "test".into(),
+                arguments: vec![],
+            }),
+        };
+
+        let counts = cacheable_member_pointer_bases(&condition);
+        assert_eq!(counts.get("limits"), Some(&2));
+    }
+
+    #[test]
+    fn excludes_a_name_read_again_after_a_call() {
+        let before = Expression::Binary {
+            operator: mwcc_syntax_trees::BinaryOperator::LogicalAnd,
+            left: Box::new(member("limits", 0)),
+            right: Box::new(member("limits", 4)),
+        };
+        let call_then_read = Expression::Binary {
+            operator: mwcc_syntax_trees::BinaryOperator::LogicalAnd,
+            left: Box::new(Expression::Call {
+                name: "test".into(),
+                arguments: vec![],
+            }),
+            right: Box::new(member("limits", 8)),
+        };
+        let condition = Expression::Binary {
+            operator: mwcc_syntax_trees::BinaryOperator::LogicalAnd,
+            left: Box::new(before),
+            right: Box::new(call_then_read),
+        };
+
+        let counts = cacheable_member_pointer_bases(&condition);
+        assert!(!counts.contains_key("limits"));
     }
 }

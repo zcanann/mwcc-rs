@@ -19,7 +19,7 @@
 //! [machine description]: crate::for_each_register
 //! [`Allocator::allocate`]: crate::Allocator::allocate
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use mwcc_machine_code::Instruction;
 
@@ -49,6 +49,8 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
     // The currently-open range per register key, as (start, last-touched).
     let mut open: HashMap<(Class, u8), (usize, usize)> = HashMap::new();
     let mut ranges: Vec<((Class, u8), usize, usize)> = Vec::new();
+    let mut uses_by_instruction = Vec::with_capacity(instructions.len());
+    let mut definitions_by_instruction = Vec::with_capacity(instructions.len());
 
     let mut calls: Vec<usize> = Vec::new();
     for (index, instruction) in instructions.iter().enumerate() {
@@ -56,6 +58,20 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
             calls.push(index);
         }
         let operands = register_operands(instruction);
+        uses_by_instruction.push(
+            operands
+                .iter()
+                .filter(|operand| operand.role == RegisterRole::Use)
+                .map(|operand| (operand.class, operand.register))
+                .collect::<HashSet<_>>(),
+        );
+        definitions_by_instruction.push(
+            operands
+                .iter()
+                .filter(|operand| operand.role == RegisterRole::Define)
+                .map(|operand| (operand.class, operand.register))
+                .collect::<HashSet<_>>(),
+        );
         // Uses first: extend the open range (opening one from entry if this is a
         // parameter's first appearance).
         for operand in operands.iter().filter(|operand| operand.role == RegisterRole::Use) {
@@ -87,18 +103,119 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
     }
     // Deterministic order: by start, then register, then class.
     ranges.sort_by_key(|((class, register), start, _)| (*start, *register, *class as u8));
+    let live_slots = control_flow_live_slots(
+        instructions,
+        &uses_by_instruction,
+        &definitions_by_instruction,
+    );
 
     let mut liveness = Liveness::default();
     liveness.calls = calls;
     for ((class, value), start, end) in ranges {
         if Reg::is_virtual_field(value) {
             let vreg = VirtualRegister::new((value - VIRTUAL_BASE) as u32, class);
-            liveness.intervals.push(LiveInterval::new(vreg, start, end));
+            let mut interval = LiveInterval::new(vreg, start, end);
+            interval.live_slots = Some(slots_for_range(&live_slots, (class, value), start, end));
+            liveness.intervals.push(interval);
         } else {
-            liveness.pinned.push(PinnedOccupancy { register: value, class, start, end });
+            liveness.pinned.push(PinnedOccupancy {
+                register: value,
+                class,
+                start,
+                end,
+            });
         }
     }
     liveness
+}
+
+type RegisterKey = (Class, u8);
+
+fn slots_for_range(
+    slots: &HashMap<RegisterKey, Vec<usize>>,
+    key: RegisterKey,
+    start: usize,
+    end: usize,
+) -> Vec<usize> {
+    slots
+        .get(&key)
+        .into_iter()
+        .flatten()
+        .copied()
+        .filter(|slot| start <= slot / 2 && slot / 2 <= end)
+        .collect()
+}
+
+/// Classic backwards liveness over the selected instruction CFG. Slots split
+/// each instruction into a read side and a write side, preserving the existing
+/// half-open reuse rule while excluding values from mutually exclusive arms.
+fn control_flow_live_slots(
+    instructions: &[Instruction],
+    uses: &[HashSet<RegisterKey>],
+    definitions: &[HashSet<RegisterKey>],
+) -> HashMap<RegisterKey, Vec<usize>> {
+    let count = instructions.len();
+    let mut live_in = vec![HashSet::new(); count];
+    let mut live_out = vec![HashSet::new(); count];
+
+    loop {
+        let mut changed = false;
+        for index in (0..count).rev() {
+            let mut next_out = HashSet::new();
+            for successor in successors(instructions, index) {
+                if successor < count {
+                    next_out.extend(live_in[successor].iter().copied());
+                }
+            }
+            let mut next_in = uses[index].clone();
+            next_in.extend(
+                next_out
+                    .iter()
+                    .filter(|key| !definitions[index].contains(key))
+                    .copied(),
+            );
+            if next_out != live_out[index] || next_in != live_in[index] {
+                live_out[index] = next_out;
+                live_in[index] = next_in;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let mut slots: HashMap<RegisterKey, Vec<usize>> = HashMap::new();
+    for index in 0..count {
+        for key in live_in[index].iter().chain(uses[index].iter()) {
+            slots.entry(*key).or_default().push(2 * index);
+        }
+        for key in live_out[index]
+            .iter()
+            .chain(definitions[index].iter())
+        {
+            slots.entry(*key).or_default().push(2 * index + 1);
+        }
+    }
+    for values in slots.values_mut() {
+        values.sort_unstable();
+        values.dedup();
+    }
+    slots
+}
+
+fn successors(instructions: &[Instruction], index: usize) -> Vec<usize> {
+    let fallthrough = index + 1;
+    match &instructions[index] {
+        Instruction::BranchConditionalForward { target, .. } => vec![fallthrough, *target],
+        Instruction::Branch { target } => vec![*target],
+        Instruction::BranchConditionalToLinkRegister { .. } => vec![fallthrough],
+        Instruction::BranchToLinkRegister
+        | Instruction::BranchToCountRegister
+        | Instruction::BranchExternal { .. }
+        | Instruction::ReturnFromInterrupt => Vec::new(),
+        _ => vec![fallthrough],
+    }
 }
 
 /// Rewrite every virtual register in `instructions` to its allocated physical
@@ -186,5 +303,88 @@ mod tests {
         // half-open rule in action (a result reusing a just-consumed source).
         assert_eq!(allocation.physical(Reg::general(0).virtual_register().unwrap()), Some(3));
         assert_eq!(stream[0], Instruction::Add { d: 3, a: 3, b: 4 });
+    }
+
+    #[test]
+    fn an_early_return_arm_call_does_not_make_the_fallthrough_value_callee_saved() {
+        let stream = [
+            Instruction::AddImmediate {
+                d: v(0),
+                a: 0,
+                immediate: 1,
+            },
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 0,
+                target: 5,
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 0,
+                immediate: 7,
+            },
+            Instruction::BranchAndLink {
+                target: "terminal_arm".into(),
+            },
+            Instruction::Branch { target: 6 },
+            Instruction::Or {
+                a: 3,
+                s: v(0),
+                b: v(0),
+            },
+            Instruction::BranchToLinkRegister,
+        ];
+        let liveness = analyze(&stream);
+        let interval = liveness
+            .intervals
+            .iter()
+            .find(|interval| interval.vreg.id == 0)
+            .expect("v0 interval");
+        let slots = interval.live_slots.as_ref().expect("CFG slots");
+        assert!(!slots.contains(&(2 * 3)));
+        assert!(!slots.contains(&(2 * 3 + 1)));
+
+        let constraints = RegisterConstraints::gekko();
+        let allocation = LinearScan
+            .allocate(
+                &liveness.intervals,
+                &liveness.pinned,
+                &liveness.calls,
+                &constraints,
+            )
+            .unwrap();
+        let home = allocation.physical(Reg::general(0).virtual_register().unwrap()).unwrap();
+        assert!(constraints.general_pool.contains(&home));
+    }
+
+    #[test]
+    fn a_call_on_the_path_to_a_use_still_requires_a_callee_saved_home() {
+        let stream = [
+            Instruction::AddImmediate {
+                d: v(0),
+                a: 0,
+                immediate: 1,
+            },
+            Instruction::BranchAndLink {
+                target: "middle".into(),
+            },
+            Instruction::Or {
+                a: 3,
+                s: v(0),
+                b: v(0),
+            },
+        ];
+        let liveness = analyze(&stream);
+        let constraints = RegisterConstraints::gekko();
+        let allocation = LinearScan
+            .allocate(
+                &liveness.intervals,
+                &liveness.pinned,
+                &liveness.calls,
+                &constraints,
+            )
+            .unwrap();
+        let home = allocation.physical(Reg::general(0).virtual_register().unwrap()).unwrap();
+        assert!(constraints.general_callee_saved.contains(&home));
     }
 }
