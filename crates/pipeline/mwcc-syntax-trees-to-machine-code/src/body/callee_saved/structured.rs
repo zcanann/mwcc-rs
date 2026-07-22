@@ -998,6 +998,7 @@ impl Generator {
             &mut condition_alias,
         )?;
         self.schedule_structured_float_store_call_arguments();
+        self.schedule_structured_aggregate_constructor();
         if dense_entry_prefix {
             self.schedule_structured_prefixed_frame_entry();
         }
