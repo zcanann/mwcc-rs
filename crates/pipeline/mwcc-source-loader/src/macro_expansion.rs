@@ -90,8 +90,19 @@ fn expand(
                         index = invocation_end;
                         continue;
                     }
+                    // C/C++ stringification uses the original (unexpanded)
+                    // argument spelling. Resolve those `#parameter` operators
+                    // before installing the expanded argument macros below;
+                    // otherwise the lexer sees the surviving `#` in the middle
+                    // of a source line as a directive and can discard the rest
+                    // of a multi-statement macro body.
+                    let replacement = stringify_parameter_uses(
+                        replacement,
+                        parameters,
+                        &arguments,
+                    );
                     let mut parameter_definitions = definitions.clone();
-                    for (parameter, argument) in parameters.iter().zip(arguments) {
+                    for (parameter, argument) in parameters.iter().zip(&arguments) {
                         let mut argument_state = LexicalState::default();
                         let expanded = expand(
                             argument,
@@ -103,7 +114,7 @@ fn expand(
                         parameter_definitions.insert(parameter.clone(), Macro::Object(expanded));
                     }
                     (
-                        replacement.clone(),
+                        replacement,
                         invocation_end,
                         Some(parameter_definitions),
                     )
@@ -142,6 +153,113 @@ fn expand(
         output.push(input[index]);
         index += 1;
     }
+    output
+}
+
+/// Replace function-macro `#parameter` operators with C string literals.
+///
+/// Keep this separate from ordinary identifier expansion: stringification is
+/// deliberately based on the call-site spelling, while a normal parameter use
+/// receives the recursively expanded argument.
+fn stringify_parameter_uses(
+    replacement: &[u8],
+    parameters: &[String],
+    arguments: &[&[u8]],
+) -> Vec<u8> {
+    let mut output = Vec::with_capacity(replacement.len());
+    let mut index = 0;
+    while index < replacement.len() {
+        if matches!(replacement[index], b'\'' | b'"') {
+            let end = skip_quoted(replacement, index);
+            output.extend_from_slice(&replacement[index..end]);
+            index = end;
+            continue;
+        }
+        if replacement[index..].starts_with(b"//") {
+            output.extend_from_slice(&replacement[index..]);
+            break;
+        }
+        if replacement[index..].starts_with(b"/*") {
+            let end = replacement[index + 2..]
+                .windows(2)
+                .position(|bytes| bytes == b"*/")
+                .map_or(replacement.len(), |close| index + close + 4);
+            output.extend_from_slice(&replacement[index..end]);
+            index = end;
+            continue;
+        }
+        if replacement[index] != b'#'
+            || replacement.get(index + 1) == Some(&b'#')
+            || (index > 0 && replacement[index - 1] == b'#')
+        {
+            output.push(replacement[index]);
+            index += 1;
+            continue;
+        }
+
+        let mut name_start = index + 1;
+        while replacement
+            .get(name_start)
+            .is_some_and(u8::is_ascii_whitespace)
+        {
+            name_start += 1;
+        }
+        if !replacement
+            .get(name_start)
+            .copied()
+            .is_some_and(is_identifier_start)
+        {
+            output.push(b'#');
+            index += 1;
+            continue;
+        }
+        let mut name_end = name_start + 1;
+        while replacement
+            .get(name_end)
+            .copied()
+            .is_some_and(is_identifier_continue)
+        {
+            name_end += 1;
+        }
+        let name = &replacement[name_start..name_end];
+        let Some(argument) = parameters
+            .iter()
+            .position(|parameter| parameter.as_bytes() == name)
+            .and_then(|position| arguments.get(position))
+        else {
+            output.push(b'#');
+            index += 1;
+            continue;
+        };
+        output.extend(stringify_argument(argument));
+        index = name_end;
+    }
+    output
+}
+
+fn stringify_argument(argument: &[u8]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(argument.len() + 2);
+    output.push(b'"');
+    let mut pending_space = false;
+    for byte in argument
+        .iter()
+        .copied()
+        .skip_while(u8::is_ascii_whitespace)
+    {
+        if byte.is_ascii_whitespace() {
+            pending_space = true;
+            continue;
+        }
+        if pending_space && output.len() > 1 {
+            output.push(b' ');
+        }
+        pending_space = false;
+        if matches!(byte, b'"' | b'\\') {
+            output.push(b'\\');
+        }
+        output.push(byte);
+    }
+    output.push(b'"');
     output
 }
 
@@ -333,6 +451,41 @@ mod tests {
                 &mut state,
             ),
             b"double acos (double); int x = 3 +  call(1, 2) + 7;\n"
+        );
+    }
+
+    #[test]
+    fn stringifies_original_function_macro_arguments() {
+        let definitions = HashMap::from([
+            (
+                "ASSERT".to_string(),
+                Macro::Function {
+                    parameters: vec!["condition".to_string()],
+                    replacement: b"show(#condition); if (condition) { pass(); }".to_vec(),
+                },
+            ),
+            ("VALUE".to_string(), Macro::Object(b"3".to_vec())),
+        ]);
+        let mut state = LexicalState::default();
+        assert_eq!(
+            expand_line(b"ASSERT(VALUE == 3)\n", &definitions, &mut state),
+            b"show(\"VALUE == 3\"); if (3 == 3) { pass(); }\n"
+        );
+    }
+
+    #[test]
+    fn stringification_collapses_space_and_escapes_literal_spelling() {
+        let definitions = HashMap::from([(
+            "TEXT".to_string(),
+            Macro::Function {
+                parameters: vec!["value".to_string()],
+                replacement: b"# value".to_vec(),
+            },
+        )]);
+        let mut state = LexicalState::default();
+        assert_eq!(
+            expand_line(b"TEXT(  left   + \"right\"  )\n", &definitions, &mut state),
+            b"\"left + \\\"right\\\"\"\n"
         );
     }
 
