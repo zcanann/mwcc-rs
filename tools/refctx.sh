@@ -194,6 +194,7 @@ if direct_reference_output="$(
 )"; then
   oracle_direct="RUNNABLE"
   cp "$dir/ref.o" "$dir/ref.direct.o"
+  if [[ "${REFCTX_CONFIGURED_ONLY:-0}" != 1 ]]; then
   # MWCC's `-E` deletes stateful pragmas. Preprocess a scratch copy whose
   # modeled pragmas are inert declarations, then restore them in the emitted
   # token stream. Mirroring the source directory preserves quoted sibling
@@ -234,6 +235,7 @@ if direct_reference_output="$(
       "$dir/ours/$source_name"
     direct_ready=1
     ctx_name="$source_name"
+  fi
   fi
 fi
 # Emit the direct probe immediately so timeouts and every early harness exit
@@ -372,6 +374,10 @@ if [[ "$oracle_direct" != "RUNNABLE" && ${#missing_precompiled_headers[@]} -gt 0
   fi
 fi
 
+if [[ "${REFCTX_CONFIGURED_ONLY:-0}" == 1 && "$oracle_direct" == "RUNNABLE" ]]; then
+  return
+fi
+
 if [[ $direct_ready -eq 0 ]]; then
 # A direct compile gives the authoritative missing-file diagnostic. decompctx
 # may also visit missing includes inside inactive conditionals, so its log alone
@@ -440,7 +446,8 @@ cp "$dir/ctx.i" "$dir/ours/$ctx_name"
 fi
 }
 
-if [[ $direct_ready -eq 0 ]]; then
+if [[ $direct_ready -eq 0 ]] \
+  && ! [[ "${REFCTX_CONFIGURED_ONLY:-0}" == 1 && "$oracle_direct" == "RUNNABLE" ]]; then
   prepare_synthetic_bridge
 fi
 
