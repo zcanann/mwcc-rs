@@ -20,6 +20,13 @@ struct UpdatePlan<'a> {
     failure_threshold: i16,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct GuardedAggregateUpdateSummary {
+    pub(crate) producer: String,
+    pub(crate) updater: String,
+    pub(crate) member_offset: i16,
+}
+
 fn variable(expression: &Expression, expected: &str) -> bool {
     matches!(expression, Expression::Variable(name) if name == expected)
 }
@@ -142,6 +149,17 @@ fn classify(function: &Function) -> Option<UpdatePlan<'_>> {
         updater,
         member_offset,
         failure_threshold,
+    })
+}
+
+pub(crate) fn summarize_guarded_aggregate_update(
+    function: &Function,
+) -> Option<GuardedAggregateUpdateSummary> {
+    let plan = classify(function)?;
+    Some(GuardedAggregateUpdateSummary {
+        producer: plan.producer.to_string(),
+        updater: plan.updater.to_string(),
+        member_offset: plan.member_offset,
     })
 }
 

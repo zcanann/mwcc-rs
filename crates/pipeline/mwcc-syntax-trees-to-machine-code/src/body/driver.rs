@@ -1134,6 +1134,9 @@ impl Generator {
             .is_some_and(|name| name == std::ffi::OsStr::new(&function.name))
         {
             eprintln!("captured function: {function:#?}");
+            if let Some(expanded) = self.inline_bodies.expand_calls(function) {
+                eprintln!("expanded function: {expanded:#?}");
+            }
         }
         // Recursive body transforms can introduce hygienic inline locals after
         // parameter assignment initialized this set. Retain their provenance so
@@ -1933,6 +1936,9 @@ impl Generator {
             return Ok(());
         }
         if self.try_guarded_aggregate_update(function)? {
+            return Ok(());
+        }
+        if self.try_inlined_guarded_aggregate_update(function)? {
             return Ok(());
         }
         // Endian scalar wrappers intentionally take the address of a 16/32/64-bit
@@ -3001,6 +3007,9 @@ impl Generator {
         let mut lr_store_index: Option<usize> = None;
         if function_makes_call(function) {
             if !function.guards.is_empty() {
+                if self.try_guarded_computed_survivor_return(function)? {
+                    return Ok(());
+                }
                 // `if (call()) return C; ... return D;` — a sequence of
                 // call-tested constant exits sharing one LR-only epilogue.
                 if self.try_call_condition_return_chain(function)? {

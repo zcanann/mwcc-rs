@@ -36,6 +36,7 @@ mod global_aggregate_post;
 mod guarded_display_list_packet;
 mod guarded_initialization;
 mod guarded_pointer_pair_initialization;
+mod guarded_computed_survivor;
 mod guarded_bitmask_call_sequence;
 mod guarded_pointer_call;
 mod indirect_call_schedule;

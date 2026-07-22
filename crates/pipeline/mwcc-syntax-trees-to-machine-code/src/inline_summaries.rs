@@ -11,9 +11,9 @@ use mwcc_syntax_trees::{BinaryOperator, Expression, Function, LoopKind, Statemen
 use std::collections::{HashMap, HashSet};
 
 use crate::body::{
-    function_calls_any, summarize_queue_pop, summarize_queue_service,
-    summarize_unoptimized_local_select, QueuePopSummary, QueueServiceSummary,
-    UnoptimizedLocalSelectSummary,
+    function_calls_any, summarize_guarded_aggregate_update, summarize_queue_pop,
+    summarize_queue_service, summarize_unoptimized_local_select, GuardedAggregateUpdateSummary,
+    QueuePopSummary, QueueServiceSummary, UnoptimizedLocalSelectSummary,
 };
 
 #[derive(Clone, Debug)]
@@ -89,6 +89,7 @@ pub struct InlineSummaries {
     unoptimized_local_selects: HashMap<String, UnoptimizedLocalSelectSummary>,
     byte_appends: HashMap<String, ByteAppendSummary>,
     fixed_size_copies: HashMap<String, FixedSizeCopySummary>,
+    guarded_aggregate_updates: HashMap<String, GuardedAggregateUpdateSummary>,
     single_base_destructors: HashMap<String, SingleBaseDestructorSummary>,
     ipa_elided_functions: HashSet<String>,
 }
@@ -132,6 +133,11 @@ impl InlineSummaries {
             if let Some(summary) = summarize_fixed_size_copy(function) {
                 summaries
                     .fixed_size_copies
+                    .insert(function.name.clone(), summary);
+            }
+            if let Some(summary) = summarize_guarded_aggregate_update(function) {
+                summaries
+                    .guarded_aggregate_updates
                     .insert(function.name.clone(), summary);
             }
             if let Some(summary) = summarize_single_base_destructor(function) {
@@ -218,6 +224,13 @@ impl InlineSummaries {
         self.fixed_size_copies.get(name)
     }
 
+    pub(crate) fn guarded_aggregate_update(
+        &self,
+        name: &str,
+    ) -> Option<&GuardedAggregateUpdateSummary> {
+        self.guarded_aggregate_updates.get(name)
+    }
+
     pub(crate) fn single_base_destructor(
         &self,
         name: &str,
@@ -287,7 +300,10 @@ fn summarize_single_base_destructor(function: &Function) -> Option<SingleBaseDes
         || function.parameters.len() != 2
         || function.parameters[0].name != "this"
         || function.parameters[1].name != "__destroy"
-        || !matches!(function.parameters[0].parameter_type, Type::StructPointer { .. })
+        || !matches!(
+            function.parameters[0].parameter_type,
+            Type::StructPointer { .. }
+        )
         || function.parameters[1].parameter_type != Type::Short
         || !function.locals.is_empty()
         || !function.guards.is_empty()
@@ -320,8 +336,7 @@ fn summarize_single_base_destructor(function: &Function) -> Option<SingleBaseDes
     };
     let adjustment = match object {
         Expression::Variable(name) if name == "this" => 0,
-        Expression::MemberAddress { base, offset, .. }
-            if variable(base, "this") => *offset,
+        Expression::MemberAddress { base, offset, .. } if variable(base, "this") => *offset,
         _ => return None,
     };
     let Statement::If {
