@@ -19,6 +19,7 @@ mod narrow_compound;
 mod operands;
 mod passes;
 mod pointer_alignment;
+mod pointer_spans;
 mod pointers;
 mod punned_displacement;
 mod stores;

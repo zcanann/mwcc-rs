@@ -51,6 +51,9 @@ impl Generator {
         expression: &Expression,
         destination: u8,
     ) -> Compilation<()> {
+        if self.try_emit_pointer_span_scale(expression, destination)? {
+            return Ok(());
+        }
         if self.try_emit_pointer_round_up(expression, destination)? {
             return Ok(());
         }
