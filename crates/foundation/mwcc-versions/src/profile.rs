@@ -835,6 +835,13 @@ pub trait CodegenProfile: core::fmt::Debug {
         PlainLinkageEpilogueStyle::ReloadBeforeStackRestore
     }
 
+    /// Whether an O4 call-result store through a saved pointer reloads LR before
+    /// that pointer. The 2.4.x scheduler fills this teardown slot; the 4.x
+    /// scheduler keeps the saved GPR first.
+    fn saved_pointer_call_store_lr_first(&self) -> bool {
+        true
+    }
+
     /// Whether a terminal call through a function pointer is lowered as an
     /// unlinked `bctr` sibling call without requiring IPA.
     /// This appears with the 4.x optimizer generation.
@@ -1162,6 +1169,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn saved_pointer_call_store_lr_first(&self) -> bool {
+        false
+    }
+
     fn guarded_byte_copy_style(&self) -> GuardedByteCopyStyle {
         GuardedByteCopyStyle::SignedCompare
     }
@@ -1272,6 +1283,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn saved_pointer_call_store_lr_first(&self) -> bool {
+        false
+    }
+
     fn guarded_byte_copy_style(&self) -> GuardedByteCopyStyle {
         GuardedByteCopyStyle::SignedCompareWithAlignedStore
     }

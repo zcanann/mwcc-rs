@@ -575,6 +575,9 @@ pub struct Behavior {
     pub frame_convention: FrameConvention,
     /// Saved-LR reload order for a linkage-first frame with no saved GPRs.
     pub plain_linkage_epilogue_style: PlainLinkageEpilogueStyle,
+    /// Whether an O4 call-result store through a saved pointer reloads LR before
+    /// that pointer. This latency slot changed in the 4.x optimizer generation.
+    pub saved_pointer_call_store_lr_first: bool,
     /// Whether stack-using leaf functions carry unwind-table entries.
     pub emit_leaf_frame_unwind: bool,
     /// Whether constant non-leaf join returns precede the saved-LR reload.
@@ -857,6 +860,10 @@ impl Behavior {
             frexp_scale_before_eptr_store: config.build.profile.frexp_scale_before_eptr_store(),
             frame_convention: config.build.profile.frame_convention(),
             plain_linkage_epilogue_style: config.build.profile.plain_linkage_epilogue_style(),
+            saved_pointer_call_store_lr_first: config
+                .build
+                .profile
+                .saved_pointer_call_store_lr_first(),
             emit_leaf_frame_unwind: config.build.profile.emit_leaf_frame_unwind(),
             constant_join_return_precedes_lr_reload: config
                 .build
@@ -1331,6 +1338,16 @@ mod tests {
                 narrow_call_zero_test_style
             );
         }
+    }
+
+    #[test]
+    fn four_x_profiles_keep_saved_pointer_ahead_of_link_reload() {
+        for compiler_build in [build::GC_3_0A3, build::GC_3_0A3P1, build::WII_1_0] {
+            assert!(!Behavior::resolve(&CompilerConfig::new(compiler_build))
+                .saved_pointer_call_store_lr_first);
+        }
+        assert!(Behavior::resolve(&CompilerConfig::new(build::GC_2_7))
+            .saved_pointer_call_store_lr_first);
     }
 
     #[test]
