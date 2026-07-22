@@ -1,6 +1,12 @@
 //! Data declarations and their reachable type graphs in legacy DWARF-1 units.
 
+mod arrays;
+
+#[cfg(test)]
+mod tests;
+
 use super::{attribute, UNIT_END};
+use arrays::{aggregate_subscript_data, fundamental_subscript_data};
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_dwarf1::{
     Address, Attribute, AttributeName, AttributeValue, Block, BlockRelocation, DebugEntry,
@@ -301,6 +307,7 @@ enum PlanKind<'a> {
     },
     Aggregate {
         root_type_id: DebugEntryId,
+        array_type_id: Option<DebugEntryId>,
         types: Vec<AggregatePlan<'a>>,
     },
 }
@@ -330,7 +337,55 @@ pub(super) fn records<'a>(
     let mut plans = Vec::with_capacity(globals.len());
     let mut aggregate_ids = HashMap::new();
     for global in globals {
-        let (start_id, global_id, kind) = if let Some(length) = global.array_length {
+        let (start_id, global_id, kind) = if matches!(global.declared_type, Type::Struct { .. }) {
+            let tag = unit
+                .global_aggregate_tags
+                .get(&global.name)
+                .ok_or_else(|| {
+                    Diagnostic::error(format!(
+                        "debug-info: aggregate identity for global '{}' was not retained",
+                        global.name
+                    ))
+                })?;
+            let mut types = Vec::new();
+            // Aggregate identities are translation-unit scoped. Emit each
+            // reachable type graph at its first data declaration, then let
+            // later globals reference the already-emitted DIE.
+            let root_type_id = plan_aggregate(
+                unit,
+                tag,
+                &mut next_id,
+                &mut aggregate_ids,
+                &mut types,
+            )?;
+            let array_type_id = global
+                .array_length
+                .map(|length| {
+                    if length == 0 {
+                        return Err(Diagnostic::error(format!(
+                            "debug-info: zero-length array '{}' has no measured legacy subscript encoding",
+                            global.name
+                        )));
+                    }
+                    Ok(allocate(&mut next_id))
+                })
+                .transpose()?;
+            let global_id = allocate(&mut next_id);
+            let start_id = types
+                .first()
+                .map(|plan| plan.type_id)
+                .or(array_type_id)
+                .unwrap_or(global_id);
+            (
+                start_id,
+                global_id,
+                PlanKind::Aggregate {
+                    root_type_id,
+                    array_type_id,
+                    types,
+                },
+            )
+        } else if let Some(length) = global.array_length {
             if length == 0 {
                 return Err(Diagnostic::error(format!(
                     "debug-info: zero-length array '{}' has no measured legacy subscript encoding",
@@ -341,34 +396,6 @@ pub(super) fn records<'a>(
             let type_id = allocate(&mut next_id);
             let global_id = allocate(&mut next_id);
             (type_id, global_id, PlanKind::Array { type_id })
-        } else if matches!(global.declared_type, Type::Struct { .. }) {
-            let tag = unit
-                .global_aggregate_tags
-                .get(&global.name)
-                .ok_or_else(|| {
-                    Diagnostic::error(format!(
-                        "debug-info: aggregate identity for global '{}' was not retained",
-                        global.name
-                    ))
-                })?;
-            let mut type_ids = HashMap::new();
-            let mut types = Vec::new();
-            let root_type_id = plan_aggregate(unit, tag, &mut next_id, &mut type_ids, &mut types)?;
-            for (tag, id) in &type_ids {
-                aggregate_ids.entry(tag.clone()).or_insert(*id);
-            }
-            let start_id = types.first().map(|plan| plan.type_id).ok_or_else(|| {
-                Diagnostic::error(format!("debug-info: aggregate graph '{tag}' is empty"))
-            })?;
-            let global_id = allocate(&mut next_id);
-            (
-                start_id,
-                global_id,
-                PlanKind::Aggregate {
-                    root_type_id,
-                    types,
-                },
-            )
         } else {
             global_type_attribute(global.declared_type, None)?;
             let global_id = allocate(&mut next_id);
@@ -405,7 +432,7 @@ pub(super) fn records<'a>(
                         ),
                         attribute(
                             AttributeName::SubscriptData,
-                            AttributeValue::Block2(subscript_data(
+                                AttributeValue::Block2(fundamental_subscript_data(
                                 plan.global.array_length.unwrap(),
                                 fundamental_type(plan.global.declared_type)?,
                             )),
@@ -424,12 +451,15 @@ pub(super) fn records<'a>(
             }
             PlanKind::Aggregate {
                 root_type_id,
+                array_type_id,
                 types,
             } => {
                 for (type_index, aggregate) in types.iter().enumerate() {
                     let sibling = types
                         .get(type_index + 1)
-                        .map_or(plan.global_id, |following| following.type_id);
+                        .map_or(array_type_id.unwrap_or(plan.global_id), |following| {
+                            following.type_id
+                        });
                     let mut attributes = vec![attribute(
                         AttributeName::Sibling,
                         AttributeValue::Reference(sibling),
@@ -483,13 +513,34 @@ pub(super) fn records<'a>(
                     records.push(DebugRecord::Marker(aggregate.children_end));
                     records.push(DebugRecord::Raw(vec![0, 0, 0, 4]));
                 }
+                if let Some(type_id) = array_type_id {
+                    records.push(DebugRecord::Entry(DebugEntry {
+                        id: *type_id,
+                        tag: Tag::ArrayType,
+                        attributes: vec![
+                            attribute(
+                                AttributeName::Sibling,
+                                AttributeValue::Reference(plan.global_id),
+                            ),
+                            attribute(
+                                AttributeName::SubscriptData,
+                                AttributeValue::RelocatableBlock2(
+                                    aggregate_subscript_data(
+                                        plan.global.array_length.unwrap(),
+                                        *root_type_id,
+                                    ),
+                                ),
+                            ),
+                        ],
+                    }));
+                }
                 records.push(DebugRecord::Entry(global_entry(
                     plan.global,
                     plan.global_id,
                     next,
                     attribute(
                         AttributeName::UserDefinedType,
-                        AttributeValue::Reference(*root_type_id),
+                        AttributeValue::Reference(array_type_id.unwrap_or(*root_type_id)),
                     ),
                 )));
             }
@@ -587,7 +638,11 @@ fn global_entry(
 ) -> DebugEntry {
     DebugEntry {
         id,
-        tag: Tag::GlobalVariable,
+        tag: if global.is_static {
+            Tag::LocalVariable
+        } else {
+            Tag::GlobalVariable
+        },
         attributes: vec![
             attribute(AttributeName::Sibling, AttributeValue::Reference(sibling)),
             attribute(
@@ -720,15 +775,6 @@ fn member_location(offset: u32) -> Attribute {
     bytes.extend_from_slice(&offset.to_be_bytes());
     bytes.push(7);
     attribute(AttributeName::Location, AttributeValue::Block2(bytes))
-}
-
-fn subscript_data(length: u16, fundamental: FundamentalType) -> Vec<u8> {
-    let mut bytes = vec![0, 0, 10];
-    bytes.extend_from_slice(&0_u32.to_be_bytes());
-    bytes.extend_from_slice(&u32::from(length - 1).to_be_bytes());
-    bytes.extend_from_slice(&[8, 0, 0x55]);
-    bytes.extend_from_slice(&(fundamental as u16).to_be_bytes());
-    bytes
 }
 
 fn pointee_type(pointee: Pointee) -> Compilation<FundamentalType> {

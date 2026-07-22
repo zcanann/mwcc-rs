@@ -13,7 +13,7 @@ use mwcc_machine_code::MachineFunction;
 use mwcc_object::{DebugRelocation, DebugRelocationKind, DebugRelocationTarget, DebugSections};
 use mwcc_syntax_trees::TranslationUnit;
 use mwcc_versions::CompilerBuild;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Route debug lowering by object-format generation. The legacy encoder owns
 /// the grouped DWARF-1 model; fragmented generations remain an explicit seam.
@@ -21,6 +21,7 @@ pub fn lower_debug_info(
     unit: &TranslationUnit,
     machine_functions: &[MachineFunction],
     has_emitted_data: bool,
+    emitted_data_symbols: &HashSet<String>,
     source_name: &str,
     source: &[u8],
     build: CompilerBuild,
@@ -52,14 +53,26 @@ pub fn lower_debug_info(
     let monolithic_data_unit = unit.functions.is_empty() && machine_functions.is_empty();
     if fragmented_generation && monolithic_data_unit {
         if fragmented::matches_aggregate_data_unit(unit) {
-            let grouped =
-                legacy::lower(unit, machine_functions, source_name, build, code_alignment)?;
+            let grouped = legacy::lower(
+                unit,
+                machine_functions,
+                emitted_data_symbols,
+                source_name,
+                build,
+                code_alignment,
+            )?;
             return fragmented::lower_aggregate_data_unit(unit, grouped).map(Some);
         }
     } else if fragmented_generation {
         if !has_emitted_data {
-            let grouped =
-                legacy::lower(unit, machine_functions, source_name, build, code_alignment)?;
+            let grouped = legacy::lower(
+                unit,
+                machine_functions,
+                emitted_data_symbols,
+                source_name,
+                build,
+                code_alignment,
+            )?;
             return fragmented::lower_simple_void_functions(
                 unit,
                 machine_functions,
@@ -70,8 +83,14 @@ pub fn lower_debug_info(
             .map(Some);
         }
         if fragmented::matches_aggregate_data_unit(unit) {
-            let grouped =
-                legacy::lower(unit, machine_functions, source_name, build, code_alignment)?;
+            let grouped = legacy::lower(
+                unit,
+                machine_functions,
+                emitted_data_symbols,
+                source_name,
+                build,
+                code_alignment,
+            )?;
             return fragmented::lower_functions_with_aggregate_data(
                 unit,
                 machine_functions,
@@ -86,7 +105,15 @@ pub fn lower_debug_info(
         ));
     }
 
-    legacy::lower(unit, machine_functions, source_name, build, code_alignment).map(Some)
+    legacy::lower(
+        unit,
+        machine_functions,
+        emitted_data_symbols,
+        source_name,
+        build,
+        code_alignment,
+    )
+    .map(Some)
 }
 
 fn convert_relocations(

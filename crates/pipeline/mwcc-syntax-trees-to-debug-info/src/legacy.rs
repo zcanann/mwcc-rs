@@ -16,6 +16,7 @@ use mwcc_machine_code::MachineFunction;
 use mwcc_object::{layout_function_placements, DebugLayout, DebugSections, FunctionPlacement};
 use mwcc_syntax_trees::{AsmItem, Expression, Function, TranslationUnit, Type};
 use mwcc_versions::CompilerBuild;
+use std::collections::HashSet;
 
 const COMPILE_UNIT: DebugEntryId = DebugEntryId(0);
 const PARAMETER_END: DebugEntryId = DebugEntryId(u32::MAX - 2);
@@ -54,6 +55,7 @@ enum MeasuredShape {
 pub(super) fn lower(
     unit: &TranslationUnit,
     machine_functions: &[MachineFunction],
+    emitted_data_symbols: &HashSet<String>,
     source_name: &str,
     build: CompilerBuild,
     code_alignment: u32,
@@ -61,7 +63,9 @@ pub(super) fn lower(
     let globals: Vec<_> = unit
         .globals
         .iter()
-        .filter(|global| !global.is_extern && !global.is_static && !global.name.is_empty())
+        .filter(|global| {
+            !global.name.is_empty() && emitted_data_symbols.contains(global.name.as_str())
+        })
         .collect();
     let shape = classify_shape(unit, machine_functions, &globals, build)?;
 
