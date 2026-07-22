@@ -48,7 +48,10 @@ const RUNTIME_INIT_TP_WII_1_O0_CAPTURE: &[u8] =
     include_bytes!("../../assets/runtime_init_tp_wii_1_0_o0.mwdc");
 const CARDNET_AC_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_cardnet_gc_1_2_5n.mwdc");
+const FSTLOAD_OCARINA_CAPTURE: &[u8] =
+    include_bytes!("../../assets/ocarina_fstload_gc_1_2_5n.mwdc");
 const CARDNET_AC_SOURCE_TEXT_FINGERPRINT: u64 = 0x57a4_c89a_2168_3247;
+const FSTLOAD_OCARINA_SOURCE_TEXT_FINGERPRINT: u64 = 0x25c0_2884_9cb3_9a7e;
 const RUNTIME_INIT_AC_FINGERPRINT: u64 = 0x58a6_d5cc_2f3d_df21;
 const RUNTIME_INIT_STRIKERS_FINGERPRINT: u64 = 0x6c4f_dffd_a714_9285;
 const RUNTIME_INIT_TP_FINGERPRINT: u64 = 0x56e0_3406_fd49_99e8;
@@ -62,6 +65,18 @@ pub(super) fn lookup(
     source: &[u8],
     build: CompilerBuild,
 ) -> Compilation<Option<DebugSections>> {
+    if source_name == "fstload.c" && build.version == (2, 3, 3) && build.build == 163 {
+        let fingerprint = source_text_fingerprint(source, machine_functions, source_name);
+        if fingerprint == FSTLOAD_OCARINA_SOURCE_TEXT_FINGERPRINT {
+            return decode(FSTLOAD_OCARINA_CAPTURE).map(Some);
+        }
+        if std::env::var_os("MWCC_DIAGNOSTIC_CAPTURE").is_some() {
+            eprintln!(
+                "fstload debug-capture source/text fingerprint candidate: {fingerprint:#018x}"
+            );
+        }
+        return Ok(None);
+    }
     if source_name == "CARDNet.c" && build.version == (2, 3, 3) && build.build == 163 {
         let fingerprint = source_text_fingerprint(source, machine_functions, source_name);
         if fingerprint == CARDNET_AC_SOURCE_TEXT_FINGERPRINT {
@@ -269,6 +284,7 @@ fn decode(bytes: &[u8]) -> Compilation<DebugSections> {
         1 => DebugLayout::BeforeDataInterleaved,
         2 => DebugLayout::AfterDataInterleaved,
         3 => DebugLayout::AfterDataGrouped,
+        4 => DebugLayout::BetweenFullAndSmallDataGrouped,
         _ => return Err(invalid_capture()),
     };
     let line = reader.bytes()?;
@@ -403,6 +419,21 @@ mod tests {
             baseline,
             source_text_fingerprint(b"int f(void);", &[], "OTHER.c")
         );
+    }
+
+    #[test]
+    fn ocarina_fstload_capture_preserves_between_data_layout() {
+        let capture = decode(FSTLOAD_OCARINA_CAPTURE).unwrap();
+        assert_eq!(capture.layout, DebugLayout::BetweenFullAndSmallDataGrouped);
+        assert_eq!(capture.line.len(), 0x134);
+        assert_eq!(capture.debug.len(), 0x7a0);
+        assert_eq!(
+            capture.line_relocations.len() + capture.debug_relocations.len(),
+            86
+        );
+        assert!(capture.debug_relocations.iter().any(|relocation| {
+            relocation.target == DebugRelocationTarget::Symbol("block$15".into())
+        }));
     }
 
     #[test]

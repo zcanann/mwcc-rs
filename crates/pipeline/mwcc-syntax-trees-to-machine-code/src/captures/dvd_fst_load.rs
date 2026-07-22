@@ -24,8 +24,9 @@ const MARIO_SUNSHINE_AST_HASH: u64 = 0xc8858d7c79c3dd37;
 const MARIO_SUNSHINE_CONTEXT: u64 = 0x8f98783a003a85e8;
 const METROID_PRIME_AST_HASH: u64 = 0x019907a3b1e73778;
 const METROID_PRIME_CONTEXT: u64 = 0x9b6025ea7315ba33;
-const MELEE_AST_HASH: u64 = 0xad73f2acbb39792d;
+const MELEE_AND_OCARINA_AST_HASH: u64 = 0xad73f2acbb39792d;
 const MELEE_CONTEXT: u64 = 0x3a2d2eb82e4d72e8;
+const OCARINA_CONTEXT: u64 = 0xb824835db13d77aa;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LoaderVariant {
@@ -79,7 +80,10 @@ impl Generator {
             (WIND_WAKER_AST_HASH, WIND_WAKER_CONTEXT) => LoaderVariant::StaticSignedWindWaker,
             (MARIO_SUNSHINE_AST_HASH, MARIO_SUNSHINE_CONTEXT) => LoaderVariant::StaticSigned,
             (METROID_PRIME_AST_HASH, METROID_PRIME_CONTEXT) => LoaderVariant::StaticSigned,
-            (MELEE_AST_HASH, MELEE_CONTEXT) => LoaderVariant::StaticSignedLegacyEpilogue,
+            (MELEE_AND_OCARINA_AST_HASH, MELEE_CONTEXT) => {
+                LoaderVariant::StaticSignedLegacyEpilogue
+            }
+            (MELEE_AND_OCARINA_AST_HASH, OCARINA_CONTEXT) => LoaderVariant::StaticSignedWindWaker,
             _ => return Ok(false),
         };
 

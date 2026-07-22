@@ -131,7 +131,13 @@ def main() -> None:
     parser.add_argument("output", type=Path)
     parser.add_argument(
         "--layout",
-        choices=("before-grouped", "before-interleaved", "after-interleaved", "after-grouped"),
+        choices=(
+            "before-grouped",
+            "before-interleaved",
+            "after-interleaved",
+            "after-grouped",
+            "between-grouped",
+        ),
         default="after-grouped",
     )
     args = parser.parse_args()
@@ -146,6 +152,7 @@ def main() -> None:
         "before-interleaved": 1,
         "after-interleaved": 2,
         "after-grouped": 3,
+        "between-grouped": 4,
     }[args.layout]
 
     output = bytearray(b"MWDC\x02")

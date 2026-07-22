@@ -2994,14 +2994,23 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut rela_line = Vec::new();
     let mut rela_debug = Vec::new();
     if let Some(debug) = debug {
+        let resolve_static_local_display = |display_name: &str| {
+            static_local_numbers.iter().find_map(|(name, number)| {
+                (display_name == format!("{name}${number}"))
+                    .then(|| local_data_symbols.get(name).copied())
+                    .flatten()
+            })
+        };
         let resolve = |target: &DebugRelocationTarget| -> u32 {
             match target {
                 DebugRelocationTarget::Section(name) => section_symbols[name.as_str()],
-                DebugRelocationTarget::Symbol(name) => *debug_symbols
+                DebugRelocationTarget::Symbol(name) => debug_symbols
                     .get(name.as_str())
                     .or_else(|| local_data_symbols.get(name.as_str()))
                     .or_else(|| local_function_symbols.get(name.as_str()))
                     .or_else(|| global_symbols.get(name.as_str()))
+                    .copied()
+                    .or_else(|| resolve_static_local_display(name))
                     .unwrap_or_else(|| panic!("unresolved debug relocation target '{name}'")),
             }
         };
