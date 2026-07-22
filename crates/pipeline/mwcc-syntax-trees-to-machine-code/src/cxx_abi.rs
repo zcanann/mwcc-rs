@@ -805,6 +805,7 @@ fn parse_base_destructor_call(statement: &Statement) -> Option<(String, u32)> {
 pub(crate) fn lower_virtual_constructor(
     function: &Function,
     globals: &[GlobalDeclaration],
+    config: CompilerConfig,
 ) -> Option<MachineFunction> {
     if !function.name.starts_with("__ct__")
         || function.parameters.len() != 1
@@ -815,7 +816,7 @@ pub(crate) fn lower_virtual_constructor(
         )
         || !function.locals.is_empty()
         || !function.guards.is_empty()
-        || function.statements.len() != 1
+        || function.statements.is_empty()
         || !matches!(
             function.return_expression.as_ref(),
             Some(mwcc_syntax_trees::Expression::Variable(name)) if name == "this"
@@ -838,21 +839,53 @@ pub(crate) fn lower_virtual_constructor(
     };
     globals.iter().find(|global| global.name == *vtable)?;
 
+    let scalar_stores = function.statements[1..]
+        .iter()
+        .map(|statement| {
+            let Statement::Store {
+                target:
+                    Expression::Member {
+                        base,
+                        offset,
+                        member_type: Type::Int,
+                        ..
+                    },
+                value: Expression::IntegerLiteral(value),
+            } = statement
+            else {
+                return None;
+            };
+            if !matches!(base.as_ref(), Expression::Variable(name) if name == "this") {
+                return None;
+            }
+            Some((i16::try_from(*offset).ok()?, i16::try_from(*value).ok()?))
+        })
+        .collect::<Option<Vec<_>>>()?;
+
     let mut output = MachineFunction::new(function.name.clone());
-    output.instructions = vec![
-        Instruction::load_immediate_shifted(4, 0),
-        Instruction::AddImmediate {
-            d: 0,
-            a: 4,
-            immediate: 0,
-        },
-        Instruction::StoreWord {
-            s: 0,
-            a: 3,
-            offset: vptr_offset,
-        },
-        Instruction::BranchToLinkRegister,
-    ];
+    output
+        .instructions
+        .push(Instruction::load_immediate_shifted(4, 0));
+    let value_register = if scalar_stores.is_empty() { 0 } else { 4 };
+    output.instructions.push(Instruction::AddImmediate {
+        d: value_register,
+        a: 4,
+        immediate: 0,
+    });
+    output.instructions.push(Instruction::StoreWord {
+        s: value_register,
+        a: 3,
+        offset: vptr_offset,
+    });
+    for (offset, value) in scalar_stores {
+        output
+            .instructions
+            .push(Instruction::load_immediate(0, value));
+        output
+            .instructions
+            .push(Instruction::StoreWord { s: 0, a: 3, offset });
+    }
+    output.instructions.push(Instruction::BranchToLinkRegister);
     output.relocations = vec![
         Relocation {
             instruction_index: 0,
@@ -870,6 +903,14 @@ pub(crate) fn lower_virtual_constructor(
     output.is_weak = function.is_weak;
     output.section = function.section.clone();
     output.force_active = function.force_active;
+    if config.build.version.0 >= 4
+        && config.flags.debug_info
+        && !function.statements[1..].is_empty()
+    {
+        // Fragmented class debug consumes the leaf constructor's ordinary
+        // post-function analysis block before the following unwind pair.
+        output.post_function_anonymous_bump = Some(0);
+    }
     Some(output)
 }
 
@@ -937,6 +978,81 @@ pub(crate) fn lower_virtual_destructor(
 
     let mut output = MachineFunction::new(function.name.clone());
     let behavior = Behavior::resolve(&config);
+    if vtable.is_weak && behavior.frame_convention == FrameConvention::Predecrement {
+        output.instructions = vec![
+            Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            },
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 20,
+            },
+            Instruction::StoreWord {
+                s: 31,
+                a: 1,
+                offset: 12,
+            },
+            Instruction::Or { a: 31, s: 3, b: 3 },
+            Instruction::CompareWordImmediate { a: 3, immediate: 0 },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 10,
+            },
+            Instruction::CompareWordImmediate { a: 4, immediate: 0 },
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 1,
+                target: 10,
+            },
+            Instruction::BranchAndLink {
+                target: deleting_callee.clone(),
+            },
+            Instruction::Or { a: 3, s: 31, b: 31 },
+            Instruction::LoadWord {
+                d: 31,
+                a: 1,
+                offset: 12,
+            },
+            Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: 20,
+            },
+            Instruction::MoveToLinkRegister { s: 0 },
+            Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: 16,
+            },
+            Instruction::BranchToLinkRegister,
+        ];
+        output.relocations = vec![Relocation {
+            instruction_index: 9,
+            kind: RelocationKind::Rel24,
+            target: RelocationTarget::External(deleting_callee.clone()),
+        }];
+        output.symbol_order = vec![deleting_callee.clone()];
+        output.referenced_function_symbols = vec![deleting_callee.clone()];
+        output.implicit_external_callees = vec![deleting_callee];
+        output.is_static = function.is_static;
+        output.is_weak = function.is_weak;
+        output.section = function.section.clone();
+        output.force_active = function.force_active;
+        output.anonymous_label_bump = u32::from(behavior.cxx_virtual_destructor_label_bump);
+        if config.flags.cpp_exceptions {
+            output.frame = Some(FrameInfo {
+                saved_gpr_count: 1,
+                saved_fpr_count: 0,
+                uses_fpu: false,
+            });
+        }
+        return Some(output);
+    }
     output.instructions = if behavior.frame_convention == FrameConvention::Predecrement {
         vec![
             Instruction::StoreWordWithUpdate {

@@ -153,6 +153,10 @@ pub struct MachineFunction {
     /// function's unwind `@N` entries. Measured per construct — a non-leaf `if` adds
     /// 2, a `do … while` loop adds 6.
     pub anonymous_label_bump: u32,
+    /// Unit-analysis ordinals consumed only by fragmented debug metadata.
+    /// These precede the first function's debug fragment but must not shift
+    /// that function's constant/unwind objects.
+    pub fragmented_debug_anonymous_bump: u32,
     /// Ordinal work performed in source order before deferred code emission is
     /// reversed. When a later compiled body becomes the physical head, this
     /// amount is transferred to that head without changing this body's pool.
@@ -253,6 +257,7 @@ impl MachineFunction {
             phantom_externals: Vec::new(),
             has_float_branch: false,
             anonymous_label_bump: 0,
+            fragmented_debug_anonymous_bump: 0,
             deferred_source_prefix_bump: 0,
             post_constant_label_bump: 0,
             post_function_anonymous_bump: None,

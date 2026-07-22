@@ -9,6 +9,7 @@ pub struct DebugEntryId(pub u32);
 #[repr(u16)]
 pub enum Tag {
     ArrayType = 0x0001,
+    ClassType = 0x0002,
     FormalParameter = 0x0005,
     GlobalSubroutine = 0x0006,
     GlobalVariable = 0x0007,
@@ -17,6 +18,7 @@ pub enum Tag {
     CompileUnit = 0x0011,
     StructureType = 0x0013,
     LocalSubroutine = 0x0014,
+    ModifiedType = 0x0015,
     UnionType = 0x0017,
 }
 
@@ -37,7 +39,11 @@ pub enum AttributeName {
     LowPc = 0x0110,
     HighPc = 0x0120,
     Language = 0x0130,
+    Member = 0x0140,
     Producer = 0x0250,
+    MwMemberFlags = 0x0280,
+    MwLinkageName = 0x2000,
+    MwVtableElement = 0x2020,
 }
 
 /// DWARF 1 fundamental type identifiers.

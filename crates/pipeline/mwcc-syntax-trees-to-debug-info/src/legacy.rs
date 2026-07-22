@@ -1,6 +1,7 @@
 //! Measured grouped DWARF-1 emitted by the 2.3.x and early 2.4.x compilers.
 
 mod captures;
+mod classes;
 pub(super) mod data;
 mod functions;
 mod simple_void_functions;
@@ -38,6 +39,8 @@ enum MeasuredShape {
     FragmentedFunctionsWithAggregateData,
     /// GC 4.x optimized void functions followed by aggregate type/data DIEs.
     FragmentedSimpleVoidFunctionsWithAggregateData,
+    /// One owned polymorphic class with its generated ABI globals.
+    FragmentedClassWithOwnedVtable,
     /// A functionless translation unit containing supported scalar, array, and
     /// aggregate data declarations.
     DataOnly,
@@ -102,7 +105,13 @@ pub(super) fn lower(
     }
 
     let mut line_records = Vec::with_capacity(machine_functions.len() + 1);
-    if shape == MeasuredShape::VerbatimAsmWithData {
+    if shape == MeasuredShape::FragmentedClassWithOwnedVtable {
+        line_records.extend(classes::line_records(
+            &source_functions,
+            machine_functions,
+            &layout,
+        )?);
+    } else if shape == MeasuredShape::VerbatimAsmWithData {
         for (machine_index, (function, _)) in source_functions.iter().enumerate() {
             let mut address = layout.offsets[machine_index];
             for item in function
@@ -248,6 +257,21 @@ pub(super) fn lower(
             data::records(unit, &globals, first_global_id, false)?.records
         });
         return finish(line, records, data_only_layout(build));
+    }
+
+    if shape == MeasuredShape::FragmentedClassWithOwnedVtable {
+        let mut records: Vec<_> = entries.into_iter().map(DebugRecord::Entry).collect();
+        let source_function_refs = source_functions
+            .iter()
+            .map(|(function, _)| *function)
+            .collect::<Vec<_>>();
+        records.extend(classes::records(
+            unit,
+            &source_function_refs,
+            &layout,
+            DebugEntryId(1),
+        )?);
+        return finish(line, records, DebugLayout::AfterDataGrouped);
     }
 
     if matches!(
@@ -461,6 +485,9 @@ pub(super) fn lower(
         MeasuredShape::FragmentedSimpleVoidFunctionsWithAggregateData => {
             unreachable!("fragmented mixed units return before legacy function records")
         }
+        MeasuredShape::FragmentedClassWithOwnedVtable => {
+            unreachable!("fragmented class units return before legacy function records")
+        }
         MeasuredShape::DataOnly => unreachable!("data-only units return before function records"),
         MeasuredShape::VerbatimAsmWithData => {
             unreachable!("verbatim asm/data units return before legacy function records")
@@ -494,6 +521,14 @@ pub(super) fn lookup_capture(
     build: CompilerBuild,
 ) -> Compilation<Option<DebugSections>> {
     captures::lookup(unit, machine_functions, source_name, source, build)
+}
+
+pub(super) fn matches_fragmented_class_unit(
+    unit: &TranslationUnit,
+    machine_functions: &[MachineFunction],
+) -> bool {
+    let functions = unit.functions.iter().collect::<Vec<_>>();
+    unit.functions.len() == machine_functions.len() && classes::matches(unit, &functions)
 }
 
 fn finish(
@@ -534,6 +569,14 @@ fn classify_shape(
     globals: &[&mwcc_syntax_trees::GlobalDeclaration],
     build: CompilerBuild,
 ) -> Compilation<MeasuredShape> {
+    let source_function_refs = unit.functions.iter().collect::<Vec<_>>();
+    if build.version.0 >= 4
+        && unit.functions.len() == machine_functions.len()
+        && classes::matches(unit, &source_function_refs)
+    {
+        return Ok(MeasuredShape::FragmentedClassWithOwnedVtable);
+    }
+
     let basic_parameter = globals.len() == 1
         && unit.functions.len() == 1
         && machine_functions.len() == 1

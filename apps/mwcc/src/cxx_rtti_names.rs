@@ -19,6 +19,17 @@ pub struct AnalysisWeights {
     pub initial_virtual_discount: u8,
 }
 
+pub fn is_single_fragmented_debug_class(facts: CxxInlineOrdinalFacts) -> bool {
+    facts.class_definitions == 1
+        && facts.inline_definitions == 1
+        && facts.virtual_destructors == 1
+        && facts.virtual_method_declarations == 0
+        && facts.virtual_destructor_declarations == 1
+        && facts.inherited_virtual_destructor_declarations == 0
+        && facts.direct_calls == 0
+        && facts.control_flow_labels == 0
+}
+
 /// Resolve the class-analysis counter independently from executable function
 /// numbering. The first polymorphic declaration shares one profile-specific
 /// baseline block; subsequent declarations pay their full syntax-kind weight.
@@ -42,6 +53,16 @@ pub fn analysis_counter(
         * usize::from(weights.inherited_virtual_destructor);
     (u32::from(initial) + strings_before + prior_declaration_bump as u32 + virtual_bump as u32)
         .max(sparse_floor)
+}
+
+/// GC 4.1's smallest owned-class debug unit shares its RTTI-name allocation
+/// with the fragmented line/type preamble instead of the ordinary C++ analysis
+/// counter. Return that measured base only for the fully identified shape.
+pub fn fragmented_debug_counter(
+    ordinary_counter: u32,
+    facts: CxxInlineOrdinalFacts,
+) -> Option<u32> {
+    is_single_fragmented_debug_class(facts).then(|| ordinary_counter.saturating_sub(2))
 }
 
 pub fn resolve(globals: &mut [DefinedGlobal], mut counter: u32) {
@@ -69,7 +90,7 @@ pub fn resolve(globals: &mut [DefinedGlobal], mut counter: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{analysis_counter, AnalysisWeights};
+    use super::{analysis_counter, fragmented_debug_counter, AnalysisWeights};
     use mwcc_syntax_trees::CxxInlineOrdinalFacts;
 
     fn facts(methods: usize, destructors: usize) -> CxxInlineOrdinalFacts {
@@ -150,5 +171,17 @@ mod tests {
                 expected[4]
             );
         }
+    }
+
+    #[test]
+    fn fragmented_single_class_reserves_the_line_and_type_preamble() {
+        let facts = CxxInlineOrdinalFacts {
+            class_definitions: 1,
+            inline_definitions: 1,
+            virtual_destructors: 1,
+            virtual_destructor_declarations: 1,
+            ..CxxInlineOrdinalFacts::default()
+        };
+        assert_eq!(fragmented_debug_counter(17, facts), Some(15));
     }
 }

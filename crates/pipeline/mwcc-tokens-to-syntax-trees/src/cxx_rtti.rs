@@ -14,6 +14,26 @@ const ANONYMOUS_PREFIX: &str = "@@cxx_rtti:";
 /// fields for the class closure referenced by this translation unit's owned
 /// vtables. Generated classes follow reverse declaration order, as MWCC does.
 pub fn materialize(unit: &mut TranslationUnit) {
+    // RTTI ownership is fixed during the ordinary definition walk, before weak
+    // inline bodies are materialized at the end of the translation unit. Keep
+    // those late bodies out of the RTTI symbol's source-position count.
+    let weak_materialized: HashSet<&str> = unit
+        .weak_materialized
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let late_function_count = unit
+        .functions
+        .iter()
+        .filter(|function| weak_materialized.contains(function.name.as_str()))
+        .count();
+    let late_non_static_count = unit
+        .functions
+        .iter()
+        .filter(|function| {
+            !function.is_static && weak_materialized.contains(function.name.as_str())
+        })
+        .count();
     let classes: HashMap<&str, &CxxAbiClass> = unit
         .cxx_abi_classes
         .iter()
@@ -119,8 +139,9 @@ pub fn materialize(unit: &mut TranslationUnit) {
             4,
         );
         if let Some((non_static_functions_before, functions_before)) = owner_position {
-            handle.non_static_functions_before = non_static_functions_before;
-            handle.functions_before = functions_before;
+            handle.non_static_functions_before =
+                non_static_functions_before.saturating_sub(late_non_static_count);
+            handle.functions_before = functions_before.saturating_sub(late_function_count);
         }
         generated.push(handle);
     }

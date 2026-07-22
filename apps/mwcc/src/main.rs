@@ -815,7 +815,15 @@ fn compile(
         // File-scope declarations advance the unit-wide ordinal stream before
         // the first EMITTED compiled body. Attach after emission scheduling so
         // deferred reverse order does not strand the provenance on the tail.
-        first.anonymous_label_bump += unit_declaration_bump as u32;
+        if config.build.version == (4, 1, 0)
+            && config.flags.debug_info
+            && config.flags.rtti
+            && cxx_rtti_names::is_single_fragmented_debug_class(cxx_inline_facts)
+        {
+            first.fragmented_debug_anonymous_bump += unit_declaration_bump as u32;
+        } else {
+            first.anonymous_label_bump += unit_declaration_bump as u32;
+        }
     }
     // File-scope variables defined here (not `extern`/`static`). A writable global
     // lands in `.sdata` (initialized) or `.sbss` (zero); a `const` one is read-only
@@ -1602,7 +1610,7 @@ fn compile(
         // RTTI helper names are reserved by the class/declaration analysis
         // walk, before executable function bodies advance the ordinary pool
         // counter. Keep this timeline independent from function lowering.
-        let rtti_analysis_counter = cxx_rtti_names::analysis_counter(
+        let ordinary_rtti_analysis_counter = cxx_rtti_names::analysis_counter(
             config.build.initial_anonymous_counter,
             string_counter,
             cxx_rtti_prior_declaration_bump,
@@ -1616,6 +1624,15 @@ fn compile(
             },
             analysis_counter_floor,
         );
+        let rtti_analysis_counter = if config.build.version.0 >= 4 && config.flags.debug_info {
+            cxx_rtti_names::fragmented_debug_counter(
+                ordinary_rtti_analysis_counter,
+                cxx_inline_facts,
+            )
+            .unwrap_or(ordinary_rtti_analysis_counter)
+        } else {
+            ordinary_rtti_analysis_counter
+        };
         cxx_rtti_names::resolve(&mut defined_globals, rtti_analysis_counter);
     }
     defined_globals.extend(function_string_objects);

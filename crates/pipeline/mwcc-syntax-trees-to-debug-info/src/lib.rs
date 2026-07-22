@@ -45,6 +45,24 @@ pub fn lower_debug_info(
         return Ok(Some(capture));
     }
     let fragmented_generation = build.version.0 >= 4;
+    if fragmented_generation && legacy::matches_fragmented_class_unit(unit, machine_functions) {
+        let grouped = legacy::lower(
+            unit,
+            machine_functions,
+            emitted_data_symbols,
+            source_name,
+            build,
+            code_alignment,
+        )?;
+        return fragmented::lower_class_unit(
+            unit,
+            machine_functions,
+            build,
+            code_alignment,
+            grouped,
+        )
+        .map(Some);
+    }
     // Functionless data units retain the same monolithic DWARF-1 DIE stream in
     // the later generations. Their container layout moved after ordinary data,
     // which the legacy data lowering already models independently. Fragmented

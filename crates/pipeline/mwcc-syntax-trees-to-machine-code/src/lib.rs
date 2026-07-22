@@ -110,7 +110,7 @@ pub fn lower_function(
     ) {
         return Ok(output);
     }
-    if let Some(output) = cxx_abi::lower_virtual_constructor(function, globals) {
+    if let Some(output) = cxx_abi::lower_virtual_constructor(function, globals, config.clone()) {
         return Ok(output);
     }
     if let Some(output) =
