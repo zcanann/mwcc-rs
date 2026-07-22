@@ -860,6 +860,10 @@ def representative_audit(
         "selection_members_present": selection_members_present,
         "requested": len(selection),
         "selected": len(selected),
+        # Keep the exact probability sample in every JSON snapshot. Seed and
+        # epoch are not sufficient provenance once selection code or inventory
+        # contents evolve.
+        "sample_configuration_ids": sorted(selected),
         "observed": len(direct),
         "complete": complete,
         "statuses": {status: counts[status] for status in STATUSES if status != "UNTESTED"},

@@ -767,6 +767,10 @@ class DashboardTests(unittest.TestCase):
             rows, observations, {item["configuration_id"] for item in rows}
         )
         self.assertFalse(report["complete"])
+        self.assertEqual(
+            report["sample_configuration_ids"],
+            sorted(item["configuration_id"] for item in rows),
+        )
         self.assertIsNone(report["estimate"])
 
     def test_representative_audit_reports_byte_successes_and_interval(self):
