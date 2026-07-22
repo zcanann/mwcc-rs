@@ -77,13 +77,13 @@ impl Generator {
 
         self.output
             .instructions
-            .push(Instruction::MoveToCountRegister { s: count });
-        self.output
-            .instructions
             .push(Instruction::CompareLogicalWordImmediate {
                 a: count,
                 immediate: 0,
             });
+        self.output
+            .instructions
+            .push(Instruction::MoveToCountRegister { s: count });
         self.output
             .instructions
             .push(Instruction::BranchConditionalToLinkRegister {
@@ -123,14 +123,16 @@ impl Generator {
                     s: count,
                     b: 0,
                 });
-                self.output
-                    .instructions
-                    .push(Instruction::ShiftRightLogicalImmediate {
+                self.emit_xnor_feedback_tail(
+                    data,
+                    30,
+                    1,
+                    Instruction::ShiftRightLogicalImmediate {
                         a: data,
                         s: data,
                         shift: 1,
-                    });
-                self.emit_xnor_feedback_tail(data, 30, 1);
+                    },
+                );
             }
             FeedbackDirection::Left => {
                 self.output
@@ -162,14 +164,16 @@ impl Generator {
                     s: count,
                     b: 0,
                 });
-                self.output
-                    .instructions
-                    .push(Instruction::ShiftLeftImmediate {
+                self.emit_xnor_feedback_tail(
+                    data,
+                    2,
+                    30,
+                    Instruction::ShiftLeftImmediate {
                         a: data,
                         s: data,
                         shift: 1,
-                    });
-                self.emit_xnor_feedback_tail(data, 2, 30);
+                    },
+                );
             }
         }
         self.emit_branch_conditional_to(16, 0, body_label);
@@ -179,10 +183,17 @@ impl Generator {
         Ok(true)
     }
 
-    fn emit_xnor_feedback_tail(&mut self, data: u8, rotate: u8, bit: u8) {
+    fn emit_xnor_feedback_tail(
+        &mut self,
+        data: u8,
+        rotate: u8,
+        bit: u8,
+        data_shift: Instruction,
+    ) {
         self.output
             .instructions
             .push(Instruction::Eqv { a: 0, s: 5, b: 0 });
+        self.output.instructions.push(data_shift);
         self.output.instructions.push(Instruction::RotateAndMask {
             a: 0,
             s: 0,
