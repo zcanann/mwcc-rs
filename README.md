@@ -44,20 +44,24 @@ There is a standing rule: **fail honestly**. When a construct is not yet support
 Canary totals and a hand-picked green gate are regression aids, not a measure of
 overall parity. The persistent frontier loop uses every configured translation
 unit in `reference_projects/*` as its denominator, spends each iteration on
-known `DIFF`, `DEFER`, and harness failures before drawing from untested work,
-and reserves a small rotating sample of previous byte matches for regression
-detection:
+known `DIFF`, `DEFER`, and harness failures before drawing from untested work.
+Previously exact rows remain in the periodic fixed audit instead of consuming
+the default edit-loop budget; use `--byte-audit N` only when a targeted rotating
+regression sample is useful:
 
 ```sh
 cargo build -p mwcc
 # Default edit loop: rotate a failure-biased sample; prior BYTE rows need not stay green.
 python3 tools/parity_loop.py --epoch 0
 
-# Periodic scorecard: rerun the frozen representative sample from scratch.
-python3 tools/parity_loop.py --audit-only --audit-size 384 --rerun
+# Periodic scorecard: resume/run the frozen representative sample.
+python3 tools/parity_loop.py --audit-only --audit-size 384
 
 # Deliberately run both when cutting a milestone/release scorecard.
-python3 tools/parity_loop.py --with-audit --audit-size 384 --rerun
+python3 tools/parity_loop.py --with-audit --audit-size 384
+
+# Ignore a same-fingerprint cache only when checking harness nondeterminism.
+python3 tools/parity_loop.py --audit-only --audit-size 384 --rerun
 ```
 
 The scorecard leads with the literal completion proof: authoritative exact
