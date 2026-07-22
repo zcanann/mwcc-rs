@@ -53,7 +53,6 @@ pub fn parse_translation_unit(
         skipped_static_inline_label_base,
     )
 }
-
 /// Parse tokens while retaining their physical source positions for DWARF and
 /// diagnostics. The token-only entry point remains for synthetic/unit inputs.
 pub fn parse_located_translation_unit(
@@ -2978,6 +2977,56 @@ blr\n\
             unit.functions[0].return_expression,
             Some(Expression::Call { ref name, .. }) if name == "get__3BoxFv"
         ));
+    }
+
+    #[test]
+    fn scalarizes_inline_aggregate_assignment_before_erasing_field_types() {
+        let source = r#"
+            struct Vec { float x; float y; float z; };
+            struct Sphere {
+                Vec center;
+                void setCenter(Vec const& source) { center = source; }
+            };
+            void use(Sphere* sphere, Vec const& source) {
+                sphere->setCenter(source);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let setter = unit
+            .skipped_inline_definitions
+            .iter()
+            .find(|function| function.name == "setCenter__6SphereFRC3Vec")
+            .expect("the in-class setter should be retained");
+        let [Statement::Expression(copy)] = setter.statements.as_slice() else {
+            panic!("the aggregate assignment should become one sequenced expression");
+        };
+        fn collect<'a>(expression: &'a Expression, output: &mut Vec<&'a Expression>) {
+            match expression {
+                Expression::Comma { left, right } => {
+                    collect(left, output);
+                    collect(right, output);
+                }
+                assignment @ Expression::Assign { .. } => output.push(assignment),
+                _ => panic!("aggregate copy contains a non-assignment lane"),
+            }
+        }
+        let mut lanes = Vec::new();
+        collect(copy, &mut lanes);
+        assert_eq!(lanes.len(), 3);
+        for (lane, expected_offset) in lanes.into_iter().zip([0, 4, 8]) {
+            assert!(matches!(lane,
+                Expression::Assign { target, value }
+                    if matches!(target.as_ref(), Expression::Member { offset, member_type: Type::Float, .. } if *offset == expected_offset)
+                        && matches!(value.as_ref(), Expression::Member { offset, member_type: Type::Float, .. } if *offset == expected_offset)
+            ));
+        }
     }
 
     #[test]

@@ -120,12 +120,56 @@ pub(super) fn substitute_expression(
             offset,
             member_type,
             index_stride,
-        } => Expression::Member {
-            base: Box::new(substitute_expression(base, replacements)),
-            offset: *offset,
-            member_type: *member_type,
-            index_stride: *index_stride,
-        },
+        } => {
+            let substituted_base = substitute_expression(base, replacements);
+            // An adjusted implicit object argument is represented as a
+            // MemberAddress. Once substituted beneath a scalar member access,
+            // fold that address adjustment—and any embedded aggregate offset—
+            // into the final displacement. This preserves the lvalue semantics
+            // without materializing a temporary pointer or loading an embedded
+            // struct as though it were a pointer member.
+            if index_stride.is_none() {
+                if let Expression::MemberAddress {
+                    base: address_base,
+                    offset: address_offset,
+                    index_stride: None,
+                    ..
+                } = &substituted_base
+                {
+                    if let Some(total) = address_offset.checked_add(*offset) {
+                        if let Expression::Member {
+                            base: embedded_base,
+                            offset: embedded_offset,
+                            member_type: mwcc_syntax_trees::Type::Struct { .. },
+                            index_stride: None,
+                        } = address_base.as_ref()
+                        {
+                            if let Some(total) = embedded_offset.checked_add(total) {
+                                return Expression::Member {
+                                    base: embedded_base.clone(),
+                                    offset: total,
+                                    member_type: *member_type,
+                                    index_stride: None,
+                                };
+                            }
+                        } else {
+                            return Expression::Member {
+                                base: address_base.clone(),
+                                offset: total,
+                                member_type: *member_type,
+                                index_stride: None,
+                            };
+                        }
+                    }
+                }
+            }
+            Expression::Member {
+                base: Box::new(substituted_base),
+                offset: *offset,
+                member_type: *member_type,
+                index_stride: *index_stride,
+            }
+        }
         Expression::MemberAddress {
             base,
             offset,

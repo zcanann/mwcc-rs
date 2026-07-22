@@ -8,6 +8,18 @@ use super::*;
 /// symbolic lets the outer access fold both displacements into one D-form load
 /// or store instead of materializing a temporary address.
 pub(crate) fn embedded_member_address_base(expression: &Expression) -> Option<(&Expression, u32)> {
+    // `object.embedded.field`: the intermediate aggregate is inline storage,
+    // not a pointer-valued member. Fold both displacements into the complete
+    // object's base for symmetric scalar loads and stores.
+    if let Expression::Member {
+        base,
+        offset,
+        member_type: Type::Struct { .. },
+        index_stride: None,
+    } = expression
+    {
+        return Some((base, *offset));
+    }
     let Expression::Cast { operand, .. } = expression else {
         return None;
     };

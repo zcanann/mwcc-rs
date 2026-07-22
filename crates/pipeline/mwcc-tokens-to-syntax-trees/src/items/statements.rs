@@ -82,6 +82,11 @@ impl Parser {
             return self.parse_delete_statement();
         }
         let first = self.factor()?;
+        // Preserve the nominal aggregate identity before parsing the right-hand
+        // side. `expression_struct_tag` is a one-expression scratch slot, so the
+        // RHS would otherwise overwrite the target's tag before a value copy can
+        // be expanded into its typed scalar fields.
+        let first_struct_tag = self.expression_struct_tag.take();
         // Prefix `++`/`--` desugars to `target = target ± 1` in factor; the
         // POSTFIX form arrives as PostStep and lowers here, where the value
         // is discarded (the two forms coincide only in that case).
@@ -105,7 +110,16 @@ impl Parser {
         } else if *self.peek() == Token::Equals {
             self.advance();
             let value = self.expression()?;
+            let value_struct_tag = self.expression_struct_tag.take();
             self.expect(Token::Semicolon)?;
+            if let Some(copy) = self.lower_typed_aggregate_assignment(
+                &first,
+                &value,
+                first_struct_tag.as_deref(),
+                value_struct_tag.as_deref(),
+            ) {
+                return Ok(Statement::Expression(copy));
+            }
             Ok(store_or_assign(first, value, local_names))
         } else if *self.peek() == Token::Semicolon {
             self.advance();

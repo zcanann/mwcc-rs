@@ -975,10 +975,81 @@ mod tests {
             .expect("an adjusted stable object pointer should compose");
         assert!(matches!(expanded.statements.as_slice(), [
             Statement::Store {
-                target: Expression::Member { base, offset: 4, .. },
+                target: Expression::Member { base, offset: 108, .. },
                 ..
             }
-        ] if matches!(base.as_ref(), Expression::MemberAddress { offset: 104, .. })));
+        ] if matches!(base.as_ref(), Expression::Variable(name) if name == "this")));
+    }
+
+    #[test]
+    fn expands_a_scalarized_copy_through_an_embedded_adjusted_object() {
+        let aggregate = Type::Struct { size: 12, align: 4 };
+        let setter = function(
+            "set_center",
+            vec![
+                Parameter {
+                    parameter_type: Type::StructPointer { element_size: 20 },
+                    name: "this".into(),
+                },
+                Parameter {
+                    parameter_type: Type::StructPointer { element_size: 0 },
+                    name: "source".into(),
+                },
+            ],
+            vec![Statement::Expression(Expression::Assign {
+                target: Box::new(Expression::Member {
+                    base: Box::new(Expression::Variable("this".into())),
+                    offset: 0,
+                    member_type: Type::Float,
+                    index_stride: None,
+                }),
+                value: Box::new(Expression::Member {
+                    base: Box::new(Expression::Variable("source".into())),
+                    offset: 0,
+                    member_type: Type::Float,
+                    index_stride: None,
+                }),
+            })],
+        );
+        let caller = function(
+            "caller",
+            vec![Parameter {
+                parameter_type: Type::StructPointer { element_size: 1028 },
+                name: "object".into(),
+            }],
+            vec![Statement::Expression(Expression::Call {
+                name: "set_center".into(),
+                arguments: vec![
+                    Expression::MemberAddress {
+                        base: Box::new(Expression::Member {
+                            base: Box::new(Expression::Variable("object".into())),
+                            offset: 728,
+                            member_type: Type::Struct { size: 300, align: 4 },
+                            index_stride: None,
+                        }),
+                        offset: 280,
+                        element: Pointee::UnsignedChar,
+                        index_stride: None,
+                    },
+                    Expression::Member {
+                        base: Box::new(Expression::Variable("object".into())),
+                        offset: 504,
+                        member_type: aggregate,
+                        index_stride: None,
+                    },
+                ],
+            })],
+        );
+
+        let expanded = InlineBodySet::analyze(&[setter])
+            .expand_calls(&caller)
+            .expect("the typed aggregate lvalue and adjusted object should compose");
+        assert!(matches!(expanded.statements.as_slice(), [
+            Statement::Expression(Expression::Assign { target, value })
+        ] if matches!(target.as_ref(), Expression::Member { base, offset: 1008, member_type: Type::Float, .. }
+                if matches!(base.as_ref(), Expression::Variable(name) if name == "object"))
+            && matches!(value.as_ref(), Expression::Member { base, offset: 0, member_type: Type::Float, .. }
+                if matches!(base.as_ref(), Expression::Member { offset: 504, member_type, .. } if *member_type == aggregate))));
     }
 
     #[test]

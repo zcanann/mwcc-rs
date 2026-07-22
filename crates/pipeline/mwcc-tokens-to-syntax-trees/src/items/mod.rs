@@ -5,6 +5,7 @@
 //! Split from the former single items.rs (fire 536); behavior-identical.
 
 mod asm;
+mod aggregate_assignments;
 mod cxx_vtables;
 mod initializers;
 mod statements;

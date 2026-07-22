@@ -73,11 +73,21 @@ pub(super) fn stable_argument(expression: &Expression, stable_variables: &HashSe
         Expression::IntegerLiteral(_)
         | Expression::FloatLiteral(_)
         | Expression::StringLiteral(_) => true,
+        // A by-reference aggregate argument is represented as its aggregate
+        // member lvalue rather than an explicit AddressOf. Scalarization may
+        // read several declared fields from it, but the lvalue's address is
+        // stable whenever its base is stable. Unions and unsupported aggregate
+        // copies never reach composition because frontend scalarization declines
+        // them.
+        Expression::Member {
+            member_type: Type::Struct { .. },
+            ..
+        } => stable_lvalue_address(expression, stable_variables),
         // An inherited non-virtual member call passes `this + base_offset`.
         // This address calculation is as stable and side-effect-free as its
         // complete-object base, so retained inline bodies may substitute it
         // without inventing a temporary or changing evaluation count.
-        Expression::MemberAddress { base, .. } => stable_argument(base, stable_variables),
+        Expression::MemberAddress { base, .. } => stable_lvalue_address(base, stable_variables),
         // Taking an lvalue's address does not read or mutate the object. Repeating
         // a stable base/index calculation in an expanded setter therefore
         // preserves both its value and its evaluation count.
@@ -352,7 +362,9 @@ fn expression_modifies_or_escapes(expression: &Expression, name: &str) -> bool {
             target: operand, ..
         } => expression_mentions(operand, name),
         Expression::Assign { target, value } => {
-            expression_mentions(target, name) || expression_modifies_or_escapes(value, name)
+            matches!(target.as_ref(), Expression::Variable(variable) if variable == name)
+                || expression_modifies_or_escapes(target, name)
+                || expression_modifies_or_escapes(value, name)
         }
         Expression::AggregateLiteral(elements) => elements
             .iter()
