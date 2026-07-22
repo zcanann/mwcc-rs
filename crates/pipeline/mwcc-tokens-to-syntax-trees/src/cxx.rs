@@ -2869,6 +2869,35 @@ impl Parser {
             if self.eat_keyword(Token::Semicolon) {
                 continue;
             }
+            // A nested type alias is declaration state, not object storage.
+            // Function-pointer aliases are especially common in SDK classes:
+            // later data members use the alias as a one-word callback field,
+            // while inline methods use its full signature for indirect calls.
+            // Retain both facts in the same registries as a top-level typedef
+            // before continuing with the class's physical members.
+            if self.eat_word("typedef") {
+                let aliased = self.parse_type()?;
+                let aliased_source = self.take_cxx_type_identity(aliased, false);
+                if let Some((alias, function_type)) =
+                    self.try_cxx_function_pointer_declarator(aliased_source)?
+                {
+                    if alias.is_empty() {
+                        return Err(Diagnostic::error(
+                            "a class function-pointer typedef requires a name",
+                        ));
+                    }
+                    self.expect(Token::Semicolon)?;
+                    self.typedefs
+                        .insert(alias.clone(), Type::Pointer(Pointee::Int));
+                    self.function_pointer_typedefs.insert(alias, function_type);
+                    continue;
+                }
+
+                let alias = self.parse_identifier()?;
+                self.expect(Token::Semicolon)?;
+                self.typedefs.insert(alias, aliased);
+                continue;
+            }
             if matches!(self.peek(), Token::Identifier(word)
                 if matches!(word.as_str(), "public" | "private" | "protected"))
                 && *self.peek_at(1) == Token::Colon

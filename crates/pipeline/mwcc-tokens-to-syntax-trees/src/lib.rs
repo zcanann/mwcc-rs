@@ -1201,6 +1201,45 @@ blr\n\
     }
 
     #[test]
+    fn class_function_pointer_typedef_preserves_derived_layouts() {
+        let source = r#"
+            class Event {
+            public:
+                typedef short (*Callback)(void*, int);
+                virtual ~Event() {}
+                unsigned short command;
+                unsigned short condition;
+                short event_id;
+                unsigned char tool_id;
+                signed char index;
+                Callback event_callback;
+                Callback check_callback;
+                Callback photo_callback;
+            };
+            class Actor {
+            public:
+                Event event;
+            };
+            class Hit : public Actor {
+            public:
+                int timer;
+            };
+            int compiled(void) { return sizeof(Hit); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.aggregate_definitions["Event"].byte_size, 24);
+        assert_eq!(unit.aggregate_definitions["Actor"].byte_size, 24);
+        assert_eq!(unit.aggregate_definitions["Hit"].byte_size, 28);
+    }
+
+    #[test]
     fn skips_primary_templates_with_default_arguments() {
         let source = r#"
             template <typename T, typename Pointer = T*>
