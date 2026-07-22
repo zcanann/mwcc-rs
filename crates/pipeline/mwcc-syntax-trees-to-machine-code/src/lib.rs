@@ -300,6 +300,7 @@ pub fn lower_function(
         const_address_bases: HashSet::new(),
         emitted_variable_index_store: false,
         prematerialized_float_constants: Vec::new(),
+        preloaded_float_compare_literal: None,
         frame_slots: HashMap::new(),
         written_slots: HashSet::new(),
         frame_feeding_local_pressure: None,

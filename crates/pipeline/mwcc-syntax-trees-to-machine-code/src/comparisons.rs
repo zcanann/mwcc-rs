@@ -1536,6 +1536,16 @@ impl Generator {
         operand: &Expression,
         double: bool,
     ) -> Compilation<()> {
+        if self
+            .preloaded_float_compare_literal
+            .is_some_and(|preload| {
+                preload.register == dest
+                    && float_compare_literal_key(operand, double) == Some(preload.key)
+            })
+        {
+            self.preloaded_float_compare_literal = None;
+            return Ok(());
+        }
         match operand {
             Expression::FloatLiteral(value) => {
                 if double {

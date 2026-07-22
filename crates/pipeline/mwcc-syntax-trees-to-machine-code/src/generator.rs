@@ -17,6 +17,37 @@ use std::collections::{HashMap, HashSet};
 pub(crate) const GENERAL_SCRATCH: u8 = 0; // r0
 pub(crate) const FLOAT_SCRATCH: u8 = 0; // f0
 
+/// Canonical value of a pool literal used by a floating comparison. Keeping
+/// the comparison precision in the key prevents a preloaded `0.0f` from being
+/// consumed by a later double comparison with the same source spelling.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FloatCompareLiteralKey {
+    Single(u32),
+    Double(u64),
+}
+
+pub(crate) fn float_compare_literal_key(
+    operand: &Expression,
+    double: bool,
+) -> Option<FloatCompareLiteralKey> {
+    let value = match operand {
+        Expression::FloatLiteral(value) => *value,
+        Expression::IntegerLiteral(value) => *value as f64,
+        _ => return None,
+    };
+    Some(if double {
+        FloatCompareLiteralKey::Double(value.to_bits())
+    } else {
+        FloatCompareLiteralKey::Single((value as f32).to_bits())
+    })
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct PreloadedFloatCompareLiteral {
+    pub(crate) key: FloatCompareLiteralKey,
+    pub(crate) register: u8,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum ValueClass {
     General,
@@ -257,6 +288,9 @@ pub(crate) struct Generator {
     /// reuses the pre-loaded FPR by the literal's f64 bits instead of re-pooling/re-loading.
     /// `(FloatLiteral f64 bits, FPR)`; empty outside a run (runs are homogeneous float/double).
     pub(crate) prematerialized_float_constants: Vec<(u64, u8)>,
+    /// One pool literal deliberately issued before an ephemeral local's memory
+    /// initializer. The first matching comparison consumes this reservation.
+    pub(crate) preloaded_float_compare_literal: Option<PreloadedFloatCompareLiteral>,
     /// Address-taken variables and their stack-frame slots. A name here is
     /// frame-resident: `&v` and type-punned accesses read/write its slot.
     pub(crate) frame_slots: HashMap<String, FrameSlot>,

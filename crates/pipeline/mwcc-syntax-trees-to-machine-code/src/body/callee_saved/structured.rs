@@ -188,6 +188,7 @@ impl Generator {
                 },
             );
         }
+        self.try_preload_ephemeral_float_compare_literal(function, &ephemeral_locals)?;
         // Initializers are evaluated at declaration time, while an incoming
         // parameter still has its entry-register alias. MWCC can preserve that
         // alias after copying the value to a saved home (`mr r31,r3; lwz ...,r3`)

@@ -809,6 +809,14 @@ pub trait CodegenProfile: core::fmt::Debug {
         false
     }
 
+    /// Whether a first comparison against a short-lived floating local may
+    /// materialize its pool literal before the local's memory initializer.
+    /// Build 163 schedules the independent literal load into that earlier slot;
+    /// later generations keep it adjacent to the comparison.
+    fn preload_ephemeral_float_compare_literal(&self) -> bool {
+        false
+    }
+
     /// In `frexp`, whether the mantissa scaling (`fmul`) is emitted before the
     /// `*eptr = <exp>` integer store. GC/2.0p1: `fmul; stw r0,0(r3)` vs mainline
     /// `stw r0,0(r3); fmul` — the two are independent, so it is purely a schedule
@@ -1524,6 +1532,10 @@ impl CodegenProfile for Gc233Build163 {
     }
 
     fn float_compare_value_before_const(&self) -> bool {
+        true
+    }
+
+    fn preload_ephemeral_float_compare_literal(&self) -> bool {
         true
     }
 

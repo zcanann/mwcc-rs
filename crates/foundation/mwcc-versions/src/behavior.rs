@@ -565,6 +565,9 @@ pub struct Behavior {
     /// In a float `if`-condition against a pool constant, whether the loaded value
     /// operand (member/global) is emitted before the constant load.
     pub float_compare_value_before_const: bool,
+    /// Whether a leading comparison against an ephemeral float local pulls its
+    /// pool literal ahead of the local's independent memory initializer.
+    pub preload_ephemeral_float_compare_literal: bool,
     /// In `frexp`, whether the mantissa scaling `fmul` precedes the `*eptr` store
     /// (GC/2.0p1's order).
     pub frexp_scale_before_eptr_store: bool,
@@ -847,6 +850,10 @@ impl Behavior {
                 .build
                 .profile
                 .float_compare_value_before_const(),
+            preload_ephemeral_float_compare_literal: config
+                .build
+                .profile
+                .preload_ephemeral_float_compare_literal(),
             frexp_scale_before_eptr_store: config.build.profile.frexp_scale_before_eptr_store(),
             frame_convention: config.build.profile.frame_convention(),
             plain_linkage_epilogue_style: config.build.profile.plain_linkage_epilogue_style(),
