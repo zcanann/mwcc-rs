@@ -27,6 +27,15 @@ pub enum PlainLinkageEpilogueStyle {
     StackRestoreBeforeReload,
 }
 
+/// Restore order after a call result is stored through a saved pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerCallStoreEpilogueStyle {
+    /// 2.4.x reloads the saved LR before the pointer's callee-saved GPR.
+    LinkRegisterFirst,
+    /// GC 4.1 reloads the pointer's callee-saved GPR before the saved LR.
+    SavedPointerFirst,
+}
+
 /// Placement of a bare floating-point comparison relative to non-leaf linkage
 /// when a following `cror` folds equality for `<=` or `>=`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -835,6 +844,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         PlainLinkageEpilogueStyle::ReloadBeforeStackRestore
     }
 
+    fn pointer_call_store_epilogue_style(&self) -> PointerCallStoreEpilogueStyle {
+        PointerCallStoreEpilogueStyle::LinkRegisterFirst
+    }
+
     /// Whether a terminal call through a function pointer is lowered as an
     /// unlinked `bctr` sibling call without requiring IPA.
     /// This appears with the 4.x optimizer generation.
@@ -1162,6 +1175,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn pointer_call_store_epilogue_style(&self) -> PointerCallStoreEpilogueStyle {
+        PointerCallStoreEpilogueStyle::SavedPointerFirst
+    }
+
     fn guarded_byte_copy_style(&self) -> GuardedByteCopyStyle {
         GuardedByteCopyStyle::SignedCompare
     }

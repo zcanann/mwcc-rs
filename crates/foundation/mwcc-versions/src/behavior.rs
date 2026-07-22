@@ -27,8 +27,9 @@ use crate::profile::{
     MaterializationCopyStyle, MemCopyRemainderMaskStyle, MemCopyWordScheduleStyle,
     NarrowCompoundShiftStyle, NarrowComputedReturnStyle, NarrowGuardScheduleStyle,
     NarrowStoreConversionStyle, NegativePowerOfTwoMultiplyStyle, NestedGlobalDispatchSchedule,
-    PlainLinkageEpilogueStyle, PunnedConditionalWritebackStyle, PunnedFloatFrameConvention,
-    PunnedShiftWritebackStyle, QueueServiceInliningStyle, RaiseFamilyStyle,
+    PlainLinkageEpilogueStyle, PointerCallStoreEpilogueStyle,
+    PunnedConditionalWritebackStyle, PunnedFloatFrameConvention, PunnedShiftWritebackStyle,
+    QueueServiceInliningStyle, RaiseFamilyStyle,
     ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle, SharedFloatDagStyle,
     SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, StoredGlobalReadStyle,
     SymbolTraversalStyle, TrigDispatcherStyle, TrigZeroConstantPlacement, VaArgScheduleStyle,
@@ -193,6 +194,7 @@ pub enum Quirk {
     LegacyCompareFirstNarrowGuards,
     LegacySerialVaArgSchedule,
     Gc11PatchPlainLinkageReload,
+    LaterSavedPointerFirstEpilogue,
     LaterTerminalIndirectTailCall,
 }
 
@@ -268,6 +270,7 @@ impl Quirk {
             Quirk::LegacyCompareFirstNarrowGuards => QuirkKind::Intentional,
             Quirk::LegacySerialVaArgSchedule => QuirkKind::Intentional,
             Quirk::Gc11PatchPlainLinkageReload => QuirkKind::Intentional,
+            Quirk::LaterSavedPointerFirstEpilogue => QuirkKind::Intentional,
             Quirk::LaterTerminalIndirectTailCall => QuirkKind::Intentional,
         }
     }
@@ -471,6 +474,9 @@ impl Quirk {
             Quirk::Gc11PatchPlainLinkageReload => {
                 "GC/1.1p1 restores r1 before reloading LR from the caller linkage area"
             }
+            Quirk::LaterSavedPointerFirstEpilogue => {
+                "GC 4.1 restores a saved store pointer before reloading the link register"
+            }
             Quirk::LaterTerminalIndirectTailCall => {
                 "later compilers lower terminal indirect calls as unlinked sibling branches"
             }
@@ -575,6 +581,8 @@ pub struct Behavior {
     pub frame_convention: FrameConvention,
     /// Saved-LR reload order for a linkage-first frame with no saved GPRs.
     pub plain_linkage_epilogue_style: PlainLinkageEpilogueStyle,
+    /// Restore order after storing a call result through a saved pointer.
+    pub pointer_call_store_epilogue_style: PointerCallStoreEpilogueStyle,
     /// Whether stack-using leaf functions carry unwind-table entries.
     pub emit_leaf_frame_unwind: bool,
     /// Whether constant non-leaf join returns precede the saved-LR reload.
@@ -857,6 +865,10 @@ impl Behavior {
             frexp_scale_before_eptr_store: config.build.profile.frexp_scale_before_eptr_store(),
             frame_convention: config.build.profile.frame_convention(),
             plain_linkage_epilogue_style: config.build.profile.plain_linkage_epilogue_style(),
+            pointer_call_store_epilogue_style: config
+                .build
+                .profile
+                .pointer_call_store_epilogue_style(),
             emit_leaf_frame_unwind: config.build.profile.emit_leaf_frame_unwind(),
             constant_join_return_precedes_lr_reload: config
                 .build
@@ -1274,6 +1286,11 @@ impl Behavior {
         {
             quirks.push(ActiveQuirk::of(Quirk::Gc11PatchPlainLinkageReload));
         }
+        if self.pointer_call_store_epilogue_style
+            == PointerCallStoreEpilogueStyle::SavedPointerFirst
+        {
+            quirks.push(ActiveQuirk::of(Quirk::LaterSavedPointerFirstEpilogue));
+        }
         if self.terminal_indirect_tail_call {
             quirks.push(ActiveQuirk::of(Quirk::LaterTerminalIndirectTailCall));
         }
@@ -1661,6 +1678,25 @@ mod tests {
             build_163.plain_linkage_epilogue_style,
             PlainLinkageEpilogueStyle::ReloadBeforeStackRestore
         );
+    }
+
+    #[test]
+    fn gc41_reverses_saved_pointer_and_link_register_restores() {
+        let gc132 = Behavior::resolve(&CompilerConfig::new(build::GC_1_3_2));
+        let gc41 = Behavior::resolve(&CompilerConfig::new(build::GC_3_0A3P1));
+
+        assert_eq!(
+            gc132.pointer_call_store_epilogue_style,
+            PointerCallStoreEpilogueStyle::LinkRegisterFirst
+        );
+        assert_eq!(
+            gc41.pointer_call_store_epilogue_style,
+            PointerCallStoreEpilogueStyle::SavedPointerFirst
+        );
+        assert!(gc41
+            .active_quirks()
+            .iter()
+            .any(|active| active.quirk == Quirk::LaterSavedPointerFirstEpilogue));
     }
 
     #[test]
