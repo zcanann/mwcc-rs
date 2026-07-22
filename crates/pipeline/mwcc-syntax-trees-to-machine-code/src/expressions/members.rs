@@ -734,6 +734,16 @@ impl Generator {
             // `((struct S *)x)->field`: a pointer cast is transparent — the base is
             // just the operand's pointer value.
             Expression::Cast { operand, .. } => self.member_base_register(operand),
+            // Inline constructor expansion may address a secondary vtable slot
+            // as a member of `&__vt__Class`. Materialize that external/global
+            // base once; the outer member operation supplies the slot offset.
+            Expression::AddressOf { operand }
+                if matches!(operand.as_ref(), Expression::Variable(_)) =>
+            {
+                let register = self.fresh_virtual_general();
+                self.emit_address_of(operand, register)?;
+                Ok(register)
+            }
             // A bare `get()->field` is handled in emit_member_load (single-load, byte-exact); any
             // OTHER call context reaching here (a nested `get()->b->c`, an indexed `get()->a[i]`, a
             // member store) has a post-call schedule mwcc places differently — defer.
