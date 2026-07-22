@@ -38,6 +38,7 @@ fn store_or_assign(
     value: Expression,
     local_names: &std::collections::HashSet<String>,
 ) -> Statement {
+    let target = crate::lvalues::canonical_assignment_target(target);
     match &target {
         Expression::Variable(name) if local_names.contains(name.as_str()) => Statement::Assign {
             name: name.clone(),

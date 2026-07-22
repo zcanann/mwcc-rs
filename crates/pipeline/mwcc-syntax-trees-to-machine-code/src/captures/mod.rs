@@ -269,6 +269,7 @@ mod mem_memset;
 mod mf_copy_al;
 mod mf_copy_al_mel;
 mod mf_copy_al_mp4;
+mod mf_copy_pikmin;
 mod mf_copy_ral;
 mod mf_copy_ral_mp4;
 mod mf_copy_run;
@@ -1134,6 +1135,7 @@ impl Generator {
             || self.try_epow(function)?
             || self.try_epow_ww(function)?
             || self.try_krem_p2(function)?
+            || self.try_mf_copy_pikmin(function)?
             || self.try_mf_copy_al(function)?
             || self.try_mf_copy_ral(function)?
             || self.try_mf_copy_un(function)?
