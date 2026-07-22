@@ -30,6 +30,7 @@ use super::structured_parameter_home_reuse::StructuredParameterHomeReuse;
 use super::structured_prologue::{
     saved_home_stores_precede_initialization, uses_dense_saved_register_range,
 };
+use super::structured_value_versions::split_reassigned_local_versions;
 #[allow(unused_imports)]
 use super::*;
 
@@ -69,6 +70,10 @@ impl Generator {
             }
         }
         if let Some(rewritten) = fold_zero_initialized_call_accumulator(&normalized) {
+            normalized = rewritten;
+            changed = true;
+        }
+        if let Some(rewritten) = split_reassigned_local_versions(&normalized) {
             normalized = rewritten;
             changed = true;
         }
@@ -178,6 +183,11 @@ impl Generator {
                 local.array_length.is_none()
                     && survivors.contains(local.name.as_str())
                     && !call_accumulators.contains(local.name.as_str())
+                    && !is_transient_direct_call_argument_local(
+                        &function.statements,
+                        function.return_expression.as_ref(),
+                        &local.name,
+                    )
             })
             .collect();
         if saved_locals.iter().any(|local| {
@@ -1136,9 +1146,24 @@ impl Generator {
                             },
                         );
                     } else {
-                        let previous = previous.ok_or_else(|| {
-                            Diagnostic::error("structured assignment has no register home")
-                        })?;
+                        let previous = previous.unwrap_or_else(|| {
+                            let register = self.fresh_virtual_general();
+                            self.locations.insert(
+                                name.clone(),
+                                Location {
+                                    class: ValueClass::General,
+                                    register,
+                                    signed: self.signed_of(declared_type),
+                                    width: declared_type.width(),
+                                    pointee: match declared_type {
+                                        Type::Pointer(pointee) => Some(pointee),
+                                        _ => None,
+                                    },
+                                    stride: pointer_stride(declared_type),
+                                },
+                            );
+                            register
+                        });
                         let terminal_result = self.behavior.frame_convention
                             == FrameConvention::Predecrement
                             && statement_index + 1 == statements.len()
