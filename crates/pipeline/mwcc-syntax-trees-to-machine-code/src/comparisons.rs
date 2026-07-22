@@ -1319,7 +1319,90 @@ impl Generator {
         let left_load = self.is_float_operand(left) && !self.is_float_leaf(left) && !left_literal;
         let right_load =
             self.is_float_operand(right) && !self.is_float_leaf(right) && !right_literal;
-        let (a, b) = if eq && (left_load || right_load) {
+        let left_is_float = self.is_float_operand(left);
+        let right_is_float = self.is_float_operand(right);
+        let (a, b) = if !left_is_float && right_is_float {
+            // Usual arithmetic conversions promote the integer side to the
+            // floating side's precision. A memory integer is first loaded into
+            // r3, then uses the shared magic-bias conversion body in the current
+            // structured frame. f2 keeps the bias clear of both compare values.
+            let integer = 3;
+            self.evaluate_general(left, integer)?;
+            let signed = self.signedness_of(left)?;
+            if signed && self.cast_operand_width(left).is_some_and(|width| width < 32) {
+                let width = self.cast_operand_width(left).expect("checked");
+                self.emit_widen(integer, integer, width as u8, true);
+            }
+            // The mixed comparison has its own measured schedule: start the
+            // 0x4330 high word, issue the bias load, store the integer, overlap
+            // the other memory operand, then assemble and subtract.
+            let bias = if signed {
+                0x4330_0000_8000_0000
+            } else {
+                0x4330_0000_0000_0000
+            };
+            if signed {
+                self.output
+                    .instructions
+                    .push(Instruction::XorImmediateShifted {
+                        a: integer,
+                        s: integer,
+                        immediate: 0x8000,
+                    });
+            }
+            self.output
+                .instructions
+                .push(Instruction::load_immediate_shifted(0, 17200));
+            self.load_double_constant(2, bias);
+            self.output.instructions.push(Instruction::StoreWord {
+                s: integer,
+                a: 1,
+                offset: 12,
+            });
+            self.evaluate_float(right, FLOAT_SCRATCH)?;
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 8,
+            });
+            self.output.instructions.push(Instruction::LoadFloatDouble {
+                d: FLOAT_FIRST,
+                a: 1,
+                offset: 8,
+            });
+            self.output.instructions.push(if double {
+                Instruction::FloatSubtractDouble {
+                    d: FLOAT_FIRST,
+                    a: FLOAT_FIRST,
+                    b: 2,
+                }
+            } else {
+                Instruction::FloatSubtractSingle {
+                    d: FLOAT_FIRST,
+                    a: FLOAT_FIRST,
+                    b: 2,
+                }
+            });
+            self.output.has_conversion = true;
+            self.frame_size = self.frame_size.max(16);
+            (FLOAT_FIRST, FLOAT_SCRATCH)
+        } else if left_is_float && !right_is_float {
+            return Err(Diagnostic::error(
+                "a right-side integer in a floating comparison needs the mixed FP scheduler (roadmap)",
+            ));
+        } else if left_load && right_load {
+            // Two memory values use the two ordinary comparison temporaries:
+            // the source-left value in f1 and source-right in f0. They are
+            // loaded once each before the ordered/unordered compare.
+            if self.f1_holds_float_argument() {
+                return Err(Diagnostic::error(
+                    "two loaded float operands with a float argument in f1 need the FP register allocator (roadmap)",
+                ));
+            }
+            self.evaluate_float(left, FLOAT_FIRST)?;
+            self.evaluate_float(right, FLOAT_SCRATCH)?;
+            (FLOAT_FIRST, FLOAT_SCRATCH)
+        } else if eq && (left_load || right_load) {
             // `==`/`!=` against a loaded value (member/global) uses a *swapped* register
             // assignment versus the ordered form: the constant in f1 (loaded first), the
             // value in f0 — `lfs f1,k; lfs f0,(v); fcmpu f1,f0`. The == canonicalization

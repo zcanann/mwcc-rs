@@ -648,16 +648,13 @@ impl Generator {
             return false;
         }
         let Some(frame_push) = self.output.instructions.iter().position(|instruction| {
-            matches!(
-                instruction,
-                Instruction::StoreWordWithUpdate {
-                    s: 1,
-                    a: 1,
-                    offset: -8
-                }
-            )
+            matches!(instruction, Instruction::StoreWordWithUpdate { s: 1, a: 1, offset } if matches!(*offset, -8 | -16))
         }) else {
             return false;
+        };
+        let old_size = match self.output.instructions[frame_push] {
+            Instruction::StoreWordWithUpdate { offset, .. } => -offset,
+            _ => unreachable!(),
         };
         let returned = self.output.instructions.iter().any(|instruction| {
             matches!(
@@ -668,7 +665,8 @@ impl Generator {
             )
         });
         let padding = if returned { 8 } else { 0 };
-        let new_size = 16 + padding;
+        let new_size = (16 + padding).max(old_size + 8);
+        let stack_shift = new_size - old_size;
 
         if let Instruction::StoreWordWithUpdate { offset, .. } =
             &mut self.output.instructions[frame_push]
@@ -682,18 +680,41 @@ impl Generator {
                 | Instruction::LoadFloatDouble { a: 1, offset, .. }
                     if *offset >= 8 =>
                 {
-                    *offset += padding;
+                    *offset += stack_shift;
                 }
                 Instruction::AddImmediate {
                     d: 1,
                     a: 1,
-                    immediate: 16,
-                } => {
+                    immediate,
+                } if *immediate == old_size => {
                     if let Instruction::AddImmediate { immediate, .. } = instruction {
                         *immediate = new_size;
                     }
                 }
                 _ => {}
+            }
+        }
+        // A structured 2.4.x owner starts `stwu; mflr; stw LR`. Build 163
+        // writes LR through the caller linkage area, starts the independent
+        // conversion high word, and only then updates SP.
+        if frame_push == 0
+            && matches!(self.output.instructions.get(1), Some(Instruction::MoveFromLinkRegister { d: 0 }))
+            && matches!(self.output.instructions.get(2), Some(Instruction::StoreWord { s: 0, a: 1, .. }))
+        {
+            if let Instruction::StoreWord { offset, .. } = &mut self.output.instructions[2] {
+                *offset = 4;
+            }
+            self.output.instructions[..3].rotate_left(1);
+            let updated_push = 2;
+            if let Some(high_word) = self.output.instructions[updated_push + 1..]
+                .iter()
+                .position(|instruction| {
+                    matches!(instruction, Instruction::AddImmediateShifted { d: 0, a: 0, immediate: 17200 })
+                })
+                .map(|offset| updated_push + 1 + offset)
+            {
+                let instruction = self.output.instructions.remove(high_word);
+                self.output.instructions.insert(updated_push, instruction);
             }
         }
         self.frame_size = new_size;

@@ -2,6 +2,7 @@
 
 #[allow(unused_imports)]
 use super::*;
+use mwcc_syntax_trees::Type;
 
 impl Generator {
     pub(crate) fn patch_forward(&mut self, branch_index: usize, target: usize) {
@@ -1183,11 +1184,65 @@ impl Generator {
                 if self.is_float_operand(left) || self.is_float_operand(right) {
                     return self.emit_float_condition(*operator, left, right);
                 }
-                // A member on both sides would both want the scratch; defer.
-                if as_member(left).is_some() && as_member(right).is_some() {
-                    return Err(Diagnostic::error(
-                        "comparison of two members as a condition (roadmap)",
-                    ));
+                // Two member loads need distinct temporaries. Keep r3 for the
+                // left value and reserve it while selecting the right member's
+                // address, which naturally gives a global pointer base r4 and
+                // the right value r0 (`lbz r3; lwz r0; cmpw r3,r0`). Narrow
+                // integer members undergo the C integer promotions here: every
+                // char/short variant fits in `int` on this target.
+                if let (
+                    Some((_, _, left_type)),
+                    Some((_, _, right_type)),
+                ) = (as_member(left), as_member(right))
+                {
+                    let operand_registers: std::collections::HashSet<u8> = self
+                        .registers_used_by(left)
+                        .into_iter()
+                        .chain(self.registers_used_by(right))
+                        .collect();
+                    let newly_reserved: Vec<u8> = operand_registers
+                        .into_iter()
+                        .filter(|register| self.reserved.insert(*register))
+                        .collect();
+                    let left_register = self.lowest_free_general()?;
+                    for register in newly_reserved {
+                        self.reserved.remove(&register);
+                    }
+                    self.evaluate_general(left, left_register)?;
+                    let inserted = self.reserved.insert(left_register);
+                    let right_result = self.evaluate_general(right, GENERAL_SCRATCH);
+                    if inserted {
+                        self.reserved.remove(&left_register);
+                    }
+                    right_result?;
+                    if left_type == Type::Char {
+                        self.output.instructions.push(Instruction::ExtendSignByte {
+                            a: left_register,
+                            s: left_register,
+                        });
+                    }
+                    if right_type == Type::Char {
+                        self.output.instructions.push(Instruction::ExtendSignByte {
+                            a: GENERAL_SCRATCH,
+                            s: GENERAL_SCRATCH,
+                        });
+                    }
+                    let promoted_signed = |value_type: Type| {
+                        value_type.width() < 32 || self.signed_of(value_type)
+                    };
+                    if promoted_signed(left_type) && promoted_signed(right_type) {
+                        self.output.instructions.push(Instruction::CompareWord {
+                            a: left_register,
+                            b: GENERAL_SCRATCH,
+                        });
+                    } else {
+                        self.output.instructions.push(Instruction::CompareLogicalWord {
+                            a: left_register,
+                            b: GENERAL_SCRATCH,
+                        });
+                    }
+                    return Ok(false_branch_bo_bi(*operator)
+                        .expect("is_comparison restricts the operator"));
                 }
                 // `unsigned u > 0` / `0 < u` is `u != 0`, and `unsigned u <= 0` / `0 >= u` is
                 // `u == 0` — as a branch mwcc uses the equality idiom (`bne`/`beq`), not the
