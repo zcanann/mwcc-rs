@@ -26,6 +26,7 @@ use super::structured_locals::{
     body_uses_local, dead_ephemeral_float_locals, is_definitely_assigned_before_reads,
     plan_deferred_saved_homes, plan_ephemeral_locals,
 };
+use super::structured_parameter_home_reuse::StructuredParameterHomeReuse;
 use super::structured_prologue::saved_home_stores_precede_initialization;
 #[allow(unused_imports)]
 use super::*;
@@ -239,8 +240,16 @@ impl Generator {
             .enumerate()
             .any(|(index, _)| is_folded_terminal_pointer_load_alias(function, index));
 
-        let count =
-            eager_saved_locals.len() + saved_parameters.len() + deferred_home_plan.group_count;
+        let parameter_home_reuse = StructuredParameterHomeReuse::plan(
+            function,
+            eager_saved_locals.len(),
+            &saved_parameters,
+            &deferred_home_plan,
+            with_frame_array && !eager_saved_locals.is_empty(),
+        );
+        let count = eager_saved_locals.len()
+            + saved_parameters.len()
+            + parameter_home_reuse.fresh_group_count;
         let first_saved = 32usize.saturating_sub(count);
         let dense_entry_prefix = with_frame_array
             && !global_member_search_entry
@@ -559,7 +568,10 @@ impl Generator {
         }
         debug_assert_eq!(home_index, deferred_home_base);
         for group in 0..deferred_home_plan.group_count {
-            let slot_index = deferred_home_base + group;
+            let slot_index = parameter_home_reuse.home_index(group);
+            if slot_index < deferred_home_base {
+                continue;
+            }
             let home = homes[slot_index];
             if !batched_saved_home_stores && !dense_frame {
                 self.emit_structured_saved_home_store(home, slot_index, plan.frame_size);
@@ -567,7 +579,7 @@ impl Generator {
         }
         for local in deferred_saved_locals {
             let group = deferred_home_plan.group(&local.name);
-            let home = homes[deferred_home_base + group];
+            let home = homes[parameter_home_reuse.home_index(group)];
             self.locations.insert(
                 local.name.clone(),
                 Location {

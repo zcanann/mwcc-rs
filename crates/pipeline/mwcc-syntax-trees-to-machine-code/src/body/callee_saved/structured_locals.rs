@@ -10,6 +10,7 @@ use super::*;
 
 pub(super) struct DeferredSavedHomePlan {
     group_by_name: std::collections::HashMap<String, usize>,
+    group_first_assignments: Vec<usize>,
     pub(super) group_count: usize,
 }
 
@@ -17,6 +18,17 @@ impl DeferredSavedHomePlan {
     pub(super) fn group(&self, name: &str) -> usize {
         self.group_by_name[name]
     }
+
+    pub(super) fn first_assignment(&self, group: usize) -> usize {
+        self.group_first_assignments[group]
+    }
+}
+
+pub(super) fn structured_name_last_read(function: &Function, name: &str) -> Option<usize> {
+    let mut cursor = 0;
+    let mut interval = DeferredInterval::default();
+    collect_deferred_interval(&function.statements, name, &mut cursor, &mut interval)?;
+    interval.last_read
 }
 
 /// Color deferred locals whose initialization remains in the body.
@@ -53,6 +65,7 @@ pub(super) fn plan_deferred_saved_homes(
     intervals.sort_by_key(|(_, first_assignment, _)| *first_assignment);
 
     let mut group_last_reads = Vec::<usize>::new();
+    let mut group_first_assignments = Vec::<usize>::new();
     let mut group_by_name = std::collections::HashMap::new();
     for (name, first_assignment, last_read) in intervals {
         // MWCC reuses the most recently expired local home. This is a LIFO
@@ -68,6 +81,7 @@ pub(super) fn plan_deferred_saved_homes(
             .map(|(group, _)| group)
             .unwrap_or_else(|| {
                 group_last_reads.push(0);
+                group_first_assignments.push(first_assignment);
                 group_last_reads.len() - 1
             });
         group_last_reads[group] = last_read;
@@ -76,6 +90,7 @@ pub(super) fn plan_deferred_saved_homes(
     Some(DeferredSavedHomePlan {
         group_count: group_last_reads.len(),
         group_by_name,
+        group_first_assignments,
     })
 }
 
