@@ -734,6 +734,13 @@ impl Generator {
             Expression::Variable(name) => {
                 if let Some(location) = self.locations.get(name) {
                     Ok(location.signed)
+                } else if self
+                    .frame_slots
+                    .get(name)
+                    .is_some_and(|slot| slot.is_array)
+                {
+                    // An array expression decays to an unsigned address.
+                    Ok(false)
                 } else if let Some(global_type) = self.globals.get(name) {
                     Ok(global_type.is_signed())
                 } else if let Some((_, element_type)) = self.fixed_address_arrays.get(name) {

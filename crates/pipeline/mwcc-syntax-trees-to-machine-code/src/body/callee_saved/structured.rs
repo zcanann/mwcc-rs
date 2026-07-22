@@ -5,12 +5,14 @@
 //! statement is representable by the shared store/call emitter plus forward
 //! `if` branches; unsupported control flow declines before emitting anything.
 
+use super::structured_entry_alias::{
+    fold_entry_alias_zero_test, plan_first_call_alias, EntryAliasBoundary, EntryParameterAlias,
+};
+use super::guarded_computed_survivor::emit_scaled_index;
+use super::structured_frame_assignment::sink_single_use_parameter_assignment;
 use super::structured_locals::{
     dead_ephemeral_float_locals, is_definitely_assigned_before_reads, plan_deferred_saved_homes,
     plan_ephemeral_locals,
-};
-use super::structured_entry_alias::{
-    fold_entry_alias_zero_test, plan_first_call_alias, EntryAliasBoundary, EntryParameterAlias,
 };
 use super::structured_prologue::saved_home_stores_precede_initialization;
 #[allow(unused_imports)]
@@ -23,10 +25,55 @@ impl Generator {
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
-        if !self.frame_slots.is_empty()
-            || !function.guards.is_empty()
-            || function.return_type != Type::Void
-            || function.return_expression.is_some()
+        self.try_callee_saved_structured_body_impl(function, false)
+    }
+
+    /// The same virtual-register path with one uninitialized automatic array
+    /// composed below its saved homes and a shared integer-valued exit.
+    pub(crate) fn try_callee_saved_structured_frame_body(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if self.behavior.frame_convention == FrameConvention::Predecrement {
+            if let Some(rewritten) = sink_single_use_parameter_assignment(function) {
+                return self.try_callee_saved_structured_body_impl(&rewritten, true);
+            }
+        }
+        self.try_callee_saved_structured_body_impl(function, true)
+    }
+
+    fn try_callee_saved_structured_body_impl(
+        &mut self,
+        function: &Function,
+        with_frame_array: bool,
+    ) -> Compilation<bool> {
+        if !self.frame_slots.is_empty() || !function.guards.is_empty() {
+            return Ok(false);
+        }
+        let frame_array = if with_frame_array {
+            let mut arrays = function
+                .locals
+                .iter()
+                .filter(|local| local.array_length.is_some());
+            let Some(array) = arrays.next() else {
+                return Ok(false);
+            };
+            if arrays.next().is_some()
+                || array.is_static
+                || array.initializer.is_some()
+                || array.data_bytes.is_some()
+                || !matches!(array.declared_type, Type::Char | Type::UnsignedChar)
+                || !matches!(function.return_type, Type::Int | Type::UnsignedInt)
+                || function.return_expression.is_none()
+            {
+                return Ok(false);
+            }
+            Some(array)
+        } else {
+            None
+        };
+        if (!with_frame_array
+            && (function.return_type != Type::Void || function.return_expression.is_some()))
             || !supports_statements(&function.statements, function)
         {
             return Ok(false);
@@ -35,6 +82,7 @@ impl Generator {
         let candidates: Vec<&str> = function
             .locals
             .iter()
+            .filter(|local| local.array_length.is_none())
             .map(|local| local.name.as_str())
             .chain(
                 function
@@ -47,6 +95,10 @@ impl Generator {
             .into_iter()
             .filter(|name| {
                 read_after_possible_call(&function.statements, name, false).read_after_call
+                    || (function_makes_call(function)
+                        && function.return_expression.as_ref().is_some_and(|expression| {
+                            expression_reads_name(expression, name)
+                        }))
             })
             .collect();
         // Entry-initialized locals rank ahead of incoming parameters. Deferred
@@ -55,7 +107,9 @@ impl Generator {
         let saved_locals: Vec<&LocalDeclaration> = function
             .locals
             .iter()
-            .filter(|local| survivors.contains(local.name.as_str()))
+            .filter(|local| {
+                local.array_length.is_none() && survivors.contains(local.name.as_str())
+            })
             .collect();
         if saved_locals.iter().any(|local| {
             local.is_static
@@ -90,15 +144,130 @@ impl Generator {
             return Ok(false);
         };
 
+        let local_region_bytes = if let Some(array) = frame_array {
+            let length = array.array_length.expect("frame array was gated");
+            let Some(bytes) = u16::from(array.declared_type.width() / 8)
+                .checked_mul(length)
+                .filter(|bytes| *bytes != 0 && *bytes <= u16::from(u8::MAX))
+            else {
+                return Ok(false);
+            };
+            i16::try_from(bytes)
+                .map_err(|_| Diagnostic::error("structured local frame is too large"))?
+        } else {
+            0
+        };
+
         let count =
             eager_saved_locals.len() + saved_parameters.len() + deferred_home_plan.group_count;
-        let homes: Vec<u8> = (0..count).map(|_| self.fresh_virtual_general()).collect();
-        let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
+        let first_saved = 32usize.saturating_sub(count);
+        let homes: Vec<u8> = (0..count)
+            .map(|home_index| {
+                if with_frame_array && eager_saved_locals.is_empty() && count <= 18 {
+                    let preferred = if home_index < saved_parameters.len() {
+                        first_saved + saved_parameters.len() - 1 - home_index
+                    } else {
+                        first_saved + home_index
+                    };
+                    self.fresh_virtual_general_preferring(preferred as u8)
+                } else {
+                    self.fresh_virtual_general()
+                }
+            })
+            .collect();
+        let mut plan = mwcc_vreg::FramePlan::with_local_region(homes.clone(), local_region_bytes);
+        if let Some(array) = frame_array {
+            let extra_scalar_words = function
+                .locals
+                .iter()
+                .filter(|local| {
+                    local.array_length.is_none()
+                        && !deferred_saved_locals
+                            .iter()
+                            .any(|saved| saved.name == local.name)
+                        && !eager_saved_locals.iter().any(|saved| saved.name == local.name)
+                })
+                .count();
+            let array_offset = match self.behavior.frame_convention {
+                FrameConvention::Predecrement => 8,
+                FrameConvention::LinkageFirst => {
+                    let words = self.entry_parameter_words + extra_scalar_words;
+                    8 + i16::try_from(words * 4).map_err(|_| {
+                        Diagnostic::error("structured legacy local table is too large")
+                    })?
+                }
+            };
+            if self.behavior.frame_convention == FrameConvention::LinkageFirst {
+                let occupied = i32::from(array_offset)
+                    + i32::from(local_region_bytes)
+                    + i32::try_from(4 * count).unwrap_or(i32::MAX);
+                plan.frame_size = i16::try_from((occupied + 15) / 16 * 16).map_err(|_| {
+                    Diagnostic::error("structured legacy frame is too large")
+                })?;
+            }
+            self.frame_slots.insert(
+                array.name.clone(),
+                FrameSlot {
+                    offset: array_offset,
+                    class: ValueClass::General,
+                    size: local_region_bytes as u8,
+                    parameter_register: None,
+                    is_array: true,
+                },
+            );
+            let pointee = match array.declared_type {
+                Type::Char => Pointee::Char,
+                Type::UnsignedChar => Pointee::UnsignedChar,
+                _ => unreachable!("structured frame array type was gated"),
+            };
+            self.locations.insert(
+                array.name.clone(),
+                Location {
+                    class: ValueClass::General,
+                    register: GENERAL_SCRATCH,
+                    signed: false,
+                    width: 32,
+                    pointee: Some(pointee),
+                    stride: None,
+                },
+            );
+        }
         self.non_leaf = true;
         self.frame_size = plan.frame_size;
         self.callee_saved = homes.clone();
         self.legacy_callee_saved_frame_layout =
             LegacyCalleeSavedFrameLayout::RetainEntryParameterTable;
+        let dense_frame = with_frame_array
+            && eager_saved_locals.is_empty()
+            && count >= 5
+            && count <= 18;
+        let dense_save_helper =
+            dense_frame && self.behavior.frame_convention == FrameConvention::Predecrement;
+        let dense_inline_save = dense_frame
+            && self.behavior.frame_convention == FrameConvention::LinkageFirst;
+        if dense_frame {
+            self.output.pre_scheduled = true;
+        }
+        if dense_inline_save {
+            self.output.instructions.extend([
+                Instruction::MoveFromLinkRegister { d: 0 },
+                Instruction::StoreWord {
+                    s: 0,
+                    a: 1,
+                    offset: 4,
+                },
+                Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -plan.frame_size,
+                },
+                Instruction::StoreMultipleWord {
+                    s: first_saved as u8,
+                    a: 1,
+                    offset: plan.frame_size - 4 * count as i16,
+                },
+            ]);
+        } else {
         self.output.instructions.extend([
             Instruction::StoreWordWithUpdate {
                 s: 1,
@@ -112,6 +281,19 @@ impl Generator {
                 offset: plan.frame_size + 4,
             },
         ]);
+        }
+        if dense_save_helper {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 11,
+                a: 1,
+                immediate: plan.frame_size,
+            });
+            let helper = format!("_savegpr_{first_saved}");
+            self.record_relocation(RelocationKind::Rel24, &helper);
+            self.output
+                .instructions
+                .push(Instruction::BranchAndLink { target: helper });
+        }
 
         let batched_saved_home_stores = saved_home_stores_precede_initialization(
             self.behavior.frame_convention,
@@ -138,9 +320,7 @@ impl Generator {
                 0,
                 plan.frame_size,
             );
-            for (parameter_index, (_, home, incoming)) in
-                saved_parameter_homes.iter().enumerate()
-            {
+            for (parameter_index, (_, home, incoming)) in saved_parameter_homes.iter().enumerate() {
                 self.emit_structured_saved_home_store(
                     *home,
                     saved_parameter_base + parameter_index,
@@ -161,7 +341,7 @@ impl Generator {
         for local in eager_saved_locals {
             let home = homes[home_index];
             home_index += 1;
-            if !batched_saved_home_stores {
+            if !batched_saved_home_stores && !dense_frame {
                 self.emit_structured_saved_home_store(home, home_index - 1, plan.frame_size);
             }
             self.evaluate(
@@ -187,17 +367,23 @@ impl Generator {
         for (_, home, incoming) in &saved_parameter_homes {
             home_index += 1;
             if !batched_saved_home_stores {
-                self.emit_structured_saved_home_store(*home, home_index - 1, plan.frame_size);
+                if !dense_frame {
+                    self.emit_structured_saved_home_store(
+                        *home,
+                        home_index - 1,
+                        plan.frame_size,
+                    );
                 self.output
                     .instructions
                     .push(Instruction::move_register(*home, *incoming));
             }
         }
+        }
         debug_assert_eq!(home_index, deferred_home_base);
         for group in 0..deferred_home_plan.group_count {
             let slot_index = deferred_home_base + group;
             let home = homes[slot_index];
-            if !batched_saved_home_stores {
+            if !batched_saved_home_stores && !dense_frame {
                 self.emit_structured_saved_home_store(home, slot_index, plan.frame_size);
             }
         }
@@ -251,25 +437,43 @@ impl Generator {
             );
         }
         self.plan_structured_float_handoff(function, &ephemeral_locals);
-        let entry_parameter_alias =
-            plan_first_call_alias(&function.statements, &saved_parameter_homes);
-        for (name, home, _) in saved_parameter_homes {
+        let dense_entry_emitted = if dense_frame {
+            if !self.emit_structured_dense_frame_entry(function, &saved_parameter_homes)? {
+                return Err(Diagnostic::error(
+                    "a dense structured frame needs a schedulable entry definition",
+                ));
+            }
+            true
+        } else {
+            false
+        };
+        let alias_statements = if dense_entry_emitted {
+            &function.statements[1..]
+        } else {
+            function.statements.as_slice()
+        };
+        let entry_parameter_alias = (!dense_inline_save)
+            .then(|| plan_first_call_alias(alias_statements, &saved_parameter_homes))
+            .flatten();
+        for (name, home, _) in &saved_parameter_homes {
             if entry_parameter_alias
                 .as_ref()
-                .is_some_and(|alias| alias.name == name)
+                .is_some_and(|alias| alias.name == *name)
             {
                 continue;
             }
             self.locations
-                .get_mut(&name)
+                .get_mut(name)
                 .expect("eligibility checked")
-                .register = home;
+                .register = *home;
         }
 
         let mut return_branches = Vec::new();
         let mut label_positions = std::collections::HashMap::new();
         let mut pending_gotos = Vec::new();
-        let statement_start = if entry_parameter_alias
+        let statement_start = if dense_entry_emitted {
+            1
+        } else if entry_parameter_alias
             .as_ref()
             .is_some_and(|alias| alias.boundary == EntryAliasBoundary::AfterFirstStatement)
         {
@@ -296,9 +500,8 @@ impl Generator {
         } else {
             0
         };
-        let mut condition_alias = entry_parameter_alias.filter(|alias| {
-            alias.boundary == EntryAliasBoundary::AfterFirstConditionTerm
-        });
+        let mut condition_alias = entry_parameter_alias
+            .filter(|alias| alias.boundary == EntryAliasBoundary::AfterFirstConditionTerm);
         self.emit_structured_statements(
             &function.statements[statement_start..],
             function,
@@ -309,6 +512,12 @@ impl Generator {
             &mut pending_gotos,
             &mut condition_alias,
         )?;
+        if dense_frame {
+            self.schedule_structured_frame_store_call();
+        }
+        if dense_inline_save {
+            self.normalize_structured_frame_argument_copies(first_saved as u8);
+        }
         for (branch, label) in pending_gotos {
             let target = label_positions.get(&label).copied().ok_or_else(|| {
                 Diagnostic::error(format!(
@@ -322,6 +531,13 @@ impl Generator {
                 *branch_target = target;
             }
         }
+        if let Some(return_expression) = function.return_expression.as_ref() {
+            let result = match function.return_type {
+                Type::Float | Type::Double => Eabi::float_result().number,
+                _ => Eabi::general_result().number,
+            };
+            self.evaluate(return_expression, function.return_type, result)?;
+        }
         let epilogue = self.output.instructions.len();
         for branch in return_branches {
             if let Instruction::Branch { target } = &mut self.output.instructions[branch] {
@@ -332,7 +548,54 @@ impl Generator {
         // both collapse to direct instruction offsets. Build 163 exposes those
         // otherwise-hidden labels through the later unwind-symbol ordinal.
         self.output.anonymous_label_bump += structured_hidden_label_count(&function.statements);
+        if dense_inline_save {
+            self.output.instructions.extend([
+                Instruction::LoadMultipleWord {
+                    d: first_saved as u8,
+                    a: 1,
+                    offset: plan.frame_size - 4 * count as i16,
+                },
+                Instruction::LoadWord {
+                    d: 0,
+                    a: 1,
+                    offset: plan.frame_size + 4,
+                },
+                Instruction::AddImmediate {
+                    d: 1,
+                    a: 1,
+                    immediate: plan.frame_size,
+                },
+                Instruction::MoveToLinkRegister { s: 0 },
+                Instruction::BranchToLinkRegister,
+            ]);
+        } else if dense_save_helper {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 11,
+                a: 1,
+                immediate: plan.frame_size,
+            });
+            let helper = format!("_restgpr_{first_saved}");
+            self.record_relocation(RelocationKind::Rel24, &helper);
+            self.output
+                .instructions
+                .push(Instruction::BranchAndLink { target: helper });
+            self.output.instructions.extend([
+                Instruction::LoadWord {
+                    d: 0,
+                    a: 1,
+                    offset: plan.frame_size + 4,
+                },
+                Instruction::MoveToLinkRegister { s: 0 },
+                Instruction::AddImmediate {
+                    d: 1,
+                    a: 1,
+                    immediate: plan.frame_size,
+                },
+                Instruction::BranchToLinkRegister,
+            ]);
+        } else {
         self.emit_epilogue_and_return();
+        }
         self.schedule_legacy_inline_expansion_residue();
         Ok(true)
     }
@@ -386,12 +649,14 @@ impl Generator {
                             };
                             let (options, condition_bit) = match retained_assertion_condition {
                                 Some(condition) => condition,
-                                None => self.emit_condition_test(term).map_err(|mut diagnostic| {
+                                None => {
+                                    self.emit_condition_test(term).map_err(|mut diagnostic| {
                                     diagnostic.message.push_str(&format!(
                                         " (in structured if condition {statement_index})"
                                     ));
                                     diagnostic
-                                })?,
+                                    })?
+                                }
                             };
                             if statement_index == 0 && term_index == 0 {
                                 if let Some(alias) = entry_alias.as_ref() {
@@ -420,12 +685,10 @@ impl Generator {
                         }
                         Ok(branches)
                     })();
-                    let carry_fallthrough_cache =
-                        matches!(
+                    let carry_fallthrough_cache = matches!(
                             then_body.last(),
                             Some(Statement::Return(None) | Statement::Goto(_))
-                        )
-                            && matches!(
+                    ) && matches!(
                                 statements.get(statement_index + 1),
                                 Some(Statement::If { else_body, .. }) if else_body.is_empty()
                             );
@@ -472,6 +735,17 @@ impl Generator {
                         carried_condition_cache_restore = Some((previous, previous_float));
                     }
                 }
+                Statement::Return(Some(value)) => {
+                    let result = match function.return_type {
+                        Type::Float | Type::Double => Eabi::float_result().number,
+                        _ => Eabi::general_result().number,
+                    };
+                    self.evaluate(value, function.return_type, result)?;
+                    return_branches.push(self.output.instructions.len());
+                    self.output
+                        .instructions
+                        .push(Instruction::Branch { target: 0 });
+                }
                 Statement::Return(None) => {
                     return_branches.push(self.output.instructions.len());
                     self.output
@@ -496,10 +770,18 @@ impl Generator {
                     }
                 }
                 Statement::Assign { name, value } => {
-                    let local = function
+                    let declared_type = function
                         .locals
                         .iter()
                         .find(|local| &local.name == name)
+                        .map(|local| local.declared_type)
+                        .or_else(|| {
+                            function
+                                .parameters
+                                .iter()
+                                .find(|parameter| &parameter.name == name)
+                                .map(|parameter| parameter.parameter_type)
+                        })
                         .expect("eligibility checked");
                     let destination = self
                         .locations
@@ -508,7 +790,60 @@ impl Generator {
                             Diagnostic::error("structured assignment has no register home")
                         })?
                         .register;
-                    self.evaluate(value, local.declared_type, destination)
+                    let handled_computed_address =
+                        if let (
+                            Type::StructPointer { element_size },
+                            Expression::AddressOf { operand },
+                        ) = (declared_type, value)
+                        {
+                            if let Expression::Index { base, index } = operand.as_ref() {
+                                if let (
+                                    Expression::Variable(global),
+                                    Expression::Variable(index_name),
+                                ) = (base.as_ref(), index.as_ref())
+                                {
+                                    if self.global_array_sizes.contains_key(global) {
+                                        let index_register = self.lookup_general(index_name).ok_or_else(|| {
+                                            Diagnostic::error("structured computed address index has no register")
+                                        })?;
+                                        let high = self.fresh_virtual_general();
+                                        let scaled = self.fresh_virtual_general();
+                                        self.emit_address_high(high, global);
+                                        emit_scaled_index(
+                                            &mut self.output.instructions,
+                                            scaled,
+                                            index_register,
+                                            element_size,
+                                        )?;
+                                        self.record_relocation(RelocationKind::Addr16Lo, global);
+                                        self.output.instructions.push(Instruction::AddImmediate {
+                                            d: GENERAL_SCRATCH,
+                                            a: high,
+                                            immediate: 0,
+                                        });
+                                        self.output.instructions.push(Instruction::Add {
+                                            d: destination,
+                                            a: GENERAL_SCRATCH,
+                                            b: scaled,
+                                        });
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        };
+                    if handled_computed_address {
+                        Ok(())
+                    } else {
+                        self.evaluate(value, declared_type, destination)
+                    }
                         .map_err(|mut diagnostic| {
                             diagnostic.message.push_str(&format!(
                                 " (in structured assignment statement {statement_index})"
@@ -568,10 +903,17 @@ fn supports_statements(statements: &[Statement], function: &Function) -> bool {
     statements.iter().all(|statement| match statement {
         Statement::Store { .. }
         | Statement::Expression(_)
+        | Statement::Return(Some(_))
         | Statement::Return(None)
         | Statement::Goto(_)
         | Statement::Label(_) => true,
-        Statement::Assign { name, .. } => function.locals.iter().any(|local| &local.name == name),
+        Statement::Assign { name, .. } => {
+            function.locals.iter().any(|local| &local.name == name)
+                || function
+                    .parameters
+                    .iter()
+                    .any(|parameter| &parameter.name == name)
+        }
         Statement::If {
             then_body,
             else_body,

@@ -150,7 +150,9 @@ pub(super) fn plan_ephemeral_locals<'a>(
         .locals
         .iter()
         .filter(|local| {
-            live.contains(local.name.as_str()) && !survivors.contains(local.name.as_str())
+            local.array_length.is_none()
+                && live.contains(local.name.as_str())
+                && !survivors.contains(local.name.as_str())
         })
         .collect();
     if ephemeral.iter().any(|local| {

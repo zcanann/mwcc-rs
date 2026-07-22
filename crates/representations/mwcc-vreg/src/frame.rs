@@ -28,7 +28,15 @@ pub struct FramePlan {
 impl FramePlan {
     /// A plan for `count` saved registers: the standard 16-byte-aligned size.
     pub fn sized_for(saved: Vec<u8>) -> FramePlan {
-        let frame_size = ((8 + 4 * saved.len() as i16 + 15) / 16) * 16;
+        Self::with_local_region(saved, 0)
+    }
+
+    /// Compose the linkage area, a caller-laid-out local region, and the saved
+    /// GPR suffix into one 16-byte-aligned frame. Local slots grow upward from
+    /// r1+8; saved homes grow downward from the top of the frame.
+    pub fn with_local_region(saved: Vec<u8>, local_bytes: i16) -> FramePlan {
+        debug_assert!(local_bytes >= 0);
+        let frame_size = ((8 + local_bytes + 4 * saved.len() as i16 + 15) / 16) * 16;
         FramePlan { frame_size, saved }
     }
 
@@ -119,6 +127,20 @@ mod tests {
                 Instruction::AddImmediate { d: 1, a: 1, immediate: 16 },
                 Instruction::BranchToLinkRegister,
             ]
+        );
+    }
+
+    #[test]
+    fn local_region_composes_below_saved_homes() {
+        let plan = FramePlan::with_local_region(vec![26, 27, 28, 29, 30, 31], 5);
+        assert_eq!(plan.frame_size, 48);
+        assert_eq!(
+            plan.prologue().last(),
+            Some(&Instruction::StoreWord {
+                s: 31,
+                a: 1,
+                offset: 24,
+            })
         );
     }
 

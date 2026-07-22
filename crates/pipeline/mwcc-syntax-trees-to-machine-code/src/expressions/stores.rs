@@ -303,9 +303,44 @@ impl Generator {
                 return Ok(());
             }
         }
-        // `g[index] = value;` where `g` is a file-scope array global.
+        // `local[index] = value` for a frame-resident array. Constant indices
+        // fold to a displacement from r1; the array's pointer-shaped location
+        // supplies its element width while value-position evaluation still
+        // decays the variable to the slot address.
         if let Expression::Index { base, index } = target {
             if let Expression::Variable(name) = base.as_ref() {
+                if let Some(slot) = self
+                    .frame_slots
+                    .get(name.as_str())
+                    .copied()
+                    .filter(|slot| slot.is_array)
+                {
+                    let Some(element) = self
+                        .locations
+                        .get(name.as_str())
+                        .and_then(|location| location.pointee)
+                    else {
+                        return Err(Diagnostic::error(
+                            "frame array is missing its element type",
+                        ));
+                    };
+                    let Some(index) = constant_value(index) else {
+                        return Err(Diagnostic::error(
+                            "a variable-index frame-array store is not supported yet (roadmap)",
+                        ));
+                    };
+                    let offset = i16::try_from(
+                        i64::from(slot.offset) + index * i64::from(element.size()),
+                    )
+                    .map_err(|_| Diagnostic::error("frame-array store offset is out of range"))?;
+                    let source = self.place_store_value(value, element)?;
+                    self.output
+                        .instructions
+                        .push(displacement_store(element, source, 1, offset)?);
+                    self.written_slots.insert(offset);
+                    return Ok(());
+                }
+                // `g[index] = value;` where `g` is a file-scope array global.
                 if let Some(&total_size) = self.global_array_sizes.get(name.as_str()) {
                     return self.emit_global_array_store(name, total_size, index, value);
                 }

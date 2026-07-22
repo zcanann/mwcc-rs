@@ -315,7 +315,7 @@ impl<'a> GuardedComputedSurvivor<'a> {
     }
 }
 
-fn emit_scaled_index(
+pub(super) fn emit_scaled_index(
     instructions: &mut Vec<Instruction>,
     destination: u8,
     source: u8,

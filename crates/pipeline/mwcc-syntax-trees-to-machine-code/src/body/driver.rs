@@ -2239,6 +2239,9 @@ impl Generator {
         {
             return Ok(());
         }
+        if self.try_callee_saved_structured_frame_body(function)? {
+            return Ok(());
+        }
         if self.try_frame_resident(function)? {
             return Ok(());
         }
