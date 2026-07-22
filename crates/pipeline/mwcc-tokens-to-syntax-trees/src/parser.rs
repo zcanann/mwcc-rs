@@ -5,6 +5,14 @@ use mwcc_syntax_trees::{Pointee, SourceFundamentalType, Type};
 use mwcc_tokens::{SourceLocation, Token};
 use std::collections::HashMap;
 
+#[derive(Clone, Copy)]
+pub(crate) struct PragmaState {
+    pub(crate) cplusplus: bool,
+    pub(crate) defer_codegen: bool,
+    pub(crate) force_active: bool,
+    pub(crate) peephole_disabled: bool,
+}
+
 /// One resolved struct member: its type and byte offset within the struct, plus
 /// the struct tag it points to when the member is itself a struct pointer (so
 /// chained access `a->b->c` resolves), or the element type when it is an array.
@@ -459,7 +467,7 @@ pub(crate) struct Parser {
     /// symbol names (push/pop scope the switch).
     pub(crate) default_cplusplus: bool,
     pub(crate) cplusplus: bool,
-    pub(crate) cplusplus_stack: Vec<bool>,
+    pub(crate) pragma_stack: Vec<PragmaState>,
     /// Active named C++ namespaces, outermost first. Top-level namespace braces
     /// are declaration containers; this stack supplies CodeWarrior's `Qn`
     /// qualification when member symbols are mangled.

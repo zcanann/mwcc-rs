@@ -39,7 +39,8 @@ const STB_WEAK_FUNC: u8 = (2 << 4) | 2; // STB_WEAK | STT_FUNC (__declspec(weak)
 const STB_WEAK_OBJECT: u8 = (2 << 4) | 1; // STB_WEAK | STT_OBJECT (an inline's static local)
 const STB_LOCAL_FUNC: u8 = 2; // STB_LOCAL | STT_FUNC (a `static` function)
 /// A `.comment` per-symbol attribute set by `#pragma force_active on` — stamped on
-/// the function symbol and its inline-`asm` `entry` symbols (animal_crossing runtime.c).
+/// the function symbol, its compiler-created constants, and inline-`asm` `entry`
+/// symbols (animal_crossing runtime.c).
 const FORCE_ACTIVE_FLAG: u32 = 0x0008_0000;
 const STB_GLOBAL_OBJECT: u8 = (1 << 4) | 1; // STB_GLOBAL | STT_OBJECT (a defined global)
 const STB_GLOBAL_NOTYPE: u8 = 1 << 4; // STB_GLOBAL | STT_NOTYPE (undefined external)
@@ -1778,7 +1779,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         } else {
                             constant.byte_width as u32
                         },
-                        0,
+                        if function.force_active {
+                            FORCE_ACTIVE_FLAG
+                        } else {
+                            0
+                        },
                     ));
                 }
             }
