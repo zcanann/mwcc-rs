@@ -2,11 +2,12 @@
 //!
 //! This phase owns physical source discovery and selection: it resolves
 //! `#include` directives against the including file and the driver's ordered
-//! access paths, evaluates conditional directives, and emits one byte-preserving
-//! source buffer. Token-level macro substitution remains a later frontend
-//! responsibility; filesystem policy never leaks into the lexer or parser.
+//! access paths, evaluates conditional directives and object-like macros, and
+//! emits one byte-preserving source buffer. Filesystem policy never leaks into
+//! the lexer or parser.
 
 mod condition;
+mod object_macros;
 
 use mwcc_core::{Compilation, Diagnostic};
 use std::collections::{HashMap, HashSet};
@@ -16,6 +17,7 @@ use std::path::{Path, PathBuf};
 pub struct SourceLoader {
     access_paths: Vec<PathBuf>,
     definitions: HashMap<String, String>,
+    object_macros: HashMap<String, Vec<u8>>,
 }
 
 impl SourceLoader {
@@ -23,15 +25,21 @@ impl SourceLoader {
         Self {
             access_paths,
             definitions: HashMap::new(),
+            object_macros: HashMap::new(),
         }
     }
 
     pub fn define(&mut self, name: impl Into<String>, value: impl Into<String>) {
-        self.definitions.insert(name.into(), value.into());
+        let name = name.into();
+        let value = value.into();
+        self.object_macros
+            .insert(name.clone(), value.as_bytes().to_vec());
+        self.definitions.insert(name, value);
     }
 
     pub fn undefine(&mut self, name: &str) {
         self.definitions.remove(name);
+        self.object_macros.remove(name);
     }
 
     /// Load `input` and recursively materialize every resolvable include.
@@ -55,6 +63,7 @@ impl SourceLoader {
             access_paths: &access_paths,
             loaded: HashSet::new(),
             definitions: self.definitions.clone(),
+            object_macros: self.object_macros.clone(),
         };
         context.load_file(&input)
     }
@@ -64,6 +73,7 @@ struct LoadContext<'a> {
     access_paths: &'a [PathBuf],
     loaded: HashSet<PathBuf>,
     definitions: HashMap<String, String>,
+    object_macros: HashMap<String, Vec<u8>>,
 }
 
 impl LoadContext<'_> {
@@ -80,6 +90,7 @@ impl LoadContext<'_> {
         let mut output = Vec::with_capacity(source.len());
         let mut conditional = Vec::new();
         let mut directive_continuation = false;
+        let mut lexical_state = object_macros::LexicalState::default();
         for line in physical_lines(&source) {
             if directive_continuation {
                 directive_continuation = line_continues(line);
@@ -94,8 +105,27 @@ impl LoadContext<'_> {
                 if !is_active(&conditional) {
                     continue;
                 }
-                if let Some((name, value)) = parse_define(directive) {
-                    self.definitions.insert(name.to_string(), value.to_string());
+                if let Some(definition) = parse_define(directive) {
+                    self.definitions.insert(
+                        definition.name.to_string(),
+                        if directive_continuation {
+                            "1".to_string()
+                        } else {
+                            definition.conditional_value.to_string()
+                        },
+                    );
+                    // A continued replacement needs logical-line assembly. Do
+                    // not publish a truncated value ending in `\`; it is safer
+                    // to leave those tokens for the later frontend until that
+                    // distinct preprocessing feature is implemented.
+                    if !directive_continuation {
+                        if let Some(replacement) = definition.object_replacement {
+                            self.object_macros.insert(
+                                definition.name.to_string(),
+                                replacement.as_bytes().to_vec(),
+                            );
+                        }
+                    }
                     output.extend_from_slice(line);
                     continue;
                 }
@@ -105,6 +135,7 @@ impl LoadContext<'_> {
                     .and_then(directive_name)
                 {
                     self.definitions.remove(name);
+                    self.object_macros.remove(name);
                     output.extend_from_slice(line);
                     continue;
                 }
@@ -112,7 +143,11 @@ impl LoadContext<'_> {
                 continue;
             }
             let Some(include) = parse_include(line) else {
-                output.extend_from_slice(line);
+                output.extend(object_macros::expand_line(
+                    line,
+                    &self.object_macros,
+                    &mut lexical_state,
+                ));
                 continue;
             };
             let Some(included_path) = self.resolve_include(&canonical, &include) else {
@@ -250,7 +285,13 @@ fn directive_name(text: &str) -> Option<&str> {
         .filter(|name| !name.is_empty())
 }
 
-fn parse_define(directive: &str) -> Option<(&str, &str)> {
+struct MacroDefinition<'a> {
+    name: &'a str,
+    conditional_value: &'a str,
+    object_replacement: Option<&'a str>,
+}
+
+fn parse_define(directive: &str) -> Option<MacroDefinition<'_>> {
     let argument = directive
         .strip_prefix("define")
         .and_then(directive_argument)?;
@@ -262,14 +303,26 @@ fn parse_define(directive: &str) -> Option<(&str, &str)> {
     if name.is_empty() {
         return None;
     }
-    // Function-like macros count as defined but are not integer-valued in `#if`.
     let rest = &argument[name_end..];
-    let value = if rest.starts_with('(') {
-        "1"
-    } else {
-        rest.trim().split("//").next().unwrap_or_default().trim()
-    };
-    Some((name, if value.is_empty() { "1" } else { value }))
+    // Function-like macros count as defined but are neither integer-valued in
+    // `#if` nor eligible for object-like expansion.
+    if rest.starts_with('(') {
+        return Some(MacroDefinition {
+            name,
+            conditional_value: "1",
+            object_replacement: None,
+        });
+    }
+    let replacement = rest.trim().split("//").next().unwrap_or_default().trim();
+    Some(MacroDefinition {
+        name,
+        conditional_value: if replacement.is_empty() {
+            "1"
+        } else {
+            replacement
+        },
+        object_replacement: Some(replacement),
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -468,5 +521,53 @@ mod tests {
             .load(&scratch.0.join("unit.c"))
             .unwrap();
         assert_eq!(loaded, b"#define BODY(x) do { \\\n\n\nint f(void);\n");
+    }
+
+    #[test]
+    fn continued_object_macros_are_not_partially_substituted() {
+        let scratch = Scratch::new();
+        std::fs::write(
+            scratch.0.join("unit.c"),
+            b"#define PAIR 1, \\\n2\nint values[] = { PAIR };\n",
+        )
+        .unwrap();
+
+        let loaded = SourceLoader::default()
+            .load(&scratch.0.join("unit.c"))
+            .unwrap();
+        assert_eq!(loaded, b"#define PAIR 1, \\\n\nint values[] = { PAIR };\n");
+    }
+
+    #[test]
+    fn object_macros_expand_and_function_macros_remain_for_the_frontend() {
+        let scratch = Scratch::new();
+        std::fs::write(
+            scratch.0.join("unit.c"),
+            concat!(
+                "#define NULL ((void*)0)\n",
+                "#define CALL(x) use(x)\n",
+                "void *first = NULL;\n",
+                "void *second = CALL(NULL);\n",
+                "#undef NULL\n",
+                "void *third = NULL;\n"
+            ),
+        )
+        .unwrap();
+
+        let loaded = SourceLoader::default()
+            .load(&scratch.0.join("unit.c"))
+            .unwrap();
+        assert_eq!(
+            loaded,
+            concat!(
+                "#define NULL ((void*)0)\n",
+                "#define CALL(x) use(x)\n",
+                "void *first = ((void*)0);\n",
+                "void *second = CALL(((void*)0));\n",
+                "#undef NULL\n",
+                "void *third = NULL;\n"
+            )
+            .as_bytes()
+        );
     }
 }
