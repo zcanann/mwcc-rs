@@ -1166,6 +1166,77 @@ blr\n\
     }
 
     #[test]
+    fn passes_an_embedded_aggregate_member_by_address_as_implicit_this() {
+        let source = r#"
+            class Inner {
+            public:
+                int payload;
+                void Init(int);
+            };
+            class Outer {
+            public:
+                int prefix;
+                Inner inner;
+            };
+            void compiled(Outer* outer) { outer->inner.Init(7); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].statements[0],
+            Statement::Expression(Expression::Call { arguments, .. })
+                if matches!(
+                    arguments.first(),
+                    Some(Expression::AddressOf { operand })
+                        if matches!(operand.as_ref(), Expression::Member { offset: 4, .. })
+                )
+        ));
+    }
+
+    #[test]
+    fn retains_embedded_member_value_identity_for_inline_scalarization() {
+        let source = r#"
+            class Inner {
+            public:
+                int payload;
+                void Set(int value) { payload = value; }
+            };
+            class Outer {
+            public:
+                int prefix;
+                Inner inner;
+            };
+            void compiled(Outer* outer) { outer->inner.Set(7); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].statements[0],
+            Statement::Expression(Expression::Call { arguments, .. })
+                if matches!(
+                    arguments.first(),
+                    Some(Expression::Member {
+                        member_type: Type::Struct { .. },
+                        offset: 4,
+                        ..
+                    })
+                )
+        ));
+    }
+
+    #[test]
     fn does_not_skip_an_emitting_template_member_specialization() {
         let source = r#"
             template <int N, typename T>

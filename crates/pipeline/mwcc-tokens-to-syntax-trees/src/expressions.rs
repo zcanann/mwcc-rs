@@ -1434,14 +1434,30 @@ impl Parser {
         object: Expression,
         mut arguments: Vec<Expression>,
     ) -> Compilation<Expression> {
-        let concrete_object = matches!(
+        let embedded_aggregate_object = matches!(
             &object,
-            Expression::Variable(name)
-                if matches!(
-                    self.variable_types.get(name).or_else(|| self.global_types.get(name)),
-                    Some(Type::Struct { .. })
-                )
+            Expression::Member {
+                member_type: Type::Struct { .. },
+                ..
+            }
         );
+        let concrete_object = match &object {
+            Expression::Variable(name) => matches!(
+                self.variable_types
+                    .get(name)
+                    .or_else(|| self.global_types.get(name)),
+                Some(Type::Struct { .. })
+            ),
+            // `outer->inner.Method()` names the embedded aggregate value. The
+            // implicit object argument is its address, just as for a named
+            // aggregate variable; passing the value would ask codegen to load
+            // an entire struct into one GPR.
+            Expression::Member {
+                member_type: Type::Struct { .. },
+                ..
+            } => true,
+            _ => false,
+        };
         let Some(member_call) = self.resolve_instance_member_call(class, member, &arguments)? else {
             if let Some(copy) = self.lower_three_component_copy_setter(
                 class,
@@ -1464,7 +1480,12 @@ impl Parser {
                 if is_inline {
                     self.skipped_inline_names.insert(name.clone());
                 }
-                let object = concrete_object
+                // Retained inline aggregate setters are scalarized after
+                // substitution and therefore keep the member value identity.
+                // An out-of-line method needs the actual implicit object
+                // pointer. Named aggregate variables already used the latter
+                // representation for both paths.
+                let object = (concrete_object && (!is_inline || !embedded_aggregate_object))
                     .then(|| Expression::AddressOf {
                         operand: Box::new(object.clone()),
                     })
@@ -1485,8 +1506,12 @@ impl Parser {
                     if direct_is_inline {
                         self.skipped_inline_names.insert(name.clone());
                     }
-                    let object = Expression::AddressOf {
-                        operand: Box::new(object),
+                    let object = if direct_is_inline && embedded_aggregate_object {
+                        object
+                    } else {
+                        Expression::AddressOf {
+                            operand: Box::new(object),
+                        }
                     };
                     arguments.insert(0, adjust_cxx_object(object, this_adjustment));
                     Expression::Call { name, arguments }

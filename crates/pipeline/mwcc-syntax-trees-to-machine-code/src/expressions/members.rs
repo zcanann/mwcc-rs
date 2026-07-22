@@ -149,8 +149,11 @@ impl Generator {
                 destination
             };
             self.emit_member_load(inner, *inner_offset, *inner_type, None, pointer)?;
-            let pointee = pointee_of_type(member_type)
-                .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
+            let pointee = pointee_of_type(member_type).ok_or_else(|| {
+                Diagnostic::error(format!(
+                    "unsupported nested-pointer member load type {member_type:?} at +{offset}"
+                ))
+            })?;
             let displacement = self.emit_member_base_adjustment(pointer, offset);
             self.output.instructions.push(displacement_load(
                 pointee,
@@ -204,8 +207,11 @@ impl Generator {
         };
         if let Some(name) = frame_aggregate_name {
             if let Some(slot) = self.frame_slots.get(name) {
-                let pointee = pointee_of_type(member_type)
-                    .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
+                let pointee = pointee_of_type(member_type).ok_or_else(|| {
+                    Diagnostic::error(format!(
+                        "unsupported frame member load type {member_type:?} at +{offset}"
+                    ))
+                })?;
                 let displacement = i16::try_from(i64::from(slot.offset) + i64::from(offset))
                     .map_err(|_| {
                         Diagnostic::error("frame struct member offset out of range (roadmap)")
@@ -229,8 +235,11 @@ impl Generator {
                     Some(Type::StructPointer { .. })
                 )
             {
-                let pointee = pointee_of_type(member_type)
-                    .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
+                let pointee = pointee_of_type(member_type).ok_or_else(|| {
+                    Diagnostic::error(format!(
+                        "unsupported global-pointer member load type {member_type:?} at +{offset}"
+                    ))
+                })?;
                 if let Some(base) = self.condition_global_base(name)? {
                     let displacement = self.emit_member_base_adjustment(base, offset);
                     self.output.instructions.push(displacement_load(
@@ -272,8 +281,11 @@ impl Generator {
             // scratch r0 (it is then its own load base).
             if !self.locations.contains_key(name.as_str()) {
                 if let Some(Type::Struct { size, .. }) = self.globals.get(name.as_str()).copied() {
-                    let pointee = pointee_of_type(member_type)
-                        .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
+                    let pointee = pointee_of_type(member_type).ok_or_else(|| {
+                        Diagnostic::error(format!(
+                            "unsupported global-value member load type {member_type:?} at +{offset}"
+                        ))
+                    })?;
                     // An offset-0 member of a *small* (SDA-addressed, <= 8 byte) global
                     // struct folds to a single SDA21 load — `lwz d, g@sda21` — exactly
                     // like a scalar global of the member's type (`displacement_load`
@@ -347,8 +359,11 @@ impl Generator {
                 }
             }
         }
-        let pointee = pointee_of_type(member_type)
-            .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
+        let pointee = pointee_of_type(member_type).ok_or_else(|| {
+            Diagnostic::error(format!(
+                "unsupported direct member load type {member_type:?} at +{offset} from {base:?}"
+            ))
+        })?;
         // `get()->field`: a member access on a struct-pointer-returning call. Emitting it directly
         // here (call, then the member load) is byte-exact for a TERMINAL value — `return get()->x`,
         // `g = get()->x`, `foo(get()->x)` — but a trailing in-place op (`get()->x + C` → `addi`)
@@ -419,8 +434,11 @@ impl Generator {
                     immediate,
                 });
         }
-        let pointee = pointee_of_type(member_type)
-            .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
+        let pointee = pointee_of_type(member_type).ok_or_else(|| {
+            Diagnostic::error(format!(
+                "unsupported indexed member load type {member_type:?} at +{offset}"
+            ))
+        })?;
         if offset == 0 {
             self.output.instructions.push(indexed_load(
                 pointee,
@@ -462,8 +480,11 @@ impl Generator {
         member_type: Type,
         destination: u8,
     ) -> Compilation<()> {
-        let pointee = pointee_of_type(member_type)
-            .ok_or_else(|| Diagnostic::error("unsupported struct member type"))?;
+        let pointee = pointee_of_type(member_type).ok_or_else(|| {
+            Diagnostic::error(format!(
+                "unsupported global indexed member load type {member_type:?} at +{offset}"
+            ))
+        })?;
         // A constant index folds into the load displacement.
         if let Some(constant) = constant_value(index) {
             // A nonzero-sized aggregate needs a real GPR base; r0 reads as literal
