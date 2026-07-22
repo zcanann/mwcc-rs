@@ -8,6 +8,118 @@
 #[allow(unused_imports)]
 use super::*;
 
+pub(super) struct DeferredSavedHomePlan {
+    group_by_name: std::collections::HashMap<String, usize>,
+    pub(super) group_count: usize,
+}
+
+impl DeferredSavedHomePlan {
+    pub(super) fn group(&self, name: &str) -> usize {
+        self.group_by_name[name]
+    }
+}
+
+/// Color single-assignment locals whose initialization remains in the body.
+/// Two locals may share a callee-saved home only when the first one's final
+/// textual read precedes the second one's sole assignment. Structured bodies
+/// have no loops or backward branches, so that source-order proof is also a
+/// control-flow-safe non-overlap proof.
+pub(super) fn plan_deferred_saved_homes(
+    function: &Function,
+    locals: &[&LocalDeclaration],
+) -> Option<DeferredSavedHomePlan> {
+    let mut intervals = Vec::with_capacity(locals.len());
+    for local in locals {
+        let mut cursor = 0usize;
+        let mut interval = DeferredInterval::default();
+        collect_deferred_interval(
+            &function.statements,
+            &local.name,
+            &mut cursor,
+            &mut interval,
+        )?;
+        if interval.assignment_count != 1 {
+            return None;
+        }
+        let first_assignment = interval.first_assignment?;
+        let last_read = interval.last_read.unwrap_or(first_assignment);
+        if last_read < first_assignment {
+            return None;
+        }
+        intervals.push((local.name.as_str(), first_assignment, last_read));
+    }
+    intervals.sort_by_key(|(_, first_assignment, _)| *first_assignment);
+
+    let mut group_last_reads = Vec::<usize>::new();
+    let mut group_by_name = std::collections::HashMap::new();
+    for (name, first_assignment, last_read) in intervals {
+        let group = group_last_reads
+            .iter()
+            .position(|previous_last_read| *previous_last_read < first_assignment)
+            .unwrap_or_else(|| {
+                group_last_reads.push(0);
+                group_last_reads.len() - 1
+            });
+        group_last_reads[group] = last_read;
+        group_by_name.insert(name.to_owned(), group);
+    }
+    Some(DeferredSavedHomePlan {
+        group_count: group_last_reads.len(),
+        group_by_name,
+    })
+}
+
+#[derive(Default)]
+struct DeferredInterval {
+    first_assignment: Option<usize>,
+    last_read: Option<usize>,
+    assignment_count: usize,
+}
+
+fn collect_deferred_interval(
+    statements: &[Statement],
+    name: &str,
+    cursor: &mut usize,
+    interval: &mut DeferredInterval,
+) -> Option<()> {
+    for statement in statements {
+        *cursor += 1;
+        let position = *cursor;
+        let reads = match statement {
+            Statement::Store { target, value } => {
+                expression_reads_name(target, name) || expression_reads_name(value, name)
+            }
+            Statement::Assign { value, .. }
+            | Statement::Expression(value)
+            | Statement::Return(Some(value)) => expression_reads_name(value, name),
+            Statement::If { condition, .. } => expression_reads_name(condition, name),
+            Statement::Return(None)
+            | Statement::Break
+            | Statement::Continue
+            | Statement::Goto(_)
+            | Statement::Label(_) => false,
+            Statement::Switch { .. } | Statement::Loop { .. } => return None,
+        };
+        if reads {
+            interval.last_read = Some(position);
+        }
+        if matches!(statement, Statement::Assign { name: assigned, .. } if assigned == name) {
+            interval.assignment_count += 1;
+            interval.first_assignment.get_or_insert(position);
+        }
+        if let Statement::If {
+            then_body,
+            else_body,
+            ..
+        } = statement
+        {
+            collect_deferred_interval(then_body, name, cursor, interval)?;
+            collect_deferred_interval(else_body, name, cursor, interval)?;
+        }
+    }
+    Some(())
+}
+
 pub(super) fn plan_ephemeral_locals<'a>(
     function: &'a Function,
     survivors: &std::collections::HashSet<&str>,
@@ -305,5 +417,96 @@ mod tests {
         });
 
         assert!(plan_ephemeral_locals(&function, &std::collections::HashSet::new()).is_none());
+    }
+
+    #[test]
+    fn coalesces_disjoint_deferred_saved_local_lifetimes() {
+        let mut first = local("first", Expression::IntegerLiteral(0));
+        first.initializer = None;
+        let mut second = local("second", Expression::IntegerLiteral(0));
+        second.initializer = None;
+        let function = Function {
+            return_type: Type::Void,
+            name: "compiled".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: vec![first, second],
+            statements: vec![
+                Statement::Assign {
+                    name: "first".into(),
+                    value: Expression::IntegerLiteral(1),
+                },
+                Statement::Expression(Expression::Call {
+                    name: "consume".into(),
+                    arguments: vec![Expression::Variable("first".into())],
+                }),
+                Statement::Assign {
+                    name: "second".into(),
+                    value: Expression::IntegerLiteral(2),
+                },
+                Statement::Expression(Expression::Call {
+                    name: "consume".into(),
+                    arguments: vec![Expression::Variable("second".into())],
+                }),
+            ],
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+        let locals: Vec<_> = function.locals.iter().collect();
+        let plan = plan_deferred_saved_homes(&function, &locals).unwrap();
+        assert_eq!(plan.group_count, 1);
+        assert_eq!(plan.group("first"), plan.group("second"));
+    }
+
+    #[test]
+    fn separates_overlapping_deferred_saved_local_lifetimes() {
+        let mut first = local("first", Expression::IntegerLiteral(0));
+        first.initializer = None;
+        let mut second = local("second", Expression::IntegerLiteral(0));
+        second.initializer = None;
+        let function = Function {
+            return_type: Type::Void,
+            name: "compiled".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: vec![first, second],
+            statements: vec![
+                Statement::Assign {
+                    name: "first".into(),
+                    value: Expression::IntegerLiteral(1),
+                },
+                Statement::Assign {
+                    name: "second".into(),
+                    value: Expression::IntegerLiteral(2),
+                },
+                Statement::Expression(Expression::Call {
+                    name: "consume".into(),
+                    arguments: vec![
+                        Expression::Variable("first".into()),
+                        Expression::Variable("second".into()),
+                    ],
+                }),
+            ],
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+        let locals: Vec<_> = function.locals.iter().collect();
+        let plan = plan_deferred_saved_homes(&function, &locals).unwrap();
+        assert_eq!(plan.group_count, 2);
+        assert_ne!(plan.group("first"), plan.group("second"));
     }
 }

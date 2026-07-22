@@ -5,7 +5,9 @@
 //! statement is representable by the shared store/call emitter plus forward
 //! `if` branches; unsupported control flow declines before emitting anything.
 
-use super::structured_locals::{is_definitely_assigned_before_reads, plan_ephemeral_locals};
+use super::structured_locals::{
+    is_definitely_assigned_before_reads, plan_deferred_saved_homes, plan_ephemeral_locals,
+};
 #[allow(unused_imports)]
 use super::*;
 
@@ -42,8 +44,9 @@ impl Generator {
                 read_after_possible_call(&function.statements, name, false).read_after_call
             })
             .collect();
-        // Local lifetimes rank ahead of incoming parameters. Within the incoming
-        // set, MWCC assigns the last parameter the highest home (r31 downward).
+        // Entry-initialized locals rank ahead of incoming parameters. Deferred
+        // locals introduced by nested declarations or inline expansion rank
+        // after them and may share a home when their lifetimes do not overlap.
         let saved_locals: Vec<&LocalDeclaration> = function
             .locals
             .iter()
@@ -74,8 +77,18 @@ impl Generator {
         let Some(ephemeral_locals) = plan_ephemeral_locals(function, &survivors) else {
             return Ok(false);
         };
+        let (eager_saved_locals, deferred_saved_locals): (Vec<_>, Vec<_>) = saved_locals
+            .into_iter()
+            .partition(|local| local.initializer.is_some());
+        let Some(deferred_home_plan) =
+            plan_deferred_saved_homes(function, &deferred_saved_locals)
+        else {
+            return Ok(false);
+        };
 
-        let count = saved_locals.len() + saved_parameters.len();
+        let count = eager_saved_locals.len()
+            + saved_parameters.len()
+            + deferred_home_plan.group_count;
         let homes: Vec<u8> = (0..count).map(|_| self.fresh_virtual_general()).collect();
         let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
         self.non_leaf = true;
@@ -98,7 +111,7 @@ impl Generator {
         ]);
 
         let mut home_index = 0;
-        for local in saved_locals {
+        for local in eager_saved_locals {
             let home = homes[home_index];
             home_index += 1;
             let slot = home_index as i16;
@@ -107,9 +120,11 @@ impl Generator {
                 a: 1,
                 offset: plan.frame_size - 4 * slot,
             });
-            if let Some(initializer) = &local.initializer {
-                self.evaluate(initializer, local.declared_type, home)?;
-            }
+            self.evaluate(
+                local.initializer.as_ref().expect("partitioned as eager"),
+                local.declared_type,
+                home,
+            )?;
             self.locations.insert(
                 local.name.clone(),
                 Location {
@@ -144,6 +159,34 @@ impl Generator {
                 .instructions
                 .push(Instruction::move_register(home, incoming));
             saved_parameter_homes.push((parameter.name.clone(), home));
+        }
+        let deferred_home_base = home_index;
+        for group in 0..deferred_home_plan.group_count {
+            let slot_index = deferred_home_base + group;
+            let home = homes[slot_index];
+            self.output.instructions.push(Instruction::StoreWord {
+                s: home,
+                a: 1,
+                offset: plan.frame_size - 4 * (slot_index as i16 + 1),
+            });
+        }
+        for local in deferred_saved_locals {
+            let group = deferred_home_plan.group(&local.name);
+            let home = homes[deferred_home_base + group];
+            self.locations.insert(
+                local.name.clone(),
+                Location {
+                    class: ValueClass::General,
+                    register: home,
+                    signed: self.signed_of(local.declared_type),
+                    width: local.declared_type.width(),
+                    pointee: match local.declared_type {
+                        Type::Pointer(pointee) => Some(pointee),
+                        _ => None,
+                    },
+                    stride: pointer_stride(local.declared_type),
+                },
+            );
         }
         // Initializers are evaluated at declaration time, while an incoming
         // parameter still has its entry-register alias. MWCC can preserve that
