@@ -297,10 +297,21 @@ impl Generator {
                     )
                 })
                 .map_or(first_call, |offset| index + 1 + offset);
-            let source_redefined = self.output.instructions[index + 1..straight_line_end]
+            let source_redefined_by_materialization = self.output.instructions
+                [index + 1..straight_line_end]
                 .iter()
                 .any(|later| {
-                    mwcc_vreg::register_operands(later)
+                    !matches!(
+                        later,
+                        Instruction::LoadWord { .. }
+                            | Instruction::LoadByteZero { .. }
+                            | Instruction::LoadHalfwordZero { .. }
+                            | Instruction::LoadHalfwordAlgebraic { .. }
+                            | Instruction::LoadWordIndexed { .. }
+                            | Instruction::LoadByteZeroIndexed { .. }
+                            | Instruction::LoadHalfwordZeroIndexed { .. }
+                            | Instruction::LoadHalfwordAlgebraicIndexed { .. }
+                    ) && mwcc_vreg::register_operands(later)
                         .into_iter()
                         .any(|operand| {
                             operand.role == mwcc_vreg::RegisterRole::Define
@@ -308,7 +319,7 @@ impl Generator {
                                 && operand.register == source
                         })
                 });
-            if promoted_parameter_count >= 2 || source_redefined {
+            if promoted_parameter_count >= 2 || source_redefined_by_materialization {
                 self.output.instructions[index] = Instruction::AddImmediate {
                     d: destination,
                     a: source,

@@ -7,6 +7,7 @@
 
 #[allow(unused_imports)]
 use super::*;
+use super::structured_locals::plan_ephemeral_locals;
 
 impl Generator {
     /// Lower a void structured body after assigning every value that can be read
@@ -71,6 +72,9 @@ impl Generator {
         }) {
             return Ok(false);
         }
+        let Some(ephemeral_locals) = plan_ephemeral_locals(function, &survivors) else {
+            return Ok(false);
+        };
 
         let count = saved_locals.len() + saved_parameters.len();
         let homes: Vec<u8> = (0..count).map(|_| self.fresh_virtual_general()).collect();
@@ -124,6 +128,7 @@ impl Generator {
                 },
             );
         }
+        let mut saved_parameter_homes = Vec::new();
         for parameter in saved_parameters {
             let home = homes[home_index];
             home_index += 1;
@@ -141,8 +146,37 @@ impl Generator {
             self.output
                 .instructions
                 .push(Instruction::move_register(home, incoming));
+            saved_parameter_homes.push((parameter.name.clone(), home));
+        }
+        // Initializers are evaluated at declaration time, while an incoming
+        // parameter still has its entry-register alias. MWCC can preserve that
+        // alias after copying the value to a saved home (`mr r31,r3; lwz ...,r3`)
+        // and switches subsequent body uses to the home only after declarations.
+        for local in ephemeral_locals {
+            let temporary = self.fresh_virtual_general();
+            self.evaluate(
+                local.initializer.as_ref().expect("eligibility checked"),
+                local.declared_type,
+                temporary,
+            )?;
+            self.locations.insert(
+                local.name.clone(),
+                Location {
+                    class: ValueClass::General,
+                    register: temporary,
+                    signed: self.signed_of(local.declared_type),
+                    width: local.declared_type.width(),
+                    pointee: match local.declared_type {
+                        Type::Pointer(pointee) => Some(pointee),
+                        _ => None,
+                    },
+                    stride: pointer_stride(local.declared_type),
+                },
+            );
+        }
+        for (name, home) in saved_parameter_homes {
             self.locations
-                .get_mut(&parameter.name)
+                .get_mut(&name)
                 .expect("eligibility checked")
                 .register = home;
         }

@@ -45,6 +45,7 @@ mod queue_service;
 mod queue_transactions;
 mod result_call_forward;
 mod structured;
+mod structured_locals;
 mod pointer_state_call_loop;
 
 pub(crate) use queue_service::{summarize_queue_service, QueueServiceSummary};

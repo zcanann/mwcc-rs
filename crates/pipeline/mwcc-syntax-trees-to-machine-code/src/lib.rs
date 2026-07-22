@@ -575,12 +575,17 @@ fn schedule_instructions(generator: &mut Generator) {
     {
         (0..generator.output.instructions.len()).collect()
     } else {
-        // The `lis -> addi` latency-slot fill runs first (mwcc issues a ready
-        // `li` into the stall slot), then the list scheduler; the relocation
-        // remap composes the two permutations (old -> filled -> scheduled).
+        // Call arguments are arranged while their values still have distinct
+        // virtual identities. Address latency filling and list scheduling then
+        // operate on that stream; relocation remaps compose in the same order.
+        let call_arguments =
+            mwcc_vreg::hoist_simple_later_call_argument(&mut generator.output.instructions);
         let slot_fill = mwcc_vreg::fill_address_latency_slots(&mut generator.output.instructions);
         let list = mwcc_vreg::schedule(&mut generator.output.instructions);
-        slot_fill.into_iter().map(|filled| list[filled]).collect()
+        call_arguments
+            .into_iter()
+            .map(|argument| list[slot_fill[argument]])
+            .collect()
     };
     for relocation in &mut generator.output.relocations {
         relocation.instruction_index = permutation[relocation.instruction_index];

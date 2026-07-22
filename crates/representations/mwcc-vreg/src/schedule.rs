@@ -211,6 +211,97 @@ pub fn fill_address_latency_slots(instructions: &mut Vec<Instruction>) -> Vec<us
     permutation
 }
 
+/// Hoist a simple later register argument ahead of the load chain that computes
+/// argument zero. MWCC prepares `consume(p->child->value, saved)` as
+/// `mr r4,saved; lwz r3,...; lwz r3,...`; source-order emission naturally puts
+/// the loads first. This runs on virtual registers, where the computed value and
+/// the saved home are still distinct and the move is safe to identify.
+pub fn hoist_simple_later_call_argument(instructions: &mut Vec<Instruction>) -> Vec<usize> {
+    let count = instructions.len();
+    let identity: Vec<usize> = (0..count).collect();
+    if has_forward_branch(instructions) {
+        return identity;
+    }
+
+    for call in 0..count {
+        if !matches!(instructions[call], Instruction::BranchAndLink { .. }) {
+            continue;
+        }
+        let block_start = instructions[..call]
+            .iter()
+            .rposition(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::BranchAndLink { .. }
+                        | Instruction::BranchToLinkRegisterAndLink
+                        | Instruction::BranchToCountRegisterAndLink
+                        | Instruction::Branch { .. }
+                        | Instruction::BranchConditionalForward { .. }
+                )
+            })
+            .map_or(0, |index| index + 1);
+
+        let Some((later_move, saved)) = (block_start..call).rev().find_map(|index| {
+            match instructions[index] {
+                Instruction::Or { a: 4..=10, s, b } if s == b && s >= 32 => Some((index, s)),
+                _ => None,
+            }
+        }) else {
+            continue;
+        };
+        let Some((first_move, computed)) = (block_start..later_move).rev().find_map(|index| {
+            match instructions[index] {
+                Instruction::Or { a: 3, s, b } if s == b && s >= 32 => Some((index, s)),
+                _ => None,
+            }
+        }) else {
+            continue;
+        };
+        let Some(first_definition) = (block_start..first_move).find(|&index| {
+            register_operands(&instructions[index]).iter().any(|operand| {
+                operand.class == Class::General
+                    && operand.role == RegisterRole::Define
+                    && operand.register == computed
+            })
+        }) else {
+            continue;
+        };
+        if !matches!(
+            instructions[first_definition],
+            Instruction::LoadWord { .. }
+                | Instruction::LoadByteZero { .. }
+                | Instruction::LoadHalfwordZero { .. }
+                | Instruction::LoadHalfwordAlgebraic { .. }
+        ) {
+            continue;
+        }
+        // The move may cross only instructions independent of both its source
+        // and destination. In particular it cannot pass the definition of its
+        // saved home, even though it may pass unrelated memory reads.
+        if instructions[first_definition..later_move].iter().any(|instruction| {
+            depends_on(instruction, &instructions[later_move])
+                || depends_on(&instructions[later_move], instruction)
+        }) {
+            continue;
+        }
+        debug_assert!(saved >= 32);
+        let moved = instructions.remove(later_move);
+        instructions.insert(first_definition, moved);
+        return (0..count)
+            .map(|old| {
+                if old == later_move {
+                    first_definition
+                } else if (first_definition..later_move).contains(&old) {
+                    old + 1
+                } else {
+                    old
+                }
+            })
+            .collect();
+    }
+    identity
+}
+
 /// Schedule a non-leaf function's link-register save (`stw r0,20(r1)`) past the
 /// leading argument materializations of its first call. mwcc fills the `mflr`->save
 /// latency gap with up to two ready instructions, so `stwu; mflr r0; li r3,…; stw
@@ -453,6 +544,33 @@ pub fn schedule(instructions: &mut Vec<Instruction>) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_saved_later_argument_precedes_the_first_arguments_load_chain() {
+        let saved = 32;
+        let computed = 33;
+        let mut stream = vec![
+            Instruction::move_register(saved, 3),
+            Instruction::LoadWord {
+                d: computed,
+                a: saved,
+                offset: 0,
+            },
+            Instruction::LoadWord {
+                d: computed,
+                a: computed,
+                offset: 44,
+            },
+            Instruction::move_register(3, computed),
+            Instruction::move_register(4, saved),
+            Instruction::BranchAndLink {
+                target: "consume".into(),
+            },
+        ];
+        hoist_simple_later_call_argument(&mut stream);
+        assert!(matches!(stream[1], Instruction::Or { a: 4, s: 32, b: 32 }));
+        assert!(matches!(stream[2], Instruction::LoadWord { d: 33, .. }));
+    }
 
     #[test]
     fn the_lis_addi_latency_slot_takes_the_first_independent_li() {
