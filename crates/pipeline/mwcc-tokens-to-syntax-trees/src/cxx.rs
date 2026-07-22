@@ -1552,6 +1552,7 @@ impl Parser {
         let recovered = (|| -> Compilation<(
             String,
             Type,
+            Option<String>,
             Vec<Type>,
             Vec<CxxParameterType>,
             bool,
@@ -1573,7 +1574,7 @@ impl Parser {
                 self.advance();
             }
             let return_type = self.parse_type()?;
-            self.last_struct_tag.take();
+            let return_struct_tag = self.last_struct_tag.take();
             self.last_enum_tag.take();
             self.last_type_was_wchar = false;
             self.last_array_typedef.take();
@@ -1686,6 +1687,7 @@ impl Parser {
             Ok((
                 member,
                 return_type,
+                return_struct_tag,
                 parameters,
                 cxx_parameters,
                 variadic,
@@ -1710,6 +1712,7 @@ impl Parser {
         if let Ok((
             member,
             return_type,
+            return_struct_tag,
             parameters,
             cxx_parameters,
             variadic,
@@ -1816,6 +1819,10 @@ impl Parser {
                 parameters: parameters.clone(),
                 cxx_parameters: cxx_parameters.clone(),
             };
+            if let Some(return_struct_tag) = return_struct_tag {
+                self.function_return_structs
+                    .insert(mangled.clone(), return_struct_tag);
+            }
             if is_inline {
                 self.skipped_inline_names.insert(mangled.clone());
             }

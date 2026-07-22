@@ -2705,6 +2705,31 @@ blr\n\
     }
 
     #[test]
+    fn retains_member_access_on_an_inline_aggregate_return() {
+        let source = r#"
+            struct Vec { float x; float y; };
+            struct Object {
+                Vec velocity;
+                Vec getVelocity() { return velocity; }
+                float verticalSpeed() { return getVelocity().y; }
+            };
+            float use(Object* object) { return object->verticalSpeed(); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(unit
+            .skipped_inline_definitions
+            .iter()
+            .any(|function| function.name == "verticalSpeed__6ObjectFv"));
+    }
+
+    #[test]
     fn resolves_virtual_calls_through_opaque_template_specializations() {
         let source = r#"
             namespace api {
