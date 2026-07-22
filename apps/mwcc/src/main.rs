@@ -383,6 +383,8 @@ fn main() -> ExitCode {
     source_loader.define("__MWERKS__", "1");
     if source_is_cxx(&input, invocation.source_language) {
         source_loader.define("__cplusplus", "1");
+    } else {
+        source_loader.define("__STDC__", "1");
     }
     for (name, value) in invocation.preprocessor_definitions {
         source_loader.define(name, value);
