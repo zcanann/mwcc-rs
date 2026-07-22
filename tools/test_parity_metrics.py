@@ -622,6 +622,32 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(report["goal_completion"]["authoritative_exact"], 1)
         self.assertEqual(report["goal_completion"]["projects_proven_complete"], 0)
 
+    def test_snapshot_exposes_projects_outside_the_mwcc_denominator(self):
+        configured = row(project="configured")
+        inventory = {
+            "projects": [
+                {"name": "configured", "status": "ok"},
+                {"name": "n64_ido", "status": "no_mwcc_configure"},
+                {"name": "broken", "status": "capture_error"},
+            ],
+            "translation_units": [configured],
+        }
+
+        report = snapshot(
+            inventory,
+            [configured],
+            {},
+            "tool",
+            source_projects={"configured", "n64_ido", "broken"},
+        )
+
+        self.assertEqual(report["project_scope"]["discovered"], 3)
+        self.assertEqual(report["project_scope"]["mwcc_configured"], 1)
+        self.assertEqual(
+            report["project_scope"]["without_mwcc_configure"], ["n64_ido"]
+        )
+        self.assertEqual(report["project_scope"]["capture_errors"], ["broken"])
+
     def test_goal_completion_requires_every_project_configuration(self):
         rows = [
             row(project="complete", source="src/a.c"),

@@ -471,6 +471,44 @@ def goal_completion(
     }
 
 
+def project_scope(
+    inventory: Dict[str, Any], rows: List[Dict[str, Any]], selected: set[str]
+) -> Dict[str, Any]:
+    """Expose projects that cannot enter the MWCC configuration denominator."""
+
+    entries = [
+        project for project in inventory.get("projects", []) if project["name"] in selected
+    ]
+    inventory_rows = inventory.get("translation_units", rows)
+    configured_names = {
+        row["project"] for row in inventory_rows if row["project"] in selected
+    }
+    without_metadata = sorted(
+        project["name"]
+        for project in entries
+        if project.get("status") == "no_mwcc_configure"
+    )
+    capture_errors = sorted(
+        project["name"]
+        for project in entries
+        if project.get("status") == "capture_error"
+    )
+    zero_configuration = sorted(
+        project["name"]
+        for project in entries
+        if project["name"] not in configured_names
+        and project["name"] not in without_metadata
+        and project["name"] not in capture_errors
+    )
+    return {
+        "discovered": len(entries),
+        "mwcc_configured": len(configured_names),
+        "without_mwcc_configure": without_metadata,
+        "capture_errors": capture_errors,
+        "zero_configuration": zero_configuration,
+    }
+
+
 def snapshot(
     inventory: Dict[str, Any],
     rows: List[Dict[str, Any]],
@@ -510,6 +548,7 @@ def snapshot(
         "evaluable": evaluable,
         "authoritative_byte": authoritative_byte,
         "source_inventory": {"discovered": discovered, "mapped": mapped, "unmapped": unmapped},
+        "project_scope": project_scope(inventory, rows, projects),
         "source_content": {
             "substantive_existing": substantive_existing,
             "trivial_existing": len(existing) - substantive_existing,
@@ -1095,6 +1134,25 @@ def print_brief(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]]) 
     tool = report["tool_fingerprint"]
     goal = report["goal_completion"]
     builds = report["build_coverage"]
+    scope = report.get("project_scope")
+    if scope is not None:
+        exclusions = []
+        if scope["without_mwcc_configure"]:
+            exclusions.append(
+                "without MWCC configure metadata: "
+                + ", ".join(scope["without_mwcc_configure"])
+            )
+        if scope["capture_errors"]:
+            exclusions.append("capture errors: " + ", ".join(scope["capture_errors"]))
+        if scope["zero_configuration"]:
+            exclusions.append(
+                "zero configurations: " + ", ".join(scope["zero_configuration"])
+            )
+        print(
+            "project scope — MWCC-configured "
+            f"{scope['mwcc_configured']}/{scope['discovered']} discovered projects"
+            f"{'; ' + '; '.join(exclusions) if exclusions else ''}"
+        )
     print("== parity status (denominator-first) ==")
     print(f"compiler+harness fingerprint: {(tool or '<no observations>')[:24]}")
     print(
@@ -1275,6 +1333,18 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
         f"sources: {report['source_inventory']['mapped']}/{report['source_inventory']['discovered']} mapped "
         f"({report['source_inventory']['unmapped']} unmapped)"
     )
+    scope = report["project_scope"]
+    print(
+        f"project scope: {scope['mwcc_configured']}/{scope['discovered']} discovered projects "
+        "have MWCC configurations"
+    )
+    for label, key in (
+        ("without MWCC configure metadata", "without_mwcc_configure"),
+        ("capture errors", "capture_errors"),
+        ("zero configurations", "zero_configuration"),
+    ):
+        if scope[key]:
+            print(f"  {label}: {', '.join(scope[key])}")
     print(
         f"configurations: {report['existing']} existing / {report['configured']} configured "
         f"({report['missing_source']} missing source)"
