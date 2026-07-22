@@ -22,6 +22,278 @@ pub(super) struct DataRecords {
     pub aggregate_ids: HashMap<String, DebugEntryId>,
 }
 
+/// Semantic record order used by GC 4.x data-only units. The same plan drives
+/// DIE construction and the later ELF-fragment partition, keeping source type
+/// ownership out of the object-container layer.
+pub(crate) enum FragmentedDataItem<'a> {
+    Aggregate {
+        key: String,
+        definition: &'a AggregateDefinition,
+    },
+    Global {
+        global: &'a GlobalDeclaration,
+        aggregate_key: String,
+    },
+}
+
+pub(crate) fn fragmented_plan(unit: &TranslationUnit) -> Compilation<Vec<FragmentedDataItem<'_>>> {
+    let globals = unit
+        .globals
+        .iter()
+        .filter(|global| !global.is_extern && !global.is_static && !global.name.is_empty())
+        .collect::<Vec<_>>();
+    let mut ordered = globals
+        .iter()
+        .copied()
+        .filter(|global| !is_tentative_zero(global))
+        .collect::<Vec<_>>();
+    ordered.extend(
+        globals
+            .iter()
+            .rev()
+            .copied()
+            .filter(|global| is_tentative_zero(global)),
+    );
+    let root_keys = ordered
+        .iter()
+        .map(|global| {
+            unit.global_aggregate_tags
+                .get(&global.name)
+                .cloned()
+                .ok_or_else(|| {
+                    Diagnostic::error(format!(
+                        "debug-info: aggregate identity for global '{}' was not retained",
+                        global.name
+                    ))
+                })
+        })
+        .collect::<Compilation<Vec<_>>>()?;
+    let mut emitted = Vec::<String>::new();
+    let mut items = Vec::new();
+    for (global, root_key) in ordered.into_iter().zip(root_keys.iter()) {
+        collect_fragmented_types(
+            unit,
+            root_key,
+            root_key,
+            &root_keys,
+            &mut emitted,
+            &mut items,
+        )?;
+        items.push(FragmentedDataItem::Global {
+            global,
+            aggregate_key: root_key.clone(),
+        });
+    }
+    Ok(items)
+}
+
+fn is_tentative_zero(global: &GlobalDeclaration) -> bool {
+    global.initializer.is_none()
+        && global.address_initializer.is_none()
+        && global.data_bytes.is_none()
+        && global.data_relocations.is_empty()
+}
+
+fn collect_fragmented_types<'a>(
+    unit: &'a TranslationUnit,
+    key: &str,
+    root_key: &str,
+    roots: &[String],
+    emitted: &mut Vec<String>,
+    output: &mut Vec<FragmentedDataItem<'a>>,
+) -> Compilation<()> {
+    if emitted.iter().any(|seen| seen == key) {
+        return Ok(());
+    }
+    if key != root_key && roots.iter().any(|root| root == key) {
+        return Ok(());
+    }
+    let definition = unit.aggregate_definitions.get(key).ok_or_else(|| {
+        Diagnostic::error(format!(
+            "debug-info: aggregate definition '{key}' was not retained"
+        ))
+    })?;
+    for member in &definition.members {
+        if matches!(member.declared_type, Type::Struct { .. }) {
+            let member_key = member.aggregate_tag.as_deref().ok_or_else(|| {
+                Diagnostic::error(format!(
+                    "debug-info: aggregate identity for member '{}.{}' was not retained",
+                    definition.name, member.name
+                ))
+            })?;
+            collect_fragmented_types(unit, member_key, root_key, roots, emitted, output)?;
+        }
+    }
+    emitted.push(key.to_string());
+    output.push(FragmentedDataItem::Aggregate {
+        key: key.to_string(),
+        definition,
+    });
+    Ok(())
+}
+
+pub(super) fn fragmented_records(
+    unit: &TranslationUnit,
+    first_id: DebugEntryId,
+) -> Compilation<DataRecords> {
+    struct PlannedItem<'a> {
+        start_id: DebugEntryId,
+        kind: PlannedKind<'a>,
+    }
+    enum PlannedKind<'a> {
+        Aggregate(AggregatePlan<'a>),
+        Global {
+            global: &'a GlobalDeclaration,
+            aggregate_key: String,
+            id: DebugEntryId,
+        },
+    }
+
+    let plan = fragmented_plan(unit)?;
+    let mut next_id = first_id.0;
+    let mut aggregate_ids = HashMap::new();
+    let mut planned = Vec::with_capacity(plan.len());
+    for item in plan {
+        match item {
+            FragmentedDataItem::Aggregate { key, definition } => {
+                let type_id = allocate(&mut next_id);
+                aggregate_ids.insert(key, type_id);
+                let member_ids = definition
+                    .members
+                    .iter()
+                    .map(|_| allocate(&mut next_id))
+                    .collect::<Vec<_>>();
+                let children_end = allocate(&mut next_id);
+                planned.push(PlannedItem {
+                    start_id: type_id,
+                    kind: PlannedKind::Aggregate(AggregatePlan {
+                        type_id,
+                        member_ids,
+                        member_type_ids: Vec::new(),
+                        children_end,
+                        definition,
+                    }),
+                });
+            }
+            FragmentedDataItem::Global {
+                global,
+                aggregate_key,
+            } => {
+                let id = allocate(&mut next_id);
+                planned.push(PlannedItem {
+                    start_id: id,
+                    kind: PlannedKind::Global {
+                        global,
+                        aggregate_key,
+                        id,
+                    },
+                });
+            }
+        }
+    }
+    for item in &mut planned {
+        if let PlannedKind::Aggregate(aggregate) = &mut item.kind {
+            aggregate.member_type_ids = aggregate
+                .definition
+                .members
+                .iter()
+                .map(|member| {
+                    member
+                        .aggregate_tag
+                        .as_ref()
+                        .and_then(|key| aggregate_ids.get(key).copied())
+                })
+                .collect();
+        }
+    }
+
+    let mut records = Vec::new();
+    for (index, item) in planned.iter().enumerate() {
+        let sibling = planned
+            .get(index + 1)
+            .map_or(DATA_END, |following| following.start_id);
+        match &item.kind {
+            PlannedKind::Aggregate(aggregate) => {
+                let mut attributes = vec![attribute(
+                    AttributeName::Sibling,
+                    AttributeValue::Reference(sibling),
+                )];
+                if let Some(source_tag) = &aggregate.definition.source_tag {
+                    attributes.push(attribute(
+                        AttributeName::Name,
+                        AttributeValue::String(source_tag.clone()),
+                    ));
+                }
+                attributes.push(attribute(
+                    AttributeName::ByteSize,
+                    AttributeValue::Data4(aggregate.definition.byte_size),
+                ));
+                records.push(DebugRecord::Entry(DebugEntry {
+                    id: aggregate.type_id,
+                    tag: if aggregate.definition.is_union {
+                        Tag::UnionType
+                    } else {
+                        Tag::StructureType
+                    },
+                    attributes,
+                }));
+                for (member_index, member) in aggregate.definition.members.iter().enumerate() {
+                    let member_sibling = aggregate
+                        .member_ids
+                        .get(member_index + 1)
+                        .copied()
+                        .unwrap_or(aggregate.children_end);
+                    records.push(DebugRecord::Entry(DebugEntry {
+                        id: aggregate.member_ids[member_index],
+                        tag: Tag::Member,
+                        attributes: vec![
+                            attribute(
+                                AttributeName::Sibling,
+                                AttributeValue::Reference(member_sibling),
+                            ),
+                            attribute(
+                                AttributeName::Name,
+                                AttributeValue::String(member.name.clone()),
+                            ),
+                            member_type_attribute(
+                                member.declared_type,
+                                aggregate.member_type_ids[member_index],
+                                member.source_fundamental,
+                            )?,
+                            member_location(member.offset),
+                        ],
+                    }));
+                }
+                records.push(DebugRecord::Marker(aggregate.children_end));
+                records.push(DebugRecord::Raw(vec![0, 0, 0, 4]));
+            }
+            PlannedKind::Global {
+                global,
+                aggregate_key,
+                id,
+            } => records.push(DebugRecord::Entry(global_entry(
+                global,
+                *id,
+                sibling,
+                global_type_attribute(
+                    global.declared_type,
+                    aggregate_ids.get(aggregate_key).copied(),
+                )?,
+            ))),
+        }
+    }
+    records.push(DebugRecord::Marker(DATA_END));
+    records.extend([
+        DebugRecord::Raw(vec![0, 0, 0, 4]),
+        DebugRecord::Raw(vec![0, 0, 0, 4]),
+    ]);
+    Ok(DataRecords {
+        records,
+        next_id: DebugEntryId(next_id),
+        aggregate_ids,
+    })
+}
+
 enum PlanKind<'a> {
     Scalar,
     Array {

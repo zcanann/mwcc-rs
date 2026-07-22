@@ -2203,7 +2203,18 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // the same `.bss` object remains reference-ordered, so key this only to the
     // retained semantic relocation rather than changing the general BSS rule.
     if let Some(debug) = debug {
-        for object in &input.data_objects {
+        let fragmented_data_order = debug
+            .symbols
+            .iter()
+            .filter_map(|symbol| symbol.name.strip_prefix(".dwarf.0007."))
+            .filter_map(|name| input.data_objects.iter().find(|object| object.name == name))
+            .collect::<Vec<_>>();
+        let debug_data_order = if fragmented_data_order.is_empty() {
+            input.data_objects.iter().collect::<Vec<_>>()
+        } else {
+            fragmented_data_order
+        };
+        for object in debug_data_order {
             let debug_declares_object = !object.is_static
                 && object.functions_before == 0
                 && debug.debug_relocations.iter().any(|relocation| {

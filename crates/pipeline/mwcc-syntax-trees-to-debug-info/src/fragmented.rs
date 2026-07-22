@@ -14,8 +14,10 @@ use mwcc_object::{
     DebugSection, DebugSections, DebugSymbol, DebugSymbolBinding, DebugSymbolPlacement,
     FunctionPlacement,
 };
-use mwcc_syntax_trees::{AggregateDefinition, TranslationUnit, Type};
+use mwcc_syntax_trees::{TranslationUnit, Type};
 use mwcc_versions::CompilerBuild;
+
+use super::legacy::data::{fragmented_plan, FragmentedDataItem};
 
 pub(super) fn lower_simple_void_functions(
     unit: &TranslationUnit,
@@ -340,53 +342,46 @@ fn data_fragment_boundaries(
 ) -> Compilation<(Vec<DataFragmentBoundary>, u32, u32, u32)> {
     let mut cursor = compile_unit_size;
     let mut fragments = Vec::new();
-    for global in emitted_debug_globals(unit) {
-        let tag = unit
-            .global_aggregate_tags
-            .get(&global.name)
-            .ok_or_else(|| {
-                Diagnostic::error(format!(
-                    "debug-info: aggregate identity for global '{}' was not retained",
-                    global.name
-                ))
-            })?;
-        let mut definitions = Vec::new();
-        collect_aggregate_postorder(unit, tag, &mut Vec::new(), &mut definitions)?;
-        for definition in definitions {
-            let offset = cursor;
-            cursor = advance_record(bytes, cursor)?;
-            for _ in &definition.members {
+    for item in fragmented_plan(unit)? {
+        match item {
+            FragmentedDataItem::Aggregate { definition, .. } => {
+                let offset = cursor;
                 cursor = advance_record(bytes, cursor)?;
+                for _ in &definition.members {
+                    cursor = advance_record(bytes, cursor)?;
+                }
+                if read_u32(bytes, cursor)? != 4 {
+                    return Err(Diagnostic::error(
+                        "debug-info: invalid GC 4.1 aggregate-children terminator",
+                    ));
+                }
+                cursor += 4;
+                let tag = if definition.is_union { "0017" } else { "0013" };
+                let name = definition.source_tag.as_deref().unwrap_or(&definition.name);
+                fragments.push(DataFragmentBoundary {
+                    name: format!(".dwarf.{tag}.{name}"),
+                    offset,
+                    size: cursor - offset,
+                    binding: DebugSymbolBinding::Weak,
+                    comment_flags: 0x0d00_0000,
+                });
             }
-            if read_u32(bytes, cursor)? != 4 {
-                return Err(Diagnostic::error(
-                    "debug-info: invalid GC 4.1 aggregate-children terminator",
-                ));
+            FragmentedDataItem::Global { global, .. } => {
+                let offset = cursor;
+                cursor = advance_record(bytes, cursor)?;
+                fragments.push(DataFragmentBoundary {
+                    name: format!(".dwarf.0007.{}", global.name),
+                    offset,
+                    size: cursor - offset,
+                    binding: if global.is_weak {
+                        DebugSymbolBinding::Weak
+                    } else {
+                        DebugSymbolBinding::Global
+                    },
+                    comment_flags: if global.is_weak { 0x0d00_0000 } else { 0 },
+                });
             }
-            cursor += 4;
-            let tag = if definition.is_union { "0017" } else { "0013" };
-            let name = definition.source_tag.as_deref().unwrap_or(&definition.name);
-            fragments.push(DataFragmentBoundary {
-                name: format!(".dwarf.{tag}.{name}"),
-                offset,
-                size: cursor - offset,
-                binding: DebugSymbolBinding::Weak,
-                comment_flags: 0x0d00_0000,
-            });
         }
-        let offset = cursor;
-        cursor = advance_record(bytes, cursor)?;
-        fragments.push(DataFragmentBoundary {
-            name: format!(".dwarf.0007.{}", global.name),
-            offset,
-            size: cursor - offset,
-            binding: if global.is_weak {
-                DebugSymbolBinding::Weak
-            } else {
-                DebugSymbolBinding::Global
-            },
-            comment_flags: if global.is_weak { 0x0d00_0000 } else { 0 },
-        });
     }
 
     let first_null_offset = cursor;
@@ -419,36 +414,6 @@ fn emitted_debug_globals(unit: &TranslationUnit) -> Vec<&mwcc_syntax_trees::Glob
         .iter()
         .filter(|global| !global.is_extern && !global.is_static && !global.name.is_empty())
         .collect()
-}
-
-fn collect_aggregate_postorder<'a>(
-    unit: &'a TranslationUnit,
-    tag: &str,
-    visited: &mut Vec<String>,
-    output: &mut Vec<&'a AggregateDefinition>,
-) -> Compilation<()> {
-    if visited.iter().any(|seen| seen == tag) {
-        return Ok(());
-    }
-    visited.push(tag.to_string());
-    let definition = unit.aggregate_definitions.get(tag).ok_or_else(|| {
-        Diagnostic::error(format!(
-            "debug-info: aggregate definition '{tag}' was not retained"
-        ))
-    })?;
-    for member in &definition.members {
-        if matches!(member.declared_type, Type::Struct { .. }) {
-            let member_tag = member.aggregate_tag.as_deref().ok_or_else(|| {
-                Diagnostic::error(format!(
-                    "debug-info: aggregate identity for member '{}.{}' was not retained",
-                    definition.name, member.name
-                ))
-            })?;
-            collect_aggregate_postorder(unit, member_tag, visited, output)?;
-        }
-    }
-    output.push(definition);
-    Ok(())
 }
 
 fn reference_fragment<'a>(

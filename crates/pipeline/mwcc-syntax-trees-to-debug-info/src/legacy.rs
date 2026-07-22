@@ -1,7 +1,7 @@
 //! Measured grouped DWARF-1 emitted by the 2.3.x and early 2.4.x compilers.
 
 mod captures;
-mod data;
+pub(super) mod data;
 mod functions;
 mod simple_void_functions;
 mod vector_installers;
@@ -226,7 +226,11 @@ pub(super) fn lower(
 
     if shape == MeasuredShape::DataOnly {
         let mut records: Vec<_> = entries.into_iter().map(DebugRecord::Entry).collect();
-        records.extend(data::records(unit, &globals, first_global_id, false)?.records);
+        records.extend(if build.version.0 >= 4 {
+            data::fragmented_records(unit, first_global_id)?.records
+        } else {
+            data::records(unit, &globals, first_global_id, false)?.records
+        });
         return finish(line, records, data_only_layout(build));
     }
 
