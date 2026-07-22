@@ -38,6 +38,7 @@ struct ResolvedTemplateType {
     known: bool,
     tag: Option<String>,
     layout: Option<StructLayout>,
+    constant: Option<u32>,
 }
 
 impl Parser {
@@ -106,12 +107,32 @@ impl Parser {
     /// template layout. This complements typedef instantiation: game headers
     /// commonly place concrete template objects directly in class layouts.
     pub(crate) fn parse_template_instance_type(&mut self) -> Option<Type> {
+        if let Some((tag, arguments, end)) =
+            self.parse_multi_argument_template_spelling_at(self.position)
+        {
+            let template_name = tag
+                .split('<')
+                .next()
+                .and_then(|name| name.rsplit("::").next())?;
+            let layout =
+                self.instantiate_struct_template_layout_with_arguments(template_name, &arguments);
+            return self.finish_template_instance_type(tag, layout, end);
+        }
         let (tag, argument, end) = self.parse_template_spelling_at(self.position)?;
         let template_name = tag
             .split('<')
             .next()
             .and_then(|name| name.rsplit("::").next())?;
         let layout = self.instantiate_struct_template_layout(template_name, argument);
+        self.finish_template_instance_type(tag, layout, end)
+    }
+
+    fn finish_template_instance_type(
+        &mut self,
+        tag: String,
+        layout: Option<StructLayout>,
+        end: usize,
+    ) -> Option<Type> {
         let followed_by_indirection =
             matches!(self.tokens.get(end), Some(Token::Star | Token::Ampersand));
         if layout.is_none() && !followed_by_indirection {
@@ -147,6 +168,23 @@ impl Parser {
         if !self.cplusplus {
             return false;
         }
+        if let Some((tag, arguments, end)) =
+            self.parse_multi_argument_template_spelling_at(self.position)
+        {
+            if matches!(self.tokens.get(end), Some(Token::Star | Token::Ampersand)) {
+                return true;
+            }
+            let Some(template_name) = tag
+                .split('<')
+                .next()
+                .and_then(|name| name.rsplit("::").next())
+            else {
+                return false;
+            };
+            return self
+                .instantiate_struct_template_layout_with_arguments(template_name, &arguments)
+                .is_some();
+        }
         let Some((tag, argument, end)) = self.parse_template_spelling_at(self.position) else {
             return false;
         };
@@ -162,6 +200,85 @@ impl Parser {
         };
         self.instantiate_struct_template_layout(template_name, argument)
             .is_some()
+    }
+
+    /// Parse two-or-more template arguments, retaining integral non-type
+    /// arguments alongside ordinary type arguments. The single-argument path
+    /// stays separate because it also serves nested ABI spelling recovery.
+    fn parse_multi_argument_template_spelling_at(
+        &self,
+        start: usize,
+    ) -> Option<(String, Vec<ResolvedTemplateType>, usize)> {
+        let mut cursor = start;
+        let mut components = Vec::new();
+        let Token::Identifier(first) = self.tokens.get(cursor)? else {
+            return None;
+        };
+        components.push(first.clone());
+        cursor += 1;
+        while self.tokens.get(cursor) == Some(&Token::Colon)
+            && self.tokens.get(cursor + 1) == Some(&Token::Colon)
+        {
+            let Some(Token::Identifier(component)) = self.tokens.get(cursor + 2) else {
+                return None;
+            };
+            components.push(component.clone());
+            cursor += 3;
+        }
+        if self.tokens.get(cursor) != Some(&Token::Less) {
+            return None;
+        }
+        cursor += 1;
+        let mut arguments = Vec::new();
+        let mut identities = Vec::new();
+        loop {
+            if let Some(Token::IntegerLiteral(value)) = self.tokens.get(cursor) {
+                let constant = u32::try_from(*value).ok()?;
+                arguments.push(ResolvedTemplateType {
+                    declared: Type::Void,
+                    known: true,
+                    tag: None,
+                    layout: None,
+                    constant: Some(constant),
+                });
+                identities.push(constant.to_string());
+                cursor += 1;
+            } else {
+                let argument_start = cursor;
+                let (declared, identity, mut end) = self.template_argument_at(cursor)?;
+                if self.tokens.get(argument_start) == Some(&Token::KeywordUnsigned)
+                    && self.tokens.get(end) == Some(&Token::KeywordInt)
+                {
+                    end += 1;
+                }
+                let known = declared.is_some();
+                arguments.push(ResolvedTemplateType {
+                    declared: declared.unwrap_or(Type::Void),
+                    known,
+                    tag: None,
+                    layout: None,
+                    constant: None,
+                });
+                identities.push(identity.unwrap_or_else(|| "...".to_owned()));
+                cursor = end;
+            }
+            match self.tokens.get(cursor) {
+                Some(Token::Comma) => cursor += 1,
+                Some(Token::Greater) => {
+                    cursor += 1;
+                    break;
+                }
+                _ => return None,
+            }
+        }
+        if arguments.len() < 2 {
+            return None;
+        }
+        Some((
+            format!("{}<{}>", components.join("::"), identities.join(",")),
+            arguments,
+            cursor,
+        ))
     }
 
     /// Recover a template specialization's complete ABI spelling separately
@@ -292,6 +409,7 @@ impl Parser {
             known: argument.is_some(),
             tag: None,
             layout: None,
+            constant: None,
         }];
         self.instantiate_struct_template_layout_with_arguments(template_name, &arguments)
     }
@@ -313,6 +431,7 @@ impl Parser {
                     known: true,
                     tag: Some(name.clone()),
                     layout: Some(layout),
+                    constant: None,
                 })
             }
             TemplateTypePattern::Instance {
@@ -333,6 +452,7 @@ impl Parser {
                     known: true,
                     tag: self.concrete_template_identity(name, &resolved),
                     layout: Some(layout),
+                    constant: None,
                 })
             }
         }
@@ -351,7 +471,7 @@ impl Parser {
     }
 
     fn resolved_template_argument_identity(argument: &ResolvedTemplateType) -> Option<String> {
-        argument.tag.clone().or_else(|| {
+        argument.constant.map(|value| value.to_string()).or_else(|| argument.tag.clone()).or_else(|| {
             if argument.known {
                 crate::cxx::encode_template_argument_type(argument.declared)
             } else {
@@ -416,7 +536,14 @@ impl Parser {
             name: template_name.to_owned(),
             arguments: arguments
                 .iter()
-                .map(|argument| (argument.declared, argument.known, argument.tag.clone()))
+                .map(|argument| {
+                    (
+                        argument.declared,
+                        argument.known,
+                        argument.tag.clone(),
+                        argument.constant,
+                    )
+                })
                 .collect(),
         };
         {
@@ -509,12 +636,22 @@ impl Parser {
                     None,
                 ),
                 };
+                let (field_size, array_bytes, array_stride) =
+                    if let Some(index) = field.array_extent_parameter {
+                        let extent = arguments.get(index)?.constant?;
+                        let total = field_size.checked_mul(extent)?;
+                        (total, Some(total), Some(field_size))
+                    } else {
+                        (field_size, None, None)
+                    };
                 Some((
                     field,
                     field_type,
                     field_size,
                     natural_alignment.max(1).max(field.alignment),
                     struct_tag,
+                    array_bytes,
+                    array_stride,
                 ))
             })
             .collect::<Option<Vec<_>>>()?;
@@ -530,14 +667,22 @@ impl Parser {
             });
             let alignment = resolved_fields[field_index..run_end]
                 .iter()
-                .map(|(_, _, _, alignment, _)| *alignment)
+                .map(|(_, _, _, alignment, _, _, _)| *alignment)
                 .max()
                 .unwrap_or(1);
             max_alignment = max_alignment.max(alignment);
             offset = offset.div_ceil(alignment) * alignment;
             let run_offset = offset;
             let mut run_size = 0u32;
-            for (field, field_type, field_size, _, struct_tag) in
+            for (
+                field,
+                field_type,
+                field_size,
+                _,
+                struct_tag,
+                array_bytes,
+                array_stride,
+            ) in
                 &resolved_fields[field_index..run_end]
             {
                 fields.insert(
@@ -548,8 +693,8 @@ impl Parser {
                         offset: run_offset,
                         struct_tag: struct_tag.clone(),
                         array_element: None,
-                        array_bytes: None,
-                        array_stride: None,
+                        array_bytes: *array_bytes,
+                        array_stride: *array_stride,
                         bit_field: None,
                     },
                 );
@@ -900,6 +1045,11 @@ impl Parser {
                         parameters.push(name.clone());
                     }
                 }
+                Some(Token::KeywordInt) if angle_depth == 1 => {
+                    if let Some(Token::Identifier(name)) = self.tokens.get(cursor + 1) {
+                        parameters.push(name.clone());
+                    }
+                }
                 Some(Token::Less) => angle_depth += 1,
                 Some(Token::Greater) => angle_depth -= 1,
                 Some(Token::EndOfFile) | None => return,
@@ -1089,6 +1239,7 @@ impl Parser {
                 name: name.clone(),
                 field_type: field_type.clone(),
                 alignment: 1,
+                array_extent_parameter: None,
                 overlap_group: None,
             });
             cursor += 1;
@@ -1111,6 +1262,20 @@ impl Parser {
                 fields.last_mut().unwrap().field_type =
                     TemplateFieldType::ParameterByteArray(index);
                 cursor += 6;
+            } else if matches!(
+                self.tokens.get(cursor..cursor + 3),
+                Some([
+                    Token::BracketOpen,
+                    Token::Identifier(extent),
+                    Token::BracketClose,
+                ]) if parameters.iter().any(|parameter| parameter == extent)
+            ) {
+                let Some(Token::Identifier(extent)) = self.tokens.get(cursor + 1) else {
+                    return None;
+                };
+                fields.last_mut().unwrap().array_extent_parameter =
+                    parameters.iter().position(|parameter| parameter == extent);
+                cursor += 3;
             }
             if matches!(self.tokens.get(cursor), Some(Token::Identifier(attribute)) if attribute == "__attribute__")
             {

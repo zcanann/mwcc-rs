@@ -2932,6 +2932,37 @@ blr\n\
     }
 
     #[test]
+    fn applies_integral_template_arguments_to_array_extents() {
+        let source = r#"
+            template <typename T> struct BitFlag {
+                union { unsigned char bytes[sizeof(T)]; T value; };
+            };
+            template <typename T, int I> struct BitFlagArray {
+                BitFlag<T> flags[I];
+            };
+            struct Holder {
+                char prefix;
+                BitFlagArray<unsigned int, 2> flags;
+                char tail;
+            };
+            BitFlagArray<unsigned int, 2> array;
+            Holder holder;
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.globals[0].declared_type,
+            mwcc_syntax_trees::Type::Struct { size: 8, align: 4 }
+        ));
+        assert!(matches!(
+            unit.globals[1].declared_type,
+            mwcc_syntax_trees::Type::Struct { size: 16, align: 4 }
+        ));
+    }
+
+    #[test]
     fn recognizes_pointer_template_instances_as_local_declarations() {
         let source = r#"
             template <typename T> struct Box { T value; };
@@ -3850,6 +3881,25 @@ blr\n\
             unit.functions[0].return_type,
             mwcc_syntax_trees::Type::Struct { size: 16, align: 4 }
         );
+    }
+
+    #[test]
+    fn resolves_relative_qualified_nested_values_in_a_namespace() {
+        let source = r#"
+            namespace Game {
+                struct Manager { struct Code { short value; }; };
+                struct Holder { Manager::Code code; int state; };
+                Holder holder;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.globals[0].declared_type,
+            mwcc_syntax_trees::Type::Struct { size: 8, align: 4 }
+        ));
     }
 
     #[test]

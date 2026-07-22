@@ -140,6 +140,8 @@ pub(crate) struct TemplateField {
     pub(crate) name: String,
     pub(crate) field_type: TemplateFieldType,
     pub(crate) alignment: u32,
+    /// Non-type template parameter supplying a one-dimensional array extent.
+    pub(crate) array_extent_parameter: Option<usize>,
     /// Consecutive fields from the same anonymous union share storage.
     pub(crate) overlap_group: Option<u32>,
 }
@@ -157,7 +159,7 @@ pub(crate) struct StructTemplate {
 #[derive(Clone, PartialEq)]
 pub(crate) struct TemplateInstantiationKey {
     pub(crate) name: String,
-    pub(crate) arguments: Vec<(Type, bool, Option<String>)>,
+    pub(crate) arguments: Vec<(Type, bool, Option<String>, Option<u32>)>,
 }
 
 #[derive(Clone)]

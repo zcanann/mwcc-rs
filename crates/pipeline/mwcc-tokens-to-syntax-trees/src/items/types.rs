@@ -260,18 +260,21 @@ impl Parser {
                 }
             }
             if components.len() >= 2 {
-                let qualified = components.join("::");
+                let source_qualified = components.join("::");
                 let local = components.last().unwrap().clone();
                 if let Some(storage) = self
                     .enum_types
-                    .get(&qualified)
+                    .get(&source_qualified)
                     .or_else(|| self.enum_types.get(&local))
                     .copied()
                 {
                     self.position = scan;
-                    self.last_enum_tag = Some(qualified);
+                    self.last_enum_tag = Some(source_qualified);
                     return Ok(storage);
                 }
+                let qualified = self
+                    .resolve_scoped_cxx_class_name(&source_qualified)
+                    .unwrap_or(source_qualified);
                 let layout_key = if self.structs.contains_key(&qualified) {
                     qualified.clone()
                 } else {
