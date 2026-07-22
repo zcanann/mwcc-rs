@@ -10,6 +10,54 @@
 use super::*;
 
 impl Generator {
+    /// Hoist an independent three-register call setup across a run of three
+    /// stores from one already-loaded float. MWCC fills the store issue window
+    /// this way in constructor-like state initialization bodies.
+    pub(super) fn schedule_structured_float_store_call_arguments(&mut self) {
+        if self.behavior.frame_convention != FrameConvention::Predecrement {
+            return;
+        }
+        let Some(start) = self.output.instructions.windows(8).position(|window| {
+            matches!(window, [
+                Instruction::LoadFloatSingle { d: loaded, .. },
+                Instruction::StoreFloatSingle { s: first, a: first_base, .. },
+                Instruction::StoreFloatSingle { s: second, a: second_base, .. },
+                Instruction::StoreFloatSingle { s: third, a: third_base, .. },
+                Instruction::Or { a: 3, s: receiver, b },
+                Instruction::AddImmediate { d: 4, a: 0, .. },
+                Instruction::AddImmediate { d: 5, a: 0, .. },
+                Instruction::BranchAndLink { .. },
+            ] if loaded == first
+                && first == second
+                && second == third
+                && first_base == second_base
+                && second_base == third_base
+                && receiver == first_base
+                && b == receiver)
+        }) else {
+            return;
+        };
+        for offset in 0..3 {
+            self.move_instruction_before(start + 4 + offset, start + 1 + offset);
+        }
+    }
+
+    fn move_instruction_before(&mut self, from: usize, to: usize) {
+        debug_assert!(to < from);
+        let instruction = self.output.instructions.remove(from);
+        self.output.instructions.insert(to, instruction);
+        self.labels.moved_before(from, to);
+        for relocation in &mut self.output.relocations {
+            relocation.instruction_index = if relocation.instruction_index == from {
+                to
+            } else if (to..from).contains(&relocation.instruction_index) {
+                relocation.instruction_index + 1
+            } else {
+                relocation.instruction_index
+            };
+        }
+    }
+
     pub(super) fn plans_structured_float_store_guard_swap(
         &self,
         statement: &Statement,
