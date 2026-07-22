@@ -88,14 +88,32 @@ impl Generator {
         } else {
             0x4330_0000_0000_0000
         };
+        // Build 163 creates the unsigned/narrow bias pool node before the
+        // signed-word bias even though its scheduler issues the signed bias
+        // load first. Keep pool creation and instruction issue as separate
+        // responsibilities so both the `.sdata2` layout and `.text` agree.
+        let narrow_bias_index = self
+            .output
+            .intern_constant(0x4330_0000_0000_0000, 8);
+        let integer_bias_index = self.output.intern_constant(integer_bias, 8);
+        for index in [narrow_bias_index, integer_bias_index] {
+            if !self
+                .output
+                .constant_number_gaps
+                .iter()
+                .any(|(existing, _)| *existing == index)
+            {
+                self.output.constant_number_gaps.push((index, 1));
+            }
+        }
         let base = self.reserve_condition_conversion_scratch(2);
-        self.load_double_constant(integer_bias_register, integer_bias);
+        self.load_double_constant_at(integer_bias_register, integer_bias_index);
         self.output.instructions.push(Instruction::StoreWord {
             s: GENERAL_SCRATCH,
             a: 1,
             offset: base + 4,
         });
-        self.load_double_constant(narrow_bias_register, 0x4330_0000_0000_0000);
+        self.load_double_constant_at(narrow_bias_register, narrow_bias_index);
         self.output.instructions.push(Instruction::StoreWord {
             s: high,
             a: 1,
