@@ -29,6 +29,7 @@ impl Generator {
         double: bool,
     ) -> Compilation<Option<(u8, u8)>> {
         if !self.behavior.legacy_float_cast_schedule
+            || self.callee_saved.is_empty()
             || double
             || !self.is_byte_load(left)
             || self.signedness_of(left)?
