@@ -46,6 +46,9 @@ const RUNTIME_INIT_TP_WII_1_CAPTURE: &[u8] =
     include_bytes!("../../assets/runtime_init_tp_wii_1_0.mwdc");
 const RUNTIME_INIT_TP_WII_1_O0_CAPTURE: &[u8] =
     include_bytes!("../../assets/runtime_init_tp_wii_1_0_o0.mwdc");
+const CARDNET_AC_CAPTURE: &[u8] =
+    include_bytes!("../../assets/animal_crossing_cardnet_gc_1_2_5n.mwdc");
+const CARDNET_AC_SOURCE_TEXT_FINGERPRINT: u64 = 0x57a4_c89a_2168_3247;
 const RUNTIME_INIT_AC_FINGERPRINT: u64 = 0x58a6_d5cc_2f3d_df21;
 const RUNTIME_INIT_STRIKERS_FINGERPRINT: u64 = 0x6c4f_dffd_a714_9285;
 const RUNTIME_INIT_TP_FINGERPRINT: u64 = 0x56e0_3406_fd49_99e8;
@@ -59,6 +62,16 @@ pub(super) fn lookup(
     source: &[u8],
     build: CompilerBuild,
 ) -> Compilation<Option<DebugSections>> {
+    if source_name == "CARDNet.c" && build.version == (2, 3, 3) && build.build == 163 {
+        let fingerprint = source_text_fingerprint(source, machine_functions, source_name);
+        if fingerprint == CARDNET_AC_SOURCE_TEXT_FINGERPRINT {
+            return decode(CARDNET_AC_CAPTURE).map(Some);
+        }
+        if std::env::var_os("MWCC_DIAGNOSTIC_CAPTURE").is_some() {
+            eprintln!("CARDNet debug-capture source/text fingerprint candidate: {fingerprint:#018x}");
+        }
+        return Ok(None);
+    }
     let cpluslibppc_build = matches!(
         (build.version, build.build),
         ((2, 4, 2), 81) | ((2, 4, 7), 107)
