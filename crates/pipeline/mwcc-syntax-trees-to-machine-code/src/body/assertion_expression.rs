@@ -158,6 +158,11 @@ impl Generator {
         let left = comparison_with_constant_on_right(shape.left);
         let right = comparison_with_constant_on_right(shape.right);
         let delayed_linkage = self.take_plain_assertion_linkage();
+        let established_dense_frame = !self.frame_slots.is_empty()
+            && self.callee_saved.len() >= 4
+            && matches!(shape.arguments,
+                [Expression::StringLiteral(file), _, Expression::StringLiteral(asserted)]
+                    if file.len() + 1 > 8 && asserted.len() + 1 > 8);
 
         let condition_registers = self.registers_used_by(shape.condition);
         let mut condition_registers = condition_registers.iter();
@@ -220,15 +225,26 @@ impl Generator {
             0
         };
 
-        self.output
-            .instructions
-            .push(Instruction::CompareWordImmediate {
-                a: value_register,
-                immediate: 0,
-            });
+        if established_dense_frame {
+            // The range-comparison result is an 8-bit boolean in a dense saved
+            // frame. MWCC both narrows and tests it with one `clrlwi.` into r0.
+            self.emit_widen_record(GENERAL_SCRATCH, value_register, 8, false);
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::CompareWordImmediate {
+                    a: value_register,
+                    immediate: 0,
+                });
+        }
         let done = self.fresh_label();
         self.emit_branch_conditional_to(4, 2, done); // bne
-        if !self.try_emit_assertion_report_call(shape.name, shape.arguments)? {
+        let emitted_report = if established_dense_frame {
+            self.try_emit_dense_frame_assertion_report(shape.name, shape.arguments)?
+        } else {
+            self.try_emit_assertion_report_call(shape.name, shape.arguments)?
+        };
+        if !emitted_report {
             self.emit_call(shape.name, shape.arguments, None, false)?;
         }
         self.bind_label(done);

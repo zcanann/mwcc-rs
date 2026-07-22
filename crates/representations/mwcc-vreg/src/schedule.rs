@@ -187,15 +187,25 @@ pub fn hoist_link_register_reload(instructions: &mut Vec<Instruction>) -> Vec<us
 /// Returns the old->new index permutation so relocations can be remapped; a removed self-move
 /// never carries a relocation, so its own mapping is a don't-care (pointed at the next survivor).
 pub fn coalesce_self_moves(instructions: &mut Vec<Instruction>) -> Vec<usize> {
+    coalesce_self_moves_preserving(instructions, &[])
+}
+
+/// Coalesce self-moves while retaining instructions whose indices carry
+/// external metadata. In particular, an `addi d,d,0` patched by an ADDR16_LO
+/// relocation forms an address and is not a semantic self-copy.
+pub fn coalesce_self_moves_preserving(
+    instructions: &mut Vec<Instruction>,
+    preserved_indices: &[usize],
+) -> Vec<usize> {
     let original = std::mem::take(instructions);
     let mut permutation = Vec::with_capacity(original.len());
     let mut next = 0;
-    for instruction in original {
+    for (index, instruction) in original.into_iter().enumerate() {
         permutation.push(next);
         let is_self_move = matches!(&instruction, Instruction::Or { a, s, b } if a == s && s == b)
             || matches!(&instruction, Instruction::AddImmediate { d, a, immediate: 0 } if d == a)
             || matches!(&instruction, Instruction::FloatMove { d, b } if d == b);
-        if !is_self_move {
+        if !is_self_move || preserved_indices.contains(&index) {
             instructions.push(instruction);
             next += 1;
         }
@@ -695,6 +705,30 @@ mod tests {
             }]
         );
         assert_eq!(permutation, vec![0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn a_relocation_owned_addi_self_copy_is_preserved() {
+        let mut stream = vec![
+            Instruction::AddImmediate {
+                d: 3,
+                a: 3,
+                immediate: 0,
+            },
+            Instruction::move_register(4, 4),
+        ];
+
+        let permutation = coalesce_self_moves_preserving(&mut stream, &[0]);
+
+        assert_eq!(permutation, vec![0, 1]);
+        assert!(matches!(
+            stream.as_slice(),
+            [Instruction::AddImmediate {
+                d: 3,
+                a: 3,
+                immediate: 0
+            }]
+        ));
     }
 
     #[test]

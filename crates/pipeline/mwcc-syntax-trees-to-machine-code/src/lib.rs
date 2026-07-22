@@ -673,7 +673,16 @@ fn schedule_link_register_save(generator: &mut Generator) {
 /// Coalesce allocator self-moves on the physical stream, remapping every
 /// instruction-index owner through the resulting removal.
 fn coalesce_self_moves(generator: &mut Generator) {
-    let permutation = mwcc_vreg::coalesce_self_moves(&mut generator.output.instructions);
+    let relocation_owners: Vec<usize> = generator
+        .output
+        .relocations
+        .iter()
+        .map(|relocation| relocation.instruction_index)
+        .collect();
+    let permutation = mwcc_vreg::coalesce_self_moves_preserving(
+        &mut generator.output.instructions,
+        &relocation_owners,
+    );
     remap_instruction_indices(generator, &permutation);
 }
 
