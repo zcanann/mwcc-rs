@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 pub(super) fn substitute_statement(
     statement: &Statement,
-    replacements: &HashMap<&str, &Expression>,
+    replacements: &HashMap<String, Expression>,
 ) -> Statement {
     match statement {
         Statement::Store { target, value } => Statement::Store {
@@ -15,6 +15,16 @@ pub(super) fn substitute_statement(
         Statement::Expression(expression) => {
             Statement::Expression(substitute_expression(expression, replacements))
         }
+        Statement::Assign { name, value } => Statement::Assign {
+            name: replacements
+                .get(name)
+                .and_then(|replacement| match replacement {
+                    Expression::Variable(name) => Some(name.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| name.clone()),
+            value: substitute_expression(value, replacements),
+        },
         Statement::If {
             condition,
             then_body,
@@ -36,12 +46,12 @@ pub(super) fn substitute_statement(
 
 fn substitute_expression(
     expression: &Expression,
-    replacements: &HashMap<&str, &Expression>,
+    replacements: &HashMap<String, Expression>,
 ) -> Expression {
     match expression {
         Expression::Variable(name) => replacements
-            .get(name.as_str())
-            .map_or_else(|| expression.clone(), |replacement| (*replacement).clone()),
+            .get(name)
+            .map_or_else(|| expression.clone(), Clone::clone),
         Expression::AggregateLiteral(elements) => Expression::AggregateLiteral(
             elements
                 .iter()

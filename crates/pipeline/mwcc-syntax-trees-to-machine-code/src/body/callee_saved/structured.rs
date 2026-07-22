@@ -151,16 +151,18 @@ impl Generator {
         // alias after copying the value to a saved home (`mr r31,r3; lwz ...,r3`)
         // and switches subsequent body uses to the home only after declarations.
         for local in ephemeral_locals {
-            let temporary = self.fresh_virtual_general();
-            self.evaluate(
-                local.initializer.as_ref().expect("eligibility checked"),
-                local.declared_type,
-                temporary,
-            )?;
+            let class = class_of(local.declared_type).expect("eligibility checked");
+            let temporary = match class {
+                ValueClass::General => self.fresh_virtual_general(),
+                ValueClass::Float => self.fresh_virtual_float(),
+            };
+            if let Some(initializer) = &local.initializer {
+                self.evaluate(initializer, local.declared_type, temporary)?;
+            }
             self.locations.insert(
                 local.name.clone(),
                 Location {
-                    class: ValueClass::General,
+                    class,
                     register: temporary,
                     signed: self.signed_of(local.declared_type),
                     width: local.declared_type.width(),

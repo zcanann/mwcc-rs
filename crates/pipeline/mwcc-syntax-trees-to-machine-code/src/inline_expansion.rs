@@ -2,9 +2,10 @@
 //!
 //! The frontend keeps skipped inline definitions out of object emission but
 //! retains their parsed ASTs. This module owns the conservative subset that can
-//! be spliced into a caller without inventing temporary storage or changing
-//! argument evaluation: void bodies with no locals or non-local control flow,
-//! called as standalone statements with stable scalar arguments.
+//! be spliced into a caller without changing argument evaluation: void bodies
+//! with automatic scalar locals and no non-local control flow, called as
+//! standalone statements with stable scalar arguments. Callee locals are
+//! alpha-renamed and initialized at the call site rather than caller entry.
 
 mod safety;
 mod substitution;
@@ -61,11 +62,22 @@ impl InlineBodySet {
         let mut changed = false;
         let mut active = HashSet::new();
         let stable_variables = stable_local_values(function);
+        let mut locals = function.locals.clone();
+        let mut occupied_names: HashSet<String> = function
+            .parameters
+            .iter()
+            .map(|parameter| parameter.name.clone())
+            .chain(function.locals.iter().map(|local| local.name.clone()))
+            .collect();
+        let mut next_local_id = 0usize;
         let statements = self.expand_statements(
             &function.statements,
             &stable_variables,
             &mut active,
             &mut changed,
+            &mut locals,
+            &mut occupied_names,
+            &mut next_local_id,
         );
         if !changed
             || statements
@@ -75,6 +87,7 @@ impl InlineBodySet {
             return None;
         }
         let mut expanded = function.clone();
+        expanded.locals = locals;
         expanded.statements = statements;
         Some(expanded)
     }
@@ -85,6 +98,9 @@ impl InlineBodySet {
         stable_variables: &HashSet<String>,
         active: &mut HashSet<String>,
         changed: &mut bool,
+        locals: &mut Vec<mwcc_syntax_trees::LocalDeclaration>,
+        occupied_names: &mut HashSet<String>,
+        next_local_id: &mut usize,
     ) -> Vec<Statement> {
         let mut output = Vec::new();
         for statement in statements {
@@ -99,17 +115,53 @@ impl InlineBodySet {
                         output.push(statement.clone());
                         continue;
                     }
-                    let replacements: HashMap<&str, &Expression> = callee
+                    let mut replacements: HashMap<String, Expression> = callee
                         .parameters
                         .iter()
                         .map(|parameter| parameter.name.as_str())
                         .zip(arguments)
+                        .map(|(name, argument)| (name.to_owned(), argument.clone()))
                         .collect();
-                    let substituted: Vec<_> = callee
-                        .statements
+                    for local in &callee.locals {
+                        let unique_name = loop {
+                            let candidate =
+                                format!("__mwcc_inline_{}_{}_{}", name, *next_local_id, local.name);
+                            *next_local_id += 1;
+                            if occupied_names.insert(candidate.clone()) {
+                                break candidate;
+                            }
+                        };
+                        replacements.insert(
+                            local.name.clone(),
+                            Expression::Variable(unique_name.clone()),
+                        );
+                        let mut declaration = local.clone();
+                        declaration.name = unique_name;
+                        declaration.initializer = None;
+                        locals.push(declaration);
+                    }
+                    let mut substituted: Vec<_> = callee
+                        .locals
                         .iter()
-                        .map(|statement| substitute_statement(statement, &replacements))
+                        .map(|local| {
+                            substitute_statement(
+                                &Statement::Assign {
+                                    name: local.name.clone(),
+                                    value: local
+                                        .initializer
+                                        .clone()
+                                        .expect("composable locals are initialized"),
+                                },
+                                &replacements,
+                            )
+                        })
                         .collect();
+                    substituted.extend(
+                        callee
+                            .statements
+                            .iter()
+                            .map(|statement| substitute_statement(statement, &replacements)),
+                    );
                     *changed = true;
                     active.insert(name.clone());
                     output.extend(self.expand_statements(
@@ -117,6 +169,9 @@ impl InlineBodySet {
                         stable_variables,
                         active,
                         changed,
+                        locals,
+                        occupied_names,
+                        next_local_id,
                     ));
                     active.remove(name);
                 }
@@ -126,8 +181,24 @@ impl InlineBodySet {
                     else_body,
                 } => output.push(Statement::If {
                     condition: condition.clone(),
-                    then_body: self.expand_statements(then_body, stable_variables, active, changed),
-                    else_body: self.expand_statements(else_body, stable_variables, active, changed),
+                    then_body: self.expand_statements(
+                        then_body,
+                        stable_variables,
+                        active,
+                        changed,
+                        locals,
+                        occupied_names,
+                        next_local_id,
+                    ),
+                    else_body: self.expand_statements(
+                        else_body,
+                        stable_variables,
+                        active,
+                        changed,
+                        locals,
+                        occupied_names,
+                        next_local_id,
+                    ),
                 }),
                 _ => output.push(statement.clone()),
             }
@@ -277,7 +348,7 @@ impl InlineBodySet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mwcc_syntax_trees::{BinaryOperator, Parameter, Pointee, Type};
+    use mwcc_syntax_trees::{BinaryOperator, LocalDeclaration, Parameter, Pointee, Type};
 
     fn function(name: &str, parameters: Vec<Parameter>, statements: Vec<Statement>) -> Function {
         Function {
@@ -297,6 +368,95 @@ mod tests {
             text_deferred: false,
             peephole_disabled: false,
         }
+    }
+
+    fn local(name: &str, declared_type: Type, initializer: Expression) -> LocalDeclaration {
+        LocalDeclaration {
+            declared_type,
+            name: name.into(),
+            initializer: Some(initializer),
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        }
+    }
+
+    #[test]
+    fn alpha_renames_locals_and_initializes_them_at_each_call_site() {
+        let mut adjust = function(
+            "adjust",
+            vec![Parameter {
+                parameter_type: Type::Int,
+                name: "input".into(),
+            }],
+            vec![
+                Statement::Assign {
+                    name: "value".into(),
+                    value: Expression::Binary {
+                        operator: BinaryOperator::Add,
+                        left: Box::new(Expression::Variable("value".into())),
+                        right: Box::new(Expression::IntegerLiteral(1)),
+                    },
+                },
+                Statement::Expression(Expression::Call {
+                    name: "consume".into(),
+                    arguments: vec![Expression::Variable("value".into())],
+                }),
+            ],
+        );
+        adjust.locals = vec![local(
+            "value",
+            Type::Int,
+            Expression::Variable("input".into()),
+        )];
+        let mut caller = function(
+            "caller",
+            vec![Parameter {
+                parameter_type: Type::Int,
+                name: "input".into(),
+            }],
+            vec![
+                Statement::Expression(Expression::Call {
+                    name: "adjust".into(),
+                    arguments: vec![Expression::Variable("input".into())],
+                }),
+                Statement::Expression(Expression::Call {
+                    name: "adjust".into(),
+                    arguments: vec![Expression::Variable("input".into())],
+                }),
+            ],
+        );
+        caller.locals = vec![local("value", Type::Int, Expression::IntegerLiteral(9))];
+
+        let expanded = InlineBodySet::analyze(&[adjust])
+            .expand_calls(&caller)
+            .expect("a local-bearing retained body should compose");
+        assert_eq!(expanded.locals.len(), 3);
+        let first = &expanded.locals[1].name;
+        let second = &expanded.locals[2].name;
+        assert_ne!(first, "value");
+        assert_ne!(first, second);
+        assert!(expanded.locals[1..]
+            .iter()
+            .all(|local| local.initializer.is_none()));
+        assert!(matches!(
+            expanded.statements.as_slice(),
+            [
+                Statement::Assign { name: first_init, value: Expression::Variable(first_value) },
+                Statement::Assign { name: first_update, .. },
+                Statement::Expression(Expression::Call { arguments: first_arguments, .. }),
+                Statement::Assign { name: second_init, value: Expression::Variable(second_value) },
+                Statement::Assign { name: second_update, .. },
+                Statement::Expression(Expression::Call { arguments: second_arguments, .. }),
+            ] if first_init == first && first_update == first && first_value == "input"
+                && matches!(first_arguments.as_slice(), [Expression::Variable(name)] if name == first)
+                && second_init == second && second_update == second && second_value == "input"
+                && matches!(second_arguments.as_slice(), [Expression::Variable(name)] if name == second)
+        ));
     }
 
     #[test]
@@ -416,6 +576,47 @@ mod tests {
                 ..
             }
         ] if matches!(base.as_ref(), Expression::MemberAddress { offset: 104, .. })));
+    }
+
+    #[test]
+    fn expands_a_stable_member_address_argument() {
+        let setter = function(
+            "set_scale",
+            vec![Parameter {
+                parameter_type: Type::Pointer(Pointee::Float),
+                name: "scale".into(),
+            }],
+            vec![Statement::Expression(Expression::Call {
+                name: "consume_scale".into(),
+                arguments: vec![Expression::Variable("scale".into())],
+            })],
+        );
+        let caller = function(
+            "caller",
+            vec![Parameter {
+                parameter_type: Type::StructPointer { element_size: 64 },
+                name: "jobj".into(),
+            }],
+            vec![Statement::Expression(Expression::Call {
+                name: "set_scale".into(),
+                arguments: vec![Expression::AddressOf {
+                    operand: Box::new(Expression::Member {
+                        base: Box::new(Expression::Variable("jobj".into())),
+                        offset: 44,
+                        member_type: Type::Float,
+                        index_stride: None,
+                    }),
+                }],
+            })],
+        );
+
+        let expanded = InlineBodySet::analyze(&[setter])
+            .expand_calls(&caller)
+            .expect("a stable lvalue address should compose");
+        assert!(matches!(expanded.statements.as_slice(), [
+            Statement::Expression(Expression::Call { arguments, .. })
+        ] if matches!(arguments.as_slice(), [Expression::AddressOf { operand }]
+            if matches!(operand.as_ref(), Expression::Member { offset: 44, .. }))));
     }
 
     #[test]

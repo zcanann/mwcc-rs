@@ -4,28 +4,41 @@ use mwcc_syntax_trees::{Expression, Function, Statement, Type};
 use std::collections::HashSet;
 
 pub(super) fn composable_function(function: &Function) -> bool {
+    let local_names: HashSet<&str> = function
+        .locals
+        .iter()
+        .map(|local| local.name.as_str())
+        .collect();
     function.return_type == Type::Void
-        && function.locals.is_empty()
+        && function.locals.iter().all(|local| {
+            !local.is_static
+                && !local.is_volatile
+                && local.array_length.is_none()
+                && local.initializer.is_some()
+        })
         && function.guards.is_empty()
         && function.return_expression.is_none()
         && function.asm_body.is_none()
-        && composable_statements(&function.statements)
+        && composable_statements(&function.statements, &local_names)
         && function
             .parameters
             .iter()
             .all(|parameter| !variable_is_modified_or_escaped(function, &parameter.name))
 }
 
-fn composable_statements(statements: &[Statement]) -> bool {
+fn composable_statements(statements: &[Statement], local_names: &HashSet<&str>) -> bool {
     statements.iter().all(|statement| match statement {
         Statement::Store { .. } | Statement::Expression(_) => true,
+        Statement::Assign { name, .. } => local_names.contains(name.as_str()),
         Statement::If {
             then_body,
             else_body,
             ..
-        } => composable_statements(then_body) && composable_statements(else_body),
-        Statement::Assign { .. }
-        | Statement::Return(_)
+        } => {
+            composable_statements(then_body, local_names)
+                && composable_statements(else_body, local_names)
+        }
+        Statement::Return(_)
         | Statement::Switch { .. }
         | Statement::Break
         | Statement::Continue
@@ -44,6 +57,24 @@ fn stable_argument(expression: &Expression, stable_variables: &HashSet<String>) 
         // complete-object base, so retained inline bodies may substitute it
         // without inventing a temporary or changing evaluation count.
         Expression::MemberAddress { base, .. } => stable_argument(base, stable_variables),
+        // Taking an lvalue's address does not read or mutate the object. Repeating
+        // a stable base/index calculation in an expanded setter therefore
+        // preserves both its value and its evaluation count.
+        Expression::AddressOf { operand } => stable_lvalue_address(operand, stable_variables),
+        _ => false,
+    }
+}
+
+fn stable_lvalue_address(expression: &Expression, stable_variables: &HashSet<String>) -> bool {
+    match expression {
+        Expression::Variable(_) => true,
+        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
+            stable_argument(base, stable_variables)
+        }
+        Expression::Index { base, index } => {
+            stable_argument(base, stable_variables) && stable_argument(index, stable_variables)
+        }
+        Expression::Dereference { pointer } => stable_argument(pointer, stable_variables),
         _ => false,
     }
 }
@@ -265,8 +296,13 @@ fn statement_modifies_or_escapes(statement: &Statement, name: &str) -> bool {
 
 fn expression_modifies_or_escapes(expression: &Expression, name: &str) -> bool {
     match expression {
-        Expression::AddressOf { operand }
-        | Expression::PostStep {
+        // `&local` exposes the local object's storage. `&pointer->member` only
+        // exposes the pointee; it cannot change the pointer value substituted
+        // into a retained inline body.
+        Expression::AddressOf { operand } => {
+            matches!(operand.as_ref(), Expression::Variable(variable) if variable == name)
+        }
+        Expression::PostStep {
             target: operand, ..
         } => expression_mentions(operand, name),
         Expression::Assign { target, value } => {
