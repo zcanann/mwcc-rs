@@ -3765,9 +3765,11 @@ impl Parser {
             }
             let declaration_line = self.current_location().line;
             let mut is_static = false;
+            let mut is_extern = false;
             while let Token::Identifier(word) = self.peek() {
                 match word.as_str() {
                     "static" => is_static = true,
+                    "extern" => is_extern = true,
                     "register" | "auto" => {}
                     _ => break,
                 }
@@ -3780,6 +3782,20 @@ impl Parser {
             }
             let declared_type = self.parse_type()?;
             let is_volatile = self.last_type_was_volatile;
+            if is_extern
+                && matches!(self.peek(), Token::Identifier(_))
+                && *self.peek_at(1) == Token::ParenOpen
+            {
+                let name = self.parse_identifier()?;
+                self.parse_block_function_prototype(&name, declared_type)?;
+                self.expect(Token::Semicolon)?;
+                continue;
+            }
+            if is_extern {
+                return Err(Diagnostic::error(
+                    "a block-scope extern object declaration is not supported yet (roadmap)",
+                ));
+            }
             // An array-typedef local (`Mtx proj;`) is exactly the flat local array
             // `f32 proj[12];` — reuse that machinery (frame codegen still defers it;
             // task #19). Extra brackets/stars/initializers are unmeasured.

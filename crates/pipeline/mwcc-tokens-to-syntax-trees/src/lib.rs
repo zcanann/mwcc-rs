@@ -4761,6 +4761,31 @@ blr\n\
     }
 
     #[test]
+    fn registers_a_block_scope_extern_function_prototype() {
+        let source = r#"
+            static void stripped() {
+                extern void F(float*);
+                float values[3];
+                F(values);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Call { name, .. }
+            )] if name == "F__FPf"
+        ));
+    }
+
+    #[test]
     fn preserves_else_if_after_a_bare_void_return() {
         let source = r#"
             void work(void);

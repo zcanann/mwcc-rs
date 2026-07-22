@@ -592,6 +592,40 @@ impl Parser {
         Ok(CxxFunctionType::new(return_type, parameters, variadic))
     }
 
+    /// Consume and register a block-scope function declaration such as
+    /// `extern void F(float*);`. It has external linkage but declaration scope
+    /// limited to the containing block; recording it in the current parser's
+    /// free-function table gives later calls their C++ ABI name without
+    /// materializing a file-scope definition.
+    pub(crate) fn parse_block_function_prototype(
+        &mut self,
+        source_name: &str,
+        return_type: Type,
+    ) -> Compilation<()> {
+        let return_identity = self.take_cxx_type_identity(return_type, false);
+        let function_type = self.parse_cxx_function_type(return_identity)?;
+        if self.cplusplus {
+            let mangled = self.mangle_typed_free_function(
+                source_name,
+                &function_type.parameters,
+                function_type.variadic,
+            )?;
+            let storage_parameters: Vec<Type> = function_type
+                .parameters
+                .iter()
+                .map(|parameter| parameter.source_type)
+                .collect();
+            self.register_free_cxx_function(
+                source_name,
+                &mangled,
+                &storage_parameters,
+                &function_type.parameters,
+                function_type.variadic,
+            );
+        }
+        Ok(())
+    }
+
     fn named_namespace_scopes(&self) -> Vec<&str> {
         self.namespace_stack
             .iter()
