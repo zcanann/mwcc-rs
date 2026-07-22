@@ -4465,4 +4465,29 @@ blr\n\
         assert!(!unit.functions[2].peephole_disabled);
         assert_eq!(unit.deferred_function_names, ["scoped"]);
     }
+
+    #[test]
+    fn inferred_pointer_struct_array_length_counts_rows_not_fields() {
+        let source = r#"
+            struct Entry { int* value; int tag; };
+            static int value;
+            static struct Entry table[] = { { &value, 7 } };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let table = unit
+            .globals
+            .iter()
+            .find(|global| global.name == "table")
+            .unwrap();
+
+        assert_eq!(table.array_length, Some(1));
+        assert_eq!(table.address_initializer.as_ref().unwrap().len(), 2);
+    }
 }

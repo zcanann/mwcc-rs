@@ -8,6 +8,7 @@
 mod cxx_analysis_residues;
 mod cxx_rtti_names;
 mod function_order;
+mod global_initializers;
 mod inline_ordinal_positions;
 mod reference_analysis;
 
@@ -970,19 +971,19 @@ fn compile(
             // run — both handled by the writer now, so it passes through. A CONST
             // table (.sdata2/.rodata) and a static table with EXTERN targets (their
             // undef-symbol placement is unmeasured) keep the defer.
-            let static_unit_function_table = global.is_static
-                && !global.is_const
-                && global.array_length.is_some()
-                && elements.iter().all(|element| {
-                    matches!(element, PointerElement::Symbol(name)
-                        if machine_functions.iter().any(|function| &function.name == name))
-                        || matches!(element, PointerElement::Null)
-                });
+            let static_unit_function_table = global_initializers::private_unit_function_table(
+                global,
+                elements,
+                &machine_functions,
+            );
+            let static_unit_data_table =
+                global_initializers::private_unit_data_table(global, elements, &unit.globals);
             if (global.is_static || global.is_const)
                 && global.section.is_none()
                 && !single_target
                 && !all_null
                 && !static_unit_function_table
+                && !static_unit_data_table
             {
                 return Err(Diagnostic::error(
                     "a static/const pointer-address global is not supported yet (roadmap)",
@@ -1092,7 +1093,10 @@ fn compile(
                 // or a static unit-function TABLE binds LOCAL; a plain writable
                 // pointer global stays GLOBAL as before.
                 is_static: global.is_static
-                    && (global.section.is_some() || global.is_const || static_unit_function_table),
+                    && (global.section.is_some()
+                        || global.is_const
+                        || static_unit_function_table
+                        || static_unit_data_table),
                 is_explicit_zero,
                 preassigned_anonymous_ordinal: None,
                 relocations,

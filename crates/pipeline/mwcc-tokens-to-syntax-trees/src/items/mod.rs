@@ -2373,6 +2373,19 @@ impl Parser {
                             _ => 1,
                         };
                         Some((bytes.len() / struct_size) as u16)
+                    } else if let (Some(elements), Some(field_types)) =
+                        (&address_initializer, &table_fields)
+                    {
+                        // Pointer-bearing struct tables use a flattened address
+                        // sequence internally. Their C array length counts struct
+                        // rows, not flattened fields; the distinction is observable
+                        // in both sizeof and legacy debug array bounds.
+                        if field_types.is_empty() || elements.len() % field_types.len() != 0 {
+                            return Err(Diagnostic::error(
+                                "a struct pointer table initializer has an incomplete row",
+                            ));
+                        }
+                        Some((elements.len() / field_types.len()) as u16)
                     } else {
                         // An inferred dimension takes its length from the flat
                         // initializer (constant values or address elements).
