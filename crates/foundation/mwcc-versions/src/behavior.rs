@@ -16,20 +16,20 @@ use crate::flags::{GlobalAddressing, Optimization};
 use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
     CoefficientTableRelocationStyle, CommaValuePlacementStyle, ComputedStoreIssueStyle,
-    ConstantStoreScheduleStyle, DataSectionRelocationStyle, FieldMergeStyle,
-    FixedAddressConstantStoreStyle, FixedAddressParameterizedRmwStyle,
+    ConstantStoreScheduleStyle, CxxDestructorPrologueStyle, DataSectionRelocationStyle,
+    FieldMergeStyle, FixedAddressConstantStoreStyle, FixedAddressParameterizedRmwStyle,
     FixedAddressPollAddressStyle, FixedAddressRmwStyle, FoldedFloatCompareLinkageStyle,
     FrameConvention, FrexpFamilyStyle, FunctionOrdinalAccountingStyle, GlobalArrayDecayStoreStyle,
     GlobalArrayIndexStyle, GuardedByteCopyStyle, GuardedMemberInitializationStyle,
-    IndexedRmwAssignmentStyle, IntCallResultConversionStyle,
-    IntegerComparisonValueStyle, IntegerDagStyle, IntegerLoopStyle, IntegerSelectStyle,
-    JumpTableBaseStyle, LeadingFrameGuardStoreStyle, LocalDataSymbolOrder, LogicalOrValueStyle,
-    LongLongTimerStyle, MaterializationCopyStyle, MemCopyRemainderMaskStyle,
-    MemCopyWordScheduleStyle, NarrowCompoundShiftStyle, NarrowComputedReturnStyle,
-    NarrowGuardScheduleStyle, NarrowStoreConversionStyle, NegativePowerOfTwoMultiplyStyle,
-    NestedGlobalDispatchSchedule, PlainLinkageEpilogueStyle, PunnedConditionalWritebackStyle,
-    PunnedFloatFrameConvention, PunnedShiftWritebackStyle, QueueServiceInliningStyle,
-    RaiseFamilyStyle, ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle, SharedFloatDagStyle,
+    IndexedRmwAssignmentStyle, IntCallResultConversionStyle, IntegerComparisonValueStyle,
+    IntegerDagStyle, IntegerLoopStyle, IntegerSelectStyle, JumpTableBaseStyle,
+    LeadingFrameGuardStoreStyle, LocalDataSymbolOrder, LogicalOrValueStyle, LongLongTimerStyle,
+    MaterializationCopyStyle, MemCopyRemainderMaskStyle, MemCopyWordScheduleStyle,
+    NarrowCompoundShiftStyle, NarrowComputedReturnStyle, NarrowGuardScheduleStyle,
+    NarrowStoreConversionStyle, NegativePowerOfTwoMultiplyStyle, NestedGlobalDispatchSchedule,
+    PlainLinkageEpilogueStyle, PunnedConditionalWritebackStyle, PunnedFloatFrameConvention,
+    PunnedShiftWritebackStyle, QueueServiceInliningStyle, RaiseFamilyStyle,
+    ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle, SharedFloatDagStyle,
     SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, StoredGlobalReadStyle,
     SymbolTraversalStyle, TrigDispatcherStyle, TrigZeroConstantPlacement, VaArgScheduleStyle,
     ValueTrackedMutationStyle, WideConstantAddSchedule,
@@ -573,6 +573,8 @@ pub struct Behavior {
     pub frexp_scale_before_eptr_store: bool,
     /// Placement/order of the non-leaf linkage area.
     pub frame_convention: FrameConvention,
+    /// Prologue schedule for compiler-generated deleting destructors.
+    pub cxx_destructor_prologue_style: CxxDestructorPrologueStyle,
     /// Saved-LR reload order for a linkage-first frame with no saved GPRs.
     pub plain_linkage_epilogue_style: PlainLinkageEpilogueStyle,
     /// Whether stack-using leaf functions carry unwind-table entries.
@@ -856,6 +858,7 @@ impl Behavior {
                 .preload_ephemeral_float_compare_literal(),
             frexp_scale_before_eptr_store: config.build.profile.frexp_scale_before_eptr_store(),
             frame_convention: config.build.profile.frame_convention(),
+            cxx_destructor_prologue_style: config.build.profile.cxx_destructor_prologue_style(),
             plain_linkage_epilogue_style: config.build.profile.plain_linkage_epilogue_style(),
             emit_leaf_frame_unwind: config.build.profile.emit_leaf_frame_unwind(),
             constant_join_return_precedes_lr_reload: config
@@ -1699,6 +1702,14 @@ mod tests {
     fn gc41_coalesces_one_folded_float_guard_label() {
         let mainline = Behavior::resolve(&CompilerConfig::new(build::GC_2_7));
         let gc41 = Behavior::resolve(&CompilerConfig::new(build::GC_3_0A3P1));
+        assert_eq!(
+            mainline.cxx_destructor_prologue_style,
+            CxxDestructorPrologueStyle::EarlyNullCheck
+        );
+        assert_eq!(
+            gc41.cxx_destructor_prologue_style,
+            CxxDestructorPrologueStyle::SavedHomesBeforeNullCheck
+        );
         assert_eq!(mainline.folded_float_guard_label_bump, 2);
         assert_eq!(gc41.folded_float_guard_label_bump, 3);
         assert_eq!(
@@ -1713,10 +1724,7 @@ mod tests {
         assert_eq!(gc41.cxx_inline_ipa_call_label_bump, 0);
         assert_eq!(mainline.cxx_rtti_virtual_method_label_weight, 4);
         assert_eq!(mainline.cxx_rtti_virtual_destructor_label_weight, 6);
-        assert_eq!(
-            mainline.cxx_rtti_inherited_virtual_destructor_label_bump,
-            2
-        );
+        assert_eq!(mainline.cxx_rtti_inherited_virtual_destructor_label_bump, 2);
         assert_eq!(mainline.cxx_rtti_initial_virtual_label_discount, 4);
         assert_eq!(gc41.cxx_rtti_virtual_method_label_weight, 5);
         assert_eq!(gc41.cxx_rtti_virtual_destructor_label_weight, 9);
@@ -1797,10 +1805,7 @@ mod tests {
             style(build::GC_1_2_5N),
             GuardedByteCopyStyle::LogicalCompare
         );
-        assert_eq!(
-            style(build::GC_2_7),
-            GuardedByteCopyStyle::LogicalCompare
-        );
+        assert_eq!(style(build::GC_2_7), GuardedByteCopyStyle::LogicalCompare);
         assert_eq!(
             style(build::GC_3_0A3P1),
             GuardedByteCopyStyle::SignedCompare

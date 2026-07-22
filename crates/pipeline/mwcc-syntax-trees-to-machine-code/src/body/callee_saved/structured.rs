@@ -8,6 +8,7 @@
 use super::structured_locals::{
     is_definitely_assigned_before_reads, plan_deferred_saved_homes, plan_ephemeral_locals,
 };
+use super::structured_entry_alias::plan_first_call_alias;
 #[allow(unused_imports)]
 use super::*;
 
@@ -156,7 +157,7 @@ impl Generator {
             self.output
                 .instructions
                 .push(Instruction::move_register(home, incoming));
-            saved_parameter_homes.push((parameter.name.clone(), home));
+            saved_parameter_homes.push((parameter.name.clone(), home, incoming));
         }
         let deferred_home_base = home_index;
         for group in 0..deferred_home_plan.group_count {
@@ -218,7 +219,15 @@ impl Generator {
             );
         }
         self.plan_structured_float_handoff(function, &ephemeral_locals);
-        for (name, home) in saved_parameter_homes {
+        let entry_parameter_alias =
+            plan_first_call_alias(&function.statements, &saved_parameter_homes);
+        for (name, home, _) in saved_parameter_homes {
+            if entry_parameter_alias
+                .as_ref()
+                .is_some_and(|alias| alias.name == name)
+            {
+                continue;
+            }
             self.locations
                 .get_mut(&name)
                 .expect("eligibility checked")
@@ -228,8 +237,24 @@ impl Generator {
         let mut return_branches = Vec::new();
         let mut label_positions = std::collections::HashMap::new();
         let mut pending_gotos = Vec::new();
+        let statement_start = if let Some(alias) = entry_parameter_alias {
+            self.emit_structured_statements(
+                &function.statements[..1],
+                function,
+                &mut return_branches,
+                &mut label_positions,
+                &mut pending_gotos,
+            )?;
+            self.locations
+                .get_mut(&alias.name)
+                .expect("planned saved parameter")
+                .register = alias.home;
+            1
+        } else {
+            0
+        };
         self.emit_structured_statements(
-            &function.statements,
+            &function.statements[statement_start..],
             function,
             &mut return_branches,
             &mut label_positions,

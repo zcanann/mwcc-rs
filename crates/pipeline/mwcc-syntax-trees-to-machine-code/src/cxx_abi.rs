@@ -14,7 +14,7 @@ use mwcc_machine_code::{
     FrameInfo, Instruction, MachineFunction, Relocation, RelocationKind, RelocationTarget,
 };
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, GlobalDeclaration, Statement, Type};
-use mwcc_versions::{Behavior, CompilerConfig, FrameConvention};
+use mwcc_versions::{Behavior, CompilerConfig, CxxDestructorPrologueStyle, FrameConvention};
 
 /// Lower a constructor composed from non-virtual base calls, a complete vtable
 /// group installation, and call-valued member stores. These values all depend
@@ -30,7 +30,10 @@ pub(crate) fn lower_composed_constructor(
         || !function.name.starts_with("__ct__")
         || function.parameters.len() != 1
         || function.parameters[0].name != "this"
-        || !matches!(function.parameters[0].parameter_type, Type::StructPointer { .. })
+        || !matches!(
+            function.parameters[0].parameter_type,
+            Type::StructPointer { .. }
+        )
         || !function.locals.is_empty()
         || !function.guards.is_empty()
         || !matches!(
@@ -54,11 +57,7 @@ pub(crate) fn lower_composed_constructor(
     }
     let mut vptr_end = vptr_start;
     let mut vptrs = Vec::new();
-    while let Some(vptr) = function
-        .statements
-        .get(vptr_end)
-        .and_then(parse_vptr_store)
-    {
+    while let Some(vptr) = function.statements.get(vptr_end).and_then(parse_vptr_store) {
         vptrs.push(vptr);
         vptr_end += 1;
     }
@@ -151,7 +150,9 @@ pub(crate) fn lower_composed_constructor(
             a: vtable_register,
             immediate: 0,
         });
-        output.instructions.push(Instruction::Or { a: 3, s: 31, b: 31 });
+        output
+            .instructions
+            .push(Instruction::Or { a: 3, s: 31, b: 31 });
         relocations.extend([
             Relocation {
                 instruction_index: vtable_hi,
@@ -265,7 +266,9 @@ pub(crate) fn lower_composed_constructor(
                     a: 31,
                     offset: i16::try_from(*target_offset).ok()?,
                 });
-                output.instructions.push(Instruction::Or { a: 3, s: 31, b: 31 });
+                output
+                    .instructions
+                    .push(Instruction::Or { a: 3, s: 31, b: 31 });
                 output.instructions.push(Instruction::OrImmediate {
                     a: 0,
                     s: 0,
@@ -302,7 +305,9 @@ pub(crate) fn lower_composed_constructor(
             symbol_order.push(callee.to_string());
         }
         if !matches!(tail_actions.last(), Some(ConstructorTail::BitOr { .. })) {
-            output.instructions.push(Instruction::Or { a: 3, s: 31, b: 31 });
+            output
+                .instructions
+                .push(Instruction::Or { a: 3, s: 31, b: 31 });
         }
     }
 
@@ -359,9 +364,7 @@ fn emit_adjusted_this(instructions: &mut Vec<Instruction>, adjustment: u32) -> O
 fn this_adjustment(expression: &Expression) -> Option<u32> {
     match expression {
         Expression::Variable(name) if name == "this" => Some(0),
-        Expression::MemberAddress { base, offset, .. }
-            if matches!(base.as_ref(), Expression::Variable(name) if name == "this") =>
-        {
+        Expression::MemberAddress { base, offset, .. } if matches!(base.as_ref(), Expression::Variable(name) if name == "this") => {
             Some(*offset)
         }
         _ => None,
@@ -540,7 +543,10 @@ pub(crate) fn lower_composed_destructor(
         || !function.name.starts_with("__dt__")
         || function.parameters.len() != 2
         || function.parameters[0].name != "this"
-        || !matches!(function.parameters[0].parameter_type, Type::StructPointer { .. })
+        || !matches!(
+            function.parameters[0].parameter_type,
+            Type::StructPointer { .. }
+        )
         || function.parameters[1].name != "__destroy"
         || function.parameters[1].parameter_type != Type::Short
         || !function.locals.is_empty()
@@ -601,6 +607,7 @@ pub(crate) fn lower_composed_destructor(
         return None;
     }
 
+    let behavior = Behavior::resolve(&config);
     let mut output = MachineFunction::new(function.name.clone());
     output.instructions.extend([
         Instruction::StoreWordWithUpdate {
@@ -609,30 +616,56 @@ pub(crate) fn lower_composed_destructor(
             offset: -16,
         },
         Instruction::MoveFromLinkRegister { d: 0 },
-        Instruction::CompareWordImmediate { a: 3, immediate: 0 },
-        Instruction::StoreWord {
-            s: 0,
-            a: 1,
-            offset: 20,
-        },
-        Instruction::StoreWord {
-            s: 31,
-            a: 1,
-            offset: 12,
-        },
-        Instruction::Or { a: 31, s: 4, b: 4 },
-        Instruction::StoreWord {
-            s: 30,
-            a: 1,
-            offset: 8,
-        },
-        Instruction::Or { a: 30, s: 3, b: 3 },
-        Instruction::BranchConditionalForward {
+    ]);
+    match behavior.cxx_destructor_prologue_style {
+        CxxDestructorPrologueStyle::EarlyNullCheck => output.instructions.extend([
+            Instruction::CompareWordImmediate { a: 3, immediate: 0 },
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 20,
+            },
+            Instruction::StoreWord {
+                s: 31,
+                a: 1,
+                offset: 12,
+            },
+            Instruction::Or { a: 31, s: 4, b: 4 },
+            Instruction::StoreWord {
+                s: 30,
+                a: 1,
+                offset: 8,
+            },
+            Instruction::Or { a: 30, s: 3, b: 3 },
+        ]),
+        CxxDestructorPrologueStyle::SavedHomesBeforeNullCheck => output.instructions.extend([
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 20,
+            },
+            Instruction::StoreWord {
+                s: 31,
+                a: 1,
+                offset: 12,
+            },
+            Instruction::StoreWord {
+                s: 30,
+                a: 1,
+                offset: 8,
+            },
+            Instruction::Or { a: 30, s: 3, b: 3 },
+            Instruction::Or { a: 31, s: 4, b: 4 },
+            Instruction::CompareWordImmediate { a: 3, immediate: 0 },
+        ]),
+    }
+    output
+        .instructions
+        .push(Instruction::BranchConditionalForward {
             options: 12,
             condition_bit: 2,
             target: 0,
-        },
-    ]);
+        });
     let null_branch = 8;
     let mut relocations = Vec::new();
     let mut referenced_functions = Vec::new();
@@ -643,11 +676,13 @@ pub(crate) fn lower_composed_destructor(
             .filter(|summary| summary.adjustment == 0);
         if let Some(summary) = inlined_base {
             let skip_branch = output.instructions.len();
-            output.instructions.push(Instruction::BranchConditionalForward {
-                options: 12,
-                condition_bit: 2,
-                target: 0,
-            });
+            output
+                .instructions
+                .push(Instruction::BranchConditionalForward {
+                    options: 12,
+                    condition_bit: 2,
+                    target: 0,
+                });
             output.instructions.push(Instruction::load_immediate(4, 0));
             let instruction_index = output.instructions.len();
             output.instructions.push(Instruction::BranchAndLink {
@@ -668,9 +703,7 @@ pub(crate) fn lower_composed_destructor(
             continue;
         }
         if index == 0 {
-            output
-                .instructions
-                .push(Instruction::load_immediate(4, 0));
+            output.instructions.push(Instruction::load_immediate(4, 0));
             if *adjustment != 0 {
                 output.instructions.push(Instruction::AddImmediate {
                     d: 3,
@@ -680,9 +713,7 @@ pub(crate) fn lower_composed_destructor(
             }
         } else {
             emit_adjusted_saved_object(&mut output.instructions, *adjustment)?;
-            output
-                .instructions
-                .push(Instruction::load_immediate(4, 0));
+            output.instructions.push(Instruction::load_immediate(4, 0));
         }
         let instruction_index = output.instructions.len();
         output.instructions.push(Instruction::BranchAndLink {
@@ -772,10 +803,7 @@ pub(crate) fn lower_composed_destructor(
     Some(output)
 }
 
-fn emit_adjusted_saved_object(
-    instructions: &mut Vec<Instruction>,
-    adjustment: u32,
-) -> Option<()> {
+fn emit_adjusted_saved_object(instructions: &mut Vec<Instruction>, adjustment: u32) -> Option<()> {
     if adjustment == 0 {
         instructions.push(Instruction::Or { a: 3, s: 30, b: 30 });
     } else {
@@ -808,7 +836,10 @@ pub(crate) fn lower_virtual_constructor(
     if !function.name.starts_with("__ct__")
         || function.parameters.len() != 1
         || function.parameters[0].name != "this"
-        || !matches!(function.parameters[0].parameter_type, Type::StructPointer { .. })
+        || !matches!(
+            function.parameters[0].parameter_type,
+            Type::StructPointer { .. }
+        )
         || !function.locals.is_empty()
         || !function.guards.is_empty()
         || function.statements.len() != 1
@@ -880,7 +911,10 @@ pub(crate) fn lower_virtual_destructor(
     if !function.name.starts_with("__dt__")
         || function.parameters.len() != 2
         || function.parameters[0].name != "this"
-        || !matches!(function.parameters[0].parameter_type, Type::StructPointer { .. })
+        || !matches!(
+            function.parameters[0].parameter_type,
+            Type::StructPointer { .. }
+        )
         || function.parameters[1].name != "__destroy"
         || function.parameters[1].parameter_type != Type::Short
     {
@@ -932,10 +966,22 @@ pub(crate) fn lower_virtual_destructor(
     let behavior = Behavior::resolve(&config);
     output.instructions = if behavior.frame_convention == FrameConvention::Predecrement {
         vec![
-            Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 },
+            Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            },
             Instruction::MoveFromLinkRegister { d: 0 },
-            Instruction::StoreWord { s: 0, a: 1, offset: 20 },
-            Instruction::StoreWord { s: 31, a: 1, offset: 12 },
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 20,
+            },
+            Instruction::StoreWord {
+                s: 31,
+                a: 1,
+                offset: 12,
+            },
             Instruction::OrRecord { a: 31, s: 3, b: 3 },
             Instruction::BranchConditionalForward {
                 options: 12,
@@ -944,96 +990,106 @@ pub(crate) fn lower_virtual_destructor(
             },
             Instruction::load_immediate_shifted(5, 0),
             Instruction::ExtendSignHalfwordRecord { a: 0, s: 4 },
-            Instruction::AddImmediate { d: 0, a: 5, immediate: 0 },
-            Instruction::StoreWord { s: 0, a: 31, offset: vptr_offset },
+            Instruction::AddImmediate {
+                d: 0,
+                a: 5,
+                immediate: 0,
+            },
+            Instruction::StoreWord {
+                s: 0,
+                a: 31,
+                offset: vptr_offset,
+            },
             Instruction::BranchConditionalForward {
                 options: 4,
                 condition_bit: 1,
                 target: 12,
             },
-            Instruction::BranchAndLink { target: deleting_callee.clone() },
-            Instruction::LoadWord { d: 0, a: 1, offset: 20 },
+            Instruction::BranchAndLink {
+                target: deleting_callee.clone(),
+            },
+            Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: 20,
+            },
             Instruction::Or { a: 3, s: 31, b: 31 },
-            Instruction::LoadWord { d: 31, a: 1, offset: 12 },
+            Instruction::LoadWord {
+                d: 31,
+                a: 1,
+                offset: 12,
+            },
             Instruction::MoveToLinkRegister { s: 0 },
-            Instruction::AddImmediate { d: 1, a: 1, immediate: 16 },
+            Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: 16,
+            },
             Instruction::BranchToLinkRegister,
         ]
     } else {
         vec![
-        Instruction::MoveFromLinkRegister { d: 0 },
-        Instruction::StoreWord {
-            s: 0,
-            a: 1,
-            offset: 4,
-        },
-        Instruction::StoreWordWithUpdate {
-            s: 1,
-            a: 1,
-            offset: -24,
-        },
-        Instruction::StoreWord {
-            s: 31,
-            a: 1,
-            offset: 20,
-        },
-        Instruction::OrRecord {
-            a: 31,
-            s: 3,
-            b: 3,
-        },
-        Instruction::BranchConditionalForward {
-            options: 12,
-            condition_bit: 2,
-            target: 13,
-        },
-        Instruction::load_immediate_shifted(3, 0),
-        Instruction::AddImmediate {
-            d: 3,
-            a: 3,
-            immediate: 0,
-        },
-        Instruction::ExtendSignHalfwordRecord { a: 0, s: 4 },
-        Instruction::StoreWord {
-            s: 3,
-            a: 31,
-            offset: vptr_offset,
-        },
-        Instruction::BranchConditionalForward {
-            options: 4,
-            condition_bit: 1,
-            target: 13,
-        },
-        Instruction::Or {
-            a: 3,
-            s: 31,
-            b: 31,
-        },
-        Instruction::BranchAndLink {
-            target: deleting_callee.clone(),
-        },
-        Instruction::LoadWord {
-            d: 0,
-            a: 1,
-            offset: 28,
-        },
-        Instruction::Or {
-            a: 3,
-            s: 31,
-            b: 31,
-        },
-        Instruction::LoadWord {
-            d: 31,
-            a: 1,
-            offset: 20,
-        },
-        Instruction::AddImmediate {
-            d: 1,
-            a: 1,
-            immediate: 24,
-        },
-        Instruction::MoveToLinkRegister { s: 0 },
-        Instruction::BranchToLinkRegister,
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 4,
+            },
+            Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -24,
+            },
+            Instruction::StoreWord {
+                s: 31,
+                a: 1,
+                offset: 20,
+            },
+            Instruction::OrRecord { a: 31, s: 3, b: 3 },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 13,
+            },
+            Instruction::load_immediate_shifted(3, 0),
+            Instruction::AddImmediate {
+                d: 3,
+                a: 3,
+                immediate: 0,
+            },
+            Instruction::ExtendSignHalfwordRecord { a: 0, s: 4 },
+            Instruction::StoreWord {
+                s: 3,
+                a: 31,
+                offset: vptr_offset,
+            },
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 1,
+                target: 13,
+            },
+            Instruction::Or { a: 3, s: 31, b: 31 },
+            Instruction::BranchAndLink {
+                target: deleting_callee.clone(),
+            },
+            Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: 28,
+            },
+            Instruction::Or { a: 3, s: 31, b: 31 },
+            Instruction::LoadWord {
+                d: 31,
+                a: 1,
+                offset: 20,
+            },
+            Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: 24,
+            },
+            Instruction::MoveToLinkRegister { s: 0 },
+            Instruction::BranchToLinkRegister,
         ]
     };
     let (vtable_hi, vtable_lo, delete_call) =
@@ -1066,8 +1122,7 @@ pub(crate) fn lower_virtual_destructor(
     output.is_weak = function.is_weak;
     output.section = function.section.clone();
     output.force_active = function.force_active;
-    output.anonymous_label_bump =
-        u32::from(behavior.cxx_virtual_destructor_label_bump);
+    output.anonymous_label_bump = u32::from(behavior.cxx_virtual_destructor_label_bump);
     if config.flags.cpp_exceptions {
         output.frame = Some(FrameInfo {
             saved_gpr_count: 1,
