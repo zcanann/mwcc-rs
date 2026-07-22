@@ -66,11 +66,13 @@ mod structured_if_else;
 mod structured_inline_residue;
 mod structured_inline_assertion;
 mod structured_locals;
+mod structured_member_scale_schedule;
 mod structured_liveness;
 mod structured_parameter_home_reuse;
 mod structured_prologue;
 mod structured_store_schedule;
 mod structured_value_versions;
+mod structured_virtual_call_schedule;
 mod pointer_state_call_loop;
 
 pub(crate) use queue_service::{summarize_queue_service, QueueServiceSummary};

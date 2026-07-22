@@ -999,6 +999,8 @@ impl Generator {
         )?;
         self.schedule_structured_float_store_call_arguments();
         self.schedule_structured_aggregate_constructor();
+        self.schedule_structured_member_scales_and_compare();
+        self.schedule_structured_virtual_calls();
         if dense_entry_prefix {
             self.schedule_structured_prefixed_frame_entry();
         }

@@ -61,7 +61,9 @@ pub(super) fn plan_first_call_alias(
     };
     let (name, home, _) = saved_parameters
         .iter()
-        .find(|(name, _, incoming)| *incoming == 3 && expression_reads_name(first, name))?;
+        .find(|(name, _, incoming)| {
+            (3..=10).contains(incoming) && expression_reads_name(first, name)
+        })?;
     Some(EntryParameterAlias {
         name: name.clone(),
         home: *home,
@@ -167,6 +169,27 @@ mod tests {
 
         let alias = plan_first_call_alias(&statements, &saved).expect("eligible alias");
 
+        assert_eq!(alias.boundary, EntryAliasBoundary::AfterFirstConditionTerm);
+    }
+
+    #[test]
+    fn preserves_a_second_parameter_entry_alias_through_the_first_guard_term() {
+        let statements = vec![Statement::If {
+            condition: Expression::Member {
+                base: Box::new(Expression::Variable("object".to_string())),
+                offset: 12,
+                member_type: Type::Int,
+                index_stride: None,
+            },
+            then_body: call(vec![Expression::Variable("object".to_string())]),
+            else_body: vec![],
+        }];
+        let saved = vec![("object".to_string(), 31, 4)];
+
+        let alias = plan_first_call_alias(&statements, &saved).expect("eligible alias");
+
+        assert_eq!(alias.name, "object");
+        assert_eq!(alias.home, 31);
         assert_eq!(alias.boundary, EntryAliasBoundary::AfterFirstConditionTerm);
     }
 
