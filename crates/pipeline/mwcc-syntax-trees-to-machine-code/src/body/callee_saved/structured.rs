@@ -193,12 +193,12 @@ impl Generator {
         // parameter still has its entry-register alias. MWCC can preserve that
         // alias after copying the value to a saved home (`mr r31,r3; lwz ...,r3`)
         // and switches subsequent body uses to the home only after declarations.
-        for local in ephemeral_locals {
+        for local in &ephemeral_locals {
             let class = class_of(local.declared_type).expect("eligibility checked");
             let temporary = match class {
                 ValueClass::General => self.fresh_virtual_general(),
                 ValueClass::Float => self.fresh_virtual_float_preferring(
-                    self.ephemeral_float_home_preference(function),
+                    self.ephemeral_float_home_preference(function, &ephemeral_locals),
                 ),
             };
             if let Some(initializer) = &local.initializer {
@@ -219,7 +219,7 @@ impl Generator {
                 },
             );
         }
-        self.plan_structured_float_handoff(function);
+        self.plan_structured_float_handoff(function, &ephemeral_locals);
         for (name, home) in saved_parameter_homes {
             self.locations
                 .get_mut(&name)

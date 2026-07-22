@@ -16,38 +16,62 @@ impl Generator {
     /// Preferred home of the single ephemeral float lifetime. A later loaded
     /// comparison occupies build 163's f2 work register, so the initializer is
     /// born there and copied to f1 for its eventual call argument.
-    pub(super) fn ephemeral_float_home_preference(&self, function: &Function) -> u8 {
-        if self.behavior.preload_ephemeral_float_compare_literal
-            && function
-                .statements
-                .iter()
-                .skip(1)
-                .any(statement_has_loaded_float_literal_compare)
-        {
+    pub(super) fn ephemeral_float_home_preference(
+        &self,
+        function: &Function,
+        ephemeral_locals: &[&LocalDeclaration],
+    ) -> u8 {
+        if self.structured_float_handoff_local(function, ephemeral_locals).is_some() {
             2
         } else {
             1
         }
     }
 
-    pub(super) fn plan_structured_float_handoff(&mut self, function: &Function) {
-        if self.ephemeral_float_home_preference(function) != 2 {
-            return;
+    fn structured_float_handoff_local<'a>(
+        &self,
+        function: &Function,
+        ephemeral_locals: &'a [&LocalDeclaration],
+    ) -> Option<&'a LocalDeclaration> {
+        if !self.behavior.preload_ephemeral_float_compare_literal
+            || !function
+                .statements
+                .iter()
+                .skip(1)
+                .any(statement_has_loaded_float_literal_compare)
+        {
+            return None;
         }
-        let Some((name, source)) = self.locations.iter().find_map(|(name, location)| {
-            (location.class == ValueClass::Float
-                && mwcc_vreg::Reg::is_virtual_field(location.register))
-            .then(|| (name.clone(), location.register))
-        }) else {
+        let [local] = ephemeral_locals else {
+            return None;
+        };
+        (matches!(local.declared_type, Type::Float | Type::Double)
+            && local
+                .initializer
+                .as_ref()
+                .is_some_and(is_direct_float_memory_load))
+        .then_some(*local)
+    }
+
+    pub(super) fn plan_structured_float_handoff(
+        &mut self,
+        function: &Function,
+        ephemeral_locals: &[&LocalDeclaration],
+    ) {
+        let Some(local) = self.structured_float_handoff_local(function, ephemeral_locals) else {
             return;
         };
+        let name = local.name.clone();
+        let source = self
+            .locations
+            .get(&name)
+            .expect("ephemeral handoff local was just placed")
+            .register;
         let destination = self.fresh_virtual_float_preferring(1);
-        let initializer = function
-            .locals
-            .iter()
-            .find(|local| local.name == name)
-            .and_then(|local| local.initializer.as_ref())
-            .expect("structured float handoff local has an initializer")
+        let initializer = local
+            .initializer
+            .as_ref()
+            .expect("handoff eligibility requires an initializer")
             .clone();
         self.retained_float_compare_value = Some(RetainedFloatCompareValue {
             expression: initializer,
