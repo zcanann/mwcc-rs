@@ -14,6 +14,38 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+struct ScratchDirectory {
+    path: PathBuf,
+}
+
+impl ScratchDirectory {
+    fn create() -> std::io::Result<Self> {
+        let root = std::env::temp_dir();
+        for nonce in 0..u16::MAX {
+            let path = root.join(format!("mwcc-oracle-{}-{nonce}", std::process::id()));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Ok(ScratchDirectory { path }),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "exhausted mwcc-oracle scratch directory names",
+        ))
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for ScratchDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 const COMPILE_FLAGS: &[&str] = &[
     "-nodefaults",
     "-proc",
@@ -69,8 +101,7 @@ fn main() -> std::process::ExitCode {
         .unwrap()
         .to_path_buf();
     let canaries = workspace.join("canaries");
-    let temporary = std::env::temp_dir().join("mwcc-oracle");
-    let _ = std::fs::create_dir_all(&temporary);
+    let temporary = ScratchDirectory::create().expect("cannot create isolated oracle scratch");
 
     println!("== differential oracle vs mwcceppc {build} ==");
     let mut passed = 0u32;
@@ -108,8 +139,8 @@ fn main() -> std::process::ExitCode {
             build_excluded += 1;
             continue;
         }
-        let reference_object = temporary.join("reference.o");
-        let our_object = temporary.join("ours.o");
+        let reference_object = temporary.path().join("reference.o");
+        let our_object = temporary.path().join("ours.o");
         let _ = std::fs::remove_file(&reference_object);
         let _ = std::fs::remove_file(&our_object);
 
@@ -127,8 +158,7 @@ fn main() -> std::process::ExitCode {
             .arg(&real_compiler)
             .args(COMPILE_FLAGS)
             .args(
-                (source.extension().is_some_and(|extension| extension == "c"))
-                    .then_some("-lang=c"),
+                (source.extension().is_some_and(|extension| extension == "c")).then_some("-lang=c"),
             )
             .args(&extra_flags)
             .arg("-c")
