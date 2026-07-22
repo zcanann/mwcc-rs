@@ -1373,7 +1373,13 @@ impl Parser {
                 self.cxx_classes.insert(qualified.to_owned(), class);
             }
             Err(error) if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() => {
-                eprintln!("class layout recovery failed in '{qualified}': {error}");
+                let start = self.position.saturating_sub(24);
+                let end = (self.position + 8).min(self.tokens.len());
+                eprintln!(
+                    "class layout recovery failed in '{qualified}' at token {}: {error}; context {:?}",
+                    self.position,
+                    &self.tokens[start..end]
+                );
             }
             Err(_) => {}
         }

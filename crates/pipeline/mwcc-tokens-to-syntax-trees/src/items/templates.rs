@@ -457,8 +457,11 @@ impl Parser {
             function_pointer_fields.extend(base_layout.function_pointer_fields);
             offset = base_layout.size;
         }
-        for field in &template.fields {
-            let (field_type, field_size, natural_alignment, struct_tag) = match &field.field_type {
+        let resolved_fields = template
+            .fields
+            .iter()
+            .map(|field| {
+                let (field_type, field_size, natural_alignment, struct_tag) = match &field.field_type {
                 TemplateFieldType::Parameter(index) => {
                     let resolved = arguments.get(*index)?;
                     if !resolved.known {
@@ -505,25 +508,56 @@ impl Parser {
                     type_alignment(*field_type),
                     None,
                 ),
-            };
-            let alignment = natural_alignment.max(1).max(field.alignment);
+                };
+                Some((
+                    field,
+                    field_type,
+                    field_size,
+                    natural_alignment.max(1).max(field.alignment),
+                    struct_tag,
+                ))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let mut field_index = 0usize;
+        while field_index < resolved_fields.len() {
+            let overlap_group = resolved_fields[field_index].0.overlap_group;
+            let run_end = overlap_group.map_or(field_index + 1, |group| {
+                resolved_fields[field_index..]
+                    .iter()
+                    .take_while(|(field, ..)| field.overlap_group == Some(group))
+                    .count()
+                    + field_index
+            });
+            let alignment = resolved_fields[field_index..run_end]
+                .iter()
+                .map(|(_, _, _, alignment, _)| *alignment)
+                .max()
+                .unwrap_or(1);
             max_alignment = max_alignment.max(alignment);
             offset = offset.div_ceil(alignment) * alignment;
-            fields.insert(
-                field.name.clone(),
-                StructField {
-                    member_type: field_type,
-                    source_fundamental: None,
-                    offset,
-                    struct_tag,
-                    array_element: None,
-                    array_bytes: None,
-                    array_stride: None,
-                    bit_field: None,
-                },
-            );
-            field_order.push(field.name.clone());
-            offset += field_size;
+            let run_offset = offset;
+            let mut run_size = 0u32;
+            for (field, field_type, field_size, _, struct_tag) in
+                &resolved_fields[field_index..run_end]
+            {
+                fields.insert(
+                    field.name.clone(),
+                    StructField {
+                        member_type: *field_type,
+                        source_fundamental: None,
+                        offset: run_offset,
+                        struct_tag: struct_tag.clone(),
+                        array_element: None,
+                        array_bytes: None,
+                        array_stride: None,
+                        bit_field: None,
+                    },
+                );
+                field_order.push(field.name.clone());
+                run_size = run_size.max(*field_size);
+            }
+            offset = run_offset + run_size.div_ceil(alignment) * alignment;
+            field_index = run_end;
         }
         let size = offset.div_ceil(max_alignment) * max_alignment;
         Some(StructLayout {
@@ -910,6 +944,7 @@ impl Parser {
         cursor += 1;
         let mut depth = 1i32;
         let mut fields = Vec::new();
+        let mut next_overlap_group = 0u32;
         while depth > 0 {
             match self.tokens.get(cursor) {
                 Some(Token::BraceOpen) => {
@@ -922,7 +957,17 @@ impl Parser {
                 }
                 Some(Token::EndOfFile) | None => return,
                 _ if depth == 1 => {
-                    if let Some((mut declaration, next)) =
+                    if let Some((mut declaration, next)) = self
+                        .capture_template_anonymous_union(
+                            cursor,
+                            &parameters,
+                            next_overlap_group,
+                        )
+                    {
+                        fields.append(&mut declaration);
+                        next_overlap_group += 1;
+                        cursor = next;
+                    } else if let Some((mut declaration, next)) =
                         self.capture_template_field_declaration(cursor, &parameters)
                     {
                         fields.append(&mut declaration);
@@ -944,6 +989,40 @@ impl Parser {
                 },
             );
         }
+    }
+
+    /// Capture the storage-bearing declarations of an anonymous union in a
+    /// primary template. Methods remain irrelevant to layout, while every data
+    /// member is tagged with one overlap group for instantiation.
+    fn capture_template_anonymous_union(
+        &self,
+        start: usize,
+        parameters: &[String],
+        overlap_group: u32,
+    ) -> Option<(Vec<TemplateField>, usize)> {
+        if !matches!(self.tokens.get(start), Some(Token::Identifier(word)) if word == "union")
+            || self.tokens.get(start + 1) != Some(&Token::BraceOpen)
+        {
+            return None;
+        }
+        let mut cursor = start + 2;
+        let mut fields = Vec::new();
+        while self.tokens.get(cursor) != Some(&Token::BraceClose) {
+            let (mut declaration, next) =
+                self.capture_template_field_declaration(cursor, parameters)?;
+            for field in &mut declaration {
+                field.overlap_group = Some(overlap_group);
+            }
+            fields.append(&mut declaration);
+            cursor = next;
+        }
+        cursor += 1;
+        // Anonymous unions end directly in `;`; a named union instance is a
+        // different declaration shape and should not be flattened here.
+        if self.tokens.get(cursor) != Some(&Token::Semicolon) {
+            return None;
+        }
+        Some((fields, cursor + 1))
     }
 
     fn capture_template_field_declaration(
@@ -1010,6 +1089,7 @@ impl Parser {
                 name: name.clone(),
                 field_type: field_type.clone(),
                 alignment: 1,
+                overlap_group: None,
             });
             cursor += 1;
             if self.tokens.get(cursor) == Some(&Token::BracketOpen)

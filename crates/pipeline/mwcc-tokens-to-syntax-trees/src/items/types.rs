@@ -282,7 +282,15 @@ impl Parser {
                         .struct_typedefs
                         .values()
                         .any(|mapped| mapped == &qualified);
-                if known {
+                // A fully qualified pointer/reference type is unambiguous even
+                // when only a forward declaration survived preprocessing. Its
+                // pointee may remain opaque (size zero); retaining the name is
+                // enough for ABI mangling and later member declaration parsing.
+                let opaque_indirection = matches!(
+                    self.tokens.get(scan),
+                    Some(Token::Star | Token::Ampersand)
+                );
+                if known || opaque_indirection {
                     self.position = scan;
                     self.struct_typedefs
                         .entry(local)

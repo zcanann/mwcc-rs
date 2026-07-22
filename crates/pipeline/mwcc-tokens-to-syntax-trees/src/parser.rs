@@ -140,6 +140,8 @@ pub(crate) struct TemplateField {
     pub(crate) name: String,
     pub(crate) field_type: TemplateFieldType,
     pub(crate) alignment: u32,
+    /// Consecutive fields from the same anonymous union share storage.
+    pub(crate) overlap_group: Option<u32>,
 }
 
 /// Recoverable layout information from a skipped C++ class template. Method

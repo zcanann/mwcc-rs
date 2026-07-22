@@ -2842,6 +2842,72 @@ blr\n\
     }
 
     #[test]
+    fn retains_template_specialization_identity_through_a_typedef() {
+        let source = r#"
+            template <typename T> struct Vector3 { T x, y, z; };
+            typedef Vector3<float> Vector3f;
+            struct Creature { virtual void initPosition(Vector3f&); };
+            void place(Creature* creature, Vector3f& position) {
+                creature->initPosition(position);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::VirtualCall {
+                    vptr_offset: 0,
+                    slot_offset: 8,
+                    arguments,
+                    ..
+                }
+            )] if arguments.len() == 1
+        ));
+    }
+
+    #[test]
+    fn retains_opaque_qualified_pointer_returns_during_layout_recovery() {
+        let source = r#"
+            namespace PSM { struct Creature; }
+            namespace Game {
+                struct Creature;
+                struct Creature { virtual PSM::Creature* getPSCreature() { return 0; } };
+                struct Enemy : Creature { int state; };
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+        )
+        .unwrap();
+        assert!(unit
+            .cxx_class_declaration_order
+            .iter()
+            .any(|class| class == "Game::Enemy"));
+    }
+
+    #[test]
+    fn recovers_anonymous_union_storage_in_template_instances() {
+        let source = r#"
+            template <typename T> struct BitFlag {
+                union { unsigned char bytes[sizeof(T)]; T value; };
+            };
+            struct Holder { char prefix; BitFlag<unsigned int> flags; char tail; };
+            Holder value;
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.globals[0].declared_type,
+            mwcc_syntax_trees::Type::Struct { size: 12, align: 4 }
+        ));
+    }
+
+    #[test]
     fn recognizes_pointer_template_instances_as_local_declarations() {
         let source = r#"
             template <typename T> struct Box { T value; };

@@ -1829,6 +1829,11 @@ impl Parser {
                     }
                 }
                 let aliased = self.parse_type()?;
+                // `Type::Struct` carries only storage. Preserve the aggregate's
+                // source identity separately so a template specialization alias
+                // such as `typedef Vector3<float> Vector3f` still mangles a later
+                // `Vector3f&` parameter as that concrete class type.
+                let aliased_struct_tag = self.last_struct_tag.clone();
                 let aliased_source_fundamental = self.last_source_fundamental;
                 // `typedef RET (*name)(params);` (function pointer, a 4-byte word
                 // pointer) or `typedef T (*name)[N];` (pointer to array — a ROW
@@ -1883,6 +1888,9 @@ impl Parser {
                 if let Some(source_fundamental) = aliased_source_fundamental {
                     self.typedef_source_fundamentals
                         .insert(name.clone(), source_fundamental);
+                }
+                if let Some(tag) = aliased_struct_tag {
+                    self.struct_typedefs.insert(name.clone(), tag);
                 }
                 self.typedefs.insert(name, aliased);
                 return Ok(());
