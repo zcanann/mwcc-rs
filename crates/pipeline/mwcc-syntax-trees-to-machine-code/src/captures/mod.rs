@@ -166,6 +166,7 @@ mod dq_popprio;
 mod dq_push;
 mod dvd_convert;
 mod dvd_error2num;
+mod dvd_fst_load;
 mod dvd_storeerr;
 mod eac_acos;
 mod eacos;
@@ -1071,6 +1072,7 @@ impl Generator {
             || self.try_cop_close(function)?
             || self.try_cop_isopened(function)?
             || self.try_dvd_error2num(function)?
+            || self.try_dvd_fst_load(function)?
             || self.try_dvd_convert(function)?
             || self.try_dvd_storeerr(function)?
             || self.try_gek_register(function)?

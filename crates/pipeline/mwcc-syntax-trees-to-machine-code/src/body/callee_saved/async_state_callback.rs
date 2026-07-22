@@ -475,6 +475,31 @@ impl Generator {
         self.emit_async_direct_call(shape.retry);
 
         self.bind_label(join);
+        // Build 163's state-machine lowering registers the asynchronous read
+        // before the recovery calls, even though the AST traversal reaches the
+        // reset branch first. Preserve that compilation order for the object
+        // symbol table; the relocation stream already has the correct order.
+        self.output.symbol_order = [
+            shape.state,
+            shape.request,
+            shape.callback,
+            shape.read,
+            shape.reset,
+            shape.disk_id,
+            shape.retry,
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        // This first-use K&R call is discovered while build 163 lowers the
+        // state dispatch, before it drains the prototyped recovery references.
+        self.output
+            .early_implicit_external_callees
+            .push(shape.read.to_string());
+        // Build 163 retains twenty optimizer labels for the nested if/switch
+        // CFG. They are not emitted into .text, but they advance the @N stream
+        // consumed by later string objects in the translation unit.
+        self.output.anonymous_label_bump += 20;
         self.emit_epilogue_and_return();
         Ok(true)
     }
