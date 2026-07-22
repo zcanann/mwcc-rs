@@ -331,6 +331,10 @@ impl Generator {
                 }
             }
         }
+        let direct_call = !self.globals.contains_key(name) && !self.locations.contains_key(name);
+        if self.try_emit_member_constant_arguments(arguments, direct_call)? {
+            return Ok(());
+        }
         // A CONSTANT argument that follows a GLOBAL-LOAD argument: mwcc materializes
         // the constants GREEDY-EARLY — their `li`s emit ahead of the load, and the
         // save scheduler then hoists them into the prologue's mflr latency slot
@@ -405,8 +409,6 @@ impl Generator {
                 return Ok(());
             }
             if constant_after_global {
-                let direct_call =
-                    !self.globals.contains_key(name) && !self.locations.contains_key(name);
                 if self.try_emit_unscheduled_global_constant_arguments(arguments, direct_call)? {
                     return Ok(());
                 }

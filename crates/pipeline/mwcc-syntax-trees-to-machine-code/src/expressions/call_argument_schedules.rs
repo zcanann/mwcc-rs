@@ -4,6 +4,52 @@
 use super::*;
 
 impl Generator {
+    /// Under latency scheduling, an i16 constant in the second argument slot is
+    /// independent of a first argument loaded from a structure member. MWCC
+    /// issues the `li r4` first, allowing the linkage scheduler to consume it,
+    /// then performs the potentially dependent `lwz r3` immediately before the
+    /// call. This order is stable from build 163 through the later mainline.
+    pub(crate) fn try_emit_member_constant_arguments(
+        &mut self,
+        arguments: &[Expression],
+        direct_call: bool,
+    ) -> Compilation<bool> {
+        let [
+            first @ Expression::Member {
+                base,
+                member_type,
+                ..
+            },
+            Expression::IntegerLiteral(value),
+        ] = arguments
+        else {
+            return Ok(false);
+        };
+        if !direct_call
+            || !self.behavior.schedule_latency_slots
+            || !matches!(base.as_ref(), Expression::Variable(_))
+            || matches!(
+                member_type,
+                Type::Float
+                    | Type::Double
+                    | Type::LongLong
+                    | Type::UnsignedLongLong
+                    | Type::Void
+                    | Type::Struct { .. }
+            )
+            || !(i16::MIN as i64..=i16::MAX as i64).contains(value)
+        {
+            return Ok(false);
+        }
+
+        self.evaluate_general(
+            &Expression::IntegerLiteral(*value),
+            Eabi::FIRST_GENERAL_ARGUMENT + 1,
+        )?;
+        self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT)?;
+        Ok(true)
+    }
+
     /// Without O4 latency scheduling, simple global/constant arguments remain
     /// in source order. This is deliberately separate from the O4 rules below:
     /// no instruction may run ahead of an earlier argument in this path.
