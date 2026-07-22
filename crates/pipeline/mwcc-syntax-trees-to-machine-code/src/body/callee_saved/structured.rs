@@ -196,7 +196,7 @@ impl Generator {
             let class = class_of(local.declared_type).expect("eligibility checked");
             let temporary = match class {
                 ValueClass::General => self.fresh_virtual_general(),
-                ValueClass::Float => self.fresh_virtual_float(),
+                ValueClass::Float => self.fresh_virtual_float_preferring(1),
             };
             if let Some(initializer) = &local.initializer {
                 self.evaluate(initializer, local.declared_type, temporary)?;

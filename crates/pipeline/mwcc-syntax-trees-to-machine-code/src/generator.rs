@@ -268,6 +268,11 @@ pub(crate) struct Generator {
     /// A register local initialized from a frame-resident pun was substituted
     /// before the frame owner ran. Preserve its legacy frame-layout effect.
     pub(crate) frame_feeding_local_pressure: Option<(usize, usize)>,
+    /// Bytes occupied by numeric-conversion scratch images inside an
+    /// allocator-owned callee-saved body. Selection places the images at the
+    /// old frame end; the ABI normalizer grows the frame enough to keep them
+    /// disjoint from the relocated callee-saved homes.
+    pub(crate) callee_saved_conversion_bytes: i16,
     /// When set, a constant store value reuses the scratch register if it already
     /// holds that constant (`scratch_constant`). Enabled only by the
     /// constant-store-fill path, which guarantees nothing clobbers the scratch
@@ -387,6 +392,17 @@ impl Generator {
         let register = Reg::float(self.next_virtual);
         self.next_virtual += 1;
         register.to_field()
+    }
+
+    /// A fresh floating virtual carrying the same consumer-placement preference
+    /// used by general virtuals. Liveness still wins when the preferred FPR is
+    /// occupied; otherwise this pins MWCC's short conversion schedules.
+    pub(crate) fn fresh_virtual_float_preferring(&mut self, register: u8) -> u8 {
+        let id = self.next_virtual;
+        self.register_prefer.insert(id, register);
+        let virtual_register = Reg::float(id);
+        self.next_virtual += 1;
+        virtual_register.to_field()
     }
 
     /// A fresh general virtual register carrying a consumer-tree PREFERENCE — the

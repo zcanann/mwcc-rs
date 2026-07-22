@@ -1331,7 +1331,10 @@ impl Generator {
         if right_is_float && matches!(left, Expression::IntegerLiteral(_)) {
             left_is_float = true;
         }
-        let (a, b) = if !left_is_float && right_is_float {
+        let dual_legacy = self.try_emit_legacy_dual_float_condition(left, right, double)?;
+        let (a, b) = if let Some(registers) = dual_legacy {
+            registers
+        } else if !left_is_float && right_is_float {
             // Usual arithmetic conversions promote the integer side to the
             // floating side's precision. A memory integer is first loaded into
             // r3, then uses the shared magic-bias conversion body in the current
@@ -1364,21 +1367,22 @@ impl Generator {
                 .instructions
                 .push(Instruction::load_immediate_shifted(0, 17200));
             self.load_double_constant(2, bias);
+            let conversion_base = self.reserve_condition_conversion_scratch(1);
             self.output.instructions.push(Instruction::StoreWord {
                 s: integer,
                 a: 1,
-                offset: 12,
+                offset: conversion_base + 4,
             });
             self.evaluate_float(right, FLOAT_SCRATCH)?;
             self.output.instructions.push(Instruction::StoreWord {
                 s: 0,
                 a: 1,
-                offset: 8,
+                offset: conversion_base,
             });
             self.output.instructions.push(Instruction::LoadFloatDouble {
                 d: FLOAT_FIRST,
                 a: 1,
-                offset: 8,
+                offset: conversion_base,
             });
             self.output.instructions.push(if double {
                 Instruction::FloatSubtractDouble {

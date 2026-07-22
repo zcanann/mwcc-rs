@@ -32,6 +32,7 @@ mod generator;
 mod inline_expansion;
 mod inline_summaries;
 mod legacy_comparisons;
+mod legacy_dual_float_condition;
 mod narrow;
 mod operands;
 mod ordinal_accounting;
@@ -302,6 +303,7 @@ pub fn lower_function(
         frame_slots: HashMap::new(),
         written_slots: HashSet::new(),
         frame_feeding_local_pressure: None,
+        callee_saved_conversion_bytes: 0,
         reuse_scratch_constant: false,
         scratch_constant: None,
         prematerialized_constants: Vec::new(),

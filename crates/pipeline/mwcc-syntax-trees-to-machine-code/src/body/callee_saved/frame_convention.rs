@@ -228,10 +228,19 @@ impl Generator {
             let promoted_values = promoted_parameter_count.max(retained_parameter_lanes);
             (promoted_values + self.legacy_discarded_call_locals).div_ceil(2)
         };
-        let new_size = old_size + i16::try_from(extra_lane_count * 8).unwrap_or(i16::MAX);
+        let base_size = old_size
+            .saturating_add(i16::try_from(extra_lane_count * 8).unwrap_or(i16::MAX));
+        let conversion_end = old_size
+            .saturating_add(self.callee_saved_conversion_bytes)
+            .saturating_add(i16::try_from(physical_saved.len() * 4).unwrap_or(i16::MAX));
+        let conversion_size = conversion_end.saturating_add(7) & !7;
+        let new_size = base_size.max(conversion_size);
 
         if let Instruction::StoreWordWithUpdate { offset, .. } = &mut self.output.instructions[0] {
             *offset = -new_size;
+        }
+        if let Instruction::StoreWord { offset, .. } = &mut self.output.instructions[link_store] {
+            *offset = 4;
         }
         for (index, &register) in physical_saved.iter().enumerate() {
             let old_offset = old_size - 4 * (index as i16 + 1);
@@ -254,9 +263,6 @@ impl Generator {
         }
         for instruction in &mut self.output.instructions {
             match instruction {
-                Instruction::StoreWord { s: 0, a: 1, offset } if *offset == old_size + 4 => {
-                    *offset = 4;
-                }
                 Instruction::LoadWord { d: 0, a: 1, offset } if *offset == old_size + 4 => {
                     *offset = new_size + 4;
                 }

@@ -130,19 +130,19 @@ pub fn hoist_link_register_reload(instructions: &mut Vec<Instruction>) -> Vec<us
         .collect()
 }
 
-/// Drop `mr rX, rX` self-moves (`or rX,rX,rX`) the register allocator produces when it
-/// colors a value's virtual home to the register the value already holds (`foo()+1` ->
-/// `mr r3,r3; addi r0,r3,1`). mwcc coalesces these away. A self-move is a no-op, so removing
-/// it is byte-neutral — it only shortens the function. Returns the old->new index permutation
-/// so relocations can be remapped; a removed self-move never carries a relocation, so its
-/// own mapping is a don't-care (pointed at the next survivor).
+/// Drop integer and float self-moves the register allocator produces when it colors a
+/// value's virtual home to the register the value already holds. mwcc coalesces these away.
+/// A self-move is a no-op, so removing it is byte-neutral — it only shortens the function.
+/// Returns the old->new index permutation so relocations can be remapped; a removed self-move
+/// never carries a relocation, so its own mapping is a don't-care (pointed at the next survivor).
 pub fn coalesce_self_moves(instructions: &mut Vec<Instruction>) -> Vec<usize> {
     let original = std::mem::take(instructions);
     let mut permutation = Vec::with_capacity(original.len());
     let mut next = 0;
     for instruction in original {
         permutation.push(next);
-        let is_self_move = matches!(&instruction, Instruction::Or { a, s, b } if a == s && s == b);
+        let is_self_move = matches!(&instruction, Instruction::Or { a, s, b } if a == s && s == b)
+            || matches!(&instruction, Instruction::FloatMove { d, b } if d == b);
         if !is_self_move {
             instructions.push(instruction);
             next += 1;
@@ -544,6 +544,31 @@ pub fn schedule(instructions: &mut Vec<Instruction>) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integer_and_float_self_moves_are_coalesced() {
+        let mut stream = vec![
+            Instruction::move_register(3, 3),
+            Instruction::FloatMove { d: 1, b: 1 },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 3,
+                immediate: 1,
+            },
+        ];
+
+        let permutation = coalesce_self_moves(&mut stream);
+
+        assert_eq!(
+            stream,
+            vec![Instruction::AddImmediate {
+                d: 3,
+                a: 3,
+                immediate: 1,
+            }]
+        );
+        assert_eq!(permutation, vec![0, 0, 0]);
+    }
 
     #[test]
     fn a_saved_later_argument_precedes_the_first_arguments_load_chain() {
