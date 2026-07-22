@@ -273,6 +273,14 @@ impl MachineFunction {
         }
     }
 
+    /// Anonymous-label work charged before this function's pool/unwind block.
+    /// Object and fragmented-debug numbering must consume the same value.
+    pub fn object_anonymous_bump(&self) -> u32 {
+        u32::from(self.has_conversion)
+            + 3 * u32::from(self.has_float_branch)
+            + self.anonymous_label_bump
+    }
+
     /// Intern a pool constant, returning its index. Equal constants share one slot
     /// (mwcc pools identical constants).
     pub fn intern_constant(&mut self, bits: u64, byte_width: u8) -> usize {

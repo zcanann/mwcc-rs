@@ -189,9 +189,7 @@ pub fn assemble_object(
             // The anonymous-`@N` counter is bumped by one for an int<->float
             // conversion and by three for a float conditional branch before this
             // function's constants are numbered.
-            anonymous_bump: (if function.has_conversion { 1 } else { 0 })
-                + (if function.has_float_branch { 3 } else { 0 })
-                + function.anonymous_label_bump,
+            anonymous_bump: function.object_anonymous_bump(),
             post_constant_bump: function.post_constant_label_bump,
             post_function_anonymous_bump: function.post_function_anonymous_bump,
             constant_number_gaps: function.constant_number_gaps.clone(),

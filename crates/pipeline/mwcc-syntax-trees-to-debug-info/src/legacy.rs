@@ -415,6 +415,15 @@ pub(super) fn lookup_capture(
     captures::lookup(unit, machine_functions, source_name, source, build)
 }
 
+pub(super) fn matches_single_simple_void(
+    unit: &TranslationUnit,
+    machine_functions: &[MachineFunction],
+) -> bool {
+    unit.functions.len() == 1
+        && machine_functions.len() == 1
+        && simple_void_functions::matches(unit, machine_functions)
+}
+
 fn finish(
     line: mwcc_dwarf1::EncodedSection,
     records: Vec<DebugRecord>,

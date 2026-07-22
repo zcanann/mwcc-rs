@@ -10,7 +10,7 @@ use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::MachineFunction;
 use mwcc_object::{
     DebugLayout, DebugRelocation, DebugRelocationKind, DebugRelocationTarget, DebugSection,
-    DebugSections, DebugSymbol, DebugSymbolBinding,
+    DebugSections, DebugSymbol, DebugSymbolBinding, DebugSymbolPlacement,
 };
 use mwcc_syntax_trees::TranslationUnit;
 use mwcc_versions::CompilerBuild;
@@ -290,6 +290,7 @@ fn decode(bytes: &[u8]) -> Compilation<DebugSections> {
             alignment,
             comment_flags,
             binding,
+            placement: DebugSymbolPlacement::Early,
         });
     }
     if reader.offset != bytes.len() {

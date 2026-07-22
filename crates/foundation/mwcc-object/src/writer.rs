@@ -10,7 +10,7 @@
 
 use crate::{
     layout_code_sections, CommentFormat, DataObject, DebugRelocationTarget, DebugSymbolBinding,
-    FunctionSymbolOrder, ObjectInput, RelocationTarget,
+    DebugSymbolPlacement, FunctionSymbolOrder, ObjectInput, RelocationTarget,
 };
 use std::collections::HashMap;
 
@@ -1015,11 +1015,37 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut debug_symbols: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     let mut emitted_debug_symbols: std::collections::HashSet<&str> =
         std::collections::HashSet::new();
+    macro_rules! emit_debug_symbol {
+        ($symbol:expr) => {{
+            let symbol = $symbol;
+            if emitted_debug_symbols.insert(symbol.name.as_str()) {
+                debug_symbols.insert(symbol.name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
+                let binding = match symbol.binding {
+                    DebugSymbolBinding::Local => STB_LOCAL_OBJECT,
+                    DebugSymbolBinding::Global => STB_GLOBAL_OBJECT,
+                    DebugSymbolBinding::Weak => STB_WEAK_OBJECT,
+                };
+                write_symbol(
+                    &mut symtab,
+                    strtab.add(&symbol.name),
+                    symbol.offset,
+                    symbol.size,
+                    binding,
+                    0,
+                    index_of(symbol.section.name()) as u16,
+                );
+                comment_values.push((symbol.alignment, symbol.comment_flags));
+            }
+        }};
+    }
     if let Some(debug) = debug {
         for symbol in debug
             .symbols
             .iter()
-            .filter(|symbol| symbol.binding == DebugSymbolBinding::Local)
+            .filter(|symbol| {
+                symbol.binding == DebugSymbolBinding::Local
+                    && symbol.placement == DebugSymbolPlacement::Early
+            })
         {
             if let Some(function_name) = symbol.name.strip_prefix(".line.") {
                 if let Some(index) = functions.iter().position(|function| {
@@ -1051,18 +1077,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     }
                 }
             }
-            debug_symbols.insert(symbol.name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
-            emitted_debug_symbols.insert(symbol.name.as_str());
-            write_symbol(
-                &mut symtab,
-                strtab.add(&symbol.name),
-                symbol.offset,
-                symbol.size,
-                STB_LOCAL_OBJECT,
-                0,
-                index_of(symbol.section.name()) as u16,
-            );
-            comment_values.push((symbol.alignment, symbol.comment_flags));
+            emit_debug_symbol!(symbol);
         }
     }
     let debug_function_lines: std::collections::HashMap<&str, &crate::DebugSymbol> = debug
@@ -1077,29 +1092,6 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // Modern fragmented DWARF contributes symbols to the compiler's ordinary
     // source-order symbol stream. Function line fragments follow their function
     // immediately; all remaining non-local fragments trail the generated run.
-    macro_rules! emit_debug_symbol {
-        ($symbol:expr) => {{
-            let symbol = $symbol;
-            if emitted_debug_symbols.insert(symbol.name.as_str()) {
-                debug_symbols.insert(symbol.name.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
-                let binding = match symbol.binding {
-                    DebugSymbolBinding::Local => STB_LOCAL_OBJECT,
-                    DebugSymbolBinding::Global => STB_GLOBAL_OBJECT,
-                    DebugSymbolBinding::Weak => STB_WEAK_OBJECT,
-                };
-                write_symbol(
-                    &mut symtab,
-                    strtab.add(&symbol.name),
-                    symbol.offset,
-                    symbol.size,
-                    binding,
-                    0,
-                    index_of(symbol.section.name()) as u16,
-                );
-                comment_values.push((symbol.alignment, symbol.comment_flags));
-            }
-        }};
-    }
     // `static inline` asm helpers (e.g. OSFastCast.h) — a local undefined symbol
     // each, in declaration order, right after the section symbols. `info = 0` is
     // STB_LOCAL | STT_NOTYPE; an undefined symbol has `.comment` alignment 0.
@@ -1856,6 +1848,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             comment_values.push((4, 0));
         }
         jump_table_symbols.push(symbols_of_tables);
+        if let Some(debug) = debug {
+            for symbol in debug.symbols.iter().filter(|symbol| {
+                symbol.binding == DebugSymbolBinding::Local
+                    && symbol.placement == DebugSymbolPlacement::AfterFunctionLocals(index)
+            }) {
+                emit_debug_symbol!(symbol);
+            }
+        }
         // A STATIC function's own FUNC symbol closes its block (definition end;
         // an implicit-local already emitted after its static locals above),
         // followed by its own static locals (measured: ac uart) — unless

@@ -558,8 +558,9 @@ impl Generator {
 
     /// `void s(T *p, …) { *p = g(args); }` — a call's result stored through a pointer
     /// PARAMETER that must survive the call. mwcc saves the pointer in r31 (`mr r31,r3`),
-    /// runs the call, then stores the result through r31 (`stw r3,0(r31)`); the store-sink
-    /// epilogue reloads LR before r31. Restricted to a general (int/pointer/narrow) pointee,
+    /// runs the call, then stores the result through r31 (`stw r3,0(r31)`). Because the saved
+    /// pointer is part of the call expression's dependency chain, its epilogue reloads r31
+    /// before LR. Restricted to a general (int/pointer/narrow) pointee,
     /// a general-returning call, and arguments that do not reference the saved pointer.
     pub(crate) fn try_store_call_through_pointer(
         &mut self,
@@ -667,8 +668,8 @@ impl Generator {
             Diagnostic::error("store-through-saved-pointer offset out of range (roadmap)")
         })?;
 
-        // Callee-saved frame: r31 holds the pointer across the call; the store-sink epilogue
-        // reloads LR before r31.
+        // Callee-saved frame: r31 holds the pointer across the call. This nested-call store
+        // restores r31 before LR across the measured 1.3.2, 2.7, and GC 4.1 generations.
         let frame_size: i16 = 16;
         self.non_leaf = true;
         self.frame_size = frame_size;
@@ -676,7 +677,6 @@ impl Generator {
         // epilogue reload (emit_epilogue_and_return reads callee_saved) renames too.
         let saved = self.fresh_virtual_general();
         self.callee_saved = vec![saved];
-        self.epilogue_lr_first = true;
         // The interleaved save+move prologue, from the FRAME BUILDER.
         self.output
             .instructions

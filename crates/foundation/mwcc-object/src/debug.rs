@@ -98,6 +98,16 @@ pub enum DebugSymbolBinding {
     Weak,
 }
 
+/// Creation point of a local fragmented-DWARF symbol in MWCC's local symbol
+/// stream. Most captured/legacy symbols lead ordinary anonymous objects; modern
+/// function fragments can close only after that function's constants/unwind
+/// entries have been created.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DebugSymbolPlacement {
+    Early,
+    AfterFunctionLocals(usize),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DebugSymbol {
     pub name: String,
@@ -108,6 +118,7 @@ pub struct DebugSymbol {
     /// Exact per-symbol attribute word stored in MWCC's `.comment` table.
     pub comment_flags: u32,
     pub binding: DebugSymbolBinding,
+    pub placement: DebugSymbolPlacement,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

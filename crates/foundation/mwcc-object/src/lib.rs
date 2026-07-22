@@ -13,7 +13,7 @@ mod writer;
 
 pub use debug::{
     DebugLayout, DebugRelocation, DebugRelocationKind, DebugRelocationTarget, DebugSection,
-    DebugSections, DebugSymbol, DebugSymbolBinding,
+    DebugSections, DebugSymbol, DebugSymbolBinding, DebugSymbolPlacement,
 };
 pub use function_layout::{
     layout_code_sections, layout_function_placements, layout_functions, CodeSection,
