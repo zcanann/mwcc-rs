@@ -114,7 +114,18 @@ impl Parser {
             // A discarded BINARY expression statement (`t & w;` — dead code in
             // MSL string.c): parse the full expression for a faithful AST; the
             // pure discarded form has no lowering yet, so codegen defers.
-            let expression = self.binary_expression_from(first, 1)?;
+            let mut expression = self.binary_expression_from(first, 1)?;
+            // The comma operator is also legal at the top level of a discarded
+            // expression statement (`create(n), registerState(s);`). Call
+            // argument parsing owns commas inside parentheses; any comma left
+            // here sequences complete expressions from left to right.
+            while self.eat_keyword(Token::Comma) {
+                let right = self.assignment_expression()?;
+                expression = Expression::Comma {
+                    left: Box::new(expression),
+                    right: Box::new(right),
+                };
+            }
             self.expect(Token::Semicolon)?;
             Ok(Statement::Expression(expression))
         }

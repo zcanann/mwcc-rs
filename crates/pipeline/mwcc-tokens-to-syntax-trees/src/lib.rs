@@ -4738,6 +4738,29 @@ blr\n\
     }
 
     #[test]
+    fn parses_a_top_level_comma_expression_statement() {
+        let source = r#"
+            void first(int);
+            void second(int);
+            void sequence(int value) { first(value), second(value); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Comma { .. }
+            )]
+        ));
+    }
+
+    #[test]
     fn preserves_else_if_after_a_bare_void_return() {
         let source = r#"
             void work(void);
