@@ -28,6 +28,7 @@ mod guards_ifs;
 mod guarded_aggregate_update;
 mod if_else;
 mod indirect_call;
+mod inlined_guarded_aggregate_update;
 mod inlined_local_select;
 mod ladders;
 mod legacy_constant_store;
@@ -60,6 +61,9 @@ mod variadic;
 
 pub(crate) use callee_saved::{
     summarize_queue_pop, summarize_queue_service, QueuePopSummary, QueueServiceSummary,
+};
+pub(crate) use guarded_aggregate_update::{
+    summarize_guarded_aggregate_update, GuardedAggregateUpdateSummary,
 };
 pub(crate) use local_select::{
     summarize_unoptimized_local_select, UnoptimizedLocalSelectSummary,
