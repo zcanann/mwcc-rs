@@ -2757,6 +2757,31 @@ blr\n\
     }
 
     #[test]
+    fn retains_member_access_on_a_virtual_aggregate_return() {
+        let source = r#"
+            template <typename T> struct Vec { T x; T y; };
+            typedef Vec<float> Vecf;
+            struct Creature {
+                virtual Vecf getPosition();
+                float horizontalPosition() { return getPosition().x; }
+            };
+            float use(Creature* creature) { return creature->horizontalPosition(); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(unit
+            .skipped_inline_definitions
+            .iter()
+            .any(|function| function.name == "horizontalPosition__8CreatureFv"));
+    }
+
+    #[test]
     fn resolves_virtual_calls_through_opaque_template_specializations() {
         let source = r#"
             namespace api {

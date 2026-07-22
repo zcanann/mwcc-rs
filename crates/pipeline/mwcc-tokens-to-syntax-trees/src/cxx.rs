@@ -95,6 +95,7 @@ pub(crate) struct VtableComponent {
 pub(crate) struct MemberMethod {
     pub(crate) parameters: Vec<Type>,
     cxx_parameters: Vec<CxxParameterType>,
+    return_struct_tag: Option<String>,
     pub(crate) is_inline: bool,
     is_const_member: bool,
     virtual_dispatch: Option<VirtualDispatch>,
@@ -124,6 +125,7 @@ pub(crate) struct RecoveredCxxMethod {
 #[derive(Clone)]
 pub(crate) struct RecoveredCxxVirtualMethod {
     pub(crate) return_type: Type,
+    pub(crate) return_struct_tag: Option<String>,
     pub(crate) parameters: Vec<Type>,
     pub(crate) fixed_parameter_count: usize,
     pub(crate) variadic: bool,
@@ -166,6 +168,7 @@ pub(crate) enum ImplicitMemberCall {
     },
     Virtual {
         dispatch: VirtualDispatch,
+        return_struct_tag: Option<String>,
         this_adjustment: u32,
     },
 }
@@ -1410,7 +1413,11 @@ impl Parser {
             {
                 self.skipped_inline_definitions.push(function);
             }
-        } else if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() {
+        } else if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some()
+            || std::env::var("MWCC_CAPTURE_INLINE")
+                .ok()
+                .is_some_and(|needle| member_name.contains(&needle))
+        {
             eprintln!(
                 "failed to retain inline definition for {class}::{member_name}: {parsed:?}; recovered functions: {}",
                 functions.len()
@@ -1768,6 +1775,7 @@ impl Parser {
                         table.methods.entry(member.clone()).or_default().push(
                             RecoveredCxxVirtualMethod {
                                 return_type,
+                                return_struct_tag: return_struct_tag.clone(),
                                 parameters: parameters.clone(),
                                 fixed_parameter_count: parameters.len(),
                                 variadic,
@@ -2181,10 +2189,12 @@ impl Parser {
                 )));
             }
         }
-        if let Some(dispatch) = self.resolve_virtual_member_call(&resolved, member, argument_count)?
+        if let Some((dispatch, return_struct_tag)) =
+            self.resolve_virtual_member_call(&resolved, member, argument_count)?
         {
             return Ok(Some(ImplicitMemberCall::Virtual {
                 dispatch,
+                return_struct_tag,
                 this_adjustment: 0,
             }));
         }
@@ -2199,7 +2209,7 @@ impl Parser {
         class: &str,
         member: &str,
         argument_count: usize,
-    ) -> Compilation<Option<VirtualDispatch>> {
+    ) -> Compilation<Option<(VirtualDispatch, Option<String>)>> {
         let source_class = class;
         let class = self.qualify_cxx_class_name(source_class);
         let resolved_class = if self.cxx_dispatch_tables.contains_key(&class) {
@@ -2237,7 +2247,7 @@ impl Parser {
                 .collect();
             return match template_candidates.as_slice() {
                 [] => Ok(None),
-                [dispatch] => Ok(Some(*dispatch)),
+                [dispatch] => Ok(Some((*dispatch, None))),
                 _ => Err(Diagnostic::error(format!(
                     "virtual C++ template member call '{primary}::{member}' is ambiguous (roadmap)"
                 ))),
@@ -2245,12 +2255,15 @@ impl Parser {
         }
         match candidates.as_slice() {
             [] => Ok(None),
-            [method] => Ok(Some(VirtualDispatch {
-                vptr_offset: method.vptr_offset,
-                slot_offset: method.slot_offset,
-                return_type: method.return_type,
-                variadic: method.variadic,
-            })),
+            [method] => Ok(Some((
+                VirtualDispatch {
+                    vptr_offset: method.vptr_offset,
+                    slot_offset: method.slot_offset,
+                    return_type: method.return_type,
+                    variadic: method.variadic,
+                },
+                method.return_struct_tag.clone(),
+            ))),
             _ => Err(Diagnostic::error(format!(
                 "virtual C++ member call '{resolved_class}::{member}' is ambiguous (roadmap)"
             ))),
@@ -2413,6 +2426,7 @@ impl Parser {
             if let Some(dispatch) = method.virtual_dispatch {
                 return Ok(Some(ImplicitMemberCall::Virtual {
                     dispatch,
+                    return_struct_tag: method.return_struct_tag.clone(),
                     this_adjustment: 0,
                 }));
             }
@@ -2492,6 +2506,7 @@ impl Parser {
             if let Some(dispatch) = method.virtual_dispatch {
                 return Ok(Some(ImplicitMemberCall::Virtual {
                     dispatch,
+                    return_struct_tag: method.return_struct_tag.clone(),
                     this_adjustment,
                 }));
             }
@@ -3118,6 +3133,7 @@ impl Parser {
                     .push(MemberMethod {
                         parameters: signature.parameters,
                         cxx_parameters: signature.cxx_parameters,
+                        return_struct_tag: struct_tag,
                         is_inline,
                         is_const_member,
                         virtual_dispatch,

@@ -741,8 +741,10 @@ impl Parser {
                         }
                         crate::cxx::ImplicitMemberCall::Virtual {
                             dispatch,
+                            return_struct_tag,
                             this_adjustment,
                         } => {
+                            self.expression_struct_tag = return_struct_tag;
                             let object = adjust_cxx_object(
                                 Expression::Variable("this".to_string()),
                                 this_adjustment,
@@ -981,6 +983,10 @@ impl Parser {
             // `get()->field`: a call to a function that RETURNS a struct pointer carries the
             // pointee's tag (recorded from the `struct S *get(...)` declaration).
             Expression::Call { name, .. } => self.function_return_structs.get(name).cloned(),
+            // Virtual aggregate returns carry their declaration's concrete tag
+            // through member-call lowering so `object->getValue().field` can
+            // resolve the returned temporary's layout.
+            Expression::VirtualCall { .. } => self.expression_struct_tag.take(),
             _ => None,
         };
         loop {
@@ -1166,7 +1172,23 @@ impl Parser {
                 Token::Arrow | Token::Dot => {
                     self.advance();
                     let field = self.parse_identifier()?;
-                    let tag = struct_tag.take().ok_or_else(|| {
+                    if struct_tag.is_none() {
+                        if let Some((offset, member_type)) =
+                            structural_virtual_vector_member(&expression, &field)
+                        {
+                            expression = Expression::Member {
+                                base: Box::new(expression),
+                                offset,
+                                member_type,
+                                index_stride: None,
+                            };
+                            continue;
+                        }
+                    }
+                    let tag = struct_tag
+                        .take()
+                        .or_else(|| self.structural_aggregate_tag_for_field(&expression, &field))
+                        .ok_or_else(|| {
                         Diagnostic::error(format!(
                             "member '{field}' on a non-struct-pointer base: {expression:?}"
                         ))
@@ -1396,13 +1418,19 @@ impl Parser {
         object: Expression,
         mut arguments: Vec<Expression>,
     ) -> Compilation<Expression> {
-        let member_call = self
-            .resolve_instance_member_call(class, member, &arguments)?
-            .ok_or_else(|| {
-                Diagnostic::error(format!(
-                    "C++ member call '{class}::{member}' is unavailable (roadmap)"
-                ))
-            })?;
+        let Some(member_call) = self.resolve_instance_member_call(class, member, &arguments)? else {
+            if let Some(copy) = self.lower_three_component_copy_setter(
+                class,
+                member,
+                object.clone(),
+                &arguments,
+            ) {
+                return Ok(copy);
+            }
+            return Err(Diagnostic::error(format!(
+                "C++ member call '{class}::{member}' is unavailable (roadmap)"
+            )));
+        };
         Ok(match member_call {
             crate::cxx::ImplicitMemberCall::Direct {
                 name,
@@ -1417,17 +1445,150 @@ impl Parser {
             }
             crate::cxx::ImplicitMemberCall::Virtual {
                 dispatch,
+                return_struct_tag,
                 this_adjustment,
-            } => Expression::VirtualCall {
-                object: Box::new(adjust_cxx_object(object, this_adjustment)),
-                vptr_offset: dispatch.vptr_offset,
-                slot_offset: dispatch.slot_offset,
-                return_type: dispatch.return_type,
-                variadic: dispatch.variadic,
-                arguments,
-            },
+            } => {
+                self.expression_struct_tag = return_struct_tag;
+                Expression::VirtualCall {
+                    object: Box::new(adjust_cxx_object(object, this_adjustment)),
+                    vptr_offset: dispatch.vptr_offset,
+                    slot_offset: dispatch.slot_offset,
+                    return_type: dispatch.return_type,
+                    variadic: dispatch.variadic,
+                    arguments,
+                }
+            }
         })
     }
+
+    /// Recover the common dependent-template `Vector3<T>::set(const Vector3&)`
+    /// body when template declaration parsing could not materialize the member
+    /// specialization. Requiring the complete x/y/z scalar layout and an
+    /// identically typed source keeps this a semantic aggregate-copy rule, not
+    /// a name-only setter guess.
+    fn lower_three_component_copy_setter(
+        &self,
+        class: &str,
+        member: &str,
+        target: Expression,
+        arguments: &[Expression],
+    ) -> Option<Expression> {
+        if member != "set" || arguments.len() != 1 {
+            return None;
+        }
+        let source_tag = match &arguments[0] {
+            Expression::Variable(name) => self.variable_structs.get(name)?,
+            _ => return None,
+        };
+        let resolved = self
+            .resolve_scoped_cxx_class_name(class)
+            .unwrap_or_else(|| class.to_owned());
+        if source_tag != &resolved && source_tag != class {
+            return None;
+        }
+        let layout = self.structs.get(&resolved).or_else(|| self.structs.get(class))?;
+        let components = ["x", "y", "z"]
+            .into_iter()
+            .map(|name| layout.fields.get(name))
+            .collect::<Option<Vec<_>>>()?;
+        if layout.fields.len() != 3
+            || components.iter().any(|field| {
+                field.struct_tag.is_some()
+                    || field.array_element.is_some()
+                    || field.bit_field.is_some()
+                    || !matches!(
+                        field.member_type,
+                        Type::Int
+                            | Type::UnsignedInt
+                            | Type::Float
+                            | Type::Char
+                            | Type::UnsignedChar
+                            | Type::Short
+                            | Type::UnsignedShort
+                    )
+            })
+        {
+            return None;
+        }
+        let source = arguments[0].clone();
+        let mut assignments = components.into_iter().map(|field| Expression::Assign {
+            target: Box::new(Expression::Member {
+                base: Box::new(target.clone()),
+                offset: field.offset,
+                member_type: field.member_type,
+                index_stride: None,
+            }),
+            value: Box::new(Expression::Member {
+                base: Box::new(source.clone()),
+                offset: field.offset,
+                member_type: field.member_type,
+                index_stride: None,
+            }),
+        });
+        let first = assignments.next()?;
+        Some(assignments.fold(first, |left, right| Expression::Comma {
+            left: Box::new(left),
+            right: Box::new(right),
+        }))
+    }
+
+    /// A virtual aggregate return can lose its nominal typedef spelling while
+    /// retaining exact size. Member access only needs the selected field's
+    /// layout, so accept a structural match when every same-sized candidate
+    /// that declares the field agrees on offset and scalar type.
+    fn structural_aggregate_tag_for_field(
+        &self,
+        expression: &Expression,
+        field: &str,
+    ) -> Option<String> {
+        let Expression::VirtualCall {
+            return_type: Type::Struct { size, .. },
+            ..
+        } = expression
+        else {
+            return None;
+        };
+        let mut candidates = self
+            .structs
+            .iter()
+            .filter_map(|(tag, layout)| {
+                (layout.size == *size)
+                    .then(|| layout.fields.get(field).map(|member| (tag, member)))
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|(left, _), (right, _)| left.cmp(right));
+        let (tag, selected) = *candidates.first()?;
+        candidates
+            .iter()
+            .all(|(_, member)| {
+                member.offset == selected.offset
+                    && member.member_type == selected.member_type
+                    && member.array_stride == selected.array_stride
+                    && member.bit_field == selected.bit_field
+            })
+            .then(|| tag.clone())
+    }
+}
+
+fn structural_virtual_vector_member(
+    expression: &Expression,
+    field: &str,
+) -> Option<(u32, Type)> {
+    let Expression::VirtualCall {
+        return_type: Type::Struct { size: 12, .. },
+        ..
+    } = expression
+    else {
+        return None;
+    };
+    let offset = match field {
+        "x" => 0,
+        "y" => 4,
+        "z" => 8,
+        _ => return None,
+    };
+    Some((offset, Type::Float))
 }
 
 /// Build the `target = target ± 1` assignment that an `++`/`--` desugars to.

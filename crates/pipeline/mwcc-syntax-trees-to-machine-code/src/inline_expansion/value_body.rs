@@ -22,7 +22,7 @@ pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
     }
     if function.return_type == Type::Void {
         if function.return_expression.is_some()
-            || !composable_function(function)
+            || (!composable_function(function) && !sequenced_aggregate_void_body(function))
             || !function.statements.iter().all(void_expression_statement)
         {
             return None;
@@ -55,6 +55,37 @@ pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
             source: function.clone(),
             expression,
         }
+    })
+}
+
+fn sequenced_aggregate_void_body(function: &Function) -> bool {
+    let local_names = function
+        .locals
+        .iter()
+        .map(|local| local.name.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    function.locals.iter().any(|local| {
+        local.initializer.is_none() && matches!(local.declared_type, Type::Struct { .. })
+    }) && function.locals.iter().all(|local| {
+        !local.is_static && !local.is_volatile && local.array_length.is_none()
+    }) && assignments_target_only_locals(&function.statements, &local_names)
+}
+
+fn assignments_target_only_locals(
+    statements: &[Statement],
+    local_names: &std::collections::HashSet<&str>,
+) -> bool {
+    statements.iter().all(|statement| match statement {
+        Statement::Assign { name, .. } => local_names.contains(name.as_str()),
+        Statement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            assignments_target_only_locals(then_body, local_names)
+                && assignments_target_only_locals(else_body, local_names)
+        }
+        _ => true,
     })
 }
 
@@ -130,13 +161,12 @@ fn summarize_result_selection(function: &Function) -> Option<Expression> {
 /// locals are allocated when this summary is substituted, so initializers and
 /// side effects still execute exactly where the original call appeared.
 fn summarize_sequenced_body(function: &Function, result: Expression) -> Option<Expression> {
-    if function.locals.len() > 4
+    if function.locals.len() > 8
         || statement_count(&function.statements) > 12
         || function.locals.iter().any(|local| {
             local.is_static
                 || local.is_volatile
                 || local.array_length.is_some()
-                || matches!(local.declared_type, Type::Struct { .. })
         })
     {
         return None;
@@ -160,6 +190,7 @@ fn summarize_sequenced_body(function: &Function, result: Expression) -> Option<E
 fn void_expression_statement(statement: &Statement) -> bool {
     match statement {
         Statement::Store { .. } | Statement::Assign { .. } => true,
+        Statement::Expression(expression) => assignment_sequence(expression),
         Statement::If {
             then_body,
             else_body,
@@ -167,6 +198,16 @@ fn void_expression_statement(statement: &Statement) -> bool {
         } => {
             then_body.iter().all(void_expression_statement)
                 && else_body.iter().all(void_expression_statement)
+        }
+        _ => false,
+    }
+}
+
+fn assignment_sequence(expression: &Expression) -> bool {
+    match expression {
+        Expression::Assign { .. } => true,
+        Expression::Comma { left, right } => {
+            assignment_sequence(left) && assignment_sequence(right)
         }
         _ => false,
     }
