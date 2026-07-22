@@ -8,6 +8,19 @@ use super::*;
 /// symbolic lets the outer access fold both displacements into one D-form load
 /// or store instead of materializing a temporary address.
 pub(crate) fn embedded_member_address_base(expression: &Expression) -> Option<(&Expression, u32)> {
+    // An array member used as an embedded aggregate base already denotes
+    // inline storage (`object.bytes` -> `object + offset`), not a pointer value
+    // that must be loaded. Fold a following member displacement into that
+    // address. Indexed member arrays retain their separate scaled path.
+    if let Expression::MemberAddress {
+        base,
+        offset,
+        index_stride: None,
+        ..
+    } = expression
+    {
+        return Some((base, *offset));
+    }
     // `object.embedded.field`: the intermediate aggregate is inline storage,
     // not a pointer-valued member. Fold both displacements into the complete
     // object's base for symmetric scalar loads and stores.
@@ -48,6 +61,12 @@ impl Generator {
         offset: u32,
         destination: u8,
     ) -> Compilation<()> {
+        if let Some((inner, inner_offset)) = embedded_member_address_base(base) {
+            let combined = inner_offset.checked_add(offset).ok_or_else(|| {
+                Diagnostic::error("nested member address offset overflow (roadmap)")
+            })?;
+            return self.emit_member_address(inner, combined, destination);
+        }
         let base_register = if let Expression::Member {
             base: inner,
             offset: member_offset,
@@ -2282,5 +2301,23 @@ pub(crate) fn split_scaled_index(index: &Expression) -> Option<(&Expression, i64
             }
         }
         _ => scaled(index).map(|(leaf, factor)| (leaf, factor, 0)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folds_nonindexed_member_array_storage_into_a_nested_member_base() {
+        let storage = Expression::MemberAddress {
+            base: Box::new(Expression::Variable("object".into())),
+            offset: 668,
+            element: Pointee::UnsignedChar,
+            index_stride: None,
+        };
+        let (base, offset) = embedded_member_address_base(&storage).expect("inline storage base");
+        assert!(matches!(base, Expression::Variable(name) if name == "object"));
+        assert_eq!(offset, 668);
     }
 }
