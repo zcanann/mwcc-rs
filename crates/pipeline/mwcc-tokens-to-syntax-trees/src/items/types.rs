@@ -1233,14 +1233,21 @@ impl Parser {
                 self.last_struct_tag = None;
             }
             // Only a ROW-POINTER typedef member reaches here (an array-typedef member
-            // was intercepted above); its subscript stride isn't carried through the
-            // member model yet, so defer rather than lay it out as a plain pointer
-            // that a later `s->m[i][j]` would stride wrongly through.
-            if self.last_array_typedef.take().is_some() {
-                return Err(Diagnostic::error(
-                    "a row-pointer-typedef struct member is not supported yet (roadmap)",
-                ));
-            }
+            // was intercepted above). It occupies one pointer word. Preserve its row
+            // byte stride as the same safety marker used by an explicitly spelled
+            // `T (*member)[N]`: recovering the containing layout is sound, while an
+            // actual member access still defers instead of using scalar stride.
+            let row_pointer_stride = match self.last_array_typedef.take() {
+                Some((element, 0, length)) => {
+                    Some(type_size(element).saturating_mul(u32::from(length)))
+                }
+                Some(_) => {
+                    return Err(Diagnostic::error(
+                        "an array-typedef struct member reached the scalar layout path",
+                    ))
+                }
+                None => None,
+            };
             let struct_tag = self.last_struct_tag.take();
             // A declarator may carry `__attribute__((aligned(n)))` between the type
             // and the name (e.g. `u8 ATTRIBUTE_ALIGN(4) board_data[32];`); skip it,
@@ -1390,11 +1397,16 @@ impl Parser {
                 // An array member `type name[N]` occupies `N` elements; its access
                 // yields the array address rather than a loaded value.
                 let mut array_element = None;
-                let mut array_stride = None;
+                let mut array_stride = row_pointer_stride;
                 let mut is_array = false;
                 let mut size = type_size(field_type);
                 let element_size = size;
                 if *self.peek() == Token::BracketOpen {
+                    if row_pointer_stride.is_some() {
+                        return Err(Diagnostic::error(
+                            "an array of row-pointer-typedef members is not supported yet (roadmap)",
+                        ));
+                    }
                     is_array = true;
                     // A scalar array records its element type for indexed access. A
                     // struct-value array (`GXTexRegion TexRegions[8];`) or a pointer

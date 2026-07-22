@@ -3563,6 +3563,51 @@ blr\n\
     }
 
     #[test]
+    fn recovers_layout_past_a_row_pointer_typedef_member() {
+        let source = r#"
+            typedef float (*MatrixPointer)[4];
+            struct Object {
+                int before;
+                MatrixPointer matrix;
+                int after;
+            };
+            int read_after(struct Object* object) { return object->after; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 8, .. })
+        ));
+    }
+
+    #[test]
+    fn defers_access_to_an_unmodeled_row_pointer_typedef_member() {
+        let source = r#"
+            typedef float (*MatrixPointer)[4];
+            struct Object { MatrixPointer matrix; };
+            float* matrix(struct Object* object) { return object->matrix; }
+        "#;
+        let error = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap_err();
+        assert!(error
+            .message
+            .contains("accessing pointer-to-array member 'matrix' is not supported yet"));
+    }
+
+    #[test]
     fn recovers_an_inline_anonymous_struct_pointer_member() {
         let source = r#"
             struct Packet {
