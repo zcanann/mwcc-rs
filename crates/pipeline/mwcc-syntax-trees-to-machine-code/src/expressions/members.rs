@@ -731,6 +731,21 @@ impl Generator {
                 });
                 Ok(register)
             }
+            // An inline byte/array member can carry recovered aggregate
+            // identity after parsing (`object.storage` used as a constructor
+            // receiver). Materialize that subobject address in a fresh virtual
+            // rather than mutating the complete object's live home. The shared
+            // allocator can still coalesce it when the original base dies.
+            Expression::MemberAddress {
+                base: inner,
+                offset,
+                index_stride: None,
+                ..
+            } => {
+                let register = self.fresh_virtual_general();
+                self.emit_member_address(inner, *offset, register)?;
+                Ok(register)
+            }
             // `((struct S *)x)->field`: a pointer cast is transparent — the base is
             // just the operand's pointer value.
             Expression::Cast { operand, .. } => self.member_base_register(operand),
