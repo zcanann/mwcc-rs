@@ -6,9 +6,9 @@
 //! def-use edge before liveness and scheduling instead of teaching the emitter
 //! to maintain a second mutable value environment.
 
+use super::structured_locals::body_uses_local;
 #[allow(unused_imports)]
 use super::*;
-use super::structured_locals::body_uses_local;
 
 /// Compose a byte displacement immediately preceding a power-of-two pointer
 /// round-up into the round-up's `addi` bias. MWCC keeps the intermediate pointer
@@ -207,6 +207,85 @@ pub(super) fn is_transient_shifted_member_mask_call_local(
     })
 }
 
+/// A local whose reads are exclusively complete call arguments is a register
+/// forwarding value. It does not consume one of the legacy frame's scalar-local
+/// lanes even when its definition is kept as a separate syntax-tree statement.
+pub(super) fn is_transient_direct_call_argument_local(
+    statements: &[Statement],
+    return_expression: Option<&Expression>,
+    candidate: &str,
+) -> bool {
+    fn counts(statements: &[Statement], candidate: &str) -> (usize, usize, bool) {
+        let mut total = 0;
+        let mut direct = 0;
+        let mut assigned = false;
+        macro_rules! add_expression {
+            ($expression:expr) => {{
+                total += count_name_occurrences($expression, candidate);
+                direct += count_direct_call_argument_occurrences($expression, candidate);
+            }};
+        }
+        for statement in statements {
+            match statement {
+                Statement::Store { target, value } => {
+                    add_expression!(target);
+                    add_expression!(value);
+                }
+                Statement::Assign { name, value } => {
+                    assigned |= name == candidate;
+                    add_expression!(value);
+                }
+                Statement::Expression(expression) | Statement::Return(Some(expression)) => {
+                    add_expression!(expression);
+                }
+                Statement::If {
+                    condition,
+                    then_body,
+                    else_body,
+                } => {
+                    add_expression!(condition);
+                    let then_counts = counts(then_body, candidate);
+                    let else_counts = counts(else_body, candidate);
+                    total += then_counts.0 + else_counts.0;
+                    direct += then_counts.1 + else_counts.1;
+                    assigned |= then_counts.2 || else_counts.2;
+                }
+                Statement::Loop {
+                    initializer,
+                    condition,
+                    step,
+                    body,
+                    ..
+                } => {
+                    for expression in initializer.iter().chain(condition).chain(step) {
+                        add_expression!(expression);
+                    }
+                    let body_counts = counts(body, candidate);
+                    total += body_counts.0;
+                    direct += body_counts.1;
+                    assigned |= body_counts.2;
+                }
+                Statement::Switch { .. } => return (usize::MAX, 0, assigned),
+                Statement::Return(None)
+                | Statement::Break
+                | Statement::Continue
+                | Statement::Goto(_)
+                | Statement::Label(_) => {}
+            }
+        }
+        (total, direct, assigned)
+    }
+
+    let (mut total, mut direct, assigned) = counts(statements, candidate);
+    if let Some(expression) = return_expression {
+        total = total.saturating_add(count_name_occurrences(expression, candidate));
+        direct = direct.saturating_add(count_direct_call_argument_occurrences(
+            expression, candidate,
+        ));
+    }
+    assigned && total != 0 && total == direct
+}
+
 fn is_shifted_member_high_mask(expression: &Expression) -> bool {
     let Expression::Binary {
         operator: BinaryOperator::BitAnd,
@@ -241,7 +320,13 @@ fn is_shifted_member_high_mask(expression: &Expression) -> bool {
         && mask == u32::MAX << cleared_bits
         && matches!(variable.as_ref(), Expression::Variable(_))
         && constant_value(shift).is_some()
-        && matches!(member.as_ref(), Expression::Member { index_stride: None, .. })
+        && matches!(
+            member.as_ref(),
+            Expression::Member {
+                index_stride: None,
+                ..
+            }
+        )
 }
 
 fn is_biased_scaled_member_sum(expression: &Expression) -> bool {
@@ -287,7 +372,13 @@ fn is_biased_scaled_member_sum(expression: &Expression) -> bool {
         && scale.is_power_of_two()
         && matches!(variable.as_ref(), Expression::Variable(_))
         && constant_value(bias).is_some()
-        && matches!(member.as_ref(), Expression::Member { index_stride: None, .. })
+        && matches!(
+            member.as_ref(),
+            Expression::Member {
+                index_stride: None,
+                ..
+            }
+        )
 }
 
 fn has_composed_round_up_bias(expression: &Expression, name: &str) -> bool {
@@ -709,5 +800,43 @@ fn is_pure_parameter_rewrite(expression: &Expression, name: &str) -> bool {
                 && expression_reads_name(expression, name)
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn distinguishes_call_forwarding_from_an_ordinary_local_read() {
+        let statements = vec![
+            Statement::Assign {
+                name: "length".into(),
+                value: Expression::IntegerLiteral(20),
+            },
+            Statement::If {
+                condition: Expression::Binary {
+                    operator: BinaryOperator::Less,
+                    left: Box::new(Expression::Call {
+                        name: "read".into(),
+                        arguments: vec![Expression::Variable("length".into())],
+                    }),
+                    right: Box::new(Expression::IntegerLiteral(0)),
+                },
+                then_body: Vec::new(),
+                else_body: Vec::new(),
+            },
+        ];
+
+        assert!(is_transient_direct_call_argument_local(
+            &statements,
+            None,
+            "length"
+        ));
+        assert!(!is_transient_direct_call_argument_local(
+            &statements,
+            Some(&Expression::Variable("length".into())),
+            "length"
+        ));
     }
 }

@@ -152,24 +152,42 @@ pub(crate) fn function_uses_name(function: &Function, name: &str) -> bool {
             Statement::Store { target, value } => {
                 expression_reads_name(target, name) || expression_reads_name(value, name)
             }
-            Statement::Assign { name: assigned, value } => {
-                assigned == name || expression_reads_name(value, name)
-            }
+            Statement::Assign {
+                name: assigned,
+                value,
+            } => assigned == name || expression_reads_name(value, name),
             Statement::Expression(expression) | Statement::Return(Some(expression)) => {
                 expression_reads_name(expression, name)
             }
-            Statement::If { condition, then_body, else_body } => {
+            Statement::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
                 expression_reads_name(condition, name)
                     || statements_use_name(then_body, name)
                     || statements_use_name(else_body, name)
             }
-            Statement::Switch { scrutinee, arms, default } => {
+            Statement::Switch {
+                scrutinee,
+                arms,
+                default,
+            } => {
                 expression_reads_name(scrutinee, name)
                     || arms.iter().any(|arm| arm_uses_name(&arm.body, name))
                     || default.as_ref().is_some_and(|arm| arm_uses_name(arm, name))
             }
-            Statement::Loop { initializer, condition, step, body, .. } => {
-                initializer.iter().chain(condition).chain(step)
+            Statement::Loop {
+                initializer,
+                condition,
+                step,
+                body,
+                ..
+            } => {
+                initializer
+                    .iter()
+                    .chain(condition)
+                    .chain(step)
                     .any(|expression| expression_reads_name(expression, name))
                     || statements_use_name(body, name)
             }
@@ -181,14 +199,19 @@ pub(crate) fn function_uses_name(function: &Function, name: &str) -> bool {
         })
     }
 
-    function.locals.iter().filter_map(|local| local.initializer.as_ref())
+    function
+        .locals
+        .iter()
+        .filter_map(|local| local.initializer.as_ref())
         .any(|initializer| expression_reads_name(initializer, name))
         || statements_use_name(&function.statements, name)
         || function.guards.iter().any(|guard| {
             expression_reads_name(&guard.condition, name)
                 || expression_reads_name(&guard.value, name)
         })
-        || function.return_expression.as_ref()
+        || function
+            .return_expression
+            .as_ref()
             .is_some_and(|value| expression_reads_name(value, name))
 }
 
@@ -282,6 +305,86 @@ pub(crate) fn count_name_occurrences(expression: &Expression, name: &str) -> usi
         }
         Expression::Comma { left, right } => {
             count_name_occurrences(left, name) + count_name_occurrences(right, name)
+        }
+    }
+}
+
+/// Count reads that are themselves complete call arguments (`call(..., value, ...)`).
+/// Comparing this with [`count_name_occurrences`] distinguishes a temporary used
+/// only to forward call arguments from a value that also participates in ordinary
+/// computation or control flow.
+pub(crate) fn count_direct_call_argument_occurrences(expression: &Expression, name: &str) -> usize {
+    let arguments = |arguments: &[Expression]| {
+        arguments
+            .iter()
+            .map(|argument| {
+                usize::from(matches!(argument, Expression::Variable(variable) if variable == name))
+                    + count_direct_call_argument_occurrences(argument, name)
+            })
+            .sum::<usize>()
+    };
+    match expression {
+        Expression::CompoundLiteral { .. }
+        | Expression::AggregateLiteral(_)
+        | Expression::Variable(_)
+        | Expression::IntegerLiteral(_)
+        | Expression::FloatLiteral(_)
+        | Expression::StringLiteral(_) => 0,
+        Expression::CallThrough {
+            target,
+            arguments: call_arguments,
+        } => count_direct_call_argument_occurrences(target, name) + arguments(call_arguments),
+        Expression::VirtualCall {
+            object,
+            arguments: call_arguments,
+            ..
+        } => count_direct_call_argument_occurrences(object, name) + arguments(call_arguments),
+        Expression::ConstructedNew {
+            arguments: call_arguments,
+            ..
+        }
+        | Expression::Call {
+            arguments: call_arguments,
+            ..
+        } => arguments(call_arguments),
+        Expression::Binary { left, right, .. }
+        | Expression::Assign {
+            target: left,
+            value: right,
+        }
+        | Expression::Comma { left, right } => {
+            count_direct_call_argument_occurrences(left, name)
+                + count_direct_call_argument_occurrences(right, name)
+        }
+        Expression::Unary { operand, .. }
+        | Expression::Cast { operand, .. }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
+        }
+        | Expression::IndexedUpdateValue { value: operand }
+        | Expression::PostStep {
+            target: operand, ..
+        }
+        | Expression::Dereference { pointer: operand }
+        | Expression::AddressOf { operand } => {
+            count_direct_call_argument_occurrences(operand, name)
+        }
+        Expression::Index { base, index } => {
+            count_direct_call_argument_occurrences(base, name)
+                + count_direct_call_argument_occurrences(index, name)
+        }
+        Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
+            count_direct_call_argument_occurrences(base, name)
+        }
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+            ..
+        } => {
+            count_direct_call_argument_occurrences(condition, name)
+                + count_direct_call_argument_occurrences(when_true, name)
+                + count_direct_call_argument_occurrences(when_false, name)
         }
     }
 }
@@ -1861,10 +1964,10 @@ pub(crate) fn fits_single_scratch(expression: &Expression, destination_is_scratc
         // A full-width integer/pointer cast is representation-preserving and its
         // evaluator simply writes the operand into the requested destination.
         // Narrowing and floating casts need additional instructions/registers.
-        Expression::Cast { target_type, operand }
-            if target_type.width() == 32
-                && !matches!(target_type, Type::Float | Type::Double) =>
-        {
+        Expression::Cast {
+            target_type,
+            operand,
+        } if target_type.width() == 32 && !matches!(target_type, Type::Float | Type::Double) => {
             fits_single_scratch(operand, destination_is_scratch)
         }
         Expression::Conditional { .. } | Expression::Cast { .. } => false,
@@ -1947,7 +2050,11 @@ mod tests {
             peephole_disabled: false,
         };
         assert!(!function_uses_name(&function, "scratch"));
-        function.statements.push(Statement::Expression(Expression::Variable("scratch".into())));
+        function
+            .statements
+            .push(Statement::Expression(Expression::Variable(
+                "scratch".into(),
+            )));
         assert!(function_uses_name(&function, "scratch"));
     }
 

@@ -16,8 +16,9 @@ use super::structured_entry_alias::{
 use super::structured_frame_assignment::{
     adjacent_byte_pointer_round_up_name, fold_adjacent_byte_pointer_round_up,
     fold_terminal_pointer_load_alias, is_folded_terminal_pointer_load_alias,
-    is_transient_biased_scaled_member_call_local, is_transient_shifted_member_mask_call_local,
-    sink_low_mask_parameter_assignment, sink_single_use_parameter_assignment,
+    is_transient_biased_scaled_member_call_local, is_transient_direct_call_argument_local,
+    is_transient_shifted_member_mask_call_local, sink_low_mask_parameter_assignment,
+    sink_single_use_parameter_assignment,
 };
 use super::structured_frame_entry::structured_dense_frame_entry_index;
 use super::structured_liveness::read_after_possible_call;
@@ -332,6 +333,11 @@ impl Generator {
                             &function.statements,
                             &local.name,
                         )
+                        && !is_transient_direct_call_argument_local(
+                            &function.statements,
+                            function.return_expression.as_ref(),
+                            &local.name,
+                        )
                         && body_uses_local(&function.statements, &local.name)
                 })
                 .count();
@@ -356,9 +362,7 @@ impl Generator {
                 // one scalar slot but only rounds this frame to a doubleword.
                 // Ordinary structured frames retain their 16-byte rounding.
                 let alignment = if folded_terminal_pointer_alias { 8 } else { 16 };
-                plan.frame_size = i16::try_from(
-                    (occupied + alignment - 1) / alignment * alignment,
-                )
+                plan.frame_size = i16::try_from((occupied + alignment - 1) / alignment * alignment)
                     .map_err(|_| Diagnostic::error("structured legacy frame is too large"))?;
             }
             self.frame_slots.insert(
