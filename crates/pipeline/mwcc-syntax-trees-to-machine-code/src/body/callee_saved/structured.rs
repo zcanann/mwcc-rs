@@ -8,7 +8,7 @@
 use super::structured_locals::{
     is_definitely_assigned_before_reads, plan_deferred_saved_homes, plan_ephemeral_locals,
 };
-use super::structured_entry_alias::plan_first_call_alias;
+use super::structured_entry_alias::{plan_first_call_alias, EntryAliasBoundary, EntryParameterAlias};
 #[allow(unused_imports)]
 use super::*;
 
@@ -237,13 +237,18 @@ impl Generator {
         let mut return_branches = Vec::new();
         let mut label_positions = std::collections::HashMap::new();
         let mut pending_gotos = Vec::new();
-        let statement_start = if let Some(alias) = entry_parameter_alias {
+        let statement_start = if entry_parameter_alias
+            .as_ref()
+            .is_some_and(|alias| alias.boundary == EntryAliasBoundary::AfterFirstStatement)
+        {
+            let alias = entry_parameter_alias.as_ref().expect("checked above");
             self.emit_structured_statements(
                 &function.statements[..1],
                 function,
                 &mut return_branches,
                 &mut label_positions,
                 &mut pending_gotos,
+                &mut None,
             )?;
             self.locations
                 .get_mut(&alias.name)
@@ -253,12 +258,16 @@ impl Generator {
         } else {
             0
         };
+        let mut condition_alias = entry_parameter_alias.filter(|alias| {
+            alias.boundary == EntryAliasBoundary::AfterFirstConditionTerm
+        });
         self.emit_structured_statements(
             &function.statements[statement_start..],
             function,
             &mut return_branches,
             &mut label_positions,
             &mut pending_gotos,
+            &mut condition_alias,
         )?;
         for (branch, label) in pending_gotos {
             let target = label_positions.get(&label).copied().ok_or_else(|| {
@@ -294,6 +303,7 @@ impl Generator {
         return_branches: &mut Vec<usize>,
         label_positions: &mut std::collections::HashMap<String, usize>,
         pending_gotos: &mut Vec<(usize, String)>,
+        entry_alias: &mut Option<EntryParameterAlias>,
     ) -> Compilation<()> {
         // An early-return guard has no join from its call-making arm. Preserve
         // condition values only along that guard's fallthrough edge, then let
@@ -317,7 +327,7 @@ impl Generator {
                     let condition_result = (|| {
                         self.preload_condition_global_cache(condition)?;
                         let mut branches = Vec::with_capacity(terms.len());
-                        for term in terms {
+                        for (term_index, term) in terms.into_iter().enumerate() {
                             let (options, condition_bit) =
                                 self.emit_condition_test(term).map_err(|mut diagnostic| {
                                     diagnostic.message.push_str(&format!(
@@ -333,6 +343,14 @@ impl Generator {
                                     condition_bit,
                                     target: 0,
                                 });
+                            if statement_index == 0 && term_index == 0 {
+                                if let Some(alias) = entry_alias.take() {
+                                    self.locations
+                                        .get_mut(&alias.name)
+                                        .expect("planned saved parameter")
+                                        .register = alias.home;
+                                }
+                            }
                         }
                         Ok(branches)
                     })();
@@ -353,6 +371,7 @@ impl Generator {
                         return_branches,
                         label_positions,
                         pending_gotos,
+                        entry_alias,
                     )
                     .map_err(|mut diagnostic| {
                         diagnostic.message.push_str(&format!(
@@ -481,7 +500,7 @@ fn logical_and_count(expression: &Expression) -> u32 {
     }
 }
 
-fn logical_and_terms(expression: &Expression) -> Vec<&Expression> {
+pub(super) fn logical_and_terms(expression: &Expression) -> Vec<&Expression> {
     let mut terms = Vec::new();
     fn collect<'a>(expression: &'a Expression, terms: &mut Vec<&'a Expression>) {
         if let Expression::Binary {
