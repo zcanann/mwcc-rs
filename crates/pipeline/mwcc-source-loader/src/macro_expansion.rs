@@ -115,15 +115,67 @@ fn expand(
                 continue;
             }
             let mut replacement_state = LexicalState::default();
-            output.extend(expand(
+            let expanded_replacement = expand(
                 &replacement,
                 parameter_definitions.as_ref().unwrap_or(definitions),
                 &mut replacement_state,
                 expanding,
                 depth + 1,
-            ));
+            );
+            let pasted_replacement = paste_tokens(&expanded_replacement);
+            if pasted_replacement == expanded_replacement {
+                output.extend(expanded_replacement);
+            } else {
+                let mut rescan_state = LexicalState::default();
+                output.extend(expand(
+                    &pasted_replacement,
+                    definitions,
+                    &mut rescan_state,
+                    expanding,
+                    depth + 1,
+                ));
+            }
             expanding.remove(name);
             index = invocation_end;
+            continue;
+        }
+        output.push(input[index]);
+        index += 1;
+    }
+    output
+}
+
+fn paste_tokens(input: &[u8]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(input.len());
+    let mut index = 0;
+    while index < input.len() {
+        if matches!(input[index], b'\'' | b'"') {
+            let end = skip_quoted(input, index);
+            output.extend_from_slice(&input[index..end]);
+            index = end;
+            continue;
+        }
+        if input[index..].starts_with(b"//") {
+            output.extend_from_slice(&input[index..]);
+            break;
+        }
+        if input[index..].starts_with(b"/*") {
+            let end = input[index + 2..]
+                .windows(2)
+                .position(|bytes| bytes == b"*/")
+                .map_or(input.len(), |close| index + close + 4);
+            output.extend_from_slice(&input[index..end]);
+            index = end;
+            continue;
+        }
+        if input[index..].starts_with(b"##") {
+            while output.last().is_some_and(u8::is_ascii_whitespace) {
+                output.pop();
+            }
+            index += 2;
+            while input.get(index).is_some_and(u8::is_ascii_whitespace) {
+                index += 1;
+            }
             continue;
         }
         output.push(input[index]);
@@ -281,6 +333,42 @@ mod tests {
                 &mut state,
             ),
             b"double acos (double); int x = 3 +  call(1, 2) + 7;\n"
+        );
+    }
+
+    #[test]
+    fn pastes_function_macro_tokens_and_rescans_the_result() {
+        let definitions = HashMap::from([
+            (
+                "DECLARE".to_string(),
+                Macro::Function {
+                    parameters: vec!["name".to_string(), "suffix".to_string()],
+                    replacement: b"int name ## 1 ## suffix;".to_vec(),
+                },
+            ),
+            ("VALUE".to_string(), Macro::Object(b"renamed".to_vec())),
+            ("prefix1u8".to_string(), Macro::Object(b"VALUE".to_vec())),
+        ]);
+        let mut state = LexicalState::default();
+        assert_eq!(
+            expand_line(b"DECLARE(prefix, u8)\n", &definitions, &mut state),
+            b"int renamed;\n"
+        );
+    }
+
+    #[test]
+    fn token_pasting_does_not_modify_literals_or_comments() {
+        let definitions = HashMap::from([(
+            "TEXT".to_string(),
+            Macro::Function {
+                parameters: Vec::new(),
+                replacement: b"\"a ## b\" /* c ## d */ value ## 2".to_vec(),
+            },
+        )]);
+        let mut state = LexicalState::default();
+        assert_eq!(
+            expand_line(b"TEXT()\n", &definitions, &mut state),
+            b"\"a ## b\" /* c ## d */ value2\n"
         );
     }
 }

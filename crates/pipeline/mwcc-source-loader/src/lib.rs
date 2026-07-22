@@ -92,8 +92,19 @@ impl LoadContext<'_> {
         let mut output = Vec::with_capacity(source.len());
         let mut conditional = Vec::new();
         let mut directive_continuation = false;
+        let mut continued_define: Option<String> = None;
         let mut lexical_state = macro_expansion::LexicalState::default();
         for (line_index, line) in physical_lines(&source).enumerate() {
+            if let Some(logical) = continued_define.as_mut() {
+                append_continued_directive(logical, line)?;
+                let continues = line_continues(line);
+                preserve_line_ending(&mut output, line);
+                if !continues {
+                    let logical = continued_define.take().expect("continued define");
+                    self.install_define(&logical);
+                }
+                continue;
+            }
             if directive_continuation {
                 directive_continuation = line_continues(line);
                 preserve_line_ending(&mut output, line);
@@ -110,23 +121,14 @@ impl LoadContext<'_> {
                     continue;
                 }
                 if let Some(definition) = parse_define(directive) {
-                    self.definitions.insert(
-                        definition.name.to_string(),
-                        if directive_continuation {
-                            "1".to_string()
-                        } else {
-                            definition.conditional_value.to_string()
-                        },
-                    );
-                    // A continued replacement needs logical-line assembly. Do
-                    // not publish a truncated value ending in `\`; it is safer
-                    // to leave those tokens for the later frontend until that
-                    // distinct preprocessing feature is implemented.
-                    self.macros.remove(definition.name);
-                    if !directive_continuation {
-                        if let Some(expansion) = definition.expansion {
-                            self.macros.insert(definition.name.to_string(), expansion);
-                        }
+                    if directive_continuation {
+                        self.macros.remove(definition.name);
+                        let mut logical = String::new();
+                        append_continued_directive(&mut logical, line)?;
+                        continued_define = Some(logical);
+                        directive_continuation = false;
+                    } else {
+                        self.install_define(directive);
                     }
                     output.extend_from_slice(line);
                     continue;
@@ -168,6 +170,20 @@ impl LoadContext<'_> {
             append_line_directive(&mut output, line_index as u32 + 2);
         }
         Ok(output)
+    }
+
+    fn install_define(&mut self, directive: &str) {
+        let Some(definition) = parse_define(directive) else {
+            return;
+        };
+        self.definitions.insert(
+            definition.name.to_string(),
+            definition.conditional_value.to_string(),
+        );
+        self.macros.remove(definition.name);
+        if let Some(expansion) = definition.expansion {
+            self.macros.insert(definition.name.to_string(), expansion);
+        }
     }
 
     fn resolve_include(&self, including_file: &Path, include: &Include<'_>) -> Option<PathBuf> {
@@ -407,6 +423,21 @@ fn line_continues(line: &[u8]) -> bool {
         == Some(b'\\')
 }
 
+fn append_continued_directive(logical: &mut String, line: &[u8]) -> Compilation<()> {
+    let physical = std::str::from_utf8(line)
+        .map_err(|_| Diagnostic::error("a continued preprocessor directive is not UTF-8"))?;
+    let segment = if logical.is_empty() {
+        parse_directive(line).ok_or_else(|| {
+            Diagnostic::error("a continued macro definition is not a directive")
+        })?
+    } else {
+        physical.trim_end_matches(['\r', '\n'])
+    };
+    let segment = segment.trim_end_matches([' ', '\t']);
+    logical.push_str(segment.strip_suffix('\\').unwrap_or(segment));
+    Ok(())
+}
+
 fn preserve_line_ending(output: &mut Vec<u8>, line: &[u8]) {
     if line.ends_with(b"\n") {
         output.push(b'\n');
@@ -557,7 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn multiline_macro_bodies_do_not_leak_into_language_tokens() {
+    fn multiline_function_macros_are_assembled_and_expanded() {
         let scratch = Scratch::new();
         std::fs::write(
             scratch.0.join("unit.c"),
@@ -565,7 +596,7 @@ mod tests {
                 "#define BODY(x) do { \\\n",
                 "  x += 1; \\\n",
                 "} while (0)\n",
-                "int f(void);\n"
+                "int f(void) { int value = 0; BODY(value); return value; }\n"
             ),
         )
         .unwrap();
@@ -573,11 +604,14 @@ mod tests {
         let loaded = SourceLoader::default()
             .load(&scratch.0.join("unit.c"))
             .unwrap();
-        assert_eq!(loaded, b"#define BODY(x) do { \\\n\n\nint f(void);\n");
+        assert_eq!(
+            loaded,
+            b"#define BODY(x) do { \\\n\n\nint f(void) { int value = 0; do {   value += 1; } while (0); return value; }\n"
+        );
     }
 
     #[test]
-    fn continued_object_macros_are_not_partially_substituted() {
+    fn continued_object_macros_are_assembled_and_expanded() {
         let scratch = Scratch::new();
         std::fs::write(
             scratch.0.join("unit.c"),
@@ -588,7 +622,29 @@ mod tests {
         let loaded = SourceLoader::default()
             .load(&scratch.0.join("unit.c"))
             .unwrap();
-        assert_eq!(loaded, b"#define PAIR 1, \\\n\nint values[] = { PAIR };\n");
+        assert_eq!(loaded, b"#define PAIR 1, \\\n\nint values[] = { 1, 2 };\n");
+    }
+
+    #[test]
+    fn multiline_function_macros_support_token_pasting() {
+        let scratch = Scratch::new();
+        std::fs::write(
+            scratch.0.join("unit.c"),
+            concat!(
+                "#define DECLARE(name, T) \\\n",
+                "  static void name##1##T(T value);\n",
+                "DECLARE(GXCmd, u8)\n"
+            ),
+        )
+        .unwrap();
+
+        let loaded = SourceLoader::default()
+            .load(&scratch.0.join("unit.c"))
+            .unwrap();
+        assert_eq!(
+            loaded,
+            b"#define DECLARE(name, T) \\\n\nstatic void GXCmd1u8( u8 value);\n"
+        );
     }
 
     #[test]
