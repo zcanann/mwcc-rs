@@ -2935,6 +2935,11 @@ impl Generator {
                 return Ok(());
             }
         }
+        // A member tested then decremented retains the loaded value and splits
+        // its pointer live range before a global-member receiver overwrites r3.
+        if self.try_guarded_member_decrement_if_else(function)? {
+            return Ok(());
+        }
         // A non-leaf `if (c) { then } else { else }` with straight-line bodies: the
         // condition test schedules into the prologue, `beq` jumps to the else body,
         // the then body falls through to an unconditional `b` over the else body to

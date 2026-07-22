@@ -29,6 +29,7 @@ mod fixed_port_replay_update;
 mod guards_ifs;
 mod global_struct_member_search;
 mod guarded_aggregate_update;
+mod guarded_member_decrement_if_else;
 mod if_else;
 mod indirect_call;
 mod inlined_guarded_aggregate_update;

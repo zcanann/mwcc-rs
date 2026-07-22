@@ -2112,8 +2112,75 @@ mod tests {
             false,
         )
         .expect("the incoming actor pointer must survive global address materialization");
-        assert!(object.windows(4).any(|bytes| bytes == [0x7c, 0x65, 0x1b, 0x78])); // mr r5,r3
-        assert!(object.windows(4).any(|bytes| bytes == [0x38, 0x85, 0x00, 0x04])); // addi r4,r5,4
+        assert!(object
+            .windows(4)
+            .any(|bytes| bytes == [0x7c, 0x65, 0x1b, 0x78])); // mr r5,r3
+        assert!(object
+            .windows(4)
+            .any(|bytes| bytes == [0x38, 0x85, 0x00, 0x04])); // addi r4,r5,4
+    }
+
+    #[test]
+    fn reuses_a_guard_member_and_splits_the_selected_arm_pointer() {
+        let source = br#"
+            class Vec { public: float x; float y; float z; };
+            class Sphere { public: Vec center; };
+            class Sink { public: int payload; void Set(Sphere*); };
+            class Globals { public: int prefix; Sink sink; };
+            class Actor {
+            public:
+                char prefix[504];
+                Vec position;
+                char middle[150];
+                short timer;
+                char gap[60];
+                Sphere sphere;
+            };
+            extern Globals globals;
+            inline Sink* sink() { return &globals.sink; }
+            extern void remove(Actor*);
+            int compiled(Actor* actor) {
+                if (actor->timer != 0) {
+                    actor->timer--;
+                    actor->sphere.center.x = actor->position.x;
+                    actor->sphere.center.y = actor->position.y;
+                    actor->sphere.center.z = actor->position.z;
+                    sink()->Set(&actor->sphere);
+                } else {
+                    remove(actor);
+                }
+                return 1;
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_3_2,
+            flags,
+        };
+        let object = compile(
+            source,
+            "guarded-member.cpp",
+            config,
+            Some(SourceLanguage::Cxx),
+            None,
+            false,
+        )
+        .expect("the guarded member live range should lower");
+        let expected_text = [
+            0x94, 0x21, 0xff, 0xf0, 0x7c, 0x08, 0x02, 0xa6, 0x90, 0x01, 0x00, 0x14, 0x7c, 0x65,
+            0x1b, 0x78, 0xa8, 0x83, 0x02, 0x9a, 0x2c, 0x04, 0x00, 0x00, 0x41, 0x82, 0x00, 0x38,
+            0x38, 0x04, 0xff, 0xff, 0xb0, 0x05, 0x02, 0x9a, 0xc0, 0x05, 0x01, 0xf8, 0xd0, 0x05,
+            0x02, 0xd8, 0xc0, 0x05, 0x01, 0xfc, 0xd0, 0x05, 0x02, 0xdc, 0xc0, 0x05, 0x02, 0x00,
+            0xd0, 0x05, 0x02, 0xe0, 0x38, 0x60, 0x00, 0x00, 0x38, 0x63, 0x00, 0x04, 0x38, 0x85,
+            0x02, 0xd8, 0x48, 0x00, 0x00, 0x01, 0x48, 0x00, 0x00, 0x08, 0x48, 0x00, 0x00, 0x01,
+            0x38, 0x60, 0x00, 0x01, 0x80, 0x01, 0x00, 0x14, 0x7c, 0x08, 0x03, 0xa6, 0x38, 0x21,
+            0x00, 0x10, 0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected_text.len())
+            .any(|bytes| bytes == expected_text));
     }
 
     #[test]
