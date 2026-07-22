@@ -5,9 +5,9 @@
 //! statement is representable by the shared store/call emitter plus forward
 //! `if` branches; unsupported control flow declines before emitting anything.
 
+use super::structured_locals::{is_definitely_assigned_before_reads, plan_ephemeral_locals};
 #[allow(unused_imports)]
 use super::*;
-use super::structured_locals::{is_definitely_assigned_before_reads, plan_ephemeral_locals};
 
 impl Generator {
     /// Lower a void structured body after assigning every value that can be read
@@ -181,11 +181,28 @@ impl Generator {
         }
 
         let mut return_branches = Vec::new();
+        let mut label_positions = std::collections::HashMap::new();
+        let mut pending_gotos = Vec::new();
         self.emit_structured_statements(
             &function.statements,
             function,
             &mut return_branches,
+            &mut label_positions,
+            &mut pending_gotos,
         )?;
+        for (branch, label) in pending_gotos {
+            let target = label_positions.get(&label).copied().ok_or_else(|| {
+                Diagnostic::error(format!(
+                    "structured forward branch targets an unknown label '{label}'"
+                ))
+            })?;
+            if let Instruction::Branch {
+                target: branch_target,
+            } = &mut self.output.instructions[branch]
+            {
+                *branch_target = target;
+            }
+        }
         let epilogue = self.output.instructions.len();
         for branch in return_branches {
             if let Instruction::Branch { target } = &mut self.output.instructions[branch] {
@@ -205,6 +222,8 @@ impl Generator {
         statements: &[Statement],
         function: &Function,
         return_branches: &mut Vec<usize>,
+        label_positions: &mut std::collections::HashMap<String, usize>,
+        pending_gotos: &mut Vec<(usize, String)>,
     ) -> Compilation<()> {
         for (statement_index, statement) in statements.iter().enumerate() {
             match statement {
@@ -216,9 +235,8 @@ impl Generator {
                     let terms = logical_and_terms(condition);
                     let mut branches = Vec::with_capacity(terms.len());
                     for term in terms {
-                        let (options, condition_bit) = self
-                            .emit_condition_test(term)
-                            .map_err(|mut diagnostic| {
+                        let (options, condition_bit) =
+                            self.emit_condition_test(term).map_err(|mut diagnostic| {
                                 diagnostic.message.push_str(&format!(
                                     " (in structured if condition {statement_index})"
                                 ));
@@ -228,18 +246,24 @@ impl Generator {
                         self.output
                             .instructions
                             .push(Instruction::BranchConditionalForward {
-                            options,
-                            condition_bit,
-                            target: 0,
-                        });
+                                options,
+                                condition_bit,
+                                target: 0,
+                            });
                     }
-                    self.emit_structured_statements(then_body, function, return_branches)
-                        .map_err(|mut diagnostic| {
-                            diagnostic.message.push_str(&format!(
-                                " (inside structured if statement {statement_index})"
-                            ));
-                            diagnostic
-                        })?;
+                    self.emit_structured_statements(
+                        then_body,
+                        function,
+                        return_branches,
+                        label_positions,
+                        pending_gotos,
+                    )
+                    .map_err(|mut diagnostic| {
+                        diagnostic.message.push_str(&format!(
+                            " (inside structured if statement {statement_index})"
+                        ));
+                        diagnostic
+                    })?;
                     let target = self.output.instructions.len();
                     for branch in branches {
                         if let Instruction::BranchConditionalForward {
@@ -256,6 +280,23 @@ impl Generator {
                     self.output
                         .instructions
                         .push(Instruction::Branch { target: 0 });
+                }
+                Statement::Goto(label) => {
+                    let branch = self.output.instructions.len();
+                    self.output
+                        .instructions
+                        .push(Instruction::Branch { target: 0 });
+                    pending_gotos.push((branch, label.clone()));
+                }
+                Statement::Label(label) => {
+                    if label_positions
+                        .insert(label.clone(), self.output.instructions.len())
+                        .is_some()
+                    {
+                        return Err(Diagnostic::error(format!(
+                            "structured body defines label '{label}' more than once"
+                        )));
+                    }
                 }
                 Statement::Assign { name, value } => {
                     let local = function
@@ -292,7 +333,11 @@ impl Generator {
 
 fn supports_statements(statements: &[Statement], function: &Function) -> bool {
     statements.iter().all(|statement| match statement {
-        Statement::Store { .. } | Statement::Expression(_) | Statement::Return(None) => true,
+        Statement::Store { .. }
+        | Statement::Expression(_)
+        | Statement::Return(None)
+        | Statement::Goto(_)
+        | Statement::Label(_) => true,
         Statement::Assign { name, .. } => function.locals.iter().any(|local| &local.name == name),
         Statement::If {
             then_body,

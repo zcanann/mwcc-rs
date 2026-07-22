@@ -38,7 +38,11 @@ fn composable_statements(statements: &[Statement], local_names: &HashSet<&str>) 
             composable_statements(then_body, local_names)
                 && composable_statements(else_body, local_names)
         }
-        Statement::Return(_)
+        // A void return is local control flow, not an escape from the caller.
+        // Expansion rewrites it to a forward jump to the end of this particular
+        // inline instance before the body enters instruction selection.
+        Statement::Return(None) => true,
+        Statement::Return(Some(_))
         | Statement::Switch { .. }
         | Statement::Break
         | Statement::Continue

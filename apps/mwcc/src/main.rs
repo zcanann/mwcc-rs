@@ -481,8 +481,10 @@ fn compile(
         &unit.functions,
         &unit.skipped_inline_definitions,
     );
-    let inline_bodies =
-        mwcc_syntax_trees_to_machine_code::InlineBodySet::analyze(&unit.skipped_inline_definitions);
+    let inline_bodies = mwcc_syntax_trees_to_machine_code::InlineBodySet::analyze_with_definitions(
+        &unit.functions,
+        &unit.skipped_inline_definitions,
+    );
     let materialized_inline_names: std::collections::HashSet<String> = unit
         .materialized_inline_candidates
         .iter()

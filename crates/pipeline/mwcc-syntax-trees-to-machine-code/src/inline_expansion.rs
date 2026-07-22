@@ -7,12 +7,16 @@
 //! standalone statements with stable scalar arguments. Callee locals are
 //! alpha-renamed and initialized at the call site rather than caller entry.
 
+mod call_sites;
+mod returns;
 mod safety;
 mod substitution;
 mod value_body;
 mod value_calls;
 
+use call_sites::collect_function_calls;
 use mwcc_syntax_trees::{Expression, Function, Statement};
+use returns::rewrite_inline_returns;
 use safety::{composable_function, stable_arguments, stable_local_values};
 use std::collections::{HashMap, HashSet};
 use substitution::substitute_statement;
@@ -26,11 +30,32 @@ pub struct InlineBodySet {
 
 impl InlineBodySet {
     pub fn analyze(skipped: &[Function]) -> Self {
-        let bodies = skipped
+        Self::analyze_with_definitions(&[], skipped)
+    }
+
+    /// Analyze retained inline definitions plus ordinary definitions that the
+    /// automatic inliner sees exactly once in this translation unit.  A
+    /// one-call definition remains emitted when it has external linkage, but
+    /// its body is also available for call-site composition.
+    pub fn analyze_with_definitions(definitions: &[Function], skipped: &[Function]) -> Self {
+        let mut call_counts = HashMap::<String, usize>::new();
+        for function in definitions.iter().chain(skipped) {
+            collect_function_calls(function, &mut call_counts);
+        }
+        let mut bodies = HashMap::new();
+        for function in skipped
             .iter()
             .filter(|function| composable_function(function))
-            .map(|function| (function.name.clone(), function.clone()))
-            .collect();
+        {
+            bodies.insert(function.name.clone(), function.clone());
+        }
+        for function in definitions.iter().filter(|function| {
+            composable_function(function) && call_counts.get(&function.name).copied() == Some(1)
+        }) {
+            bodies
+                .entry(function.name.clone())
+                .or_insert_with(|| function.clone());
+        }
         let values = skipped
             .iter()
             .filter_map(|function| {
@@ -176,6 +201,8 @@ impl InlineBodySet {
                         .zip(arguments)
                         .map(|(name, argument)| (name.to_owned(), argument.clone()))
                         .collect();
+                    let callee_stable = stable_local_values(callee);
+                    let mut nested_stable_variables = stable_variables.clone();
                     for local in &callee.locals {
                         let unique_name = loop {
                             let candidate =
@@ -189,6 +216,9 @@ impl InlineBodySet {
                             local.name.clone(),
                             Expression::Variable(unique_name.clone()),
                         );
+                        if callee_stable.contains(&local.name) {
+                            nested_stable_variables.insert(unique_name.clone());
+                        }
                         let mut declaration = local.clone();
                         declaration.name = unique_name;
                         declaration.initializer = None;
@@ -216,11 +246,21 @@ impl InlineBodySet {
                             .iter()
                             .map(|statement| substitute_statement(statement, &replacements)),
                     );
+                    // A return exits the callee instance, not its caller.  Give
+                    // every expansion a private forward boundary so nested
+                    // control flow preserves that distinction through the
+                    // shared structured-body lowering path.
+                    let return_boundary =
+                        format!("__mwcc_inline_return_{}_{}", name, *next_local_id);
+                    *next_local_id += 1;
+                    if rewrite_inline_returns(&mut substituted, &return_boundary) {
+                        substituted.push(Statement::Label(return_boundary));
+                    }
                     *changed = true;
                     active.insert(name.clone());
                     output.extend(self.expand_statements(
                         &substituted,
-                        stable_variables,
+                        &nested_stable_variables,
                         active,
                         changed,
                         locals,
@@ -798,5 +838,48 @@ mod tests {
         )])
         .expand_calls(&caller)
         .is_none());
+    }
+
+    #[test]
+    fn composes_a_one_call_ordinary_void_definition_and_localizes_its_return() {
+        let helper = function(
+            "helper",
+            vec![Parameter {
+                parameter_type: Type::Int,
+                name: "value".into(),
+            }],
+            vec![Statement::If {
+                condition: Expression::Variable("value".into()),
+                then_body: vec![Statement::Return(None)],
+                else_body: Vec::new(),
+            }],
+        );
+        let caller = function(
+            "caller",
+            vec![Parameter {
+                parameter_type: Type::Int,
+                name: "value".into(),
+            }],
+            vec![Statement::Expression(Expression::Call {
+                name: "helper".into(),
+                arguments: vec![Expression::Variable("value".into())],
+            })],
+        );
+
+        let bodies =
+            InlineBodySet::analyze_with_definitions(&[helper.clone(), caller.clone()], &[]);
+        let expanded = bodies
+            .expand_calls(&caller)
+            .expect("a sole ordinary call should be an automatic-inline candidate");
+        assert!(matches!(expanded.statements.as_slice(), [
+            Statement::If { then_body, .. },
+            Statement::Label(boundary),
+        ] if matches!(then_body.as_slice(), [Statement::Goto(target)] if target == boundary)));
+
+        let mut second_caller = caller.clone();
+        second_caller.name = "second_caller".into();
+        let repeated =
+            InlineBodySet::analyze_with_definitions(&[helper, caller.clone(), second_caller], &[]);
+        assert!(repeated.expand_calls(&caller).is_none());
     }
 }
