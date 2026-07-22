@@ -1439,6 +1439,10 @@ pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
 };
 
 impl CodegenProfile for Gc233Build163 {
+    fn mem_copy_remainder_mask_style(&self) -> MemCopyRemainderMaskStyle {
+        MemCopyRemainderMaskStyle::MaterializedThree
+    }
+
     fn guarded_member_initialization_style(&self) -> GuardedMemberInitializationStyle {
         GuardedMemberInitializationStyle::LazyPooledFloat
     }

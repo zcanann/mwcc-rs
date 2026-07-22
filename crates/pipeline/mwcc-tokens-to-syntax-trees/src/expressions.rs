@@ -283,7 +283,7 @@ impl Parser {
             self.advance();
             let rhs = self.expression()?;
             return Ok(Expression::Assign {
-                target: Box::new(first.clone()),
+                target: Box::new(crate::lvalues::canonical_assignment_target(first.clone())),
                 value: Box::new(Expression::Binary {
                     operator,
                     left: Box::new(first),
@@ -318,7 +318,7 @@ impl Parser {
             self.advance();
             let value = self.expression()?;
             return Ok(Expression::Assign {
-                target: Box::new(condition),
+                target: Box::new(crate::lvalues::canonical_assignment_target(condition)),
                 value: Box::new(value),
             });
         }
@@ -335,7 +335,7 @@ impl Parser {
             self.advance();
             let rhs = self.expression()?;
             return Ok(Expression::Assign {
-                target: Box::new(first.clone()),
+                target: Box::new(crate::lvalues::canonical_assignment_target(first.clone())),
                 value: Box::new(Expression::Binary {
                     operator,
                     left: Box::new(first),
@@ -347,7 +347,7 @@ impl Parser {
             self.advance();
             let value = self.expression()?;
             return Ok(Expression::Assign {
-                target: Box::new(first),
+                target: Box::new(crate::lvalues::canonical_assignment_target(first)),
                 value: Box::new(value),
             });
         }
@@ -1352,7 +1352,7 @@ impl Parser {
 /// Build the `target = target ± 1` assignment that an `++`/`--` desugars to.
 fn increment_assignment(target: Expression, operator: BinaryOperator) -> Expression {
     Expression::Assign {
-        target: Box::new(target.clone()),
+        target: Box::new(crate::lvalues::canonical_assignment_target(target.clone())),
         value: Box::new(Expression::Binary {
             operator,
             left: Box::new(target),

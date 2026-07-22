@@ -1369,6 +1369,16 @@ mod tests {
 
     #[test]
     fn msl_copy_policy_tracks_each_measured_generation_transition() {
+        let build_163 = Behavior::resolve(&CompilerConfig::new(build::GC_1_2_5));
+        assert_eq!(
+            build_163.mem_copy_word_schedule_style,
+            MemCopyWordScheduleStyle::SerialScratch
+        );
+        assert_eq!(
+            build_163.mem_copy_remainder_mask_style,
+            MemCopyRemainderMaskStyle::MaterializedThree
+        );
+
         let early = Behavior::resolve(&CompilerConfig::new(build::GC_1_3));
         assert_eq!(
             early.mem_copy_word_schedule_style,

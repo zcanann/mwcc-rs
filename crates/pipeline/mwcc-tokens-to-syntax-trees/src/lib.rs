@@ -15,6 +15,7 @@ mod cxx_new;
 mod cxx_rtti;
 mod expressions;
 mod items;
+mod lvalues;
 mod parser;
 
 use parser::Parser;
@@ -245,6 +246,52 @@ mod tests {
         .unwrap();
 
         assert!(unit.functions[0].locals[0].is_volatile);
+    }
+
+    #[test]
+    fn canonicalizes_mwcc_cast_lvalue_assignments_without_losing_step_type() {
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(
+                "typedef unsigned char u8; void copy(void* p) { ((u8*)p) = ((u8*)p) - 1; *++((u8*)p) = 3; }",
+            )
+            .unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        let [mwcc_syntax_trees::Statement::Assign { name, value },
+            mwcc_syntax_trees::Statement::Store { target, .. }] =
+            unit.functions[0].statements.as_slice()
+        else {
+            panic!("expected a local assignment followed by an updated-pointer store");
+        };
+        assert_eq!(name, "p");
+        assert!(matches!(
+            value,
+            Expression::Binary { left, .. }
+                if matches!(left.as_ref(), Expression::Cast {
+                    target_type: mwcc_syntax_trees::Type::Pointer(
+                        mwcc_syntax_trees::Pointee::UnsignedChar
+                    ),
+                    ..
+                })
+        ));
+        assert!(matches!(
+            target,
+            Expression::Dereference { pointer }
+                if matches!(pointer.as_ref(), Expression::Assign { target, value }
+                    if matches!(target.as_ref(), Expression::Variable(variable) if variable == "p")
+                        && matches!(value.as_ref(), Expression::Binary { left, .. }
+                            if matches!(left.as_ref(), Expression::Cast {
+                                target_type: mwcc_syntax_trees::Type::Pointer(
+                                    mwcc_syntax_trees::Pointee::UnsignedChar
+                                ),
+                                ..
+                            })))
+        ));
     }
 
     #[test]
