@@ -18,97 +18,13 @@ impl Generator {
         let Some(shape) = GuardedComputedSurvivor::recognize(function, self) else {
             return Ok(false);
         };
-
-        let channel = self.lookup_general(shape.index).ok_or_else(|| {
-            Diagnostic::error("guarded computed survivor index has no incoming register")
-        })?;
-        if channel != Eabi::FIRST_GENERAL_ARGUMENT {
+        let frame_size = match self.behavior.frame_convention {
+            FrameConvention::LinkageFirst => 24,
+            FrameConvention::Predecrement => 16,
+        };
+        if !self.emit_guarded_computed_survivor_prefix(&shape, frame_size)? {
             return Ok(false);
         }
-
-        self.non_leaf = true;
-        self.callee_saved = vec![31];
-        self.epilogue_lr_before_gprs = true;
-        match self.behavior.frame_convention {
-            FrameConvention::LinkageFirst => {
-                self.frame_size = 24;
-                self.output
-                    .instructions
-                    .push(Instruction::MoveFromLinkRegister { d: 0 });
-                self.emit_address_high(4, shape.global);
-                self.output.instructions.push(Instruction::StoreWord {
-                    s: 0,
-                    a: 1,
-                    offset: 4,
-                });
-                self.emit_guarded_survivor_address_low(shape.global);
-                emit_scaled_index(&mut self.output.instructions, 5, channel, shape.stride)?;
-                self.output
-                    .instructions
-                    .push(Instruction::StoreWordWithUpdate {
-                        s: 1,
-                        a: 1,
-                        offset: -24,
-                    });
-                self.output
-                    .instructions
-                    .push(Instruction::load_immediate(4, shape.slot));
-                self.output.instructions.push(Instruction::StoreWord {
-                    s: 31,
-                    a: 1,
-                    offset: 20,
-                });
-                self.output
-                    .instructions
-                    .push(Instruction::Add { d: 31, a: 0, b: 5 });
-                self.output
-                    .instructions
-                    .push(Instruction::load_immediate(5, shape.frequency));
-            }
-            FrameConvention::Predecrement => {
-                self.frame_size = 16;
-                self.output
-                    .instructions
-                    .push(Instruction::StoreWordWithUpdate {
-                        s: 1,
-                        a: 1,
-                        offset: -16,
-                    });
-                self.output
-                    .instructions
-                    .push(Instruction::MoveFromLinkRegister { d: 0 });
-                self.emit_address_high(4, shape.global);
-                emit_scaled_index(&mut self.output.instructions, 5, channel, shape.stride)?;
-                self.output.instructions.push(Instruction::StoreWord {
-                    s: 0,
-                    a: 1,
-                    offset: 20,
-                });
-                self.emit_guarded_survivor_address_low(shape.global);
-                self.output
-                    .instructions
-                    .push(Instruction::load_immediate(4, shape.slot));
-                self.output.instructions.push(Instruction::StoreWord {
-                    s: 31,
-                    a: 1,
-                    offset: 12,
-                });
-                self.output
-                    .instructions
-                    .push(Instruction::Add { d: 31, a: 0, b: 5 });
-                self.output
-                    .instructions
-                    .push(Instruction::load_immediate(5, shape.frequency));
-            }
-        }
-
-        self.record_relocation(RelocationKind::Rel24, shape.predicate);
-        self.output.instructions.push(Instruction::BranchAndLink {
-            target: shape.predicate.to_owned(),
-        });
-        self.output
-            .instructions
-            .push(Instruction::CompareWordImmediate { a: 3, immediate: 0 });
 
         let alternate = self.fresh_label();
         let join = self.fresh_label();
@@ -148,6 +64,105 @@ impl Generator {
         Ok(true)
     }
 
+    /// Emit the generation-specific prologue, computed saved home, predicate
+    /// call, and zero comparison shared by terminal and frame continuations.
+    pub(super) fn emit_guarded_computed_survivor_prefix(
+        &mut self,
+        shape: &GuardedComputedSurvivor<'_>,
+        frame_size: i16,
+    ) -> Compilation<bool> {
+        let channel = self.lookup_general(shape.index).ok_or_else(|| {
+            Diagnostic::error("guarded computed survivor index has no incoming register")
+        })?;
+        if channel != Eabi::FIRST_GENERAL_ARGUMENT {
+            return Ok(false);
+        }
+
+        self.non_leaf = true;
+        self.frame_size = frame_size;
+        self.callee_saved = vec![31];
+        self.epilogue_lr_before_gprs = true;
+        match self.behavior.frame_convention {
+            FrameConvention::LinkageFirst => {
+                self.output
+                    .instructions
+                    .push(Instruction::MoveFromLinkRegister { d: 0 });
+                self.emit_address_high(4, shape.global);
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: 0,
+                    a: 1,
+                    offset: 4,
+                });
+                self.emit_guarded_survivor_address_low(shape.global);
+                emit_scaled_index(&mut self.output.instructions, 5, channel, shape.stride)?;
+                self.output
+                    .instructions
+                    .push(Instruction::StoreWordWithUpdate {
+                        s: 1,
+                        a: 1,
+                        offset: -frame_size,
+                    });
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate(4, shape.slot));
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: 31,
+                    a: 1,
+                    offset: frame_size - 4,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::Add { d: 31, a: 0, b: 5 });
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate(5, shape.frequency));
+            }
+            FrameConvention::Predecrement => {
+                self.output
+                    .instructions
+                    .push(Instruction::StoreWordWithUpdate {
+                        s: 1,
+                        a: 1,
+                        offset: -frame_size,
+                    });
+                self.output
+                    .instructions
+                    .push(Instruction::MoveFromLinkRegister { d: 0 });
+                self.emit_address_high(4, shape.global);
+                emit_scaled_index(&mut self.output.instructions, 5, channel, shape.stride)?;
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: 0,
+                    a: 1,
+                    offset: frame_size + 4,
+                });
+                self.emit_guarded_survivor_address_low(shape.global);
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate(4, shape.slot));
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: 31,
+                    a: 1,
+                    offset: frame_size - 4,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::Add { d: 31, a: 0, b: 5 });
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate(5, shape.frequency));
+            }
+        }
+
+        self.record_relocation(RelocationKind::Rel24, shape.predicate);
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: shape.predicate.to_owned(),
+        });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 3, immediate: 0 });
+        Ok(true)
+    }
+
     fn emit_guarded_survivor_address_low(&mut self, global: &str) {
         self.record_relocation(RelocationKind::Addr16Lo, global);
         self.output.instructions.push(Instruction::AddImmediate {
@@ -158,15 +173,15 @@ impl Generator {
     }
 }
 
-struct GuardedComputedSurvivor<'a> {
-    global: &'a str,
-    index: &'a str,
-    stride: u32,
-    predicate: &'a str,
-    slot: i16,
-    frequency: i16,
-    guard_result: i16,
-    member_offset: i16,
+pub(super) struct GuardedComputedSurvivor<'a> {
+    pub(super) global: &'a str,
+    pub(super) index: &'a str,
+    pub(super) stride: u32,
+    pub(super) predicate: &'a str,
+    pub(super) slot: i16,
+    pub(super) frequency: i16,
+    pub(super) guard_result: i16,
+    pub(super) member_offset: i16,
 }
 
 impl<'a> GuardedComputedSurvivor<'a> {
@@ -179,12 +194,6 @@ impl<'a> GuardedComputedSurvivor<'a> {
         let [local] = function.locals.as_slice() else {
             return None;
         };
-        let Type::StructPointer { element_size } = local.declared_type else {
-            return None;
-        };
-        if local.initializer.is_some() || local.is_static || local.array_length.is_some() {
-            return None;
-        }
         let (name, value, condition, guard_result) =
             match (function.statements.as_slice(), function.guards.as_slice()) {
                 (
@@ -209,7 +218,36 @@ impl<'a> GuardedComputedSurvivor<'a> {
                 }
                 _ => return None,
             };
-        if name != &local.name {
+        Self::recognize_parts(
+            local,
+            name,
+            value,
+            condition,
+            guard_result,
+            function.return_expression.as_ref()?,
+            generator,
+        )
+    }
+
+    /// Recognize the shared assignment/guard/return data while allowing a
+    /// separate owner to validate and emit the continuation between them.
+    pub(super) fn recognize_parts(
+        local: &'a LocalDeclaration,
+        assigned_name: &str,
+        value: &'a Expression,
+        condition: &'a Expression,
+        guard_result: &'a Expression,
+        return_expression: &'a Expression,
+        generator: &Generator,
+    ) -> Option<Self> {
+        let Type::StructPointer { element_size } = local.declared_type else {
+            return None;
+        };
+        if local.initializer.is_some()
+            || local.is_static
+            || local.array_length.is_some()
+            || assigned_name != local.name.as_str()
+        {
             return None;
         }
         let Expression::AddressOf { operand } = value else {
@@ -255,7 +293,7 @@ impl<'a> GuardedComputedSurvivor<'a> {
             offset: member_offset,
             member_type,
             ..
-        } = function.return_expression.as_ref()?
+        } = return_expression
         else {
             return None;
         };
