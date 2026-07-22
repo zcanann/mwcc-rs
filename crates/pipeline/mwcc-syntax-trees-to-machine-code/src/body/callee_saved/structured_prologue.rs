@@ -22,6 +22,23 @@ pub(super) fn saved_home_stores_precede_initialization(
         && deferred_home_count != 0
 }
 
+/// Select MWCC's contiguous GPR save form for structured frames. Eager locals
+/// are safe here only when lifetime coloring has merged a later local into an
+/// expired parameter home; that is the measured shape where the legacy
+/// allocator changes from individually scheduled saves to one dense range.
+pub(super) fn uses_dense_saved_register_range(
+    with_frame_array: bool,
+    eager_local_count: usize,
+    saved_home_count: usize,
+    global_member_search_entry: bool,
+    reuses_parameter_home: bool,
+) -> bool {
+    with_frame_array
+        && saved_home_count <= 18
+        && (saved_home_count >= 5 || (global_member_search_entry && saved_home_count >= 4))
+        && (eager_local_count == 0 || reuses_parameter_home)
+}
+
 impl Generator {
     pub(super) fn try_emit_structured_wide_saved_initializer(
         &mut self,
@@ -105,5 +122,11 @@ mod tests {
             1,
             1,
         ));
+    }
+
+    #[test]
+    fn expired_parameter_reuse_enables_a_dense_eager_frame() {
+        assert!(uses_dense_saved_register_range(true, 4, 12, false, true));
+        assert!(!uses_dense_saved_register_range(true, 4, 12, false, false));
     }
 }

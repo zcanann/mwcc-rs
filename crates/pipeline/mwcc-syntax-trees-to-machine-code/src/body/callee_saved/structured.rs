@@ -27,7 +27,9 @@ use super::structured_locals::{
     plan_deferred_saved_homes, plan_ephemeral_locals,
 };
 use super::structured_parameter_home_reuse::StructuredParameterHomeReuse;
-use super::structured_prologue::saved_home_stores_precede_initialization;
+use super::structured_prologue::{
+    saved_home_stores_precede_initialization, uses_dense_saved_register_range,
+};
 #[allow(unused_imports)]
 use super::*;
 
@@ -251,6 +253,14 @@ impl Generator {
             + saved_parameters.len()
             + parameter_home_reuse.fresh_group_count;
         let first_saved = 32usize.saturating_sub(count);
+        let dense_frame = uses_dense_saved_register_range(
+            with_frame_array,
+            eager_saved_locals.len(),
+            count,
+            global_member_search_entry,
+            parameter_home_reuse
+                .reuses_parameter_home(eager_saved_locals.len(), saved_parameters.len()),
+        );
         let dense_entry_prefix = with_frame_array
             && !global_member_search_entry
             && structured_dense_frame_entry_index(function).is_some_and(|index| index != 0);
@@ -371,7 +381,16 @@ impl Generator {
                 // one scalar slot but only rounds this frame to a doubleword.
                 // Ordinary structured frames retain their 16-byte rounding.
                 let alignment = if folded_terminal_pointer_alias { 8 } else { 16 };
-                plan.frame_size = i16::try_from((occupied + alignment - 1) / alignment * alignment)
+                let frame_size = if dense_frame && !eager_saved_locals.is_empty() {
+                    // A dense legacy frame retains the caller-linkage word
+                    // between the local region and its contiguous saved-GPR
+                    // range. Individually saved frames acquire the same gap
+                    // during frame normalization after allocation.
+                    occupied + 8
+                } else {
+                    (occupied + alignment - 1) / alignment * alignment
+                };
+                plan.frame_size = i16::try_from(frame_size)
                     .map_err(|_| Diagnostic::error("structured legacy frame is too large"))?;
             }
             self.frame_slots.insert(
@@ -422,10 +441,6 @@ impl Generator {
         self.callee_saved = homes.clone();
         self.legacy_callee_saved_frame_layout =
             LegacyCalleeSavedFrameLayout::RetainEntryParameterTable;
-        let dense_frame = with_frame_array
-            && eager_saved_locals.is_empty()
-            && count <= 18
-            && (count >= 5 || (global_member_search_entry && count >= 4));
         let dense_save_helper =
             dense_frame && self.behavior.frame_convention == FrameConvention::Predecrement;
         let dense_inline_save =
@@ -507,26 +522,32 @@ impl Generator {
         }
         let deferred_home_base = saved_parameter_base + saved_parameter_homes.len();
         if batched_saved_home_stores {
-            self.emit_structured_saved_home_store_range(
-                &homes[..saved_parameter_base],
-                0,
-                plan.frame_size,
-            );
-            for (parameter_index, (_, home, incoming)) in saved_parameter_homes.iter().enumerate() {
-                self.emit_structured_saved_home_store(
-                    *home,
-                    saved_parameter_base + parameter_index,
+            if !dense_frame {
+                self.emit_structured_saved_home_store_range(
+                    &homes[..saved_parameter_base],
+                    0,
                     plan.frame_size,
                 );
+            }
+            for (parameter_index, (_, home, incoming)) in saved_parameter_homes.iter().enumerate() {
+                if !dense_frame {
+                    self.emit_structured_saved_home_store(
+                        *home,
+                        saved_parameter_base + parameter_index,
+                        plan.frame_size,
+                    );
+                }
                 self.output
                     .instructions
                     .push(Instruction::move_register(*home, *incoming));
             }
-            self.emit_structured_saved_home_store_range(
-                &homes[deferred_home_base..],
-                deferred_home_base,
-                plan.frame_size,
-            );
+            if !dense_frame {
+                self.emit_structured_saved_home_store_range(
+                    &homes[deferred_home_base..],
+                    deferred_home_base,
+                    plan.frame_size,
+                );
+            }
         }
 
         let mut home_index = 0;
@@ -637,7 +658,7 @@ impl Generator {
         }
         self.plan_structured_float_handoff(function, &ephemeral_locals);
         let dense_statement_start = if dense_frame {
-            if global_member_search_entry {
+            if global_member_search_entry || saved_parameter_base != 0 {
                 0
             } else {
                 self.emit_structured_dense_frame_entry(function, &saved_parameter_homes)?

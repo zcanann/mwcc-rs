@@ -77,6 +77,13 @@ impl StructuredParameterHomeReuse {
     pub(super) fn home_index(&self, group: usize) -> usize {
         self.home_index_by_group[group]
     }
+
+    pub(super) fn reuses_parameter_home(&self, eager_count: usize, parameter_count: usize) -> bool {
+        let fresh_home_base = eager_count + parameter_count;
+        self.home_index_by_group
+            .iter()
+            .any(|home| *home < fresh_home_base)
+    }
 }
 
 #[cfg(test)]
