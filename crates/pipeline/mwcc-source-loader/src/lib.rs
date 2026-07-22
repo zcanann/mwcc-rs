@@ -188,6 +188,29 @@ impl LoadContext<'_> {
 
     fn resolve_include(&self, including_file: &Path, include: &Include<'_>) -> Option<PathBuf> {
         let requested = Path::new(include.path);
+        // A configured project may put a generated binary `.mch` first on the
+        // access path. That file is serialized MWCC state, not C++ source. Our
+        // frontend reconstructs the declarations from the companion textual
+        // `.pch` kept by decomp projects.
+        if requested.extension().and_then(|extension| extension.to_str()) == Some("mch") {
+            let textual = requested.with_extension("pch");
+            if include.quoted {
+                if let Some(parent) = including_file.parent() {
+                    let candidate = parent.join(&textual);
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
+                }
+            }
+            if let Some(candidate) = self
+                .access_paths
+                .iter()
+                .map(|root| root.join(&textual))
+                .find(|candidate| candidate.is_file())
+            {
+                return Some(candidate);
+            }
+        }
         if requested.is_absolute() && requested.is_file() {
             return Some(requested.to_path_buf());
         }
@@ -526,6 +549,27 @@ mod tests {
         assert_eq!(
             loaded,
             b"#line 1\nint sibling;\n#line 2\n#line 1\nint access;\n#line 3\n"
+        );
+    }
+
+    #[test]
+    fn binary_precompiled_header_includes_use_the_textual_companion() {
+        let scratch = Scratch::new();
+        std::fs::write(scratch.0.join("state.mch"), b"\xce\xfa\xef\xbe").unwrap();
+        std::fs::write(scratch.0.join("state.pch"), b"struct State { int value; };\n")
+            .unwrap();
+        std::fs::write(
+            scratch.0.join("unit.cpp"),
+            b"#include \"state.mch\"\nint read(State* state) { return state->value; }\n",
+        )
+        .unwrap();
+
+        let loaded = SourceLoader::default()
+            .load(&scratch.0.join("unit.cpp"))
+            .unwrap();
+        assert_eq!(
+            loaded,
+            b"#line 1\nstruct State { int value; };\n#line 2\nint read(State* state) { return state->value; }\n"
         );
     }
 
