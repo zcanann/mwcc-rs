@@ -4490,4 +4490,29 @@ blr\n\
         assert_eq!(table.array_length, Some(1));
         assert_eq!(table.address_initializer.as_ref().unwrap().len(), 2);
     }
+
+    #[test]
+    fn integer_struct_field_retains_cast_symbol_relocation() {
+        let source = r#"
+            typedef unsigned int u32;
+            struct Record { u32 address; };
+            extern int target;
+            struct Record record = { (u32)target };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let record = unit
+            .globals
+            .iter()
+            .find(|global| global.name == "record")
+            .unwrap();
+
+        assert_eq!(record.data_relocations, [(0, "target".to_string(), 0)]);
+    }
 }

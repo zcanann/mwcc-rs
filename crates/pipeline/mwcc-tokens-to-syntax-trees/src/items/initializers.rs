@@ -525,6 +525,20 @@ impl Parser {
                     let encoded = (value as u64).to_be_bytes();
                     image[field_base..field_base + 4].copy_from_slice(&encoded[4..]);
                 }
+            } else if matches!(
+                member_type,
+                Type::Int | Type::UnsignedInt
+            ) {
+                // Some ABI records deliberately store an address in a word-sized
+                // integer field (`(u32)symbol`). It is still link-time address data,
+                // so retain an ADDR32 relocation just like a pointer-typed field.
+                if let Some((target, addend)) = self.parse_address_element(tag)? {
+                    relocations.push((absolute_field, target, addend));
+                } else {
+                    let value = self.parse_scalar_constant(member_type)?;
+                    let encoded = (value as u64).to_be_bytes();
+                    image[field_base..field_base + 4].copy_from_slice(&encoded[4..]);
+                }
             } else {
                 let value = self.parse_scalar_constant(member_type)?;
                 let width = type_size(member_type) as usize;
