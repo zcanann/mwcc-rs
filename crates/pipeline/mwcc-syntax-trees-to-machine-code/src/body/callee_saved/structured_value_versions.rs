@@ -6,6 +6,7 @@
 //! name, so this conservative normalization gives each proven straight-line
 //! redefinition a private internal name before liveness and home coloring.
 
+use super::structured_locals::body_uses_local;
 #[allow(unused_imports)]
 use super::*;
 
@@ -135,6 +136,32 @@ pub(super) fn split_reassigned_local_versions(function: &Function) -> Option<Fun
     }
     fold_single_use_constant_versions(&mut rewritten);
     Some(rewritten)
+}
+
+/// Find a different source value read by a reassignment and still needed
+/// afterward. The emitter combines this proof with its location table: when
+/// source and destination share a home, the write must break that alias.
+pub(super) fn reassignment_live_source<'a>(
+    function: &'a Function,
+    assigned: &str,
+    value: &Expression,
+    remaining_statements: &[Statement],
+) -> Option<&'a str> {
+    function
+        .locals
+        .iter()
+        .map(|local| local.name.as_str())
+        .chain(
+            function
+                .parameters
+                .iter()
+                .map(|parameter| parameter.name.as_str()),
+        )
+        .find(|candidate| {
+            *candidate != assigned
+                && expression_reads_name(value, candidate)
+                && body_uses_local(remaining_statements, candidate)
+        })
 }
 
 fn fold_single_use_constant_versions(function: &mut Function) {
@@ -364,5 +391,22 @@ mod tests {
             rewritten.return_expression,
             Some(Expression::Variable(name)) if name == *version
         ));
+    }
+
+    #[test]
+    fn finds_a_reassignment_source_that_remains_live() {
+        let mut function = function();
+        function.locals = vec![local("dummy", None), local("length", None)];
+        let value = Expression::Binary {
+            operator: BinaryOperator::Add,
+            left: Box::new(Expression::Variable("dummy".into())),
+            right: Box::new(Expression::IntegerLiteral(20)),
+        };
+        let remaining = [Statement::Expression(Expression::Variable("dummy".into()))];
+
+        assert_eq!(
+            reassignment_live_source(&function, "length", &value, &remaining),
+            Some("dummy"),
+        );
     }
 }

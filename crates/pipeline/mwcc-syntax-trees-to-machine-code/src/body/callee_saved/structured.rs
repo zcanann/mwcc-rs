@@ -10,6 +10,7 @@ use super::structured_call_accumulator::{
     call_accumulator_assignment_count, call_accumulator_names,
     fold_zero_initialized_call_accumulator, in_place_call_combined_return_name,
 };
+use super::structured_call_schedule::transient_call_argument_register;
 use super::structured_entry_alias::{
     fold_entry_alias_zero_test, plan_first_call_alias, EntryAliasBoundary, EntryParameterAlias,
 };
@@ -30,7 +31,7 @@ use super::structured_parameter_home_reuse::StructuredParameterHomeReuse;
 use super::structured_prologue::{
     saved_home_stores_precede_initialization, uses_dense_saved_register_range,
 };
-use super::structured_value_versions::split_reassigned_local_versions;
+use super::structured_value_versions::{reassignment_live_source, split_reassigned_local_versions};
 #[allow(unused_imports)]
 use super::*;
 
@@ -1168,8 +1169,25 @@ impl Generator {
                             == FrameConvention::Predecrement
                             && statement_index + 1 == statements.len()
                             && in_place_call_combined_return_name(function) == Some(name.as_str());
+                        let separates_live_alias = reassignment_live_source(
+                            function,
+                            name,
+                            value,
+                            &statements[statement_index + 1..],
+                        )
+                        .and_then(|source| self.locations.get(source))
+                        .is_some_and(|source| source.register == previous);
                         let destination = if terminal_result {
                             Eabi::general_result().number
+                        } else if separates_live_alias {
+                            if let Some(register) = transient_call_argument_register(
+                                &statements[statement_index + 1..],
+                                name,
+                            ) {
+                                self.fresh_virtual_general_preferring(register)
+                            } else {
+                                self.fresh_virtual_general()
+                            }
                         } else {
                             previous
                         };
@@ -1254,7 +1272,7 @@ impl Generator {
                             ));
                             diagnostic
                         })?;
-                        if terminal_result {
+                        if terminal_result || separates_live_alias {
                             self.locations
                                 .get_mut(name)
                                 .expect("structured assignment home")

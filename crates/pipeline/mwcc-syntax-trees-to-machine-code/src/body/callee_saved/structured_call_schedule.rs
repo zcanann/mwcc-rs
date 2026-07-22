@@ -4,6 +4,72 @@ use super::structured_locals::body_uses_local;
 #[allow(unused_imports)]
 use super::*;
 
+pub(super) fn transient_call_argument_register(
+    statements: &[Statement],
+    candidate: &str,
+) -> Option<u8> {
+    statements
+        .iter()
+        .find_map(|statement| statement_call_argument_index(statement, candidate))
+        .and_then(|index| u8::try_from(index).ok())
+        .and_then(|index| Eabi::FIRST_GENERAL_ARGUMENT.checked_add(index))
+        .filter(|register| *register <= 10)
+}
+
+fn statement_call_argument_index(statement: &Statement, candidate: &str) -> Option<usize> {
+    match statement {
+        Statement::Store { target, value } => expression_call_argument_index(target, candidate)
+            .or_else(|| expression_call_argument_index(value, candidate)),
+        Statement::Assign { value, .. }
+        | Statement::Expression(value)
+        | Statement::Return(Some(value)) => expression_call_argument_index(value, candidate),
+        Statement::If {
+            condition,
+            then_body,
+            else_body,
+        } => expression_call_argument_index(condition, candidate).or_else(|| {
+            then_body
+                .iter()
+                .chain(else_body)
+                .find_map(|statement| statement_call_argument_index(statement, candidate))
+        }),
+        _ => None,
+    }
+}
+
+fn expression_call_argument_index(expression: &Expression, candidate: &str) -> Option<usize> {
+    match expression {
+        Expression::Call { arguments, .. } => arguments.iter().position(
+            |argument| matches!(argument, Expression::Variable(name) if name == candidate),
+        ),
+        Expression::Binary { left, right, .. }
+        | Expression::Assign {
+            target: left,
+            value: right,
+        }
+        | Expression::Comma { left, right } => expression_call_argument_index(left, candidate)
+            .or_else(|| expression_call_argument_index(right, candidate)),
+        Expression::Unary { operand, .. }
+        | Expression::Cast { operand, .. }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
+        }
+        | Expression::IndexedUpdateValue { value: operand }
+        | Expression::PostStep {
+            target: operand, ..
+        } => expression_call_argument_index(operand, candidate),
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+            ..
+        } => expression_call_argument_index(condition, candidate)
+            .or_else(|| expression_call_argument_index(when_true, candidate))
+            .or_else(|| expression_call_argument_index(when_false, candidate)),
+        _ => None,
+    }
+}
+
 impl Generator {
     /// Build 163 spells the final multi-argument forwarding of a deferred local
     /// home as `addi d,s,0`, while earlier uses and entry-initialized locals
@@ -97,9 +163,20 @@ mod tests {
             dying_first_local_argument(&current, &later_use, &known),
             None
         );
+        assert_eq!(dying_first_local_argument(&later_use[0], &[], &known), None);
+    }
+
+    #[test]
+    fn selects_the_eabi_register_for_a_forwarded_argument() {
+        let statement = call(vec![
+            Expression::IntegerLiteral(0),
+            Expression::IntegerLiteral(0),
+            Expression::IntegerLiteral(0),
+            Expression::Variable("length".into()),
+        ]);
         assert_eq!(
-            dying_first_local_argument(&later_use[0], &[], &known),
-            None
+            transient_call_argument_register(&[statement], "length"),
+            Some(6),
         );
     }
 }
