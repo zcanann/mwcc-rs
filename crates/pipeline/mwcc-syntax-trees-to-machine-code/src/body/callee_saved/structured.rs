@@ -197,7 +197,9 @@ impl Generator {
             let class = class_of(local.declared_type).expect("eligibility checked");
             let temporary = match class {
                 ValueClass::General => self.fresh_virtual_general(),
-                ValueClass::Float => self.fresh_virtual_float_preferring(1),
+                ValueClass::Float => self.fresh_virtual_float_preferring(
+                    self.ephemeral_float_home_preference(function),
+                ),
             };
             if let Some(initializer) = &local.initializer {
                 self.evaluate(initializer, local.declared_type, temporary)?;
@@ -217,6 +219,7 @@ impl Generator {
                 },
             );
         }
+        self.plan_structured_float_handoff(function);
         for (name, home) in saved_parameter_homes {
             self.locations
                 .get_mut(&name)
@@ -301,6 +304,7 @@ impl Generator {
                     })();
                     self.restore_condition_global_cache(previous_cache);
                     let branches = condition_result?;
+                    self.commit_structured_float_handoff();
                     self.emit_structured_statements(
                         then_body,
                         function,

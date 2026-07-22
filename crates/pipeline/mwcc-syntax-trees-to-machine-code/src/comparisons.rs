@@ -1475,6 +1475,7 @@ impl Generator {
             let b = self.place_float_compare_operand(right, double)?;
             (a, b)
         };
+        self.emit_structured_float_handoff_before_compare();
         if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
             let (first, second) = if matches!(
                 right,
@@ -1602,6 +1603,9 @@ impl Generator {
         const FLOAT_FIRST: u8 = 1;
         if self.is_float_leaf(operand) {
             return self.float_register_of_leaf(operand);
+        }
+        if let Some(register) = self.retained_float_compare_register(operand) {
+            return Ok(register);
         }
         if self.f1_holds_float_argument() {
             return Err(Diagnostic::error("a float member/global compare with a float argument in f1 needs the FP register allocator (roadmap)"));

@@ -48,6 +48,22 @@ pub(crate) struct PreloadedFloatCompareLiteral {
     pub(crate) register: u8,
 }
 
+pub(crate) struct StructuredFloatHandoff {
+    pub(crate) name: String,
+    pub(crate) source: u8,
+    pub(crate) destination: u8,
+    pub(crate) emitted: bool,
+}
+
+/// Original memory value retained beside a conditionally transformed local.
+/// Build 163 can compare the source again without reloading it while the local
+/// occupies a separate FPR for a later call argument.
+#[derive(Clone)]
+pub(crate) struct RetainedFloatCompareValue {
+    pub(crate) expression: Expression,
+    pub(crate) register: u8,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum ValueClass {
     General,
@@ -291,6 +307,10 @@ pub(crate) struct Generator {
     /// One pool literal deliberately issued before an ephemeral local's memory
     /// initializer. The first matching comparison consumes this reservation.
     pub(crate) preloaded_float_compare_literal: Option<PreloadedFloatCompareLiteral>,
+    /// Build-163 alias split for a local whose first compare uses its f2
+    /// initializer while later mutation/call uses consume a preserved f1 copy.
+    pub(crate) structured_float_handoff: Option<StructuredFloatHandoff>,
+    pub(crate) retained_float_compare_value: Option<RetainedFloatCompareValue>,
     /// Address-taken variables and their stack-frame slots. A name here is
     /// frame-resident: `&v` and type-punned accesses read/write its slot.
     pub(crate) frame_slots: HashMap<String, FrameSlot>,

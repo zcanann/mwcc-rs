@@ -301,6 +301,8 @@ pub fn lower_function(
         emitted_variable_index_store: false,
         prematerialized_float_constants: Vec::new(),
         preloaded_float_compare_literal: None,
+        structured_float_handoff: None,
+        retained_float_compare_value: None,
         frame_slots: HashMap::new(),
         written_slots: HashSet::new(),
         frame_feeding_local_pressure: None,
