@@ -909,9 +909,12 @@ impl Parser {
             .collect();
         for function in std::mem::take(&mut self.cxx_inline_materializations) {
             if referenced_functions.contains(function.name.as_str()) {
+                let source = self
+                    .cxx_inline_materialization_sources
+                    .remove(&function.name);
                 self.weak_materialized.push(function.name.clone());
                 functions.push(function);
-                self.function_sources.push(None);
+                self.function_sources.push(source);
             }
         }
         cxx_vtables::position_after_functions(&mut globals, &functions);

@@ -164,6 +164,7 @@ pub fn parse_located_translation_unit_with_enum_min(
         empty_nested_template_types: std::collections::HashSet::new(),
         inline_cxx_members: std::collections::HashSet::new(),
         cxx_inline_materializations: Vec::new(),
+        cxx_inline_materialization_sources: std::collections::HashMap::new(),
         cxx_static_methods: HashMap::new(),
         cxx_constructors: HashMap::new(),
         cxx_free_functions: HashMap::new(),
@@ -1156,6 +1157,7 @@ blr\n\
                 .collect::<Vec<_>>(),
             [("__ct__7DerivedFv", false), ("__dt__7DerivedFv", true)]
         );
+        assert!(unit.function_sources[1].is_some());
         let vtable = unit
             .globals
             .iter()

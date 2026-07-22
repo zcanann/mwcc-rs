@@ -197,6 +197,11 @@ pub(crate) struct Parser {
     /// emitted vtable. They are appended after ordinary definitions so
     /// deferred-inlining order places their weak out-of-line copies first.
     pub(crate) cxx_inline_materializations: Vec<mwcc_syntax_trees::Function>,
+    /// Physical source provenance for materialized in-class bodies, keyed by
+    /// their emitted ABI name. The recovery parser already computes this map;
+    /// retaining it lets debug lowering describe compiler-emitted weak bodies.
+    pub(crate) cxx_inline_materialization_sources:
+        HashMap<String, mwcc_syntax_trees::FunctionSource>,
     /// Static class-member overloads recovered from aggregate declarations,
     /// keyed by fully-qualified `(class, member)` name. Calls carry no implicit
     /// `this`, but still require CodeWarrior member-function mangling.

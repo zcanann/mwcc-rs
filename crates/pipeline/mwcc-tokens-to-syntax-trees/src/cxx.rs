@@ -1242,6 +1242,7 @@ impl Parser {
         let mut prototypes = Vec::new();
         let parsed = probe.parse_top_level_item(&mut globals, &mut functions, &mut prototypes);
         if parsed.is_ok() && functions.len() == 1 {
+            let source = probe.function_sources.pop().flatten();
             let mut function = functions.pop().expect("length checked");
             if destructor {
                 function.is_weak = true;
@@ -1251,6 +1252,10 @@ impl Parser {
                     .any(|existing| existing.name == function.name)
                 {
                     self.cxx_inline_materializations.push(function.clone());
+                    if let Some(source) = source {
+                        self.cxx_inline_materialization_sources
+                            .insert(function.name.clone(), source);
+                    }
                 }
             }
             self.skipped_inline_names.insert(function.name.clone());
