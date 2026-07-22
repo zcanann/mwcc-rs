@@ -1251,6 +1251,28 @@ blr\n\
     }
 
     #[test]
+    fn class_layout_accepts_east_const_self_reference() {
+        let source = r#"
+            class DivideInfo {
+            public:
+                unsigned int range_bits;
+                virtual ~DivideInfo() {}
+                bool check(DivideInfo const&) const;
+            };
+            int compiled(void) { return sizeof(DivideInfo); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.aggregate_definitions["DivideInfo"].byte_size, 8);
+    }
+
+    #[test]
     fn skips_primary_templates_with_default_arguments() {
         let source = r#"
             template <typename T, typename Pointer = T*>

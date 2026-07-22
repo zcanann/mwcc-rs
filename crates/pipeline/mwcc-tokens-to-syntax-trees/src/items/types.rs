@@ -366,6 +366,7 @@ impl Parser {
         if *self.peek() == Token::KeywordStruct {
             self.advance();
             let tag = self.parse_identifier()?;
+            self.consume_trailing_qualifiers();
             if !matches!(self.peek(), Token::Star | Token::Ampersand) {
                 // A struct *value*: a known layout becomes a sized struct value
                 // (a frame-resident local); an opaque/unknown struct still defers.
@@ -400,6 +401,7 @@ impl Parser {
         if matches!(self.peek(), Token::Identifier(word) if word == "union") {
             self.advance();
             let tag = self.parse_identifier()?;
+            self.consume_trailing_qualifiers();
             if !matches!(self.peek(), Token::Star | Token::Ampersand) {
                 return match self.struct_value_type(&tag) {
                     Some(union_type) => {
@@ -452,6 +454,7 @@ impl Parser {
         if let Token::Identifier(name) = self.peek() {
             if let Some(tag) = self.struct_pointer_typedefs.get(name).cloned() {
                 self.advance();
+                self.consume_trailing_qualifiers();
                 let element_size = self.structs.get(&tag).map_or(0, |layout| layout.size);
                 self.last_struct_tag = Some(tag);
                 if *self.peek() == Token::Star {
@@ -477,6 +480,11 @@ impl Parser {
                     .or_else(|| self.struct_typedefs.get(&name).cloned());
                 if let Some(tag) = tag {
                     self.advance();
+                    // East-const aggregate references (`Node const&`) must be
+                    // classified after the qualifier. Requiring a completed
+                    // value layout before looking through `const` creates an
+                    // impossible cycle for a class's own method signatures.
+                    self.consume_trailing_qualifiers();
                     if !matches!(self.peek(), Token::Star | Token::Ampersand) {
                         return match self.struct_value_type(&tag) {
                             Some(struct_type) => {
