@@ -1087,6 +1087,12 @@ pub(crate) fn inline_store_bearing_locals(function: &Function) -> Option<Functio
     // survives in the output (it lives in a register).
     let mut tracked_names = local_name_set.clone();
     tracked_names.extend(reassigned_parameters.iter().copied());
+    let register_names: std::collections::HashSet<&str> = function
+        .parameters
+        .iter()
+        .map(|parameter| parameter.name.as_str())
+        .chain(function.locals.iter().map(|local| local.name.as_str()))
+        .collect();
     // Each tracked name's current value, earlier folds applied. Seed from initializers (a
     // call-bearing initializer is a call result to preserve, not inline). `read_count`
     // tracks how many times each name's CURRENT value-version is read, to reject
@@ -1159,6 +1165,22 @@ pub(crate) fn inline_store_bearing_locals(function: &Function) -> Option<Functio
             Statement::Store { target, value } => {
                 in_leading_ifs = false;
                 if expression_has_call(value) || expression_has_call(target) {
+                    return None;
+                }
+                // A tracked local is a value snapshot, not a macro. Do not
+                // substitute a memory-reading value through a write that can
+                // invalidate it: `old = global; global = replacement; return
+                // old` must retain the load before the store. Direct named
+                // globals only alias themselves; an indirect target can alias
+                // any memory read, and an indirect read can alias a named
+                // global target.
+                let invalidates_snapshot = values.values().any(|snapshot| match target {
+                    Expression::Variable(global) => {
+                        expression_reads_name(snapshot, global) || contains_memory_load(snapshot)
+                    }
+                    _ => expression_reads_memory(snapshot, &register_names),
+                });
+                if invalidates_snapshot {
                     return None;
                 }
                 // A store INTO a local is a different shape — we only fold locals that feed
@@ -1643,4 +1665,56 @@ pub(crate) fn function_calls_any(
             .return_expression
             .as_ref()
             .is_some_and(|expression| expression_calls(expression, names))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mwcc_syntax_trees::Parameter;
+
+    #[test]
+    fn store_local_folding_does_not_cross_a_global_snapshot_write() {
+        let function = Function {
+            return_type: Type::UnsignedShort,
+            name: "exchange".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: vec![Parameter {
+                parameter_type: Type::UnsignedShort,
+                name: "replacement".into(),
+            }],
+            locals: vec![LocalDeclaration {
+                declared_type: Type::UnsignedShort,
+                name: "old".into(),
+                initializer: None,
+                is_volatile: false,
+                array_length: None,
+                is_static: false,
+                data_bytes: None,
+                data_relocations: Vec::new(),
+                is_const: false,
+                row_bytes: None,
+            }],
+            statements: vec![
+                Statement::Assign {
+                    name: "old".into(),
+                    value: Expression::Variable("global".into()),
+                },
+                Statement::Store {
+                    target: Expression::Variable("global".into()),
+                    value: Expression::Variable("replacement".into()),
+                },
+            ],
+            guards: Vec::new(),
+            return_expression: Some(Expression::Variable("old".into())),
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+
+        assert!(inline_store_bearing_locals(&function).is_none());
+    }
 }

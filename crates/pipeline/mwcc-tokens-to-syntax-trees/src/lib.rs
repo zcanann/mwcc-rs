@@ -229,7 +229,7 @@ pub fn parse_located_translation_unit_with_enum_min(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mwcc_syntax_trees::Expression;
+    use mwcc_syntax_trees::{Expression, Statement};
 
     #[test]
     fn retains_volatile_automatic_storage() {
@@ -4514,5 +4514,47 @@ blr\n\
             .unwrap();
 
         assert_eq!(record.data_relocations, [(0, "target".to_string(), 0)]);
+    }
+
+    #[test]
+    fn saved_global_value_remains_a_distinct_local_snapshot() {
+        let source = r#"
+            unsigned short global;
+            unsigned short exchange(unsigned short value) {
+                unsigned short previous;
+                previous = global;
+                global = value;
+                return previous;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let function = &unit.functions[0];
+        assert!(matches!(
+            function.statements.as_slice(),
+            [
+                Statement::Assign {
+                    name,
+                    value: Expression::Variable(global),
+                },
+                Statement::Store {
+                    target: Expression::Variable(target),
+                    value: Expression::Variable(value),
+                },
+            ] if name == "previous"
+                && global == "global"
+                && target == "global"
+                && value == "value"
+        ));
+        assert!(matches!(
+            function.return_expression.as_ref(),
+            Some(Expression::Variable(name)) if name == "previous"
+        ));
     }
 }
