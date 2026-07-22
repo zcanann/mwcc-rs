@@ -141,7 +141,9 @@ impl Generator {
             }
         }
         self.bind_label(join);
-        self.output.anonymous_label_bump += 3;
+        // The guard's alternate and join are the two optimizer labels that
+        // advance the following unwind symbol.
+        self.output.anonymous_label_bump += 2;
         self.emit_epilogue_and_return();
         Ok(true)
     }
