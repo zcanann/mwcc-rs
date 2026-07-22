@@ -1122,6 +1122,52 @@ blr\n\
     }
 
     #[test]
+    fn constructor_materializes_an_inline_virtual_destructor_and_weak_vtable() {
+        let source = r#"
+            struct Base {
+                virtual ~Base();
+            };
+            struct Derived : public Base {
+                Derived();
+                virtual ~Derived() {}
+            };
+            Derived::Derived() {}
+        "#;
+        let mut unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.functions
+                .iter()
+                .map(|function| (function.name.as_str(), function.is_weak))
+                .collect::<Vec<_>>(),
+            [("__ct__7DerivedFv", false), ("__dt__7DerivedFv", true)]
+        );
+        let vtable = unit
+            .globals
+            .iter()
+            .find(|global| global.name == "__vt__7Derived")
+            .expect("the constructor needs the all-inline class vtable");
+        assert!(vtable.is_weak);
+        assert!(vtable
+            .data_relocations
+            .iter()
+            .any(|(_, target, _)| target == "__dt__7DerivedFv"));
+        materialize_cxx_rtti(&mut unit);
+        assert!(unit
+            .globals
+            .iter()
+            .find(|global| global.name == "__vt__7Derived")
+            .is_some_and(|global| global.is_weak));
+    }
+
+    #[test]
     fn retains_named_parameter_identity_in_member_definition_symbols() {
         let source = r#"
             struct Creature { int value; };

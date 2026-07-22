@@ -2464,16 +2464,27 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     global_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
                     if let Some(&offset) = data_offsets.get(name) {
                         let section = index_of(data_section[name]) as u16;
+                        let object = input
+                            .data_objects
+                            .iter()
+                            .find(|object| object.name == name)
+                            .expect("a defined data reference has an owning object");
+                        let binding = if object.is_weak {
+                            STB_WEAK_OBJECT
+                        } else {
+                            STB_GLOBAL_OBJECT
+                        };
+                        let flags = if object.is_weak { 0x0d00_0000 } else { 0 };
                         write_symbol(
                             &mut symtab,
                             strtab.add(name),
                             offset,
                             data_sizes[name],
-                            STB_GLOBAL_OBJECT,
+                            binding,
                             0,
                             section,
                         );
-                        comment_values.push((data_aligns[name], 0));
+                        comment_values.push((data_aligns[name], flags));
                     } else if referenced_inline_asm.contains(name) {
                         // a CALLED static-inline asm helper stays LOCAL (info 0).
                         write_symbol(&mut symtab, strtab.add(name), 0, 0, 0, 0, SHN_UNDEF);

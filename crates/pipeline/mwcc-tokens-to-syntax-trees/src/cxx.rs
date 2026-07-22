@@ -1192,15 +1192,27 @@ impl Parser {
         else {
             return;
         };
-        let Some(member_index) = parameter_open.checked_sub(1) else {
+        let Some(mut member_index) = parameter_open.checked_sub(1) else {
             return;
         };
         let Some((Token::Identifier(member_name), _)) = source.get(member_index) else {
             return;
         };
-        let constructor = member_index == 0
-            && class.rsplit("::").next().is_some_and(|name| name == member_name);
+        let member_name = member_name.clone();
+        let destructor = member_index > 0
+            && source.get(member_index - 1).is_some_and(|(token, _)| *token == Token::Tilde);
+        let constructor = !destructor
+            && member_index == 0
+            && class
+                .rsplit("::")
+                .next()
+                .is_some_and(|name| name == member_name);
         let location = source[member_index].1;
+        if destructor {
+            source.remove(member_index - 1);
+            member_index -= 1;
+            source[member_index].0 = Token::Identifier("__dt".to_string());
+        }
         let mut qualification = Vec::new();
         for (index, component) in class.split("::").enumerate() {
             if index > 0 {
@@ -1212,7 +1224,7 @@ impl Parser {
         qualification.push((Token::Colon, location));
         qualification.push((Token::Colon, location));
         source.splice(member_index..member_index, qualification);
-        if constructor {
+        if constructor || destructor {
             source.insert(0, (Token::KeywordVoid, location));
         }
         let eof_location = source.last().map_or(location, |(_, location)| *location);
@@ -1228,13 +1240,19 @@ impl Parser {
         let mut globals = Vec::new();
         let mut functions = Vec::new();
         let mut prototypes = Vec::new();
-        if probe
-            .parse_top_level_item(&mut globals, &mut functions, &mut prototypes)
-            .is_ok()
-            && globals.is_empty()
-            && functions.len() == 1
-        {
-            let function = functions.pop().expect("length checked");
+        let parsed = probe.parse_top_level_item(&mut globals, &mut functions, &mut prototypes);
+        if parsed.is_ok() && functions.len() == 1 {
+            let mut function = functions.pop().expect("length checked");
+            if destructor {
+                function.is_weak = true;
+                if !self
+                    .cxx_inline_materializations
+                    .iter()
+                    .any(|existing| existing.name == function.name)
+                {
+                    self.cxx_inline_materializations.push(function.clone());
+                }
+            }
             self.skipped_inline_names.insert(function.name.clone());
             if !self
                 .skipped_inline_definitions
@@ -2481,8 +2499,21 @@ impl Parser {
                 ));
             }
             if *self.peek() == Token::Tilde {
-                if is_virtual {
-                    if class.vtable_key_function.is_none() {
+                self.advance();
+                let destructor_name = self.parse_identifier()?;
+                if destructor_name != name {
+                    return Err(Diagnostic::error(format!(
+                        "destructor '~{destructor_name}' does not name class '{name}'"
+                    )));
+                }
+                let signature = self.parse_class_parameter_types()?;
+                if !signature.parameters.is_empty() {
+                    return Err(Diagnostic::error("a destructor cannot have parameters"));
+                }
+                let is_inline = self.skip_class_method_tail()?;
+                let is_virtual_destructor = is_virtual || class.has_virtual_destructor;
+                if is_virtual_destructor {
+                    if !is_inline && class.vtable_key_function.is_none() {
                         let qualified = self.qualify_cxx_class_name(&name);
                         let scopes: Vec<&str> = qualified.split("::").collect();
                         class.vtable_key_function = Some(
@@ -2508,10 +2539,9 @@ impl Parser {
                         primary.virtual_destructor_slot = class.virtual_destructor_slot;
                     }
                 }
-                self.skip_class_member()?;
                 // An in-class destructor definition is commonly followed by an
                 // optional declaration semicolon (`virtual ~T() { };`). The
-                // balanced-body skipper stops at `}`, so consume that separator
+                // method-tail skipper stops at `}`, so consume that separator
                 // before the next member is interpreted as a fresh type.
                 self.eat_keyword(Token::Semicolon);
                 continue;

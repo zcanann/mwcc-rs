@@ -3038,6 +3038,35 @@ impl Parser {
                                 constructor_prefix_len..constructor_prefix_len,
                                 vptr_stores,
                             );
+                            // A class whose virtuals are all inline has no strong
+                            // key function. Defining its out-of-line constructor
+                            // nevertheless requires the complete vtable group;
+                            // its inline deleting destructor is then pulled from
+                            // the vtable-referenced materialization queue below.
+                            if class.vtable_key_function.is_none()
+                                && class.has_virtual_destructor
+                                && !globals.iter().any(|global| global.name == vtable)
+                            {
+                                let scopes: Vec<&str> = scope.split("::").collect();
+                                let destructor = crate::cxx::mangle_qualified_member_function(
+                                    &scopes,
+                                    "__dt",
+                                    &[],
+                                )?;
+                                if self
+                                    .cxx_inline_materializations
+                                    .iter()
+                                    .any(|candidate| candidate.name == destructor)
+                                {
+                                    let mut table = cxx_vtables::global(
+                                        class,
+                                        vtable,
+                                        Some(&destructor),
+                                    );
+                                    table.is_weak = true;
+                                    globals.push(table);
+                                }
+                            }
                         }
                     }
                 }
