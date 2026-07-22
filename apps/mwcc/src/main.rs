@@ -484,6 +484,9 @@ fn compile(
         .iter()
         .map(|located| located.token.clone())
         .collect();
+    if let Some(directory) = artifacts {
+        write_token_artifacts(directory, config, &tokens);
+    }
     let behavior = mwcc_versions::Behavior::resolve(&config);
     let is_cxx = source_is_cxx(source_name, source_language);
     let mut unit = mwcc_tokens_to_syntax_trees::parse_located_translation_unit_with_enum_min(
@@ -1992,10 +1995,8 @@ fn compile(
     );
 
     if let Some(directory) = artifacts {
-        write_artifacts(
+        write_lowered_artifacts(
             directory,
-            config,
-            &tokens,
             &unit.functions,
             &machine_functions,
             &object,
@@ -2332,19 +2333,17 @@ mod tests {
     }
 }
 
-fn write_artifacts(
+fn artifact_dump(directory: &std::path::Path, name: &str, body: String) {
+    let _ = std::fs::write(directory.join(name), body);
+}
+
+fn write_token_artifacts(
     directory: &str,
     config: mwcc_versions::CompilerConfig,
     tokens: &[mwcc_tokens::Token],
-    functions: &[mwcc_syntax_trees::Function],
-    machine_functions: &[mwcc_machine_code::MachineFunction],
-    object: &[u8],
 ) {
     let directory = PathBuf::from(directory);
     let _ = std::fs::create_dir_all(&directory);
-    let dump = |name: &str, body: String| {
-        let _ = std::fs::write(directory.join(name), body);
-    };
 
     // The build identity, then the resolved behavior's *active quirks* — exactly
     // what diverges from the 2.4.x mainline for this configuration, and why. A
@@ -2368,13 +2367,25 @@ fn write_artifacts(
             ));
         }
     }
-    dump("00_build.txt", report);
-    dump(
+    artifact_dump(&directory, "00_build.txt", report);
+    artifact_dump(
+        &directory,
         "01_tokens.txt",
         tokens.iter().map(|token| format!("{token}\n")).collect(),
     );
-    dump("02_syntax_tree.txt", format!("{functions:#?}\n"));
-    dump(
+}
+
+fn write_lowered_artifacts(
+    directory: &str,
+    functions: &[mwcc_syntax_trees::Function],
+    machine_functions: &[mwcc_machine_code::MachineFunction],
+    object: &[u8],
+) {
+    let directory = PathBuf::from(directory);
+    let _ = std::fs::create_dir_all(&directory);
+    artifact_dump(&directory, "02_syntax_tree.txt", format!("{functions:#?}\n"));
+    artifact_dump(
+        &directory,
         "03_machine_code.txt",
         machine_functions
             .iter()
@@ -2388,7 +2399,8 @@ fn write_artifacts(
             })
             .collect(),
     );
-    dump(
+    artifact_dump(
+        &directory,
         "04_object.txt",
         format!(
             "ELF32 BE PowerPC relocatable object, {} bytes\n",
