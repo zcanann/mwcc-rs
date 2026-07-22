@@ -1127,6 +1127,11 @@ impl Generator {
     }
 
     pub(crate) fn evaluate_body(&mut self, function: &Function) -> Compilation<()> {
+        // Recursive body transforms can introduce hygienic inline locals after
+        // parameter assignment initialized this set. Retain their provenance so
+        // local-pointer aliases are not later mistaken for entry parameters.
+        self.known_locals
+            .extend(function.locals.iter().map(|local| local.name.clone()));
         let calls_skipped_inline = function_calls_any(function, &self.skipped_inline_names)
             || self.inline_bodies.calls_any(function);
         // Drop never-referenced, side-effect-free locals (an unused `int s = 0;`) — mwcc

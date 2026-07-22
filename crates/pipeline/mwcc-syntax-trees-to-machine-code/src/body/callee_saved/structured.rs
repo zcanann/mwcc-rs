@@ -391,7 +391,10 @@ impl Generator {
                         Ok(branches)
                     })();
                     let carry_fallthrough_cache =
-                        matches!(then_body.last(), Some(Statement::Return(None)))
+                        matches!(
+                            then_body.last(),
+                            Some(Statement::Return(None) | Statement::Goto(_))
+                        )
                             && matches!(
                                 statements.get(statement_index + 1),
                                 Some(Statement::If { else_body, .. }) if else_body.is_empty()
