@@ -176,6 +176,7 @@ pub(super) fn fragmented_records(
                         type_id,
                         member_ids,
                         member_type_ids: Vec::new(),
+                        member_array_type_ids: vec![None; definition.members.len()],
                         children_end,
                         definition,
                     }),
@@ -313,8 +314,22 @@ struct AggregatePlan<'a> {
     type_id: DebugEntryId,
     member_ids: Vec<DebugEntryId>,
     member_type_ids: Vec<Option<DebugEntryId>>,
+    /// Array type emitted immediately before this aggregate, by member index.
+    /// Members reference the array DIE rather than their scalar element type.
+    member_array_type_ids: Vec<Option<DebugEntryId>>,
     children_end: DebugEntryId,
     definition: &'a AggregateDefinition,
+}
+
+impl AggregatePlan<'_> {
+    fn start_id(&self) -> DebugEntryId {
+        self.member_array_type_ids
+            .iter()
+            .flatten()
+            .next()
+            .copied()
+            .unwrap_or(self.type_id)
+    }
 }
 
 struct GlobalPlan<'a> {
@@ -348,13 +363,8 @@ pub(super) fn records<'a>(
             // Aggregate identities are translation-unit scoped. Emit each
             // reachable type graph at its first data declaration, then let
             // later globals reference the already-emitted DIE.
-            let root_type_id = plan_aggregate(
-                unit,
-                tag,
-                &mut next_id,
-                &mut aggregate_ids,
-                &mut types,
-            )?;
+            let root_type_id =
+                plan_aggregate(unit, tag, &mut next_id, &mut aggregate_ids, &mut types)?;
             let array_type_id = global
                 .array_length
                 .map(|length| {
@@ -370,7 +380,7 @@ pub(super) fn records<'a>(
             let global_id = allocate(&mut next_id);
             let start_id = types
                 .first()
-                .map(|plan| plan.type_id)
+                .map(AggregatePlan::start_id)
                 .or(array_type_id)
                 .unwrap_or(global_id);
             (
@@ -429,7 +439,7 @@ pub(super) fn records<'a>(
                         ),
                         attribute(
                             AttributeName::SubscriptData,
-                                AttributeValue::Block2(fundamental_subscript_data(
+                            AttributeValue::Block2(fundamental_subscript_data(
                                 plan.global.array_length.unwrap(),
                                 global_fundamental_type(plan.global)?,
                             )),
@@ -452,11 +462,55 @@ pub(super) fn records<'a>(
                 types,
             } => {
                 for (type_index, aggregate) in types.iter().enumerate() {
-                    let sibling = types
-                        .get(type_index + 1)
-                        .map_or(array_type_id.unwrap_or(plan.global_id), |following| {
-                            following.type_id
-                        });
+                    let sibling = types.get(type_index + 1).map_or(
+                        array_type_id.unwrap_or(plan.global_id),
+                        AggregatePlan::start_id,
+                    );
+                    let array_ids = aggregate
+                        .member_array_type_ids
+                        .iter()
+                        .flatten()
+                        .copied()
+                        .collect::<Vec<_>>();
+                    for (array_index, (member_index, array_id)) in aggregate
+                        .member_array_type_ids
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(member_index, id)| id.map(|id| (member_index, id)))
+                        .enumerate()
+                    {
+                        let member = &aggregate.definition.members[member_index];
+                        let array_length = u16::try_from(member.array_length.unwrap()).map_err(
+                            |_| {
+                                Diagnostic::error(format!(
+                                    "debug-info: aggregate '{}.{}' has a member array too large for legacy DWARF",
+                                    aggregate.definition.name, member.name
+                                ))
+                            },
+                        )?;
+                        records.push(DebugRecord::Entry(DebugEntry {
+                            id: array_id,
+                            tag: Tag::ArrayType,
+                            attributes: vec![
+                                attribute(
+                                    AttributeName::Sibling,
+                                    AttributeValue::Reference(
+                                        array_ids
+                                            .get(array_index + 1)
+                                            .copied()
+                                            .unwrap_or(aggregate.type_id),
+                                    ),
+                                ),
+                                attribute(
+                                    AttributeName::SubscriptData,
+                                    AttributeValue::Block2(fundamental_subscript_data(
+                                        array_length,
+                                        aggregate_member_fundamental_type(member)?,
+                                    )),
+                                ),
+                            ],
+                        }));
+                    }
                     let mut attributes = vec![attribute(
                         AttributeName::Sibling,
                         AttributeValue::Reference(sibling),
@@ -498,10 +552,20 @@ pub(super) fn records<'a>(
                                     AttributeName::Name,
                                     AttributeValue::String(member.name.clone()),
                                 ),
-                                member_type_attribute(
-                                    member.declared_type,
-                                    aggregate.member_type_ids[member_index],
-                                    member.source_fundamental,
+                                aggregate.member_array_type_ids[member_index].map_or_else(
+                                    || {
+                                        member_type_attribute(
+                                            member.declared_type,
+                                            aggregate.member_type_ids[member_index],
+                                            member.source_fundamental,
+                                        )
+                                    },
+                                    |id| {
+                                        Ok(attribute(
+                                            AttributeName::UserDefinedType,
+                                            AttributeValue::Reference(id),
+                                        ))
+                                    },
                                 )?,
                                 member_location(member.offset),
                             ],
@@ -521,12 +585,10 @@ pub(super) fn records<'a>(
                             ),
                             attribute(
                                 AttributeName::SubscriptData,
-                                AttributeValue::RelocatableBlock2(
-                                    aggregate_subscript_data(
-                                        plan.global.array_length.unwrap(),
-                                        *root_type_id,
-                                    ),
-                                ),
+                                AttributeValue::RelocatableBlock2(aggregate_subscript_data(
+                                    plan.global.array_length.unwrap(),
+                                    *root_type_id,
+                                )),
                             ),
                         ],
                     }));
@@ -587,11 +649,18 @@ fn plan_aggregate<'a>(
     let type_id = allocate(next_id);
     type_ids.insert(tag.to_owned(), type_id);
     let mut member_type_ids = Vec::with_capacity(definition.members.len());
+    let mut member_array_type_ids = Vec::with_capacity(definition.members.len());
     for member in &definition.members {
-        if member.array_length.is_some() || member.bit_field.is_some() {
+        if member.bit_field.is_some() {
             return Err(Diagnostic::error(format!(
-                "debug-info: aggregate '{}' uses an array or bit-field member not implemented by legacy DWARF lowering yet (roadmap)",
+                "debug-info: aggregate '{}' uses a bit-field member not implemented by legacy DWARF lowering yet (roadmap)",
                 definition.name
+            )));
+        }
+        if member.array_length == Some(0) {
+            return Err(Diagnostic::error(format!(
+                "debug-info: aggregate '{}.{}' has a zero-length member array",
+                definition.name, member.name
             )));
         }
         let referenced_type = match member.declared_type {
@@ -610,6 +679,7 @@ fn plan_aggregate<'a>(
             }
         };
         member_type_ids.push(referenced_type);
+        member_array_type_ids.push(member.array_length.map(|_| allocate(next_id)));
     }
     let member_ids = definition
         .members
@@ -621,10 +691,20 @@ fn plan_aggregate<'a>(
         type_id,
         member_ids,
         member_type_ids,
+        member_array_type_ids,
         children_end,
         definition,
     });
     Ok(type_id)
+}
+
+fn aggregate_member_fundamental_type(
+    member: &mwcc_syntax_trees::AggregateMember,
+) -> Compilation<FundamentalType> {
+    match member.source_fundamental {
+        Some(source) => source_fundamental_type(source),
+        None => fundamental_type(member.declared_type),
+    }
 }
 
 fn global_entry(
