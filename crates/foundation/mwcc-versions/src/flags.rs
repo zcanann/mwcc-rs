@@ -94,6 +94,9 @@ pub struct Flags {
     /// `-str …,readonly` places pooled string literals in a read-only data
     /// section rather than writable `.data`.
     pub string_literals_read_only: bool,
+    /// `-str …,pool` packs each function's literals into one
+    /// `@stringBaseN` object addressed outside the small-data area.
+    pub string_literals_packed: bool,
     /// Whether compiler pooling is enabled. The verified object-level effect is
     /// byte 16 of the `.comment` header; pooling passes consume this same mode.
     pub pooling_enabled: bool,
@@ -131,6 +134,7 @@ impl Default for Flags {
             rtti: false,
             emit_mwcats: true,
             string_literals_read_only: false,
+            string_literals_packed: false,
             pooling_enabled: true,
             use_lmw_stmw: false,
             scheduler_enabled: true,

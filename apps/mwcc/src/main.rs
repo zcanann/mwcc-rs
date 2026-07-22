@@ -177,6 +177,8 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                         match part {
                             "readonly" => invocation.flags.string_literals_read_only = true,
                             "noreadonly" => invocation.flags.string_literals_read_only = false,
+                            "pool" => invocation.flags.string_literals_packed = true,
+                            "nopool" => invocation.flags.string_literals_packed = false,
                             _ => {}
                         }
                     }
@@ -1513,8 +1515,9 @@ fn compile(
                 comment_alignment: 4,
                 initial_bytes: Some(object_bytes),
                 is_const: config.flags.string_literals_read_only,
-                force_full_data_section: config.flags.string_literals_read_only
-                    && !read_only_small_data,
+                // A packed read-only string base is a `.rodata` blob even when
+                // its payload fits the ordinary sdata2 size threshold.
+                force_full_data_section: config.flags.string_literals_read_only,
                 is_static: true,
                 is_explicit_zero: false,
                 preassigned_anonymous_ordinal: None,
@@ -2173,8 +2176,9 @@ mod tests {
 
     #[test]
     fn command_line_string_mode_controls_read_only_literals() {
-        let read_only = parse_invocation(&["-str".into(), "reuse,readonly".into()]);
+        let read_only = parse_invocation(&["-str".into(), "reuse,pool,readonly".into()]);
         assert!(read_only.flags.string_literals_read_only);
+        assert!(read_only.flags.string_literals_packed);
 
         let restated_pooling = parse_invocation(&[
             "-str".into(),
@@ -2194,6 +2198,14 @@ mod tests {
             "noreadonly".into(),
         ]);
         assert!(!writable_override.flags.string_literals_read_only);
+
+        let unpacked = parse_invocation(&[
+            "-str".into(),
+            "pool".into(),
+            "-str".into(),
+            "nopool".into(),
+        ]);
+        assert!(!unpacked.flags.string_literals_packed);
     }
 
     #[test]

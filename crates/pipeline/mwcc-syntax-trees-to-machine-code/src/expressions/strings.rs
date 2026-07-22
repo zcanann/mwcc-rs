@@ -12,6 +12,12 @@ impl Generator {
     /// to the real `@N`.
     pub(crate) fn emit_string_literal(&mut self, bytes: &[u8], destination: u8) -> Compilation<()> {
         let placeholder = self.string_literal_placeholder(bytes);
+        if self.behavior.string_literals_packed {
+            self.output.packed_string_literals = true;
+            self.emit_address_high(destination, &placeholder);
+            self.emit_address_low(destination, &placeholder);
+            return Ok(());
+        }
         match self.behavior.global_addressing {
             GlobalAddressing::SmallData => {
                 // A string within the small-data threshold (≤ 8 bytes incl. the NUL) lands in

@@ -502,6 +502,8 @@ pub struct Behavior {
     /// The `,p`/`,s` objective retained independently from the optimization
     /// level so loop lowering can reproduce size-sensitive unrolling.
     pub optimization_goal: OptimizationGoal,
+    /// Whether string literals use a packed per-function `@stringBaseN`.
+    pub string_literals_packed: bool,
     /// Register, literal-pool, and epilogue family for dense call dispatchers.
     pub call_dispatcher_style: CallDispatcherStyle,
     /// Ordinals carried across a source-leading leaf by deferred emission.
@@ -769,6 +771,7 @@ impl Behavior {
         Behavior {
             optimization: config.flags.optimization,
             optimization_goal: config.flags.optimization_goal,
+            string_literals_packed: config.flags.string_literals_packed,
             call_dispatcher_style: config.build.profile.call_dispatcher_style(),
             deferred_transparent_leaf_bump: config.build.profile.deferred_transparent_leaf_bump(),
             deferred_call_dispatcher_labels_per_case: if config.flags.inline_deferred {
