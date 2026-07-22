@@ -21,6 +21,18 @@ pub enum Optimization {
     O4,
 }
 
+/// The secondary optimization objective selected by `-O<level>,p` or
+/// `-O<level>,s`/`,space`.
+///
+/// This is independent of the optimization level: both modes run the O4
+/// optimizer, but the performance mode may unroll loops that the size mode
+/// deliberately keeps compact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OptimizationGoal {
+    Performance,
+    Size,
+}
+
 /// Whether one class of file-scope objects uses its small-data area. A threshold
 /// of zero means a symbol never lands in small data, so it is addressed absolutely
 /// (`lis`/`addi` with `R_PPC_ADDR16_HA`/`_LO`) rather than through
@@ -57,6 +69,7 @@ pub enum EnumStorage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Flags {
     pub optimization: Optimization,
+    pub optimization_goal: OptimizationGoal,
     /// Writable globals controlled by `-sdata` and addressed through r13 when on.
     pub global_addressing: GlobalAddressing,
     /// Read-only globals controlled by `-sdata2` and addressed through r2 when on.
@@ -108,6 +121,7 @@ impl Default for Flags {
     fn default() -> Self {
         Flags {
             optimization: Optimization::O4,
+            optimization_goal: OptimizationGoal::Performance,
             global_addressing: GlobalAddressing::SmallData,
             read_only_global_addressing: GlobalAddressing::SmallData,
             char_default: CharDefault::BuildDefault,
