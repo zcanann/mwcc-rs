@@ -7,7 +7,7 @@
 //! the lexer or parser.
 
 mod condition;
-mod object_macros;
+mod macro_expansion;
 
 use mwcc_core::{Compilation, Diagnostic};
 use std::collections::{HashMap, HashSet};
@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 pub struct SourceLoader {
     access_paths: Vec<PathBuf>,
     definitions: HashMap<String, String>,
-    object_macros: HashMap<String, Vec<u8>>,
+    macros: HashMap<String, macro_expansion::Macro>,
 }
 
 impl SourceLoader {
@@ -25,21 +25,23 @@ impl SourceLoader {
         Self {
             access_paths,
             definitions: HashMap::new(),
-            object_macros: HashMap::new(),
+            macros: HashMap::new(),
         }
     }
 
     pub fn define(&mut self, name: impl Into<String>, value: impl Into<String>) {
         let name = name.into();
         let value = value.into();
-        self.object_macros
-            .insert(name.clone(), value.as_bytes().to_vec());
+        self.macros.insert(
+            name.clone(),
+            macro_expansion::Macro::Object(value.as_bytes().to_vec()),
+        );
         self.definitions.insert(name, value);
     }
 
     pub fn undefine(&mut self, name: &str) {
         self.definitions.remove(name);
-        self.object_macros.remove(name);
+        self.macros.remove(name);
     }
 
     /// Load `input` and recursively materialize every resolvable include.
@@ -63,7 +65,7 @@ impl SourceLoader {
             access_paths: &access_paths,
             loaded: HashSet::new(),
             definitions: self.definitions.clone(),
-            object_macros: self.object_macros.clone(),
+            macros: self.macros.clone(),
         };
         context.load_file(&input)
     }
@@ -73,7 +75,7 @@ struct LoadContext<'a> {
     access_paths: &'a [PathBuf],
     loaded: HashSet<PathBuf>,
     definitions: HashMap<String, String>,
-    object_macros: HashMap<String, Vec<u8>>,
+    macros: HashMap<String, macro_expansion::Macro>,
 }
 
 impl LoadContext<'_> {
@@ -90,7 +92,7 @@ impl LoadContext<'_> {
         let mut output = Vec::with_capacity(source.len());
         let mut conditional = Vec::new();
         let mut directive_continuation = false;
-        let mut lexical_state = object_macros::LexicalState::default();
+        let mut lexical_state = macro_expansion::LexicalState::default();
         for line in physical_lines(&source) {
             if directive_continuation {
                 directive_continuation = line_continues(line);
@@ -118,12 +120,10 @@ impl LoadContext<'_> {
                     // not publish a truncated value ending in `\`; it is safer
                     // to leave those tokens for the later frontend until that
                     // distinct preprocessing feature is implemented.
+                    self.macros.remove(definition.name);
                     if !directive_continuation {
-                        if let Some(replacement) = definition.object_replacement {
-                            self.object_macros.insert(
-                                definition.name.to_string(),
-                                replacement.as_bytes().to_vec(),
-                            );
+                        if let Some(expansion) = definition.expansion {
+                            self.macros.insert(definition.name.to_string(), expansion);
                         }
                     }
                     output.extend_from_slice(line);
@@ -135,7 +135,7 @@ impl LoadContext<'_> {
                     .and_then(directive_name)
                 {
                     self.definitions.remove(name);
-                    self.object_macros.remove(name);
+                    self.macros.remove(name);
                     output.extend_from_slice(line);
                     continue;
                 }
@@ -143,9 +143,9 @@ impl LoadContext<'_> {
                 continue;
             }
             let Some(include) = parse_include(line) else {
-                output.extend(object_macros::expand_line(
+                output.extend(macro_expansion::expand_line(
                     line,
-                    &self.object_macros,
+                    &self.macros,
                     &mut lexical_state,
                 ));
                 continue;
@@ -288,7 +288,7 @@ fn directive_name(text: &str) -> Option<&str> {
 struct MacroDefinition<'a> {
     name: &'a str,
     conditional_value: &'a str,
-    object_replacement: Option<&'a str>,
+    expansion: Option<macro_expansion::Macro>,
 }
 
 fn parse_define(directive: &str) -> Option<MacroDefinition<'_>> {
@@ -307,10 +307,41 @@ fn parse_define(directive: &str) -> Option<MacroDefinition<'_>> {
     // Function-like macros count as defined but are neither integer-valued in
     // `#if` nor eligible for object-like expansion.
     if rest.starts_with('(') {
+        let close = rest.find(')')?;
+        let parameter_text = &rest[1..close];
+        let parameters = if parameter_text.trim().is_empty() {
+            Vec::new()
+        } else {
+            parameter_text
+                .split(',')
+                .map(str::trim)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        let valid_parameters = parameters.iter().all(|parameter| {
+            parameter
+                .as_bytes()
+                .first()
+                .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+                && parameter
+                    .as_bytes()
+                    .iter()
+                    .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        });
         return Some(MacroDefinition {
             name,
             conditional_value: "1",
-            object_replacement: None,
+            expansion: valid_parameters.then(|| macro_expansion::Macro::Function {
+                parameters,
+                replacement: rest[close + 1..]
+                    .trim()
+                    .split("//")
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .as_bytes()
+                    .to_vec(),
+            }),
         });
     }
     let replacement = rest.trim().split("//").next().unwrap_or_default().trim();
@@ -321,7 +352,9 @@ fn parse_define(directive: &str) -> Option<MacroDefinition<'_>> {
         } else {
             replacement
         },
-        object_replacement: Some(replacement),
+        expansion: Some(macro_expansion::Macro::Object(
+            replacement.as_bytes().to_vec(),
+        )),
     })
 }
 
@@ -539,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn object_macros_expand_and_function_macros_remain_for_the_frontend() {
+    fn source_macros_expand_and_undef_removes_definitions() {
         let scratch = Scratch::new();
         std::fs::write(
             scratch.0.join("unit.c"),
@@ -563,7 +596,7 @@ mod tests {
                 "#define NULL ((void*)0)\n",
                 "#define CALL(x) use(x)\n",
                 "void *first = ((void*)0);\n",
-                "void *second = CALL(((void*)0));\n",
+                "void *second = use(((void*)0));\n",
                 "#undef NULL\n",
                 "void *third = NULL;\n"
             )
