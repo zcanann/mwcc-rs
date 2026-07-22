@@ -170,6 +170,23 @@ pub(super) fn plan_ephemeral_locals<'a>(
     Some(ephemeral)
 }
 
+/// Return floating ephemeral locals whose lexical lifetime has ended before
+/// `remaining_statements`. Structured lowering uses this only at the function
+/// body's top level: nested blocks may still flow into an enclosing suffix.
+pub(super) fn dead_ephemeral_float_locals<'a>(
+    ephemeral_locals: &[&'a LocalDeclaration],
+    remaining_statements: &[Statement],
+) -> Vec<&'a str> {
+    ephemeral_locals
+        .iter()
+        .filter(|local| {
+            class_of(local.declared_type).ok() == Some(ValueClass::Float)
+                && !body_uses_local(remaining_statements, &local.name)
+        })
+        .map(|local| local.name.as_str())
+        .collect()
+}
+
 #[derive(Clone, Copy)]
 struct AssignmentFlow {
     initialized: bool,
@@ -385,6 +402,39 @@ mod tests {
         let planned = plan_ephemeral_locals(&function, &std::collections::HashSet::new())
             .expect("the branch-local float lifetime is valid");
         assert_eq!(planned.len(), 1);
+    }
+
+    #[test]
+    fn expires_branch_local_float_before_the_following_statement() {
+        let mut temporary = local("temporary", Expression::IntegerLiteral(0));
+        temporary.declared_type = Type::Float;
+        temporary.initializer = None;
+        let later = Statement::Expression(Expression::Call {
+            name: "consume_later".into(),
+            arguments: Vec::new(),
+        });
+
+        assert_eq!(
+            dead_ephemeral_float_locals(&[&temporary], std::slice::from_ref(&later)),
+            ["temporary"]
+        );
+    }
+
+    #[test]
+    fn retains_branch_local_float_read_by_the_following_statement() {
+        let mut temporary = local("temporary", Expression::IntegerLiteral(0));
+        temporary.declared_type = Type::Float;
+        temporary.initializer = None;
+        let later = Statement::Expression(Expression::Call {
+            name: "consume_later".into(),
+            arguments: vec![Expression::Variable("temporary".into())],
+        });
+
+        assert!(dead_ephemeral_float_locals(
+            &[&temporary],
+            std::slice::from_ref(&later)
+        )
+        .is_empty());
     }
 
     #[test]

@@ -6,7 +6,8 @@
 //! `if` branches; unsupported control flow declines before emitting anything.
 
 use super::structured_locals::{
-    is_definitely_assigned_before_reads, plan_deferred_saved_homes, plan_ephemeral_locals,
+    dead_ephemeral_float_locals, is_definitely_assigned_before_reads, plan_deferred_saved_homes,
+    plan_ephemeral_locals,
 };
 use super::structured_entry_alias::{plan_first_call_alias, EntryAliasBoundary, EntryParameterAlias};
 use super::structured_prologue::saved_home_stores_precede_initialization;
@@ -274,6 +275,8 @@ impl Generator {
             self.emit_structured_statements(
                 &function.statements[..1],
                 function,
+                &ephemeral_locals,
+                false,
                 &mut return_branches,
                 &mut label_positions,
                 &mut pending_gotos,
@@ -283,6 +286,10 @@ impl Generator {
                 .get_mut(&alias.name)
                 .expect("planned saved parameter")
                 .register = alias.home;
+            self.release_dead_ephemeral_float_locations(
+                &ephemeral_locals,
+                &function.statements[1..],
+            );
             1
         } else {
             0
@@ -293,6 +300,8 @@ impl Generator {
         self.emit_structured_statements(
             &function.statements[statement_start..],
             function,
+            &ephemeral_locals,
+            true,
             &mut return_branches,
             &mut label_positions,
             &mut pending_gotos,
@@ -330,6 +339,8 @@ impl Generator {
         &mut self,
         statements: &[Statement],
         function: &Function,
+        ephemeral_locals: &[&LocalDeclaration],
+        release_dead_float_locations: bool,
         return_branches: &mut Vec<usize>,
         label_positions: &mut std::collections::HashMap<String, usize>,
         pending_gotos: &mut Vec<(usize, String)>,
@@ -412,6 +423,8 @@ impl Generator {
                     self.emit_structured_statements(
                         then_body,
                         function,
+                        ephemeral_locals,
+                        false,
                         return_branches,
                         label_positions,
                         pending_gotos,
@@ -491,12 +504,28 @@ impl Generator {
                     diagnostic
                 })?,
             }
+            if release_dead_float_locations {
+                self.release_dead_ephemeral_float_locations(
+                    ephemeral_locals,
+                    &statements[statement_index + 1..],
+                );
+            }
         }
         if let Some((previous, previous_float)) = carried_condition_cache_restore {
             self.restore_condition_global_cache(previous);
             self.restore_condition_float_cache(previous_float);
         }
         Ok(())
+    }
+
+    fn release_dead_ephemeral_float_locations(
+        &mut self,
+        ephemeral_locals: &[&LocalDeclaration],
+        remaining_statements: &[Statement],
+    ) {
+        for name in dead_ephemeral_float_locals(ephemeral_locals, remaining_statements) {
+            self.locations.remove(name);
+        }
     }
 }
 
