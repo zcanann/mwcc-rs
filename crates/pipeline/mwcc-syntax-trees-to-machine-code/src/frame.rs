@@ -2552,6 +2552,20 @@ impl Generator {
                         });
                     return self.emit_global_array_base(name, total_size, destination);
                 }
+                // Inline constructor expansion synthesizes a reference to the
+                // class's externally owned vtable even when this translation
+                // unit does not define that table. ABI metadata symbols always
+                // use a full HA/LO address pair rather than SDA addressing.
+                if name.starts_with("__vt__") {
+                    self.emit_address_high(destination, name);
+                    self.record_relocation(RelocationKind::Addr16Lo, name);
+                    self.output.instructions.push(Instruction::AddImmediate {
+                        d: destination,
+                        a: destination,
+                        immediate: 0,
+                    });
+                    return Ok(());
+                }
             }
         }
         if let Expression::Index { base, index } = operand {
@@ -2903,6 +2917,21 @@ pub(crate) fn collect_address_taken(function: &Function) -> HashSet<String> {
             .locals
             .iter()
             .filter(|local| local.is_volatile && !local.is_static)
+            .map(|local| local.name.clone()),
+    );
+    // Aggregate values have no scalar register representation. Even without a
+    // written `&`, a used automatic object therefore needs its full frame slot:
+    // aggregate-return calls write into it, copies read from it, and member
+    // calls pass its address as the implicit `this` argument.
+    names.extend(
+        function
+            .locals
+            .iter()
+            .filter(|local| {
+                !local.is_static
+                    && matches!(local.declared_type, Type::Struct { .. })
+                    && function_uses_name(function, &local.name)
+            })
             .map(|local| local.name.clone()),
     );
     names

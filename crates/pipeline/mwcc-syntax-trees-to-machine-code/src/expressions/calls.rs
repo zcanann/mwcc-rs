@@ -60,10 +60,75 @@ impl Generator {
         destination: Option<u8>,
         float_result: bool,
     ) -> Compilation<()> {
-        let mut all_arguments = Vec::with_capacity(arguments.len() + 1);
-        all_arguments.push(object.clone());
+        self.emit_virtual_call_with_hidden_result(
+            object,
+            vptr_offset,
+            slot_offset,
+            variadic,
+            arguments,
+            None,
+            destination,
+            float_result,
+        )
+    }
+
+    /// Emit a virtual call returning an aggregate through the EABI hidden
+    /// result pointer. The hidden address occupies r3 and shifts the object
+    /// (`this`) to r4; dispatch must therefore load through r4 rather than the
+    /// scalar-return convention's r3.
+    pub(crate) fn emit_virtual_call_with_aggregate_result(
+        &mut self,
+        object: &Expression,
+        vptr_offset: u16,
+        slot_offset: u16,
+        variadic: bool,
+        arguments: &[Expression],
+        result_address: &Expression,
+    ) -> Compilation<()> {
+        self.emit_virtual_call_with_hidden_result(
+            object,
+            vptr_offset,
+            slot_offset,
+            variadic,
+            arguments,
+            Some(result_address),
+            None,
+            false,
+        )
+    }
+
+    fn emit_virtual_call_with_hidden_result(
+        &mut self,
+        object: &Expression,
+        vptr_offset: u16,
+        slot_offset: u16,
+        variadic: bool,
+        arguments: &[Expression],
+        hidden_result: Option<&Expression>,
+        destination: Option<u8>,
+        float_result: bool,
+    ) -> Compilation<()> {
+        let object_argument = match object {
+            Expression::Variable(name)
+                if self.frame_slots.get(name).is_some_and(|slot| {
+                    matches!(slot.value_type, Type::Struct { .. }) && !slot.is_array
+                }) =>
+            {
+                Expression::AddressOf {
+                    operand: Box::new(object.clone()),
+                }
+            }
+            _ => object.clone(),
+        };
+        let mut all_arguments = Vec::with_capacity(arguments.len() + 1 + usize::from(hidden_result.is_some()));
+        if let Some(result_address) = hidden_result {
+            all_arguments.push(result_address.clone());
+        }
+        all_arguments.push(object_argument);
         all_arguments.extend_from_slice(arguments);
         self.emit_arguments(&all_arguments, "<virtual>")?;
+
+        let object_register = Eabi::FIRST_GENERAL_ARGUMENT + u8::from(hidden_result.is_some());
 
         let vptr_offset = i16::try_from(vptr_offset)
             .map_err(|_| Diagnostic::error("a virtual-table pointer offset is out of range"))?;
@@ -71,7 +136,7 @@ impl Generator {
             .map_err(|_| Diagnostic::error("a virtual-table slot offset is out of range"))?;
         self.output.instructions.push(Instruction::LoadWord {
             d: 12,
-            a: Eabi::FIRST_GENERAL_ARGUMENT,
+            a: object_register,
             offset: vptr_offset,
         });
         self.output.instructions.push(Instruction::LoadWord {

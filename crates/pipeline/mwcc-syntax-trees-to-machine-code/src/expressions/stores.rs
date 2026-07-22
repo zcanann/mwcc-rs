@@ -54,6 +54,12 @@ impl Generator {
             Expression::IndexedUpdateValue { value } => (value.as_ref(), true),
             value => (value, false),
         };
+        if self.try_emit_frame_aggregate_copy(target, value)? {
+            return Ok(());
+        }
+        if self.try_emit_frame_subobject_store(target, value)? {
+            return Ok(());
+        }
         // `aggregate = *&aggregate` is an exact self-copy. Inlined setters can
         // expose this when their source argument aliases the destination (for
         // example `jobj->scale = *&jobj->scale`); mwcc removes it entirely.
@@ -879,6 +885,174 @@ impl Generator {
             }
         }
         Ok(())
+    }
+
+    /// Copy one frame-resident aggregate into another frame subobject without
+    /// pretending either value can live in a scalar register. A single word
+    /// scratch is enough; overlap chooses the memmove-safe direction.
+    fn try_emit_frame_aggregate_copy(
+        &mut self,
+        target: &Expression,
+        value: &Expression,
+    ) -> Compilation<bool> {
+        let Expression::Variable(source_name) = value else {
+            return Ok(false);
+        };
+        let Some(source) = self.frame_slots.get(source_name).copied() else {
+            return Ok(false);
+        };
+        let Type::Struct {
+            size: source_size, ..
+        } = source.value_type
+        else {
+            return Ok(false);
+        };
+        let (target_offset, target_size) = match target {
+            Expression::Variable(target_name) => {
+                let Some(slot) = self.frame_slots.get(target_name).copied() else {
+                    return Ok(false);
+                };
+                let Type::Struct { size, .. } = slot.value_type else {
+                    return Ok(false);
+                };
+                (slot.offset, size)
+            }
+            Expression::Member {
+                base,
+                offset,
+                member_type: Type::Struct { size, .. },
+                index_stride: None,
+            } => {
+                let Expression::AddressOf { operand } = base.as_ref() else {
+                    return Ok(false);
+                };
+                let Expression::Variable(target_name) = operand.as_ref() else {
+                    return Ok(false);
+                };
+                let Some(slot) = self.frame_slots.get(target_name).copied() else {
+                    return Ok(false);
+                };
+                let member_offset = i16::try_from(*offset).map_err(|_| {
+                    Diagnostic::error("frame aggregate member offset is out of range")
+                })?;
+                let target_offset = slot.offset.checked_add(member_offset).ok_or_else(|| {
+                    Diagnostic::error("frame aggregate destination is out of range")
+                })?;
+                (target_offset, *size)
+            }
+            _ => return Ok(false),
+        };
+        if source_size != target_size || source_size == 0 || source_size % 4 != 0 {
+            return Err(Diagnostic::error(
+                "a frame aggregate copy requires equal, word-sized objects (roadmap)",
+            ));
+        }
+        let bytes = i16::try_from(source_size)
+            .map_err(|_| Diagnostic::error("frame aggregate copy is too large"))?;
+        let source_end = source
+            .offset
+            .checked_add(bytes)
+            .ok_or_else(|| Diagnostic::error("frame aggregate source is out of range"))?;
+        let backwards = target_offset > source.offset && target_offset < source_end;
+        let words = source_size / 4;
+        let indices: Box<dyn Iterator<Item = u32>> = if backwards {
+            Box::new((0..words).rev())
+        } else {
+            Box::new(0..words)
+        };
+        for word in indices {
+            let displacement = i16::try_from(word * 4)
+                .map_err(|_| Diagnostic::error("frame aggregate word offset is out of range"))?;
+            let source_offset = source.offset.checked_add(displacement).ok_or_else(|| {
+                Diagnostic::error("frame aggregate source word is out of range")
+            })?;
+            let destination_offset = target_offset.checked_add(displacement).ok_or_else(|| {
+                Diagnostic::error("frame aggregate destination word is out of range")
+            })?;
+            self.output.instructions.push(Instruction::LoadWord {
+                d: GENERAL_SCRATCH,
+                a: 1,
+                offset: source_offset,
+            });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: GENERAL_SCRATCH,
+                a: 1,
+                offset: destination_offset,
+            });
+            self.written_slots.insert(destination_offset);
+        }
+        Ok(true)
+    }
+
+    /// Store a scalar into a member (or constant-indexed member array) of an
+    /// automatic aggregate. The aggregate already has a frame slot, so the
+    /// member address folds directly into an r1 displacement.
+    fn try_emit_frame_subobject_store(
+        &mut self,
+        target: &Expression,
+        value: &Expression,
+    ) -> Compilation<bool> {
+        fn member_slot(
+            generator: &Generator,
+            base: &Expression,
+            offset: u32,
+            value_type: Type,
+        ) -> Option<(Pointee, i16)> {
+            let Expression::AddressOf { operand } = base else {
+                return None;
+            };
+            let Expression::Variable(name) = operand.as_ref() else {
+                return None;
+            };
+            let slot = generator.frame_slots.get(name)?;
+            if !matches!(slot.value_type, Type::Struct { .. }) || slot.is_array {
+                return None;
+            }
+            let pointee = pointee_of_type(value_type)?;
+            let offset = i16::try_from(offset).ok()?;
+            Some((pointee, slot.offset.checked_add(offset)?))
+        }
+
+        let resolved = match target {
+            Expression::Member {
+                base,
+                offset,
+                member_type,
+                index_stride: None,
+            } => member_slot(self, base, *offset, *member_type),
+            Expression::Index { base, index } => {
+                let Expression::Member {
+                    base,
+                    offset,
+                    member_type,
+                    index_stride: None,
+                } = base.as_ref()
+                else {
+                    return Ok(false);
+                };
+                let Some(index) = constant_value(index) else {
+                    return Ok(false);
+                };
+                let Some(pointee) = pointee_of_type(*member_type) else {
+                    return Ok(false);
+                };
+                let indexed = index
+                    .checked_mul(i64::from(pointee.size()))
+                    .and_then(|bytes| i64::from(*offset).checked_add(bytes))
+                    .and_then(|bytes| u32::try_from(bytes).ok());
+                indexed.and_then(|offset| member_slot(self, base, offset, *member_type))
+            }
+            _ => None,
+        };
+        let Some((pointee, offset)) = resolved else {
+            return Ok(false);
+        };
+        let source = self.place_store_value(value, pointee)?;
+        self.output
+            .instructions
+            .push(displacement_store(pointee, source, 1, offset)?);
+        self.written_slots.insert(offset);
+        Ok(true)
     }
 
     /// Emit a comma-operator's discarded left operand for its side effects only: a call

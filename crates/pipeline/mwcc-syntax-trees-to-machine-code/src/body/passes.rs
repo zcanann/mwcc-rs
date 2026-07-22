@@ -1839,6 +1839,14 @@ mod tests {
                     name: "touch".into(),
                     arguments: vec![Expression::Variable("derived".into())],
                 }),
+                Statement::Expression(Expression::VirtualCall {
+                    object: Box::new(Expression::Variable("derived".into())),
+                    vptr_offset: 0,
+                    slot_offset: 8,
+                    return_type: Type::Void,
+                    variadic: false,
+                    arguments: Vec::new(),
+                }),
                 Statement::Store {
                     target: Expression::Member {
                         base: Box::new(Expression::Variable("derived".into())),
@@ -1866,11 +1874,13 @@ mod tests {
             folded.statements.as_slice(),
             [
                 Statement::Expression(Expression::Call { arguments, .. }),
+                Statement::Expression(Expression::VirtualCall { object, .. }),
                 Statement::Store {
                     target: Expression::Member { base, .. },
                     ..
                 },
             ] if matches!(arguments.as_slice(), [Expression::Variable(name)] if name == "base")
+                && matches!(object.as_ref(), Expression::Variable(name) if name == "base")
                 && matches!(base.as_ref(), Expression::Variable(name) if name == "base")
         ));
     }

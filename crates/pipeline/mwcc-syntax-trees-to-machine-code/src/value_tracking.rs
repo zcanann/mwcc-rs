@@ -1255,10 +1255,30 @@ pub(crate) fn substitute(
 ) -> Expression {
     match expression {
         Expression::CompoundLiteral { .. } => expression.clone(),
-        // Never substitute through an indirect call (its target is a live load).
-        other @ Expression::CallThrough { .. } | other @ Expression::VirtualCall { .. } => {
-            other.clone()
-        }
+        // Never substitute through a function-pointer call: its target is a
+        // live load. A virtual call's target is instead loaded from the
+        // object's vtable, so replacing an immutable object-pointer alias is
+        // ordinary copy propagation (and its explicit arguments follow the
+        // same rules as a direct call).
+        other @ Expression::CallThrough { .. } => other.clone(),
+        Expression::VirtualCall {
+            object,
+            vptr_offset,
+            slot_offset,
+            return_type,
+            variadic,
+            arguments,
+        } => Expression::VirtualCall {
+            object: Box::new(substitute(object, values)),
+            vptr_offset: *vptr_offset,
+            slot_offset: *slot_offset,
+            return_type: *return_type,
+            variadic: *variadic,
+            arguments: arguments
+                .iter()
+                .map(|argument| substitute(argument, values))
+                .collect(),
+        },
         other @ Expression::AggregateLiteral(_) => other.clone(),
         // A postfix step mutates its target — never substitute through it.
         Expression::PostStep { .. } => expression.clone(),
