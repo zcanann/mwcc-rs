@@ -18,6 +18,7 @@ mod members;
 mod narrow_compound;
 mod operands;
 mod passes;
+mod pointer_alignment;
 mod pointers;
 mod stores;
 mod strings;

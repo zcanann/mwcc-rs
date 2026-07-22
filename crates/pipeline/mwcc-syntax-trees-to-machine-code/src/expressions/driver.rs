@@ -51,6 +51,9 @@ impl Generator {
         expression: &Expression,
         destination: u8,
     ) -> Compilation<()> {
+        if self.try_emit_pointer_round_up(expression, destination)? {
+            return Ok(());
+        }
         // A compile-time-constant expression — folded constant arithmetic
         // (`2 + 3`, `FLAG_A | FLAG_B`, `1 << 3`) or a side-effect-free identity
         // (`x - x`, `x ^ x`) — materializes the value directly, as mwcc folds it.

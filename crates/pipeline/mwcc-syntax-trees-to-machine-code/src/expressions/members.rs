@@ -1238,8 +1238,8 @@ impl Generator {
     /// `&g[index]` for a file-scope array global `g`: the ELEMENT ADDRESS `&g + index*size`
     /// — an address computation (`lis;addi;addi` large / `addi;addi` small), NOT the pointer
     /// arithmetic `load(g)+index` an array-as-pointer read would do. Materialize the base, then
-    /// add the scaled constant offset. A variable index (a runtime scale+add of an address) is
-    /// not modeled yet, so it defers.
+    /// add the scaled offset. Struct-value arrays retain their byte size directly
+    /// in the element type; scalar arrays derive it from their pointee.
     pub(crate) fn emit_global_array_element_address(
         &mut self,
         name: &str,
@@ -1248,29 +1248,74 @@ impl Generator {
         destination: u8,
     ) -> Compilation<()> {
         let element_type = self.globals[name];
-        let pointee = pointee_of_type(element_type).ok_or_else(|| {
-            Diagnostic::error(
-                "address of a global array of this element type is not supported yet (roadmap)",
-            )
-        })?;
+        let element_size = match element_type {
+            Type::Struct { size, .. } if size != 0 => size,
+            _ => u32::from(pointee_of_type(element_type).ok_or_else(|| {
+                Diagnostic::error(
+                    "address of a global array of this element type is not supported yet (roadmap)",
+                )
+            })?.size()),
+        };
         // The base materializes into `destination` and is then its own `addi` base, so it cannot
         // be the scratch r0 (an `addi` based on r0 reads literal zero, not the register).
         if destination == GENERAL_SCRATCH {
             return Err(Diagnostic::error("a global-array element address into the scratch register is not supported yet (roadmap)"));
         }
-        let Some(constant) = constant_value(index) else {
-            return Err(Diagnostic::error("the address of a variable-indexed global-array element is not supported yet (roadmap)"));
-        };
-        self.emit_global_array_base(name, total_size, destination)?;
-        let offset = constant * pointee.size() as i64;
-        if offset != 0 {
-            let offset = i16::try_from(offset).map_err(|_| {
-                Diagnostic::error("global-array element address offset out of range (roadmap)")
+        if let Some(constant) = constant_value(index) {
+            self.emit_global_array_base(name, total_size, destination)?;
+            let offset = constant * i64::from(element_size);
+            if offset != 0 {
+                let offset = i16::try_from(offset).map_err(|_| {
+                    Diagnostic::error("global-array element address offset out of range (roadmap)")
+                })?;
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: destination,
+                    a: destination,
+                    immediate: offset,
+                });
+            }
+            return Ok(());
+        }
+
+        let index_register = self.general_register_of_leaf(index)?;
+        let scaled = self.fresh_virtual_general_preferring(4);
+        if element_size.is_power_of_two() {
+            self.output.instructions.push(Instruction::ShiftLeftImmediate {
+                a: scaled,
+                s: index_register,
+                shift: element_size.trailing_zeros() as u8,
+            });
+        } else {
+            let immediate = i16::try_from(element_size).map_err(|_| {
+                Diagnostic::error("global-array element size is too large to scale (roadmap)")
             })?;
-            self.output.instructions.push(Instruction::AddImmediate {
+            self.output.instructions.push(Instruction::MultiplyImmediate {
+                d: scaled,
+                a: index_register,
+                immediate,
+            });
+        }
+        let small = self.behavior.global_addressing == GlobalAddressing::SmallData
+            && total_size <= 8;
+        if small {
+            self.emit_global_array_base(name, total_size, destination)?;
+            self.output.instructions.push(Instruction::Add {
                 d: destination,
                 a: destination,
-                immediate: offset,
+                b: scaled,
+            });
+        } else {
+            self.emit_address_high(destination, name);
+            self.record_relocation(RelocationKind::Addr16Lo, name);
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: GENERAL_SCRATCH,
+                a: destination,
+                immediate: 0,
+            });
+            self.output.instructions.push(Instruction::Add {
+                d: destination,
+                a: GENERAL_SCRATCH,
+                b: scaled,
             });
         }
         Ok(())
