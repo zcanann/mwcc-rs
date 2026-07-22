@@ -41,6 +41,12 @@ pub(crate) fn canonical_inline_member_name(
 #[derive(Clone, Default)]
 pub(crate) struct ClassLayout {
     pub(crate) bases: Vec<BaseClass>,
+    /// Size occupied before deferred virtual-base subobjects are appended.
+    /// A derived class reuses this boundary for its own members and appends one
+    /// copy of every inherited virtual base after its own non-virtual region.
+    pub(crate) nonvirtual_size: u32,
+    /// Unique virtual-base identities inherited or declared by this class.
+    pub(crate) virtual_bases: Vec<String>,
     pub(crate) fields: Vec<String>,
     pub(crate) constructors: Vec<ClassParameterTypes>,
     pub(crate) methods: std::collections::HashMap<String, Vec<MemberMethod>>,
@@ -271,6 +277,7 @@ impl CxxParameterType {
 pub(crate) struct BaseClass {
     pub(crate) name: String,
     pub(crate) offset: u32,
+    pub(crate) is_virtual: bool,
 }
 
 /// Normalize C++ linkage specifications into the same scoped language pragmas
@@ -2344,7 +2351,7 @@ impl Parser {
                 inherited.push((owner, candidates[0].clone(), this_adjustment));
                 continue;
             }
-            for base in class.bases.iter().rev() {
+            for base in class.bases.iter().rev().filter(|base| !base.is_virtual) {
                 let adjustment = this_adjustment.checked_add(base.offset).ok_or_else(|| {
                     Diagnostic::error("C++ base-subobject adjustment overflow")
                 })?;
@@ -2460,15 +2467,17 @@ impl Parser {
 
         if self.eat_keyword(Token::Colon) {
             loop {
-                while matches!(self.peek(), Token::Identifier(word)
-                    if matches!(word.as_str(), "public" | "private" | "protected"))
-                {
-                    self.advance();
-                }
-                if self.eat_word("virtual") {
-                    return Err(Diagnostic::error(
-                        "virtual base-class layout is not supported yet (roadmap)",
-                    ));
+                let mut is_virtual_base = false;
+                loop {
+                    if matches!(self.peek(), Token::Identifier(word)
+                        if matches!(word.as_str(), "public" | "private" | "protected"))
+                    {
+                        self.advance();
+                    } else if self.eat_word("virtual") {
+                        is_virtual_base = true;
+                    } else {
+                        break;
+                    }
                 }
                 let source_base_name = self.parse_cxx_qualified_identifier()?;
                 let base_name = self
@@ -2485,10 +2494,45 @@ impl Parser {
                         "base class '{base_name}' must be defined before '{name}'"
                     ))
                 })?;
+                let inherited_virtual_bases = base_class
+                    .as_ref()
+                    .map(|base| base.virtual_bases.clone())
+                    .unwrap_or_default();
+                if is_virtual_base {
+                    // CodeWarrior reserves one word in the non-virtual region
+                    // for this virtual-base path. The shared base subobject is
+                    // materialized after the most-derived class's own fields.
+                    offset = offset.div_ceil(4) * 4;
+                    offset = offset.checked_add(4).ok_or_else(|| {
+                        Diagnostic::error("C++ virtual-base layout exceeds the 32-bit address space")
+                    })?;
+                    max_align = max_align.max(4);
+                    if !class.virtual_bases.contains(&base_name) {
+                        class.virtual_bases.push(base_name);
+                    }
+                    for inherited in inherited_virtual_bases {
+                        if !class.virtual_bases.contains(&inherited) {
+                            class.virtual_bases.push(inherited);
+                        }
+                    }
+                    if !self.eat_keyword(Token::Comma) {
+                        break;
+                    }
+                    continue;
+                }
                 let base_align = (base.align as u32).max(1);
+                let base_nonvirtual_size = base_class
+                    .as_ref()
+                    .map(|base| base.nonvirtual_size)
+                    .filter(|size| *size != 0)
+                    .unwrap_or(base.size);
                 offset = offset.div_ceil(base_align) * base_align;
                 let base_offset = offset;
-                for (field_name, field) in base.fields_in_declaration_order() {
+                for (field_name, field) in base
+                    .fields_in_declaration_order()
+                    .into_iter()
+                    .filter(|(_, field)| field.offset < base_nonvirtual_size)
+                {
                     layout.insert_field(
                         field_name.clone(),
                         StructField {
@@ -2502,14 +2546,15 @@ impl Parser {
                             bit_field: field.bit_field,
                         },
                     );
+                    if base.function_pointer_fields.contains(field_name) {
+                        layout.function_pointer_fields.insert(field_name.clone());
+                    }
                 }
-                layout
-                    .function_pointer_fields
-                    .extend(base.function_pointer_fields.iter().cloned());
                 let is_primary_base = class.bases.is_empty();
                 class.bases.push(BaseClass {
-                    name: base_name,
+                    name: base_name.clone(),
                     offset: base_offset,
+                    is_virtual: false,
                 });
                 class.is_polymorphic |= base_is_polymorphic;
                 if class.vptr_offset.is_none() {
@@ -2523,16 +2568,25 @@ impl Parser {
                     }
                 }
                 if let Some(base_class) = base_class {
-                    class.vtable_components.extend(base_class.vtable_components.into_iter().map(
-                        |component| VtableComponent {
+                    class.vtable_components.extend(
+                        base_class
+                            .vtable_components
+                            .into_iter()
+                            .filter(|component| component.object_offset < base_nonvirtual_size)
+                            .map(|component| VtableComponent {
                             object_offset: base_offset + component.object_offset,
                             vptr_offset: base_offset + component.vptr_offset,
                             virtual_slots: component.virtual_slots,
                             virtual_destructor_slot: component.virtual_destructor_slot,
-                        },
-                    ));
+                            }),
+                    );
                 }
-                offset += base.size;
+                for inherited in inherited_virtual_bases {
+                    if !class.virtual_bases.contains(&inherited) {
+                        class.virtual_bases.push(inherited);
+                    }
+                }
+                offset += base_nonvirtual_size;
                 max_align = max_align.max(base_align);
                 if !self.eat_keyword(Token::Comma) {
                     break;
@@ -2680,6 +2734,10 @@ impl Parser {
             }
 
             let declaration_start = self.position;
+            let field_is_function_pointer_typedef = matches!(
+                self.peek(),
+                Token::Identifier(word) if self.function_pointer_typedefs.contains_key(word)
+            );
             let field_type = match self.parse_type() {
                 Ok(field_type) => field_type,
                 Err(error) if !is_virtual => {
@@ -2834,6 +2892,9 @@ impl Parser {
                     });
                 continue;
             }
+            if field_is_function_pointer_typedef {
+                self.last_cxx_function_type.take();
+            }
             if matches!(self.peek(), Token::Colon) {
                 return Err(Diagnostic::error(
                     "a C++ bit-field member is not supported yet (roadmap)",
@@ -2883,6 +2944,9 @@ impl Parser {
                     bit_field: None,
                 },
             );
+            if field_is_function_pointer_typedef {
+                layout.function_pointer_fields.insert(field_name.clone());
+            }
             class.fields.push(field_name);
             offset = offset.checked_add(field_size).ok_or_else(|| {
                 Diagnostic::error("C++ class layout exceeds the 32-bit address space")
@@ -2891,6 +2955,96 @@ impl Parser {
         }
         self.expect(Token::BraceClose)?;
         self.expect(Token::Semicolon)?;
+        if !class.virtual_bases.is_empty() && class.vptr_offset.is_none() {
+            // With no polymorphic non-virtual primary base, CodeWarrior gives
+            // the virtual-inheriting region its own dispatch pointer after the
+            // written members. The separate virtual-base pointer(s) remain at
+            // their declaration positions.
+            offset = offset.div_ceil(4) * 4;
+            class.vptr_offset = Some(offset);
+            if let Some(dispatch_base) = class
+                .virtual_bases
+                .first()
+                .and_then(|base| self.cxx_classes.get(base))
+            {
+                class.virtual_slots = dispatch_base.virtual_slots;
+                class.has_virtual_destructor = dispatch_base.has_virtual_destructor;
+                class.virtual_destructor_slot = dispatch_base.virtual_destructor_slot;
+            }
+            class.vtable_components.push(VtableComponent {
+                object_offset: 0,
+                vptr_offset: offset,
+                virtual_slots: class.virtual_slots,
+                virtual_destructor_slot: class.virtual_destructor_slot,
+            });
+            offset = offset.checked_add(4).ok_or_else(|| {
+                Diagnostic::error("C++ virtual-base layout exceeds the 32-bit address space")
+            })?;
+            max_align = max_align.max(4);
+            class.is_polymorphic = true;
+        }
+        // Direct-base storage and this class's own members form the reusable
+        // non-virtual region. A further-derived class starts its fields here,
+        // then emits one copy of each inherited virtual base at its own tail.
+        class.nonvirtual_size = offset.max(1).div_ceil(max_align) * max_align;
+        offset = class.nonvirtual_size;
+        let virtual_bases = class.virtual_bases.clone();
+        let mut virtual_base_index = 0usize;
+        for virtual_base in virtual_bases {
+            let base = self.structs.get(&virtual_base).ok_or_else(|| {
+                Diagnostic::error(format!(
+                    "virtual base class '{virtual_base}' must be defined before '{name}'"
+                ))
+            })?;
+            let base_align = u32::from(base.align).max(1);
+            offset = offset.div_ceil(base_align) * base_align;
+            let base_offset = offset;
+            for (field_name, field) in base.fields_in_declaration_order() {
+                if layout.fields.contains_key(field_name) {
+                    continue;
+                }
+                layout.insert_field(
+                    field_name.clone(),
+                    StructField {
+                        member_type: field.member_type,
+                        source_fundamental: field.source_fundamental,
+                        offset: base_offset + field.offset,
+                        struct_tag: field.struct_tag.clone(),
+                        array_element: field.array_element,
+                        array_bytes: field.array_bytes,
+                        array_stride: field.array_stride,
+                        bit_field: field.bit_field,
+                    },
+                );
+                if base.function_pointer_fields.contains(field_name) {
+                    layout.function_pointer_fields.insert(field_name.clone());
+                }
+            }
+            class.bases.insert(
+                virtual_base_index,
+                BaseClass {
+                    name: virtual_base.clone(),
+                    offset: base_offset,
+                    is_virtual: true,
+                },
+            );
+            virtual_base_index += 1;
+            if let Some(base_class) = self.cxx_classes.get(&virtual_base) {
+                class.is_polymorphic |= base_class.is_polymorphic;
+                class.vtable_components.extend(base_class.vtable_components.iter().map(
+                    |component| VtableComponent {
+                        object_offset: base_offset + component.object_offset,
+                        vptr_offset: base_offset + component.vptr_offset,
+                        virtual_slots: component.virtual_slots,
+                        virtual_destructor_slot: component.virtual_destructor_slot,
+                    },
+                ));
+            }
+            offset = offset.checked_add(base.size).ok_or_else(|| {
+                Diagnostic::error("C++ virtual-base layout exceeds the 32-bit address space")
+            })?;
+            max_align = max_align.max(base_align);
+        }
         // C++ gives an otherwise empty class size one. Empty-base optimization is
         // deliberately outside this subset.
         layout.size = offset.max(1).div_ceil(max_align) * max_align;

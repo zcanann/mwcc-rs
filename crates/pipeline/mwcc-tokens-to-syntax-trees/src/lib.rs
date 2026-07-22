@@ -2341,6 +2341,30 @@ blr\n\
     }
 
     #[test]
+    fn relocates_inherited_virtual_bases_after_most_derived_members() {
+        let source = r#"
+            struct Primary { int first; };
+            struct Trait { virtual void act(); int traitValue; };
+            struct Derived : public Primary, virtual public Trait { int own; };
+            struct Most : public Derived { int extra; };
+            Derived derived;
+            Most most;
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.globals[0].declared_type,
+            mwcc_syntax_trees::Type::Struct { size: 24, align: 4 }
+        ));
+        assert!(matches!(
+            unit.globals[1].declared_type,
+            mwcc_syntax_trees::Type::Struct { size: 28, align: 4 }
+        ));
+    }
+
+    #[test]
     fn resolves_an_unqualified_initializer_for_a_qualified_base() {
         let source = r#"
             namespace Scene { struct Base { Base(int); }; }

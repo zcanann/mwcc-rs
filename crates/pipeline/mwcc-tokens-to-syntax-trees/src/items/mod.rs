@@ -1930,9 +1930,22 @@ impl Parser {
                     Diagnostic::error(format!("struct layout '{tag}' was not recovered: {error}"))
                 })?;
                 layout.source_tag = Some(tag.clone());
-                self.structs.insert(tag.clone(), layout);
+                let qualified = self.qualify_cxx_class_name(&tag);
+                if self.cplusplus && self.cxx_classes.contains_key(&qualified) {
+                    // The C++ declaration pass already recovered vptrs, bases,
+                    // and special members. The generic C aggregate parser still
+                    // consumes the declaration, but its data-only projection
+                    // must not overwrite that richer layout.
+                    self.struct_typedefs.insert(tag.clone(), qualified);
+                } else {
+                    self.structs.insert(tag.clone(), layout);
+                }
                 if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() {
-                    let layout = &self.structs[&tag];
+                    let layout = self
+                        .structs
+                        .get(&self.qualify_cxx_class_name(&tag))
+                        .or_else(|| self.structs.get(&tag))
+                        .expect("captured or parsed struct layout");
                     eprintln!(
                         "recovered struct '{tag}' at token {definition_start}: size {}, fields {}",
                         layout.size,
