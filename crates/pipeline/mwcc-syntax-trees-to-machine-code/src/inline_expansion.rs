@@ -101,12 +101,14 @@ impl InlineBodySet {
                 .filter(|function| function.name.contains(needle.as_ref()))
             {
                 eprintln!(
-                    "inline summary {}: statement={} value={} locals={} statements={}",
+                    "inline summary {}: statement={} value={} parameters={} locals={} statements={} return={:?}",
                     function.name,
                     bodies.contains_key(&function.name),
                     values.contains_key(&function.name),
+                    function.parameters.len(),
                     function.locals.len(),
                     function.statements.len(),
+                    function.return_expression,
                 );
             }
         }
@@ -134,6 +136,55 @@ impl InlineBodySet {
                 .statements
                 .iter()
                 .any(|statement| self.contains_call(statement))
+    }
+
+    /// Expand a constructor call embedded in scalar `new` without inventing a
+    /// caller-visible AST local.
+    ///
+    /// `ConstructedNew` owns allocation and the null guard in instruction
+    /// selection, so it cannot be rewritten as an ordinary source call.  Its
+    /// retained inline constructor body can still use the same recursive value
+    /// composition as every other inline expression once the allocator result
+    /// has a temporary variable identity.  Decline bodies that need hygienic
+    /// locals; frame allocation for those belongs in a later, explicit model.
+    pub(crate) fn expand_constructed_new_body(
+        &self,
+        constructor: &str,
+        result_name: &str,
+        arguments: &[Expression],
+    ) -> Option<Expression> {
+        let mut call_arguments = Vec::with_capacity(arguments.len() + 1);
+        call_arguments.push(Expression::Variable(result_name.to_owned()));
+        call_arguments.extend_from_slice(arguments);
+        let call = Expression::Call {
+            name: constructor.to_owned(),
+            arguments: call_arguments,
+        };
+        let mut locals = Vec::new();
+        let mut occupied_names = HashSet::from([result_name.to_owned()]);
+        let mut next_local_id = 0;
+        let mut allocator = value_calls::LocalAllocator {
+            locals: &mut locals,
+            occupied_names: &mut occupied_names,
+            next_local_id: &mut next_local_id,
+        };
+        let mut active = HashSet::new();
+        let stable_variables = HashSet::from([result_name.to_owned()]);
+        let mut changed = false;
+        let mut substitutions = 0;
+        let expanded = value_calls::expand_expression(
+            &call,
+            &self.values,
+            &stable_variables,
+            &mut active,
+            &mut changed,
+            &mut substitutions,
+            &mut allocator,
+        );
+        if !changed || !locals.is_empty() || self.expression_contains_call(&expanded) {
+            return None;
+        }
+        Some(expanded)
     }
 
     /// Expand every composable retained-inline call in `function`.
@@ -723,6 +774,92 @@ mod tests {
                 if matches!(operand.as_ref(), Expression::Variable(target) if target == "target"))
                 && source == "source"
         ));
+    }
+
+    #[test]
+    fn expands_nested_constructor_body_for_guarded_scalar_new() {
+        let pointer = Type::StructPointer { element_size: 16 };
+        let mut base = function(
+            "base_constructor",
+            vec![
+                Parameter {
+                    parameter_type: pointer,
+                    name: "this".into(),
+                },
+                Parameter {
+                    parameter_type: Type::Pointer(Pointee::Char),
+                    name: "name".into(),
+                },
+            ],
+            vec![Statement::Store {
+                target: Expression::Member {
+                    base: Box::new(Expression::Variable("this".into())),
+                    offset: 4,
+                    member_type: Type::UnsignedInt,
+                    index_stride: None,
+                },
+                value: Expression::IntegerLiteral(7),
+            }],
+        );
+        base.return_type = pointer;
+        base.return_expression = Some(Expression::Variable("this".into()));
+        let mut derived = function(
+            "derived_constructor",
+            vec![Parameter {
+                parameter_type: pointer,
+                name: "this".into(),
+            }],
+            vec![
+                Statement::Expression(Expression::Call {
+                    name: "base_constructor".into(),
+                    arguments: vec![
+                        Expression::Variable("this".into()),
+                        Expression::StringLiteral(b"state".to_vec()),
+                    ],
+                }),
+                Statement::Store {
+                    target: Expression::Member {
+                        base: Box::new(Expression::Variable("this".into())),
+                        offset: 0,
+                        member_type: Type::StructPointer { element_size: 0 },
+                        index_stride: None,
+                    },
+                    value: Expression::AddressOf {
+                        operand: Box::new(Expression::Variable("derived_vtable".into())),
+                    },
+                },
+            ],
+        );
+        derived.return_type = pointer;
+        derived.return_expression = Some(Expression::Variable("this".into()));
+
+        let expanded = InlineBodySet::analyze(&[base, derived])
+            .expand_constructed_new_body("derived_constructor", "allocation", &[])
+            .expect("a local-free constructor chain should compose inside new");
+        fn assigned_offsets(expression: &Expression, output: &mut Vec<u32>) {
+            match expression {
+                Expression::Assign { target, .. } => {
+                    if let Expression::Member { offset, .. } = target.as_ref() {
+                        output.push(*offset);
+                    }
+                }
+                Expression::Comma { left, right } => {
+                    assigned_offsets(left, output);
+                    assigned_offsets(right, output);
+                }
+                _ => {}
+            }
+        }
+        fn terminal(expression: &Expression) -> &Expression {
+            match expression {
+                Expression::Comma { right, .. } => terminal(right),
+                expression => expression,
+            }
+        }
+        let mut offsets = Vec::new();
+        assigned_offsets(&expanded, &mut offsets);
+        assert_eq!(offsets, vec![4, 0]);
+        assert!(matches!(terminal(&expanded), Expression::Variable(name) if name == "allocation"));
     }
 
     #[test]

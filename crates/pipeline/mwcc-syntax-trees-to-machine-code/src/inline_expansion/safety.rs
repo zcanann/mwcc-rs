@@ -70,7 +70,9 @@ fn composable_statements(statements: &[Statement], local_names: &HashSet<&str>) 
 pub(super) fn stable_argument(expression: &Expression, stable_variables: &HashSet<String>) -> bool {
     match expression {
         Expression::Variable(name) => stable_variables.contains(name),
-        Expression::IntegerLiteral(_) | Expression::FloatLiteral(_) => true,
+        Expression::IntegerLiteral(_)
+        | Expression::FloatLiteral(_)
+        | Expression::StringLiteral(_) => true,
         // An inherited non-virtual member call passes `this + base_offset`.
         // This address calculation is as stable and side-effect-free as its
         // complete-object base, so retained inline bodies may substitute it
