@@ -1004,6 +1004,27 @@ class FrontierTests(unittest.TestCase):
         self.assertIn(rows[2]["configuration_id"], chosen)
         self.assertEqual(frontier["previous_status_counts"]["BYTE"], 1)
 
+    def test_core_byte_with_configured_source_failure_reenters_work_pool(self):
+        rows = [row(source=f"src/{index}.c") for index in range(4)]
+        observations = {
+            rows[0]["configuration_id"]: {
+                "status": "BYTE",
+                "evidence": {"configured_source": "DEFER"},
+            },
+            rows[1]["configuration_id"]: {
+                "status": "BYTE",
+                "evidence": {"configured_source": "BYTE"},
+            },
+        }
+        args = argparse.Namespace(size=1, byte_audit=0, seed="seed", epoch="0")
+        frontier = build_frontier(rows, observations, args)
+        self.assertEqual(
+            frontier["configuration_ids"], [rows[0]["configuration_id"]]
+        )
+        self.assertEqual(
+            frontier["previous_status_counts"], {"DEFER": 1}
+        )
+
     def test_frontier_reserves_a_probe_for_an_unobserved_version(self):
         rows = [row(source=f"src/a{index}.c") for index in range(5)]
         rows.append(row(source="src/wii.c", mw_version="Wii/1.0"))

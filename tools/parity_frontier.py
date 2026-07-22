@@ -18,6 +18,23 @@ from parity_identity import configuration_id
 PRIORITY = ("DIFF", "DEFER", "HARNESS")
 
 
+def work_status(observation: Optional[Dict[str, Any]]) -> str:
+    """Classify a row for work, including drop-in failures hidden by core BYTE."""
+
+    if observation is None:
+        return "UNTESTED"
+    status = observation["status"]
+    if status != "BYTE":
+        return status
+    evidence = observation.get("evidence")
+    configured = evidence.get("configured_source") if isinstance(evidence, dict) else None
+    if configured == "DIFF":
+        return "DIFF"
+    if configured == "DEFER":
+        return "DEFER"
+    return status
+
+
 def latest_any_tool(records: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     latest: Dict[str, Dict[str, Any]] = {}
     for record in records:
@@ -66,7 +83,7 @@ def build_frontier(
     by_status: Dict[str, List[str]] = {}
     for identity in universe:
         observation = observations.get(identity)
-        status = observation["status"] if observation else "UNTESTED"
+        status = work_status(observation)
         by_status.setdefault(status, []).append(identity)
 
     selected: List[str] = []
@@ -115,7 +132,7 @@ def build_frontier(
         selected.extend(choose(remainder, args.size - len(selected), args.seed, args.epoch, "REMAINDER"))
 
     previous = Counter(
-        observations[identity]["status"] if identity in observations else "UNTESTED"
+        work_status(observations.get(identity))
         for identity in selected
     )
     return {
