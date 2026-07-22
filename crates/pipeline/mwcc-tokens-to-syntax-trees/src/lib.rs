@@ -2771,6 +2771,40 @@ blr\n\
     }
 
     #[test]
+    fn retains_implicit_default_constructor_calls_for_automatic_objects() {
+        let source = r#"
+            namespace fx {
+                struct Effect {
+                    inline Effect() { value = 3; }
+                    int value;
+                };
+            }
+            int use(int value) {
+                if (value) {
+                    fx::Effect effect;
+                }
+                return value;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [Statement::If { then_body, .. }]
+                if matches!(then_body.as_slice(),
+                    [Statement::Expression(Expression::Call { name, arguments })]
+                    if name == "__ct__Q22fx6EffectFv"
+                        && matches!(arguments.as_slice(), [Expression::AddressOf { .. }]))
+        ));
+    }
+
+    #[test]
     fn retains_aggregate_copy_constructor_initializers_for_inline_expansion() {
         let source = r#"
             struct Vec { float x; float y; float z; };
@@ -2809,6 +2843,14 @@ blr\n\
                 },
                 value: Expression::Variable(position),
             } if position == "position"
+        )));
+        assert!(constructor.statements.iter().any(|statement| matches!(
+            statement,
+            Statement::Store {
+                value: Expression::AddressOf { operand },
+                ..
+            } if matches!(operand.as_ref(), Expression::Variable(vtable)
+                if vtable == "__vt__Q23efx3Arg")
         )));
     }
 
@@ -4608,7 +4650,7 @@ blr\n\
         let source = r#"
             struct Base { virtual int value(int); };
             struct Child : Base {
-                int value(int);
+                virtual int value(int);
                 virtual void added(void);
             };
             int caller(Child* child, int input) { return child->value(input); }

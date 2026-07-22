@@ -96,6 +96,7 @@ pub(crate) struct MemberMethod {
     pub(crate) parameters: Vec<Type>,
     cxx_parameters: Vec<CxxParameterType>,
     pub(crate) is_inline: bool,
+    is_const_member: bool,
     virtual_dispatch: Option<VirtualDispatch>,
 }
 
@@ -1303,7 +1304,7 @@ impl Parser {
             .cloned()
             .zip(self.locations[declaration_start..=body_end].iter().copied())
             .collect();
-        while matches!(source.first(), Some((Token::Identifier(word), _)) if matches!(word.as_str(), "virtual" | "explicit"))
+        while matches!(source.first(), Some((Token::Identifier(word), _)) if matches!(word.as_str(), "virtual" | "explicit" | "inline"))
         {
             source.remove(0);
         }
@@ -2570,6 +2571,55 @@ impl Parser {
         result
     }
 
+    /// Find the callable slot overridden along the zero-offset primary-base
+    /// chain. Declaring an override with an explicit `virtual` keyword does not
+    /// append a new slot; it replaces the matching base entry in place.
+    /// Secondary-base thunks need separate vtable-component modeling and are
+    /// deliberately excluded here.
+    fn resolve_primary_base_virtual_override(
+        &self,
+        class: &ClassLayout,
+        member: &str,
+        parameters: &[Type],
+        is_const_member: bool,
+    ) -> Compilation<Option<VirtualDispatch>> {
+        let mut primary = class
+            .bases
+            .first()
+            .filter(|base| !base.is_virtual && base.offset == 0)
+            .map(|base| base.name.as_str());
+        while let Some(owner) = primary {
+            let Some(base) = self.cxx_classes.get(owner) else {
+                return Ok(None);
+            };
+            if let Some(methods) = base.methods.get(member) {
+                let candidates = methods
+                    .iter()
+                    .filter(|method| {
+                        method.parameters == parameters
+                            && method.is_const_member == is_const_member
+                            && method.virtual_dispatch.is_some()
+                    })
+                    .collect::<Vec<_>>();
+                match candidates.as_slice() {
+                    [] => {}
+                    [method] => return Ok(method.virtual_dispatch),
+                    _ => {
+                        return Err(Diagnostic::error(format!(
+                            "virtual override '{owner}::{member}' is ambiguous (roadmap)"
+                        )))
+                    }
+                }
+            }
+            primary = base
+                .bases
+                .first()
+                .filter(|base| !base.is_virtual && base.offset == 0)
+                .map(|base| base.name.as_str());
+        }
+        Ok(None)
+    }
+
     fn parse_class_definition_body(
         &mut self,
         name: String,
@@ -2961,21 +3011,45 @@ impl Parser {
                 let is_pure = self.tokens.get(tail) == Some(&Token::Equals)
                     && self.tokens.get(tail + 1) == Some(&Token::IntegerLiteral(0));
                 let is_inline = self.skip_class_method_tail()?;
+                let inherited_virtual = is_virtual
+                    .then(|| {
+                        self.resolve_primary_base_virtual_override(
+                            &class,
+                            &field_name,
+                            &signature.parameters,
+                            is_const_member,
+                        )
+                    })
+                    .transpose()?
+                    .flatten();
                 let virtual_dispatch = if is_virtual {
-                    let slot_offset = 8usize
-                        .checked_add(class.virtual_slots.checked_mul(4).ok_or_else(|| {
-                            Diagnostic::error("C++ primary vtable slot offset overflow")
-                        })?)
-                        .and_then(|offset| u16::try_from(offset).ok())
-                        .ok_or_else(|| {
-                            Diagnostic::error("C++ primary vtable slot offset overflow")
-                        })?;
-                    let vptr_offset = u16::try_from(class.vptr_offset.unwrap_or(0))
-                        .map_err(|_| Diagnostic::error("C++ primary vptr offset overflow"))?;
-                    class.virtual_slots += 1;
-                    if let Some(primary) = class.vtable_components.first_mut() {
-                        primary.virtual_slots = class.virtual_slots;
-                    }
+                    let dispatch = if let Some(mut inherited) = inherited_virtual {
+                        // Covariant returns retain the inherited slot while the
+                        // call expression needs the derived declaration's type.
+                        inherited.return_type = field_type;
+                        inherited
+                    } else {
+                        let slot_offset = 8usize
+                            .checked_add(class.virtual_slots.checked_mul(4).ok_or_else(|| {
+                                Diagnostic::error("C++ primary vtable slot offset overflow")
+                            })?)
+                            .and_then(|offset| u16::try_from(offset).ok())
+                            .ok_or_else(|| {
+                                Diagnostic::error("C++ primary vtable slot offset overflow")
+                            })?;
+                        let vptr_offset = u16::try_from(class.vptr_offset.unwrap_or(0))
+                            .map_err(|_| Diagnostic::error("C++ primary vptr offset overflow"))?;
+                        class.virtual_slots += 1;
+                        if let Some(primary) = class.vtable_components.first_mut() {
+                            primary.virtual_slots = class.virtual_slots;
+                        }
+                        VirtualDispatch {
+                            vptr_offset,
+                            slot_offset,
+                            return_type: field_type,
+                            variadic: false,
+                        }
+                    };
                     if !is_pure {
                         let qualified = self.qualify_cxx_class_name(&name);
                         let scopes: Vec<&str> = qualified.split("::").collect();
@@ -2994,7 +3068,9 @@ impl Parser {
                                 false,
                             )?
                         };
-                        class.virtual_definitions.push((slot_offset, mangled));
+                        class
+                            .virtual_definitions
+                            .push((dispatch.slot_offset, mangled));
                         if !is_inline && class.vtable_key_function.is_none() {
                             class.vtable_key_function = class
                                 .virtual_definitions
@@ -3002,12 +3078,7 @@ impl Parser {
                                 .map(|(_, name)| name.clone());
                         }
                     }
-                    Some(VirtualDispatch {
-                        vptr_offset,
-                        slot_offset,
-                        return_type: field_type,
-                        variadic: false,
-                    })
+                    Some(dispatch)
                 } else {
                     None
                 };
@@ -3019,6 +3090,7 @@ impl Parser {
                         parameters: signature.parameters,
                         cxx_parameters: signature.cxx_parameters,
                         is_inline,
+                        is_const_member,
                         virtual_dispatch,
                     });
                 continue;
@@ -3305,6 +3377,46 @@ impl Parser {
                     ))
                 }),
         }
+    }
+
+    /// Whether source class metadata declares a zero-argument constructor.
+    ///
+    /// An automatic class object written without an initializer still invokes
+    /// its default constructor when one is declared. POD structs must remain a
+    /// storage-only declaration, so statement parsing uses this predicate
+    /// before asking overload resolution for the constructor symbol.
+    pub(crate) fn has_declared_default_constructor(&self, class_name: &str) -> bool {
+        let resolved_class = self
+            .resolve_scoped_cxx_class_name(class_name)
+            .unwrap_or_else(|| class_name.to_owned());
+        let local_class = resolved_class
+            .rsplit("::")
+            .next()
+            .unwrap_or(resolved_class.as_str());
+        let scopes = resolved_class.split("::").collect::<Vec<_>>();
+        mangle_qualified_member_function_typed(&scopes, "__ct", &[])
+            .ok()
+            .is_some_and(|constructor| self.skipped_inline_names.contains(&constructor))
+            || self.cxx_classes
+            .get(&resolved_class)
+            .or_else(|| self.cxx_classes.get(class_name))
+            .or_else(|| self.cxx_classes.get(local_class))
+            .is_some_and(|class| {
+                class
+                    .constructors
+                    .iter()
+                    .any(|signature| signature.parameters.is_empty())
+            })
+            || self
+                .cxx_constructors
+                .get(resolved_class.as_str())
+                .or_else(|| self.cxx_constructors.get(class_name))
+                .or_else(|| self.cxx_constructors.get(local_class))
+                .is_some_and(|constructors| {
+                    constructors
+                        .iter()
+                        .any(|constructor| constructor.fixed_parameter_count == 0)
+                })
     }
 
     fn parse_class_parameter_types(&mut self) -> Compilation<ClassParameterTypes> {

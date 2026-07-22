@@ -768,20 +768,27 @@ impl Parser {
                 if let Some(tag) = &struct_tag {
                     self.variable_structs.insert(name.clone(), tag.clone());
                 }
-                let constructor_call = if !is_static
-                    && struct_tag.is_some()
-                    && self.eat_keyword(Token::ParenOpen)
-                {
+                let explicit_constructor =
+                    !is_static && struct_tag.is_some() && *self.peek() == Token::ParenOpen;
+                let implicit_default_constructor = !is_static
+                    && struct_tag.as_deref().is_some_and(|class_name| {
+                        self.has_declared_default_constructor(class_name)
+                    })
+                    && !matches!(self.peek(), Token::Equals | Token::BraceOpen);
+                let constructor_call = if explicit_constructor || implicit_default_constructor {
                     let mut arguments = Vec::new();
-                    if *self.peek() != Token::ParenClose {
-                        loop {
-                            arguments.push(self.expression()?);
-                            if !self.eat_keyword(Token::Comma) {
-                                break;
+                    if explicit_constructor {
+                        self.expect(Token::ParenOpen)?;
+                        if *self.peek() != Token::ParenClose {
+                            loop {
+                                arguments.push(self.expression()?);
+                                if !self.eat_keyword(Token::Comma) {
+                                    break;
+                                }
                             }
                         }
+                        self.expect(Token::ParenClose)?;
                     }
-                    self.expect(Token::ParenClose)?;
                     let class_name = struct_tag.as_deref().expect("checked above");
                     let constructor =
                         self.resolve_placement_constructor(class_name, &arguments)?;

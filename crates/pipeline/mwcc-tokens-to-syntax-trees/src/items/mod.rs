@@ -3057,7 +3057,11 @@ impl Parser {
             if let Some(scope) = special_member_scope {
                 if let Some(class) = self.cxx_classes.get(scope) {
                     if !class.vtable_components.is_empty() {
-                        let vtable = format!("__vt__{}{}", scope.len(), scope);
+                        let scopes: Vec<&str> = scope.split("::").collect();
+                        let vtable = format!(
+                            "__vt__{}",
+                            crate::cxx::encode_qualified_scope(&scopes)?
+                        );
                         let mut table_offset = 0u32;
                         let vptr_stores: Vec<Statement> = class
                             .vtable_components
@@ -3180,7 +3184,11 @@ impl Parser {
                         .vtable_key_function
                         .as_deref()
                         .is_some_and(|key| key == function.name);
-                    let vtable = format!("__vt__{}{}", scope.len(), scope);
+                    let scopes: Vec<&str> = scope.split("::").collect();
+                    let vtable = format!(
+                        "__vt__{}",
+                        crate::cxx::encode_qualified_scope(&scopes)?
+                    );
                     if owns_vtable && !globals.iter().any(|global| global.name == vtable) {
                         let scopes: Vec<&str> = scope.split("::").collect();
                         let destructor = class
