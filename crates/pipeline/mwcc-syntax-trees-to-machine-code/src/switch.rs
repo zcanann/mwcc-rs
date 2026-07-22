@@ -21,7 +21,7 @@ use crate::generator::*;
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{Instruction, JumpTable, RelocationKind, RelocationTarget};
 use mwcc_syntax_trees::{ArmBody, Expression, Statement, SwitchArm, Type};
-use mwcc_versions::JumpTableBaseStyle;
+use mwcc_versions::{CallDispatcherStyle, JumpTableBaseStyle};
 
 /// A pending dispatch-branch destination, resolved to an instruction index once
 /// the case bodies have been laid out.
@@ -115,12 +115,18 @@ impl Generator {
             a: table_register,
             immediate: 0,
         });
+        let entry_register = match self.behavior.call_dispatcher_style {
+            CallDispatcherStyle::Legacy24x => 0,
+            CallDispatcherStyle::Packed41 => 3,
+        };
+        self.output.instructions.push(Instruction::LoadWordIndexed {
+            d: entry_register,
+            a: 3,
+            b: 0,
+        });
         self.output
             .instructions
-            .push(Instruction::LoadWordIndexed { d: 3, a: 3, b: 0 });
-        self.output
-            .instructions
-            .push(Instruction::MoveToCountRegister { s: 3 });
+            .push(Instruction::MoveToCountRegister { s: entry_register });
         self.output
             .instructions
             .push(Instruction::BranchToCountRegister);
@@ -165,18 +171,23 @@ impl Generator {
                     .map_or(default_offset, |&source_index| body_offsets[source_index])
             })
             .collect();
+        // Modern dispatchers retain a label per arm plus a three-label dispatch
+        // block, and deferred inlining retains one more hidden label per arm.
+        // The legacy specialized owner accounts its labels before its strings.
+        let anonymous_offset = match self.behavior.call_dispatcher_style {
+            // The specialized legacy dispatcher accounts its internal labels
+            // before its strings; the table follows those string slots directly.
+            CallDispatcherStyle::Legacy24x => 0,
+            CallDispatcherStyle::Packed41 => {
+                arms.len() as u32
+                    + 3
+                    + arms.len() as u32
+                        * u32::from(self.behavior.deferred_call_dispatcher_labels_per_case)
+            }
+        };
         self.output.jump_tables.push(JumpTable {
             entries,
-            // The dispatch and join consume three labels in addition to one
-            // label per source arm. Modern optimizers retain a separate
-            // three-label dispatch block, and deferred inlining retains one
-            // more hidden label for every arm (measured on GC/3.0a3p1 and
-            // Wii/1.0).
-            anonymous_offset: arms.len() as u32
-                + 3
-                + u32::from(self.behavior.call_dispatcher_hidden_label_bump)
-                + arms.len() as u32
-                    * u32::from(self.behavior.deferred_call_dispatcher_labels_per_case),
+            anonymous_offset,
         });
         Ok(())
     }

@@ -781,19 +781,21 @@ fn compile(
             });
         }
     }
-    if cxx_analysis_residues.is_none() {
+    let leading_source_ordinal_bump = if cxx_analysis_residues.is_none() {
         inline_ordinal_positions::distribute(
             &mut machine_functions,
             &unit.function_inline_prebumps,
             unit.skipped_inline_functions,
-        );
-    }
+        )
+    } else {
+        0
+    };
     // Deferred inlining has its own translation-unit emission schedule. Keep the
     // policy isolated from lowering and object layout: both consume its result.
     if config.flags.inline_deferred {
         function_order::apply_deferred_emission_order(
             &mut machine_functions,
-            config.build.post_leaf_function_anonymous_bump,
+            behavior.deferred_transparent_leaf_bump,
         );
     }
     // `#pragma defer_codegen on` defers the covered functions the same way:
@@ -810,6 +812,9 @@ fn compile(
         deferred.reverse();
         machine_functions = kept;
         machine_functions.extend(deferred);
+    }
+    if let Some(first) = machine_functions.first_mut() {
+        first.anonymous_label_bump += leading_source_ordinal_bump;
     }
     if let Some(first) = machine_functions.first_mut() {
         // File-scope declarations advance the unit-wide ordinal stream before
