@@ -9,6 +9,7 @@ dependencies = [
  "mwcc-core",
  "mwcc-machine-code",
  "mwcc-machine-code-to-object",
+ "mwcc-source-loader",
  "mwcc-source-to-tokens",
  "mwcc-syntax-trees",
  "mwcc-syntax-trees-to-debug-info",
@@ -56,6 +57,13 @@ version = "0.0.1"
 [[package]]
 name = "mwcc-oracle"
 version = "0.0.1"
+
+[[package]]
+name = "mwcc-source-loader"
+version = "0.0.1"
+dependencies = [
+ "mwcc-core",
+]
 
 [[package]]
 name = "mwcc-source-to-tokens"

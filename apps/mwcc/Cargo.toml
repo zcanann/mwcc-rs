@@ -15,6 +15,7 @@ mwcc-versions.workspace = true
 mwcc-tokens.workspace = true
 mwcc-syntax-trees.workspace = true
 mwcc-machine-code.workspace = true
+mwcc-source-loader.workspace = true
 mwcc-source-to-tokens.workspace = true
 mwcc-tokens-to-syntax-trees.workspace = true
 mwcc-syntax-trees-to-machine-code.workspace = true

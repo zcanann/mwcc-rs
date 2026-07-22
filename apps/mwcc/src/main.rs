@@ -40,8 +40,9 @@ struct Invocation {
     /// Explicit `-lang` selection. When absent, the input extension selects the
     /// frontend; real project lines sometimes deliberately compile `.cpp` as C.
     source_language: Option<SourceLanguage>,
-    /// Codegen-affecting flags parsed from the real build line; the rest are
-    /// ignored (they are the preprocessor's or diagnostics' concern).
+    /// Ordered filesystem access paths used to materialize the source graph.
+    include_paths: Vec<PathBuf>,
+    /// Codegen-affecting flags parsed from the real build line.
     flags: mwcc_versions::Flags,
 }
 
@@ -53,6 +54,7 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
         build_label: None,
         artifacts_directory: None,
         source_language: None,
+        include_paths: Vec::new(),
         flags: mwcc_versions::Flags::default(),
     };
     let mut index = 0;
@@ -81,6 +83,12 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                     .and_then(|value| SourceLanguage::parse(value))
                 {
                     invocation.source_language = Some(language);
+                }
+            }
+            "-i" | "-I" | "-ir" | "-isystem" => {
+                index += 1;
+                if let Some(path) = arguments.get(index) {
+                    invocation.include_paths.push(PathBuf::from(path));
                 }
             }
             // `-char signed`/`-char unsigned` overrides the build's `char` default.
@@ -282,6 +290,9 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                     invocation.source_language = Some(language);
                 }
             }
+            argument if argument.starts_with("-I") && argument.len() > 2 => {
+                invocation.include_paths.push(PathBuf::from(&argument[2..]));
+            }
             argument if argument.ends_with(".c") && invocation.input.is_none() => {
                 invocation.input = Some(argument.to_string());
             }
@@ -321,10 +332,12 @@ fn main() -> ExitCode {
         None => mwcc_versions::DEFAULT,
     };
 
-    let source = match std::fs::read(&input) {
+    let source = match mwcc_source_loader::SourceLoader::new(invocation.include_paths)
+        .load(std::path::Path::new(&input))
+    {
         Ok(source) => source,
-        Err(error) => {
-            eprintln!("mwcc: cannot read {input}: {error}");
+        Err(diagnostic) => {
+            eprintln!("mwcc: {diagnostic}");
             return ExitCode::FAILURE;
         }
     };
@@ -1987,6 +2000,25 @@ mod tests {
 
         let last_wins = parse_invocation(&["-lang=c++".into(), "-lang".into(), "c".into()]);
         assert_eq!(last_wins.source_language, Some(SourceLanguage::C));
+    }
+
+    #[test]
+    fn command_line_include_paths_preserve_search_order_and_forms() {
+        let parsed = parse_invocation(&[
+            "-i".into(),
+            "first".into(),
+            "-Isecond".into(),
+            "-ir".into(),
+            "third".into(),
+            "-isystem".into(),
+            "fourth".into(),
+            "-inline".into(),
+            "auto".into(),
+        ]);
+        assert_eq!(
+            parsed.include_paths,
+            ["first", "second", "third", "fourth"].map(std::path::PathBuf::from)
+        );
     }
 
     #[test]
