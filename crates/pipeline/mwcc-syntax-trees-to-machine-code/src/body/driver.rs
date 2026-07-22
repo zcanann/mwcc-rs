@@ -1130,6 +1130,11 @@ impl Generator {
     }
 
     pub(crate) fn evaluate_body(&mut self, function: &Function) -> Compilation<()> {
+        if std::env::var_os("MWCC_CAPTURE_FUNCTION")
+            .is_some_and(|name| name == std::ffi::OsStr::new(&function.name))
+        {
+            eprintln!("captured function: {function:#?}");
+        }
         // Recursive body transforms can introduce hygienic inline locals after
         // parameter assignment initialized this set. Retain their provenance so
         // local-pointer aliases are not later mistaken for entry parameters.
@@ -1922,6 +1927,12 @@ impl Generator {
             return Ok(());
         }
         if self.try_control_block_unique_copy(function)? {
+            return Ok(());
+        }
+        if self.try_conditional_member_copy(function)? {
+            return Ok(());
+        }
+        if self.try_guarded_aggregate_update(function)? {
             return Ok(());
         }
         // Endian scalar wrappers intentionally take the address of a 16/32/64-bit
