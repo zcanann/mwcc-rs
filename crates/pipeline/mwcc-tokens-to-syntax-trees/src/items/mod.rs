@@ -3550,6 +3550,20 @@ impl Parser {
     }
 
     pub(crate) fn item_is_function_definition(&self) -> bool {
+        // Aggregate headers may contain arbitrary parenthesized expressions in
+        // attributes, base-template arguments, and `offsetof` spellings. None
+        // of those parentheses can make the declaration a function definition;
+        // stop before the generic `(params) {` lookahead mistakes the class
+        // body for emitted function text.
+        if matches!(self.tokens.get(self.position), Some(Token::KeywordStruct))
+            || matches!(
+                self.tokens.get(self.position),
+                Some(Token::Identifier(word))
+                    if matches!(word.as_str(), "class" | "struct" | "union" | "enum")
+            )
+        {
+            return false;
+        }
         // A function template definition does not itself emit a function body;
         // code appears only for an instantiated specialization. Recovery may
         // therefore skip an unused template just like an inline header helper.

@@ -1179,6 +1179,28 @@ blr\n\
     }
 
     #[test]
+    fn parenthesized_template_base_does_not_make_a_class_a_function() {
+        let source = r#"
+            template <int Offset> struct Base {};
+            class Derived : public Base<-((int)0)> {
+            public:
+                int value;
+            };
+            int compiled(void) { return 3; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.functions.len(), 1);
+        assert_eq!(unit.functions[0].name, "compiled__Fv");
+    }
+
+    #[test]
     fn skips_primary_templates_with_default_arguments() {
         let source = r#"
             template <typename T, typename Pointer = T*>
