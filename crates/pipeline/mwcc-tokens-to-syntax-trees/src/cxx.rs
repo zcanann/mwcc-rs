@@ -3057,11 +3057,22 @@ impl Parser {
                 // body was consumed and registered by `parse_type` above.
                 continue;
             }
-            if self.last_array_typedef.take().is_some() {
-                return Err(Diagnostic::error(
-                    "an array-typedef class member is not supported yet (roadmap)",
-                ));
-            }
+            // A row-pointer typedef (`typedef T (*Rows)[N]`) is already a
+            // pointer and therefore occupies one word as a class member. Keep
+            // its byte stride for later indexed-member lowering. A true array
+            // typedef (`typedef T Rows[N]`) still declares inline storage and
+            // must use the dedicated array layout path before it is admitted.
+            let row_pointer_stride = match self.last_array_typedef.take() {
+                Some((element, 0, length)) => {
+                    Some(type_size(element).saturating_mul(u32::from(length)))
+                }
+                Some(_) => {
+                    return Err(Diagnostic::error(
+                        "an array-typedef class member is not supported yet (roadmap)",
+                    ));
+                }
+                None => None,
+            };
             let struct_tag = self.last_struct_tag.take();
             let attribute_align = self.skip_attributes()?.unwrap_or(1);
             // Operator overload declarators are methods regardless of the
@@ -3246,7 +3257,7 @@ impl Parser {
                         first_index_stride,
                     )
                 } else {
-                    (element_size, None, None, None)
+                    (element_size, None, None, row_pointer_stride)
                 };
             layout.insert_field(
                 field_name.clone(),

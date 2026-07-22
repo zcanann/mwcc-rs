@@ -1203,6 +1203,7 @@ blr\n\
     #[test]
     fn class_function_pointer_typedef_preserves_derived_layouts() {
         let source = r#"
+            typedef float (*MatrixPointer)[4];
             class Event {
             public:
                 typedef short (*Callback)(void*, int);
@@ -1219,6 +1220,7 @@ blr\n\
             class Actor {
             public:
                 Event event;
+                MatrixPointer matrix;
             };
             class Hit : public Actor {
             public:
@@ -1235,8 +1237,17 @@ blr\n\
         )
         .unwrap();
         assert_eq!(unit.aggregate_definitions["Event"].byte_size, 24);
-        assert_eq!(unit.aggregate_definitions["Actor"].byte_size, 24);
-        assert_eq!(unit.aggregate_definitions["Hit"].byte_size, 28);
+        assert_eq!(unit.aggregate_definitions["Actor"].byte_size, 28);
+        assert_eq!(unit.aggregate_definitions["Hit"].byte_size, 32);
+        assert_eq!(
+            unit.aggregate_definitions["Actor"]
+                .members
+                .iter()
+                .find(|member| member.name == "matrix")
+                .unwrap()
+                .offset,
+            24
+        );
     }
 
     #[test]
