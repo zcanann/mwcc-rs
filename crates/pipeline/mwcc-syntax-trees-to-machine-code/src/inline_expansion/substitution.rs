@@ -44,7 +44,7 @@ pub(super) fn substitute_statement(
     }
 }
 
-fn substitute_expression(
+pub(super) fn substitute_expression(
     expression: &Expression,
     replacements: &HashMap<String, Expression>,
 ) -> Expression {

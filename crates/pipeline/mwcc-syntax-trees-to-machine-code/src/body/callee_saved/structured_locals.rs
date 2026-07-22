@@ -69,7 +69,7 @@ struct AssignmentFlow {
 /// assignment. This is the shape introduced by call-site inline expansion:
 /// declarations live in the function table, while their initialization must
 /// remain inside the branch containing the original inline call.
-fn is_definitely_assigned_before_reads(statements: &[Statement], name: &str) -> bool {
+pub(super) fn is_definitely_assigned_before_reads(statements: &[Statement], name: &str) -> bool {
     assignment_flow(statements, name, false).is_some_and(|flow| flow.assigned)
 }
 

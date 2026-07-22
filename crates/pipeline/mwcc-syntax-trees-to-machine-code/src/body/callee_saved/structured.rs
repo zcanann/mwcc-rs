@@ -7,7 +7,7 @@
 
 #[allow(unused_imports)]
 use super::*;
-use super::structured_locals::plan_ephemeral_locals;
+use super::structured_locals::{is_definitely_assigned_before_reads, plan_ephemeral_locals};
 
 impl Generator {
     /// Lower a void structured body after assigning every value that can be read
@@ -52,8 +52,9 @@ impl Generator {
         if saved_locals.iter().any(|local| {
             local.is_static
                 || local.array_length.is_some()
-                || local.initializer.is_none()
                 || class_of(local.declared_type).ok() != Some(ValueClass::General)
+                || (local.initializer.is_none()
+                    && !is_definitely_assigned_before_reads(&function.statements, &local.name))
         }) {
             return Ok(false);
         }
@@ -106,11 +107,9 @@ impl Generator {
                 a: 1,
                 offset: plan.frame_size - 4 * slot,
             });
-            self.evaluate(
-                local.initializer.as_ref().expect("eligibility checked"),
-                local.declared_type,
-                home,
-            )?;
+            if let Some(initializer) = &local.initializer {
+                self.evaluate(initializer, local.declared_type, home)?;
+            }
             self.locations.insert(
                 local.name.clone(),
                 Location {
@@ -293,10 +292,7 @@ impl Generator {
 
 fn supports_statements(statements: &[Statement], function: &Function) -> bool {
     statements.iter().all(|statement| match statement {
-        Statement::Store { .. }
-        | Statement::Expression(Expression::Call { .. })
-        | Statement::Expression(Expression::VirtualCall { .. })
-        | Statement::Return(None) => true,
+        Statement::Store { .. } | Statement::Expression(_) | Statement::Return(None) => true,
         Statement::Assign { name, .. } => function.locals.iter().any(|local| &local.name == name),
         Statement::If {
             then_body,
@@ -405,7 +401,21 @@ fn read_after_possible_call(
                     && (expression_reads_name(target, name) || expression_reads_name(value, name));
                 prior_call |= statement_has_call(statement);
             }
-            Statement::Assign { value, .. } | Statement::Expression(value) => {
+            Statement::Assign {
+                name: assigned_name,
+                value,
+            } => {
+                read_after |= prior_call && expression_reads_name(value, name);
+                if assigned_name == name {
+                    // A fresh definition after a call kills the old value's
+                    // cross-call lifetime. A self-referential update retains it.
+                    prior_call = expression_has_call(value)
+                        || (prior_call && expression_reads_name(value, name));
+                } else {
+                    prior_call |= statement_has_call(statement);
+                }
+            }
+            Statement::Expression(value) => {
                 read_after |= prior_call && expression_reads_name(value, name);
                 prior_call |= statement_has_call(statement);
             }
@@ -493,5 +503,37 @@ mod tests {
             else_body: vec![],
         }];
         assert!(read_after_possible_call(&statements, "value", false).read_after_call);
+    }
+
+    #[test]
+    fn a_fresh_assignment_kills_an_earlier_call_lifetime() {
+        let statements = vec![
+            Statement::Expression(Expression::Call {
+                name: "before".into(),
+                arguments: vec![],
+            }),
+            Statement::Assign {
+                name: "value".into(),
+                value: Expression::IntegerLiteral(1),
+            },
+            Statement::Expression(Expression::Variable("value".into())),
+        ];
+        assert!(!read_after_possible_call(&statements, "value", false).read_after_call);
+
+        let self_update = vec![
+            Statement::Expression(Expression::Call {
+                name: "before".into(),
+                arguments: vec![],
+            }),
+            Statement::Assign {
+                name: "value".into(),
+                value: Expression::Binary {
+                    operator: BinaryOperator::Add,
+                    left: Box::new(Expression::Variable("value".into())),
+                    right: Box::new(Expression::IntegerLiteral(1)),
+                },
+            },
+        ];
+        assert!(read_after_possible_call(&self_update, "value", false).read_after_call);
     }
 }

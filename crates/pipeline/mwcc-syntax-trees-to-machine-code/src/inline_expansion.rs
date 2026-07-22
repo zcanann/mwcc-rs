@@ -9,15 +9,19 @@
 
 mod safety;
 mod substitution;
+mod value_body;
+mod value_calls;
 
 use mwcc_syntax_trees::{Expression, Function, Statement};
 use safety::{composable_function, stable_arguments, stable_local_values};
 use std::collections::{HashMap, HashSet};
 use substitution::substitute_statement;
+use value_body::ValueInlineBody;
 
 #[derive(Clone, Debug, Default)]
 pub struct InlineBodySet {
     bodies: HashMap<String, Function>,
+    values: HashMap<String, ValueInlineBody>,
 }
 
 impl InlineBodySet {
@@ -27,7 +31,13 @@ impl InlineBodySet {
             .filter(|function| composable_function(function))
             .map(|function| (function.name.clone(), function.clone()))
             .collect();
-        Self { bodies }
+        let values = skipped
+            .iter()
+            .filter_map(|function| {
+                value_body::summarize(function).map(|body| (function.name.clone(), body))
+            })
+            .collect();
+        Self { bodies, values }
     }
 
     /// Whether a function references a retained body by its canonical AST
@@ -79,16 +89,60 @@ impl InlineBodySet {
             &mut occupied_names,
             &mut next_local_id,
         );
-        if !changed
-            || statements
-                .iter()
-                .any(|statement| self.contains_call(statement))
-        {
-            return None;
-        }
+        let statements: Vec<_> = statements
+            .iter()
+            .map(|statement| {
+                value_calls::expand_statement(
+                    statement,
+                    &self.values,
+                    &stable_variables,
+                    &mut active,
+                    &mut changed,
+                )
+            })
+            .collect();
         let mut expanded = function.clone();
         expanded.locals = locals;
+        for local in &mut expanded.locals {
+            if let Some(initializer) = &local.initializer {
+                local.initializer = Some(value_calls::expand_expression(
+                    initializer,
+                    &self.values,
+                    &stable_variables,
+                    &mut active,
+                    &mut changed,
+                ));
+            }
+        }
+        for guard in &mut expanded.guards {
+            guard.condition = value_calls::expand_expression(
+                &guard.condition,
+                &self.values,
+                &stable_variables,
+                &mut active,
+                &mut changed,
+            );
+            guard.value = value_calls::expand_expression(
+                &guard.value,
+                &self.values,
+                &stable_variables,
+                &mut active,
+                &mut changed,
+            );
+        }
+        if let Some(return_expression) = &expanded.return_expression {
+            expanded.return_expression = Some(value_calls::expand_expression(
+                return_expression,
+                &self.values,
+                &stable_variables,
+                &mut active,
+                &mut changed,
+            ));
+        }
         expanded.statements = statements;
+        if !changed || self.calls_any(&expanded) {
+            return None;
+        }
         Some(expanded)
     }
 
@@ -280,6 +334,7 @@ impl InlineBodySet {
         match expression {
             Expression::Call { name, arguments } => {
                 self.bodies.contains_key(name)
+                    || self.values.contains_key(name)
                     || arguments
                         .iter()
                         .any(|argument| self.expression_contains_call(argument))
