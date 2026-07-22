@@ -2650,9 +2650,48 @@ impl Parser {
         let previous_layout_scope = self
             .current_cxx_layout_scope
             .replace(qualified_name.clone());
+        let previous_layout_constants = self.cxx_layout_constants.clone();
         let result = self.parse_class_definition_body(name, qualified_name);
+        self.cxx_layout_constants = previous_layout_constants;
         self.current_cxx_layout_scope = previous_layout_scope;
         result
+    }
+
+    /// Retain a simple in-class integral constant long enough to lay out later
+    /// array members (`static const int N = 32; T values[N];`). Static storage
+    /// itself still contributes no bytes to the class. Parsing on a clone keeps
+    /// failed or non-integral declarations side-effect free.
+    fn capture_cxx_layout_integral_constant(&mut self) {
+        let mut probe = self.clone();
+        probe.eat_word("const");
+        let Ok(declared_type) = probe.parse_type() else {
+            return;
+        };
+        if !matches!(
+            declared_type,
+            Type::Int
+                | Type::UnsignedInt
+                | Type::Short
+                | Type::UnsignedShort
+                | Type::Char
+                | Type::UnsignedChar
+                | Type::LongLong
+                | Type::UnsignedLongLong
+        ) {
+            return;
+        }
+        let Ok(name) = probe.parse_identifier() else {
+            return;
+        };
+        if !probe.eat_keyword(Token::Equals) {
+            return;
+        }
+        let Ok(value) = probe.parse_integer_constant() else {
+            return;
+        };
+        if *probe.peek() == Token::Semicolon {
+            self.cxx_layout_constants.insert(name, value);
+        }
     }
 
     /// Find the callable slot overridden along the zero-offset primary-base
@@ -2743,7 +2782,12 @@ impl Parser {
                     .map_or((false, None, 0), |base| {
                         (base.is_polymorphic, base.vptr_offset, base.virtual_slots)
                     });
-                let base = self.structs.get(&base_name).ok_or_else(|| {
+                let base = self
+                    .structs
+                    .get(&base_name)
+                    .cloned()
+                    .or_else(|| self.asserted_aggregate_layout(&base_name))
+                    .ok_or_else(|| {
                     Diagnostic::error(format!(
                         "base class '{base_name}' must be defined before '{name}'"
                     ))
@@ -2874,6 +2918,19 @@ impl Parser {
             if self.eat_keyword(Token::Semicolon) {
                 continue;
             }
+            // An anonymous inline struct is a physical subobject (or promoted
+            // anonymous member), not a nested named type declaration. Reuse the
+            // aggregate layout path so nested anonymous structs compose.
+            if *self.peek() == Token::KeywordStruct
+                && self.tokens.get(self.position + 1) == Some(&Token::BraceOpen)
+            {
+                class.fields.extend(self.parse_and_place_inline_struct(
+                    &mut layout,
+                    &mut offset,
+                    &mut max_align,
+                )?);
+                continue;
+            }
             // A nested type alias is declaration state, not object storage.
             // Function-pointer aliases are especially common in SDK classes:
             // later data members use the alias as a one-word callback field,
@@ -2967,6 +3024,7 @@ impl Parser {
                 }
             }
             if is_static {
+                self.capture_cxx_layout_integral_constant();
                 self.skip_class_member()?;
                 continue;
             }
@@ -3324,7 +3382,12 @@ impl Parser {
         let virtual_bases = class.virtual_bases.clone();
         let mut virtual_base_index = 0usize;
         for virtual_base in virtual_bases {
-            let base = self.structs.get(&virtual_base).ok_or_else(|| {
+            let base = self
+                .structs
+                .get(&virtual_base)
+                .cloned()
+                .or_else(|| self.asserted_aggregate_layout(&virtual_base))
+                .ok_or_else(|| {
                 Diagnostic::error(format!(
                     "virtual base class '{virtual_base}' must be defined before '{name}'"
                 ))

@@ -2039,6 +2039,84 @@ mod tests {
     }
 
     #[test]
+    fn lowers_discarded_assignments_introduced_by_inline_aggregate_scalarization() {
+        let source = br#"
+            class Vec {
+            public:
+                float x;
+                float y;
+                float z;
+            };
+            class Holder {
+            public:
+                Vec source;
+                Vec target;
+            };
+            inline void copy(Holder* holder) { holder->target = holder->source; }
+            void compiled(Holder* holder) { copy(holder); }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::DEFAULT,
+            flags,
+        };
+        let object = compile(
+            source,
+            "inline-copy.cpp",
+            config,
+            Some(SourceLanguage::Cxx),
+            None,
+            false,
+        )
+        .expect("scalarized inline assignments should lower as stores");
+        assert!(!object.is_empty());
+    }
+
+    #[test]
+    fn preserves_a_later_member_address_while_materializing_a_global_receiver() {
+        let source = br#"
+            class Sink {
+            public:
+                int payload;
+                void Set(int*);
+            };
+            class Globals {
+            public:
+                int prefix;
+                Sink sink;
+            };
+            class Actor {
+            public:
+                int prefix;
+                int value;
+            };
+            extern Globals globals;
+            inline Sink* sink() { return &globals.sink; }
+            void compiled(Actor* actor) { sink()->Set(&actor->value); }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::DEFAULT,
+            flags,
+        };
+        let object = compile(
+            source,
+            "endangered-member-address.cpp",
+            config,
+            Some(SourceLanguage::Cxx),
+            None,
+            false,
+        )
+        .expect("the incoming actor pointer must survive global address materialization");
+        assert!(object.windows(4).any(|bytes| bytes == [0x7c, 0x65, 0x1b, 0x78])); // mr r5,r3
+        assert!(object.windows(4).any(|bytes| bytes == [0x38, 0x85, 0x00, 0x04])); // addi r4,r5,4
+    }
+
+    #[test]
     fn scalar_array_layout_and_comment_alignment_are_independent() {
         assert_eq!(
             global_alignments(1, None, true, 1, true),

@@ -3,7 +3,91 @@
 #[allow(unused_imports)]
 use super::*;
 
+fn direct_member_address(expression: &Expression) -> Option<(&Expression, u32)> {
+    match expression {
+        Expression::MemberAddress {
+            base,
+            offset,
+            index_stride: None,
+            ..
+        } => Some((base.as_ref(), *offset)),
+        Expression::AddressOf { operand } => match operand.as_ref() {
+            Expression::Member {
+                base,
+                offset,
+                index_stride: None,
+                ..
+            } => Some((base.as_ref(), *offset)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 impl Generator {
+    /// Preserve an incoming first parameter when constructing a global-member
+    /// receiver for argument zero would otherwise overwrite its `r3` home
+    /// before argument one takes the address of one of its members.
+    ///
+    /// MWCC uses the first register beyond the two argument slots as the
+    /// temporary (`mr r5,r3; ...global address in r3...; addi r4,r5,offset`).
+    /// This is both an observed schedule and a correctness requirement: using
+    /// r3 for the final addi would address the global object instead.
+    pub(crate) fn try_emit_global_member_and_endangered_member_address(
+        &mut self,
+        arguments: &[Expression],
+        direct_call: bool,
+    ) -> Compilation<bool> {
+        let [first, second] = arguments else {
+            return Ok(false);
+        };
+        if !direct_call {
+            return Ok(false);
+        }
+
+        let Some((first_base, _)) = direct_member_address(first) else {
+            return Ok(false);
+        };
+        let Some((second_base, second_offset)) = direct_member_address(second) else {
+            return Ok(false);
+        };
+        let Expression::Variable(global) = first_base else {
+            return Ok(false);
+        };
+        let Expression::Variable(parameter) = second_base else {
+            return Ok(false);
+        };
+        let first_argument = Eabi::FIRST_GENERAL_ARGUMENT;
+        if !self.globals.contains_key(global.as_str())
+            || self
+                .locations
+                .get(parameter.as_str())
+                .map(|location| location.register)
+                != Some(first_argument)
+        {
+            return Ok(false);
+        }
+        let second_offset = i16::try_from(second_offset).map_err(|_| {
+            Diagnostic::error("member address argument offset out of range (roadmap)")
+        })?;
+        let preserved = first_argument + 2;
+        self.emit_integer_materialization_copy(preserved, first_argument);
+        self.evaluate_general(first, first_argument)?;
+        if second_offset == 0 {
+            self.output.instructions.push(Instruction::move_register(
+                first_argument + 1,
+                preserved,
+            ));
+        } else {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: first_argument + 1,
+                a: preserved,
+                immediate: second_offset,
+            });
+        }
+        Ok(true)
+    }
+
     /// Under latency scheduling, an i16 constant in the second argument slot is
     /// independent of a first argument loaded from a structure member. MWCC
     /// issues the `li r4` first, allowing the linkage scheduler to consume it,

@@ -788,7 +788,10 @@ impl Parser {
                                 .zip(arguments.iter())
                                 .collect();
                             self.inline_substitution_count += 1;
-                            substitute_variables(body, &map)
+                            let substituted = substitute_variables(body, &map);
+                            self.expression_struct_tag =
+                                self.function_return_structs.get(&name).cloned();
+                            substituted
                         }
                         _ => {
                             let name = if self.cplusplus {
@@ -840,7 +843,11 @@ impl Parser {
                     }
                 } else if let Some(mangled) = self.resolve_implicit_static_data_member(&name)? {
                     Expression::Variable(mangled)
-                } else if let Some(&value) = self.enum_constants.get(&name) {
+                } else if let Some(&value) = self
+                    .cxx_layout_constants
+                    .get(&name)
+                    .or_else(|| self.enum_constants.get(&name))
+                {
                     Expression::IntegerLiteral(value)
                 } else if self.cplusplus {
                     Expression::Variable(

@@ -906,157 +906,17 @@ impl Parser {
                 && (self.tokens.get(self.position + 1) == Some(&Token::BraceOpen)
                     || self.tokens.get(self.position + 2) == Some(&Token::BraceOpen))
             {
-                self.advance(); // `struct`
-                let tag = if matches!(self.peek(), Token::Identifier(_)) {
-                    Some(self.parse_identifier()?)
-                } else {
-                    None
-                };
-                let inner = self.parse_struct_body()?;
-                let inner_size = inner.size;
-                let inner_align = (inner.align as u32).max(1);
-                let mut pointer_depth = 0usize;
-                while self.eat_keyword(Token::Star) {
-                    pointer_depth += 1;
-                }
-                let member_name = if matches!(self.peek(), Token::Identifier(_)) {
-                    Some(self.parse_identifier()?)
-                } else {
-                    None
-                };
-                if pointer_depth > 0 {
-                    let name = member_name.ok_or_else(|| {
-                        Diagnostic::error("an inline-struct pointer member needs a name")
-                    })?;
-                    self.expect(Token::Semicolon)?;
-                    if let Some((_, unit_offset, bits_used)) = bit_unit.take() {
-                        offset = unit_offset + u32::from(bits_used).div_ceil(8);
-                    }
-                    let layout_tag = tag.unwrap_or_else(|| format!("@anon{}", self.structs.len()));
-                    self.structs.insert(layout_tag.clone(), inner);
-                    alignment_max = alignment_max.max(4);
-                    offset = align_layout_offset(offset, 4)?;
-                    layout.insert_field(
-                        name,
-                        StructField {
-                            member_type: if pointer_depth == 1 {
-                                Type::StructPointer {
-                                    element_size: inner_size,
-                                }
-                            } else {
-                                Type::Pointer(Pointee::Pointer)
-                            },
-                            source_fundamental: None,
-                            offset,
-                            struct_tag: (pointer_depth == 1).then_some(layout_tag),
-                            array_element: None,
-                            array_bytes: None,
-                            array_stride: None,
-                            bit_field: None,
-                        },
-                    );
-                    offset = advance_layout_offset(offset, 4)?;
-                    continue;
-                }
-                // An inline struct member may be an ARRAY — `struct { … } queue[3];` (EXIControl's
-                // callback queue). Parse the dimension(s); `array_bytes` is the total so the fields
-                // after it lay out correctly (`count * inner_size`), `None` for a scalar member.
-                let mut array_count: Option<u32> = None;
-                while *self.peek() == Token::BracketOpen {
-                    self.advance();
-                    let dimension = self.parse_integer_constant()? as u32;
-                    array_count = Some(array_count.unwrap_or(1).saturating_mul(dimension));
-                    self.expect(Token::BracketClose)?;
-                }
-                let member_bytes =
-                    array_count.map_or(inner_size, |count| count.saturating_mul(inner_size));
-                let array_bytes = array_count.map(|count| count.saturating_mul(inner_size));
-                match (tag, member_name) {
-                    (Some(tag), Some(name)) => {
-                        self.structs.insert(tag.clone(), inner);
-                        alignment_max = alignment_max.max(inner_align);
-                        offset = align_layout_offset(offset, inner_align)?;
-                        layout.insert_field(
-                            name,
-                            StructField {
-                                member_type: Type::Struct {
-                                    size: inner_size,
-                                    align: inner_align as u8,
-                                },
-                                source_fundamental: None,
-                                offset,
-                                struct_tag: Some(tag),
-                                array_element: None,
-                                array_bytes,
-                                array_stride: None,
-                                bit_field: None,
-                            },
-                        );
-                        offset = advance_layout_offset(offset, member_bytes)?;
-                    }
-                    (Some(tag), None) => {
-                        // A named struct type registered inside this one (no member).
-                        self.structs.insert(tag, inner);
-                    }
-                    (None, Some(name)) => {
-                        // An anonymous inline struct *named* as a member (`struct {…}
-                        // mesh;`). Register its layout under a synthetic tag (unique —
-                        // generated after the inner parse, so nested anon structs don't
-                        // collide) so `parent.mesh.field` chains, then add it as an
-                        // ordinary struct-value member.
-                        let synthetic = format!("@anon{}", self.structs.len());
-                        self.structs.insert(synthetic.clone(), inner);
-                        alignment_max = alignment_max.max(inner_align);
-                        offset = align_layout_offset(offset, inner_align)?;
-                        layout.insert_field(
-                            name,
-                            StructField {
-                                member_type: Type::Struct {
-                                    size: inner_size,
-                                    align: inner_align as u8,
-                                },
-                                source_fundamental: None,
-                                offset,
-                                struct_tag: Some(synthetic),
-                                array_element: None,
-                                array_bytes,
-                                array_stride: None,
-                                bit_field: None,
-                            },
-                        );
-                        offset = advance_layout_offset(offset, member_bytes)?;
-                    }
-                    (None, None) => {
-                        alignment_max = alignment_max.max(inner_align);
-                        offset = align_layout_offset(offset, inner_align)?;
-                        for (field_name, field) in inner.fields_in_declaration_order() {
-                            layout.insert_field(
-                                field_name.clone(),
-                                StructField {
-                                    member_type: field.member_type,
-                                    source_fundamental: field.source_fundamental,
-                                    offset: offset + field.offset,
-                                    struct_tag: field.struct_tag.clone(),
-                                    array_element: field.array_element,
-                                    array_bytes: field.array_bytes,
-                                    array_stride: field.array_stride,
-                                    bit_field: field.bit_field,
-                                },
-                            );
-                        }
-                        layout
-                            .function_pointer_fields
-                            .extend(inner.function_pointer_fields.iter().cloned());
-                        offset = advance_layout_offset(offset, inner_size)?;
-                    }
-                }
-                self.expect(Token::Semicolon)?;
                 if let Some((_, unit_offset, bits_used)) = bit_unit.take() {
                     // mwcc TRIMS the container to the bytes its bits use
                     // (measured: 4 bits -> next byte member at +1; 9-12 bits
                     // -> +2; the container type still sets the alignment).
                     offset = unit_offset + u32::from(bits_used).div_ceil(8);
                 }
+                self.parse_and_place_inline_struct(
+                    &mut layout,
+                    &mut offset,
+                    &mut alignment_max,
+                )?;
                 continue;
             }
             // An inline union member `union [Tag] { … } [name];`. An ANONYMOUS one
@@ -1534,6 +1394,165 @@ impl Parser {
                 "an inline-union pointer member needs a name",
             )),
         }
+    }
+
+    /// Parse and place one inline struct declaration in an enclosing aggregate.
+    /// C aggregates and C++ classes share these nested-storage and anonymous
+    /// member-promotion rules.
+    pub(crate) fn parse_and_place_inline_struct(
+        &mut self,
+        layout: &mut StructLayout,
+        offset: &mut u32,
+        alignment_max: &mut u32,
+    ) -> Compilation<Vec<String>> {
+        self.expect(Token::KeywordStruct)?;
+        let tag = if matches!(self.peek(), Token::Identifier(_)) {
+            Some(self.parse_identifier()?)
+        } else {
+            None
+        };
+        let inner = self.parse_struct_body()?;
+        let inner_size = inner.size;
+        let inner_align = u32::from(inner.align).max(1);
+        let mut pointer_depth = 0usize;
+        while self.eat_keyword(Token::Star) {
+            pointer_depth += 1;
+        }
+        let mut member_names = Vec::new();
+        if matches!(self.peek(), Token::Identifier(_)) {
+            member_names.push(self.parse_identifier()?);
+            while self.eat_keyword(Token::Comma) {
+                member_names.push(self.parse_identifier()?);
+            }
+        }
+        if pointer_depth > 0 {
+            let [name] = member_names.as_slice() else {
+                return Err(Diagnostic::error(
+                    "an inline-struct pointer declaration requires exactly one member",
+                ));
+            };
+            self.expect(Token::Semicolon)?;
+            let layout_tag = tag.unwrap_or_else(|| format!("@anon{}", self.structs.len()));
+            self.structs.insert(layout_tag.clone(), inner);
+            *alignment_max = (*alignment_max).max(4);
+            *offset = align_layout_offset(*offset, 4)?;
+            layout.insert_field(
+                name.clone(),
+                StructField {
+                    member_type: if pointer_depth == 1 {
+                        Type::StructPointer {
+                            element_size: inner_size,
+                        }
+                    } else {
+                        Type::Pointer(Pointee::Pointer)
+                    },
+                    source_fundamental: None,
+                    offset: *offset,
+                    struct_tag: (pointer_depth == 1).then_some(layout_tag),
+                    array_element: None,
+                    array_bytes: None,
+                    array_stride: None,
+                    bit_field: None,
+                },
+            );
+            *offset = advance_layout_offset(*offset, 4)?;
+            return Ok(vec![name.clone()]);
+        }
+
+        let mut array_count: Option<u32> = None;
+        while *self.peek() == Token::BracketOpen {
+            self.advance();
+            let dimension = self.parse_integer_constant()? as u32;
+            array_count = Some(array_count.unwrap_or(1).saturating_mul(dimension));
+            self.expect(Token::BracketClose)?;
+        }
+        let member_bytes = array_count.map_or(inner_size, |count| count.saturating_mul(inner_size));
+        let array_bytes = array_count.map(|count| count.saturating_mul(inner_size));
+        let names = match (tag, member_names.is_empty()) {
+            (Some(tag), false) => {
+                self.structs.insert(tag.clone(), inner);
+                *alignment_max = (*alignment_max).max(inner_align);
+                for name in &member_names {
+                    *offset = align_layout_offset(*offset, inner_align)?;
+                    layout.insert_field(
+                        name.clone(),
+                        StructField {
+                            member_type: Type::Struct {
+                                size: inner_size,
+                                align: inner_align as u8,
+                            },
+                            source_fundamental: None,
+                            offset: *offset,
+                            struct_tag: Some(tag.clone()),
+                            array_element: None,
+                            array_bytes,
+                            array_stride: None,
+                            bit_field: None,
+                        },
+                    );
+                    *offset = advance_layout_offset(*offset, member_bytes)?;
+                }
+                member_names
+            }
+            (Some(tag), true) => {
+                self.structs.insert(tag, inner);
+                Vec::new()
+            }
+            (None, false) => {
+                let synthetic = format!("@anon{}", self.structs.len());
+                self.structs.insert(synthetic.clone(), inner);
+                *alignment_max = (*alignment_max).max(inner_align);
+                for name in &member_names {
+                    *offset = align_layout_offset(*offset, inner_align)?;
+                    layout.insert_field(
+                        name.clone(),
+                        StructField {
+                            member_type: Type::Struct {
+                                size: inner_size,
+                                align: inner_align as u8,
+                            },
+                            source_fundamental: None,
+                            offset: *offset,
+                            struct_tag: Some(synthetic.clone()),
+                            array_element: None,
+                            array_bytes,
+                            array_stride: None,
+                            bit_field: None,
+                        },
+                    );
+                    *offset = advance_layout_offset(*offset, member_bytes)?;
+                }
+                member_names
+            }
+            (None, true) => {
+                *alignment_max = (*alignment_max).max(inner_align);
+                *offset = align_layout_offset(*offset, inner_align)?;
+                let mut names = Vec::new();
+                for (field_name, field) in inner.fields_in_declaration_order() {
+                    layout.insert_field(
+                        field_name.clone(),
+                        StructField {
+                            member_type: field.member_type,
+                            source_fundamental: field.source_fundamental,
+                            offset: *offset + field.offset,
+                            struct_tag: field.struct_tag.clone(),
+                            array_element: field.array_element,
+                            array_bytes: field.array_bytes,
+                            array_stride: field.array_stride,
+                            bit_field: field.bit_field,
+                        },
+                    );
+                    names.push(field_name.clone());
+                }
+                layout
+                    .function_pointer_fields
+                    .extend(inner.function_pointer_fields.iter().cloned());
+                *offset = advance_layout_offset(*offset, inner_size)?;
+                names
+            }
+        };
+        self.expect(Token::Semicolon)?;
+        Ok(names)
     }
 
     /// Parse a `union { … }` body: every member starts at offset 0, so the union's

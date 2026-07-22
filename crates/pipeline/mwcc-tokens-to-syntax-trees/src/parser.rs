@@ -179,6 +179,15 @@ pub(crate) struct Parser {
     pub(crate) skipped_static_inline_label_base: u8,
     /// Declared struct layouts, by tag name.
     pub(crate) structs: HashMap<String, StructLayout>,
+    /// Unambiguous storage extents proven by generated
+    /// `STATIC_ASSERT(sizeof(T) == N)` declarations. These remain separate
+    /// from full layouts: they can place an opaque value/base without inventing
+    /// fields or leaking a synthetic definition into debug information.
+    pub(crate) asserted_aggregate_sizes: HashMap<String, u32>,
+    /// Integral constants declared in the C++ class layout currently being
+    /// recovered. They are scoped independently from ordinary enum constants
+    /// so an unrelated class cannot satisfy an array extent by name alone.
+    pub(crate) cxx_layout_constants: HashMap<String, i64>,
     /// C++-specific base and declaration-order information for class layouts.
     pub(crate) cxx_classes: HashMap<String, crate::cxx::ClassLayout>,
     /// Fully-qualified C++ class names in first definition order. Late vtable

@@ -1166,6 +1166,11 @@ impl Parser {
             && functions.len() == 1
         {
             let function = functions.pop().expect("length checked");
+            for (name, tag) in &probe.function_return_structs {
+                self.function_return_structs
+                    .entry(name.clone())
+                    .or_insert_with(|| tag.clone());
+            }
             for (source_name, methods) in probe.cxx_free_functions {
                 let retained = self.cxx_free_functions.entry(source_name).or_default();
                 for method in methods {

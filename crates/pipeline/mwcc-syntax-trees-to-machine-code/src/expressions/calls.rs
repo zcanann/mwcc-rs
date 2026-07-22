@@ -547,6 +547,9 @@ impl Generator {
             self.evaluate_general(&arguments[0], Eabi::FIRST_GENERAL_ARGUMENT)?;
             return Ok(());
         }
+        if self.try_emit_global_member_and_endangered_member_address(arguments, direct_call)? {
+            return Ok(());
+        }
         if self.try_emit_member_constant_arguments(arguments, direct_call)? {
             return Ok(());
         }

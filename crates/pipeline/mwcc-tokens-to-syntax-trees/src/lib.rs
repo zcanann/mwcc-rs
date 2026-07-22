@@ -9,6 +9,7 @@ use mwcc_syntax_trees::TranslationUnit;
 use mwcc_tokens::{LocatedToken, SourceLocation, Token};
 use std::collections::HashMap;
 
+mod aggregate_size_assertions;
 mod cxx;
 mod cxx_analysis_facts;
 mod cxx_new;
@@ -112,6 +113,9 @@ pub fn parse_located_translation_unit_with_enum_min(
         .into_iter()
         .map(|located| (located.token, located.location))
         .unzip();
+    let asserted_aggregate_sizes = aggregate_size_assertions::collect(&tokens);
+    let asserted_aggregate_aliases =
+        aggregate_size_assertions::unambiguous_aliases(&asserted_aggregate_sizes);
     let mut parser = Parser {
         tokens,
         locations,
@@ -157,6 +161,8 @@ pub fn parse_located_translation_unit_with_enum_min(
         force_active: false,
         peephole_disabled: false,
         structs: HashMap::new(),
+        asserted_aggregate_sizes,
+        cxx_layout_constants: HashMap::new(),
         cxx_classes: HashMap::new(),
         cxx_class_declaration_order: Vec::new(),
         struct_templates: HashMap::new(),
@@ -211,7 +217,7 @@ pub fn parse_located_translation_unit_with_enum_min(
         last_type_was_volatile: false,
         inline_asm_symbols: Vec::new(),
         plain_inline_asm_helpers: Vec::new(),
-        struct_typedefs: HashMap::new(),
+        struct_typedefs: asserted_aggregate_aliases,
         struct_pointer_typedefs: HashMap::new(),
         array_typedefs: HashMap::new(),
         row_pointer_typedefs: HashMap::new(),
@@ -1127,6 +1133,36 @@ blr\n\
             unit.inline_expansion_facts["compiled"].leading_initializer_substitutions,
             1
         );
+    }
+
+    #[test]
+    fn retains_pointer_identity_after_substituting_a_global_member_accessor() {
+        let source = r#"
+            class Inner {
+            public:
+                void Set(int*);
+            };
+            class Holder {
+            public:
+                Inner inner;
+            };
+            extern Holder global;
+            inline Inner* accessor() { return &global.inner; }
+            void compiled(int* value) { accessor()->Set(value); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].statements[0],
+            Statement::Expression(Expression::Call { arguments, .. })
+                if matches!(arguments.first(), Some(Expression::AddressOf { .. }))
+        ));
     }
 
     #[test]
@@ -4203,6 +4239,88 @@ blr\n\
             unit.functions[0].return_expression.as_ref(),
             Some(mwcc_syntax_trees::Expression::Member { offset: 0, base, .. })
                 if matches!(base.as_ref(), mwcc_syntax_trees::Expression::AddressOf { .. })
+        ));
+    }
+
+    #[test]
+    fn uses_asserted_size_to_place_an_otherwise_opaque_class_member() {
+        let source = r#"
+            class Opaque {
+            public:
+                const static Opaque zero;
+                int payload;
+            };
+            typedef char static_assertion_failed7[(sizeof(Opaque) == 4) ? 1 : -1];
+            class Outer {
+            public:
+                Opaque opaque;
+                int value;
+            };
+            Outer global;
+            int read() { return global.value; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 4, .. })
+        ));
+    }
+
+    #[test]
+    fn scopes_static_integral_constants_to_cxx_class_layout() {
+        let source = r#"
+            class Fixed {
+            public:
+                static const int Count = 3;
+                int values[Count];
+                int tail;
+            };
+            int read(Fixed* value) { return value->tail; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 12, .. })
+        ));
+    }
+
+    #[test]
+    fn lays_out_nested_anonymous_struct_members_in_cxx_classes() {
+        let source = r#"
+            class Vibration {
+            public:
+                struct {
+                    struct { int x; int y; } shock, quake;
+                } camera;
+                int tail;
+            };
+            int read(Vibration* value) { return value->camera.quake.y; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 12, .. })
         ));
     }
 

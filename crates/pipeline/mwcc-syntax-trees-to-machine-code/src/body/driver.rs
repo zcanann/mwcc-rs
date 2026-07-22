@@ -3947,6 +3947,14 @@ impl Generator {
             Statement::Expression(expression @ Expression::Comma { .. }) => {
                 self.emit_discarded_comma_sequence(expression)
             }
+            // Assignment is an expression in C and C++. The parser normally
+            // canonicalizes a discarded scalar assignment to `Statement::Store`,
+            // but semantic inline expansion can introduce typed assignment
+            // leaves after that statement-level pass (notably scalarized
+            // aggregate copies). Their discarded result needs the same store.
+            Statement::Expression(Expression::Assign { target, value }) => {
+                self.emit_store(target, value)
+            }
             // A bare indirect-call statement `(*s->fp)()` / `(**pp)()`: load the
             // callee pointer into r12, then `mtctr r12; bctrl`. Only the NO-ARGUMENT
             // form is modeled — an argument collides with the pointer's own base
@@ -3983,9 +3991,9 @@ impl Generator {
                 if self.try_emit_conditional_call_statement(expression)? {
                     Ok(())
                 } else {
-                    Err(Diagnostic::error(
-                        "only a call may be a bare statement (roadmap)",
-                    ))
+                    Err(Diagnostic::error(format!(
+                        "only a call may be a bare statement (roadmap): {expression:?}"
+                    )))
                 }
             }
             Statement::Assign { name, value } if self.frame_slots.contains_key(name) => {

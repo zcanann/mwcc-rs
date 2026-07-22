@@ -814,6 +814,8 @@ impl Parser {
         self.structs
             .get(tag)
             .filter(|layout| layout.size > 0)
+            .cloned()
+            .or_else(|| self.asserted_aggregate_layout(tag))
             .map(|layout| Type::Struct {
                 size: layout.size,
                 align: layout.align.max(1),
