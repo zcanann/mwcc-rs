@@ -1200,6 +1200,80 @@ blr\n\
     }
 
     #[test]
+    fn passes_an_aggregate_lvalue_by_address_to_a_reference_parameter() {
+        let source = r#"
+            struct Source { int payload; };
+            class Sink {
+            public:
+                void Set(Source const&);
+            };
+            struct Holder {
+                int prefix;
+                Sink sink;
+            };
+            static Source source;
+            void compiled(Holder* holder) { holder->sink.Set(source); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        let Statement::Expression(Expression::Call { arguments, .. }) =
+            &unit.functions[0].statements[0]
+        else {
+            panic!("expected the member call");
+        };
+        assert!(matches!(
+            arguments.as_slice(),
+            [
+                Expression::AddressOf { operand: object },
+                Expression::AddressOf { operand: source }
+            ] if matches!(object.as_ref(), Expression::Member { offset: 4, .. })
+                && matches!(source.as_ref(), Expression::Variable(name) if name == "source")
+        ));
+    }
+
+    #[test]
+    fn retains_an_inline_reference_argument_for_aggregate_scalarization() {
+        let source = r#"
+            struct Source { int payload; };
+            class Sink {
+            public:
+                int payload;
+                void Set(Source const& source) { payload = source.payload; }
+            };
+            struct Holder {
+                int prefix;
+                Sink sink;
+            };
+            static Source source;
+            void compiled(Holder* holder) { holder->sink.Set(source); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        let Statement::Expression(Expression::Call { arguments, .. }) =
+            &unit.functions[0].statements[0]
+        else {
+            panic!("expected the retained inline member call");
+        };
+        assert!(matches!(
+            arguments.as_slice(),
+            [Expression::Member { offset: 4, .. }, Expression::Variable(name)]
+                if name == "source"
+        ));
+    }
+
+    #[test]
     fn retains_embedded_member_value_identity_for_inline_scalarization() {
         let source = r#"
             class Inner {

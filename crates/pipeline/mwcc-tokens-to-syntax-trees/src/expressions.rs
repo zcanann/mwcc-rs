@@ -715,11 +715,24 @@ impl Parser {
                 } else if let Some(member_call) =
                     self.resolve_implicit_member_call(&name, &arguments)?
                 {
+                    if !matches!(
+                        &member_call,
+                        crate::cxx::ImplicitMemberCall::Direct {
+                            is_inline: true,
+                            ..
+                        }
+                    ) {
+                        arguments = self.lower_cxx_aggregate_reference_arguments(
+                            member_call.parameters(),
+                            arguments,
+                        );
+                    }
                     match member_call {
                         crate::cxx::ImplicitMemberCall::Direct {
                             name: mangled,
                             is_inline,
                             this_adjustment,
+                            parameters: _,
                         } => {
                             if is_inline {
                                 // The declaration pass records in-class bodies as
@@ -745,6 +758,7 @@ impl Parser {
                             this_adjustment,
                             direct_name,
                             direct_is_inline,
+                            parameters: _,
                         } => {
                             self.expression_struct_tag = return_struct_tag;
                             if direct_is_inline {
@@ -1471,11 +1485,26 @@ impl Parser {
                 "C++ member call '{class}::{member}' is unavailable (roadmap)"
             )));
         };
+        let retained_inline_call = match &member_call {
+            crate::cxx::ImplicitMemberCall::Direct { is_inline, .. } => *is_inline,
+            crate::cxx::ImplicitMemberCall::Virtual {
+                direct_name,
+                direct_is_inline,
+                ..
+            } => concrete_object && direct_name.is_some() && *direct_is_inline,
+        };
+        if !retained_inline_call {
+            arguments = self.lower_cxx_aggregate_reference_arguments(
+                member_call.parameters(),
+                arguments,
+            );
+        }
         Ok(match member_call {
             crate::cxx::ImplicitMemberCall::Direct {
                 name,
                 is_inline,
                 this_adjustment,
+                parameters: _,
             } => {
                 if is_inline {
                     self.skipped_inline_names.insert(name.clone());
@@ -1499,6 +1528,7 @@ impl Parser {
                 this_adjustment,
                 direct_name,
                 direct_is_inline,
+                parameters: _,
             } => {
                 self.expression_struct_tag = return_struct_tag;
                 if concrete_object && direct_name.is_some() {

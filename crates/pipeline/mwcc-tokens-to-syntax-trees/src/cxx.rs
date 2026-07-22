@@ -165,6 +165,7 @@ pub(crate) enum ImplicitMemberCall {
         name: String,
         is_inline: bool,
         this_adjustment: u32,
+        parameters: Vec<Type>,
     },
     Virtual {
         dispatch: VirtualDispatch,
@@ -172,7 +173,16 @@ pub(crate) enum ImplicitMemberCall {
         this_adjustment: u32,
         direct_name: Option<String>,
         direct_is_inline: bool,
+        parameters: Vec<Type>,
     },
+}
+
+impl ImplicitMemberCall {
+    pub(crate) fn parameters(&self) -> &[Type] {
+        match self {
+            Self::Direct { parameters, .. } | Self::Virtual { parameters, .. } => parameters,
+        }
+    }
 }
 
 /// The C++ ABI identity of one source parameter. The general syntax-tree
@@ -2180,6 +2190,7 @@ impl Parser {
                     name: method.mangled.clone(),
                     is_inline: self.skipped_inline_names.contains(&method.mangled),
                     this_adjustment: 0,
+                    parameters: method.parameters.clone(),
                 }));
             }
             [] => {}
@@ -2200,6 +2211,7 @@ impl Parser {
                         name: method.mangled.clone(),
                         is_inline: self.skipped_inline_names.contains(&method.mangled),
                         this_adjustment: 0,
+                        parameters: method.parameters.clone(),
                     }));
                 }
                 return Err(Diagnostic::error(format!(
@@ -2215,7 +2227,7 @@ impl Parser {
                 return Ok(Some(call));
             }
         }
-        if let Some((dispatch, return_struct_tag)) =
+        if let Some((dispatch, return_struct_tag, parameters)) =
             self.resolve_virtual_member_call(&resolved, member, argument_count)?
         {
             return Ok(Some(ImplicitMemberCall::Virtual {
@@ -2224,6 +2236,7 @@ impl Parser {
                 this_adjustment: 0,
                 direct_name: None,
                 direct_is_inline: false,
+                parameters,
             }));
         }
         Ok(None)
@@ -2237,7 +2250,7 @@ impl Parser {
         class: &str,
         member: &str,
         argument_count: usize,
-    ) -> Compilation<Option<(VirtualDispatch, Option<String>)>> {
+    ) -> Compilation<Option<(VirtualDispatch, Option<String>, Vec<Type>)>> {
         let source_class = class;
         let class = self.qualify_cxx_class_name(source_class);
         let resolved_class = if self.cxx_dispatch_tables.contains_key(&class) {
@@ -2275,7 +2288,7 @@ impl Parser {
                 .collect();
             return match template_candidates.as_slice() {
                 [] => Ok(None),
-                [dispatch] => Ok(Some((*dispatch, None))),
+                [dispatch] => Ok(Some((*dispatch, None, Vec::new()))),
                 _ => Err(Diagnostic::error(format!(
                     "virtual C++ template member call '{primary}::{member}' is ambiguous (roadmap)"
                 ))),
@@ -2291,6 +2304,7 @@ impl Parser {
                     variadic: method.variadic,
                 },
                 method.return_struct_tag.clone(),
+                method.parameters.clone(),
             ))),
             _ => Err(Diagnostic::error(format!(
                 "virtual C++ member call '{resolved_class}::{member}' is ambiguous (roadmap)"
@@ -2462,6 +2476,7 @@ impl Parser {
                         &method.cxx_parameters,
                     )?),
                     direct_is_inline: method.is_inline,
+                    parameters: method.parameters.clone(),
                 }));
             }
             return Ok(Some(ImplicitMemberCall::Direct {
@@ -2472,6 +2487,7 @@ impl Parser {
                 )?,
                 is_inline: method.is_inline,
                 this_adjustment: 0,
+                parameters: method.parameters.clone(),
             }));
         }
 
@@ -2548,6 +2564,7 @@ impl Parser {
                         &method.cxx_parameters,
                     )?),
                     direct_is_inline: method.is_inline,
+                    parameters: method.parameters.clone(),
                 }));
             }
             return Ok(Some(ImplicitMemberCall::Direct {
@@ -2558,6 +2575,7 @@ impl Parser {
                 )?,
                 is_inline: method.is_inline,
                 this_adjustment,
+                parameters: method.parameters.clone(),
             }));
         }
 
@@ -2582,6 +2600,7 @@ impl Parser {
                     name: method.mangled.clone(),
                     is_inline: self.skipped_inline_names.contains(&method.mangled),
                     this_adjustment: 0,
+                    parameters: method.parameters.clone(),
                 })),
                 [] => {}
                 _ => {
@@ -2601,6 +2620,7 @@ impl Parser {
                             name: method.mangled.clone(),
                             is_inline: self.skipped_inline_names.contains(&method.mangled),
                             this_adjustment: 0,
+                            parameters: method.parameters.clone(),
                         }));
                     }
                     return Err(Diagnostic::error(format!(
@@ -3733,10 +3753,34 @@ impl Parser {
         Ok(Some(mangled))
     }
 
-    /// Convert concrete aggregate lvalues passed to reference constructor
-    /// parameters into their EABI addresses. Source syntax omits `&`, but the
-    /// semantic inliner must see the pointer value or it will try to bind an
-    /// aggregate into a scalar parameter temporary.
+    /// Convert concrete aggregate lvalues passed to reference parameters into
+    /// their EABI addresses. Source syntax omits `&`, but the syntax tree must
+    /// retain the pointer value or codegen will try to load an entire aggregate
+    /// into one argument register.
+    pub(crate) fn lower_cxx_aggregate_reference_arguments(
+        &self,
+        parameters: &[Type],
+        arguments: Vec<Expression>,
+    ) -> Vec<Expression> {
+        arguments
+            .into_iter()
+            .enumerate()
+            .map(|(index, argument)| {
+                if matches!(parameters.get(index), Some(Type::StructPointer { .. }))
+                    && matches!(self.cxx_expression_type(&argument), Some(Type::Struct { .. }))
+                {
+                    Expression::AddressOf {
+                        operand: Box::new(argument),
+                    }
+                } else {
+                    argument
+                }
+            })
+            .collect()
+    }
+
+    /// Resolve a placement constructor signature, then apply the same
+    /// aggregate-reference conversion used by ordinary C++ calls.
     pub(crate) fn lower_placement_constructor_arguments(
         &self,
         class_name: &str,
@@ -3771,21 +3815,7 @@ impl Parser {
         let [signature] = signatures.as_slice() else {
             return arguments;
         };
-        arguments
-            .into_iter()
-            .zip(signature.parameters.iter().zip(&signature.cxx_parameters))
-            .map(|(argument, (storage, parameter))| {
-                if (parameter.is_reference || matches!(storage, Type::StructPointer { .. }))
-                    && matches!(self.cxx_expression_type(&argument), Some(Type::Struct { .. }))
-                {
-                    Expression::AddressOf {
-                        operand: Box::new(argument),
-                    }
-                } else {
-                    argument
-                }
-            })
-            .collect()
+        self.lower_cxx_aggregate_reference_arguments(&signature.parameters, arguments)
     }
 
     /// Whether source class metadata declares a zero-argument constructor.
