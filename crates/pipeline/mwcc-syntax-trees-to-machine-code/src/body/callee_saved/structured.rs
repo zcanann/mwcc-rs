@@ -22,7 +22,9 @@ use super::structured_frame_assignment::{
     sink_low_mask_parameter_assignment, sink_single_use_parameter_assignment,
 };
 use super::structured_frame_entry::structured_dense_frame_entry_index;
-use super::structured_home_layout::dense_eager_home_preference;
+use super::structured_home_layout::{
+    dense_eager_deferred_preferences, dense_eager_home_preference,
+};
 use super::structured_liveness::read_after_possible_call;
 use super::structured_locals::{
     body_uses_local, dead_ephemeral_float_locals, is_definitely_assigned_before_reads,
@@ -32,7 +34,9 @@ use super::structured_parameter_home_reuse::StructuredParameterHomeReuse;
 use super::structured_prologue::{
     saved_home_stores_precede_initialization, uses_dense_saved_register_range,
 };
-use super::structured_value_versions::{reassignment_live_source, split_reassigned_local_versions};
+use super::structured_value_versions::{
+    has_split_value_version, reassignment_live_source, split_reassigned_local_versions,
+};
 #[allow(unused_imports)]
 use super::*;
 
@@ -316,15 +320,27 @@ impl Generator {
             }
         }
         let deferred_preference_base = eager_saved_locals.len() + saved_parameters.len();
+        let dense_deferred_preferences = dense_eager_deferred_preferences(
+            eager_saved_locals.len(),
+            saved_parameters.len(),
+            count,
+            &deferred_home_plan,
+            &parameter_home_reuse,
+        );
         let homes: Vec<u8> = (0..count)
             .map(|home_index| {
                 if dense_frame && !eager_saved_locals.is_empty() {
-                    let preferred = dense_eager_home_preference(
-                        eager_saved_locals.len(),
-                        saved_parameters.len(),
-                        count,
-                        home_index,
-                    );
+                    let preferred = dense_deferred_preferences
+                        .get(&home_index)
+                        .copied()
+                        .or_else(|| {
+                            dense_eager_home_preference(
+                                eager_saved_locals.len(),
+                                saved_parameters.len(),
+                                count,
+                                home_index,
+                            )
+                        });
                     if let Some(register) = preferred {
                         self.fresh_virtual_general_preferring(register)
                     } else {
@@ -795,6 +811,8 @@ impl Generator {
         let mut return_branches = Vec::new();
         let mut label_positions = std::collections::HashMap::new();
         let mut pending_gotos = Vec::new();
+        let preassigned_local_names: std::collections::HashSet<String> =
+            self.locations.keys().cloned().collect();
         let statement_start = if dense_frame {
             dense_statement_start
         } else if entry_parameter_alias
@@ -846,7 +864,29 @@ impl Generator {
             self.schedule_structured_frame_store_call();
         }
         if dense_inline_save {
-            self.normalize_structured_frame_argument_copies(first_saved as u8);
+            let logical_call_result_homes: Vec<u8> = function
+                .locals
+                .iter()
+                .filter(|local| {
+                    has_split_value_version(function, &local.name)
+                        && !preassigned_local_names.contains(&local.name)
+                })
+                .filter_map(|local| self.lookup_general(&local.name))
+                .collect();
+            let recycled_call_result_homes: Vec<u8> = function
+                .locals
+                .iter()
+                .filter(|local| {
+                    has_split_value_version(function, &local.name)
+                        && preassigned_local_names.contains(&local.name)
+                })
+                .filter_map(|local| self.lookup_general(&local.name))
+                .collect();
+            self.normalize_structured_frame_argument_copies(
+                first_saved as u8,
+                &logical_call_result_homes,
+                &recycled_call_result_homes,
+            );
         }
         for (branch, label) in pending_gotos {
             let target = label_positions.get(&label).copied().ok_or_else(|| {
@@ -1237,7 +1277,19 @@ impl Generator {
                         );
                     } else {
                         let previous = previous.unwrap_or_else(|| {
-                            let register = self.fresh_virtual_general();
+                            let version_preference = has_split_value_version(function, name)
+                                .then(|| {
+                                    32usize
+                                        .checked_sub(self.callee_saved.len())?
+                                        .checked_add(1)
+                                        .and_then(|register| u8::try_from(register).ok())
+                                })
+                                .flatten();
+                            let register = if let Some(preferred) = version_preference {
+                                self.fresh_virtual_general_preferring(preferred)
+                            } else {
+                                self.fresh_virtual_general()
+                            };
                             self.locations.insert(
                                 name.clone(),
                                 Location {

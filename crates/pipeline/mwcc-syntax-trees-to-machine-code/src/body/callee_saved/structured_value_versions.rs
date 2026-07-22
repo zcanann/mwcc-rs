@@ -7,6 +7,14 @@
 //! redefinition a private internal name before liveness and home coloring.
 
 use super::structured_locals::body_uses_local;
+
+pub(super) fn has_split_value_version(function: &Function, source: &str) -> bool {
+    let prefix = format!("__mwcc_value_{source}_");
+    function
+        .locals
+        .iter()
+        .any(|local| local.name.starts_with(&prefix))
+}
 #[allow(unused_imports)]
 use super::*;
 
@@ -408,5 +416,13 @@ mod tests {
             reassignment_live_source(&function, "length", &value, &remaining),
             Some("dummy"),
         );
+    }
+
+    #[test]
+    fn recognizes_internal_versions_by_their_source_name() {
+        let mut function = function();
+        function.locals.push(local("__mwcc_value_data_1", None));
+        assert!(has_split_value_version(&function, "data"));
+        assert!(!has_split_value_version(&function, "other"));
     }
 }

@@ -69,7 +69,12 @@ impl Generator {
     /// Keep that generation-specific materialization local to dense frames.
     /// A copy at the start of a conditional arm is control-flow forwarding,
     /// rather than straight-line materialization, and retains the `mr` form.
-    pub(super) fn normalize_structured_frame_argument_copies(&mut self, first_saved: u8) {
+    pub(super) fn normalize_structured_frame_argument_copies(
+        &mut self,
+        first_saved: u8,
+        logical_call_result_homes: &[u8],
+        recycled_call_result_homes: &[u8],
+    ) {
         for index in 0..self.output.instructions.len() {
             if index > 0
                 && matches!(
@@ -83,7 +88,11 @@ impl Generator {
                 continue;
             };
             let saved_to_argument = (3..=8).contains(&a) && s >= first_saved;
-            let value_to_saved_home = a >= first_saved;
+            // An initial definition that remains live beside a later version
+            // is a value-preserving call-result copy, not a legacy
+            // materialization. Its home therefore retains the logical `mr`
+            // encoding even in an otherwise addi-normalized dense frame.
+            let value_to_saved_home = a >= first_saved && !logical_call_result_homes.contains(&a);
             if s == b && (saved_to_argument || value_to_saved_home) {
                 self.output.instructions[index] = Instruction::AddImmediate {
                     d: a,
@@ -96,6 +105,7 @@ impl Generator {
         self.schedule_biased_scaled_member_call();
         self.schedule_shifted_member_mask_call();
         self.schedule_call_result_member_mask_call(first_saved);
+        self.schedule_recycled_call_result_argument(recycled_call_result_homes);
 
         // When a saved value and a frame address are the final independent
         // arguments of a dense-frame call, build 163 forwards the saved value
@@ -121,6 +131,39 @@ impl Generator {
             } else {
                 index += 1;
             }
+        }
+    }
+
+    /// A call result written into an already-planned local home is ready before
+    /// the following call's ordinary argument forwards. Build 163 issues that
+    /// recycled value first, after its defining call-result copy, to extend the
+    /// useful latency window. Move it only across dependency-free, relocation-
+    /// free argument materializations.
+    fn schedule_recycled_call_result_argument(&mut self, recycled_homes: &[u8]) {
+        if recycled_homes.is_empty() {
+            return;
+        }
+        let mut call = 0;
+        while call < self.output.instructions.len() {
+            if !matches!(
+                self.output.instructions[call],
+                Instruction::BranchAndLink { .. }
+            ) {
+                call += 1;
+                continue;
+            }
+            let Some((from, to)) = recycled_result_argument_move(
+                &self.output.instructions,
+                call,
+                recycled_homes,
+                &self.output.relocations,
+            ) else {
+                call += 1;
+                continue;
+            };
+            let instruction = self.output.instructions.remove(from);
+            self.output.instructions.insert(to, instruction);
+            call += 1;
         }
     }
 
@@ -251,6 +294,55 @@ impl Generator {
     }
 }
 
+fn recycled_result_argument_move(
+    instructions: &[Instruction],
+    call: usize,
+    recycled_homes: &[u8],
+    relocations: &[mwcc_machine_code::Relocation],
+) -> Option<(usize, usize)> {
+    let start = instructions[..call]
+        .iter()
+        .rposition(|instruction| matches!(instruction, Instruction::BranchAndLink { .. }))
+        .map_or(0, |previous_call| previous_call + 1);
+    let candidates: Vec<(usize, u8, u8)> = instructions[start..call]
+        .iter()
+        .enumerate()
+        .filter_map(|(offset, instruction)| match instruction {
+            Instruction::AddImmediate {
+                d: destination @ 3..=8,
+                a: source,
+                immediate: 0,
+            } if recycled_homes.contains(source) => Some((start + offset, *destination, *source)),
+            _ => None,
+        })
+        .collect();
+    let [(from, destination, source)] = candidates.as_slice() else {
+        return None;
+    };
+    let mut to = *from;
+    while to > start {
+        let previous = to - 1;
+        if relocations
+            .iter()
+            .any(|relocation| relocation.instruction_index == previous)
+        {
+            break;
+        }
+        let operands = mwcc_vreg::register_operands(&instructions[previous]);
+        if operands.iter().any(|operand| {
+            operand.class == mwcc_vreg::Class::General
+                && (operand.register == *source || operand.register == *destination)
+        }) {
+            break;
+        }
+        if !matches!(defined_general(&instructions[previous]), Some(3..=8)) {
+            break;
+        }
+        to = previous;
+    }
+    (to < *from).then_some((*from, to))
+}
+
 fn is_call_result_member_mask_window(instructions: &[Instruction], first_saved: u8) -> bool {
     let [
         Instruction::BranchAndLink { .. },
@@ -321,6 +413,47 @@ fn defined_general(instruction: &Instruction) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hoists_a_recycled_result_after_its_definition() {
+        let instructions = vec![
+            Instruction::BranchAndLink {
+                target: "produce".into(),
+            },
+            Instruction::AddImmediate {
+                d: 40,
+                a: 3,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 41,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 42,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 6,
+                a: 40,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 5,
+                a: 1,
+                immediate: 16,
+            },
+            Instruction::BranchAndLink {
+                target: "consume".into(),
+            },
+        ];
+        assert_eq!(
+            recycled_result_argument_move(&instructions, 6, &[40], &[]),
+            Some((4, 2)),
+        );
+    }
 
     #[test]
     fn recognizes_a_saved_result_and_member_mask_call_window() {

@@ -22,6 +22,19 @@ impl DeferredSavedHomePlan {
     pub(super) fn first_assignment(&self, group: usize) -> usize {
         self.group_first_assignments[group]
     }
+
+    pub(super) fn member_count(&self, group: usize) -> usize {
+        self.group_by_name
+            .values()
+            .filter(|candidate| **candidate == group)
+            .count()
+    }
+
+    pub(super) fn contains_value_version(&self, group: usize) -> bool {
+        self.group_by_name
+            .iter()
+            .any(|(name, candidate)| *candidate == group && name.starts_with("__mwcc_value_"))
+    }
 }
 
 pub(super) fn structured_name_last_read(function: &Function, name: &str) -> Option<usize> {
@@ -73,12 +86,17 @@ pub(super) fn plan_deferred_saved_homes(
         // free, a new deferred local takes the one whose previous value died
         // latest (for example a status result reuses the just-dead length home,
         // not an older answer home).
-        let group = group_last_reads
-            .iter()
-            .enumerate()
-            .filter(|(_, previous_last_read)| **previous_last_read < first_assignment)
-            .max_by_key(|(_, previous_last_read)| **previous_last_read)
-            .map(|(group, _)| group)
+        let starts_load_batch = starts_deferred_load_batch(function, name);
+        let group = (!name.starts_with("__mwcc_value_") && !starts_load_batch)
+            .then(|| {
+                group_last_reads
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, previous_last_read)| **previous_last_read < first_assignment)
+                    .max_by_key(|(_, previous_last_read)| **previous_last_read)
+                    .map(|(group, _)| group)
+            })
+            .flatten()
             .unwrap_or_else(|| {
                 group_last_reads.push(0);
                 group_first_assignments.push(first_assignment);
@@ -92,6 +110,35 @@ pub(super) fn plan_deferred_saved_homes(
         group_by_name,
         group_first_assignments,
     })
+}
+
+fn starts_deferred_load_batch(function: &Function, candidate: &str) -> bool {
+    function
+        .statements
+        .iter()
+        .enumerate()
+        .any(|(index, statement)| match statement {
+            Statement::Assign { name, value } => name == candidate
+                && is_direct_load(value)
+                && function.statements.get(index + 1).is_some_and(
+                    |next| matches!(next, Statement::Assign { value, .. } if is_direct_load(value)),
+                )
+                && index.checked_sub(1).is_none_or(|previous| {
+                    !matches!(
+                        &function.statements[previous],
+                        Statement::Assign { value, .. } if is_direct_load(value)
+                    )
+                }),
+            _ => false,
+        })
+}
+
+fn is_direct_load(expression: &Expression) -> bool {
+    match expression {
+        Expression::Dereference { .. } => true,
+        Expression::Cast { operand, .. } => is_direct_load(operand),
+        _ => false,
+    }
 }
 
 #[derive(Default)]
