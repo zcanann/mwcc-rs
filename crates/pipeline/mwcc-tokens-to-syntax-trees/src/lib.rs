@@ -3095,6 +3095,35 @@ blr\n\
     }
 
     #[test]
+    fn resolves_qualified_inline_default_constructor_for_scalar_new() {
+        let source = r#"
+            namespace Game { namespace Baby {
+                struct StateDead {
+                    inline StateDead() { }
+                    int state;
+                };
+                StateDead* create() { return new StateDead; }
+            } }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::ConstructedNew {
+                constructor,
+                arguments,
+                ..
+            }) if constructor == "__ct__Q34Game4Baby9StateDeadFv" && arguments.is_empty()
+        ));
+    }
+
+    #[test]
     fn parses_multi_argument_placement_new_before_deferring_its_lowering() {
         let source = r#"
             void* operator new(unsigned long, const char*, int);

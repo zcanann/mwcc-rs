@@ -2538,8 +2538,25 @@ impl Parser {
                 self.advance();
                 continue;
             }
-            let is_explicit = self.eat_word("explicit");
-            let is_virtual = self.eat_word("virtual");
+            // Declaration specifiers may be interleaved. Layout recovery does
+            // not otherwise care about `inline`, but it must consume it before
+            // recognizing an in-class constructor or method declarator.
+            let mut is_explicit = false;
+            let mut is_virtual = false;
+            let mut is_static = false;
+            loop {
+                if self.eat_word("explicit") {
+                    is_explicit = true;
+                } else if self.eat_word("virtual") {
+                    is_virtual = true;
+                } else if self.eat_word("inline") || self.eat_word("__inline") {
+                    // In-class definitions are already inline semantically.
+                } else if self.eat_word("static") {
+                    is_static = true;
+                } else {
+                    break;
+                }
+            }
             if is_virtual {
                 if !class.is_polymorphic {
                     // Unlike modern Itanium-style layouts, this ABI inserts the
@@ -2560,7 +2577,7 @@ impl Parser {
                     class.is_polymorphic = true;
                 }
             }
-            if self.eat_word("static") {
+            if is_static {
                 self.skip_class_member()?;
                 continue;
             }
@@ -2894,14 +2911,34 @@ impl Parser {
         class_name: &str,
         arguments: &[Expression],
     ) -> Compilation<String> {
-        if let Some(class) = self.cxx_classes.get(class_name) {
+        let resolved_class = self
+            .resolve_scoped_cxx_class_name(class_name)
+            .unwrap_or_else(|| class_name.to_owned());
+        if arguments.is_empty() {
+            let scopes = resolved_class.split("::").collect::<Vec<_>>();
+            let default_constructor =
+                mangle_qualified_member_function_typed(&scopes, "__ct", &[])?;
+            if self.skipped_inline_names.contains(&default_constructor) {
+                return Ok(default_constructor);
+            }
+        }
+        let local_class = resolved_class
+            .rsplit("::")
+            .next()
+            .unwrap_or(resolved_class.as_str());
+        if let Some(class) = self
+            .cxx_classes
+            .get(&resolved_class)
+            .or_else(|| self.cxx_classes.get(class_name))
+            .or_else(|| self.cxx_classes.get(local_class))
+        {
             let mut candidates = class
                 .constructors
                 .iter()
                 .filter(|signature| signature.parameters.len() == arguments.len())
                 .map(|signature| {
-                    self.mangle_typed_member_in_current_namespace(
-                        class_name,
+                    mangle_qualified_member_function_typed(
+                        &resolved_class.split("::").collect::<Vec<_>>(),
                         "__ct",
                         &signature.cxx_parameters,
                     )
@@ -2913,15 +2950,12 @@ impl Parser {
                 return Ok(constructor.clone());
             }
         }
-        let qualified = if class_name.contains("::") {
-            class_name.to_owned()
-        } else {
-            self.qualify_cxx_class_name(class_name)
-        };
+        let qualified = resolved_class.as_str();
         let candidates: Vec<_> = self
             .cxx_constructors
-            .get(&qualified)
+            .get(qualified)
             .or_else(|| self.cxx_constructors.get(class_name))
+            .or_else(|| self.cxx_constructors.get(local_class))
             .into_iter()
             .flatten()
             .filter(|method| method.fixed_parameter_count == arguments.len())
@@ -2935,10 +2969,15 @@ impl Parser {
         if let [constructor] = unique.as_slice() {
             return Ok((*constructor).to_owned());
         }
+        if arguments.is_empty() && !unique.is_empty() {
+            return Err(Diagnostic::error(format!(
+                "constructor overload resolution for '{class_name}' is ambiguous among {unique:?} (roadmap)"
+            )));
+        }
         match candidates.as_slice() {
             [method] => Ok(method.mangled.clone()),
             _ => self
-                .resolve_exact_cxx_overload(&qualified, &candidates, arguments)?
+                .resolve_exact_cxx_overload(qualified, &candidates, arguments)?
                 .ok_or_else(|| {
                     Diagnostic::error(format!(
                         "constructor overload resolution for '{class_name}' is unavailable (roadmap)"
