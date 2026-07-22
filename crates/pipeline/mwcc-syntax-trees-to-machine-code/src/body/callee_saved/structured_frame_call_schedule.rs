@@ -67,21 +67,34 @@ impl Generator {
     /// Linkage-first MWCC spells both saved-register forwards and values parked
     /// in saved homes as `addi ..., 0`; the newer allocator uses the `mr` alias.
     /// Keep that generation-specific materialization local to dense frames.
+    /// A copy at the start of a conditional arm is control-flow forwarding,
+    /// rather than straight-line materialization, and retains the `mr` form.
     pub(super) fn normalize_structured_frame_argument_copies(&mut self, first_saved: u8) {
-        for instruction in &mut self.output.instructions {
-            let Instruction::Or { a, s, b } = instruction else {
+        for index in 0..self.output.instructions.len() {
+            if index > 0
+                && matches!(
+                    self.output.instructions[index - 1],
+                    Instruction::BranchConditionalForward { .. }
+                )
+            {
+                continue;
+            }
+            let Instruction::Or { a, s, b } = self.output.instructions[index] else {
                 continue;
             };
-            let saved_to_argument = (3..=8).contains(a) && *s >= first_saved;
-            let value_to_saved_home = *a >= first_saved;
-            if *s == *b && (saved_to_argument || value_to_saved_home) {
-                *instruction = Instruction::AddImmediate {
-                    d: *a,
-                    a: *s,
+            let saved_to_argument = (3..=8).contains(&a) && s >= first_saved;
+            let value_to_saved_home = a >= first_saved;
+            if s == b && (saved_to_argument || value_to_saved_home) {
+                self.output.instructions[index] = Instruction::AddImmediate {
+                    d: a,
+                    a: s,
                     immediate: 0,
                 };
             }
         }
+
+        self.schedule_biased_scaled_member_call();
+        self.schedule_shifted_member_mask_call();
 
         // When a saved value and a frame address are the final independent
         // arguments of a dense-frame call, build 163 forwards the saved value
@@ -104,6 +117,109 @@ impl Generator {
             if frame_address && saved_forward {
                 self.output.instructions.swap(index, index + 1);
                 index += 2;
+            } else {
+                index += 1;
+            }
+        }
+    }
+
+    /// A member load feeding the first argument of a call is independent of the
+    /// biased scaled sum feeding its second argument. Build 163 issues both
+    /// member loads together, hiding the second load's latency behind the sum.
+    fn schedule_biased_scaled_member_call(&mut self) {
+        let mut call = 7;
+        while call < self.output.instructions.len() {
+            if !matches!(
+                self.output.instructions[call],
+                Instruction::BranchAndLink { .. }
+            ) {
+                call += 1;
+                continue;
+            }
+            let start = call - 7;
+            let (
+                Instruction::LoadWord {
+                    d: 0,
+                    a: member_base,
+                    ..
+                },
+                Instruction::Add { d: sum, b: 0, .. },
+                Instruction::AddImmediate {
+                    d: 0,
+                    a: biased_sum,
+                    ..
+                },
+                Instruction::ShiftLeftImmediate {
+                    a: scaled, s: 0, ..
+                },
+                Instruction::AddImmediate {
+                    d: tailed,
+                    a: tailed_source,
+                    ..
+                },
+                Instruction::LoadWord {
+                    d: 3,
+                    a: argument_base,
+                    ..
+                },
+                copy,
+                Instruction::BranchAndLink { .. },
+            ) = (
+                &self.output.instructions[start],
+                &self.output.instructions[start + 1],
+                &self.output.instructions[start + 2],
+                &self.output.instructions[start + 3],
+                &self.output.instructions[start + 4],
+                &self.output.instructions[start + 5],
+                &self.output.instructions[start + 6],
+                &self.output.instructions[call],
+            )
+            else {
+                call += 1;
+                continue;
+            };
+            let copy_matches = matches!(copy,
+                Instruction::Or { a: 4, s, b } if s == sum && b == sum)
+                || matches!(copy,
+                    Instruction::AddImmediate { d: 4, a, immediate: 0 } if a == sum);
+            if member_base != argument_base
+                || sum != biased_sum
+                || sum != scaled
+                || sum != tailed
+                || sum != tailed_source
+                || !copy_matches
+            {
+                call += 1;
+                continue;
+            }
+
+            let state_load = self.output.instructions.remove(start + 5);
+            self.output.instructions.insert(start + 1, state_load);
+            call += 1;
+        }
+    }
+
+    /// Preserve an endangered later call argument in the independent issue slot
+    /// between a shift and the XOR that consumes it. This is the measured CARD
+    /// response schedule: `lwz; slwi; addi arg; xor; clrrwi`.
+    fn schedule_shifted_member_mask_call(&mut self) {
+        let mut index = 0;
+        while index + 4 < self.output.instructions.len() {
+            let shifted = match &self.output.instructions[index + 1] {
+                Instruction::ShiftLeftImmediate { a, .. } => *a,
+                _ => {
+                    index += 1;
+                    continue;
+                }
+            };
+            let matches = matches!(self.output.instructions[index], Instruction::LoadWord { d: 0, .. })
+                && matches!(self.output.instructions[index + 2], Instruction::Xor { a: 0, s, b: 0 } if s == shifted)
+                && matches!(self.output.instructions[index + 3], Instruction::AndContiguousMask { a, s: 0, .. } if a == shifted)
+                && matches!(self.output.instructions[index + 4], Instruction::AddImmediate { d: 6, a: 3, immediate: 0 });
+            if matches {
+                let argument = self.output.instructions.remove(index + 4);
+                self.output.instructions.insert(index + 2, argument);
+                index += 5;
             } else {
                 index += 1;
             }

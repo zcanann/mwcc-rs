@@ -148,6 +148,10 @@ pub(crate) struct FrameSlot {
     pub(crate) class: ValueClass,
     /// Byte size of the variable (4 or 8).
     pub(crate) size: u8,
+    /// Source-level type of the stored value. This is deliberately separate
+    /// from `size`: narrow scalar parameters and locals occupy ABI-sized
+    /// lanes, but must still use byte/halfword loads and stores.
+    pub(crate) value_type: Type,
     /// The incoming argument register, if this is a spilled parameter.
     pub(crate) parameter_register: Option<u8>,
     /// Whether this slot is a local array (`int buf[N];`): in value position the
@@ -734,13 +738,10 @@ impl Generator {
             Expression::Variable(name) => {
                 if let Some(location) = self.locations.get(name) {
                     Ok(location.signed)
-                } else if self
-                    .frame_slots
-                    .get(name)
-                    .is_some_and(|slot| slot.is_array)
-                {
-                    // An array expression decays to an unsigned address.
-                    Ok(false)
+                } else if let Some(slot) = self.frame_slots.get(name) {
+                    // An array expression decays to an unsigned address; a
+                    // scalar retains the signedness of its declared type.
+                    Ok(!slot.is_array && slot.value_type.is_signed())
                 } else if let Some(global_type) = self.globals.get(name) {
                     Ok(global_type.is_signed())
                 } else if let Some((_, element_type)) = self.fixed_address_arrays.get(name) {

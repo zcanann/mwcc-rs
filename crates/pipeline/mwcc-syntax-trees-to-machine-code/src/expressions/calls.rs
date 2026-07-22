@@ -1,8 +1,8 @@
 //! Call emission and argument marshaling.
 
+use super::call_argument_types::{classify_call_argument, CallArgumentPlacement};
 #[allow(unused_imports)]
 use super::*;
-use super::call_argument_types::{classify_call_argument, CallArgumentPlacement};
 use mwcc_versions::FrameConvention;
 
 impl Generator {
@@ -232,15 +232,14 @@ impl Generator {
         // into r3. Measured in `outer(fp, float_call(fp->member))` as `bl; mr
         // r3,r31; bl`; no intermediate save or argument shuffle is needed.
         if let [first @ Expression::Variable(first_name), second @ Expression::Call {
-            name: second_name,
-            ..
+            name: second_name, ..
         }] = arguments
         {
             let parameter_types = self.call_parameter_types.get(name);
             let first_parameter = parameter_types.and_then(|types| types.first()).copied();
             let second_parameter = parameter_types.and_then(|types| types.get(1)).copied();
-            let first_is_general = first_parameter
-                .is_some_and(|ty| !matches!(ty, Type::Float | Type::Double));
+            let first_is_general =
+                first_parameter.is_some_and(|ty| !matches!(ty, Type::Float | Type::Double));
             let second_is_float = matches!(second_parameter, Some(Type::Float | Type::Double));
             let call_returns_float = matches!(
                 self.call_return_types.get(second_name),
@@ -251,11 +250,7 @@ impl Generator {
                     .locations
                     .get(first_name.as_str())
                     .is_some_and(|location| location.register >= 14);
-            if first_is_general
-                && second_is_float
-                && call_returns_float
-                && first_survives_call
-            {
+            if first_is_general && second_is_float && call_returns_float && first_survives_call {
                 self.evaluate_float(second, Eabi::FIRST_FLOAT_ARGUMENT)?;
                 self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT)?;
                 return Ok(());
@@ -356,11 +351,9 @@ impl Generator {
                 }
             }
             let address_array_constant = match arguments {
-                [
-                    Expression::AddressOf { operand },
-                    Expression::Variable(array),
-                    Expression::IntegerLiteral(value),
-                ] if (i16::MIN as i64..=i16::MAX as i64).contains(value) => {
+                [Expression::AddressOf { operand }, Expression::Variable(array), Expression::IntegerLiteral(value)]
+                    if (i16::MIN as i64..=i16::MAX as i64).contains(value) =>
+                {
                     let Expression::Variable(addressed) = operand.as_ref() else {
                         return Err(Diagnostic::error(
                             "a constant argument after a global load needs the LR-store-latency schedule (roadmap)",
@@ -373,9 +366,7 @@ impl Generator {
                     let array_size = self.global_array_sizes.get(array.as_str()).copied();
                     let absolute = self.behavior.global_addressing == GlobalAddressing::Absolute;
                     match (addressed_size, array_size) {
-                        (Some(first), Some(second))
-                            if absolute || (first > 8 && second > 8) =>
-                        {
+                        (Some(first), Some(second)) if absolute || (first > 8 && second > 8) => {
                             Some((addressed.clone(), array.clone(), *value as i16))
                         }
                         _ => None,
@@ -412,9 +403,7 @@ impl Generator {
                 if self.try_emit_unscheduled_global_constant_arguments(arguments, direct_call)? {
                     return Ok(());
                 }
-                if self
-                    .try_emit_absolute_short_global_constant_arguments(arguments, direct_call)?
-                {
+                if self.try_emit_absolute_short_global_constant_arguments(arguments, direct_call)? {
                     return Ok(());
                 }
                 let mut global_argument: Option<(usize, String)> = None;
@@ -668,6 +657,47 @@ impl Generator {
         let mut next_general = Eabi::FIRST_GENERAL_ARGUMENT;
         let mut next_float = Eabi::FIRST_FLOAT_ARGUMENT;
         let mut folded_float_arguments: Vec<(u64, bool, u8)> = Vec::new();
+        // Preserve a later word argument whose current register is the target of
+        // an earlier argument remap. Build 163 copies that endangered value to
+        // its final ABI slot first, then fills the earlier slots. Restrict this
+        // to the all-general, one-word prefix where argument index maps directly
+        // to r3+rN; mixed floating/wide calls retain their dedicated schedulers.
+        let prematerialized_general = (1..arguments.len()).find_map(|later| {
+            let source = self.leaf_info(&arguments[later]).ok()?.0;
+            let target = Eabi::FIRST_GENERAL_ARGUMENT.checked_add(later as u8)?;
+            if source == target
+                || !(0..later).any(|earlier| {
+                    Eabi::FIRST_GENERAL_ARGUMENT + earlier as u8 == source
+                        && self
+                            .leaf_info(&arguments[earlier])
+                            .map(|(register, width, _)| register != source && width == 32)
+                            .unwrap_or(false)
+                })
+                || !arguments[..=later]
+                    .iter()
+                    .enumerate()
+                    .all(|(index, argument)| {
+                        !self.is_float_value(argument)
+                            && !matches!(
+                                self.call_parameter_types
+                                    .get(name)
+                                    .and_then(|types| types.get(index)),
+                                Some(
+                                    Type::Float
+                                        | Type::Double
+                                        | Type::LongLong
+                                        | Type::UnsignedLongLong
+                                )
+                            )
+                    })
+            {
+                return None;
+            }
+            Some((later, target, source))
+        });
+        if let Some((_, target, source)) = prematerialized_general {
+            self.emit_integer_materialization_copy(target, source);
+        }
         for (index, argument) in arguments.iter().enumerate() {
             let parameter_type = self
                 .call_parameter_types
@@ -695,11 +725,12 @@ impl Generator {
                     } else {
                         u64::from((value as f32).to_bits())
                     };
-                    if let Some((_, _, source)) = folded_float_arguments
-                        .iter()
-                        .find(|(seen_bits, seen_double, _)| {
-                            *seen_bits == bits && *seen_double == double
-                        })
+                    if let Some((_, _, source)) =
+                        folded_float_arguments
+                            .iter()
+                            .find(|(seen_bits, seen_double, _)| {
+                                *seen_bits == bits && *seen_double == double
+                            })
                     {
                         self.output.instructions.push(Instruction::FloatMove {
                             d: next_float,
@@ -714,6 +745,10 @@ impl Generator {
                 }
                 next_float += 1;
             } else {
+                if prematerialized_general.is_some_and(|(later, _, _)| later == index) {
+                    next_general += 1;
+                    continue;
+                }
                 // A narrow (char/short) argument to a parameter that is NOT wider is passed
                 // WITHOUT the int promotion — `void g(char); g(char_a)` is just `bl g`, no
                 // `extsb` (only a wider parameter, e.g. `void g(int)`, widens the argument).
@@ -817,7 +852,13 @@ impl Generator {
                 if !passthrough_in_place
                     && arguments[index + 1..]
                         .iter()
-                        .any(|later| self.registers_used_by(later).contains(&next_general))
+                        .enumerate()
+                        .any(|(offset, later)| {
+                            let later_index = index + 1 + offset;
+                            !prematerialized_general.is_some_and(|(prematerialized, _, _)| {
+                                prematerialized == later_index
+                            }) && self.registers_used_by(later).contains(&next_general)
+                        })
                 {
                     return Err(Diagnostic::error(
                         "argument would clobber a register a later argument needs (roadmap)",
@@ -828,10 +869,8 @@ impl Generator {
                 // materialization. Build 163 uses `addi d,s,0` for that direction;
                 // a single-argument move and a duplicated earlier argument
                 // (`g(a,a)`, r3 -> r4) remain `mr`. Mainline uses `mr` throughout.
-                let downward_word_copy = self
-                    .leaf_info(argument)
-                    .ok()
-                    .filter(|(source, width, _)| {
+                let downward_word_copy =
+                    self.leaf_info(argument).ok().filter(|(source, width, _)| {
                         arguments.len() > 1
                             && *width == 32
                             && *source > next_general

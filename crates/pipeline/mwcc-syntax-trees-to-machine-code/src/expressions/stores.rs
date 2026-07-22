@@ -89,18 +89,11 @@ impl Generator {
                         "assignment to a whole frame array is not supported",
                     ));
                 }
-                let pointee = match (slot.class, slot.size) {
-                    (ValueClass::General, 1) => Pointee::UnsignedChar,
-                    (ValueClass::General, 2) => Pointee::UnsignedShort,
-                    (ValueClass::General, 4) => Pointee::UnsignedInt,
-                    (ValueClass::Float, 4) => Pointee::Float,
-                    (ValueClass::Float, 8) => Pointee::Double,
-                    _ => {
-                        return Err(Diagnostic::error(
-                            "this volatile frame-slot type is not supported yet (roadmap)",
-                        ))
-                    }
-                };
+                let pointee = pointee_of_type(slot.value_type).ok_or_else(|| {
+                    Diagnostic::error(
+                        "this volatile frame-slot type is not supported yet (roadmap)",
+                    )
+                })?;
                 let source = self.place_store_value(value, pointee)?;
                 self.output
                     .instructions
@@ -320,19 +313,18 @@ impl Generator {
                         .get(name.as_str())
                         .and_then(|location| location.pointee)
                     else {
-                        return Err(Diagnostic::error(
-                            "frame array is missing its element type",
-                        ));
+                        return Err(Diagnostic::error("frame array is missing its element type"));
                     };
                     let Some(index) = constant_value(index) else {
                         return Err(Diagnostic::error(
                             "a variable-index frame-array store is not supported yet (roadmap)",
                         ));
                     };
-                    let offset = i16::try_from(
-                        i64::from(slot.offset) + index * i64::from(element.size()),
-                    )
-                    .map_err(|_| Diagnostic::error("frame-array store offset is out of range"))?;
+                    let offset =
+                        i16::try_from(i64::from(slot.offset) + index * i64::from(element.size()))
+                            .map_err(|_| {
+                            Diagnostic::error("frame-array store offset is out of range")
+                        })?;
                     let source = self.place_store_value(value, element)?;
                     self.output
                         .instructions
@@ -711,9 +703,7 @@ impl Generator {
             return Err(Diagnostic::error("a store through a register pointer whose value contains a call needs callee-saved preservation (roadmap)"));
         }
         if index.is_none() {
-            if let Some((pointee, address, offset)) =
-                self.punned_displacement_address(base)
-            {
+            if let Some((pointee, address, offset)) = self.punned_displacement_address(base) {
                 let restore = address != GENERAL_SCRATCH && self.reserved.insert(address);
                 let source = self.place_store_value(value, pointee)?;
                 if restore {

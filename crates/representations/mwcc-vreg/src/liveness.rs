@@ -51,6 +51,7 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
     let mut ranges: Vec<((Class, u8), usize, usize)> = Vec::new();
     let mut uses_by_instruction = Vec::with_capacity(instructions.len());
     let mut definitions_by_instruction = Vec::with_capacity(instructions.len());
+    let mut defined_physical_ranges = HashSet::new();
 
     let mut calls: Vec<usize> = Vec::new();
     for (index, instruction) in instructions.iter().enumerate() {
@@ -59,19 +60,16 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
             calls.push(index);
         }
         let operands = register_operands(instruction);
-        uses_by_instruction.push(
-            operands
-                .iter()
-                .filter(|operand| operand.role == RegisterRole::Use)
-                .map(|operand| (operand.class, operand.register))
-                .collect::<HashSet<_>>(),
-        );
-        let mut definitions =
-            operands
-                .iter()
-                .filter(|operand| operand.role == RegisterRole::Define)
-                .map(|operand| (operand.class, operand.register))
-                .collect::<HashSet<_>>();
+        let mut uses = operands
+            .iter()
+            .filter(|operand| operand.role == RegisterRole::Use)
+            .map(|operand| (operand.class, operand.register))
+            .collect::<HashSet<_>>();
+        let mut definitions = operands
+            .iter()
+            .filter(|operand| operand.role == RegisterRole::Define)
+            .map(|operand| (operand.class, operand.register))
+            .collect::<HashSet<_>>();
         if is_call {
             // Calls are an implicit definition boundary for the EABI volatile
             // register set even though the branch instruction has no explicit
@@ -85,7 +83,6 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
             );
             definitions.extend((0..=13).map(|register| (Class::Float, register)));
         }
-        definitions_by_instruction.push(definitions);
         // Uses first: extend the open range (opening one from entry if this is a
         // parameter's first appearance).
         for operand in operands.iter().filter(|operand| operand.role == RegisterRole::Use) {
@@ -93,6 +90,24 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
             entry.1 = index;
         }
         if is_call {
+            // A physical argument materialized since the previous call remains
+            // live through this call even though `bl` has no explicit register
+            // operands. Do not infer untouched incoming parameters as arguments:
+            // only ranges opened by a definition participate.
+            let arguments: Vec<_> = defined_physical_ranges
+                .iter()
+                .copied()
+                .filter(|(class, register)| match class {
+                    Class::General => (3..=10).contains(register),
+                    Class::Float => (1..=8).contains(register),
+                })
+                .collect();
+            for key in arguments {
+                if let Some((_, end)) = open.get_mut(&key) {
+                    *end = index;
+                    uses.insert(key);
+                }
+            }
             let clobbered: Vec<_> = open
                 .keys()
                 .copied()
@@ -108,12 +123,15 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
                 if let Some((start, end)) = open.remove(&key) {
                     ranges.push((key, start, end));
                 }
+                defined_physical_ranges.remove(&key);
             }
             // The ABI result registers become new physical values at the call.
             // Unused results form harmless zero-length occupancies; used results
             // now begin here instead of being treated as live from function entry.
             open.insert((Class::General, 3), (index, index));
             open.insert((Class::Float, 1), (index, index));
+            defined_physical_ranges.insert((Class::General, 3));
+            defined_physical_ranges.insert((Class::Float, 1));
         }
         // Then definitions: a PHYSICAL register's old value ends and a new range
         // begins (the classic r3 parameter/temporary/result reuse). A VIRTUAL
@@ -132,8 +150,11 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
                     ranges.push((key, start, end));
                 }
                 open.insert(key, (index, index));
+                defined_physical_ranges.insert(key);
             }
         }
+        uses_by_instruction.push(uses);
+        definitions_by_instruction.push(definitions);
     }
     for (key, (start, end)) in open {
         ranges.push((key, start, end));
@@ -356,6 +377,24 @@ mod tests {
             allocation.physical(Reg::general(0).virtual_register().unwrap()),
             Some(3),
             "the dead incoming r3 is reusable before the call result redefines it"
+        );
+    }
+
+    #[test]
+    fn a_materialized_call_argument_blocks_an_overlapping_virtual() {
+        let stream = [
+            Instruction::LoadWord { d: 3, a: 31, offset: 40 },
+            Instruction::AddImmediate { d: v(0), a: 30, immediate: 4 },
+            Instruction::Or { a: 4, s: v(0), b: v(0) },
+            Instruction::BranchAndLink { target: "consume".into() },
+        ];
+        let liveness = analyze(&stream);
+        let constraints = RegisterConstraints::gekko();
+        let allocation = LinearScan.allocate(&liveness.intervals, &liveness.pinned, &liveness.calls, &constraints).unwrap();
+        assert_eq!(
+            allocation.physical(Reg::general(0).virtual_register().unwrap()),
+            Some(4),
+            "the r3 argument remains live until the call"
         );
     }
 

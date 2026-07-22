@@ -94,6 +94,7 @@ impl Generator {
                 offset: LOCAL_OFFSET,
                 class: ValueClass::General,
                 size: 4,
+                value_type: local.declared_type,
                 parameter_register: None,
                 is_array: false,
             },

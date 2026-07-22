@@ -15,6 +15,7 @@ use super::structured_entry_alias::{
 };
 use super::structured_frame_assignment::{
     adjacent_byte_pointer_round_up_name, fold_adjacent_byte_pointer_round_up,
+    is_transient_biased_scaled_member_call_local, is_transient_shifted_member_mask_call_local,
     sink_low_mask_parameter_assignment, sink_single_use_parameter_assignment,
 };
 use super::structured_frame_entry::structured_dense_frame_entry_index;
@@ -313,6 +314,14 @@ impl Generator {
                             .any(|saved| saved.name == local.name)
                         && pure_local_alias(local).is_none()
                         && !is_call_result_local(&function.statements, &local.name)
+                        && !is_transient_biased_scaled_member_call_local(
+                            &function.statements,
+                            &local.name,
+                        )
+                        && !is_transient_shifted_member_mask_call_local(
+                            &function.statements,
+                            &local.name,
+                        )
                         && body_uses_local(&function.statements, &local.name)
                 })
                 .count();
@@ -342,6 +351,7 @@ impl Generator {
                     offset: array_offset,
                     class: ValueClass::General,
                     size: local_region_bytes as u8,
+                    value_type: array.declared_type,
                     parameter_register: None,
                     is_array: true,
                 },
@@ -355,6 +365,7 @@ impl Generator {
                         offset: scalar_offset,
                         class: ValueClass::General,
                         size: 4,
+                        value_type: local.declared_type,
                         parameter_register: None,
                         is_array: false,
                     },
@@ -994,6 +1005,29 @@ impl Generator {
                         })
                         .expect("eligibility checked");
                     let previous = self.locations.get(name).map(|location| location.register);
+                    let remaining = &statements[statement_index + 1..];
+                    let terminal_volatile = matches!(declared_type, Type::Int | Type::UnsignedInt)
+                        && value_read_before_redefinition(remaining, name)
+                        && !read_after_possible_call(remaining, name, false).read_after_call;
+                    if terminal_volatile && matches!(value, Expression::Call { .. }) {
+                        self.evaluate(value, declared_type, Eabi::general_result().number)?;
+                        self.locations
+                            .get_mut(name)
+                            .expect("structured assignment home")
+                            .register = Eabi::general_result().number;
+                        continue;
+                    }
+                    if terminal_volatile {
+                        if let Expression::Variable(source) = value {
+                            if let Some(source) = self.lookup_general(source) {
+                                self.locations
+                                    .get_mut(name)
+                                    .expect("structured assignment home")
+                                    .register = source;
+                                continue;
+                            }
+                        }
+                    }
                     let preference = previous
                         .and_then(|register| {
                             (register >= mwcc_vreg::VIRTUAL_BASE)
@@ -1262,6 +1296,44 @@ fn pure_local_alias(local: &LocalDeclaration) -> Option<&str> {
         Expression::Variable(name) => Some(name),
         _ => None,
     }
+}
+
+fn value_read_before_redefinition(statements: &[Statement], name: &str) -> bool {
+    for statement in statements {
+        match statement {
+            Statement::Assign {
+                name: assigned,
+                value,
+            } => {
+                if expression_reads_name(value, name) {
+                    return true;
+                }
+                if assigned == name {
+                    return false;
+                }
+            }
+            Statement::Store { target, value } => {
+                if expression_reads_name(target, name) || expression_reads_name(value, name) {
+                    return true;
+                }
+            }
+            Statement::Expression(expression) | Statement::Return(Some(expression)) => {
+                if expression_reads_name(expression, name) {
+                    return true;
+                }
+            }
+            Statement::If { condition, .. } => {
+                return expression_reads_name(condition, name);
+            }
+            Statement::Return(None)
+            | Statement::Goto(_)
+            | Statement::Break
+            | Statement::Continue => return false,
+            Statement::Label(_) => {}
+            Statement::Loop { .. } | Statement::Switch { .. } => return false,
+        }
+    }
+    false
 }
 
 fn is_call_result_local(statements: &[Statement], candidate: &str) -> bool {

@@ -64,6 +64,22 @@ impl Generator {
             return Ok(Some(destination));
         }
         if let Expression::Variable(name) = operand {
+            // A scalar whose address is taken has no register home. Reload it
+            // into the consumer's preferred working register using the slot's
+            // source type (which may be narrower than its allocation lane).
+            if self
+                .frame_slots
+                .get(name)
+                .is_some_and(|slot| !slot.is_array)
+            {
+                let target = if prefer_destination {
+                    destination
+                } else {
+                    GENERAL_SCRATCH
+                };
+                self.evaluate_general(operand, target)?;
+                return Ok(Some(target));
+            }
             // A global is loaded into the consumer's register (the destination for
             // addi-family consumers, otherwise the scratch), like a dereference —
             // unless it was just stored and is still live in a register, which is

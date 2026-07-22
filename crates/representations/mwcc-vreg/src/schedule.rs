@@ -31,18 +31,45 @@ fn is_barrier(instruction: &Instruction) -> bool {
     use Instruction::*;
     matches!(
         instruction,
-        StoreWord { .. } | StoreByte { .. } | StoreHalfword { .. } | StoreFloatSingle { .. }
-            | StoreFloatDouble { .. } | StoreWordWithUpdate { .. } | StoreWordIndexed { .. }
-            | StoreByteIndexed { .. } | StoreHalfwordIndexed { .. } | StoreFloatSingleIndexed { .. }
-            | LoadWord { .. } | LoadByteZero { .. } | LoadHalfwordZero { .. } | LoadHalfwordAlgebraic { .. }
-            | LoadFloatSingle { .. } | LoadFloatDouble { .. } | LoadWordIndexed { .. }
-            | LoadByteZeroIndexed { .. } | LoadHalfwordZeroIndexed { .. } | LoadHalfwordAlgebraicIndexed { .. }
+        StoreWord { .. }
+            | StoreByte { .. }
+            | StoreHalfword { .. }
+            | StoreFloatSingle { .. }
+            | StoreFloatDouble { .. }
+            | StoreWordWithUpdate { .. }
+            | StoreWordIndexed { .. }
+            | StoreByteIndexed { .. }
+            | StoreHalfwordIndexed { .. }
+            | StoreFloatSingleIndexed { .. }
+            | LoadWord { .. }
+            | LoadByteZero { .. }
+            | LoadHalfwordZero { .. }
+            | LoadHalfwordAlgebraic { .. }
+            | LoadFloatSingle { .. }
+            | LoadFloatDouble { .. }
+            | LoadWordIndexed { .. }
+            | LoadByteZeroIndexed { .. }
+            | LoadHalfwordZeroIndexed { .. }
+            | LoadHalfwordAlgebraicIndexed { .. }
             | LoadFloatSingleIndexed { .. }
-            | FloatCompareOrdered { .. } | CompareWord { .. } | CompareWordImmediate { .. } | CompareWordImmediateField { .. }
-            | CompareLogicalWord { .. } | CompareLogicalWordImmediate { .. }
-            | BranchConditionalForward { .. } | BranchConditionalToLinkRegister { .. } | Branch { .. } | BranchExternal { .. }
-            | BranchToLinkRegister | BranchToLinkRegisterAndLink | BranchToCountRegister | BranchToCountRegisterAndLink | BranchAndLink { .. }
-            | MoveFromLinkRegister { .. } | MoveToLinkRegister { .. } | MoveToCountRegister { .. }
+            | FloatCompareOrdered { .. }
+            | CompareWord { .. }
+            | CompareWordImmediate { .. }
+            | CompareWordImmediateField { .. }
+            | CompareLogicalWord { .. }
+            | CompareLogicalWordImmediate { .. }
+            | BranchConditionalForward { .. }
+            | BranchConditionalToLinkRegister { .. }
+            | Branch { .. }
+            | BranchExternal { .. }
+            | BranchToLinkRegister
+            | BranchToLinkRegisterAndLink
+            | BranchToCountRegister
+            | BranchToCountRegisterAndLink
+            | BranchAndLink { .. }
+            | MoveFromLinkRegister { .. }
+            | MoveToLinkRegister { .. }
+            | MoveToCountRegister { .. }
     )
 }
 
@@ -53,9 +80,16 @@ fn is_store(instruction: &Instruction) -> bool {
     use Instruction::*;
     matches!(
         instruction,
-        StoreWord { .. } | StoreByte { .. } | StoreHalfword { .. } | StoreFloatSingle { .. }
-            | StoreFloatDouble { .. } | StoreWordWithUpdate { .. } | StoreWordIndexed { .. }
-            | StoreByteIndexed { .. } | StoreHalfwordIndexed { .. } | StoreFloatSingleIndexed { .. }
+        StoreWord { .. }
+            | StoreByte { .. }
+            | StoreHalfword { .. }
+            | StoreFloatSingle { .. }
+            | StoreFloatDouble { .. }
+            | StoreWordWithUpdate { .. }
+            | StoreWordIndexed { .. }
+            | StoreByteIndexed { .. }
+            | StoreHalfwordIndexed { .. }
+            | StoreFloatSingleIndexed { .. }
             | StoreFloatDoubleIndexed { .. }
     )
 }
@@ -78,18 +112,29 @@ pub fn hoist_link_register_reload(instructions: &mut Vec<Instruction>) -> Vec<us
     if has_forward_branch(instructions) {
         return identity;
     }
-    let Some(mtlr) = instructions.iter().position(|instruction| matches!(instruction, Instruction::MoveToLinkRegister { .. })) else {
+    let Some(mtlr) = instructions
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::MoveToLinkRegister { .. }))
+    else {
         return identity;
     };
     if mtlr == 0 {
         return identity;
     }
     let reload = mtlr - 1;
-    if !matches!(instructions[reload], Instruction::LoadWord { d: 0, a: 1, .. }) {
+    if !matches!(
+        instructions[reload],
+        Instruction::LoadWord { d: 0, a: 1, .. }
+    ) {
         return identity;
     }
     let Some(call) = instructions[..reload].iter().rposition(|instruction| {
-        matches!(instruction, Instruction::BranchAndLink { .. } | Instruction::BranchToLinkRegisterAndLink | Instruction::BranchToCountRegisterAndLink)
+        matches!(
+            instruction,
+            Instruction::BranchAndLink { .. }
+                | Instruction::BranchToLinkRegisterAndLink
+                | Instruction::BranchToCountRegisterAndLink
+        )
     }) else {
         return identity;
     };
@@ -98,14 +143,19 @@ pub fn hoist_link_register_reload(instructions: &mut Vec<Instruction>) -> Vec<us
     // load. So the reload sits AFTER such a multiply, not before it. (Only a multiply whose destination
     // is not r0, so the reload does not clobber its result.)
     let mut target = call + 1;
-    while target < reload && matches!(&instructions[target], Instruction::MultiplyLow { d, .. } if *d != 0) {
+    while target < reload
+        && matches!(&instructions[target], Instruction::MultiplyLow { d, .. } if *d != 0)
+    {
         target += 1;
     }
     if target >= reload {
         return identity; // the reload already sits right after the call
     }
     // The reload writes r0; it can only pass post-call work that leaves r0 alone.
-    if instructions[target..reload].iter().any(touches_register_zero) {
+    if instructions[target..reload]
+        .iter()
+        .any(touches_register_zero)
+    {
         return identity;
     }
     // It must also stay after a store mwcc keeps ahead of it — the store that consumes
@@ -131,7 +181,8 @@ pub fn hoist_link_register_reload(instructions: &mut Vec<Instruction>) -> Vec<us
 }
 
 /// Drop integer and float self-moves the register allocator produces when it colors a
-/// value's virtual home to the register the value already holds. mwcc coalesces these away.
+/// value's virtual home to the register the value already holds. Both `mr` and the
+/// linkage-first `addi d,s,0` spelling are coalesced by mwcc.
 /// A self-move is a no-op, so removing it is byte-neutral — it only shortens the function.
 /// Returns the old->new index permutation so relocations can be remapped; a removed self-move
 /// never carries a relocation, so its own mapping is a don't-care (pointed at the next survivor).
@@ -142,6 +193,7 @@ pub fn coalesce_self_moves(instructions: &mut Vec<Instruction>) -> Vec<usize> {
     for instruction in original {
         permutation.push(next);
         let is_self_move = matches!(&instruction, Instruction::Or { a, s, b } if a == s && s == b)
+            || matches!(&instruction, Instruction::AddImmediate { d, a, immediate: 0 } if d == a)
             || matches!(&instruction, Instruction::FloatMove { d, b } if d == b);
         if !is_self_move {
             instructions.push(instruction);
@@ -241,28 +293,34 @@ pub fn hoist_simple_later_call_argument(instructions: &mut Vec<Instruction>) -> 
             })
             .map_or(0, |index| index + 1);
 
-        let Some((later_move, saved)) = (block_start..call).rev().find_map(|index| {
-            match instructions[index] {
-                Instruction::Or { a: 4..=10, s, b } if s == b && s >= 32 => Some((index, s)),
-                _ => None,
-            }
-        }) else {
+        let Some((later_move, saved)) =
+            (block_start..call)
+                .rev()
+                .find_map(|index| match instructions[index] {
+                    Instruction::Or { a: 4..=10, s, b } if s == b && s >= 32 => Some((index, s)),
+                    _ => None,
+                })
+        else {
             continue;
         };
-        let Some((first_move, computed)) = (block_start..later_move).rev().find_map(|index| {
-            match instructions[index] {
-                Instruction::Or { a: 3, s, b } if s == b && s >= 32 => Some((index, s)),
-                _ => None,
-            }
-        }) else {
+        let Some((first_move, computed)) =
+            (block_start..later_move)
+                .rev()
+                .find_map(|index| match instructions[index] {
+                    Instruction::Or { a: 3, s, b } if s == b && s >= 32 => Some((index, s)),
+                    _ => None,
+                })
+        else {
             continue;
         };
         let Some(first_definition) = (block_start..first_move).find(|&index| {
-            register_operands(&instructions[index]).iter().any(|operand| {
-                operand.class == Class::General
-                    && operand.role == RegisterRole::Define
-                    && operand.register == computed
-            })
+            register_operands(&instructions[index])
+                .iter()
+                .any(|operand| {
+                    operand.class == Class::General
+                        && operand.role == RegisterRole::Define
+                        && operand.register == computed
+                })
         }) else {
             continue;
         };
@@ -278,10 +336,13 @@ pub fn hoist_simple_later_call_argument(instructions: &mut Vec<Instruction>) -> 
         // The move may cross only instructions independent of both its source
         // and destination. In particular it cannot pass the definition of its
         // saved home, even though it may pass unrelated memory reads.
-        if instructions[first_definition..later_move].iter().any(|instruction| {
-            depends_on(instruction, &instructions[later_move])
-                || depends_on(&instructions[later_move], instruction)
-        }) {
+        if instructions[first_definition..later_move]
+            .iter()
+            .any(|instruction| {
+                depends_on(instruction, &instructions[later_move])
+                    || depends_on(&instructions[later_move], instruction)
+            })
+        {
             continue;
         }
         debug_assert!(saved >= 32);
@@ -316,27 +377,52 @@ pub fn schedule_link_register_save(instructions: &mut Vec<Instruction>) -> Vec<u
     // The non-leaf prologue: `mflr r0` immediately followed by `stw r0,20(r1)`. A
     // callee-saved or already-scheduled prologue does not match (the save is not the
     // very next instruction), so it is left untouched.
-    let Some(mflr) = instructions.iter().position(|instruction| matches!(instruction, Instruction::MoveFromLinkRegister { d: 0 })) else {
+    let Some(mflr) = instructions
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::MoveFromLinkRegister { d: 0 }))
+    else {
         return identity;
     };
     let save = mflr + 1;
-    if save >= instructions.len() || !matches!(instructions[save], Instruction::StoreWord { s: 0, a: 1, offset: 20 }) {
+    if save >= instructions.len()
+        || !matches!(
+            instructions[save],
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 20
+            }
+        )
+    {
         return identity;
     }
     // An INDIRECT call delays the save past the same gap: `mr r12, fp` then the
     // argument moves, ending in `mtctr r12; bctrl`. The leading run here is the setup
     // moves (`mr`, i.e. `or rD,rS,rS`) and any `li`-form argument.
-    let moved_count = if save + 1 < instructions.len() && matches!(instructions[save + 1], Instruction::Or { a: 12, .. }) {
+    let moved_count = if save + 1 < instructions.len()
+        && matches!(instructions[save + 1], Instruction::Or { a: 12, .. })
+    {
         let mut run = 0;
         while save + 1 + run < instructions.len()
-            && matches!(instructions[save + 1 + run], Instruction::Or { .. } | Instruction::AddImmediate { a: 0, .. } | Instruction::AddImmediateShifted { a: 0, .. })
+            && matches!(
+                instructions[save + 1 + run],
+                Instruction::Or { .. }
+                    | Instruction::AddImmediate { a: 0, .. }
+                    | Instruction::AddImmediateShifted { a: 0, .. }
+            )
         {
             run += 1;
         }
         let dispatch = save + 1 + run;
         if dispatch + 1 >= instructions.len()
-            || !matches!(instructions[dispatch], Instruction::MoveToCountRegister { .. })
-            || !matches!(instructions[dispatch + 1], Instruction::BranchToCountRegisterAndLink)
+            || !matches!(
+                instructions[dispatch],
+                Instruction::MoveToCountRegister { .. }
+            )
+            || !matches!(
+                instructions[dispatch + 1],
+                Instruction::BranchToCountRegisterAndLink
+            )
         {
             return identity;
         }
@@ -349,7 +435,11 @@ pub fn schedule_link_register_save(instructions: &mut Vec<Instruction>) -> Vec<u
         // after the save, so the run requires `a == 0`.
         let mut run = 0;
         while save + 1 + run < instructions.len()
-            && matches!(instructions[save + 1 + run], Instruction::AddImmediate { a: 0, .. } | Instruction::AddImmediateShifted { a: 0, .. })
+            && matches!(
+                instructions[save + 1 + run],
+                Instruction::AddImmediate { a: 0, .. }
+                    | Instruction::AddImmediateShifted { a: 0, .. }
+            )
         {
             run += 1;
         }
@@ -360,7 +450,16 @@ pub fn schedule_link_register_save(instructions: &mut Vec<Instruction>) -> Vec<u
         // loads regardless, so require only that a call (`bl`, or an indirect `bctrl`
         // through a global function pointer's `lwz r12`) follows the run, not that it is
         // the very next instruction. (Only the run is moved; the trailing work stays.)
-        if run == 0 || !instructions[next..].iter().any(|instruction| matches!(instruction, Instruction::BranchAndLink { .. } | Instruction::BranchToLinkRegisterAndLink | Instruction::BranchToCountRegisterAndLink)) {
+        if run == 0
+            || !instructions[next..].iter().any(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::BranchAndLink { .. }
+                        | Instruction::BranchToLinkRegisterAndLink
+                        | Instruction::BranchToCountRegisterAndLink
+                )
+            })
+        {
             return identity;
         }
         run.min(2)
@@ -370,7 +469,10 @@ pub fn schedule_link_register_save(instructions: &mut Vec<Instruction>) -> Vec<u
     }
     // The save reads r0 (from `mflr`); it may only pass instructions that leave r0
     // alone (argument materializations write r3.., never the scratch).
-    if instructions[save + 1..save + 1 + moved_count].iter().any(touches_register_zero) {
+    if instructions[save + 1..save + 1 + moved_count]
+        .iter()
+        .any(touches_register_zero)
+    {
         return identity;
     }
     let moved = instructions.remove(save);
@@ -390,13 +492,20 @@ pub fn schedule_link_register_save(instructions: &mut Vec<Instruction>) -> Vec<u
 
 /// Whether an instruction reads or writes general register r0 (the scratch).
 fn touches_register_zero(instruction: &Instruction) -> bool {
-    register_operands(instruction).iter().any(|operand| operand.class == Class::General && operand.register == 0)
+    register_operands(instruction)
+        .iter()
+        .any(|operand| operand.class == Class::General && operand.register == 0)
 }
 
 /// Whether the function has a forward branch — v1 leaves such functions untouched
 /// because reordering would invalidate the branch's instruction-index target.
 fn has_forward_branch(instructions: &[Instruction]) -> bool {
-    instructions.iter().any(|instruction| matches!(instruction, Instruction::BranchConditionalForward { .. } | Instruction::Branch { .. }))
+    instructions.iter().any(|instruction| {
+        matches!(
+            instruction,
+            Instruction::BranchConditionalForward { .. } | Instruction::Branch { .. }
+        )
+    })
 }
 
 /// The (class, register) sets an instruction defines and uses.
@@ -432,16 +541,23 @@ fn depends_on(earlier: &Instruction, later: &Instruction) -> bool {
 fn latency_rank(instruction: &Instruction) -> u8 {
     use Instruction::*;
     match instruction {
-        DivideWord { .. } | DivideWordUnsigned { .. } | FloatDivideSingle { .. }
+        DivideWord { .. }
+        | DivideWordUnsigned { .. }
+        | FloatDivideSingle { .. }
         | FloatDivideDouble { .. } => 3,
         // The DOUBLE multiply family ranks with its single cousins: measured in
         // the float-table class (canary 1052), a leading `fmul` keeps the run's
         // head against a latency-chain lis, and a program-order `fmadd` keeps its
         // place against a later `fmul` — same rank, program order breaks ties.
-        MultiplyLow { .. } | MultiplyImmediate { .. } | FloatMultiplySingle { .. }
-        | FloatMultiplyAddSingle { .. } | FloatMultiplySubtractSingle { .. }
-        | FloatNegativeMultiplySubtractSingle { .. } | FloatMultiplyDouble { .. }
-        | FloatMultiplyAddDouble { .. } | FloatMultiplySubtractDouble { .. }
+        MultiplyLow { .. }
+        | MultiplyImmediate { .. }
+        | FloatMultiplySingle { .. }
+        | FloatMultiplyAddSingle { .. }
+        | FloatMultiplySubtractSingle { .. }
+        | FloatNegativeMultiplySubtractSingle { .. }
+        | FloatMultiplyDouble { .. }
+        | FloatMultiplyAddDouble { .. }
+        | FloatMultiplySubtractDouble { .. }
         | FloatNegativeMultiplySubtractDouble { .. } => 2,
         _ => 1,
     }
@@ -459,11 +575,13 @@ fn list_schedule(run: &[usize], instructions: &[Instruction]) -> Vec<usize> {
     // keeps the fold's value `li` ahead of it.
     let heads_latency_chain: Vec<bool> = (0..count)
         .map(|k| {
-            matches!(instructions[run[k]], Instruction::AddImmediateShifted { a: 0, .. })
-                && (k + 1..count).any(|later| {
-                    matches!(instructions[run[later]], Instruction::AddImmediate { .. })
-                        && depends_on(&instructions[run[k]], &instructions[run[later]])
-                })
+            matches!(
+                instructions[run[k]],
+                Instruction::AddImmediateShifted { a: 0, .. }
+            ) && (k + 1..count).any(|later| {
+                matches!(instructions[run[later]], Instruction::AddImmediate { .. })
+                    && depends_on(&instructions[run[k]], &instructions[run[later]])
+            })
         })
         .collect();
     // predecessors[k] = how many earlier-in-run instructions instruction run[k]
@@ -487,7 +605,11 @@ fn list_schedule(run: &[usize], instructions: &[Instruction]) -> Vec<usize> {
         let chosen = (0..count)
             .filter(|&k| !placed[k] && remaining_predecessors[k] == 0)
             .max_by_key(|&k| {
-                let rank = latency_rank(&instructions[run[k]]).max(if heads_latency_chain[k] { 2 } else { 1 });
+                let rank = latency_rank(&instructions[run[k]]).max(if heads_latency_chain[k] {
+                    2
+                } else {
+                    1
+                });
                 (rank, std::cmp::Reverse(run[k]))
             })
             .unwrap();
@@ -549,6 +671,11 @@ mod tests {
     fn integer_and_float_self_moves_are_coalesced() {
         let mut stream = vec![
             Instruction::move_register(3, 3),
+            Instruction::AddImmediate {
+                d: 4,
+                a: 4,
+                immediate: 0,
+            },
             Instruction::FloatMove { d: 1, b: 1 },
             Instruction::AddImmediate {
                 d: 3,
@@ -567,7 +694,7 @@ mod tests {
                 immediate: 1,
             }]
         );
-        assert_eq!(permutation, vec![0, 0, 0]);
+        assert_eq!(permutation, vec![0, 0, 0, 0]);
     }
 
     #[test]
@@ -602,22 +729,62 @@ mod tests {
         // Natural order `lis; addi; li v0; li v1` — the addi stalls on the lis,
         // so the first li moves into the slot: `lis; li v0; addi; li v1`.
         let mut stream = vec![
-            Instruction::AddImmediateShifted { d: 3, a: 0, immediate: 0 },  // 0: lis r3,@ha
-            Instruction::AddImmediate { d: 4, a: 3, immediate: 0 },         // 1: addi r4,r3,@lo (stalls)
-            Instruction::AddImmediate { d: 5, a: 0, immediate: 7 },         // 2: li v0 (the fill)
-            Instruction::AddImmediate { d: 6, a: 0, immediate: 9 },         // 3: li v1 (stays)
-            Instruction::StoreWord { s: 5, a: 4, offset: 0 },
+            Instruction::AddImmediateShifted {
+                d: 3,
+                a: 0,
+                immediate: 0,
+            }, // 0: lis r3,@ha
+            Instruction::AddImmediate {
+                d: 4,
+                a: 3,
+                immediate: 0,
+            }, // 1: addi r4,r3,@lo (stalls)
+            Instruction::AddImmediate {
+                d: 5,
+                a: 0,
+                immediate: 7,
+            }, // 2: li v0 (the fill)
+            Instruction::AddImmediate {
+                d: 6,
+                a: 0,
+                immediate: 9,
+            }, // 3: li v1 (stays)
+            Instruction::StoreWord {
+                s: 5,
+                a: 4,
+                offset: 0,
+            },
             Instruction::BranchToLinkRegister,
         ];
         let permutation = fill_address_latency_slots(&mut stream);
         assert_eq!(
             stream,
             vec![
-                Instruction::AddImmediateShifted { d: 3, a: 0, immediate: 0 },
-                Instruction::AddImmediate { d: 5, a: 0, immediate: 7 },
-                Instruction::AddImmediate { d: 4, a: 3, immediate: 0 },
-                Instruction::AddImmediate { d: 6, a: 0, immediate: 9 },
-                Instruction::StoreWord { s: 5, a: 4, offset: 0 },
+                Instruction::AddImmediateShifted {
+                    d: 3,
+                    a: 0,
+                    immediate: 0
+                },
+                Instruction::AddImmediate {
+                    d: 5,
+                    a: 0,
+                    immediate: 7
+                },
+                Instruction::AddImmediate {
+                    d: 4,
+                    a: 3,
+                    immediate: 0
+                },
+                Instruction::AddImmediate {
+                    d: 6,
+                    a: 0,
+                    immediate: 9
+                },
+                Instruction::StoreWord {
+                    s: 5,
+                    a: 4,
+                    offset: 0
+                },
                 Instruction::BranchToLinkRegister,
             ]
         );
@@ -630,9 +797,21 @@ mod tests {
         // The only later li DEFINES the register the addi already wrote (WAW with
         // the crossed addi) — moving it would reorder the writes, so no fill.
         let mut stream = vec![
-            Instruction::AddImmediateShifted { d: 3, a: 0, immediate: 0 },
-            Instruction::AddImmediate { d: 4, a: 3, immediate: 0 },
-            Instruction::AddImmediate { d: 4, a: 0, immediate: 7 },
+            Instruction::AddImmediateShifted {
+                d: 3,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 3,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 0,
+                immediate: 7,
+            },
             Instruction::BranchToLinkRegister,
         ];
         let before = stream.clone();
@@ -641,10 +820,26 @@ mod tests {
 
         // A barrier (store) before any li: nothing to fill with.
         let mut stream = vec![
-            Instruction::AddImmediateShifted { d: 3, a: 0, immediate: 0 },
-            Instruction::AddImmediate { d: 4, a: 3, immediate: 0 },
-            Instruction::StoreWord { s: 4, a: 3, offset: 0 },
-            Instruction::AddImmediate { d: 5, a: 0, immediate: 7 },
+            Instruction::AddImmediateShifted {
+                d: 3,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 3,
+                immediate: 0,
+            },
+            Instruction::StoreWord {
+                s: 4,
+                a: 3,
+                offset: 0,
+            },
+            Instruction::AddImmediate {
+                d: 5,
+                a: 0,
+                immediate: 7,
+            },
             Instruction::BranchToLinkRegister,
         ];
         let before = stream.clone();
@@ -653,10 +848,26 @@ mod tests {
 
         // A forward branch anywhere: the whole function is left untouched.
         let mut stream = vec![
-            Instruction::AddImmediateShifted { d: 3, a: 0, immediate: 0 },
-            Instruction::AddImmediate { d: 4, a: 3, immediate: 0 },
-            Instruction::AddImmediate { d: 5, a: 0, immediate: 7 },
-            Instruction::BranchConditionalForward { options: 12, condition_bit: 0, target: 4 },
+            Instruction::AddImmediateShifted {
+                d: 3,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 3,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 5,
+                a: 0,
+                immediate: 7,
+            },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 0,
+                target: 4,
+            },
             Instruction::BranchToLinkRegister,
         ];
         let before = stream.clone();
@@ -669,19 +880,47 @@ mod tests {
         // `reg(5, cb)` natural order: `li r3,5; lis r4; addi r4,r4` — the lis has
         // a dependent addi in the run, so it issues first (measured).
         let mut stream = vec![
-            Instruction::AddImmediate { d: 3, a: 0, immediate: 5 },
-            Instruction::AddImmediateShifted { d: 4, a: 0, immediate: 0 },
-            Instruction::AddImmediate { d: 4, a: 4, immediate: 0 },
-            Instruction::BranchAndLink { target: String::from("reg") },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 0,
+                immediate: 5,
+            },
+            Instruction::AddImmediateShifted {
+                d: 4,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 4,
+                immediate: 0,
+            },
+            Instruction::BranchAndLink {
+                target: String::from("reg"),
+            },
         ];
         let permutation = schedule(&mut stream);
         assert_eq!(
             stream,
             vec![
-                Instruction::AddImmediateShifted { d: 4, a: 0, immediate: 0 },
-                Instruction::AddImmediate { d: 3, a: 0, immediate: 5 },
-                Instruction::AddImmediate { d: 4, a: 4, immediate: 0 },
-                Instruction::BranchAndLink { target: String::from("reg") },
+                Instruction::AddImmediateShifted {
+                    d: 4,
+                    a: 0,
+                    immediate: 0
+                },
+                Instruction::AddImmediate {
+                    d: 3,
+                    a: 0,
+                    immediate: 5
+                },
+                Instruction::AddImmediate {
+                    d: 4,
+                    a: 4,
+                    immediate: 0
+                },
+                Instruction::BranchAndLink {
+                    target: String::from("reg")
+                },
             ]
         );
         assert_eq!(permutation, vec![1, 0, 2, 3]);
@@ -689,9 +928,21 @@ mod tests {
         // A lis whose consumer is a barrier (the `stwu @lo` fold), NOT an in-run
         // addi: no boost — the fold keeps its value `li` ahead of the lis.
         let mut stream = vec![
-            Instruction::AddImmediate { d: 4, a: 0, immediate: 7 },
-            Instruction::AddImmediateShifted { d: 3, a: 0, immediate: 0 },
-            Instruction::StoreWordWithUpdate { s: 4, a: 3, offset: 0 },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 0,
+                immediate: 7,
+            },
+            Instruction::AddImmediateShifted {
+                d: 3,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::StoreWordWithUpdate {
+                s: 4,
+                a: 3,
+                offset: 0,
+            },
         ];
         let before = stream.clone();
         assert_eq!(schedule(&mut stream), vec![0, 1, 2]);
@@ -703,10 +954,14 @@ mod tests {
         // ((a*b)+1)*(c*d): the second product (index 2) is independent and issues
         // before the dependent addi (index 1), hiding the multiply latency.
         let mut stream = vec![
-            Instruction::MultiplyLow { d: 3, a: 3, b: 4 },     // 0: a*b
-            Instruction::AddImmediate { d: 3, a: 3, immediate: 1 }, // 1: +1 (needs 0)
-            Instruction::MultiplyLow { d: 0, a: 5, b: 6 },     // 2: c*d (independent)
-            Instruction::MultiplyLow { d: 3, a: 3, b: 0 },     // 3: needs 1 and 2
+            Instruction::MultiplyLow { d: 3, a: 3, b: 4 }, // 0: a*b
+            Instruction::AddImmediate {
+                d: 3,
+                a: 3,
+                immediate: 1,
+            }, // 1: +1 (needs 0)
+            Instruction::MultiplyLow { d: 0, a: 5, b: 6 }, // 2: c*d (independent)
+            Instruction::MultiplyLow { d: 3, a: 3, b: 0 }, // 3: needs 1 and 2
             Instruction::BranchToLinkRegister,
         ];
         let permutation = schedule(&mut stream);
@@ -715,7 +970,11 @@ mod tests {
             vec![
                 Instruction::MultiplyLow { d: 3, a: 3, b: 4 },
                 Instruction::MultiplyLow { d: 0, a: 5, b: 6 },
-                Instruction::AddImmediate { d: 3, a: 3, immediate: 1 },
+                Instruction::AddImmediate {
+                    d: 3,
+                    a: 3,
+                    immediate: 1
+                },
                 Instruction::MultiplyLow { d: 3, a: 3, b: 0 },
                 Instruction::BranchToLinkRegister,
             ]
@@ -728,7 +987,7 @@ mod tests {
     fn dependences_constrain_a_run_to_a_valid_order() {
         // b = a*a (i1) depends on a defined by i0; both must keep order.
         let mut stream = vec![
-            Instruction::Add { d: 3, a: 3, b: 4 },       // r3 = r3 + r4
+            Instruction::Add { d: 3, a: 3, b: 4 },         // r3 = r3 + r4
             Instruction::MultiplyLow { d: 3, a: 3, b: 3 }, // r3 = r3 * r3
             Instruction::BranchToLinkRegister,
         ];
@@ -741,8 +1000,16 @@ mod tests {
     fn a_function_with_a_forward_branch_is_left_untouched() {
         let mut stream = vec![
             Instruction::Add { d: 3, a: 3, b: 4 },
-            Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 3 },
-            Instruction::AddImmediate { d: 3, a: 3, immediate: 1 },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 3,
+            },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 3,
+                immediate: 1,
+            },
             Instruction::BranchToLinkRegister,
         ];
         let original = stream.clone();
@@ -757,7 +1024,11 @@ mod tests {
         // with the identity policy nothing else does either.
         let mut stream = vec![
             Instruction::Add { d: 3, a: 3, b: 4 },
-            Instruction::StoreWord { s: 3, a: 1, offset: 8 },
+            Instruction::StoreWord {
+                s: 3,
+                a: 1,
+                offset: 8,
+            },
             Instruction::Add { d: 5, a: 5, b: 6 },
             Instruction::BranchToLinkRegister,
         ];

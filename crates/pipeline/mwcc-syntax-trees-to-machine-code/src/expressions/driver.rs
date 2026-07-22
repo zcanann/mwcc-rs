@@ -57,6 +57,12 @@ impl Generator {
         if self.try_emit_pointer_round_up(expression, destination)? {
             return Ok(());
         }
+        if self.try_emit_biased_scaled_member_sum(expression, destination)? {
+            return Ok(());
+        }
+        if self.try_emit_shifted_member_high_mask(expression, destination)? {
+            return Ok(());
+        }
         // A compile-time-constant expression — folded constant arithmetic
         // (`2 + 3`, `FLAG_A | FLAG_B`, `1 << 3`) or a side-effect-free identity
         // (`x - x`, `x ^ x`) — materializes the value directly, as mwcc folds it.
@@ -416,7 +422,21 @@ impl Generator {
                     if slot.is_array {
                         self.output.instructions.push(Instruction::AddImmediate { d: destination, a: 1, immediate: slot.offset });
                     } else {
-                        self.output.instructions.push(Instruction::LoadWord { d: destination, a: 1, offset: slot.offset });
+                        let pointee = pointee_of_type(slot.value_type).ok_or_else(|| {
+                            Diagnostic::error(format!(
+                                "frame value of type {:?} has no scalar load",
+                                slot.value_type
+                            ))
+                        })?;
+                        self.output.instructions.push(displacement_load(
+                            pointee,
+                            destination,
+                            1,
+                            slot.offset,
+                        )?);
+                        if slot.value_type == Type::Char && !self.narrow_truncation_context {
+                            self.emit_widen(destination, destination, 8, true);
+                        }
                     }
                     return Ok(());
                 }

@@ -62,7 +62,12 @@ impl Generator {
             let offset = 8 + 4 * index as i16;
             let register = self.general_register_of(&parameter.name)?;
             highest_offset = highest_offset.max(offset);
-            spills.push((parameter.name.clone(), register, offset));
+            spills.push((
+                parameter.name.clone(),
+                parameter.parameter_type,
+                register,
+                offset,
+            ));
         }
 
         let home_lane_size = 16 + 8 * homes.len() as i16;
@@ -80,13 +85,14 @@ impl Generator {
                 a: 1,
                 offset: -frame_size,
             });
-        for (name, register, offset) in spills {
+        for (name, value_type, register, offset) in spills {
             self.frame_slots.insert(
                 name,
                 FrameSlot {
                     offset,
                     class: ValueClass::General,
                     size: 4,
+                    value_type,
                     parameter_register: Some(register),
                     is_array: false,
                 },

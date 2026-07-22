@@ -76,6 +76,131 @@ pub(super) fn adjacent_byte_pointer_round_up_name(function: &Function) -> Option
         })
 }
 
+/// A scaled member sum computed solely for the immediately following call is a
+/// register-pressure value, not one of build 163's retained scalar frame lanes.
+pub(super) fn is_transient_biased_scaled_member_call_local(
+    statements: &[Statement],
+    candidate: &str,
+) -> bool {
+    statements.windows(2).any(|window| {
+        let [
+            Statement::Assign { name, value },
+            Statement::Expression(Expression::Call { arguments, .. }),
+        ] = window
+        else {
+            return false;
+        };
+        name == candidate
+            && arguments
+                .iter()
+                .any(|argument| matches!(argument, Expression::Variable(name) if name == candidate))
+            && is_biased_scaled_member_sum(value)
+    })
+}
+
+pub(super) fn is_transient_shifted_member_mask_call_local(
+    statements: &[Statement],
+    candidate: &str,
+) -> bool {
+    statements.windows(2).any(|window| {
+        let [
+            Statement::Assign { name, value },
+            Statement::Expression(Expression::Call { arguments, .. }),
+        ] = window
+        else {
+            return false;
+        };
+        name == candidate
+            && arguments
+                .iter()
+                .any(|argument| matches!(argument, Expression::Variable(name) if name == candidate))
+            && is_shifted_member_high_mask(value)
+    })
+}
+
+fn is_shifted_member_high_mask(expression: &Expression) -> bool {
+    let Expression::Binary {
+        operator: BinaryOperator::BitAnd,
+        left: combined,
+        right: mask,
+    } = expression
+    else {
+        return false;
+    };
+    let Some(mask) = constant_value(mask).map(|value| value as i32 as u32) else {
+        return false;
+    };
+    let Expression::Binary {
+        operator: BinaryOperator::BitXor,
+        left: shifted,
+        right: member,
+    } = combined.as_ref()
+    else {
+        return false;
+    };
+    let Expression::Binary {
+        operator: BinaryOperator::ShiftLeft,
+        left: variable,
+        right: shift,
+    } = shifted.as_ref()
+    else {
+        return false;
+    };
+    let cleared_bits = mask.trailing_zeros();
+    cleared_bits != 0
+        && cleared_bits < 32
+        && mask == u32::MAX << cleared_bits
+        && matches!(variable.as_ref(), Expression::Variable(_))
+        && constant_value(shift).is_some()
+        && matches!(member.as_ref(), Expression::Member { index_stride: None, .. })
+}
+
+fn is_biased_scaled_member_sum(expression: &Expression) -> bool {
+    let Expression::Binary {
+        operator: BinaryOperator::Add,
+        left: product,
+        right: tail,
+    } = expression
+    else {
+        return false;
+    };
+    if constant_value(tail).is_none() {
+        return false;
+    }
+    let Expression::Binary {
+        operator: BinaryOperator::Multiply,
+        left: sum,
+        right: scale,
+    } = product.as_ref()
+    else {
+        return false;
+    };
+    let Some(scale) = constant_value(scale).and_then(|value| u32::try_from(value).ok()) else {
+        return false;
+    };
+    let Expression::Binary {
+        operator: BinaryOperator::Add,
+        left: biased,
+        right: member,
+    } = sum.as_ref()
+    else {
+        return false;
+    };
+    let Expression::Binary {
+        operator: BinaryOperator::Add,
+        left: variable,
+        right: bias,
+    } = biased.as_ref()
+    else {
+        return false;
+    };
+    scale >= 2
+        && scale.is_power_of_two()
+        && matches!(variable.as_ref(), Expression::Variable(_))
+        && constant_value(bias).is_some()
+        && matches!(member.as_ref(), Expression::Member { index_stride: None, .. })
+}
+
 fn has_composed_round_up_bias(expression: &Expression, name: &str) -> bool {
     let Expression::Cast {
         target_type: Type::Pointer(_) | Type::StructPointer { .. },

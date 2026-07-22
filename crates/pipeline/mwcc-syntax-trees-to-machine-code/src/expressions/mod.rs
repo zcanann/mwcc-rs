@@ -3,8 +3,9 @@
 //! Split by family (fire 528); behavior-identical to the former single expressions.rs.
 
 mod arithmetic;
-mod bit_fields;
+mod biased_scaled_member_sum;
 mod bit_field_stores;
+mod bit_fields;
 mod call_argument_schedules;
 mod call_argument_types;
 mod calls;
@@ -22,12 +23,13 @@ mod pointer_alignment;
 mod pointer_spans;
 mod pointers;
 mod punned_displacement;
+mod shifted_member_mask;
 mod stores;
 mod strings;
 
+pub(crate) use members::embedded_member_address_base;
 #[allow(unused_imports)]
 pub(crate) use passes::*;
-pub(crate) use members::embedded_member_address_base;
 
 pub(crate) use crate::analysis::*;
 pub(crate) use crate::generator::*;
@@ -37,6 +39,5 @@ pub(crate) use mwcc_machine_code::{Instruction, RelocationKind};
 pub(crate) use mwcc_syntax_trees::{BinaryOperator, Expression, Pointee, Type, UnaryOperator};
 pub(crate) use mwcc_target::Eabi;
 pub(crate) use mwcc_versions::{
-    BitFieldLoadPlacement, GlobalAddressing, GlobalArrayDecayStoreStyle,
-    MaterializationCopyStyle,
+    BitFieldLoadPlacement, GlobalAddressing, GlobalArrayDecayStoreStyle, MaterializationCopyStyle,
 };

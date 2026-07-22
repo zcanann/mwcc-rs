@@ -23,7 +23,11 @@ impl Generator {
             leaf_name(value).and_then(|name| self.lookup_general(name))
         {
             register
-        } else if self.is_word_load(value) {
+        } else if self.is_word_load(value)
+            || matches!(value, Expression::Variable(name)
+                if self.frame_slots.get(name).is_some_and(|slot|
+                    !slot.is_array && slot.class == ValueClass::General))
+        {
             self.evaluate_general(value, GENERAL_SCRATCH)?;
             GENERAL_SCRATCH
         } else {

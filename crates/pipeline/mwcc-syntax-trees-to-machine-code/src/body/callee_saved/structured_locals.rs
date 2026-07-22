@@ -55,9 +55,17 @@ pub(super) fn plan_deferred_saved_homes(
     let mut group_last_reads = Vec::<usize>::new();
     let mut group_by_name = std::collections::HashMap::new();
     for (name, first_assignment, last_read) in intervals {
+        // MWCC reuses the most recently expired local home. This is a LIFO
+        // lifetime discipline, not first-fit coloring: when several homes are
+        // free, a new deferred local takes the one whose previous value died
+        // latest (for example a status result reuses the just-dead length home,
+        // not an older answer home).
         let group = group_last_reads
             .iter()
-            .position(|previous_last_read| *previous_last_read < first_assignment)
+            .enumerate()
+            .filter(|(_, previous_last_read)| **previous_last_read < first_assignment)
+            .max_by_key(|(_, previous_last_read)| **previous_last_read)
+            .map(|(group, _)| group)
             .unwrap_or_else(|| {
                 group_last_reads.push(0);
                 group_last_reads.len() - 1
@@ -776,5 +784,53 @@ mod tests {
         let plan = plan_deferred_saved_homes(&function, &locals).unwrap();
         assert_eq!(plan.group_count, 2);
         assert_ne!(plan.group("first"), plan.group("second"));
+    }
+
+    #[test]
+    fn reuses_the_most_recently_expired_deferred_home() {
+        let mut early = local("early", Expression::IntegerLiteral(0));
+        early.initializer = None;
+        let mut late = local("late", Expression::IntegerLiteral(0));
+        late.initializer = None;
+        let mut reuse = local("reuse", Expression::IntegerLiteral(0));
+        reuse.initializer = None;
+        let function = Function {
+            return_type: Type::Void,
+            name: "compiled".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: vec![early, late, reuse],
+            statements: vec![
+                Statement::Assign {
+                    name: "early".into(),
+                    value: Expression::IntegerLiteral(1),
+                },
+                Statement::Assign {
+                    name: "late".into(),
+                    value: Expression::IntegerLiteral(2),
+                },
+                Statement::Expression(Expression::Variable("early".into())),
+                Statement::Expression(Expression::Variable("late".into())),
+                Statement::Assign {
+                    name: "reuse".into(),
+                    value: Expression::IntegerLiteral(3),
+                },
+                Statement::Expression(Expression::Variable("reuse".into())),
+            ],
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+        let locals: Vec<_> = function.locals.iter().collect();
+        let plan = plan_deferred_saved_homes(&function, &locals).unwrap();
+        assert_eq!(plan.group_count, 2);
+        assert_eq!(plan.group("reuse"), plan.group("late"));
+        assert_ne!(plan.group("reuse"), plan.group("early"));
     }
 }
