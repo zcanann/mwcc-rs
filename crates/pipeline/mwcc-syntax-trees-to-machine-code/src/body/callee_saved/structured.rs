@@ -1205,6 +1205,7 @@ impl Generator {
                         self.preload_condition_global_cache(condition)?;
                         let mut branches = Vec::with_capacity(terms.len());
                         for (term_index, term) in terms.iter().copied().enumerate() {
+                            let term_start = self.output.instructions.len();
                             let retained_assertion_condition = if term_index == 0 {
                                 None
                             } else {
@@ -1221,6 +1222,7 @@ impl Generator {
                                     })?
                                 }
                             };
+                            self.reuse_short_circuit_member_base(term_index, term_start);
                             if statement_index == 0 && term_index == 0 {
                                 if let Some(alias) = entry_alias.as_ref() {
                                     fold_entry_alias_zero_test(

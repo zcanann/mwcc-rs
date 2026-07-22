@@ -2266,6 +2266,15 @@ impl Generator {
         if self.try_callee_saved_structured_frame_body(function)? {
             return Ok(());
         }
+        // A single call-bearing `if (a && b)` is already a complete structured
+        // control-flow region. Claim it before broader conditional-call owners
+        // can lower the condition as a materialized 0/1 expression and lose
+        // MWCC's direct short-circuit branches.
+        if is_single_short_circuit_call_if(function)
+            && self.try_callee_saved_structured_body(function)?
+        {
+            return Ok(());
+        }
         if self.try_frame_resident(function)? {
             return Ok(());
         }
@@ -4594,4 +4603,17 @@ impl Generator {
             if self.locations.get(name.as_str())
                 .is_some_and(|location| location.class == ValueClass::General && location.width == 32 && location.pointee.is_none()))
     }
+}
+
+fn is_single_short_circuit_call_if(function: &Function) -> bool {
+    matches!(function.statements.as_slice(), [
+        Statement::If {
+            condition: Expression::Binary {
+                operator: BinaryOperator::LogicalAnd,
+                ..
+            },
+            then_body,
+            else_body,
+        }
+    ] if else_body.is_empty() && then_body.iter().any(statement_has_call))
 }
