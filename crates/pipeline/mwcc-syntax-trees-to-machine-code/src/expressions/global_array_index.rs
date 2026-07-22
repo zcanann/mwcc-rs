@@ -2,8 +2,122 @@
 
 #[allow(unused_imports)]
 use super::*;
+use super::members::split_scaled_index;
 
 impl Generator {
+    /// Load `array[leaf * factor + offset]` when the constant offset can stay in
+    /// the final D-form load.  Keeping the offset out of the computed index is
+    /// important: mwcc scales only the variable term, forms one element address,
+    /// and folds `offset * sizeof(element)` into the load displacement.
+    pub(crate) fn try_emit_offset_global_array_load(
+        &mut self,
+        name: &str,
+        total_size: u32,
+        pointee: Pointee,
+        index: &Expression,
+        destination: u8,
+    ) -> Compilation<bool> {
+        let Some((leaf, factor, offset)) = split_scaled_index(index) else {
+            return Ok(false);
+        };
+        if offset == 0 || factor <= 0 {
+            return Ok(false);
+        }
+        let scale = factor
+            .checked_mul(i64::from(pointee.size()))
+            .filter(|scale| (*scale as u64).is_power_of_two())
+            .ok_or_else(|| {
+                Diagnostic::error(
+                    "an offset global-array subscript needs a power-of-two variable scale (roadmap)",
+                )
+            })?;
+        let displacement = offset
+            .checked_mul(i64::from(pointee.size()))
+            .and_then(|value| i16::try_from(value).ok())
+            .ok_or_else(|| {
+                Diagnostic::error("global-array element offset out of range (roadmap)")
+            })?;
+        let index = self.general_register_of_leaf(leaf)?;
+        let address = if matches!(pointee, Pointee::Float | Pointee::Double) {
+            self.free_general_excluding(GENERAL_SCRATCH)?
+        } else if destination == GENERAL_SCRATCH {
+            self.fresh_virtual_general()
+        } else {
+            destination
+        };
+        let high = if address == index {
+            self.fresh_virtual_general()
+        } else {
+            address
+        };
+        let shift = scale.trailing_zeros() as u8;
+        self.emit_address_high(high, name);
+
+        if self.behavior.global_array_index_style
+            == mwcc_versions::GlobalArrayIndexStyle::ExplicitAddress
+        {
+            // Build 163 completes the base before issuing the independent scale.
+            self.record_relocation(RelocationKind::Addr16Lo, name);
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: high,
+                a: high,
+                immediate: 0,
+            });
+            if scale == 1 {
+                self.output.instructions.push(Instruction::Add {
+                    d: address,
+                    a: high,
+                    b: index,
+                });
+            } else {
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftLeftImmediate {
+                        a: GENERAL_SCRATCH,
+                        s: index,
+                        shift,
+                    });
+                self.output.instructions.push(Instruction::Add {
+                    d: address,
+                    a: high,
+                    b: GENERAL_SCRATCH,
+                });
+            }
+        } else {
+            // Mainline overlaps the variable scale with the relocated base load.
+            let scaled = if scale == 1 {
+                index
+            } else {
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftLeftImmediate {
+                        a: GENERAL_SCRATCH,
+                        s: index,
+                        shift,
+                    });
+                GENERAL_SCRATCH
+            };
+            self.record_relocation(RelocationKind::Addr16Lo, name);
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: address,
+                a: high,
+                immediate: 0,
+            });
+            self.output.instructions.push(Instruction::Add {
+                d: address,
+                a: address,
+                b: scaled,
+            });
+        }
+        self.output.instructions.push(displacement_load(
+            pointee,
+            destination,
+            address,
+            displacement,
+        )?);
+        Ok(true)
+    }
+
     /// Load an offset-zero field from a variable-indexed global struct array into
     /// r0 under the legacy explicit-address schedule. The ordinary address helper
     /// assumes its destination can also hold the element address; r0 cannot (and

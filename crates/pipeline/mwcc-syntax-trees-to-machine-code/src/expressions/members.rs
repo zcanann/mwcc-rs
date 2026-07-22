@@ -1090,6 +1090,15 @@ impl Generator {
             )?);
             return Ok(());
         }
+        if self.try_emit_offset_global_array_load(
+            name,
+            total_size,
+            pointee,
+            index,
+            destination,
+        )? {
+            return Ok(());
+        }
         // A variable index: scale it, materialize the base, and `lwzx`/`lfsx`. mwcc orders these so
         // the scale runs before the base lands in the base register; for a large array the base's
         // high half goes to a register the scale won't clobber. An INTEGER element's base IS the
