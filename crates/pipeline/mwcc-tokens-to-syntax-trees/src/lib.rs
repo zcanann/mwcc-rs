@@ -4702,6 +4702,30 @@ blr\n\
     }
 
     #[test]
+    fn resolves_member_overloads_from_aggregate_argument_identity() {
+        let source = r#"
+            struct Creature {};
+            struct Vector3f {};
+            struct Enemy {
+                float turn(Creature* target, float speed, float angle) { return 1.0f; }
+                float turn(Vector3f& target, float speed, float angle) { return 2.0f; }
+            };
+            float use(Enemy* enemy, Creature* creature) {
+                return enemy->turn(creature, 0.1f, 1.0f);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Call { name, .. })
+                if name.contains("Creature") && !name.contains("Vector3f")
+        ));
+    }
+
+    #[test]
     fn leaves_primary_templates_on_the_recovery_path() {
         let source = r#"
             template <typename T> int value(T value) { return value; }

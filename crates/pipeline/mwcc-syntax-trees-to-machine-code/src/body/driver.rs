@@ -3907,6 +3907,9 @@ impl Generator {
                 None,
                 false,
             ),
+            Statement::Expression(expression @ Expression::Comma { .. }) => {
+                self.emit_discarded_comma_sequence(expression)
+            }
             // A bare indirect-call statement `(*s->fp)()` / `(**pp)()`: load the
             // callee pointer into r12, then `mtctr r12; bctrl`. Only the NO-ARGUMENT
             // form is modeled — an argument collides with the pointer's own base

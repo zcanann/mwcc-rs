@@ -293,7 +293,7 @@ impl Parser {
                 continue;
             }
             if let Some(crate::cxx::ImplicitMemberCall::Direct { name, .. }) =
-                self.resolve_instance_member_call(class, target_member, 0)?
+                self.resolve_instance_member_call(class, target_member, &[])?
             {
                 if !resolved.contains(&name) {
                     resolved.push(name);

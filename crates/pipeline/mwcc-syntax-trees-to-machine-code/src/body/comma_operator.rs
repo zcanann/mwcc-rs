@@ -4,6 +4,24 @@ use super::*;
 use std::collections::HashSet;
 
 impl Generator {
+    /// Emit a discarded comma expression strictly left-to-right. Unlike a
+    /// value-producing comma, no right-hand result must survive an earlier
+    /// call, so each leaf can reuse ordinary statement lowering independently.
+    /// This covers source sequences such as `create(n), registerState(s);`
+    /// without introducing artificial temporaries or register constraints.
+    pub(crate) fn emit_discarded_comma_sequence(
+        &mut self,
+        expression: &Expression,
+    ) -> Compilation<()> {
+        match expression {
+            Expression::Comma { left, right } => {
+                self.emit_discarded_comma_sequence(left)?;
+                self.emit_discarded_comma_sequence(right)
+            }
+            leaf => self.emit_statement(&Statement::Expression(leaf.clone())),
+        }
+    }
+
     /// Build 163 assigns argument-home stack slots to register parameters that
     /// survive a comma operator. The spill set follows parameter order; each
     /// consumer reloads from the home. Later builds keep the values in their

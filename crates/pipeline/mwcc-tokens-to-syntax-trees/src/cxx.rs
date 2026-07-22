@@ -788,23 +788,12 @@ impl Parser {
         let exact: Vec<_> = candidates
             .iter()
             .filter(|method| {
-                arguments.iter().enumerate().all(|(index, argument)| {
-                    let Some(parameter) = method.cxx_parameters.get(index) else {
-                        return method.variadic;
-                    };
-                    if parameter.is_reference {
-                        if let (Some(expected), Some(actual)) = (
-                            parameter.qualified_name.as_deref(),
-                            self.cxx_expression_struct_tag(argument),
-                        ) {
-                            return expected == actual
-                                || expected.rsplit("::").next()
-                                    == actual.rsplit("::").next();
-                        }
-                    }
-                    self.cxx_expression_type(argument)
-                        .is_none_or(|actual| method.parameters[index] == actual)
-                })
+                self.cxx_arguments_exactly_match(
+                    &method.parameters,
+                    &method.cxx_parameters,
+                    method.variadic,
+                    arguments,
+                )
             })
             .collect();
         match exact.as_slice() {
@@ -813,6 +802,34 @@ impl Parser {
                 "C++ function call '{key}' is ambiguous (roadmap)"
             ))),
         }
+    }
+
+    /// Whether every modeled argument exactly matches a candidate declaration.
+    /// Aggregate identity is stronger than storage type: both `Creature*` and
+    /// `Vector3f&` occupy one address word, but only the qualified source type
+    /// can select the correct overload. Unknown argument types deliberately do
+    /// not disqualify a candidate, so an unresolved tie still defers safely.
+    fn cxx_arguments_exactly_match(
+        &self,
+        parameters: &[Type],
+        cxx_parameters: &[CxxParameterType],
+        variadic: bool,
+        arguments: &[Expression],
+    ) -> bool {
+        arguments.iter().enumerate().all(|(index, argument)| {
+            let Some(parameter) = cxx_parameters.get(index) else {
+                return variadic;
+            };
+            if let (Some(expected), Some(actual)) = (
+                parameter.qualified_name.as_deref(),
+                self.cxx_expression_struct_tag(argument),
+            ) {
+                return expected == actual
+                    || expected.rsplit("::").next() == actual.rsplit("::").next();
+            }
+            self.cxx_expression_type(argument)
+                .is_none_or(|actual| parameters.get(index) == Some(&actual))
+        })
     }
 
     pub(crate) fn cxx_expression_type(&self, expression: &Expression) -> Option<Type> {
@@ -2076,8 +2093,9 @@ impl Parser {
         &self,
         class: &str,
         member: &str,
-        argument_count: usize,
+        arguments: &[Expression],
     ) -> Compilation<Option<ImplicitMemberCall>> {
+        let argument_count = arguments.len();
         let resolved = self
             .resolve_scoped_cxx_class_name(class)
             .unwrap_or_else(|| class.to_owned());
@@ -2105,6 +2123,24 @@ impl Parser {
             }
             [] => {}
             _ => {
+                let exact = candidates
+                    .iter()
+                    .filter(|method| {
+                        self.cxx_arguments_exactly_match(
+                            &method.parameters,
+                            &method.cxx_parameters,
+                            method.variadic,
+                            arguments,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                if let [method] = exact.as_slice() {
+                    return Ok(Some(ImplicitMemberCall::Direct {
+                        name: method.mangled.clone(),
+                        is_inline: self.skipped_inline_names.contains(&method.mangled),
+                        this_adjustment: 0,
+                    }));
+                }
                 return Err(Diagnostic::error(format!(
                     "C++ member call '{resolved}::{member}' is ambiguous (roadmap)"
                 )));
@@ -2117,7 +2153,7 @@ impl Parser {
                 this_adjustment: 0,
             }));
         }
-        self.resolve_member_call_in_class(&resolved, member, argument_count)
+        self.resolve_member_call_in_class(&resolved, member, arguments)
     }
 
     /// Resolve a virtual member by declaration signature and return the ABI
@@ -2290,12 +2326,12 @@ impl Parser {
     pub(crate) fn resolve_implicit_member_call(
         &self,
         function: &str,
-        argument_count: usize,
+        arguments: &[Expression],
     ) -> Compilation<Option<ImplicitMemberCall>> {
         let Some(class_name) = self.current_cxx_member_class.as_deref() else {
             return Ok(None);
         };
-        self.resolve_member_call_in_class(class_name, function, argument_count)
+        self.resolve_member_call_in_class(class_name, function, arguments)
     }
 
     /// Resolve ordinary member lookup for a known object class. Both implicit
@@ -2306,8 +2342,9 @@ impl Parser {
         &self,
         class_name: &str,
         function: &str,
-        argument_count: usize,
+        arguments: &[Expression],
     ) -> Compilation<Option<ImplicitMemberCall>> {
+        let argument_count = arguments.len();
         if let Some(methods) = self
             .cxx_classes
             .get(class_name)
@@ -2317,6 +2354,21 @@ impl Parser {
                 .iter()
                 .filter(|method| method.parameters.len() == argument_count)
                 .collect();
+            let candidates = if candidates.len() > 1 {
+                candidates
+                    .into_iter()
+                    .filter(|method| {
+                        self.cxx_arguments_exactly_match(
+                            &method.parameters,
+                            &method.cxx_parameters,
+                            false,
+                            arguments,
+                        )
+                    })
+                    .collect()
+            } else {
+                candidates
+            };
             if candidates.len() != 1 {
                 return Err(Diagnostic::error(format!(
                     "member overload resolution for '{class_name}::{function}' is ambiguous or unavailable (roadmap)"
@@ -2366,6 +2418,21 @@ impl Parser {
                     .iter()
                     .filter(|method| method.parameters.len() == argument_count)
                     .collect();
+                let candidates = if candidates.len() > 1 {
+                    candidates
+                        .into_iter()
+                        .filter(|method| {
+                            self.cxx_arguments_exactly_match(
+                                &method.parameters,
+                                &method.cxx_parameters,
+                                false,
+                                arguments,
+                            )
+                        })
+                        .collect()
+                } else {
+                    candidates
+                };
                 if candidates.len() != 1 {
                     return Err(Diagnostic::error(format!(
                         "member overload resolution for '{owner}::{function}' is ambiguous or unavailable (roadmap)"
@@ -2427,9 +2494,29 @@ impl Parser {
                     this_adjustment: 0,
                 })),
                 [] => {}
-                _ => return Err(Diagnostic::error(format!(
-                    "member overload resolution for '{owner}::{function}' is ambiguous (roadmap)"
-                ))),
+                _ => {
+                    let exact = candidates
+                        .iter()
+                        .filter(|method| {
+                            self.cxx_arguments_exactly_match(
+                                &method.parameters,
+                                &method.cxx_parameters,
+                                method.variadic,
+                                arguments,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    if let [method] = exact.as_slice() {
+                        return Ok(Some(ImplicitMemberCall::Direct {
+                            name: method.mangled.clone(),
+                            is_inline: self.skipped_inline_names.contains(&method.mangled),
+                            this_adjustment: 0,
+                        }));
+                    }
+                    return Err(Diagnostic::error(format!(
+                        "member overload resolution for '{owner}::{function}' is ambiguous (roadmap)"
+                    )));
+                }
             }
             let Some(base) = self.cxx_primary_bases.get(owner) else {
                 break;

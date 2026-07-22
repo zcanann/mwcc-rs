@@ -708,8 +708,7 @@ impl Parser {
                     }
                 }
                 self.expect(Token::ParenClose)?;
-                if let Some(member_call) =
-                    self.resolve_implicit_member_call(&name, arguments.len())?
+                if let Some(member_call) = self.resolve_implicit_member_call(&name, &arguments)?
                 {
                     match member_call {
                         crate::cxx::ImplicitMemberCall::Direct {
@@ -1393,7 +1392,7 @@ impl Parser {
         mut arguments: Vec<Expression>,
     ) -> Compilation<Expression> {
         let member_call = self
-            .resolve_instance_member_call(class, member, arguments.len())?
+            .resolve_instance_member_call(class, member, &arguments)?
             .ok_or_else(|| {
                 Diagnostic::error(format!(
                     "C++ member call '{class}::{member}' is unavailable (roadmap)"
