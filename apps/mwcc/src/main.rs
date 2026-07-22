@@ -1044,12 +1044,15 @@ fn compile(
             );
             let static_unit_data_table =
                 global_initializers::private_unit_data_table(global, elements, &unit.globals);
+            let static_string_table =
+                global_initializers::private_string_table(global, elements);
             if (global.is_static || global.is_const)
                 && global.section.is_none()
                 && !single_target
                 && !all_null
                 && !static_unit_function_table
                 && !static_unit_data_table
+                && !static_string_table
             {
                 return Err(Diagnostic::error(
                     "a static/const pointer-address global is not supported yet (roadmap)",
@@ -1163,7 +1166,8 @@ fn compile(
                         || global.is_const
                         || all_null
                         || static_unit_function_table
-                        || static_unit_data_table),
+                        || static_unit_data_table
+                        || static_string_table),
                 is_explicit_zero,
                 preassigned_anonymous_ordinal: None,
                 relocations,

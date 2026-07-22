@@ -43,3 +43,19 @@ pub(crate) fn private_unit_data_table(
             PointerElement::Str(_) => false,
         })
 }
+
+/// A private writable table whose relocations all target string literals owned
+/// by this translation unit is self-contained. The driver interns each string
+/// and the object writer can therefore order every local target without any
+/// unresolved external-symbol policy.
+pub(crate) fn private_string_table(
+    global: &GlobalDeclaration,
+    elements: &[PointerElement],
+) -> bool {
+    global.is_static
+        && !global.is_const
+        && global.array_length.is_some()
+        && elements
+            .iter()
+            .all(|element| matches!(element, PointerElement::Str(_) | PointerElement::Null))
+}

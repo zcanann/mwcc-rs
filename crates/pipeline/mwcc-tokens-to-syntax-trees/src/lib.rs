@@ -3486,6 +3486,28 @@ blr\n\
     }
 
     #[test]
+    fn out_of_class_static_method_definition_has_no_implicit_this() {
+        let source = r#"
+            struct Utility {
+                static int value(int input);
+            };
+            int Utility::value(int input) { return input; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].parameters.as_slice(),
+            [mwcc_syntax_trees::Parameter { name, .. }] if name == "input"
+        ));
+    }
+
+    #[test]
     fn retains_struct_layout_across_inline_cxx_operators() {
         let source = r#"
             struct Pixel {

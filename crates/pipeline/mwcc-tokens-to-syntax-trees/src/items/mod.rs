@@ -2738,38 +2738,50 @@ impl Parser {
             let inherited_c_linkage = self
                 .c_linkage_functions
                 .contains(linkage_source_name.as_str());
+            let mut member_definition_is_static = false;
 
             if let Some(scope) = &member_scope {
                 let source_name = if constructor_scope.is_some() {
-                    "__ct"
+                    "__ct".to_string()
                 } else {
-                    &name
+                    name.clone()
                 };
                 name = if member_is_const {
                     self.mangle_typed_const_member_in_current_namespace(
                         scope,
-                        source_name,
+                        &source_name,
                         &cxx_parameters,
                     )?
                 } else {
                     self.mangle_typed_member_in_current_namespace(
                         scope,
-                        source_name,
+                        &source_name,
                         &cxx_parameters,
                     )?
                 };
-                parameters.insert(
-                    0,
-                    Parameter {
-                        parameter_type: Type::StructPointer {
-                            element_size: member_layout_scope
-                                .as_deref()
-                                .and_then(|layout_scope| self.structs.get(layout_scope))
-                                .map_or(0, |layout| layout.size),
-                        },
-                        name: "this".to_string(),
+                member_definition_is_static = member_declaration_scope.as_ref().is_some_and(
+                    |class| {
+                        self.cxx_static_methods
+                            .get(&(class.clone(), source_name.clone()))
+                            .is_some_and(|methods| {
+                                methods.iter().any(|method| method.mangled == name)
+                            })
                     },
                 );
+                if !member_definition_is_static {
+                    parameters.insert(
+                        0,
+                        Parameter {
+                            parameter_type: Type::StructPointer {
+                                element_size: member_layout_scope
+                                    .as_deref()
+                                    .and_then(|layout_scope| self.structs.get(layout_scope))
+                                    .map_or(0, |layout| layout.size),
+                            },
+                            name: "this".to_string(),
+                        },
+                    );
+                }
                 // A virtual destructor has an ABI-only signed-short deleting
                 // flag in r4. It is deliberately absent from the mangled type,
                 // but must be present in executable IR so the ordinary
@@ -2954,10 +2966,12 @@ impl Parser {
             let previous_member_class = self.current_cxx_member_class.clone();
             let previous_this_struct = self.variable_structs.get("this").cloned();
             self.current_cxx_member_class = member_declaration_scope.clone();
-            if let Some(scope) = &member_layout_scope {
-                self.current_member_scope = Some(scope.clone());
-                self.variable_structs
-                    .insert("this".to_string(), scope.clone());
+            if !member_definition_is_static {
+                if let Some(scope) = &member_layout_scope {
+                    self.current_member_scope = Some(scope.clone());
+                    self.variable_structs
+                        .insert("this".to_string(), scope.clone());
+                }
             }
             let parsed_function = self.function_body(
                 if let Some(scope) = &constructor_scope {
