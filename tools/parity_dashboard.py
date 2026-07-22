@@ -438,7 +438,13 @@ def build_coverage(
 def goal_completion(
     rows: List[Dict[str, Any]], observations: Dict[str, Dict[str, Any]]
 ) -> Dict[str, Any]:
-    """Report literal proof against the all-configurations success criterion."""
+    """Report literal drop-in proof against the all-configurations criterion.
+
+    The preprocessed bridge is valuable compiler-core evidence, but matching it
+    does not prove that ``mwcc-rs`` can replace MWCC on the project's real build
+    command.  Only the separately recorded configured-source object can earn
+    completion credit here.
+    """
 
     by_project: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -447,8 +453,16 @@ def goal_completion(
 
     projects = []
     for name, project_rows in sorted(by_project.items()):
-        exact = sum(
+        bridge_exact = sum(
             authoritative_result(observations[row["configuration_id"]]) == "BYTE"
+            for row in project_rows
+            if row["configuration_id"] in observations
+        )
+        configured_source_exact = sum(
+            observation_evidence(observations[row["configuration_id"]]).get(
+                "configured_source"
+            )
+            == "BYTE"
             for row in project_rows
             if row["configuration_id"] in observations
         )
@@ -456,14 +470,24 @@ def goal_completion(
             {
                 "name": name,
                 "configurations": len(project_rows),
-                "authoritative_exact": exact,
-                "remaining": len(project_rows) - exact,
-                "proven_complete": exact == len(project_rows),
+                # Retain this diagnostic field for snapshot compatibility. It
+                # is deliberately not used for completion or remaining work.
+                "authoritative_exact": bridge_exact,
+                "configured_source_exact": configured_source_exact,
+                "remaining": len(project_rows) - configured_source_exact,
+                "proven_complete": configured_source_exact == len(project_rows),
             }
         )
     return {
-        "criterion": "every configured translation unit is whole-object byte-identical",
+        "criterion": (
+            "every configured translation unit's actual project invocation is "
+            "whole-object byte-identical"
+        ),
         "configurations": sum(item["configurations"] for item in projects),
+        "configured_source_exact": sum(
+            item["configured_source_exact"] for item in projects
+        ),
+        # Bridge-only diagnostic, not formal completion credit.
         "authoritative_exact": sum(item["authoritative_exact"] for item in projects),
         "projects": len(projects),
         "projects_proven_complete": sum(item["proven_complete"] for item in projects),
@@ -1156,8 +1180,8 @@ def print_brief(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]]) 
     print("== parity status (denominator-first) ==")
     print(f"compiler+harness fingerprint: {(tool or '<no observations>')[:24]}")
     print(
-        "formal completion — authoritative whole-object exact: "
-        f"{goal['authoritative_exact']}/{goal['configurations']} configured TUs; "
+        "formal completion — configured-source whole-object exact: "
+        f"{goal['configured_source_exact']}/{goal['configurations']} configured TUs; "
         f"complete project matrices {goal['projects_proven_complete']}/{goal['projects']}"
     )
     print(
@@ -1351,8 +1375,8 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
     )
     goal = report["goal_completion"]
     print(
-        "goal completion proof: whole-object exact "
-        f"{goal['authoritative_exact']}/{goal['configurations']} configured TUs; "
+        "goal completion proof: configured-source whole-object exact "
+        f"{goal['configured_source_exact']}/{goal['configurations']} configured TUs; "
         f"fully exact project matrices {goal['projects_proven_complete']}/{goal['projects']}"
     )
     print(

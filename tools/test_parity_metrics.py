@@ -637,7 +637,31 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(report["authoritative_byte"], 1)
         self.assertEqual(report["rates"]["byte_of_existing"], 0.5)
         self.assertEqual(report["goal_completion"]["authoritative_exact"], 1)
+        self.assertEqual(report["goal_completion"]["configured_source_exact"], 0)
         self.assertEqual(report["goal_completion"]["projects_proven_complete"], 0)
+
+    def test_goal_completion_does_not_credit_a_bridge_only_match(self):
+        source = row(source="src/bridge-only.c")
+        observation = {
+            "status": "BYTE",
+            "evidence": {
+                "oracle_direct": "RUNNABLE",
+                "comparison_input": "DIRECT",
+                "reference_object": "DIRECT",
+                "configured_source": "DEFER",
+            },
+        }
+        goal = snapshot(
+            {"projects": []},
+            [source],
+            {source["configuration_id"]: observation},
+            "tool",
+        )["goal_completion"]
+
+        self.assertEqual(goal["authoritative_exact"], 1)
+        self.assertEqual(goal["configured_source_exact"], 0)
+        self.assertEqual(goal["by_project"][0]["remaining"], 1)
+        self.assertEqual(goal["projects_proven_complete"], 0)
 
     def test_snapshot_exposes_projects_outside_the_mwcc_denominator(self):
         configured = row(project="configured")
@@ -677,6 +701,7 @@ class DashboardTests(unittest.TestCase):
                 "evidence": {
                     "oracle_direct": "RUNNABLE",
                     "comparison_input": "DIRECT",
+                    "configured_source": "BYTE",
                 },
             }
             for item in rows[:2]
@@ -685,6 +710,7 @@ class DashboardTests(unittest.TestCase):
             "goal_completion"
         ]
         self.assertEqual(goal["authoritative_exact"], 2)
+        self.assertEqual(goal["configured_source_exact"], 2)
         self.assertEqual(goal["configurations"], 3)
         self.assertEqual(goal["projects_proven_complete"], 1)
         self.assertEqual(goal["projects"], 2)
