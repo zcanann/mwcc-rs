@@ -26,6 +26,17 @@ impl Generator {
                 .push(displacement_load(pointee, destination, 1, offset)?);
             return Ok(());
         }
+        // `*(T *)(bytes + k)`: the addition happens as byte-pointer
+        // arithmetic before the cast, so k is already the final displacement.
+        if let Some((pointee, address, offset)) = self.punned_displacement_address(pointer) {
+            self.output.instructions.push(displacement_load(
+                pointee,
+                destination,
+                address,
+                offset,
+            )?);
+            return Ok(());
+        }
         // A global pointer: load the pointer value into the destination (an SDA21
         // word load), then dereference it from there, as mwcc does.
         if let Expression::Variable(name) = pointer {

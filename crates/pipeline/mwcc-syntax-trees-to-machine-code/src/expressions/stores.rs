@@ -710,6 +710,21 @@ impl Generator {
         if expression_has_call(value) {
             return Err(Diagnostic::error("a store through a register pointer whose value contains a call needs callee-saved preservation (roadmap)"));
         }
+        if index.is_none() {
+            if let Some((pointee, address, offset)) =
+                self.punned_displacement_address(base)
+            {
+                let restore = address != GENERAL_SCRATCH && self.reserved.insert(address);
+                let source = self.place_store_value(value, pointee)?;
+                if restore {
+                    self.reserved.remove(&address);
+                }
+                self.output
+                    .instructions
+                    .push(displacement_store(pointee, source, address, offset)?);
+                return Ok(());
+            }
+        }
         let (pointee, address) = self.resolve_pointer(base)?;
         // The address register is live for the store; reserve it while the value is
         // placed so a value needing a temporary (e.g. a magic-number divide) can't pick

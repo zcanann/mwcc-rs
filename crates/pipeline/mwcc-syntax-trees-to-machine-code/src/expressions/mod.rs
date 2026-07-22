@@ -20,6 +20,7 @@ mod operands;
 mod passes;
 mod pointer_alignment;
 mod pointers;
+mod punned_displacement;
 mod stores;
 mod strings;
 
