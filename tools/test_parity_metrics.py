@@ -23,6 +23,8 @@ from parity_dashboard import (
     compiler_blocker_family,
     delta,
     failure_reason,
+    function_metric,
+    function_metric_summary,
     normalize_reason,
     print_brief,
     representative_audit,
@@ -938,6 +940,35 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(code_component_result(record, "TEXT_RELOC_SHAPE"), "BYTE")
         self.assertEqual(code_component_result(record, "TEXT_RELOC_TARGETS"), "DIFF")
         self.assertEqual(code_component_result(record, "ANON_ORDINALS"), "DIFF")
+
+    def test_function_metrics_preserve_partial_progress_and_byte_weight(self):
+        first = {
+            "status": "DIFF",
+            "output": (
+                "FUNCTION_CODE DIFF — 9/28 relocation-aware functions exact (32.1%); "
+                "296/3436 reference function bytes exact (8.6%); "
+                "17 comparable, 11 missing, 0 candidate-only"
+            ),
+        }
+        second = {
+            "status": "DIFF",
+            "output": (
+                "FUNCTION_CODE DIFF — 3/4 relocation-aware functions exact (75.0%); "
+                "60/100 reference function bytes exact (60.0%); "
+                "4 comparable, 0 missing, 1 candidate-only"
+            ),
+        }
+        self.assertEqual(function_metric(first, "FUNCTION_CODE")["exact_functions"], 9)
+        summary = function_metric_summary([first, second], "FUNCTION_CODE")
+        self.assertEqual(summary["objects_measured"], 2)
+        self.assertEqual(summary["exact_functions"], 12)
+        self.assertEqual(summary["reference_functions"], 32)
+        self.assertEqual(summary["exact_bytes"], 356)
+        self.assertEqual(summary["reference_bytes"], 3536)
+        self.assertEqual(summary["missing"], 11)
+        self.assertEqual(summary["candidate_only"], 1)
+        self.assertAlmostEqual(summary["exact_function_proportion"], 12 / 32)
+        self.assertAlmostEqual(summary["exact_reference_byte_proportion"], 356 / 3536)
 
     def test_snapshot_keeps_untested_in_the_denominator(self):
         rows = [row(source="src/a.c"), row(source="src/b.c"), row(source="src/missing.c", source_exists=False)]

@@ -32,6 +32,27 @@ class TextRelocation:
         return re.sub(r"(?<![A-Za-z0-9_$])@\d+\b", "@<anonymous>", self.target)
 
 
+@dataclass(frozen=True)
+class TextFunction:
+    address: int
+    size: int
+    name: str
+
+
+@dataclass(frozen=True)
+class FunctionParity:
+    reference_functions: int
+    candidate_functions: int
+    comparable_functions: int
+    text_exact_functions: int
+    code_exact_functions: int
+    reference_function_bytes: int
+    text_exact_reference_bytes: int
+    code_exact_reference_bytes: int
+    missing_functions: int
+    candidate_only_functions: int
+
+
 def run_objdump(objdump: Path, *arguments: str) -> str:
     result = subprocess.run(
         [str(objdump), *arguments],
@@ -84,6 +105,122 @@ def parse_text_relocations(output: str) -> list[TextRelocation]:
                 TextRelocation(int(match.group(1), 16), match.group(2), match.group(3))
             )
     return relocations
+
+
+def parse_text_functions(output: str) -> list[TextFunction]:
+    """Read defined, non-empty ``.text`` function symbols from ``objdump -t``."""
+
+    functions: list[TextFunction] = []
+    pattern = re.compile(
+        r"^\s*([0-9A-Fa-f]+)\s+.*?\bF\s+\.text\s+"
+        r"([0-9A-Fa-f]+)\s+(\S.*?)\s*$"
+    )
+    for line in output.splitlines():
+        if match := pattern.match(line):
+            size = int(match.group(2), 16)
+            if size:
+                functions.append(
+                    TextFunction(int(match.group(1), 16), size, match.group(3))
+                )
+    return functions
+
+
+def function_parity(
+    reference_bytes: bytes,
+    candidate_bytes: bytes,
+    reference_relocations: Sequence[TextRelocation],
+    candidate_relocations: Sequence[TextRelocation],
+    reference_functions: Sequence[TextFunction],
+    candidate_functions: Sequence[TextFunction],
+) -> FunctionParity:
+    """Compare named function bodies independently of whole-section placement."""
+
+    reference_by_name = {function.name: function for function in reference_functions}
+    candidate_by_name = {function.name: function for function in candidate_functions}
+    comparable = reference_by_name.keys() & candidate_by_name.keys()
+    text_exact = 0
+    code_exact = 0
+    text_exact_bytes = 0
+    code_exact_bytes = 0
+
+    def body(section: bytes, function: TextFunction) -> bytes:
+        return section[function.address : function.address + function.size]
+
+    def function_relocations(
+        relocations: Sequence[TextRelocation], function: TextFunction
+    ) -> list[TextRelocation]:
+        end = function.address + function.size
+        return [
+            TextRelocation(
+                relocation.offset - function.address,
+                relocation.kind,
+                relocation.target,
+            )
+            for relocation in relocations
+            if function.address <= relocation.offset < end
+        ]
+
+    for name in comparable:
+        reference = reference_by_name[name]
+        candidate = candidate_by_name[name]
+        bytes_equal = (
+            reference.size == candidate.size
+            and body(reference_bytes, reference) == body(candidate_bytes, candidate)
+        )
+        if bytes_equal:
+            text_exact += 1
+            text_exact_bytes += reference.size
+            if function_relocations(
+                reference_relocations, reference
+            ) == function_relocations(candidate_relocations, candidate):
+                code_exact += 1
+                code_exact_bytes += reference.size
+
+    return FunctionParity(
+        reference_functions=len(reference_by_name),
+        candidate_functions=len(candidate_by_name),
+        comparable_functions=len(comparable),
+        text_exact_functions=text_exact,
+        code_exact_functions=code_exact,
+        reference_function_bytes=sum(function.size for function in reference_by_name.values()),
+        text_exact_reference_bytes=text_exact_bytes,
+        code_exact_reference_bytes=code_exact_bytes,
+        missing_functions=len(reference_by_name.keys() - candidate_by_name.keys()),
+        candidate_only_functions=len(candidate_by_name.keys() - reference_by_name.keys()),
+    )
+
+
+def describe_function_parity(parity: FunctionParity, relocation_aware: bool) -> str:
+    exact_functions = (
+        parity.code_exact_functions if relocation_aware else parity.text_exact_functions
+    )
+    exact_bytes = (
+        parity.code_exact_reference_bytes
+        if relocation_aware
+        else parity.text_exact_reference_bytes
+    )
+    if not parity.reference_functions and not parity.candidate_functions:
+        return "EMPTY — neither object has named .text functions"
+    exact = (
+        exact_functions == parity.reference_functions
+        and parity.missing_functions == 0
+        and parity.candidate_only_functions == 0
+    )
+    status = "BYTE" if exact else "DIFF"
+    function_percent = 100.0 * exact_functions / parity.reference_functions if parity.reference_functions else 0.0
+    byte_percent = (
+        100.0 * exact_bytes / parity.reference_function_bytes
+        if parity.reference_function_bytes
+        else 0.0
+    )
+    qualifier = "relocation-aware " if relocation_aware else ""
+    return (
+        f"{status} — {exact_functions}/{parity.reference_functions} {qualifier}functions exact "
+        f"({function_percent:.1f}%); {exact_bytes}/{parity.reference_function_bytes} "
+        f"reference function bytes exact ({byte_percent:.1f}%); "
+        f"{parity.comparable_functions} comparable, {parity.missing_functions} missing, "
+        f"{parity.candidate_only_functions} candidate-only"
+    )
 
 
 def first_sequence_difference(reference: Sequence[object], candidate: Sequence[object]) -> int:
@@ -178,6 +315,10 @@ def measure(objdump: Path, object_path: Path) -> tuple[bytes, list[TextRelocatio
     return section, relocations
 
 
+def measure_functions(objdump: Path, object_path: Path) -> list[TextFunction]:
+    return parse_text_functions(run_objdump(objdump, "-t", str(object_path)))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("objdump", type=Path)
@@ -188,6 +329,14 @@ def main() -> int:
 
     reference_bytes, reference_relocations = measure(args.objdump, args.reference)
     candidate_bytes, candidate_relocations = measure(args.objdump, args.candidate)
+    parity = function_parity(
+        reference_bytes,
+        candidate_bytes,
+        reference_relocations,
+        candidate_relocations,
+        measure_functions(args.objdump, args.reference),
+        measure_functions(args.objdump, args.candidate),
+    )
     suffix = f" in {args.context}" if args.context else ""
     for line in statuses(
         reference_bytes,
@@ -196,6 +345,8 @@ def main() -> int:
         candidate_relocations,
     ):
         print(f"{line}{suffix}")
+    print(f"FUNCTION_TEXT {describe_function_parity(parity, False)}{suffix}")
+    print(f"FUNCTION_CODE {describe_function_parity(parity, True)}{suffix}")
     return 0
 
 

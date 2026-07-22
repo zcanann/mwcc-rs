@@ -137,6 +137,59 @@ def component_summary(
     }
 
 
+FUNCTION_METRIC_PATTERN = re.compile(
+    r"^(FUNCTION_(?:TEXT|CODE)) (?:BYTE|DIFF) — "
+    r"(?P<exact_functions>\d+)/(?P<reference_functions>\d+) .*?functions exact .*?; "
+    r"(?P<exact_bytes>\d+)/(?P<reference_bytes>\d+) reference function bytes exact .*?; "
+    r"(?P<comparable>\d+) comparable, (?P<missing>\d+) missing, "
+    r"(?P<candidate_only>\d+) candidate-only$"
+)
+
+
+def function_metric(record: Dict[str, Any], component: str) -> Optional[Dict[str, int]]:
+    """Parse one per-function metric emitted while both objects still exist."""
+
+    for line in record.get("output", "").splitlines():
+        match = FUNCTION_METRIC_PATTERN.match(line)
+        if match and match.group(1) == component:
+            return {name: int(value) for name, value in match.groupdict().items()}
+    return None
+
+
+def function_metric_summary(
+    observations: Iterable[Dict[str, Any]], component: str
+) -> Dict[str, Any]:
+    metrics = [
+        metric
+        for observation in observations
+        if (metric := function_metric(observation, component)) is not None
+    ]
+    totals = {
+        name: sum(metric[name] for metric in metrics)
+        for name in (
+            "exact_functions",
+            "reference_functions",
+            "exact_bytes",
+            "reference_bytes",
+            "comparable",
+            "missing",
+            "candidate_only",
+        )
+    }
+    totals["objects_measured"] = len(metrics)
+    totals["exact_function_proportion"] = (
+        totals["exact_functions"] / totals["reference_functions"]
+        if totals["reference_functions"]
+        else None
+    )
+    totals["exact_reference_byte_proportion"] = (
+        totals["exact_bytes"] / totals["reference_bytes"]
+        if totals["reference_bytes"]
+        else None
+    )
+    return totals
+
+
 def blocker_breakdown(
     rows: List[Dict[str, Any]],
     observations: Dict[str, Dict[str, Any]],
@@ -981,6 +1034,10 @@ def representative_audit(
             "text_reloc_shape": component_summary(direct.values(), "TEXT_RELOC_SHAPE"),
             "text_reloc_targets": component_summary(direct.values(), "TEXT_RELOC_TARGETS"),
         }
+        function_components = {
+            "text": function_metric_summary(direct.values(), "FUNCTION_TEXT"),
+            "code": function_metric_summary(direct.values(), "FUNCTION_CODE"),
+        }
         anonymous_ordinal_only_mismatches = sum(
             code_component_result(observation, "ANON_ORDINALS") == "DIFF"
             for observation in direct.values()
@@ -1109,6 +1166,7 @@ def representative_audit(
             "code_exact_interval_low": code_exact_low,
             "code_exact_interval_high": code_exact_high,
             "code_components": code_components,
+            "function_components": function_components,
             "anonymous_ordinal_only_mismatches": anonymous_ordinal_only_mismatches,
             # Whitespace-only source placeholders can produce exact trivial
             # objects. They remain in the goal metric, while this conditional
@@ -1311,6 +1369,18 @@ def print_brief(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]]) 
                 f"{estimate['code_exact_proportion']:.1%}; wrong "
                 f"{estimate['code_wrong']}/{estimate['code_measured']}; "
                 f"projection-deferred {estimate['code_deferred']}"
+            )
+        function_code = estimate["function_components"]["code"]
+        if function_code["objects_measured"]:
+            print(
+                "relocation-aware function parity — exact functions "
+                f"{function_code['exact_functions']}/{function_code['reference_functions']} = "
+                f"{function_code['exact_function_proportion']:.1%}; exact reference code bytes "
+                f"{function_code['exact_bytes']}/{function_code['reference_bytes']} = "
+                f"{function_code['exact_reference_byte_proportion']:.1%}; "
+                f"objects measured {function_code['objects_measured']}/{estimate['total']}; "
+                f"comparable {function_code['comparable']}, missing "
+                f"{function_code['missing']}, candidate-only {function_code['candidate_only']}"
             )
         print(
             "audit coverage — compiler versions "

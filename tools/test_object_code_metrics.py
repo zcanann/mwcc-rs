@@ -6,8 +6,12 @@ import subprocess
 from pathlib import Path
 
 from object_code_metrics import (
+    TextFunction,
     TextRelocation,
+    describe_function_parity,
+    function_parity,
     parse_section_bytes,
+    parse_text_functions,
     parse_text_relocations,
     run_objdump,
     statuses,
@@ -67,6 +71,54 @@ OFFSET   TYPE              VALUE
                 TextRelocation(0x24, "R_PPC_EMB_SDA21", "@79"),
                 TextRelocation(0x64, "R_PPC_REL24", "cBgW_CheckBGround__Ff"),
             ],
+        )
+
+    def test_parses_defined_text_function_symbols(self):
+        output = """
+00000000 g     F .text  00000008 public__Fv
+00000008  w    F .text  00000004 weak__Fv
+00000000         *UND*  00000000 external__Fv
+00000000 g     O .data  00000004 datum
+"""
+        self.assertEqual(
+            parse_text_functions(output),
+            [
+                TextFunction(0, 8, "public__Fv"),
+                TextFunction(8, 4, "weak__Fv"),
+            ],
+        )
+
+    def test_function_parity_is_position_independent_and_relocation_aware(self):
+        reference_bytes = bytes.fromhex("01020304 aabbccdd 05060708")
+        candidate_bytes = bytes.fromhex("aabbccdd 01020304 05060709")
+        reference_functions = [
+            TextFunction(0, 4, "first"),
+            TextFunction(4, 4, "second"),
+            TextFunction(8, 4, "missing"),
+        ]
+        candidate_functions = [
+            TextFunction(4, 4, "first"),
+            TextFunction(0, 4, "second"),
+            TextFunction(8, 4, "extra"),
+        ]
+        parity = function_parity(
+            reference_bytes,
+            candidate_bytes,
+            [TextRelocation(0, "R_PPC_REL24", "callee_a")],
+            [TextRelocation(4, "R_PPC_REL24", "callee_b")],
+            reference_functions,
+            candidate_functions,
+        )
+        self.assertEqual(parity.text_exact_functions, 2)
+        self.assertEqual(parity.code_exact_functions, 1)
+        self.assertEqual(parity.text_exact_reference_bytes, 8)
+        self.assertEqual(parity.code_exact_reference_bytes, 4)
+        self.assertEqual(parity.missing_functions, 1)
+        self.assertEqual(parity.candidate_only_functions, 1)
+        self.assertIn("2/3 functions exact", describe_function_parity(parity, False))
+        self.assertIn(
+            "1/3 relocation-aware functions exact",
+            describe_function_parity(parity, True),
         )
 
 
