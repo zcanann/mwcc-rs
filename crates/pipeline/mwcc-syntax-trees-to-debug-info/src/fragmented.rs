@@ -124,7 +124,7 @@ pub(super) fn lower_simple_void_functions(
         .zip(&debug_fragments)
     {
         let binding = function_binding(function.is_static, function.is_weak);
-        let fragment_flags = if function.is_weak { 0x0d00_0000 } else { 0 };
+        let fragment_flags = if function.is_weak { 0x0e00_0000 } else { 0 };
         sections.symbols.push(symbol(
             format!(".line.{}", function.name),
             DebugSection::Line,
@@ -332,7 +332,7 @@ fn fragment_ordinals(
     let first_ordinal = counter
         .checked_add(first_prefix.saturating_sub(1))
         .ok_or_else(|| Diagnostic::error("debug-info: invalid GC 4.1 fragment ordinal"))?;
-    let mut close_ordinal = first_ordinal + 1;
+    let mut close_ordinal = None;
     for (index, machine) in machine_functions.iter().enumerate() {
         let mut number = counter
             .checked_add(ordinal_bump_before_unwind(machine)?)
@@ -343,7 +343,13 @@ fn fragment_ordinals(
                 .ok_or_else(|| Diagnostic::error("debug-info: invalid GC 4.1 fragment ordinal"))?;
         }
         if index + 1 == machine_functions.len() {
-            close_ordinal = close_ordinal.max(number);
+            close_ordinal = Some(
+                number
+                    .checked_add(u32::from(machine.frame.is_none()))
+                    .ok_or_else(|| {
+                        Diagnostic::error("debug-info: invalid GC 4.1 fragment ordinal")
+                    })?,
+            );
         }
         let post_function_bump = machine.post_function_anonymous_bump.unwrap_or_else(|| {
             if machine.frame.is_some() {
@@ -356,7 +362,10 @@ fn fragment_ordinals(
             .checked_add(u32::from(post_function_bump))
             .ok_or_else(|| Diagnostic::error("debug-info: invalid GC 4.1 fragment ordinal"))?;
     }
-    Ok((first_ordinal, close_ordinal))
+    Ok((
+        first_ordinal,
+        close_ordinal.expect("a simple-function debug unit is nonempty"),
+    ))
 }
 
 fn fragmented_post_framed_bump(build: CompilerBuild) -> u8 {
