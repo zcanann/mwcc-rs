@@ -53,7 +53,7 @@ pub fn lower_debug_info(
     // instead keeps the monolithic grouped stream used by the legacy lowering.
     let monolithic_data_unit = unit.functions.is_empty() && machine_functions.is_empty();
     if fragmented_generation && !monolithic_data_unit {
-        if !has_emitted_data && legacy::matches_single_simple_void(unit, machine_functions) {
+        if !has_emitted_data && legacy::matches_simple_void_functions(unit, machine_functions) {
             let grouped = legacy::lower(
                 unit,
                 machine_functions,
@@ -61,10 +61,11 @@ pub fn lower_debug_info(
                 build,
                 code_alignment,
             )?;
-            return fragmented::lower_single_simple_void(
+            return fragmented::lower_simple_void_functions(
                 unit,
                 machine_functions,
                 build,
+                code_alignment,
                 grouped,
             )
             .map(Some);

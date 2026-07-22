@@ -298,6 +298,7 @@ fn decode(bytes: &[u8]) -> Compilation<DebugSections> {
     }
     Ok(DebugSections {
         layout,
+        post_framed_function_anonymous_bump_override: None,
         line,
         debug,
         line_relocations,

@@ -124,6 +124,11 @@ pub struct DebugSymbol {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DebugSections {
     pub layout: DebugLayout,
+    /// Fragmented debug generations can redistribute ordinal bookkeeping
+    /// across a framed function boundary. The object planner consumes this
+    /// override while assigning unwind symbols; monolithic formats leave it
+    /// unset and use the build's ordinary post-function convention.
+    pub post_framed_function_anonymous_bump_override: Option<u8>,
     pub line: Vec<u8>,
     pub debug: Vec<u8>,
     pub line_relocations: Vec<DebugRelocation>,

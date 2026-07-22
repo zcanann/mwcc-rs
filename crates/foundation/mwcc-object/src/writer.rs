@@ -747,7 +747,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         }
         let post_function_bump = function.post_function_anonymous_bump.unwrap_or_else(|| {
             if function.frame.is_some() {
-                input.object_format.post_framed_function_anonymous_bump
+                debug
+                    .and_then(|debug| {
+                        debug.post_framed_function_anonymous_bump_override
+                    })
+                    .unwrap_or(input.object_format.post_framed_function_anonymous_bump)
             } else {
                 input.object_format.post_leaf_function_anonymous_bump
             }

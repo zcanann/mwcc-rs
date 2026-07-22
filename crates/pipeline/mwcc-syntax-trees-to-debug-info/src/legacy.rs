@@ -415,13 +415,11 @@ pub(super) fn lookup_capture(
     captures::lookup(unit, machine_functions, source_name, source, build)
 }
 
-pub(super) fn matches_single_simple_void(
+pub(super) fn matches_simple_void_functions(
     unit: &TranslationUnit,
     machine_functions: &[MachineFunction],
 ) -> bool {
-    unit.functions.len() == 1
-        && machine_functions.len() == 1
-        && simple_void_functions::matches(unit, machine_functions)
+    simple_void_functions::matches(unit, machine_functions)
 }
 
 fn finish(
@@ -447,6 +445,7 @@ fn finish(
 
     Ok(DebugSections {
         layout,
+        post_framed_function_anonymous_bump_override: None,
         line: line.bytes,
         debug: encoded.section.bytes,
         line_relocations: convert_relocations(line.relocations, &offsets, false),
