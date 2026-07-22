@@ -97,7 +97,11 @@ fn rounded_member(expression: &Expression, base_name: &str) -> Option<i16> {
     if constant_value(right).map(|value| value as u32) != Some(!31u32) {
         return None;
     }
-    let rounded_base = match left.as_ref() {
+    let rounded_expression = match left.as_ref() {
+        Expression::Cast { operand, .. } => operand.as_ref(),
+        other => other,
+    };
+    let rounded_base = match rounded_expression {
         Expression::Binary {
             operator: BinaryOperator::Add,
             left,

@@ -22,6 +22,8 @@ const WIND_WAKER_AST_HASH: u64 = 0xae44435f445e12d0;
 const WIND_WAKER_CONTEXT: u64 = 0xb72f62728882f697;
 const MARIO_SUNSHINE_AST_HASH: u64 = 0xc8858d7c79c3dd37;
 const MARIO_SUNSHINE_CONTEXT: u64 = 0x8f98783a003a85e8;
+const METROID_PRIME_AST_HASH: u64 = 0x019907a3b1e73778;
+const METROID_PRIME_CONTEXT: u64 = 0x9b6025ea7315ba33;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LoaderVariant {
@@ -67,6 +69,7 @@ impl Generator {
             (MARIO_PARTY_4_AST_HASH, MARIO_PARTY_4_CONTEXT) => LoaderVariant::StaticSigned,
             (WIND_WAKER_AST_HASH, WIND_WAKER_CONTEXT) => LoaderVariant::StaticSignedWindWaker,
             (MARIO_SUNSHINE_AST_HASH, MARIO_SUNSHINE_CONTEXT) => LoaderVariant::StaticSigned,
+            (METROID_PRIME_AST_HASH, METROID_PRIME_CONTEXT) => LoaderVariant::StaticSigned,
             _ => return Ok(false),
         };
 
