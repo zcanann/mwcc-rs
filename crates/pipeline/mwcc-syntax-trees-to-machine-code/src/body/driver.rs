@@ -3358,6 +3358,11 @@ impl Generator {
         if self.try_leading_store_guard(function)? {
             return Ok(());
         }
+        // Shared zero stores, a bit-field merge/test, and its guarded
+        // initialization tail form one register-liveness schedule.
+        if self.try_leading_shared_zero_bitfield_guard(function)? {
+            return Ok(());
+        }
         // An in-place float update followed by a clamp is one scheduling
         // region: the optional bound negation fills the first member-load gap.
         if self.try_leading_float_update_clamp(function)? {

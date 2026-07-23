@@ -5,6 +5,7 @@
 mod call_prologue;
 mod leading_member_store_call;
 mod leading_float_update_clamp;
+mod leading_shared_zero_bitfield_guard;
 mod aggregate_return_temporaries;
 mod ascii_pointer_compare;
 mod assertion_expression;

@@ -2348,6 +2348,66 @@ mod tests {
     }
 
     #[test]
+    fn retains_a_shared_zero_across_a_bit_field_update_and_guard() {
+        let source = br#"
+            struct CommonData { void* padding; int value; };
+            extern struct CommonData* common;
+            struct Fighter {
+                char prefix[6732];
+                float timer;
+                char first;
+                char second;
+                unsigned char guarded_zero;
+                unsigned char guarded_value;
+                char middle[2000];
+                unsigned char b0 : 1;
+                unsigned char b1 : 1;
+                unsigned char b2 : 1;
+                unsigned char b3 : 1;
+                unsigned char b4 : 1;
+                unsigned char b5 : 1;
+                unsigned char enabled : 1;
+            };
+            void initialize(struct Fighter* fighter, int enabled, float timer) {
+                fighter->timer = timer;
+                fighter->second = 0;
+                fighter->first = 0;
+                fighter->enabled = enabled;
+                if (fighter->enabled) {
+                    fighter->guarded_zero = 0;
+                    fighter->guarded_value = common->value;
+                }
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "shared-zero-bit-field-guard.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the leading zero should remain live through the bit-field guard");
+        let expected = [
+            0xd0, 0x23, 0x1a, 0x4c, 0x38, 0xa0, 0x00, 0x00, 0x98, 0xa3, 0x1a, 0x51, 0x98, 0xa3,
+            0x1a, 0x50, 0x88, 0x03, 0x22, 0x24, 0x50, 0x80, 0x0f, 0xbc, 0x98, 0x03, 0x22, 0x24,
+            0x88, 0x03, 0x22, 0x24, 0x54, 0x00, 0xff, 0xff, 0x4d, 0x82, 0x00, 0x20, 0x98, 0xa3,
+            0x1a, 0x52, 0x80, 0x80, 0x00, 0x00, 0x80, 0x04, 0x00, 0x04, 0x98, 0x03, 0x1a, 0x53,
+            0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected.len())
+            .any(|bytes| bytes == expected));
+    }
+
+    #[test]
     fn lowers_discarded_assignments_introduced_by_inline_aggregate_scalarization() {
         let source = br#"
             class Vec {
