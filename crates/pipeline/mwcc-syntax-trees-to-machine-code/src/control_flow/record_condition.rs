@@ -14,27 +14,37 @@ impl Generator {
         // A member address used for truth (`if (&p->member)`) folds address
         // formation and the CR0 test into `addic.`. Assertion macros expose this
         // after preprocessing as the condition of a discarded ternary.
-        if let Expression::AddressOf { operand } = condition {
-            if let Expression::Member {
+        let member_address = match condition {
+            Expression::AddressOf { operand } => match operand.as_ref() {
+                Expression::Member {
+                    base,
+                    offset,
+                    index_stride: None,
+                    ..
+                } => Some((base.as_ref(), *offset)),
+                _ => None,
+            },
+            Expression::MemberAddress {
                 base,
                 offset,
                 index_stride: None,
                 ..
-            } = operand.as_ref()
-            {
-                if let (Some(base), Ok(immediate)) = (
-                    leaf_name(base).and_then(|name| self.lookup_general(name)),
-                    i16::try_from(*offset as i64),
-                ) {
-                    self.output
-                        .instructions
-                        .push(Instruction::AddImmediateCarryingRecord {
-                            d: GENERAL_SCRATCH,
-                            a: base,
-                            immediate,
-                        });
-                    return Ok(true);
-                }
+            } => Some((base.as_ref(), *offset)),
+            _ => None,
+        };
+        if let Some((base, offset)) = member_address {
+            if let (Some(base), Ok(immediate)) = (
+                leaf_name(base).and_then(|name| self.lookup_general(name)),
+                i16::try_from(offset as i64),
+            ) {
+                self.output
+                    .instructions
+                    .push(Instruction::AddImmediateCarryingRecord {
+                        d: GENERAL_SCRATCH,
+                        a: base,
+                        immediate,
+                    });
+                return Ok(true);
             }
         }
         if !matches!(

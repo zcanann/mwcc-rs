@@ -2741,6 +2741,52 @@ blr\n\
     }
 
     #[test]
+    fn destructor_materializes_inline_optional_template_lifetime() {
+        let source = r#"
+            class Leaf {
+            public:
+                ~Leaf();
+                int value;
+            };
+            template <typename T> class Middle : public Leaf {};
+            template <typename T> class Stored : public Middle<T> {};
+            template <typename T> class Optional {
+            public:
+                ~Optional() { clear(); }
+                void clear() {}
+            private:
+                unsigned char data[sizeof(T)];
+                bool valid __attribute__((aligned(4)));
+            };
+            class Owner {
+                int prefix;
+                Optional<Stored<int> > item;
+            public:
+                ~Owner();
+            };
+            Owner::~Owner() {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        let [mwcc_syntax_trees::Statement::If { then_body, .. }] =
+            unit.functions[0].statements.as_slice()
+        else {
+            panic!("expected the complete-object guard");
+        };
+        let rendered = format!("{then_body:#?}");
+        assert!(rendered.contains("__dt__4LeafFv"));
+        assert!(rendered.contains("offset: 8"), "the validity flag follows Leaf storage");
+        assert_eq!(rendered.matches("MemberAddress").count(), 4);
+    }
+
+    #[test]
     fn pure_virtual_destructor_body_does_not_populate_its_vtable_slot() {
         let source = r#"
             class Abstract {
@@ -4869,7 +4915,7 @@ blr\n\
                     arguments,
                     ..
                 }
-            )] if matches!(arguments.as_slice(), [mwcc_syntax_trees::Expression::IntegerLiteral(-1)])
+            )] if matches!(arguments.as_slice(), [mwcc_syntax_trees::Expression::IntegerLiteral(1)])
         ));
     }
 

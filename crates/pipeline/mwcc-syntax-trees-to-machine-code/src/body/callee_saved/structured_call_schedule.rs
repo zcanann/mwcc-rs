@@ -71,6 +71,38 @@ fn expression_call_argument_index(expression: &Expression, candidate: &str) -> O
 }
 
 impl Generator {
+    /// Hoist the saved-LR load into the issue slot before a final move from a
+    /// callee-saved return home. The load is independent of the result move;
+    /// MWCC uses that latency schedule before restoring the saved GPR range.
+    pub(super) fn schedule_saved_return_epilogue(&mut self) {
+        let Some(lr_index) = self.output.instructions.iter().rposition(|instruction| {
+            matches!(instruction, Instruction::LoadWord { d: 0, a: 1, offset } if *offset == self.frame_size + 4)
+        }) else {
+            return;
+        };
+        let Some(return_index) = lr_index.checked_sub(1) else {
+            return;
+        };
+        if !matches!(
+            self.output.instructions[return_index],
+            Instruction::Or { a: 3, s, b }
+                if s == b && self.callee_saved.contains(&s)
+        ) || !self.output.instructions[lr_index + 1..].iter().any(|instruction| {
+            matches!(instruction, Instruction::LoadWord { d, a: 1, .. } if self.callee_saved.contains(d))
+        }) {
+            return;
+        }
+        self.output.instructions.swap(return_index, lr_index);
+        self.labels.moved_before(lr_index, return_index);
+        for relocation in &mut self.output.relocations {
+            relocation.instruction_index = match relocation.instruction_index {
+                index if index == return_index => lr_index,
+                index if index == lr_index => return_index,
+                index => index,
+            };
+        }
+    }
+
     /// Complete the paired entry-call schedule by restoring LR before the one
     /// saved receiver. The entry shape is the proof that this ordering applies;
     /// unrelated one-register frames retain the generic epilogue.

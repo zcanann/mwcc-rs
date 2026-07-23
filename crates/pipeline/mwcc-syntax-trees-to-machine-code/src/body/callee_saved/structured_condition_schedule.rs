@@ -4,6 +4,57 @@
 use super::*;
 
 impl Generator {
+    /// Collapse two nested nonnull checks of the same member address into the
+    /// receiver-producing record add plus a plain second test that MWCC keeps
+    /// for the inlined wrapper boundary. The final direct call then consumes
+    /// r3 without rematerializing the address.
+    pub(super) fn schedule_repeated_member_address_call_guards(&mut self) {
+        let mut start = 0;
+        while start + 7 <= self.output.instructions.len() {
+            if !is_repeated_member_address_call(&self.output.instructions[start..start + 7]) {
+                start += 1;
+                continue;
+            }
+            let (base, immediate) = match self.output.instructions[start] {
+                Instruction::AddImmediateCarryingRecord { a, immediate, .. } => (a, immediate),
+                _ => unreachable!(),
+            };
+            self.output.instructions[start] = Instruction::AddImmediateCarryingRecord {
+                d: 3,
+                a: base,
+                immediate,
+            };
+            self.output.instructions[start + 2] =
+                Instruction::CompareLogicalWordImmediate { a: 3, immediate: 0 };
+            self.remove_structured_condition_instruction(start + 4);
+            start += 6;
+        }
+    }
+
+    fn remove_structured_condition_instruction(&mut self, at: usize) {
+        self.output.instructions.remove(at);
+        self.labels.removed(at, 1);
+        self.output
+            .relocations
+            .retain(|relocation| relocation.instruction_index != at);
+        for relocation in &mut self.output.relocations {
+            if relocation.instruction_index > at {
+                relocation.instruction_index -= 1;
+            }
+        }
+        for instruction in &mut self.output.instructions {
+            match instruction {
+                Instruction::BranchConditionalForward { target, .. }
+                | Instruction::Branch { target }
+                    if *target > at =>
+                {
+                    *target -= 1;
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Reuse a nested member base loaded by the preceding `&&` term. The first
     /// false-edge branch does not clobber the loaded pointer on fallthrough, so
     /// a byte/word member test followed by another member test can share it.
@@ -30,6 +81,21 @@ impl Generator {
             }
         }
     }
+}
+
+fn is_repeated_member_address_call(window: &[Instruction]) -> bool {
+    matches!(window, [
+        Instruction::AddImmediateCarryingRecord { d: 0, a: first_base, immediate: first_offset },
+        Instruction::BranchConditionalForward { .. },
+        Instruction::AddImmediateCarryingRecord { d: 0, a: second_base, immediate: second_offset },
+        Instruction::BranchConditionalForward { .. },
+        Instruction::AddImmediate { d: 3, a: call_base, immediate: call_offset },
+        Instruction::AddImmediate { d: 4, a: 0, immediate: 0 },
+        Instruction::BranchAndLink { .. },
+    ] if first_base == second_base
+        && first_base == call_base
+        && first_offset == second_offset
+        && first_offset == call_offset)
 }
 
 fn reuses_preceding_member_load(instructions: &[Instruction], term_start: usize) -> bool {
@@ -94,5 +160,19 @@ mod tests {
             },
         ];
         assert!(reuses_preceding_member_load(&instructions, 4));
+    }
+
+    #[test]
+    fn recognizes_nested_member_address_guards_feeding_a_call() {
+        let instructions = [
+            Instruction::AddImmediateCarryingRecord { d: 0, a: 31, immediate: 64 },
+            Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 7 },
+            Instruction::AddImmediateCarryingRecord { d: 0, a: 31, immediate: 64 },
+            Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 7 },
+            Instruction::AddImmediate { d: 3, a: 31, immediate: 64 },
+            Instruction::AddImmediate { d: 4, a: 0, immediate: 0 },
+            Instruction::BranchAndLink { target: "__dt__6CTokenFv".to_string() },
+        ];
+        assert!(is_repeated_member_address_call(&instructions));
     }
 }

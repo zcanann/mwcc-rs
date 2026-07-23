@@ -15,7 +15,9 @@ use crate::cxx_analysis_facts::{
     nested_explicit_virtual_declarations,
 };
 use crate::items::{pointee_of, type_alignment, type_size};
-use crate::parser::{Parser, StructField, StructLayout};
+use crate::parser::{
+    Parser, StructField, StructLayout, TemplateFieldType, TemplateTypePattern,
+};
 
 /// Give inline special members identities that cannot collide with one
 /// another. Their source spellings both contain the class name (`C()` and
@@ -4651,6 +4653,12 @@ impl Parser {
             if field.array_bytes.is_some() {
                 continue;
             }
+            if let Some(mut lifetime) =
+                self.synthesize_inline_optional_member_destructor(field_class, field.offset)?
+            {
+                statements.append(&mut lifetime);
+                continue;
+            }
             let has_destructor = self.cxx_nonvirtual_destructor_classes.contains(field_class)
                 || self
                     .cxx_classes
@@ -4689,6 +4697,126 @@ impl Parser {
         }
         Ok(statements)
     }
+
+    /// Materialize the lifetime work of an inline optional-storage template
+    /// from recovered template facts. The admitted shape is intentionally
+    /// structural: byte storage sized by T, an aligned byte validity flag, and
+    /// inline `~Template`/`clear` members. The contained template's recovered
+    /// base chain identifies the first source destructor that must be called.
+    fn synthesize_inline_optional_member_destructor(
+        &self,
+        field_class: &str,
+        object_offset: u32,
+    ) -> Compilation<Option<Vec<Statement>>> {
+        let Some((primary, encoded_argument)) = template_primary_and_argument(field_class) else {
+            return Ok(None);
+        };
+        let Some(template) = self.struct_templates.get(primary) else {
+            return Ok(None);
+        };
+        if !self
+            .inline_template_members
+            .contains(&(primary.to_string(), "__dt".to_string()))
+            || !self
+                .inline_template_members
+                .contains(&(primary.to_string(), "clear".to_string()))
+        {
+            return Ok(None);
+        }
+        let Some(storage) = template.fields.iter().find(|field| {
+            matches!(field.field_type, TemplateFieldType::ParameterByteArray(0))
+        }) else {
+            return Ok(None);
+        };
+        let Some(valid) = template.fields.iter().find(|field| {
+            matches!(field.field_type, TemplateFieldType::Concrete(Type::UnsignedChar))
+                && field.alignment >= 4
+        }) else {
+            return Ok(None);
+        };
+        let Some(layout) = self.structs.get(field_class) else {
+            return Ok(None);
+        };
+        let Some(storage_field) = layout.fields.get(&storage.name) else {
+            return Ok(None);
+        };
+        let Some(valid_field) = layout.fields.get(&valid.name) else {
+            return Ok(None);
+        };
+        let argument = encoded_argument.trim_start_matches(|character: char| character.is_ascii_digit());
+        let Some((leaf_class, wrapper_depth)) = self.template_destructor_leaf(argument) else {
+            return Ok(None);
+        };
+        let destructor = self.mangle_typed_member_in_current_namespace(&leaf_class, "__dt", &[])?;
+        let object = || adjusted_this(object_offset + storage_field.offset);
+        let mut destruction = Statement::Expression(Expression::Call {
+            name: destructor,
+            arguments: vec![object(), Expression::IntegerLiteral(0)],
+        });
+        for _ in 0..wrapper_depth {
+            destruction = Statement::If {
+                condition: object(),
+                then_body: vec![destruction],
+                else_body: Vec::new(),
+            };
+        }
+        let valid_offset = object_offset + valid_field.offset;
+        Ok(Some(vec![Statement::If {
+            condition: object(),
+            then_body: vec![
+                Statement::If {
+                    condition: Expression::Member {
+                        base: Box::new(Expression::Variable("this".to_string())),
+                        offset: valid_offset,
+                        member_type: Type::UnsignedChar,
+                        index_stride: None,
+                    },
+                    then_body: vec![destruction],
+                    else_body: Vec::new(),
+                },
+                Statement::Store {
+                    target: Expression::Member {
+                        base: Box::new(Expression::Variable("this".to_string())),
+                        offset: valid_offset,
+                        member_type: Type::UnsignedChar,
+                        index_stride: None,
+                    },
+                    value: Expression::IntegerLiteral(0),
+                },
+            ],
+            else_body: Vec::new(),
+        }]))
+    }
+
+    fn template_destructor_leaf(&self, concrete: &str) -> Option<(String, usize)> {
+        let mut primary = template_primary_and_argument(concrete)?.0;
+        let mut wrapper_depth = 0;
+        loop {
+            let template = self.struct_templates.get(primary)?;
+            wrapper_depth += 1;
+            match template.base.as_ref()? {
+                TemplateTypePattern::Named(name) => {
+                    let destructible = self.cxx_nonvirtual_destructor_classes.contains(name)
+                        || self
+                            .cxx_classes
+                            .get(name)
+                            .is_some_and(|class| {
+                                class.has_virtual_destructor || class.declares_destructor
+                            });
+                    return destructible.then(|| (name.clone(), wrapper_depth));
+                }
+                TemplateTypePattern::Instance { name, .. } => primary = name,
+                TemplateTypePattern::Parameter(_) => return None,
+            }
+        }
+    }
+}
+
+fn template_primary_and_argument(tag: &str) -> Option<(&str, &str)> {
+    let open = tag.find('<')?;
+    let argument = tag.get(open + 1..tag.len().checked_sub(1)?)?;
+    let primary = tag[..open].rsplit("::").next()?;
+    Some((primary, argument))
 }
 
 fn adjusted_this(offset: u32) -> Expression {

@@ -79,15 +79,30 @@ pub(super) fn fold_entry_alias_zero_test(
     instructions: &mut Vec<Instruction>,
     alias: &EntryParameterAlias,
 ) -> bool {
-    let [prefix @ .., copy, compare] = instructions.as_mut_slice() else {
+    let [prefix @ .., compare] = instructions.as_slice() else {
         return false;
     };
-    let _ = prefix;
-    let incoming = match copy {
-        Instruction::Or { a, s, b }
-            if *a == alias.home && *s == *b => *s,
-        _ => return false,
+    let Some((copy_index, incoming)) = prefix
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, instruction)| match instruction {
+            Instruction::Or { a, s, b } if *a == alias.home && *s == *b => Some((index, *s)),
+            _ => None,
+        })
+    else {
+        return false;
     };
+    // Moving the CR0 definition back across saved-register stores and plain
+    // entry copies is safe; arithmetic, calls, and record instructions are not.
+    if prefix[copy_index + 1..].iter().any(|instruction| {
+        !matches!(
+            instruction,
+            Instruction::StoreWord { .. } | Instruction::Or { .. }
+        )
+    }) {
+        return false;
+    }
     let compares_incoming_to_zero = matches!(
         compare,
         Instruction::CompareWordImmediate { a, immediate: 0 }
@@ -98,7 +113,7 @@ pub(super) fn fold_entry_alias_zero_test(
         return false;
     }
 
-    *copy = Instruction::OrRecord {
+    instructions[copy_index] = Instruction::OrRecord {
         a: alias.home,
         s: incoming,
         b: incoming,
@@ -210,5 +225,31 @@ mod tests {
             instructions.as_slice(),
             [Instruction::OrRecord { a: 31, s: 3, b: 3 }]
         ));
+    }
+
+    #[test]
+    fn folds_across_an_independent_saved_parameter_copy() {
+        let alias = EntryParameterAlias {
+            name: "pointer".into(),
+            home: 31,
+            boundary: EntryAliasBoundary::AfterFirstConditionTerm,
+        };
+        let mut instructions = vec![
+            Instruction::move_register(31, 3),
+            Instruction::StoreWord {
+                s: 30,
+                a: 1,
+                offset: 8,
+            },
+            Instruction::move_register(30, 4),
+            Instruction::CompareLogicalWordImmediate { a: 3, immediate: 0 },
+        ];
+
+        assert!(fold_entry_alias_zero_test(&mut instructions, &alias));
+        assert!(matches!(
+            instructions.first(),
+            Some(Instruction::OrRecord { a: 31, s: 3, b: 3 })
+        ));
+        assert_eq!(instructions.len(), 3);
     }
 }

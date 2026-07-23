@@ -1643,8 +1643,12 @@ impl Parser {
                             .then_some(index + 1)
                     };
                     if let Some(parameter_open) = parameter_open {
+                        let member_is_destructor = index > class_body_start
+                            && self.tokens.get(index - 1) == Some(&Token::Tilde);
                         let member_name = if call_operator {
                             "__cl".to_owned()
+                        } else if member_is_destructor {
+                            "__dt".to_owned()
                         } else {
                             source_member_name.clone()
                         };

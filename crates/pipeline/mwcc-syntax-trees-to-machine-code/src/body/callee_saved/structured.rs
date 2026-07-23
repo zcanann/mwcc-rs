@@ -160,10 +160,7 @@ impl Generator {
         } else {
             None
         };
-        let supported_plain_return = (function.return_type == Type::Void
-            && function.return_expression.is_none())
-            || (matches!(function.return_type, Type::Int | Type::UnsignedInt)
-                && function.return_expression.is_some());
+        let supported_plain_return = structured_return_is_supported(function);
         if (!with_frame_array && !supported_plain_return)
             || !supports_statements(
                 &function.statements,
@@ -267,12 +264,24 @@ impl Generator {
                     .join(", ")
             ));
         }
-        let saved_parameters: Vec<_> = function
+        let mut saved_parameters: Vec<_> = function
             .parameters
             .iter()
             .rev()
             .filter(|parameter| survivors.contains(parameter.name.as_str()))
             .collect();
+        // A parameter returned after the call graph owns the longest visible
+        // lifetime. MWCC gives it the highest callee-saved home even when a
+        // later parameter is also live to the final call (notably `this` in a
+        // complete-object deleting destructor).
+        if let Some(Expression::Variable(returned)) = function.return_expression.as_ref() {
+            if let Some(index) = saved_parameters
+                .iter()
+                .position(|parameter| parameter.name == *returned)
+            {
+                saved_parameters[..=index].rotate_right(1);
+            }
+        }
         if saved_parameters.iter().any(|parameter| {
             self.locations
                 .get(&parameter.name)
@@ -997,6 +1006,7 @@ impl Generator {
             &mut pending_gotos,
             &mut condition_alias,
         )?;
+        self.schedule_repeated_member_address_call_guards();
         self.schedule_structured_float_store_call_arguments();
         self.schedule_structured_aggregate_constructor();
         self.schedule_structured_member_scales_and_compare();
@@ -1142,6 +1152,7 @@ impl Generator {
         } else {
             self.emit_epilogue_and_return();
         }
+        self.schedule_saved_return_epilogue();
         self.schedule_saved_receiver_entry_epilogue();
         self.schedule_legacy_inline_expansion_residue();
         Ok(true)
@@ -1662,6 +1673,21 @@ impl Generator {
             self.locations.remove(name);
         }
     }
+}
+
+fn structured_return_is_supported(function: &Function) -> bool {
+    (function.return_type == Type::Void && function.return_expression.is_none())
+        || (matches!(
+            function.return_type,
+            Type::Char
+                | Type::UnsignedChar
+                | Type::Short
+                | Type::UnsignedShort
+                | Type::Int
+                | Type::UnsignedInt
+                | Type::Pointer(_)
+                | Type::StructPointer { .. }
+        ) && function.return_expression.is_some())
 }
 
 fn supports_statements(

@@ -147,7 +147,7 @@ impl Parser {
 
     /// Normalize scalar `delete pointer;` into the CodeWarrior EABI operation:
     /// null-check the object, then call its virtual deleting destructor with
-    /// the compiler-supplied `-1` destruction flag. Array delete and a direct
+    /// the compiler-supplied `1` destruction flag. Array delete and a direct
     /// non-virtual destructor remain explicit unsupported cases.
     fn parse_delete_statement(&mut self) -> Compilation<Statement> {
         self.advance(); // `delete`
@@ -176,7 +176,7 @@ impl Parser {
                 slot_offset: dispatch.slot_offset,
                 return_type: dispatch.return_type,
                 variadic: dispatch.variadic,
-                arguments: vec![Expression::IntegerLiteral(-1)],
+                arguments: vec![Expression::IntegerLiteral(1)],
             })],
             else_body: Vec::new(),
         })
