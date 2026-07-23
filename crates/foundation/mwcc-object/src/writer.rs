@@ -2011,6 +2011,41 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         );
         comment_values.push((0, 0));
     }
+    // Register one data definition at the point where a compiler transaction
+    // first resolves it. Keeping this primitive separate prevents the several
+    // global-run paths below from drifting on binding, section, or comment
+    // metadata while they model different discovery orders.
+    macro_rules! emit_defined_data_symbol {
+        ($name:expr) => {{
+            let name = $name;
+            if !global_symbols.contains_key(name) && !local_data_symbols.contains_key(name) {
+                let offset = data_offsets[name];
+                let section = index_of(data_section[name]) as u16;
+                let object = input
+                    .data_objects
+                    .iter()
+                    .find(|object| object.name == name)
+                    .expect("a defined data reference has an owning object");
+                let binding = if object.is_weak {
+                    STB_WEAK_OBJECT
+                } else {
+                    STB_GLOBAL_OBJECT
+                };
+                let flags = if object.is_weak { 0x0d00_0000 } else { 0 };
+                global_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
+                write_symbol(
+                    &mut symtab,
+                    strtab.add(name),
+                    offset,
+                    data_sizes[name],
+                    binding,
+                    0,
+                    section,
+                );
+                comment_values.push((data_aligns[name], flags));
+            }
+        }};
+    }
     // One initialized exported object's symbol plus its pointer-relocation
     // targets (reverse element order) — shared by the up-front run and the
     // source-position interleaved runs below.
@@ -2140,6 +2175,58 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             emit_object_targets!(object);
         }};
     }
+    // Deferred codegen normally visits bodies in reverse source order. A static
+    // `.ctors`/`.dtors` record is an earlier analysis transaction, however: it
+    // resolves its target function and the target body's already-defined data
+    // dependencies as one closure before the reverse body pass resumes. This is
+    // observable when a later empty function would otherwise split the target
+    // FUNC and its referenced OBJECT in the global symbol run.
+    macro_rules! emit_deferred_chain_transaction {
+        ($object:expr) => {{
+            let object = $object;
+            emit_object_targets!(object);
+            for relocation in object.relocations.iter().rev() {
+                let Some(function) = functions
+                    .iter()
+                    .find(|function| function.name == relocation.target)
+                else {
+                    continue;
+                };
+                let body_data: std::collections::HashSet<&str> = function
+                    .relocations
+                    .iter()
+                    .filter_map(|relocation| match &relocation.target {
+                        RelocationTarget::External(name)
+                        | RelocationTarget::ExternalWithAddend(name, _)
+                            if data_offsets.contains_key(name.as_str()) =>
+                        {
+                            Some(name.as_str())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let mut emitted = std::collections::HashSet::new();
+                for name in function
+                    .symbol_order
+                    .iter()
+                    .map(String::as_str)
+                    .chain(function.relocations.iter().filter_map(|relocation| {
+                        match &relocation.target {
+                            RelocationTarget::External(name)
+                            | RelocationTarget::ExternalWithAddend(name, _) => {
+                                Some(name.as_str())
+                            }
+                            _ => None,
+                        }
+                    }))
+                {
+                    if body_data.contains(name) && emitted.insert(name) {
+                        emit_defined_data_symbol!(name);
+                    }
+                }
+            }
+        }};
+    }
     // Some STATIC objects bind LOCAL themselves but register their relocation
     // targets in the GLOBAL source-order run:
     //
@@ -2220,10 +2307,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     for object in &input.data_objects {
         if is_initialized_run_object(object) && object.non_static_functions_before == 0 {
             emit_initialized_object!(object);
-        } else if (input.object_format.function_symbol_order == FunctionSymbolOrder::Deferred
-            && is_static_chain_reference(object))
-            || (is_static_table_hook(object) && object.functions_before == 0)
+        } else if input.object_format.function_symbol_order == FunctionSymbolOrder::Deferred
+            && is_static_chain_reference(object)
         {
+            emit_deferred_chain_transaction!(object);
+        } else if is_static_table_hook(object) && object.functions_before == 0 {
             emit_object_targets!(object);
         }
     }
@@ -2514,30 +2602,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         }
                         continue;
                     }
-                    global_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
-                    if let Some(&offset) = data_offsets.get(name) {
-                        let section = index_of(data_section[name]) as u16;
+                    if data_offsets.contains_key(name) {
                         let object = input
                             .data_objects
                             .iter()
                             .find(|object| object.name == name)
                             .expect("a defined data reference has an owning object");
-                        let binding = if object.is_weak {
-                            STB_WEAK_OBJECT
-                        } else {
-                            STB_GLOBAL_OBJECT
-                        };
-                        let flags = if object.is_weak { 0x0d00_0000 } else { 0 };
-                        write_symbol(
-                            &mut symtab,
-                            strtab.add(name),
-                            offset,
-                            data_sizes[name],
-                            binding,
-                            0,
-                            section,
-                        );
-                        comment_values.push((data_aligns[name], flags));
+                        emit_defined_data_symbol!(name);
                         // Referencing an owned (strong) C++ vtable registers
                         // the table and its address-taken function slots as one
                         // compiler-generated declaration transaction. Weak
@@ -2546,10 +2617,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                             emit_object_targets!(object);
                         }
                     } else if referenced_inline_asm.contains(name) {
+                        global_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
                         // a CALLED static-inline asm helper stays LOCAL (info 0).
                         write_symbol(&mut symtab, strtab.add(name), 0, 0, 0, 0, SHN_UNDEF);
                         comment_values.push((0, 0));
                     } else {
+                        global_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
                         write_symbol(
                             &mut symtab,
                             strtab.add(name),
