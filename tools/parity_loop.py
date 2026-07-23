@@ -184,8 +184,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--audit-timeout",
         type=int,
-        default=300,
-        help="maximum seconds per representative-audit configuration (default: 300)",
+        default=15,
+        help="initial seconds per representative-audit configuration (default: 15)",
+    )
+    parser.add_argument(
+        "--audit-retry-timeout",
+        type=int,
+        default=60,
+        help="retry only timed-out audit rows at this ceiling; 0 disables (default: 60)",
     )
     parser.add_argument("--reference-root", type=Path)
     parser.add_argument("--state-dir", type=Path, default=Path("target/reference-parity/frontier"))
@@ -246,8 +252,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
     work_timeout = args.timeout if args.timeout is not None else args.work_timeout
     audit_timeout = args.timeout if args.timeout is not None else args.audit_timeout
-    if work_timeout < 1 or audit_timeout < 1:
+    audit_retry_timeout = 0 if args.timeout is not None else args.audit_retry_timeout
+    if work_timeout < 1 or audit_timeout < 1 or audit_retry_timeout < 0:
         print("timeouts must be positive", file=sys.stderr)
+        return 2
+    if audit_retry_timeout and audit_retry_timeout <= audit_timeout:
+        print("--audit-retry-timeout must exceed --audit-timeout (or be 0)", file=sys.stderr)
         return 2
     run_audit = args.audit_only or args.with_audit
     run_frontier = not args.audit_only
@@ -393,6 +403,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         run_status = subprocess.run(audit_run_command).returncode
         if run_status not in (0, 1):
             return run_status
+        if audit_retry_timeout:
+            audit_retry_command = [
+                *audit_run_command,
+                "--retry-status",
+                "HARNESS",
+            ]
+            timeout_index = audit_retry_command.index("--timeout") + 1
+            audit_retry_command[timeout_index] = str(audit_retry_timeout)
+            # ``--rerun`` belongs only to the initial pass. The retry pass must
+            # reuse every completed row and replace transient timeouts alone.
+            audit_retry_command = [
+                argument for argument in audit_retry_command if argument != "--rerun"
+            ]
+            run_status = subprocess.run(audit_retry_command).returncode
+            if run_status not in (0, 1):
+                return run_status
 
     if run_frontier:
         frontier_run_command = [

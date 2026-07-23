@@ -43,6 +43,7 @@ from parity_loop import (
 )
 from reference_parity import (
     bounded_completion_order,
+    cached_record_reusable,
     code_verdict,
     harness_fingerprint,
     immutable_compiler_snapshot,
@@ -472,7 +473,8 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(work.size, 32)
         self.assertEqual(work.jobs, 4)
         self.assertEqual(work.work_timeout, 60)
-        self.assertEqual(work.audit_timeout, 300)
+        self.assertEqual(work.audit_timeout, 15)
+        self.assertEqual(work.audit_retry_timeout, 60)
         self.assertIsNone(work.timeout)
         self.assertEqual(str(work.compiler), "target/debug/mwcc")
         self.assertFalse(work.no_build)
@@ -694,6 +696,22 @@ class IdentityTests(unittest.TestCase):
             work.write_text('{"configuration_ids":[]}', encoding="utf-8")
             self.assertTrue(selection_is_probability_sample(audit))
             self.assertFalse(selection_is_probability_sample(work))
+
+    def test_selective_retry_reuses_every_other_cached_status(self):
+        self.assertFalse(cached_record_reusable(None, {"HARNESS"}))
+        self.assertFalse(cached_record_reusable({"status": "HARNESS"}, {"HARNESS"}))
+        self.assertTrue(cached_record_reusable({"status": "DEFER"}, {"HARNESS"}))
+
+    def test_reference_runner_accepts_repeatable_retry_statuses(self):
+        args = parse_reference_args(
+            ["--retry-status", "HARNESS", "--retry-status", "MISSING_DEPENDENCY"]
+        )
+        self.assertEqual(args.retry_status, ["HARNESS", "MISSING_DEPENDENCY"])
+
+    def test_parity_loop_defaults_to_progressive_audit_timeouts(self):
+        args = parse_loop_args([])
+        self.assertEqual(args.audit_timeout, 15)
+        self.assertEqual(args.audit_retry_timeout, 60)
 
 
 class DashboardTests(unittest.TestCase):

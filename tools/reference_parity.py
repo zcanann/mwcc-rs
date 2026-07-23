@@ -283,6 +283,19 @@ def load_cache(path: Path) -> Dict[str, Dict[str, Any]]:
     return cached
 
 
+def cached_record_reusable(
+    record: Optional[Dict[str, Any]], retry_statuses: set[str]
+) -> bool:
+    """Return whether an observation should satisfy this invocation.
+
+    A longer measurement pass can selectively replace transient outcomes such
+    as ``HARNESS`` without throwing away completed compiler evidence. The cache
+    remains append-only; its last record for an observation identity wins.
+    """
+
+    return record is not None and record.get("status") not in retry_statuses
+
+
 def verdict_line(output: str) -> str:
     for line in output.splitlines():
         if line.startswith(("BYTE", "DIFF", "DEFER")):
@@ -460,6 +473,13 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--sample-size", type=int, default=0, help="select a deterministic hash-ranked sample")
     parser.add_argument("--sample-seed", default="mwcc-parity-v1", help="seed for deterministic sampling")
     parser.add_argument("--rerun", action="store_true", help="ignore cached results")
+    parser.add_argument(
+        "--retry-status",
+        action="append",
+        choices=STATUSES,
+        default=[],
+        help="rerun only cached rows with this status (repeatable)",
+    )
     parser.add_argument("--list", action="store_true", help="list selected rows without compiling")
     return parser.parse_args(argv)
 
@@ -540,12 +560,16 @@ def main() -> int:
         print(f"waiting for active cache writer: {cache}", file=sys.stderr)
         fcntl.flock(cache_lock.fileno(), fcntl.LOCK_EX)
     cached = {} if args.rerun else load_cache(cache)
+    retry_statuses = set(args.retry_status)
     build_support: Dict[str, Tuple[bool, str]] = {
         build: build_supported(compiler, build)
         for build in dict.fromkeys(
             row["mw_version"]
             for row in rows
-            if observation_id(row_configuration_id(row), fingerprint) not in cached
+            if not cached_record_reusable(
+                cached.get(observation_id(row_configuration_id(row), fingerprint)),
+                retry_statuses,
+            )
         )
     }
     counts = {status: 0 for status in STATUSES}
@@ -560,8 +584,9 @@ def main() -> int:
     def observe(row: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
         config_identity = row_configuration_id(row)
         identity = observation_id(config_identity, fingerprint)
-        if identity in cached:
-            return cached[identity], True
+        cached_record = cached.get(identity)
+        if cached_record_reusable(cached_record, retry_statuses):
+            return cached_record, True
 
         observed_at = datetime.now(timezone.utc).isoformat()
         row_started = time.monotonic()
@@ -588,6 +613,7 @@ def main() -> int:
                 "harness_sha256": harness_hash,
                 "observed_at": observed_at,
                 "elapsed_seconds": round(time.monotonic() - row_started, 6),
+                "timeout_seconds": args.timeout,
                 "status": status,
                 "project": row["project"],
                 "variant": row["variant"],
