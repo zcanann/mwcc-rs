@@ -135,5 +135,29 @@ fn leaf_return_shape_is_supported(function: &Function) -> bool {
                 | Type::StructPointer { .. }
                 | Type::Float
                 | Type::Double
-        ) && function.return_expression.is_some())
+        ) && (function.return_expression.is_some()
+            || !leaf_statements_fall_through(&function.statements)))
+}
+
+/// Whether execution can reach the implicit tail after this structured list.
+/// Eligibility excludes loops and gotos, so returns and complete if/else
+/// diamonds are the only terminating edges that need modeling here.
+fn leaf_statements_fall_through(statements: &[Statement]) -> bool {
+    for statement in statements {
+        match statement {
+            Statement::Return(_) => return false,
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } if !else_body.is_empty()
+                && !leaf_statements_fall_through(then_body)
+                && !leaf_statements_fall_through(else_body) =>
+            {
+                return false;
+            }
+            _ => {}
+        }
+    }
+    true
 }
