@@ -3405,6 +3405,12 @@ impl Generator {
             }
         }
 
+        // Nested leaf diamonds use the same structured CFG emitter as framed
+        // call-bearing bodies, but own no prologue or saved-register policy.
+        if self.try_leaf_structured_body(function)? {
+            return Ok(());
+        }
+
         // Body statements (stores, calls) run first.
         let statements_start = self.output.instructions.len();
         let statement_count = function.statements.len();
@@ -4591,6 +4597,17 @@ impl Generator {
                 // which mis-typed every double-constant return (`return 0.0;`).
                 if let Expression::FloatLiteral(value) = expression {
                     self.load_float_literal(destination, *value, value_type == Type::Double);
+                    return Ok(());
+                }
+                // An integer constant converted to float is folded at compile
+                // time, then materialized from the destination precision's
+                // pool. It is not a run-time int-to-float conversion sequence.
+                if let Expression::IntegerLiteral(value) = expression {
+                    self.load_float_literal(
+                        destination,
+                        *value as f64,
+                        value_type == Type::Double,
+                    );
                     return Ok(());
                 }
                 if self.is_integer_leaf(expression) {

@@ -52,6 +52,7 @@ mod queue_service;
 mod queue_transactions;
 mod result_call_forward;
 mod structured;
+mod structured_leaf;
 mod structured_call_schedule;
 mod structured_condition_schedule;
 mod structured_constructor_schedule;
