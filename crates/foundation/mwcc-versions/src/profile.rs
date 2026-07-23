@@ -377,6 +377,15 @@ pub enum TrigZeroConstantPlacement {
     Prologue,
 }
 
+/// Control-flow shape used to select a trigonometric kernel quadrant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrigQuadrantDispatchStyle {
+    /// GameCube generations lower the four-way switch as a balanced compare tree.
+    BinarySearch,
+    /// Wii build 145 tests quadrants 0, 1, and 2 in order, then falls to default.
+    LinearChain,
+}
+
 /// Encoding used for generation-specific integer value materializations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaterializationCopyStyle {
@@ -1091,6 +1100,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         TrigZeroConstantPlacement::SmallArm
     }
 
+    fn trig_quadrant_dispatch_style(&self) -> TrigQuadrantDispatchStyle {
+        TrigQuadrantDispatchStyle::BinarySearch
+    }
+
     /// Hidden labels added to every trigonometric dispatcher's pool counter.
     fn trig_dispatcher_hidden_label_bump(&self) -> u8 {
         0
@@ -1657,6 +1670,10 @@ impl CodegenProfile for Wii43Build145 {
 
     fn trig_zero_constant_placement(&self) -> TrigZeroConstantPlacement {
         TrigZeroConstantPlacement::Prologue
+    }
+
+    fn trig_quadrant_dispatch_style(&self) -> TrigQuadrantDispatchStyle {
+        TrigQuadrantDispatchStyle::LinearChain
     }
 
     fn trig_dispatcher_hidden_label_bump(&self) -> u8 {

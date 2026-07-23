@@ -34,8 +34,9 @@ use crate::profile::{
     PunnedFloatFrameConvention, PunnedShiftWritebackStyle, QueueServiceInliningStyle,
     RaiseFamilyStyle, ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle, SharedFloatDagStyle,
     SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, StoredGlobalReadStyle,
-    SymbolTraversalStyle, TrigDispatcherStyle, TrigZeroConstantPlacement, VaArgScheduleStyle,
-    ValueTrackedMutationStyle, WideConstantAddSchedule,
+    SymbolTraversalStyle, TrigDispatcherStyle, TrigQuadrantDispatchStyle,
+    TrigZeroConstantPlacement, VaArgScheduleStyle, ValueTrackedMutationStyle,
+    WideConstantAddSchedule,
 };
 
 /// Why a codegen decision diverges from the GameCube 2.4.x mainline.
@@ -161,6 +162,7 @@ pub enum Quirk {
     EarlyExpandedTrigDispatcherLabels,
     LegacyReloadingTrigDispatcher,
     EagerTrigZeroConstant,
+    LinearTrigQuadrantDispatch,
     LaterTrigDispatcherLabels,
     LegacyAddImmediateMaterializationCopy,
     LegacySerialWideConstantAdd,
@@ -240,6 +242,7 @@ impl Quirk {
             Quirk::EarlyExpandedTrigDispatcherLabels => QuirkKind::Intentional,
             Quirk::LegacyReloadingTrigDispatcher => QuirkKind::Intentional,
             Quirk::EagerTrigZeroConstant => QuirkKind::Intentional,
+            Quirk::LinearTrigQuadrantDispatch => QuirkKind::Intentional,
             Quirk::LaterTrigDispatcherLabels => QuirkKind::Intentional,
             Quirk::LegacyAddImmediateMaterializationCopy => QuirkKind::Intentional,
             Quirk::LegacySerialWideConstantAdd => QuirkKind::Intentional,
@@ -378,6 +381,9 @@ impl Quirk {
             }
             Quirk::EagerTrigZeroConstant => {
                 "later trigonometric dispatchers preload zero in the prologue"
+            }
+            Quirk::LinearTrigQuadrantDispatch => {
+                "Wii trigonometric dispatchers select quadrants with a linear compare chain"
             }
             Quirk::LaterTrigDispatcherLabels => {
                 "later trigonometric dispatchers retain expanded hidden label blocks"
@@ -681,6 +687,8 @@ pub struct Behavior {
     pub trig_dispatcher_style: TrigDispatcherStyle,
     /// Placement of the zero constant consumed by a dispatcher's small arm.
     pub trig_zero_constant_placement: TrigZeroConstantPlacement,
+    /// Control-flow shape used to select the reduced argument's quadrant.
+    pub trig_quadrant_dispatch_style: TrigQuadrantDispatchStyle,
     /// Later-generation hidden labels retained by every trig dispatcher.
     pub trig_dispatcher_hidden_label_bump: u8,
     /// Later-generation hidden labels retained by the trig parity-tail CFG.
@@ -1018,6 +1026,10 @@ impl Behavior {
             punned_shift_writeback_style: config.build.profile.punned_shift_writeback_style(),
             trig_dispatcher_style: config.build.profile.trig_dispatcher_style(),
             trig_zero_constant_placement: config.build.profile.trig_zero_constant_placement(),
+            trig_quadrant_dispatch_style: config
+                .build
+                .profile
+                .trig_quadrant_dispatch_style(),
             trig_dispatcher_hidden_label_bump: config
                 .build
                 .profile
@@ -1331,6 +1343,9 @@ impl Behavior {
         }
         if self.trig_zero_constant_placement == TrigZeroConstantPlacement::Prologue {
             quirks.push(ActiveQuirk::of(Quirk::EagerTrigZeroConstant));
+        }
+        if self.trig_quadrant_dispatch_style == TrigQuadrantDispatchStyle::LinearChain {
+            quirks.push(ActiveQuirk::of(Quirk::LinearTrigQuadrantDispatch));
         }
         if self.trig_dispatcher_hidden_label_bump != 0 || self.trig_dispatcher_ipa_label_bump != 0 {
             quirks.push(ActiveQuirk::of(Quirk::LaterTrigDispatcherLabels));
@@ -1903,8 +1918,20 @@ mod tests {
 
     #[test]
     fn later_trig_dispatchers_resolve_eager_zero_and_ipa_labels() {
-        for (compiler_build, dispatcher_labels, parity_tail_labels) in
-            [(build::GC_3_0A3P1, 10, 2), (build::WII_1_0, 3, 3)]
+        for (compiler_build, dispatcher_labels, parity_tail_labels, quadrant_style) in [
+            (
+                build::GC_3_0A3P1,
+                10,
+                2,
+                TrigQuadrantDispatchStyle::BinarySearch,
+            ),
+            (
+                build::WII_1_0,
+                3,
+                3,
+                TrigQuadrantDispatchStyle::LinearChain,
+            ),
+        ]
         {
             let mut config = CompilerConfig::new(compiler_build);
             let plain = Behavior::resolve(&config);
@@ -1928,6 +1955,7 @@ mod tests {
                 plain.trig_zero_constant_placement,
                 TrigZeroConstantPlacement::Prologue
             );
+            assert_eq!(plain.trig_quadrant_dispatch_style, quadrant_style);
             assert_eq!(plain.trig_dispatcher_hidden_label_bump, dispatcher_labels);
             assert_eq!(plain.trig_parity_tail_hidden_label_bump, parity_tail_labels);
             assert_eq!(plain.trig_dispatcher_ipa_label_bump, 4);
@@ -1936,6 +1964,13 @@ mod tests {
                 .active_quirks()
                 .iter()
                 .any(|active| active.quirk == Quirk::EagerTrigZeroConstant));
+            assert_eq!(
+                plain
+                    .active_quirks()
+                    .iter()
+                    .any(|active| active.quirk == Quirk::LinearTrigQuadrantDispatch),
+                quadrant_style == TrigQuadrantDispatchStyle::LinearChain
+            );
             assert!(plain
                 .active_quirks()
                 .iter()

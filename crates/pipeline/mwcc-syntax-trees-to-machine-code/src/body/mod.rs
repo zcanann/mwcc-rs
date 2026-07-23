@@ -67,6 +67,7 @@ mod switch_call_dispatcher;
 mod switch_call_return;
 mod tail_call;
 mod tokenizer;
+mod trig_quadrant_dispatch;
 mod variadic;
 
 pub(crate) use callee_saved::{
@@ -88,6 +89,7 @@ pub(crate) use member_linefeed::lower_member_linefeed;
 pub(crate) use member_rect_control::lower_member_rect_control;
 pub(crate) use member_tab::lower_member_tab;
 pub(crate) use register_inline_asm::lower_register_inline_asm_wrapper;
+use trig_quadrant_dispatch::TrigQuadrant;
 pub(crate) use crate::expressions::pointer_stride;
 pub(crate) use crate::expressions::{
     const_address_pointer, displacement_store, pointee_of_type, split_address,

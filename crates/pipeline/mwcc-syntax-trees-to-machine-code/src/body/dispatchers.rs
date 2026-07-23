@@ -485,12 +485,7 @@ impl Generator {
             }
         }
         // The four arms: (callee, int arg, negated) per quadrant 0..3.
-        struct Quadrant {
-            callee: String,
-            int_argument: Option<i16>,
-            negated: bool,
-        }
-        let parse_quadrant = |result: &Expression| -> Option<Quadrant> {
+        let parse_quadrant = |result: &Expression| -> Option<TrigQuadrant> {
             let (call, negated) = match result {
                 Expression::Unary {
                     operator: UnaryOperator::Negate,
@@ -526,13 +521,13 @@ impl Generator {
                 }
                 _ => return None,
             };
-            Some(Quadrant {
+            Some(TrigQuadrant {
                 callee: name.clone(),
                 int_argument,
                 negated,
             })
         };
-        let mut quadrants: Vec<Option<Quadrant>> = vec![None, None, None, None];
+        let mut quadrants: Vec<Option<TrigQuadrant>> = vec![None, None, None, None];
         if let Some((_, arms, default)) = &switch_tail {
             for arm in arms.iter() {
                 let index = arm.value;
@@ -790,83 +785,11 @@ impl Generator {
                 parity_label_bump + deferred_label_bump + ipa_label_bump;
             return Ok(true);
         }
-        self.output.instructions.push(Instruction::RotateAndMask {
-            a: 0,
-            s: 3,
-            shift: 0,
-            begin: 30,
-            end: 31,
-        });
-        let case0 = self.fresh_label();
-        let case1 = self.fresh_label();
-        let case2 = self.fresh_label();
-        let case3 = self.fresh_label();
-        let mid = self.fresh_label();
-        self.output
-            .instructions
-            .push(Instruction::CompareWordImmediate { a: 0, immediate: 1 });
-        self.emit_branch_conditional_to(12, 2, case1); // beq
-        self.emit_branch_conditional_to(4, 0, mid); // bge -> the 2/3 side
-        self.output
-            .instructions
-            .push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
-        self.emit_branch_conditional_to(4, 0, case0); // bge
-        self.emit_branch_to(case3);
-        self.bind_label(mid);
-        self.output
-            .instructions
-            .push(Instruction::CompareWordImmediate { a: 0, immediate: 3 });
-        self.emit_branch_conditional_to(4, 0, case3); // bge
-        self.emit_branch_to(case2);
-        // The arms.
-        let mut emit_arm = |generator: &mut Self, quadrant: &Quadrant, label, falls: bool| {
-            generator.bind_label(label);
-            generator
-                .output
-                .instructions
-                .push(Instruction::LoadFloatDouble {
-                    d: 1,
-                    a: 1,
-                    offset: 16,
-                });
-            if let Some(int_argument) = quadrant.int_argument {
-                generator
-                    .output
-                    .instructions
-                    .push(Instruction::load_immediate(3, int_argument));
-            }
-            generator
-                .output
-                .instructions
-                .push(Instruction::LoadFloatDouble {
-                    d: 2,
-                    a: 1,
-                    offset: 24,
-                });
-            generator.record_relocation(RelocationKind::Rel24, &quadrant.callee);
-            generator
-                .output
-                .instructions
-                .push(Instruction::BranchAndLink {
-                    target: quadrant.callee.clone(),
-                });
-            if quadrant.negated {
-                generator
-                    .output
-                    .instructions
-                    .push(Instruction::FloatNegate { d: 1, b: 1 });
-            }
-            if !falls {
-                generator.emit_branch_to(epilogue);
-            }
-        };
         let [Some(q0), Some(q1), Some(q2), Some(q3)] = &quadrants[..] else {
             unreachable!("validated above");
         };
-        emit_arm(self, q0, case0, false);
-        emit_arm(self, q1, case1, false);
-        emit_arm(self, q2, case2, false);
-        emit_arm(self, q3, case3, true);
+        let quadrant_label_bump =
+            self.emit_trig_quadrant_dispatch([q0, q1, q2, q3], epilogue);
         self.bind_label(epilogue);
         self.output.instructions.push(Instruction::LoadWord {
             d: 0,
@@ -916,8 +839,10 @@ impl Generator {
         } else {
             0_u32
         };
-        self.output.anonymous_label_bump +=
-            base_label_bump + hidden_label_bump + ipa_label_bump;
+        self.output.anonymous_label_bump += base_label_bump
+            + hidden_label_bump
+            + quadrant_label_bump
+            + ipa_label_bump;
         Ok(true)
     }
 
