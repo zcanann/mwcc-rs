@@ -8,6 +8,7 @@ use std::collections::HashMap;
 #[derive(Clone, Copy)]
 pub(crate) struct PragmaState {
     pub(crate) cplusplus: bool,
+    pub(crate) cpp_exceptions_override: Option<bool>,
     pub(crate) defer_codegen: bool,
     pub(crate) force_active: bool,
     pub(crate) peephole_disabled: bool,
@@ -535,6 +536,11 @@ pub(crate) struct Parser {
     /// peephole directives.
     pub(crate) default_cplusplus: bool,
     pub(crate) cplusplus: bool,
+    /// File-scope `#pragma exceptions on/off/reset` override. `None` inherits
+    /// the command-line mode; parsed functions snapshot explicit overrides.
+    pub(crate) cpp_exceptions_override: Option<bool>,
+    pub(crate) function_cpp_exception_overrides:
+        std::collections::HashMap<String, bool>,
     pub(crate) pragma_stack: Vec<PragmaState>,
     /// Active named C++ namespaces, outermost first. Top-level namespace braces
     /// are declaration containers; this stack supplies CodeWarrior's `Qn`

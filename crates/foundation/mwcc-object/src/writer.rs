@@ -1459,7 +1459,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // order, ahead of statics first seen at their definition. The per-function
     // loop below skips any function emitted here (measured: OSAlarm's
     // `DecrementerExceptionHandler`, prototyped at the top of the file).
-    for name in input.forward_declared_statics {
+    for name in input.early_static_function_symbols {
         if let Some(index) = functions.iter().position(|function| {
             function.is_static && !function.implicit_local && function.name == name.as_str()
         }) {
@@ -2185,7 +2185,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // __CARDVendorID). Keep the prefix narrow so ordinary declaration ordering
     // is unchanged once a non-weak object has been encountered.
     for object in input.data_objects.iter().take_while(|object| {
-        object.is_weak && is_initialized_run_object(object) && object.functions_before == 0
+        object.is_weak
+            && is_initialized_run_object(object)
+            && object.non_static_functions_before == 0
     }) {
         emit_initialized_object!(object);
     }
@@ -2216,7 +2218,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // UNINITIALIZED zero globals trail the functions in reverse. (Large `.bss`
     // follows its own reference-order rule, untouched here.)
     for object in &input.data_objects {
-        if is_initialized_run_object(object) && object.functions_before == 0 {
+        if is_initialized_run_object(object) && object.non_static_functions_before == 0 {
             emit_initialized_object!(object);
         } else if (input.object_format.function_symbol_order == FunctionSymbolOrder::Deferred
             && is_static_chain_reference(object))
@@ -2251,7 +2253,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         };
         for object in debug_data_order {
             let debug_declares_object = !object.is_static
-                && object.functions_before == 0
+                && object.non_static_functions_before == 0
                 && debug.debug_relocations.iter().any(|relocation| {
                     matches!(
                         &relocation.target,
@@ -2265,6 +2267,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         }
     }
     let mut functions_seen = 0usize;
+    let mut non_static_functions_seen = 0usize;
     for (index, function) in functions.iter().enumerate() {
         // A function-local static initializer creates its address targets while
         // compiling the owning body. The LOCAL object symbols were emitted in
@@ -2725,9 +2728,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // functions, lands after the preceding function's referenced
         // externals, not up front).
         functions_seen += 1;
+        if !function.is_static {
+            non_static_functions_seen += 1;
+        }
         for object in &input.data_objects {
             if is_initialized_run_object(object)
-                && object.functions_before == functions_seen
+                && object.non_static_functions_before == non_static_functions_seen
                 && !global_symbols.contains_key(object.name)
             {
                 emit_initialized_object!(object);

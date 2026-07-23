@@ -1421,6 +1421,7 @@ impl Generator {
                     self.inline_expansion_facts,
                     expanded.statement_body_substitutions,
                     expanded.value_body_substitutions,
+                    self.behavior.inline_statement_substitution_label_weight,
                 );
                 return self.evaluate_body(&expanded.function);
             }

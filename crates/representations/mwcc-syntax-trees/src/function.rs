@@ -301,6 +301,9 @@ pub struct InlineExpansionFacts {
 pub struct TranslationUnit {
     pub globals: Vec<GlobalDeclaration>,
     pub functions: Vec<Function>,
+    /// Explicit `#pragma exceptions on/off` state at each parsed function.
+    /// Missing entries inherit the invocation's `-Cpp_exceptions` setting.
+    pub function_cpp_exception_overrides: std::collections::HashMap<String, bool>,
     /// C++ class definitions in source declaration order. Compiler-generated
     /// vtable helpers use this order even when their owning destructors are
     /// defined in a different order later in the file.

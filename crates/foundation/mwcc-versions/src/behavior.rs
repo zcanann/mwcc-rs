@@ -506,8 +506,16 @@ pub struct Behavior {
     pub string_literals_packed: bool,
     /// Register, literal-pool, and epilogue family for dense call dispatchers.
     pub call_dispatcher_style: CallDispatcherStyle,
-    /// Ordinals carried across a source-leading leaf by deferred emission.
-    pub deferred_transparent_leaf_bump: u8,
+    /// Source-analysis cost per earlier compiled body under deferred emission.
+    pub deferred_source_function_label_bump: u8,
+    /// Boundary cost after each reversed deferred-emission body.
+    pub deferred_post_function_label_bump: u8,
+    /// Extra C++ in-class definition cost in the deferred analyzer.
+    pub deferred_cxx_inline_definition_label_bump: u8,
+    /// Extra non-virtual-destructor cost in the deferred analyzer.
+    pub deferred_cxx_nonvirtual_destructor_label_bump: u8,
+    /// Residue per statement-body inline substitution for the active mode.
+    pub inline_statement_substitution_label_weight: u8,
     /// Hidden deferred-inlining labels retained per call-dispatch switch arm.
     /// Zero for ordinary compilation and for unmeasured compiler generations.
     pub deferred_call_dispatcher_labels_per_case: u8,
@@ -794,7 +802,38 @@ impl Behavior {
             optimization_goal: config.flags.optimization_goal,
             string_literals_packed: config.flags.string_literals_packed,
             call_dispatcher_style: config.build.profile.call_dispatcher_style(),
-            deferred_transparent_leaf_bump: config.build.profile.deferred_transparent_leaf_bump(),
+            deferred_source_function_label_bump: config
+                .build
+                .profile
+                .deferred_source_function_label_bump(),
+            deferred_post_function_label_bump: config
+                .build
+                .profile
+                .deferred_post_function_label_bump(),
+            deferred_cxx_inline_definition_label_bump: if config.flags.inline_deferred {
+                config
+                    .build
+                    .profile
+                    .deferred_cxx_inline_definition_label_bump()
+            } else {
+                0
+            },
+            deferred_cxx_nonvirtual_destructor_label_bump: if config.flags.inline_deferred {
+                config
+                    .build
+                    .profile
+                    .deferred_cxx_nonvirtual_destructor_label_bump()
+            } else {
+                0
+            },
+            inline_statement_substitution_label_weight: if config.flags.inline_deferred {
+                config
+                    .build
+                    .profile
+                    .deferred_inline_statement_substitution_label_weight()
+            } else {
+                2
+            },
             deferred_call_dispatcher_labels_per_case: if config.flags.inline_deferred {
                 config
                     .build
@@ -1877,8 +1916,10 @@ mod tests {
         assert_eq!(gc41.cxx_rtti_virtual_method_label_weight, 5);
         assert_eq!(gc41.cxx_rtti_virtual_destructor_label_weight, 9);
         assert_eq!(gc41.cxx_rtti_inherited_virtual_destructor_label_bump, 4);
-        assert_eq!(mainline.deferred_transparent_leaf_bump, 3);
-        assert_eq!(gc41.deferred_transparent_leaf_bump, 4);
+        assert_eq!(mainline.deferred_source_function_label_bump, 3);
+        assert_eq!(gc41.deferred_source_function_label_bump, 4);
+        assert_eq!(mainline.deferred_post_function_label_bump, 1);
+        assert_eq!(gc41.deferred_post_function_label_bump, 1);
         assert_eq!(
             mainline.call_dispatcher_style,
             CallDispatcherStyle::Legacy24x
@@ -1915,7 +1956,7 @@ mod tests {
         let mut wii_deferred_config = CompilerConfig::new(build::WII_1_0);
         wii_deferred_config.flags.inline_deferred = true;
         let wii_deferred = Behavior::resolve(&wii_deferred_config);
-        assert_eq!(wii_deferred.deferred_transparent_leaf_bump, 4);
+        assert_eq!(wii_deferred.deferred_source_function_label_bump, 4);
         assert_eq!(wii_deferred.deferred_call_dispatcher_labels_per_case, 1);
         assert!(wii_deferred_config
             .build
@@ -1934,6 +1975,19 @@ mod tests {
             ipa.function_ordinal_accounting_style,
             FunctionOrdinalAccountingStyle::Gc41Ipa
         );
+    }
+
+    #[test]
+    fn deferred_mainline_resolves_legacy_cxx_ordinal_costs() {
+        let mut config = CompilerConfig::new(build::GC_2_7);
+        config.flags.inline_deferred = true;
+        let behavior = Behavior::resolve(&config);
+
+        assert_eq!(behavior.deferred_source_function_label_bump, 3);
+        assert_eq!(behavior.deferred_post_function_label_bump, 1);
+        assert_eq!(behavior.deferred_cxx_inline_definition_label_bump, 1);
+        assert_eq!(behavior.deferred_cxx_nonvirtual_destructor_label_bump, 1);
+        assert_eq!(behavior.inline_statement_substitution_label_weight, 1);
     }
 
     #[test]

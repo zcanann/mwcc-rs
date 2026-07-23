@@ -173,7 +173,7 @@ fn data_anchor_precedes_the_first_upfront_local_data_object() {
         small_data: true,
         emit_mwcats: false,
         inline_asm_symbols: &[],
-        forward_declared_statics: &[],
+        early_static_function_symbols: &[],
         early_undefined_externals: &[],
         section_function_declarations: &[],
         section_externals: &[],

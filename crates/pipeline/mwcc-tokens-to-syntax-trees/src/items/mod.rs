@@ -242,6 +242,7 @@ impl Parser {
             match directive.as_str() {
                 "push" => self.pragma_stack.push(crate::parser::PragmaState {
                     cplusplus: self.cplusplus,
+                    cpp_exceptions_override: self.cpp_exceptions_override,
                     defer_codegen: self.defer_codegen,
                     force_active: self.force_active,
                     peephole_disabled: self.peephole_disabled,
@@ -249,11 +250,13 @@ impl Parser {
                 "pop" => {
                     let state = self.pragma_stack.pop().unwrap_or(crate::parser::PragmaState {
                         cplusplus: self.default_cplusplus,
+                        cpp_exceptions_override: None,
                         defer_codegen: false,
                         force_active: false,
                         peephole_disabled: false,
                     });
                     self.cplusplus = state.cplusplus;
+                    self.cpp_exceptions_override = state.cpp_exceptions_override;
                     self.defer_codegen = state.defer_codegen;
                     self.force_active = state.force_active;
                     self.peephole_disabled = state.peephole_disabled;
@@ -261,6 +264,9 @@ impl Parser {
                 "cplusplus on" => self.cplusplus = true,
                 "cplusplus off" => self.cplusplus = false,
                 "cplusplus reset" => self.cplusplus = self.default_cplusplus,
+                "exceptions on" => self.cpp_exceptions_override = Some(true),
+                "exceptions off" => self.cpp_exceptions_override = Some(false),
+                "exceptions reset" => self.cpp_exceptions_override = None,
                 "defer_codegen on" => self.defer_codegen = true,
                 "defer_codegen off" => self.defer_codegen = false,
                 "force_active on" => self.force_active = true,
@@ -906,6 +912,10 @@ impl Parser {
                 // its body cannot add top-level inline definitions, so the bump
                 // at the definition covers every declaration inside it.
                 for function in &functions[functions_before..] {
+                    if let Some(enabled) = self.cpp_exceptions_override {
+                        self.function_cpp_exception_overrides
+                            .insert(function.name.clone(), enabled);
+                    }
                     self.function_inline_prebumps
                         .insert(function.name.clone(), bump_before_item);
                     for local in function.locals.iter().filter(|local| local.is_static) {
@@ -1080,6 +1090,9 @@ impl Parser {
         Ok(TranslationUnit {
             globals,
             functions,
+            function_cpp_exception_overrides: std::mem::take(
+                &mut self.function_cpp_exception_overrides,
+            ),
             cxx_abi_classes,
             cxx_class_declaration_order: std::mem::take(
                 &mut self.cxx_class_declaration_order,

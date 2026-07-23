@@ -41,11 +41,13 @@ pub(crate) fn ordinal_residue(
     facts: mwcc_syntax_trees::InlineExpansionFacts,
     statement_body_substitutions: usize,
     value_body_substitutions: usize,
+    statement_body_weight: u8,
 ) -> u32 {
     ordinal_residue::ordinal_residue(
         facts,
         statement_body_substitutions,
         value_body_substitutions,
+        statement_body_weight,
     )
 }
 

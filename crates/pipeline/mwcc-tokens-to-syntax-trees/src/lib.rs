@@ -225,6 +225,8 @@ pub fn parse_located_translation_unit_with_behavior(
         cxx_delete_forwarder: None,
         default_cplusplus: cplusplus,
         cplusplus,
+        cpp_exceptions_override: None,
+        function_cpp_exception_overrides: std::collections::HashMap::new(),
         pragma_stack: Vec::new(),
         namespace_stack: Vec::new(),
         cxx_namespaces: std::collections::HashSet::new(),
@@ -5813,6 +5815,45 @@ blr\n\
                 mwcc_syntax_trees::Expression::Call { name, .. }
             )] if name == "active__3std"
         ));
+    }
+
+    #[test]
+    fn records_scoped_exception_pragma_overrides_per_function() {
+        let source = r#"
+            #pragma exceptions on
+            void enabled() {}
+            #pragma push
+            #pragma exceptions off
+            void disabled() {}
+            #pragma pop
+            void restored() {}
+            #pragma exceptions reset
+            void inherited() {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.function_cpp_exception_overrides.get("enabled__Fv"),
+            Some(&true)
+        );
+        assert_eq!(
+            unit.function_cpp_exception_overrides.get("disabled__Fv"),
+            Some(&false)
+        );
+        assert_eq!(
+            unit.function_cpp_exception_overrides.get("restored__Fv"),
+            Some(&true)
+        );
+        assert!(!unit
+            .function_cpp_exception_overrides
+            .contains_key("inherited__Fv"));
     }
 
     #[test]

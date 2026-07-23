@@ -114,7 +114,7 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
                 let directive = line.trim().trim_start_matches('#').trim();
                 if let Some(rest) = directive.strip_prefix("pragma ") {
                     let rest = rest.trim();
-                    if matches!(rest, "cplusplus on" | "cplusplus off" | "cplusplus reset" | "push" | "pop" | "defer_codegen on" | "defer_codegen off" | "force_active on" | "force_active off" | "force_active reset" | "peephole on" | "peephole off" | "peephole reset") {
+                    if matches!(rest, "cplusplus on" | "cplusplus off" | "cplusplus reset" | "exceptions on" | "exceptions off" | "exceptions reset" | "push" | "pop" | "defer_codegen on" | "defer_codegen off" | "force_active on" | "force_active off" | "force_active reset" | "peephole on" | "peephole off" | "peephole reset") {
                         push_token!(Token::Pragma(rest.to_string()), line_start);
                     }
                 }
@@ -598,5 +598,21 @@ mod tests {
             .unwrap();
         assert_eq!(return_token.location.line, 5);
         assert_eq!(return_token.location.column, 15);
+    }
+
+    #[test]
+    fn exception_pragmas_survive_lexing() {
+        let tokens = tokenize_bytes(
+            b"#pragma exceptions on\n#pragma exceptions off\n#pragma exceptions reset\n",
+        )
+        .unwrap();
+        assert_eq!(
+            &tokens[..3],
+            [
+                Token::Pragma("exceptions on".to_string()),
+                Token::Pragma("exceptions off".to_string()),
+                Token::Pragma("exceptions reset".to_string()),
+            ]
+        );
     }
 }

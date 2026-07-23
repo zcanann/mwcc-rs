@@ -705,12 +705,34 @@ pub trait CodegenProfile: core::fmt::Debug {
         CallDispatcherStyle::Legacy24x
     }
 
-    /// Anonymous ordinals contributed by a source-leading leaf when deferred
-    /// compilation emits a later anonymous-object owner first. The legacy
-    /// optimizer carries three internal labels; 4.x carries the full ordinary
-    /// four-slot post-function gap.
-    fn deferred_transparent_leaf_bump(&self) -> u8 {
+    /// Source-analysis transaction contributed by each earlier compiled body
+    /// when deferred compilation emits the translation unit in reverse.
+    fn deferred_source_function_label_bump(&self) -> u8 {
         3
+    }
+
+    /// Boundary left after each body in the reversed deferred-emission stream.
+    /// Framed functions also consume their two unwind-symbol ordinals.
+    fn deferred_post_function_label_bump(&self) -> u8 {
+        1
+    }
+
+    /// Additional base cost of an in-class inline definition under the legacy
+    /// deferred analyzer. Ordinary mainline analysis otherwise charges only
+    /// the definition's control-flow labels.
+    fn deferred_cxx_inline_definition_label_bump(&self) -> u8 {
+        1
+    }
+
+    /// Additional legacy deferred-analysis cost for a non-virtual destructor.
+    fn deferred_cxx_nonvirtual_destructor_label_bump(&self) -> u8 {
+        1
+    }
+
+    /// Anonymous-label residue of one statement-body inline substitution under
+    /// deferred analysis (ordinary emission retains two nodes).
+    fn deferred_inline_statement_substitution_label_weight(&self) -> u8 {
+        1
     }
 
     /// Whether plain `char` (no `signed`/`unsigned` qualifier) is signed. The one
@@ -1293,7 +1315,7 @@ impl CodegenProfile for Gc41Build51213 {
         CallDispatcherStyle::Packed41
     }
 
-    fn deferred_transparent_leaf_bump(&self) -> u8 {
+    fn deferred_source_function_label_bump(&self) -> u8 {
         4
     }
 
@@ -1317,12 +1339,20 @@ impl CodegenProfile for Gc41Build51213 {
         4
     }
 
+    fn deferred_cxx_inline_definition_label_bump(&self) -> u8 {
+        0
+    }
+
     fn cxx_inline_control_flow_label_weight(&self) -> u8 {
         0
     }
 
     fn cxx_virtual_destructor_label_bump(&self) -> u8 {
         3
+    }
+
+    fn deferred_cxx_nonvirtual_destructor_label_bump(&self) -> u8 {
+        0
     }
 
     fn cxx_inline_ipa_call_label_bump(&self) -> u8 {
@@ -1423,8 +1453,16 @@ impl CodegenProfile for Wii43Build145 {
         4
     }
 
+    fn deferred_cxx_inline_definition_label_bump(&self) -> u8 {
+        0
+    }
+
     fn cxx_nonvirtual_destructor_label_bump(&self) -> u8 {
         3
+    }
+
+    fn deferred_cxx_nonvirtual_destructor_label_bump(&self) -> u8 {
+        0
     }
 
     fn cxx_trivial_class_temporary_label_bump(&self) -> u8 {
@@ -1495,7 +1533,7 @@ impl CodegenProfile for Wii43Build145 {
         CallDispatcherStyle::Packed41
     }
 
-    fn deferred_transparent_leaf_bump(&self) -> u8 {
+    fn deferred_source_function_label_bump(&self) -> u8 {
         4
     }
 

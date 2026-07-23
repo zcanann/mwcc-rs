@@ -718,6 +718,13 @@ fn compile(
         if diagnose_syntax_tree {
             eprintln!("{function:#?}");
         }
+        let mut function_config = config;
+        if let Some(enabled) = unit
+            .function_cpp_exception_overrides
+            .get(&function.name)
+        {
+            function_config.flags.cpp_exceptions = *enabled;
+        }
         match mwcc_syntax_trees_to_machine_code::lower_function(
             function,
             &unit.globals,
@@ -737,7 +744,7 @@ fn compile(
                 .get(&function.name)
                 .copied()
                 .unwrap_or_default(),
-            config,
+            function_config,
         ) {
             Ok(machine_function) => machine_functions.push(machine_function),
             Err(mut diagnostic) => {
@@ -875,6 +882,8 @@ fn compile(
         * usize::from(behavior.cxx_class_definition_label_bump)
         + cxx_inline_facts.inline_definitions
             * usize::from(behavior.cxx_inline_definition_label_bump)
+        + cxx_inline_facts.inline_definitions
+            * usize::from(behavior.deferred_cxx_inline_definition_label_bump)
         + cxx_inline_facts.inline_definition_parameters
             * usize::from(behavior.dropped_inline_parameter_label_weight)
         + cxx_inline_facts.inline_definition_local_declarators
@@ -883,6 +892,8 @@ fn compile(
             * usize::from(behavior.cxx_inline_control_flow_label_weight)
         + cxx_inline_facts.nonvirtual_destructors
             * usize::from(behavior.cxx_nonvirtual_destructor_label_bump)
+        + cxx_inline_facts.nonvirtual_destructors
+            * usize::from(behavior.deferred_cxx_nonvirtual_destructor_label_bump)
         + cxx_inline_facts.trivial_class_temporary_constructions
             * usize::from(behavior.cxx_trivial_class_temporary_label_bump)
         + cxx_inline_facts.nontrivial_class_temporary_constructions
@@ -1000,7 +1011,8 @@ fn compile(
     if config.flags.inline_deferred {
         function_order::apply_deferred_emission_order(
             &mut machine_functions,
-            behavior.deferred_transparent_leaf_bump,
+            behavior.deferred_source_function_label_bump,
+            behavior.deferred_post_function_label_bump,
         );
     }
     // `#pragma defer_codegen on` defers the covered functions the same way:
@@ -1852,10 +1864,12 @@ fn compile(
     defined_globals.extend(function_string_objects);
     defined_globals.extend(static_local_globals);
 
-    // A `static` function whose ADDRESS is taken before its definition gets its
-    // LOCAL FUNC symbol created at that reference. Data initializers are visited in
-    // their relocation-emission order (often reverse field order), while text-body
-    // address references follow prototype order. A forward-declared static that is
+    // A `static` function whose ADDRESS is taken by a data initializer gets its
+    // LOCAL FUNC symbol created while that initializer is analyzed, before deferred
+    // function code generation creates constants and unwind symbols. Data
+    // initializers are visited in their relocation-emission order (often reverse
+    // field order). Text-body address references only hoist a symbol when a
+    // prototype made the function known before its definition; a static that is
     // only CALLED (REL24) keeps its symbol at the definition.
     //
     // Measured examples:
@@ -1863,7 +1877,7 @@ fn compile(
     //   descending-offset `.data` relocations before any function-local constants.
     // - OSAlarm creates DecrementerExceptionHandler when its address is passed to
     //   __OSSetExceptionHandler in a text body.
-    let forward_declared_statics: Vec<String> = {
+    let early_static_function_symbols: Vec<String> = {
         let static_definition_index: std::collections::HashMap<&str, usize> = unit
             .functions
             .iter()
@@ -1900,14 +1914,10 @@ fn compile(
                 };
             for relocation_index in relocation_indices {
                 let relocation = &global.relocations[relocation_index];
-                let Some(&definition_index) =
-                    static_definition_index.get(relocation.target.as_str())
-                else {
+                if !static_definition_index.contains_key(relocation.target.as_str()) {
                     continue;
-                };
-                if definition_index >= global.functions_before
-                    && seen.insert(relocation.target.clone())
-                {
+                }
+                if seen.insert(relocation.target.clone()) {
                     symbols.push(relocation.target.clone());
                 }
             }
@@ -2078,7 +2088,7 @@ fn compile(
         &machine_functions,
         &defined_globals,
         &object_inline_asm_symbols,
-        &forward_declared_statics,
+        &early_static_function_symbols,
         &early_undefined_externals,
         &unit.section_prototypes,
         &section_externals,

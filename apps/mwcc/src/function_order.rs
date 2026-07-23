@@ -91,9 +91,29 @@ fn emit_with_materialized_callees(
 /// source order. An all-asm translation unit therefore remains unchanged.
 pub(crate) fn apply_deferred_emission_order(
     functions: &mut Vec<MachineFunction>,
-    transparent_leaf_bump: u8,
+    source_function_label_bump: u8,
+    post_function_label_bump: u8,
 ) {
     let mut source_order = std::mem::take(functions);
+
+    // Deferred compilation analyzes the compiled bodies in source order before
+    // emitting them in reverse. Every compiled body before the eventual emitted
+    // head contributes a fixed source-analysis transaction to that head's
+    // absolute anonymous ordinal. Once emission starts, each body leaves a much
+    // smaller boundary cost behind it; a framed function's two unwind symbols
+    // make the observed distance `2 + post_function_label_bump`.
+    let compiled_count = source_order
+        .iter()
+        .filter(|function| !function.is_asm)
+        .count();
+    let source_transaction_prefix = compiled_count
+        .saturating_sub(1)
+        .saturating_mul(usize::from(source_function_label_bump)) as u32;
+    for function in source_order.iter_mut().filter(|function| !function.is_asm) {
+        function
+            .post_function_anonymous_bump
+            .get_or_insert(post_function_label_bump);
+    }
 
     // Some transactions complete ordinal analysis in source order even though
     // their code and pools emit in reverse order. Transfer that measured work
@@ -109,43 +129,13 @@ pub(crate) fn apply_deferred_emission_order(
         .map(|(_, function)| function.deferred_source_prefix_bump)
         .sum();
 
-    // Deferred emission reverses compiled bodies, but a leading source-order
-    // run of leaf functions with no anonymous payload was still compiled first.
-    // Its post-function bookkeeping therefore advances the ordinal seen by the
-    // first later body that owns a pool object or jump table. Carry only this
-    // fully characterized prefix; once a function owns anonymous state, a
-    // general absolute-ordinal plan is required rather than guessing its cost.
-    let mut transparent_prefix = Some(0u32);
-    for function in &mut source_order {
-        let owns_anonymous_state = function.frame.is_some()
-            || function.has_conversion
-            || function.has_float_branch
-            || function.anonymous_label_bump != 0
-            || !function.string_literals.is_empty()
-            || !function.constants.is_empty()
-            || !function.jump_tables.is_empty()
-            || !function.anonymous_rodata.is_empty()
-            || !function.static_locals.is_empty();
-        if owns_anonymous_state {
-            if let Some(prefix) = transparent_prefix {
-                function.anonymous_label_bump += prefix;
-            }
-            transparent_prefix = None;
-        } else if let Some(prefix) = &mut transparent_prefix {
-            *prefix += u32::from(
-                function
-                    .post_function_anonymous_bump
-                    .unwrap_or(transparent_leaf_bump),
-            );
-        }
-    }
     let (mut immediate_asm, mut deferred_compiled): (Vec<_>, Vec<_>) = source_order
         .into_iter()
         .partition(|function| function.is_asm);
     deferred_compiled.reverse();
-    if deferred_source_prefix != 0 {
-        if let Some(head) = deferred_compiled.first_mut() {
-            head.anonymous_label_bump += deferred_source_prefix;
+    if let Some(head) = deferred_compiled.first_mut() {
+        head.anonymous_label_bump += source_transaction_prefix + deferred_source_prefix;
+        if deferred_source_prefix != 0 {
             // The source-order analysis already bridges these reversed bodies;
             // MWCC does not insert its ordinary compiled-function gap again.
             head.post_function_anonymous_bump = Some(0);
@@ -175,7 +165,7 @@ mod tests {
             function("last", false),
         ];
 
-        apply_deferred_emission_order(&mut functions, 4);
+        apply_deferred_emission_order(&mut functions, 3, 1);
 
         assert_eq!(
             functions
@@ -192,12 +182,37 @@ mod tests {
         owner.string_literals.push(b"owned".to_vec());
         let mut functions = vec![function("leaf", false), owner];
 
-        apply_deferred_emission_order(&mut functions, 4);
+        apply_deferred_emission_order(&mut functions, 3, 1);
 
         assert_eq!(functions[0].name, "owner");
-        assert_eq!(functions[0].anonymous_label_bump, 4);
+        assert_eq!(functions[0].anonymous_label_bump, 3);
+        assert_eq!(functions[0].post_function_anonymous_bump, Some(1));
         assert_eq!(functions[1].name, "leaf");
         assert_eq!(functions[1].anonymous_label_bump, 0);
+    }
+
+    #[test]
+    fn reverse_stream_carries_source_transactions_and_small_boundaries() {
+        let mut functions = vec![
+            function("f1", false),
+            function("f2", false),
+            function("f3", false),
+            function("f4", false),
+        ];
+
+        apply_deferred_emission_order(&mut functions, 3, 1);
+
+        assert_eq!(
+            functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            ["f4", "f3", "f2", "f1"]
+        );
+        assert_eq!(functions[0].anonymous_label_bump, 9);
+        assert!(functions
+            .iter()
+            .all(|function| function.post_function_anonymous_bump == Some(1)));
     }
 
     #[test]
@@ -208,10 +223,10 @@ mod tests {
         let later = function("later", false);
         let mut functions = vec![source_first, later];
 
-        apply_deferred_emission_order(&mut functions, 4);
+        apply_deferred_emission_order(&mut functions, 3, 1);
 
         assert_eq!(functions[0].name, "later");
-        assert_eq!(functions[0].anonymous_label_bump, 9);
+        assert_eq!(functions[0].anonymous_label_bump, 12);
         assert_eq!(functions[0].post_function_anonymous_bump, Some(0));
         assert_eq!(functions[1].anonymous_label_bump, 7);
     }

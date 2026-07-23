@@ -9,9 +9,10 @@ pub(super) fn ordinal_residue(
     facts: InlineExpansionFacts,
     statement_body_substitutions: usize,
     value_body_substitutions: usize,
+    statement_body_weight: u8,
 ) -> u32 {
     facts.leading_initializer_substitutions as u32
-        + 2 * statement_body_substitutions as u32
+        + u32::from(statement_body_weight) * statement_body_substitutions as u32
         + 3 * value_body_substitutions as u32
 }
 
@@ -28,6 +29,7 @@ mod tests {
                 },
                 2,
                 1,
+                2,
             ),
             8
         );
