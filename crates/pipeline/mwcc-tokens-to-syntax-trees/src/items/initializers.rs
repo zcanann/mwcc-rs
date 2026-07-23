@@ -148,8 +148,7 @@ impl Parser {
                 ));
             }
             let symbol = self
-                .resolve_free_cxx_function_address(&name)
-                .or_else(|| self.resolve_cxx_data_object(&name))
+                .resolve_cxx_initializer_address(&name)
                 .unwrap_or(name);
             return Ok(PointerElement::Symbol(symbol));
         }
@@ -184,8 +183,7 @@ impl Parser {
             let name = name.clone();
             self.advance();
             let symbol = self
-                .resolve_free_cxx_function_address(&name)
-                .or_else(|| self.resolve_cxx_data_object(&name))
+                .resolve_cxx_initializer_address(&name)
                 .unwrap_or(name);
             return Ok(PointerElement::Symbol(symbol));
         }
@@ -619,7 +617,10 @@ impl Parser {
             if !self.enum_constants.contains_key(name) {
                 let name = name.clone();
                 self.advance();
-                return Ok(Some((name, 0)));
+                let symbol = self
+                    .resolve_cxx_initializer_address(&name)
+                    .unwrap_or(name);
+                return Ok(Some((symbol, 0)));
             }
         }
         // `name + K` — an address with a byte addend into a known global array
@@ -651,7 +652,10 @@ impl Parser {
                 ) {
                     let name = name.clone();
                     self.position += 2;
-                    return Ok(Some((name, 0)));
+                    let symbol = self
+                        .resolve_cxx_initializer_address(&name)
+                        .unwrap_or(name);
+                    return Ok(Some((symbol, 0)));
                 }
             }
         }

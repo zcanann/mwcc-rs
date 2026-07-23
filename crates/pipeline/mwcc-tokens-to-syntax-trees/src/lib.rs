@@ -4248,6 +4248,30 @@ blr\n\
     }
 
     #[test]
+    fn mangles_free_cxx_function_addresses_in_struct_initializers() {
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(
+                "typedef void (*Method)(void);\n\
+                 struct Interface { Method method; };\n\
+                 extern void target();\n\
+                 Interface value = { target };",
+            )
+            .unwrap(),
+            true,
+            true,
+            2,
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(unit.prototypes[0].0, "target__Fv");
+        assert_eq!(
+            unit.globals[0].data_relocations,
+            vec![(0, "target__Fv".to_string(), 0)]
+        );
+    }
+
+    #[test]
     fn retains_named_cxx_enum_parameter_identity() {
         let source = r#"
             enum Material { Solid, Water };

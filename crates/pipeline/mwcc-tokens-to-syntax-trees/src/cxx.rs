@@ -872,6 +872,14 @@ impl Parser {
         }
     }
 
+    /// Resolve a source-level name used as an initializer address to its ABI
+    /// symbol. Function and data addresses share this boundary so scalar
+    /// pointer initializers and relocated aggregate fields cannot disagree.
+    pub(crate) fn resolve_cxx_initializer_address(&self, source_name: &str) -> Option<String> {
+        self.resolve_free_cxx_function_address(source_name)
+            .or_else(|| self.resolve_cxx_data_object(source_name))
+    }
+
     pub(crate) fn resolve_qualified_free_cxx_call(
         &self,
         scope: &str,
