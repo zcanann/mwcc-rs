@@ -2260,6 +2260,85 @@ mod tests {
     }
 
     #[test]
+    fn lowers_wii_writer_control_rectangle_switch() {
+        let source = br#"
+            struct Rect {
+                float left;
+                float top;
+                float right;
+                float bottom;
+                void normalize();
+            };
+            struct Writer {
+                float cursorX() const;
+                float cursorY() const;
+                float fontHeight() const;
+            };
+            struct Context {
+                Writer* writer;
+                int padding[4];
+            };
+            struct Handler {
+                void linefeed(Context*);
+                void tab(Context*);
+                int rectangle(Rect*, unsigned short, Context*);
+            };
+            int Handler::rectangle(Rect* rect, unsigned short code, Context* context) {
+                (void)0;
+                (void)0;
+                (void)0;
+                switch (code) {
+                case 10: {
+                    Writer& writer = *context->writer;
+                    rect->right = writer.cursorX();
+                    rect->top = writer.cursorY();
+                    linefeed(context);
+                    rect->left = writer.cursorX();
+                    rect->bottom = writer.cursorY() + context->writer->fontHeight();
+                    rect->normalize();
+                }
+                    return 3;
+                case 9: {
+                    Writer& writer = *context->writer;
+                    rect->left = writer.cursorX();
+                    tab(context);
+                    rect->right = writer.cursorX();
+                    rect->top = writer.cursorY();
+                    rect->bottom = rect->top + writer.fontHeight();
+                    rect->normalize();
+                }
+                    return 1;
+                default:
+                    return 0;
+                }
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.inline_enabled = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::WII_1_0,
+            flags,
+        };
+        let object = compile(
+            source,
+            "member-rect-control.cpp",
+            config,
+            Some(SourceLanguage::Cxx),
+            None,
+            false,
+        )
+        .expect("the structural Wii control-character rectangle should lower");
+        assert!(object
+            .windows(4)
+            .any(|instruction| instruction == [0x94, 0x21, 0xff, 0xc0]));
+        assert!(object
+            .windows(4)
+            .any(|instruction| instruction == [0x41, 0x82, 0x00, 0x14]));
+    }
+
+    #[test]
     fn preserves_a_later_member_address_while_materializing_a_global_receiver() {
         let source = br#"
             class Sink {
