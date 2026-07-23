@@ -9,6 +9,8 @@ mod aggregate_assignments;
 mod bit_fields;
 mod cxx_vtables;
 mod cxx_destructors;
+pub(crate) mod cxx_template_destructors;
+pub(crate) mod cxx_template_constructors;
 mod initializers;
 mod statements;
 mod template_calls;
@@ -1055,9 +1057,16 @@ impl Parser {
                     .map(|(_, target, _)| target.as_str())
             })
             .collect();
+        let requested_weak_materializations = std::mem::take(
+            &mut self.cxx_deferred_weak_materialization_requests,
+        )
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>();
         let mut early_materializations = Vec::new();
         for function in std::mem::take(&mut self.cxx_inline_materializations) {
-            if referenced_functions.contains(function.name.as_str()) {
+            if referenced_functions.contains(function.name.as_str())
+                || requested_weak_materializations.contains(&function.name)
+            {
                 let source = self
                     .cxx_inline_materialization_sources
                     .remove(&function.name);

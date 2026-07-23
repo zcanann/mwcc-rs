@@ -252,6 +252,7 @@ pub fn parse_located_translation_unit_with_behavior(
         cxx_inline_materialization_sources: std::collections::HashMap::new(),
         cxx_inline_materialization_requests: Vec::new(),
         cxx_inline_destructor_requests: Vec::new(),
+        cxx_deferred_weak_materialization_requests: Vec::new(),
         cxx_static_methods: HashMap::new(),
         cxx_class_deletes: HashMap::new(),
         cxx_constructors: HashMap::new(),

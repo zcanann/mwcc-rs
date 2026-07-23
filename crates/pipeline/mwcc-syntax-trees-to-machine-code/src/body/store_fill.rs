@@ -4,6 +4,41 @@
 use super::*;
 
 impl Generator {
+    /// A leaf constructor whose entire observable body initializes members to
+    /// one constant retains incoming `this` in r3 and materializes the value
+    /// once. Keep this separate from the void store-fill family: accepting an
+    /// arbitrary non-void function here could silently skip return evaluation.
+    pub(crate) fn try_constructor_constant_store_fill(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if !function.name.starts_with("__ct__")
+            || !matches!(function.return_type, Type::StructPointer { .. })
+            || !matches!(
+                function.parameters.as_slice(),
+                [parameter]
+                    if parameter.name == "this"
+                        && matches!(parameter.parameter_type, Type::StructPointer { .. })
+            )
+            || !matches!(
+                function.return_expression.as_ref(),
+                Some(Expression::Variable(name)) if name == "this"
+            )
+            || function_makes_call(function)
+            || !function.guards.is_empty()
+            || !function.locals.is_empty()
+        {
+            return Ok(false);
+        }
+        let Some(ConstStoreRun::AllSame) = self.constant_store_run_plan(&function.statements)
+        else {
+            return Ok(false);
+        };
+        self.emit_constant_store_run(&function.statements, ConstStoreRun::AllSame)?;
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     /// Build 163's leaf scheduler delays an initial global store from the live
     /// r3 return value by one slot: `ga=a; gb=b; return a` becomes stores from
     /// r4, then r3. A longer run continues in source order after that swap.

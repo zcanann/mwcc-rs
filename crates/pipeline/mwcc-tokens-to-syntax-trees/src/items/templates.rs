@@ -1314,6 +1314,7 @@ impl Parser {
         if self.tokens.get(cursor) != Some(&Token::BraceOpen) {
             return;
         }
+        let body_open = cursor;
         cursor += 1;
         let mut depth = 1i32;
         let mut fields = Vec::new();
@@ -1353,12 +1354,15 @@ impl Parser {
             }
         }
         if !fields.is_empty() || base.is_some() {
+            let default_constructor_zero_fields =
+                capture_default_constructor_zero_fields(&self.tokens, body_open, cursor - 1, &name);
             self.struct_templates.insert(
                 name,
                 StructTemplate {
                     parameters,
                     base,
                     fields,
+                    default_constructor_zero_fields,
                 },
             );
         }
@@ -1885,5 +1889,121 @@ impl Parser {
             Token::Identifier(name) => self.typedefs.get(name).copied(),
             _ => None,
         }
+    }
+}
+
+/// Recover the observable part of a primary template's zero-argument
+/// constructor initializer list. This deliberately records only exact scalar
+/// zero initializers; other expressions remain for the general template parser.
+fn capture_default_constructor_zero_fields(
+    tokens: &[Token],
+    body_open: usize,
+    body_close: usize,
+    class_name: &str,
+) -> Vec<String> {
+    let mut cursor = body_open + 1;
+    let mut depth = 1i32;
+    while cursor < body_close {
+        match tokens.get(cursor) {
+            Some(Token::BraceOpen) => depth += 1,
+            Some(Token::BraceClose) => depth -= 1,
+            Some(Token::Identifier(name))
+                if depth == 1
+                    && name == class_name
+                    && tokens.get(cursor + 1) == Some(&Token::ParenOpen)
+                    && tokens.get(cursor + 2) == Some(&Token::ParenClose)
+                    && tokens.get(cursor + 3) == Some(&Token::Colon) =>
+            {
+                let mut initializer = cursor + 4;
+                let mut zero_fields = Vec::new();
+                loop {
+                    let Some(Token::Identifier(field)) = tokens.get(initializer) else {
+                        break;
+                    };
+                    if tokens.get(initializer + 1) != Some(&Token::ParenOpen) {
+                        break;
+                    }
+                    let is_zero = matches!(
+                        tokens.get(initializer + 2),
+                        Some(Token::IntegerLiteral(0))
+                    ) || matches!(
+                        tokens.get(initializer + 2),
+                        Some(Token::Identifier(value)) if value == "false"
+                    );
+                    if tokens.get(initializer + 3) != Some(&Token::ParenClose) {
+                        break;
+                    }
+                    if is_zero {
+                        zero_fields.push(field.clone());
+                    }
+                    initializer += 4;
+                    if tokens.get(initializer) != Some(&Token::Comma) {
+                        return zero_fields;
+                    }
+                    initializer += 1;
+                }
+            }
+            _ => {}
+        }
+        cursor += 1;
+    }
+    Vec::new()
+}
+
+#[cfg(test)]
+mod default_constructor_tests {
+    use super::*;
+
+    #[test]
+    fn captures_only_proven_zero_initializers_from_default_constructor() {
+        let tokens = vec![
+            Token::BraceOpen,
+            Token::Identifier("optional_object".into()),
+            Token::ParenOpen,
+            Token::ParenClose,
+            Token::Colon,
+            Token::Identifier("m_valid".into()),
+            Token::ParenOpen,
+            Token::Identifier("false".into()),
+            Token::ParenClose,
+            Token::Comma,
+            Token::Identifier("m_count".into()),
+            Token::ParenOpen,
+            Token::IntegerLiteral(0),
+            Token::ParenClose,
+            Token::BraceOpen,
+            Token::BraceClose,
+            Token::BraceClose,
+        ];
+        assert_eq!(
+            capture_default_constructor_zero_fields(
+                &tokens,
+                0,
+                tokens.len() - 1,
+                "optional_object",
+            ),
+            ["m_valid", "m_count"]
+        );
+    }
+
+    #[test]
+    fn ignores_parameterized_constructor() {
+        let tokens = vec![
+            Token::BraceOpen,
+            Token::Identifier("Box".into()),
+            Token::ParenOpen,
+            Token::KeywordInt,
+            Token::Identifier("value".into()),
+            Token::ParenClose,
+            Token::Colon,
+            Token::Identifier("m_value".into()),
+            Token::ParenOpen,
+            Token::IntegerLiteral(0),
+            Token::ParenClose,
+            Token::BraceOpen,
+            Token::BraceClose,
+            Token::BraceClose,
+        ];
+        assert!(capture_default_constructor_zero_fields(&tokens, 0, 15, "Box").is_empty());
     }
 }

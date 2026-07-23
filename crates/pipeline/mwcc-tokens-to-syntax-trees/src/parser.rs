@@ -164,6 +164,9 @@ pub(crate) struct StructTemplate {
     pub(crate) parameters: Vec<String>,
     pub(crate) base: Option<TemplateTypePattern>,
     pub(crate) fields: Vec<TemplateField>,
+    /// Fields whose primary-template zero-argument constructor explicitly
+    /// initializes them with `0` or `false`, in initializer-list order.
+    pub(crate) default_constructor_zero_fields: Vec<String>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -266,6 +269,9 @@ pub(crate) struct Parser {
     /// virtual calls because MWCC emits the destructor set in reverse class
     /// declaration order after the caller.
     pub(crate) cxx_inline_destructor_requests: Vec<String>,
+    /// Inline template members whose calls were consumed by expansion but for
+    /// which MWCC still emits a weak out-of-line fallback in the deferred tail.
+    pub(crate) cxx_deferred_weak_materialization_requests: Vec<String>,
     /// Static class-member overloads recovered from aggregate declarations,
     /// keyed by fully-qualified `(class, member)` name. Calls carry no implicit
     /// `this`, but still require CodeWarrior member-function mangling.
