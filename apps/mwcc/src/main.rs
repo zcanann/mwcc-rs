@@ -2158,6 +2158,50 @@ mod tests {
     }
 
     #[test]
+    fn lowers_wii_member_linefeed_with_saved_float_window() {
+        let source = br#"
+            struct Writer {
+                float cursorY() const;
+                float lineHeight() const;
+                void setCursor(float, float);
+            };
+            struct Context {
+                Writer* writer;
+                int padding;
+                float xOrigin;
+            };
+            struct Handler { void linefeed(Context*); };
+            void Handler::linefeed(Context* context) {
+                (void)0;
+                Writer& writer = *context->writer;
+                float x = context->xOrigin;
+                float y = writer.cursorY() + writer.lineHeight();
+                writer.setCursor(x, y);
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.inline_enabled = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::WII_1_0,
+            flags,
+        };
+        let object = compile(
+            source,
+            "member-linefeed.cpp",
+            config,
+            Some(SourceLanguage::Cxx),
+            None,
+            false,
+        )
+        .expect("the structural Wii linefeed schedule should lower");
+        assert!(object
+            .windows(4)
+            .any(|instruction| instruction == [0x94, 0x21, 0xff, 0xc0]));
+    }
+
+    #[test]
     fn preserves_a_later_member_address_while_materializing_a_global_receiver() {
         let source = br#"
             class Sink {

@@ -47,6 +47,7 @@ mod loops;
 mod member_copy_call;
 mod member_float_normalize;
 mod member_initialization;
+mod member_linefeed;
 mod member_store_fill;
 mod nested_global_indirect_call;
 mod passes;
@@ -81,6 +82,7 @@ pub(crate) use passes::*;
 
 pub(crate) use crate::analysis::*;
 pub(crate) use member_float_normalize::lower_member_float_normalize;
+pub(crate) use member_linefeed::lower_member_linefeed;
 pub(crate) use register_inline_asm::lower_register_inline_asm_wrapper;
 pub(crate) use crate::expressions::pointer_stride;
 pub(crate) use crate::expressions::{
