@@ -1035,6 +1035,22 @@ mod tests {
             assemble("mtsdr1", vec![AsmOperand::Gpr(22)]).unwrap(),
             Instruction::MoveToSpr { spr: 25, s: 22 }
         );
+        assert_eq!(
+            assemble(
+                "mfspr",
+                vec![AsmOperand::Gpr(9), AsmOperand::Label("DBSR".into())]
+            )
+            .unwrap(),
+            Instruction::MoveFromSpr { d: 9, spr: 1008 }
+        );
+        assert_eq!(
+            assemble(
+                "mtspr",
+                vec![AsmOperand::Label("DBSR".into()), AsmOperand::Gpr(10)]
+            )
+            .unwrap(),
+            Instruction::MoveToSpr { spr: 1008, s: 10 }
+        );
     }
 
     #[test]

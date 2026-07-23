@@ -341,6 +341,9 @@ pub(super) fn special_register(mnemonic: &str, operand: &AsmOperand) -> Compilat
             "GQR5" => 917,
             "GQR6" => 918,
             "GQR7" => 919,
+            // mwcc's Gekko assembler accepts DBSR as the debug-oriented alias
+            // for HID0 (observed in the Dolphin system-call vector).
+            "DBSR" => 1008,
             "HID0" => 1008,
             "HID1" => 1009,
             "HID2" => 920,
