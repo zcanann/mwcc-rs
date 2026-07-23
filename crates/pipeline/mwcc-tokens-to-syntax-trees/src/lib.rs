@@ -18,6 +18,7 @@ mod expressions;
 mod explicit_instantiations;
 mod items;
 mod lvalues;
+mod parameter_names;
 mod parser;
 
 use parser::Parser;
@@ -84,14 +85,44 @@ pub fn parse_located_translation_unit_with_enum_min(
     skipped_static_inline_label_base: u8,
     enum_min: bool,
 ) -> Compilation<TranslationUnit> {
+    parse_located_translation_unit_with_behavior(
+        tokens,
+        cplusplus,
+        char_is_signed,
+        plain_inline_localstatic_base,
+        skipped_static_inline_label_base,
+        0,
+        0,
+        0,
+        enum_min,
+    )
+}
+
+/// Parse tokens with the anonymous-ordinal behavior selected by the concrete
+/// compiler profile. Compatibility entry points above retain the legacy zeros.
+pub fn parse_located_translation_unit_with_behavior(
+    tokens: Vec<LocatedToken>,
+    cplusplus: bool,
+    char_is_signed: bool,
+    plain_inline_localstatic_base: u8,
+    skipped_static_inline_label_base: u8,
+    skipped_plain_inline_label_base: u8,
+    dropped_inline_parameter_label_weight: u8,
+    anonymous_aggregate_definition_label_weight: u8,
+    enum_min: bool,
+) -> Compilation<TranslationUnit> {
     // East pointee qualifiers are codegen-transparent, but C++ `const`
     // remains part of a function's ABI name. Move that fact after the star as
     // a parser-internal marker: declaration lookahead keeps seeing canonical
     // `T*`, while parse_type consumes the marker before the declarator name.
     let mut tokens = cxx::normalize_linkage_specifications(tokens);
-    if cplusplus {
-        tokens = explicit_instantiations::materialize(tokens);
-    }
+    let removed_template_named_parameters = if cplusplus {
+        let materialization = explicit_instantiations::materialize(tokens);
+        tokens = materialization.tokens;
+        materialization.removed_member_parameter_names
+    } else {
+        0
+    };
     tokens = cxx::normalize_constructor_declarators(tokens);
     let mut index = 0;
     while index + 1 < tokens.len() {
@@ -117,6 +148,13 @@ pub fn parse_located_translation_unit_with_enum_min(
         .into_iter()
         .map(|located| (located.token, located.location))
         .unzip();
+    let counted_named_parameter_positions = if cplusplus {
+        parameter_names::translation_unit_positions(&tokens)
+    } else {
+        std::collections::HashSet::new()
+    };
+    let named_prototype_parameters =
+        counted_named_parameter_positions.len() + removed_template_named_parameters;
     let asserted_aggregate_sizes = aggregate_size_assertions::collect(&tokens);
     let asserted_aggregate_aliases =
         aggregate_size_assertions::unambiguous_aliases(&asserted_aggregate_sizes);
@@ -127,6 +165,9 @@ pub fn parse_located_translation_unit_with_enum_min(
         char_is_signed,
         plain_inline_localstatic_base,
         skipped_static_inline_label_base,
+        skipped_plain_inline_label_base,
+        dropped_inline_parameter_label_weight,
+        anonymous_aggregate_definition_label_weight,
         last_member_array_bytes: None,
         global_structs: std::collections::HashMap::new(),
         block_renames: Vec::new(),
@@ -136,9 +177,12 @@ pub fn parse_located_translation_unit_with_enum_min(
         skipped_inline_functions: 0,
         function_inline_prebumps: std::collections::HashMap::new(),
         cxx_inline_ordinal_facts: mwcc_syntax_trees::CxxInlineOrdinalFacts::default(),
-        named_prototype_parameters: 0,
+        counted_named_parameter_positions,
+        named_prototype_parameters,
+        removed_template_named_parameters,
         static_local_prebumps: std::collections::HashMap::new(),
         counted_enum_positions: std::collections::HashSet::new(),
+        counted_anonymous_aggregate_positions: std::collections::HashSet::new(),
         implicitly_materialized: Vec::new(),
         materialized_inline_candidates: Vec::new(),
         weak_materialized: Vec::new(),
@@ -247,6 +291,90 @@ pub fn parse_located_translation_unit_with_enum_min(
 mod tests {
     use super::*;
     use mwcc_syntax_trees::{Expression, Statement, Type};
+
+    fn located(source: &str) -> Vec<LocatedToken> {
+        mwcc_source_to_tokens::tokenize(source)
+            .unwrap()
+            .into_iter()
+            .enumerate()
+            .map(|(index, token)| LocatedToken {
+                token,
+                location: SourceLocation {
+                    byte_offset: index as u32,
+                    line: 0,
+                    column: 0,
+                },
+            })
+            .collect()
+    }
+
+    #[test]
+    fn records_wii_anonymous_aggregate_ordinals_once() {
+        let unit = parse_located_translation_unit_with_behavior(
+            located(
+                "typedef struct { int first; struct { int nested; } value; } A; \
+                 union { int integer; float scalar; } object; int f(int x) { return x; }",
+            ),
+            true,
+            true,
+            1,
+            3,
+            3,
+            1,
+            1,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(unit.skipped_inline_functions, 3);
+    }
+
+    #[test]
+    fn records_typedef_class_operator_inline_facts() {
+        let source = r#"
+            typedef struct Value {
+                Value(int initial) { field = initial; }
+                Value& operator=(int replacement) { field = replacement; return *this; }
+                int field;
+            } Value;
+            int f(int x) { return x; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(unit.cxx_inline_ordinal_facts.inline_definitions, 2);
+        assert_eq!(
+            unit.cxx_inline_ordinal_facts.inline_definition_parameters,
+            2
+        );
+    }
+
+    #[test]
+    fn retains_names_from_materialized_primary_template_members_once() {
+        let source = r#"
+            template <typename T> class C { public: void set(T* pointer, int count); };
+            template <typename T> void C<T>::set(T* pointer, int count) {}
+            template class C<char>;
+            template class C<wchar_t>;
+            int f(int x) { return x; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(unit.named_prototype_parameters, 13);
+    }
 
     #[test]
     fn retains_volatile_automatic_storage() {
@@ -2578,6 +2706,7 @@ blr\n\
             mwcc_syntax_trees::CxxInlineOrdinalFacts {
                 class_definitions: 1,
                 inline_definitions: 4,
+                inline_definition_parameters: 0,
                 virtual_destructors: 1,
                 virtual_method_declarations: 0,
                 virtual_destructor_declarations: 1,

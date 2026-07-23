@@ -500,12 +500,15 @@ fn compile(
     }
     let behavior = mwcc_versions::Behavior::resolve(&config);
     let is_cxx = source_is_cxx(source_name, source_language);
-    let mut unit = mwcc_tokens_to_syntax_trees::parse_located_translation_unit_with_enum_min(
+    let mut unit = mwcc_tokens_to_syntax_trees::parse_located_translation_unit_with_behavior(
         located_tokens,
         is_cxx,
         config.char_is_signed(),
         behavior.plain_inline_localstatic_base,
         behavior.skipped_static_inline_label_base,
+        behavior.skipped_plain_inline_label_base,
+        behavior.dropped_inline_parameter_label_weight,
+        behavior.anonymous_aggregate_definition_label_weight,
         config.flags.enum_storage == mwcc_versions::EnumStorage::Minimum,
     )?;
     if is_cxx && config.flags.rtti {
@@ -860,6 +863,8 @@ fn compile(
         * usize::from(behavior.cxx_class_definition_label_bump)
         + cxx_inline_facts.inline_definitions
             * usize::from(behavior.cxx_inline_definition_label_bump)
+        + cxx_inline_facts.inline_definition_parameters
+            * usize::from(behavior.dropped_inline_parameter_label_weight)
         + cxx_inline_facts.control_flow_labels
             * usize::from(behavior.cxx_inline_control_flow_label_weight)
         + cxx_inline_facts.virtual_destructors

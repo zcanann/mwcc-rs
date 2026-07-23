@@ -553,6 +553,29 @@ pub(crate) fn normalize_constructor_declarators(
 }
 
 impl Parser {
+    /// Charge one source-written function-parameter name exactly once even when
+    /// declaration recovery speculatively parses the same token range again.
+    pub(crate) fn record_named_parameter_at(&mut self, position: usize) {
+        if self.counted_named_parameter_positions.insert(position) {
+            self.named_prototype_parameters += 1;
+        }
+    }
+
+    /// Merge source facts learned by an isolated recovery parser. Token indices
+    /// remain stable because every probe clones the same translation-unit stream.
+    pub(crate) fn merge_named_parameter_positions_from(&mut self, probe: &Parser) {
+        for position in &probe.counted_named_parameter_positions {
+            self.record_named_parameter_at(*position);
+        }
+    }
+
+    pub(crate) fn remove_named_parameters_in(&mut self, open: usize, close: usize) {
+        self.counted_named_parameter_positions
+            .retain(|position| *position <= open || *position >= close);
+        self.named_prototype_parameters = self.counted_named_parameter_positions.len()
+            + self.removed_template_named_parameters;
+    }
+
     /// Consume the source-only facts left by `parse_type` into one ABI type.
     /// Storage/codegen keeps using the returned `Type` independently.
     pub(crate) fn take_cxx_type_identity(
@@ -586,20 +609,21 @@ impl Parser {
     pub(crate) fn try_cxx_function_pointer_declarator(
         &mut self,
         return_type: CxxParameterType,
-    ) -> Compilation<Option<(String, CxxFunctionType)>> {
+    ) -> Compilation<Option<(String, Option<usize>, CxxFunctionType)>> {
         if *self.peek() != Token::ParenOpen || *self.peek_at(1) != Token::Star {
             return Ok(None);
         }
         self.advance(); // `(`
         self.advance(); // `*`
-        let name = if matches!(self.peek(), Token::Identifier(_)) {
-            self.parse_identifier()?
+        let (name, name_position) = if matches!(self.peek(), Token::Identifier(_)) {
+            let name_position = self.position;
+            (self.parse_identifier()?, Some(name_position))
         } else {
-            String::new()
+            (String::new(), None)
         };
         self.expect(Token::ParenClose)?;
         let function_type = self.parse_cxx_function_type(return_type)?;
-        Ok(Some((name, function_type)))
+        Ok(Some((name, name_position, function_type)))
     }
 
     /// Parse the `(parameters)` portion of a function type after its return
@@ -632,7 +656,9 @@ impl Parser {
                 }
                 let is_reference = self.eat_keyword(Token::Ampersand);
                 if matches!(self.peek(), Token::Identifier(_)) {
+                    let name_position = self.position;
                     self.advance();
+                    self.record_named_parameter_at(name_position);
                 }
                 if *self.peek() == Token::BracketOpen {
                     self.advance();
@@ -1087,12 +1113,21 @@ impl Parser {
             return Vec::new();
         }
         let start = self.position;
-        let is_aggregate = matches!(self.tokens.get(start), Some(Token::KeywordStruct))
-            || matches!(self.tokens.get(start), Some(Token::Identifier(word)) if word == "class");
+        let follows_typedef = matches!(self.tokens.get(start + 1), Some(Token::KeywordStruct))
+            || matches!(self.tokens.get(start + 1), Some(Token::Identifier(word)) if word == "class");
+        let aggregate_start = if matches!(self.tokens.get(start), Some(Token::Identifier(word)) if word == "typedef")
+            && follows_typedef
+        {
+            start + 1
+        } else {
+            start
+        };
+        let is_aggregate = matches!(self.tokens.get(aggregate_start), Some(Token::KeywordStruct))
+            || matches!(self.tokens.get(aggregate_start), Some(Token::Identifier(word)) if word == "class");
         if !is_aggregate {
             return Vec::new();
         }
-        let Some(Token::Identifier(source_class)) = self.tokens.get(start + 1) else {
+        let Some(Token::Identifier(source_class)) = self.tokens.get(aggregate_start + 1) else {
             return Vec::new();
         };
         let source_class = source_class.clone();
@@ -1103,7 +1138,7 @@ impl Parser {
         self.struct_typedefs
             .entry(source_class)
             .or_insert_with(|| class.clone());
-        let mut index = start + 2;
+        let mut index = aggregate_start + 2;
         while !matches!(
             self.tokens.get(index),
             Some(Token::BraceOpen | Token::Semicolon | Token::EndOfFile) | None
@@ -1113,14 +1148,14 @@ impl Parser {
         if self.tokens.get(index) != Some(&Token::BraceOpen) {
             return Vec::new();
         }
-        self.capture_cxx_class_layout(start, &class);
+        self.capture_cxx_class_layout(aggregate_start, &class);
         self.cxx_inline_ordinal_facts.class_definitions += 1;
 
         // Retain the primary-base identity independently from virtual-table
         // recovery. In ordinary multiple inheritance the first base begins at
         // offset zero, so an inherited direct call needs no `this` adjustment.
         // Secondary-base calls and inherited virtual dispatch still defer.
-        let header = &self.tokens[start + 2..index];
+        let header = &self.tokens[aggregate_start + 2..index];
         let mut dispatch = RecoveredCxxDispatchTable::default();
         let mut inherits_virtual_destructor = false;
         if let Some(colon) = header.iter().position(|token| *token == Token::Colon) {
@@ -1173,9 +1208,30 @@ impl Parser {
         let mut paren_depth = 0i32;
         let mut explicitly_inline = false;
         let mut member_name: Option<String> = None;
+        let mut member_parameter_count: Option<usize> = None;
         let mut member_declaration_start = body_start;
         let mut inline_body = None;
-        while let Some(token) = self.tokens.get(index) {
+        while index < self.tokens.len() {
+            if brace_depth == 1
+                && paren_depth == 0
+                && self.tokens.get(index) == Some(&Token::ParenOpen)
+            {
+                if let Some((_, positions)) = crate::parameter_names::positions(&self.tokens, index)
+                {
+                    for position in positions {
+                        self.record_named_parameter_at(position);
+                    }
+                }
+                let mut parameter_probe = self.clone();
+                parameter_probe.position = index;
+                if let Ok(signature) = parameter_probe.parse_class_parameter_types() {
+                    member_parameter_count = Some(signature.parameters.len());
+                    self.merge_named_parameter_positions_from(&parameter_probe);
+                }
+            }
+            let Some(token) = self.tokens.get(index) else {
+                break;
+            };
             let begins_member = brace_depth == 1
                 && paren_depth == 0
                 && (index == body_start
@@ -1204,6 +1260,13 @@ impl Parser {
                             )),
                             _ => None,
                         });
+                    if member_name.is_none()
+                        && self.tokens[member_declaration_start..index].iter().any(
+                            |token| matches!(token, Token::Identifier(word) if word == "operator"),
+                        )
+                    {
+                        member_name = Some("operator".to_string());
+                    }
                 }
             }
             if begins_member {
@@ -1250,6 +1313,8 @@ impl Parser {
                         if let Some(member) = member_name.take() {
                             self.inline_cxx_members.insert((class.clone(), member));
                             self.cxx_inline_ordinal_facts.inline_definitions += 1;
+                            self.cxx_inline_ordinal_facts.inline_definition_parameters +=
+                                member_parameter_count.unwrap_or(0);
                             let declaration = &self.tokens[member_declaration_start..index];
                             if declaration.iter().any(
                                 |token| matches!(token, Token::Identifier(word) if word == "virtual"),
@@ -1287,6 +1352,7 @@ impl Parser {
                         }
                         explicitly_inline = false;
                         member_name = None;
+                        member_parameter_count = None;
                     }
                 }
                 Token::Semicolon if brace_depth == 1 && paren_depth == 0 => {
@@ -1297,6 +1363,7 @@ impl Parser {
                     }
                     explicitly_inline = false;
                     member_name = None;
+                    member_parameter_count = None;
                 }
                 Token::EndOfFile => return prototypes,
                 _ => {}
@@ -1357,6 +1424,7 @@ impl Parser {
         let Ok(is_inline) = probe.skip_class_method_tail() else {
             return;
         };
+        self.merge_named_parameter_positions_from(&probe);
         let scopes: Vec<&str> = class.split("::").collect();
         let Ok(mangled) = mangle_qualified_member_function_typed(
             &scopes,
@@ -1777,7 +1845,9 @@ impl Parser {
                         parameter_type = Type::StructPointer { element_size: 0 };
                     }
                     if matches!(self.peek(), Token::Identifier(_)) {
+                        let name_position = self.position;
                         self.advance();
+                        self.record_named_parameter_at(name_position);
                     }
                     self.skip_cxx_default_argument()?;
                     cxx_parameters.push(
@@ -3041,7 +3111,7 @@ impl Parser {
             if self.eat_word("typedef") {
                 let aliased = self.parse_type()?;
                 let aliased_source = self.take_cxx_type_identity(aliased, false);
-                if let Some((alias, function_type)) =
+                if let Some((alias, _, function_type)) =
                     self.try_cxx_function_pointer_declarator(aliased_source)?
                 {
                     if alias.is_empty() {
@@ -3251,7 +3321,7 @@ impl Parser {
                 self.skip_class_member()?;
                 continue;
             }
-            if let Some((field_name, _callback_type)) = self
+            if let Some((field_name, _, _callback_type)) = self
                 .try_cxx_function_pointer_declarator(CxxParameterType::plain(field_type))?
             {
                 if *self.peek() != Token::Semicolon {
@@ -3978,9 +4048,12 @@ impl Parser {
                 if is_reference {
                     parameter_type = Type::StructPointer { element_size: 0 };
                 }
-                if let Some((_, callback_type)) = self
+                if let Some((_, name_position, callback_type)) = self
                     .try_cxx_function_pointer_declarator(source_identity.clone())?
                 {
+                    if let Some(name_position) = name_position {
+                        self.record_named_parameter_at(name_position);
+                    }
                     parameters.push(Type::StructPointer { element_size: 0 });
                     cxx_parameters.push(
                         CxxParameterType::plain(Type::StructPointer { element_size: 0 })
@@ -3989,7 +4062,9 @@ impl Parser {
                     );
                 } else {
                     if matches!(self.peek(), Token::Identifier(_)) {
+                        let name_position = self.position;
                         self.advance();
+                        self.record_named_parameter_at(name_position);
                     }
                     self.skip_cxx_default_argument()?;
                     parameters.push(parameter_type);

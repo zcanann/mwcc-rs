@@ -177,6 +177,12 @@ pub(crate) struct Parser {
     pub(crate) plain_inline_localstatic_base: u8,
     /// Base anonymous-label cost of a skipped static-inline definition.
     pub(crate) skipped_static_inline_label_base: u8,
+    /// Base anonymous-label cost of a skipped plain-inline definition.
+    pub(crate) skipped_plain_inline_label_base: u8,
+    /// Anonymous-label cost of each explicit parameter on a dropped inline body.
+    pub(crate) dropped_inline_parameter_label_weight: u8,
+    /// Anonymous-label cost of an anonymous struct/union definition.
+    pub(crate) anonymous_aggregate_definition_label_weight: u8,
     /// Declared struct layouts, by tag name.
     pub(crate) structs: HashMap<String, StructLayout>,
     /// Unambiguous storage extents proven by generated
@@ -449,10 +455,16 @@ pub(crate) struct Parser {
     /// C++ class/inline syntax retained for version-specific anonymous-symbol
     /// accounting after parsing.
     pub(crate) cxx_inline_ordinal_facts: mwcc_syntax_trees::CxxInlineOrdinalFacts,
-    /// Source-written parameter names seen on prototypes. Kept independently
-    /// from their types because later optimizer generations charge anonymous
-    /// symbol ordinals for the names.
+    /// Source-written function-parameter names already charged to the anonymous
+    /// symbol sequence. Parser recovery deliberately revisits class declarations
+    /// and inline bodies, so token identity—not parse-path identity—is the only
+    /// safe deduplication key.
+    pub(crate) counted_named_parameter_positions: std::collections::HashSet<usize>,
+    /// Number of unique source-written function-parameter names. The public
+    /// translation-unit field retains its historical name for compatibility.
     pub(crate) named_prototype_parameters: usize,
+    /// One-time names on primary template definitions removed by materialization.
+    pub(crate) removed_template_named_parameters: usize,
     /// Per static-local NAME, the skipped-inline bump total at its DECLARATION
     /// point — a static numbers off the anonymous counter AS OF that position
     /// (measured: mp4 uart's initialized$4 inside the FIRST inline vs pikmin's
@@ -461,6 +473,8 @@ pub(crate) struct Parser {
     /// Token positions of anonymous-`enum` bodies already counted into the
     /// anonymous-`@N` pre-bump (guards speculative re-parses from double-counting).
     pub(crate) counted_enum_positions: std::collections::HashSet<usize>,
+    /// Anonymous aggregate bodies already charged during top-level recovery.
+    pub(crate) counted_anonymous_aggregate_positions: std::collections::HashSet<usize>,
     /// Materialized static-inline functions with NO prior prototype (the
     /// implicit-declaration shape): their call relocations bind the surviving
     /// UNDEFINED global ghost, and their local symbols order differently.

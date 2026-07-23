@@ -30,7 +30,15 @@ struct Instantiation {
     argument: LocatedToken,
 }
 
-pub(crate) fn materialize(tokens: Vec<LocatedToken>) -> Vec<LocatedToken> {
+pub(crate) struct Materialization {
+    pub(crate) tokens: Vec<LocatedToken>,
+    /// Source-written names on primary member-template definitions removed by
+    /// concrete materialization. Generated copies do not replace this one-time
+    /// front-end analysis cost.
+    pub(crate) removed_member_parameter_names: usize,
+}
+
+pub(crate) fn materialize(tokens: Vec<LocatedToken>) -> Materialization {
     let instantiated_classes = (0..tokens.len())
         .filter_map(|index| instantiation_at(&tokens, index).map(|item| item.class))
         .collect::<std::collections::HashSet<_>>();
@@ -56,6 +64,11 @@ pub(crate) fn materialize(tokens: Vec<LocatedToken>) -> Vec<LocatedToken> {
         }
     }
 
+    let removed_member_parameter_names = members
+        .values()
+        .flatten()
+        .map(|member| member_parameter_name_count(&member.tokens))
+        .sum();
     let mut output = Vec::with_capacity(tokens.len());
     index = 0;
     while index < tokens.len() {
@@ -109,7 +122,33 @@ pub(crate) fn materialize(tokens: Vec<LocatedToken>) -> Vec<LocatedToken> {
         output.push(tokens[index].clone());
         index += 1;
     }
-    output
+    Materialization {
+        tokens: output,
+        removed_member_parameter_names,
+    }
+}
+
+fn member_parameter_name_count(tokens: &[LocatedToken]) -> usize {
+    let body_start = tokens
+        .iter()
+        .position(|located| located.token == Token::BraceOpen)
+        .unwrap_or(tokens.len());
+    let plain = tokens
+        .iter()
+        .map(|located| located.token.clone())
+        .collect::<Vec<_>>();
+    let mut latest = Vec::new();
+    for (position, token) in plain.iter().enumerate().take(body_start) {
+        if token != &Token::ParenOpen {
+            continue;
+        }
+        if let Some((close, names)) = crate::parameter_names::positions(&plain, position) {
+            if close < body_start {
+                latest = names;
+            }
+        }
+    }
+    latest.len()
 }
 
 fn emit_dependent_class(

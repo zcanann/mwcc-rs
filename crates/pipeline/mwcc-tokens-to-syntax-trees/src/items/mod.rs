@@ -711,6 +711,7 @@ impl Parser {
             let explicit_data_specialization =
                 explicit_specialization && self.item_is_explicit_data_specialization();
             let start = self.position;
+            self.capture_anonymous_aggregate_ordinal();
             // Inline is declaration state, not layout state. Capture it before
             // either the C++ layout parser succeeds or recovery skips a class.
             prototypes.extend(self.capture_cxx_class_declarations());
@@ -752,6 +753,9 @@ impl Parser {
                     .message
                     .contains("an inline function definition is skipped")
                 {
+                    if let Some((open, close, _)) = self.skipped_inline_parameter_span() {
+                        self.remove_named_parameters_in(open, close);
+                    }
                     self.try_recover_skipped_inline_definition();
                 }
                 // An unparsed explicit specialization is concrete, not a primary
@@ -2802,9 +2806,12 @@ impl Parser {
                     .with_function_type(cxx_function_type.clone());
                     // A function-pointer parameter `RET (*name)(params)` is a 4-byte
                     // opaque pointer; consume its declarator and signature.
-                    if let Some((name, callback_type)) = self
+                    if let Some((name, name_position, callback_type)) = self
                         .try_cxx_function_pointer_declarator(callback_return_type)?
                     {
+                        if let Some(name_position) = name_position {
+                            self.record_named_parameter_at(name_position);
+                        }
                         parameters.push(Parameter {
                             parameter_type: Type::StructPointer { element_size: 0 },
                             name,
@@ -2819,6 +2826,8 @@ impl Parser {
                     } else {
                         // The name is optional (a prototype may write just the type).
                         let name = if matches!(self.peek(), Token::Identifier(_)) {
+                            let name_position = self.position;
+                            self.record_named_parameter_at(name_position);
                             self.parse_identifier()?
                         } else {
                             String::new()
@@ -2900,16 +2909,6 @@ impl Parser {
                     self.advance();
                 }
             }
-
-            // Keep this source fact before C++ member lowering inserts the
-            // implicit `this` parameter. Later 4.x compilers charge one
-            // anonymous ordinal for each name written on a prototype, even
-            // though the callable type only retains parameter types.
-            let source_named_parameter_count = parameters
-                .iter()
-                .filter(|parameter| !parameter.name.is_empty())
-                .count();
-
             let constructor_scope = member_declaration_scope
                 .as_ref()
                 .filter(|scope| scope.rsplit("::").next() == Some(name.as_str()))
@@ -3056,7 +3055,6 @@ impl Parser {
 
             if *self.peek() == Token::Semicolon {
                 self.advance(); // a prototype — record its return + parameter types, keep looking
-                self.named_prototype_parameters += source_named_parameter_count;
                 if self.default_cplusplus && !self.cplusplus {
                     self.c_linkage_functions.insert(linkage_source_name);
                 }
@@ -3584,7 +3582,54 @@ impl Parser {
     /// adds 2; `else`/`switch`/`case`/`default`/`||`/`&&` add 1; `while` adds
     /// 4, `for` 5; a ternary adds 0. Unmeasured control constructs (`do`,
     /// `goto`) return an Err so the unit defers rather than mis-bump.
+    pub(crate) fn skipped_inline_parameter_span(&self) -> Option<(usize, usize, usize)> {
+        let mut index = self.position;
+        let mut depth = 0usize;
+        let mut open = None;
+        let mut latest = None;
+        while let Some(token) = self.tokens.get(index) {
+            match token {
+                Token::ParenOpen => {
+                    if depth == 0 {
+                        open = Some(index);
+                    }
+                    depth += 1;
+                }
+                Token::ParenClose if depth > 0 => {
+                    depth -= 1;
+                    if depth == 0 {
+                        let open = open.take()?;
+                        latest = Some((
+                            open,
+                            index,
+                            source_parameter_count(&self.tokens, open, index),
+                        ));
+                    }
+                }
+                Token::BraceOpen if depth == 0 => return latest,
+                Token::Semicolon | Token::EndOfFile if depth == 0 => return None,
+                _ => {}
+            }
+            index += 1;
+        }
+        None
+    }
+
     pub(crate) fn skipped_inline_label_bump(&self) -> Compilation<Option<usize>> {
+        let parameter_count = self
+            .skipped_function_name()
+            .and_then(|name| {
+                self.skipped_inline_signatures
+                    .iter()
+                    .rev()
+                    .find(|(candidate, _, _)| candidate == &name)
+                    .map(|(_, _, parameters)| parameters.len())
+            })
+            .or_else(|| {
+                self.skipped_inline_parameter_span()
+                    .map(|(_, _, count)| count)
+            })
+            .unwrap_or(0);
         let mut index = self.position;
         let mut paren_depth = 0i32;
         let mut saw_parameter_list = false;
@@ -3613,8 +3658,9 @@ impl Parser {
                     let mut bump = if saw_static {
                         usize::from(self.skipped_static_inline_label_base)
                     } else {
-                        0
-                    };
+                        usize::from(self.skipped_plain_inline_label_base)
+                    } + parameter_count
+                        * usize::from(self.dropped_inline_parameter_label_weight);
                     let mut brace_depth = 0i32;
                     // `&&`/`||` count ONLY inside a CONDITION's parens (fire 493:
                     // value-position short-circuits add nothing).
@@ -3868,6 +3914,44 @@ impl Parser {
             {
                 self.struct_typedefs.insert(name.clone(), name);
             }
+        }
+    }
+
+    /// Record a top-level anonymous `struct`/`union` body before either the
+    /// semantic parser or recovery skips it. The body token is a stable key
+    /// across speculative parsing, matching anonymous-enum accounting.
+    fn capture_anonymous_aggregate_ordinal(&mut self) {
+        if self.anonymous_aggregate_definition_label_weight == 0 {
+            return;
+        }
+        let starts_aggregate_declaration = self.tokens.get(self.position) == Some(&Token::KeywordStruct)
+            || matches!(self.tokens.get(self.position), Some(Token::Identifier(word)) if matches!(word.as_str(), "typedef" | "union" | "class"));
+        if !starts_aggregate_declaration {
+            return;
+        }
+        let mut index = self.position;
+        let mut brace_depth = 0usize;
+        while let Some(token) = self.tokens.get(index) {
+            let is_aggregate_key = token == &Token::KeywordStruct
+                || matches!(token, Token::Identifier(word) if matches!(word.as_str(), "union" | "class"));
+            if is_aggregate_key && self.tokens.get(index + 1) == Some(&Token::BraceOpen) {
+                let body_position = index + 1;
+                if self
+                    .counted_anonymous_aggregate_positions
+                    .insert(body_position)
+                {
+                    self.skipped_inline_functions +=
+                        usize::from(self.anonymous_aggregate_definition_label_weight);
+                }
+            }
+            match token {
+                Token::BraceOpen => brace_depth += 1,
+                Token::BraceClose => brace_depth = brace_depth.saturating_sub(1),
+                Token::Semicolon if brace_depth == 0 => break,
+                Token::EndOfFile => break,
+                _ => {}
+            }
+            index += 1;
         }
     }
 
@@ -4958,6 +5042,48 @@ fn collapse_if_return_chain(statements: &mut Vec<Statement>) {
             origin: ConditionalOrigin::IfReturns,
         })));
     }
+}
+
+fn source_parameter_count(tokens: &[Token], open: usize, close: usize) -> usize {
+    let body = &tokens[open + 1..close];
+    if body.is_empty() || body == [Token::KeywordVoid] {
+        return 0;
+    }
+    let mut count = 0usize;
+    let mut segment_start = 0usize;
+    let mut parens = 0usize;
+    let mut brackets = 0usize;
+    let mut braces = 0usize;
+    let mut angles = 0usize;
+    for (index, token) in body.iter().enumerate() {
+        match token {
+            Token::ParenOpen => parens += 1,
+            Token::ParenClose => parens = parens.saturating_sub(1),
+            Token::BracketOpen => brackets += 1,
+            Token::BracketClose => brackets = brackets.saturating_sub(1),
+            Token::BraceOpen => braces += 1,
+            Token::BraceClose => braces = braces.saturating_sub(1),
+            Token::Less if parens == 0 && brackets == 0 && braces == 0 => angles += 1,
+            Token::Greater if angles > 0 => angles -= 1,
+            Token::Comma
+                if parens == 0 && brackets == 0 && braces == 0 && angles == 0 =>
+            {
+                if !parameter_segment_is_variadic(&body[segment_start..index]) {
+                    count += 1;
+                }
+                segment_start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    if !parameter_segment_is_variadic(&body[segment_start..]) {
+        count += 1;
+    }
+    count
+}
+
+fn parameter_segment_is_variadic(tokens: &[Token]) -> bool {
+    tokens.len() == 3 && tokens.iter().all(|token| *token == Token::Dot)
 }
 
 /// Lower a value-DISCARDED postfix step (`x++` as a statement or a

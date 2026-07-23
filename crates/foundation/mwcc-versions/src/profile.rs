@@ -1083,6 +1083,24 @@ pub trait CodegenProfile: core::fmt::Debug {
         3
     }
 
+    /// Base anonymous-label cost of compiling and dropping a plain `inline`
+    /// definition. Older front ends charge only the static form.
+    fn skipped_plain_inline_label_base(&self) -> u8 {
+        0
+    }
+
+    /// Per-parameter analysis cost on compiled-then-dropped inline definitions,
+    /// independently of source-written names.
+    fn dropped_inline_parameter_label_weight(&self) -> u8 {
+        0
+    }
+
+    /// Anonymous aggregate definitions are ordinarily discarded without
+    /// advancing the source-analysis ordinal stream.
+    fn anonymous_aggregate_definition_label_weight(&self) -> u8 {
+        0
+    }
+
     /// Anonymous-symbol weights for structural facts from in-class C++ inline
     /// definitions. The 2.4.x generation only exposes the virtual-destructor
     /// artifact; GC 4.1 overrides the optimizer-analysis costs.
@@ -1316,6 +1334,22 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn skipped_plain_inline_label_base(&self) -> u8 {
+        3
+    }
+
+    fn dropped_inline_parameter_label_weight(&self) -> u8 {
+        1
+    }
+
+    fn anonymous_aggregate_definition_label_weight(&self) -> u8 {
+        1
+    }
+
+    fn cxx_inline_definition_label_bump(&self) -> u8 {
+        4
+    }
+
     fn pointer_call_store_epilogue_style(&self) -> PointerCallStoreEpilogueStyle {
         PointerCallStoreEpilogueStyle::SavedPointerFirst
     }

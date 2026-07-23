@@ -260,6 +260,9 @@ pub enum PointerElement {
 pub struct CxxInlineOrdinalFacts {
     pub class_definitions: usize,
     pub inline_definitions: usize,
+    /// Explicit source parameters across in-class inline definitions. Wii 4.3
+    /// charges one analysis ordinal per parameter in addition to any written name.
+    pub inline_definition_parameters: usize,
     pub virtual_destructors: usize,
     /// Source-declared ordinary virtual members. RTTI names are assigned by a
     /// class-analysis walk whose weights differ from executable functions.
@@ -328,9 +331,9 @@ pub struct TranslationUnit {
     /// result type (e.g. a `double`-returning math routine) and its parameter
     /// types (so an argument's int<->float register placement is correct).
     pub prototypes: Vec<(String, Type, Vec<Type>)>,
-    /// Source-written parameter names on function prototypes. GC 4.1 and Wii
-    /// build 145 consume one anonymous ordinal for each even though names do
-    /// not survive in the callable type itself.
+    /// Source-written function-parameter names whose declarations survive the
+    /// front-end analysis walk. The historical field name is retained for
+    /// capture compatibility.
     pub named_prototype_parameters: usize,
     /// Skipped `inline` function definitions: each advanced mwcc's `@N` counter
     /// by 3 (compiled then dropped), so the writer pre-bumps the numbering.
