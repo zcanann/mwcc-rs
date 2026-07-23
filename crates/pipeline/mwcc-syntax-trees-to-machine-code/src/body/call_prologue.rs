@@ -4,8 +4,41 @@
 use super::*;
 
 impl Generator {
+    /// Fill a linkage-first prologue that was produced by late frame
+    /// normalization rather than emitted in its final convention.
+    ///
+    /// Structured owners initially use the allocator's predecrement frame and
+    /// therefore cannot use the ordinary body-time hoist. Once normalization
+    /// has produced `mflr; stw LR; stwu`, the same measured scheduling rule can
+    /// safely recognize and fill its two linkage hazards.
+    pub(crate) fn hoist_normalized_linkage_first_arg_moves(&mut self) {
+        if self.behavior.frame_convention != FrameConvention::LinkageFirst
+            || !matches!(
+                self.output.instructions.as_slice(),
+                [
+                    Instruction::MoveFromLinkRegister { d: 0 },
+                    Instruction::StoreWord {
+                        s: 0,
+                        a: 1,
+                        offset: 4
+                    },
+                    Instruction::StoreWordWithUpdate {
+                        s: 1,
+                        a: 1,
+                        offset: -8
+                    },
+                    ..
+                ]
+            )
+        {
+            return;
+        }
+        self.hoist_leading_arg_moves(Some(1));
+    }
+
     /// Fill the non-leaf prologue's linkage-write latency with leading register-
-    /// ALU argument setup that is ready at function entry.
+    /// ALU argument setup and floating-register copies that are ready at
+    /// function entry.
     ///
     /// A register move/derivation qualifies; a memory load and anything touching
     /// r0 do not. Mainline places at most two instructions before the LR store.
@@ -37,12 +70,9 @@ impl Generator {
                     d != 0 && (a != 0 || saw_move || linkage_first)
                 }
                 Instruction::AddImmediateShifted { d, a: 0, .. } => d != 0 && linkage_first,
-                ref other if is_argument_alu(other) => {
-                    let movable = mwcc_vreg::register_operands(other)
-                        .iter()
-                        .all(|operand| operand.register != 0);
-                    saw_move |= movable;
-                    movable
+                ref other if is_hoistable_argument_register_op(other) => {
+                    saw_move = true;
+                    true
                 }
                 _ => false,
             };
@@ -67,10 +97,11 @@ impl Generator {
     }
 }
 
-fn is_argument_alu(instruction: &Instruction) -> bool {
+fn is_argument_register_op(instruction: &Instruction) -> bool {
     matches!(
         instruction,
-        Instruction::Add { .. }
+        Instruction::FloatMove { .. }
+            | Instruction::Add { .. }
             | Instruction::MultiplyLow { .. }
             | Instruction::SubtractFrom { .. }
             | Instruction::And { .. }
@@ -89,6 +120,15 @@ fn is_argument_alu(instruction: &Instruction) -> bool {
             | Instruction::ExtendSignByte { .. }
             | Instruction::ExtendSignHalfword { .. }
     )
+}
+
+fn is_hoistable_argument_register_op(instruction: &Instruction) -> bool {
+    is_argument_register_op(instruction)
+        && mwcc_vreg::register_operands(instruction)
+            .iter()
+            .all(|operand| {
+                operand.class != mwcc_vreg::Class::General || operand.register != 0
+            })
 }
 
 fn remap_linkage_first_relocations(
@@ -145,5 +185,18 @@ mod tests {
             .map(|relocation| relocation.instruction_index)
             .collect();
         assert_eq!(indices, [0, 2, 5, 1, 3, 4]);
+    }
+
+    #[test]
+    fn floating_scratch_zero_is_safe_for_argument_hoisting() {
+        assert!(is_hoistable_argument_register_op(&Instruction::FloatMove {
+            d: 0,
+            b: 1,
+        }));
+        assert!(!is_hoistable_argument_register_op(&Instruction::Or {
+            a: 3,
+            s: 0,
+            b: 0,
+        }));
     }
 }

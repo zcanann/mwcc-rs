@@ -25,6 +25,75 @@ fn direct_member_address(expression: &Expression) -> Option<(&Expression, u32)> 
 }
 
 impl Generator {
+    /// Marshal `(object, object->float, f1, f2, f3)` without destroying the
+    /// three incoming floating parameters before they shift up one ABI slot.
+    ///
+    /// MWCC saves f1 through f0, moves the high endpoint first, then completes
+    /// the shift before loading the member into f1. The non-leaf scheduler can
+    /// subsequently interleave the first three independent moves with linkage.
+    pub(crate) fn try_emit_member_prefixed_float_shift_arguments(
+        &mut self,
+        arguments: &[Expression],
+        name: &str,
+        direct_call: bool,
+    ) -> Compilation<bool> {
+        let [
+            first @ Expression::Variable(first_name),
+            member @ Expression::Member {
+                base,
+                member_type: Type::Float,
+                index_stride: None,
+                ..
+            },
+            Expression::Variable(second_name),
+            Expression::Variable(third_name),
+            Expression::Variable(fourth_name),
+        ] = arguments
+        else {
+            return Ok(false);
+        };
+        let Expression::Variable(base_name) = base.as_ref() else {
+            return Ok(false);
+        };
+        let parameter_types = self.call_parameter_types.get(name);
+        let expected_types = parameter_types.is_some_and(|types| {
+            types.len() >= 5
+                && !matches!(types[0], Type::Float | Type::Double)
+                && types[1..5]
+                    .iter()
+                    .all(|ty| matches!(ty, Type::Float))
+        });
+        if !direct_call
+            || !self.behavior.schedule_latency_slots
+            || !expected_types
+            || first_name != base_name
+            || self.leaf_info(first).ok().map(|value| value.0)
+                != Some(Eabi::FIRST_GENERAL_ARGUMENT)
+            || self.float_register_of(second_name).ok() != Some(1)
+            || self.float_register_of(third_name).ok() != Some(2)
+            || self.float_register_of(fourth_name).ok() != Some(3)
+        {
+            return Ok(false);
+        }
+
+        self.output
+            .instructions
+            .push(Instruction::FloatMove { d: 4, b: 3 });
+        self.output.instructions.push(Instruction::FloatMove {
+            d: FLOAT_SCRATCH,
+            b: 1,
+        });
+        self.output
+            .instructions
+            .push(Instruction::FloatMove { d: 3, b: 2 });
+        self.output.instructions.push(Instruction::FloatMove {
+            d: 2,
+            b: FLOAT_SCRATCH,
+        });
+        self.evaluate_float(member, Eabi::FIRST_FLOAT_ARGUMENT)?;
+        Ok(true)
+    }
+
     /// Marshal the two values of a terminal object-member forwarding call
     /// without first moving the shared object pointer out of r3.
     ///
