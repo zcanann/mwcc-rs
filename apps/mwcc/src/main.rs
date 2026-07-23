@@ -2066,6 +2066,7 @@ fn compile(
         } else {
             mwcc_machine_code_to_object::FunctionSymbolOrder::ReferencesFirst
         },
+        initialized_globals_before_deferred_functions: config.flags.inline_deferred,
         local_data_symbols_in_declaration_order: behavior.local_data_symbol_order
             == mwcc_versions::LocalDataSymbolOrder::DeclarationOrder,
         small_zero_statics_in_declaration_order: behavior.small_zero_data_layout_style

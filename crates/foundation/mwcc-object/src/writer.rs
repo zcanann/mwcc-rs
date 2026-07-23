@@ -2265,6 +2265,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 ".sdata" | ".data" | ".sdata2" | ".rodata" | ".ctors" | ".dtors"
             ) || (section_name == ".sbss" && object.is_explicit_zero))
     };
+    let initialized_object_is_upfront = |object: &DataObject| {
+        object.non_static_functions_before == 0
+            || input
+                .object_format
+                .initialized_globals_before_deferred_functions
+    };
     // Retained weak inline statics are registered while parsing headers before
     // section-attributed asm prototypes. Build 163 emits that leading weak run
     // first, then the otherwise-early UND prototypes, then ordinary initialized
@@ -2274,7 +2280,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     for object in input.data_objects.iter().take_while(|object| {
         object.is_weak
             && is_initialized_run_object(object)
-            && object.non_static_functions_before == 0
+            && initialized_object_is_upfront(object)
     }) {
         emit_initialized_object!(object);
     }
@@ -2301,11 +2307,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // globals (`int a = 0;`) emit their symbols in DECLARATION order at their
     // SOURCE POSITION: objects declared before any non-static function up front
     // here, later ones interleaved after that function's symbol below (mwcc:
-    // `__lower_map, tolower, __upper_map` — the ctype shape). Only the
+    // `__lower_map, tolower, __upper_map` — the ctype shape). Deferred codegen
+    // completes all initialized declarations before its reversed function pass,
+    // so its later source objects join this up-front run. Only the
     // UNINITIALIZED zero globals trail the functions in reverse. (Large `.bss`
     // follows its own reference-order rule, untouched here.)
     for object in &input.data_objects {
-        if is_initialized_run_object(object) && object.non_static_functions_before == 0 {
+        if is_initialized_run_object(object) && initialized_object_is_upfront(object) {
             emit_initialized_object!(object);
         } else if input.object_format.function_symbol_order == FunctionSymbolOrder::Deferred
             && is_static_chain_reference(object)

@@ -40,6 +40,10 @@ pub struct ObjectFormat {
     /// Whether the `.sdata2` constant pool carries ELF's `SHF_WRITE` bit.
     pub sdata2_writable: bool,
     pub function_symbol_order: FunctionSymbolOrder,
+    /// Deferred code generation completes initialized file-scope declarations
+    /// before its reversed function-emission pass, regardless of where those
+    /// declarations appeared between source functions.
+    pub initialized_globals_before_deferred_functions: bool,
     /// Whether file-scope LOCAL data symbols preserve declaration order across
     /// initialized and zero-filled sections.
     pub local_data_symbols_in_declaration_order: bool,
