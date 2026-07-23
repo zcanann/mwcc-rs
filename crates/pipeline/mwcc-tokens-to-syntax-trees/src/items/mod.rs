@@ -3926,6 +3926,11 @@ impl Parser {
         cxx_reference_parameters: std::collections::HashSet<String>,
     ) -> Compilation<Function> {
         self.inline_substitution_count = 0;
+        // Block-shadow mappings are function-scoped. A switch arm can leave a
+        // renamed declaration at the end of one parsed body; carrying that map
+        // into the next definition rewrites unrelated locals (`writer` becomes
+        // `writer@1`) while their declarations retain the original name.
+        self.block_renames.clear();
         let body_start_line = self.current_location().line;
         self.expect(Token::BraceOpen)?;
         // A redundant WHOLE-BODY block `int f() { { ... } }` (a macro

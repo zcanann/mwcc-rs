@@ -4457,6 +4457,16 @@ impl Generator {
         value_type: Type,
         destination: u8,
     ) -> Compilation<()> {
+        // A C++ reference binding to an aggregate (`S& r = *p`) carries the
+        // aggregate's address. The frontend represents references as
+        // `StructPointer`, so evaluating the dereference as a scalar load would
+        // incorrectly try to read an entire struct. Materialize the pointer
+        // value instead; member pointers still perform their one required `lwz`.
+        if matches!(value_type, Type::StructPointer { .. }) {
+            if let Expression::Dereference { pointer } = expression {
+                return self.evaluate_general(pointer, destination);
+            }
+        }
         // An `(int)` cast of an UNSIGNED-narrow or int-typed operand is a no-op
         // (the lbz/lhz load already zero-extends): unwrap it. A signed-narrow
         // operand keeps the cast (its widening is the extsb/extsh the inner

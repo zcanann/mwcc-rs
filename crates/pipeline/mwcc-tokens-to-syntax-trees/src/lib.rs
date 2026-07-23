@@ -6614,4 +6614,37 @@ blr\n\
                 && matches!(else_body.as_slice(), [Statement::If { .. }])
         ));
     }
+
+    #[test]
+    fn block_shadow_renames_do_not_escape_the_function() {
+        let source = r#"
+            void sink(int);
+            void first(int selector) {
+                switch (selector) {
+                case 0: { int value = 1; sink(value); break; }
+                case 1: { int value = 2; sink(value); break; }
+                }
+            }
+            void second(void) {
+                (void)0;
+                int value = 3;
+                sink(value);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        let second = &unit.functions[1];
+        assert!(second.locals.iter().any(|local| local.name == "value"));
+        assert!(matches!(
+            second.statements.last(),
+            Some(Statement::Expression(Expression::Call { arguments, .. }))
+                if matches!(arguments.as_slice(), [Expression::Variable(name)] if name == "value")
+        ));
+    }
 }

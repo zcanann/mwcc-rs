@@ -2128,6 +2128,36 @@ mod tests {
     }
 
     #[test]
+    fn binds_aggregate_reference_from_struct_pointer_member() {
+        let source = br#"
+            struct Writer { int value; };
+            struct Context { Writer* writer; };
+            extern void consume(Writer&);
+            void run(Context* context) {
+                Writer& writer = *context->writer;
+                consume(writer);
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::DEFAULT,
+            flags,
+        };
+        let object = compile(
+            source,
+            "aggregate-reference.cpp",
+            config,
+            Some(SourceLanguage::Cxx),
+            None,
+            false,
+        )
+        .expect("aggregate reference binding should preserve the pointee address");
+        assert!(!object.is_empty());
+    }
+
+    #[test]
     fn preserves_a_later_member_address_while_materializing_a_global_receiver() {
         let source = br#"
             class Sink {
