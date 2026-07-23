@@ -183,6 +183,9 @@ impl Instruction {
             Instruction::PairedSingleQuantizedLoad { d, a, offset, w, i } => {
                 (56 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | ((w as u32) << 15) | ((i as u32) << 12) | ((offset as u32) & 0xfff)
             }
+            Instruction::PairedSingleQuantizedLoadIndexed { d, a, b, w, i } => {
+                (4 << 26) | ((d as u32) << 21) | ((a as u32) << 16) | ((b as u32) << 11) | ((w as u32) << 10) | ((i as u32) << 7) | (6 << 1)
+            }
             Instruction::PairedSingleQuantizedStore { s, a, offset, w, i } => {
                 (60 << 26) | ((s as u32) << 21) | ((a as u32) << 16) | ((w as u32) << 15) | ((i as u32) << 12) | ((offset as u32) & 0xfff)
             }
@@ -269,6 +272,21 @@ mod tests {
             }
             .encode(),
             0xffe1_18ae
+        );
+    }
+
+    #[test]
+    fn encodes_indexed_paired_single_restore() {
+        assert_eq!(
+            Instruction::PairedSingleQuantizedLoadIndexed {
+                d: 31,
+                a: 1,
+                b: 0,
+                w: 0,
+                i: 0,
+            }
+            .encode(),
+            0x13e1_000c
         );
     }
 }

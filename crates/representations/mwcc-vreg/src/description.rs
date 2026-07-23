@@ -131,6 +131,11 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
             visit(D, F, d);
             if *a != 0 { visit(U, G, a); }
         }
+        PairedSingleQuantizedLoadIndexed { d, a, b, .. } => {
+            visit(D, F, d);
+            if *a != 0 { visit(U, G, a); }
+            visit(U, G, b);
+        }
         // The update form reads AND rewrites the general base.
         LoadFloatDoubleWithUpdate { d, a, .. } | LoadFloatSingleWithUpdate { d, a, .. } => {
             visit(D, F, d);
