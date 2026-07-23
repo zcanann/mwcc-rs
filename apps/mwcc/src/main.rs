@@ -2258,6 +2258,47 @@ mod tests {
     }
 
     #[test]
+    fn copies_a_bit_field_within_its_storage_unit_in_place() {
+        let source = br#"
+            struct Flags {
+                unsigned char b0 : 1;
+                unsigned char b1 : 1;
+                unsigned char b2 : 1;
+                unsigned char b3 : 1;
+                unsigned char b4 : 1;
+                unsigned char source : 1;
+                unsigned char target : 1;
+            };
+            void copy(struct Flags* flags) {
+                flags->target = flags->source;
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "in-place-bit-field-copy.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("fields in one storage unit should share their load");
+        let expected = [
+            0x88, 0x83, 0x00, 0x00, 0x50, 0x84, 0xff, 0xbc, 0x98, 0x83, 0x00, 0x00, 0x4e, 0x80,
+            0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected.len())
+            .any(|bytes| bytes == expected));
+    }
+
+    #[test]
     fn schedules_in_place_float_updates_with_their_trailing_clamps() {
         let source = br#"
             struct Body { float velocity; };

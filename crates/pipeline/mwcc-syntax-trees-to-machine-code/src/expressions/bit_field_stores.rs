@@ -44,6 +44,50 @@ impl Generator {
         }
         let storage_pointee = pointee_of_type(*member_type)
             .ok_or_else(|| Diagnostic::error("unsupported bit-field storage type"))?;
+        if let Expression::BitFieldRead {
+            storage: source_storage,
+            shift: source_shift,
+            width: source_width,
+            ..
+        } = value
+        {
+            if width == source_width
+                && u16::from(*source_shift) + u16::from(*source_width)
+                    <= u16::from(member_type.width())
+                && structurally_equal(storage, source_storage)
+            {
+                // When both fields occupy the same storage unit, MWCC rotates
+                // the loaded unit into itself.  This preserves all unrelated
+                // bits and avoids a second load plus a separate extraction.
+                let storage_value =
+                    self.fresh_virtual_general_avoiding(vec![GENERAL_SCRATCH]);
+                let address = self.member_base_register(base)?;
+                self.output.instructions.push(displacement_load(
+                    storage_pointee,
+                    storage_value,
+                    address,
+                    *offset as i16,
+                )?);
+                let begin = 32 - *shift - *width;
+                let end = 31 - *shift;
+                self.output
+                    .instructions
+                    .push(Instruction::RotateAndMaskInsert {
+                        a: storage_value,
+                        s: storage_value,
+                        shift: (*shift + 32 - *source_shift) % 32,
+                        begin,
+                        end,
+                    });
+                self.output.instructions.push(displacement_store(
+                    storage_pointee,
+                    storage_value,
+                    address,
+                    *offset as i16,
+                )?);
+                return Ok(true);
+            }
+        }
         let source = self.fresh_virtual_general_avoiding(vec![GENERAL_SCRATCH]);
         let address = self.member_base_register(base)?;
         self.output.instructions.push(displacement_load(
