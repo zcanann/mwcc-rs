@@ -2400,6 +2400,46 @@ mod tests {
     }
 
     #[test]
+    fn keeps_a_one_use_sign_selection_in_the_float_scratch() {
+        let source = br#"
+            struct Body { float facing; float input; };
+            void update(struct Body* body) {
+                float direction;
+                if (body->input >= 0) {
+                    direction = 1;
+                } else {
+                    direction = -1;
+                }
+                body->facing = direction;
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "sign-selected-member-store.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the one-use selected value should stay in f0");
+        let expected = [
+            0xc0, 0x23, 0x00, 0x04, 0xc0, 0x00, 0x00, 0x00, 0xfc, 0x01, 0x00, 0x40, 0x4c, 0x41,
+            0x13, 0x82, 0x40, 0x82, 0x00, 0x0c, 0xc0, 0x00, 0x00, 0x00, 0x48, 0x00, 0x00, 0x08,
+            0xc0, 0x00, 0x00, 0x00, 0xd0, 0x03, 0x00, 0x00, 0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected.len())
+            .any(|bytes| bytes == expected));
+    }
+
+    #[test]
     fn dispatches_on_a_member_of_a_freshly_loaded_pointer_local() {
         let source = br#"
             struct State { int mode; };

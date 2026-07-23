@@ -3368,6 +3368,11 @@ impl Generator {
         if self.try_symmetric_float_clamp(function)? {
             return Ok(());
         }
+        // A one-use +/-1 float local selected from a member condition is an
+        // ephemeral f0 value, not an ordinary allocated local.
+        if self.try_sign_selected_member_store(function)? {
+            return Ok(());
+        }
         // An in-place float update followed by a clamp is one scheduling
         // region: the optional bound negation fills the first member-load gap.
         if self.try_leading_float_update_clamp(function)? {
