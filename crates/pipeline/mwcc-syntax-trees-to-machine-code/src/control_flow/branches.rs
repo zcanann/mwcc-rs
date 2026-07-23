@@ -168,7 +168,20 @@ impl Generator {
             && simple_arm(when_false)
             && integer_arms
         {
-            self.output.anonymous_label_bump += 3;
+            // A float truth/comparison feeding an integer return select consumes
+            // two internal labels in legacy MWCC; the all-integer diamond uses
+            // three. The emitted branch/value sequence is otherwise shared.
+            let floating_condition = match condition {
+                Expression::Binary { left, right, .. } => {
+                    self.is_float_value(left) || self.is_float_value(right)
+                }
+                Expression::Unary {
+                    operator: UnaryOperator::LogicalNot,
+                    operand,
+                } => self.is_float_value(operand),
+                _ => self.is_float_value(condition),
+            };
+            self.output.anonymous_label_bump += if floating_condition { 2 } else { 3 };
             let (options, condition_bit) = self.emit_condition_test(condition)?;
             let arm_is_destination = |arm: &Expression| {
                 leaf_name(arm)
@@ -997,6 +1010,21 @@ impl Generator {
             operand,
         } = condition
         {
+            // Floating truthiness is an IEEE equality test against +0.0, not an
+            // integer register test. Reuse the ordinary float-comparison path so
+            // `if (!f)` emits `fcmpu f,0; bne` (and memory operands retain their
+            // measured load placement).
+            if self.is_float_leaf(operand) {
+                let source = self.float_register_of_leaf(operand)?;
+                self.load_float_constant(FLOAT_SCRATCH, 0.0);
+                self.output
+                    .instructions
+                    .push(Instruction::FloatCompareUnordered {
+                        a: source,
+                        b: FLOAT_SCRATCH,
+                    });
+                return Ok((4, 2)); // bne — skip when the original value is nonzero
+            }
             // `!(x & mask)` is the negated bit-test: rlwinm. then `bne` (skip when
             // the masked bits are set, so the body runs only when they are clear).
             if let Expression::Binary {
@@ -1545,6 +1573,20 @@ impl Generator {
         }
         if self.try_emit_computed_record_condition(condition)? {
             return Ok((12, 2)); // beq — skip when the recorded result is zero
+        }
+        // A bare floating condition is `f != 0.0`; the guarded body is skipped
+        // when equality holds. Equality uses `fcmpu`, matching C's NaN truthiness
+        // (NaN is nonzero/true).
+        if self.is_float_leaf(condition) {
+            let source = self.float_register_of_leaf(condition)?;
+            self.load_float_constant(FLOAT_SCRATCH, 0.0);
+            self.output
+                .instructions
+                .push(Instruction::FloatCompareUnordered {
+                    a: source,
+                    b: FLOAT_SCRATCH,
+                });
+            return Ok((12, 2)); // beq — skip when the original value is zero
         }
         // Plain truth test: compare against zero, skip when equal. A pointer/unsigned
         // operand uses cmplwi (mwcc), a signed one cmpwi.
