@@ -2,9 +2,9 @@
 
 Last fresh holdout: 2026-07-23 14:55 UTC at compiler commit `018cffe0`
 
-Latest paired checkpoint: 2026-07-23 11:08 UTC at compiler commit `93db2a25`
+Latest paired checkpoint: 2026-07-23 16:48 UTC at compiler commit `7c7f881e`
 
-Latest compiler + harness fingerprint: `bc256287cbd6a1712e92f60b01d326cc3e1077098eb906be476f93888b944d4a:c71332f6aa2301c5456ab14a75db04edeefe9702cd6c7ce3a84d5f93b8024ff6`
+Latest compiler + harness fingerprint: `ab9c4c7c0d6d47f2416ccee0f6d083b8e78ca188723857a0cdc19f6775912750:c71332f6aa2301c5456ab14a75db04edeefe9702cd6c7ce3a84d5f93b8024ff6`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary pass counts and work-queue
@@ -15,13 +15,13 @@ counts are deliberately absent: neither is a corpus parity estimate.
 The configured corpus contains 47,879 translation units across 13 MWCC-configured
 projects. All 13 compiler identities in the corpus are recognized. No project
 matrix is complete yet. The latest fingerprint directly observed 413 configured
-TUs and proved 47 whole-object exact: 31 statistical sample rows plus 16 breadth
+TUs and proved 48 whole-object exact: 32 statistical sample rows plus 16 breadth
 sentinels. Old-fingerprint exact observations are not counted as proof about the
 current compiler, so the literal current-fingerprint proof is:
 
 | Measure | Result |
 | --- | ---: |
-| Configured TUs proven whole-object exact | 47 / 47,879 |
+| Configured TUs proven whole-object exact | 48 / 47,879 |
 | Project matrices proven complete | 0 / 13 |
 | Directly observed configurations at this fingerprint | 413 / 47,879 |
 
@@ -102,6 +102,44 @@ reference functions were exact and 840/3,984 reference code bytes were exact.
 These diagnostics do not earn whole-object parity credit.
 
 ## Latest paired checkpoint
+
+Compiler commit `7c7f881e` was run over the exact 384-row untouched-frame sample
+that was first revealed at `018cffe0`, plus its 29 out-of-estimator breadth
+sentinels. Membership is now known, so this is a paired movement measurement,
+not a new unbiased estimate of the current compiler.
+
+| Whole-object outcome | `018cffe0` | `7c7f881e` | Change |
+| --- | ---: | ---: | ---: |
+| Exact | 31 / 384 | 32 / 384 | +1 |
+| Confirmed non-parity (`DIFF` or compiler `DEFER`) | 193 / 384 | 195 / 384 | +2 |
+| Measurement unknown | 160 / 384 | 157 / 384 | -3 |
+
+The current panel is 8.3% exact, with a descriptive 95% interval of 6.0%-11.5%
+and an exact-or-unknown identification range of 8.3%-49.2%. Conservatively
+projecting the untouched frame over the excluded prior-observation stratum gives
+a full-corpus identification range of 8.1%-50.5%. The still-unbiased status
+estimate remains the 8.1% fresh-holdout result recorded above.
+
+Among 224 rows with authoritative resolved outcomes at both fingerprints,
+whole-object exact movement was +1/-0. The exact gain was:
+
+- `super_mario_sunshine/src/JSystem/JStage/JSGObject.cpp` (`DIFF -> BYTE`)
+
+`twilight_princess/src/SSystem/SComponent/c_m3d_g_vtx.cpp` changed
+`DIFF -> DEFER`, so it remains confirmed non-parity. Three former timeouts now
+produce precise compiler `DEFER` diagnostics. Unknown attribution is 104
+60-second timeouts, 41 missing dependencies, and 12 invalid configurations.
+
+Of the 35 statistical rows that emitted objects, 32 were whole-object exact and
+three differed. Relocation-aware diagnostics covered 12 objects: 46/51 reference
+functions and 4,060/4,792 reference code bytes were exact. These are conditional
+backend-quality diagnostics and earn no additional whole-object parity credit.
+
+The run compiled the 287 quick rows once, then retried only the 126 initial
+timeouts at 60 seconds. It took 631.3 seconds of active wall time and 7,607.8
+aggregate row-seconds; median row time was 2.28 seconds and p95 was 60.01 seconds.
+
+## Historical paired checkpoint at `93db2a25`
 
 Compiler commit `93db2a25` was run over the exact same 384 statistical rows and
 30 breadth sentinels. Because this panel's membership was known during compiler
