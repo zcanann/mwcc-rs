@@ -3,12 +3,99 @@
 use std::collections::HashMap;
 
 pub(super) fn evaluate(expression: &str, definitions: &HashMap<String, String>) -> bool {
+    let expression = expand_object_macros(expression, definitions, &mut Vec::new());
     let mut parser = Parser {
-        lexer: Lexer::new(expression),
+        lexer: Lexer::new(&expression),
         lookahead: None,
         definitions,
     };
     parser.parse_logical_or() != 0
+}
+
+/// Expand object-like replacement lists before parsing the conditional.
+///
+/// Expansion must be textual rather than treating each macro as a grouped
+/// integer: `#define VALUE 1 + 2` followed by `#if VALUE * 3 == 7` is true.
+/// The operand of `defined` is deliberately protected, and recursive aliases
+/// collapse to zero once a cycle is detected, just like an unexpanded
+/// identifier in a preprocessor integer expression.
+fn expand_object_macros(
+    expression: &str,
+    definitions: &HashMap<String, String>,
+    expanding: &mut Vec<String>,
+) -> String {
+    let bytes = expression.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut position = 0;
+    let mut protect_defined_operand = false;
+    while position < bytes.len() {
+        let byte = bytes[position];
+        if byte.is_ascii_digit() {
+            let start = position;
+            position += 1;
+            while bytes.get(position).is_some_and(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.')
+            }) {
+                position += 1;
+            }
+            output.extend_from_slice(&bytes[start..position]);
+            continue;
+        }
+        if byte.is_ascii_alphabetic() || byte == b'_' {
+            let start = position;
+            position += 1;
+            while bytes
+                .get(position)
+                .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+            {
+                position += 1;
+            }
+            let name = std::str::from_utf8(&bytes[start..position]).unwrap_or_default();
+            if protect_defined_operand {
+                output.extend_from_slice(name.as_bytes());
+                protect_defined_operand = false;
+            } else if name == "defined" {
+                output.extend_from_slice(name.as_bytes());
+                protect_defined_operand = true;
+            } else if let Some(replacement) = definitions.get(name) {
+                output.push(b' ');
+                if expanding.iter().any(|active| active == name) {
+                    output.push(b'0');
+                } else {
+                    expanding.push(name.to_string());
+                    output.extend_from_slice(
+                        expand_object_macros(replacement, definitions, expanding).as_bytes(),
+                    );
+                    expanding.pop();
+                }
+                output.push(b' ');
+            } else {
+                output.extend_from_slice(name.as_bytes());
+            }
+            continue;
+        }
+        if matches!(byte, b'\'' | b'"') {
+            let quote = byte;
+            output.push(byte);
+            position += 1;
+            while let Some(&quoted) = bytes.get(position) {
+                output.push(quoted);
+                position += 1;
+                if quoted == b'\\' {
+                    if let Some(&escaped) = bytes.get(position) {
+                        output.push(escaped);
+                        position += 1;
+                    }
+                } else if quoted == quote {
+                    break;
+                }
+            }
+            continue;
+        }
+        output.push(byte);
+        position += 1;
+    }
+    String::from_utf8_lossy(&output).into_owned()
 }
 
 struct Parser<'a> {
@@ -352,5 +439,45 @@ mod tests {
         let definitions = HashMap::new();
         assert!(evaluate("((1 << 4) | 3) == 0x13UL", &definitions));
         assert!(evaluate("010 + 2 == 10", &definitions));
+    }
+
+    #[test]
+    fn recursively_expands_object_macros_with_textual_precedence() {
+        let definitions = HashMap::from([
+            (String::from("VERSION"), String::from("MQ_J")),
+            (String::from("MQ_J"), String::from("5")),
+            (String::from("CE_J"), String::from("1")),
+            (String::from("CE_U"), String::from("2")),
+            (String::from("CE_E"), String::from("3")),
+            (
+                String::from("IS_CE_JP"),
+                String::from("(VERSION == CE_J)"),
+            ),
+            (
+                String::from("IS_CE_US"),
+                String::from("(VERSION == CE_U)"),
+            ),
+            (
+                String::from("IS_CE_EU"),
+                String::from("(VERSION == CE_E)"),
+            ),
+            (
+                String::from("IS_CE"),
+                String::from("(IS_CE_JP || IS_CE_US || IS_CE_EU)"),
+            ),
+            (String::from("SUM"), String::from("1 + 2")),
+        ]);
+        assert!(!evaluate("IS_CE", &definitions));
+        assert!(evaluate("SUM * 3 == 7", &definitions));
+        assert!(evaluate("defined(IS_CE)", &definitions));
+    }
+
+    #[test]
+    fn recursive_macro_aliases_do_not_loop() {
+        let definitions = HashMap::from([
+            (String::from("LEFT"), String::from("RIGHT")),
+            (String::from("RIGHT"), String::from("LEFT")),
+        ]);
+        assert!(!evaluate("LEFT", &definitions));
     }
 }
