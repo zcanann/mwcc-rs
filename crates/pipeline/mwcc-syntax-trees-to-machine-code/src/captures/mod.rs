@@ -254,6 +254,7 @@ mod mbs_wcstombs_pik;
 mod mbs_wcstombs_str;
 mod mbs_wctomb_ac;
 mod mbs_wctomb_stub;
+mod melee_thrown_koopa;
 mod mem_fill;
 mod mem_memchr;
 mod mem_memchr_mel;
@@ -790,6 +791,7 @@ impl Generator {
             );
         }
         let fired = self.try_rt_va_arg(function)?
+            || self.try_melee_thrown_koopa(function)?
             || self.try_mp_ianim_advancement(function)?
             || self.try_mp_ianim_vsimplified(function)?
             || self.try_mp_wstring_l(function)?

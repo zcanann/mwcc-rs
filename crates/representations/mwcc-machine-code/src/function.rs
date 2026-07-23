@@ -137,6 +137,10 @@ pub struct MachineFunction {
     /// constant is numbered) — an int<->float conversion's internal label sits
     /// between the constants it separates (k_tan's @69 -> @71 jump).
     pub constant_number_gaps: Vec<(usize, u32)>,
+    /// Signed adjustment applied at the front of this function's pool block.
+    /// A negative value represents constants materialized while lowering a
+    /// skipped inline, before the ordinary body counter reaches this function.
+    pub constant_number_adjust: i32,
     /// Named `static const` SCALARS this function's TU must EMIT (mwcc
     /// usually folds/elides them, but some header/source contexts keep the
     /// named .sdata2 object — measured per capture; ww's e_pow keeps `one`).
@@ -253,6 +257,7 @@ impl MachineFunction {
             static_local_adjust: 0,
             has_conversion: false,
             constant_number_gaps: Vec::new(),
+            constant_number_adjust: 0,
             keep_named_const_scalars: Vec::new(),
             phantom_externals: Vec::new(),
             has_float_branch: false,
@@ -302,6 +307,20 @@ impl MachineFunction {
     /// symbol still leads the owning static function (ww's variant).
     pub fn intern_constant_image(&mut self, bits: u64, byte_width: u8) -> usize {
         self.intern_constant_slotted(bits, byte_width, false, true)
+    }
+
+    /// Intern a FRESH auto-array image in the ordinary pool block. Separate
+    /// discarded inline locals may have identical bytes but retain distinct
+    /// symbols and slots.
+    pub fn intern_constant_image_new(&mut self, bits: u64, byte_width: u8) -> usize {
+        self.constants.push(PoolConstant {
+            bits,
+            byte_width,
+            static_slot: false,
+            image: true,
+            force_new: true,
+        });
+        self.constants.len() - 1
     }
 
     /// Intern a FRESH pool slot even when an equal constant already exists

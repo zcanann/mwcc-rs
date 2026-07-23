@@ -242,6 +242,10 @@ pub struct FunctionObject<'a> {
     /// Mid-pool `@N` gaps applied while numbering constants: (constant index,
     /// extra numbers consumed before it).
     pub constant_number_gaps: Vec<(usize, u32)>,
+    /// Signed adjustment at the front of this function's pool block. Negative
+    /// values account for constants created by an inlined body before the
+    /// enclosing function's ordinary anonymous counter position.
+    pub constant_number_adjust: i32,
     /// UND externals with no relocation, emitted first among the externals.
     pub phantom_externals: Vec<String>,
     /// `@N` numbers consumed after the constants, before the extab pair.

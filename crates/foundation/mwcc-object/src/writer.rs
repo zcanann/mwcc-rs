@@ -11,6 +11,7 @@
 use crate::{
     layout_code_sections, CommentFormat, DataObject, DebugRelocationTarget, DebugSymbolBinding,
     DebugSymbolPlacement, FunctionSymbolOrder, ObjectInput, RelocationTarget,
+    Sdata2Constant,
 };
 use std::collections::HashMap;
 
@@ -503,11 +504,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             let fresh_slot = |pool: &mut Vec<u8>| {
                 // An 8-byte STATIC-SLOT entry is a struct IMAGE (two floats/ints):
                 // it aligns 4, unlike a genuine double constant (align 8).
-                let alignment = if constant.byte_width == 8 && constant.static_slot {
-                    4
-                } else {
-                    constant.byte_width as usize
-                };
+                let alignment = constant_alignment(constant) as usize;
                 while pool.len() % alignment != 0 {
                     pool.push(0);
                 }
@@ -641,7 +638,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 (counter as i64 - 1 + object.anonymous_adjust + offset_index as i64) as u32,
             );
         }
-        let mut number = counter + owned_statics.len() as u32 + function.anonymous_bump;
+        let unadjusted_number = counter + owned_statics.len() as u32 + function.anonymous_bump;
+        let mut number = adjusted_pool_number(unadjusted_number, function.constant_number_adjust);
         // This function's own strings sit at the front of its `@N` block, before
         // its constants — unless string_number_after_constants places them
         // after the first K constants (creation order — bfbb's __dec2num).
@@ -1774,11 +1772,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         }) as u16,
                     );
                     comment_values.push((
-                        if constant.byte_width == 8 && constant.static_slot {
-                            4
-                        } else {
-                            constant.byte_width as u32
-                        },
+                        constant_alignment(constant),
                         if function.force_active {
                             FORCE_ACTIVE_FLAG
                         } else {
@@ -3642,6 +3636,20 @@ fn write_elf_header(
 fn align8(value: u32) -> u32 {
     (value + 7) & !7
 }
+
+fn adjusted_pool_number(base: u32, adjustment: i32) -> u32 {
+    u32::try_from(i64::from(base) + i64::from(adjustment))
+        .expect("pool-number adjustment must remain non-negative")
+}
+
+fn constant_alignment(constant: &Sdata2Constant) -> u32 {
+    if constant.byte_width == 8 && (constant.static_slot || constant.image) {
+        4
+    } else {
+        u32::from(constant.byte_width)
+    }
+}
+
 fn write_u16(output: &mut Vec<u8>, value: u16) {
     output.extend_from_slice(&value.to_be_bytes());
 }
@@ -3700,6 +3708,28 @@ fn write_section_header(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn constant(byte_width: u8, image: bool) -> Sdata2Constant {
+        Sdata2Constant {
+            bits: 0,
+            byte_width,
+            static_slot: false,
+            image,
+            force_new: image,
+            force_full_data_section: false,
+        }
+    }
+
+    #[test]
+    fn discarded_inline_images_use_aggregate_alignment() {
+        assert_eq!(constant_alignment(&constant(8, true)), 4);
+        assert_eq!(constant_alignment(&constant(8, false)), 8);
+    }
+
+    #[test]
+    fn pool_numbers_can_precede_the_ordinary_function_position() {
+        assert_eq!(adjusted_pool_number(192, -1), 191);
+    }
 
     #[test]
     fn comment_header_records_pooling_mode() {
