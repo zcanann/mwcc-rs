@@ -1144,7 +1144,8 @@ impl Generator {
         self.known_locals
             .extend(function.locals.iter().map(|local| local.name.clone()));
         let calls_skipped_inline = function_calls_any(function, &self.skipped_inline_names)
-            || self.inline_bodies.calls_any(function);
+            || self.inline_bodies.calls_required(function);
+        let calls_inline_candidate = calls_skipped_inline || self.inline_bodies.calls_any(function);
         // Drop never-referenced, side-effect-free locals (an unused `int s = 0;`) — mwcc
         // emits nothing for them — then recompile the cleaned function.
         if let Some(cleaned) = remove_dead_locals(function) {
@@ -1224,13 +1225,13 @@ impl Generator {
         // A skipped inline has no callable symbol. Let the retained-body gate
         // below compose it instead of allowing this broad sibling-call path to
         // emit an undefined `bl`/`b` target.
-        if !calls_skipped_inline && self.try_tail_call(function)? {
+        if !calls_inline_candidate && self.try_tail_call(function)? {
             return Ok(());
         }
-        if !calls_skipped_inline && self.try_non_tail_call_forward(function)? {
+        if !calls_inline_candidate && self.try_non_tail_call_forward(function)? {
             return Ok(());
         }
-        if !calls_skipped_inline && self.try_conditional_member_select_tail(function)? {
+        if !calls_inline_candidate && self.try_conditional_member_select_tail(function)? {
             return Ok(());
         }
         if self.try_legacy_comma_parameter_homes(function)? {
@@ -1428,7 +1429,7 @@ impl Generator {
         if self.try_call_result_product_return(function)? {
             return Ok(());
         }
-        if calls_skipped_inline {
+        if calls_inline_candidate {
             if let Some(expanded) = self.inline_bodies.expand_calls_with_facts(function) {
                 self.output.anonymous_label_bump += crate::inline_expansion::ordinal_residue(
                     self.inline_expansion_facts,
@@ -1438,24 +1439,26 @@ impl Generator {
                 );
                 return self.evaluate_body(&expanded.function);
             }
-            let mut unresolved: Vec<_> = self
-                .skipped_inline_names
-                .iter()
-                .filter(|name| {
-                    let singleton = std::collections::HashSet::from([(*name).clone()]);
-                    function_calls_any(function, &singleton)
-                })
-                .cloned()
-                .collect();
-            unresolved.sort();
-            let suffix = if unresolved.is_empty() {
-                String::new()
-            } else {
-                format!(": {}", unresolved.join(", "))
-            };
-            return Err(Diagnostic::error(format!(
-                "a call to a skipped inline function needs inline expansion (roadmap){suffix}"
-            )));
+            if calls_skipped_inline {
+                let mut unresolved: Vec<_> = self
+                    .skipped_inline_names
+                    .iter()
+                    .filter(|name| {
+                        let singleton = std::collections::HashSet::from([(*name).clone()]);
+                        function_calls_any(function, &singleton)
+                    })
+                    .cloned()
+                    .collect();
+                unresolved.sort();
+                let suffix = if unresolved.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", unresolved.join(", "))
+                };
+                return Err(Diagnostic::error(format!(
+                    "a call to a skipped inline function needs inline expansion (roadmap){suffix}"
+                )));
+            }
         }
         // A NATIVE caller of a WEAK-MATERIALIZED plain inline defers the same
         // way: mwcc may have re-inlined a trivial body at this call site

@@ -28,6 +28,7 @@ use value_body::ValueInlineBody;
 pub struct InlineBodySet {
     bodies: HashMap<String, Function>,
     values: HashMap<String, ValueInlineBody>,
+    required: HashSet<String>,
 }
 
 pub(crate) fn legacy_frame_residue_bytes(
@@ -67,6 +68,10 @@ impl InlineBodySet {
     /// one-call definition remains emitted when it has external linkage, but
     /// its body is also available for call-site composition.
     pub fn analyze_with_definitions(definitions: &[Function], skipped: &[Function]) -> Self {
+        let required: HashSet<String> = skipped
+            .iter()
+            .map(|function| function.name.clone())
+            .collect();
         let mut call_counts = HashMap::<String, usize>::new();
         for function in definitions.iter().chain(skipped) {
             collect_function_calls(function, &mut call_counts);
@@ -114,7 +119,20 @@ impl InlineBodySet {
                 );
             }
         }
-        Self { bodies, values }
+        Self {
+            bodies,
+            values,
+            required,
+        }
+    }
+
+    /// Whether this function calls a definition that cannot be materialized as
+    /// an ordinary callable symbol. Optional one-call auto-inline candidates
+    /// are deliberately excluded: if composition declines, they remain calls.
+    pub(crate) fn calls_required(&self, function: &Function) -> bool {
+        let mut calls = HashMap::new();
+        collect_function_calls(function, &mut calls);
+        calls.keys().any(|name| self.required.contains(name))
     }
 
     /// Whether a function references a retained body by its canonical AST
@@ -1385,6 +1403,7 @@ mod tests {
 
         let bodies =
             InlineBodySet::analyze_with_definitions(&[helper.clone(), caller.clone()], &[]);
+        assert!(!bodies.calls_required(&caller));
         let expanded = bodies
             .expand_calls(&caller)
             .expect("a sole ordinary call should be an automatic-inline candidate");
@@ -1392,6 +1411,9 @@ mod tests {
             Statement::If { then_body, .. },
             Statement::Label(boundary),
         ] if matches!(then_body.as_slice(), [Statement::Goto(target)] if target == boundary)));
+
+        let required = InlineBodySet::analyze(&[helper.clone()]);
+        assert!(required.calls_required(&caller));
 
         let mut second_caller = caller.clone();
         second_caller.name = "second_caller".into();
