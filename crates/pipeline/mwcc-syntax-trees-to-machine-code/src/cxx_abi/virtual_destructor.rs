@@ -7,17 +7,16 @@ use mwcc_syntax_trees::Function;
 use mwcc_versions::{Behavior, CompilerConfig, FrameConvention, Optimization};
 
 /// The unoptimized predecrement ABI makes the hidden signed deleting flag a
-/// real stack parameter. Keeping this schedule separate prevents the ordinary
-/// optimized wrapper from accumulating O0 spill policy.
-pub(super) fn lower_unoptimized_weak(
+/// real stack parameter and omits the synthesized self-vptr restore. This is a
+/// property of the O0 destructor schedule, independent of whether the class's
+/// vtable is weak or owned by this translation unit.
+pub(super) fn lower_unoptimized(
     function: &Function,
     behavior: &Behavior,
     config: &CompilerConfig,
-    weak_vtable: bool,
     deleting_callee: &str,
 ) -> Option<MachineFunction> {
-    if !weak_vtable
-        || config.flags.inline_deferred
+    if config.flags.inline_deferred
         || behavior.frame_convention != FrameConvention::Predecrement
         || behavior.optimization != Optimization::O0
     {
@@ -112,4 +111,54 @@ pub(super) fn lower_unoptimized_weak(
         });
     }
     Some(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mwcc_syntax_trees::{Expression, Parameter, Type};
+    use mwcc_versions::WII_1_0;
+
+    #[test]
+    fn unoptimized_owned_vtable_destructor_homes_the_deleting_flag() {
+        let function = Function {
+            return_type: Type::StructPointer { element_size: 16 },
+            name: "__dt__10JAIAudibleFv".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: vec![
+                Parameter {
+                    parameter_type: Type::StructPointer { element_size: 16 },
+                    name: "this".into(),
+                },
+                Parameter {
+                    parameter_type: Type::Short,
+                    name: "__destroy".into(),
+                },
+            ],
+            locals: Vec::new(),
+            statements: Vec::new(),
+            guards: Vec::new(),
+            return_expression: Some(Expression::Variable("this".into())),
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+        let mut config = CompilerConfig::new(WII_1_0);
+        config.flags.optimization = Optimization::O0;
+        config.flags.inline_enabled = false;
+        let behavior = Behavior::resolve(&config);
+
+        let output = lower_unoptimized(&function, &behavior, &config, "__dl__FPv").unwrap();
+        let actual = output
+            .encode_text()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(actual, "9421ffe07c0802a69001002493e1001c7c7f1b78b08100082c1f000041820018a80100082c0000004081000c7fe3fb78480000017fe3fb7883e1001c800100247c0803a6382100204e800020");
+    }
 }

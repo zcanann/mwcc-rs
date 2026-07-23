@@ -1295,11 +1295,10 @@ pub(crate) fn lower_virtual_destructor(
     let vtable = globals.iter().find(|global| global.name == vtable_name)?;
 
     let behavior = Behavior::resolve(&config);
-    if let Some(output) = virtual_destructor::lower_unoptimized_weak(
+    if let Some(output) = virtual_destructor::lower_unoptimized(
         function,
         &behavior,
         &config,
-        vtable.is_weak,
         &deleting_callee,
     ) {
         return Some(output);
