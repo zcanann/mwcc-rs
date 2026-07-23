@@ -6,6 +6,7 @@
 //! accumulating partial versions of the same policy.
 
 use mwcc_machine_code::MachineFunction;
+use std::collections::{HashMap, HashSet};
 
 /// Whether every earlier call site consumed a terminal implicitly-materialized
 /// inline. A surviving relocation proves the out-of-line copy is still needed.
@@ -21,6 +22,66 @@ pub(crate) fn terminal_implicit_inline_is_consumed(
             )
         })
     })
+}
+
+/// With inlining disabled, reachable inline definitions materialize when the
+/// compiler first reaches a call to them. Emit each recovered definition after
+/// that first caller, then recursively emit its own recovered callees. This is
+/// distinct from source order and from deferred-inlining reversal.
+pub(crate) fn interleave_disabled_inline_materializations(
+    functions: &mut Vec<MachineFunction>,
+    materialized_names: &HashSet<String>,
+) {
+    if materialized_names.is_empty() {
+        return;
+    }
+    let mut pending = HashMap::new();
+    let mut pending_order = Vec::new();
+    let mut roots = Vec::new();
+    for function in std::mem::take(functions) {
+        if materialized_names.contains(&function.name) {
+            pending_order.push(function.name.clone());
+            pending.insert(function.name.clone(), function);
+        } else {
+            roots.push(function);
+        }
+    }
+
+    let mut ordered = Vec::with_capacity(roots.len() + pending.len());
+    for root in roots {
+        emit_with_materialized_callees(root, &mut pending, &mut ordered);
+    }
+    // Address-taken definitions can be rooted by data rather than a code
+    // relocation. Preserve their recovered-definition order at the tail.
+    for name in pending_order {
+        if let Some(function) = pending.remove(&name) {
+            emit_with_materialized_callees(function, &mut pending, &mut ordered);
+        }
+    }
+    *functions = ordered;
+}
+
+fn emit_with_materialized_callees(
+    function: MachineFunction,
+    pending: &mut HashMap<String, MachineFunction>,
+    ordered: &mut Vec<MachineFunction>,
+) {
+    let callees: Vec<String> = function
+        .relocations
+        .iter()
+        .filter_map(|relocation| match &relocation.target {
+            mwcc_machine_code::RelocationTarget::External(target) if pending.contains_key(target) => {
+                Some(target.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    ordered.push(function);
+    for callee in callees {
+        if let Some(function) = pending.remove(&callee) {
+            emit_with_materialized_callees(function, pending, ordered);
+        }
+    }
 }
 
 /// Apply `-inline …,deferred` emission order.
@@ -167,5 +228,39 @@ mod tests {
             target: mwcc_machine_code::RelocationTarget::External("helper".to_string()),
         });
         assert!(!terminal_implicit_inline_is_consumed("helper", &[caller]));
+    }
+
+    #[test]
+    fn disabled_inline_definitions_follow_their_first_caller_recursively() {
+        fn calling(name: &str, target: &str) -> MachineFunction {
+            let mut function = function(name, false);
+            function.relocations.push(mwcc_machine_code::Relocation {
+                instruction_index: 0,
+                kind: mwcc_machine_code::RelocationKind::Rel24,
+                target: mwcc_machine_code::RelocationTarget::External(target.to_string()),
+            });
+            function
+        }
+
+        let mut functions = vec![
+            function("before", false),
+            calling("caller", "inline_outer"),
+            function("after", false),
+            calling("inline_outer", "inline_inner"),
+            function("inline_inner", false),
+        ];
+        let materialized = ["inline_outer".to_string(), "inline_inner".to_string()]
+            .into_iter()
+            .collect();
+
+        interleave_disabled_inline_materializations(&mut functions, &materialized);
+
+        assert_eq!(
+            functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            ["before", "caller", "inline_outer", "inline_inner", "after"]
+        );
     }
 }

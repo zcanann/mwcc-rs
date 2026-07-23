@@ -511,6 +511,7 @@ fn compile(
     if is_cxx && config.flags.rtti {
         mwcc_tokens_to_syntax_trees::materialize_cxx_rtti(&mut unit);
     }
+    let mut disabled_inline_materializations = std::collections::HashSet::new();
     if !config.flags.inline_enabled {
         let referenced = reference_analysis::referenced_disabled_inlines(&unit);
         let mut materialized = Vec::new();
@@ -526,6 +527,7 @@ fn compile(
                 }
             }
             unit.skipped_inline_names.remove(&definition.name);
+            disabled_inline_materializations.insert(definition.name.clone());
             materialized.push(definition);
         }
         unit.functions.extend(materialized);
@@ -752,6 +754,10 @@ fn compile(
             &unit.globals,
             &unit.cxx_class_declaration_order,
         )?,
+    );
+    function_order::interleave_disabled_inline_materializations(
+        &mut machine_functions,
+        &disabled_inline_materializations,
     );
     // Mixed code payloads and relocations are modeled below. Debug lowering
     // owns its own section-aware support boundary; mwcats still has only one
