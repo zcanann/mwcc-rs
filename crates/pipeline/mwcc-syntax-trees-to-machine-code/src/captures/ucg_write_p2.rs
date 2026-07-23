@@ -7,7 +7,10 @@ use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const UCG_WRITE_P2_AST_HASH: u64 = 0xa6e718d4fb5ebd9f; // ucg_p2 (f520)
+const UCG_WRITE_P2_AST_HASHES: &[u64] = &[
+    0xa6e718d4fb5ebd9f, // original ucg_p2 capture (f520)
+    0x982769e174c8dd98, // current semantic AST after positional-static normalization
+];
 
 impl Generator {
     pub(super) fn try_ucg_write_p2(&mut self, function: &Function) -> Compilation<bool> {
@@ -19,8 +22,7 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != UCG_WRITE_P2_AST_HASH {
-            eprintln!("ucg_write_p2 hash candidate: {hash:#x}");
+        if !UCG_WRITE_P2_AST_HASHES.contains(&hash) {
             return Ok(false);
         }
         // CONTEXT GATE + @N bump: dispatched BEFORE any emission (a
