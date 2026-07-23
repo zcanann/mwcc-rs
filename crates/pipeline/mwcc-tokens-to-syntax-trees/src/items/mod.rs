@@ -518,7 +518,7 @@ impl Parser {
         block_locals: &mut Vec<LocalDeclaration>,
     ) -> Compilation<(mwcc_syntax_trees::ArmBody, bool)> {
         use mwcc_syntax_trees::ArmBody;
-        let braced = self.eat_keyword(Token::BraceOpen);
+        let mut braced = self.eat_keyword(Token::BraceOpen);
         if *self.peek() == Token::KeywordReturn && *self.peek_at(1) != Token::Semicolon {
             self.advance();
             let result = self.expression()?;
@@ -576,8 +576,14 @@ impl Parser {
                     self.advance();
                     self.expect(Token::Semicolon)?;
                     saw_break = true;
+                    break;
                 }
-                break;
+                // A scoped block need not be the complete arm. CodeWarrior
+                // sources commonly keep declarations in `case X: { ... }`
+                // and place the arm's return after that scope. Continue using
+                // ordinary unbraced arm boundaries after the block closes.
+                braced = false;
+                continue;
             }
             if *self.peek() == Token::KeywordIf {
                 statements.push(self.parse_if_statement(local_names, block_locals)?);
@@ -2303,6 +2309,7 @@ impl Parser {
             let member_layout_scope = member_scope.as_deref().and_then(|scope| {
                 self.resolve_scoped_cxx_class_name(scope)
                     .filter(|resolved| self.structs.contains_key(resolved))
+                    .or_else(|| self.instantiate_encoded_template_scope(scope))
             });
             let member_declaration_scope = member_scope.as_deref().map(|scope| {
                 self.resolve_scoped_cxx_class_name(scope)
@@ -3293,11 +3300,13 @@ impl Parser {
                                 Some(Expression::Variable("this".to_string()));
 
                             if !globals.iter().any(|global| global.name == vtable) {
-                                globals.push(cxx_vtables::global(
+                                let mut table = cxx_vtables::global(
                                     class,
                                     vtable,
                                     Some(&function.name),
-                                ));
+                                );
+                                table.is_weak = function_is_weak;
+                                globals.push(table);
                             }
                         } else if constructor_scope.is_some() {
                             function.statements.splice(
@@ -3361,11 +3370,13 @@ impl Parser {
                                 )
                             })
                             .transpose()?;
-                        globals.push(cxx_vtables::global(
+                        let mut table = cxx_vtables::global(
                             class,
                             vtable,
                             destructor.as_deref(),
-                        ));
+                        );
+                        table.is_weak = function_is_weak;
+                        globals.push(table);
                     }
                 }
             }

@@ -15,6 +15,7 @@ mod cxx_analysis_facts;
 mod cxx_new;
 mod cxx_rtti;
 mod expressions;
+mod explicit_instantiations;
 mod items;
 mod lvalues;
 mod parser;
@@ -88,6 +89,9 @@ pub fn parse_located_translation_unit_with_enum_min(
     // a parser-internal marker: declaration lookahead keeps seeing canonical
     // `T*`, while parse_type consumes the marker before the declarator name.
     let mut tokens = cxx::normalize_linkage_specifications(tokens);
+    if cplusplus {
+        tokens = explicit_instantiations::materialize(tokens);
+    }
     tokens = cxx::normalize_constructor_declarators(tokens);
     let mut index = 0;
     while index + 1 < tokens.len() {
@@ -4623,6 +4627,64 @@ blr\n\
     }
 
     #[test]
+    fn materializes_explicit_class_template_member_definitions() {
+        let source = r#"
+            template <typename T>
+            class Box {
+            public:
+                void set(T);
+            };
+            template <typename T>
+            void Box<T>::set(T value) {}
+            template class Box<char>;
+            template class Box<wchar_t>;
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(
+            unit.functions
+                .iter()
+                .map(|function| (function.name.as_str(), function.is_weak))
+                .collect::<Vec<_>>(),
+            [("set__6Box<c>Fc", true), ("set__6Box<w>Fw", true)]
+        );
+    }
+
+    #[test]
+    fn explicit_class_instantiation_emits_a_weak_vtable_group() {
+        let source = r#"
+            template <typename T>
+            class Base {
+            public:
+                virtual ~Base();
+            };
+            template <typename T>
+            Base<T>::~Base() {}
+            template class Base<char>;
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(unit.functions.iter().all(|function| function.is_weak));
+        assert!(unit
+            .globals
+            .iter()
+            .find(|global| global.name == "__vt__7Base<c>")
+            .is_some_and(|vtable| vtable.is_weak));
+    }
+
+    #[test]
     fn retains_array_typedef_storage_in_union_layouts() {
         let source = r#"
             typedef long Mtx_t[4][4];
@@ -6367,6 +6429,41 @@ blr\n\
             Some(mwcc_syntax_trees::ArmBody::Statements(statements))
                 if matches!(statements.as_slice(), [Statement::Return(None)])
         ));
+    }
+
+    #[test]
+    fn retains_statements_after_a_scoped_switch_arm_block() {
+        let source = r#"
+            int inspect(int);
+            int callback(int state) {
+                switch (state) {
+                case 0: {
+                    int value = inspect(state);
+                    inspect(value);
+                }
+                    return 1;
+                default:
+                    return 2;
+                }
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let Statement::Switch { arms, default, .. } = &unit.functions[0].statements[0] else {
+            panic!("{:#?}", unit.functions[0]);
+        };
+        assert!(matches!(
+            &arms[0].body,
+            mwcc_syntax_trees::ArmBody::Statements(statements)
+                if matches!(statements.last(), Some(Statement::Return(Some(_))))
+        ));
+        assert!(matches!(default, Some(mwcc_syntax_trees::ArmBody::Return(_))));
     }
 
     #[test]

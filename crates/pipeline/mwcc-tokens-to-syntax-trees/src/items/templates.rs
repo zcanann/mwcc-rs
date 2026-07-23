@@ -36,12 +36,48 @@ fn template_pointer_type(declared: Option<Type>) -> Type {
 struct ResolvedTemplateType {
     declared: Type,
     known: bool,
+    /// Exact ABI spelling, separate from aggregate field identity. Builtins
+    /// such as `wchar_t` share storage with an integer but not template names.
+    identity: Option<String>,
     tag: Option<String>,
     layout: Option<StructLayout>,
     constant: Option<u32>,
 }
 
 impl Parser {
+    /// Bind the compact ABI spelling produced by explicit-instantiation
+    /// normalization (`Vector<c>`, `Vector<w>`, ...) to the primary template's
+    /// recovered storage layout in the current namespace.
+    pub(crate) fn instantiate_encoded_template_scope(&mut self, scope: &str) -> Option<String> {
+        let terminal = scope.rsplit("::").next()?;
+        let open = terminal.find('<')?;
+        let argument_spelling = terminal.strip_suffix('>')?.get(open + 1..)?;
+        if argument_spelling.len() != 1 {
+            return None;
+        }
+        let argument = match argument_spelling.as_bytes()[0] {
+            b'c' => Type::Char,
+            b'w' => Type::UnsignedShort,
+            b's' => Type::Short,
+            b'i' => Type::Int,
+            b'f' => Type::Float,
+            b'd' => Type::Double,
+            b'b' => Type::UnsignedChar,
+            _ => return None,
+        };
+        let primary = &terminal[..open];
+        let layout = self.instantiate_struct_template_layout_with_identity(
+            primary,
+            Some(argument),
+            Some(argument_spelling.to_owned()),
+        )?;
+        let qualified = self.qualify_cxx_class_name(scope);
+        self.structs.insert(qualified.clone(), layout);
+        self.struct_typedefs
+            .insert(scope.to_string(), qualified.clone());
+        Some(qualified)
+    }
+
     /// Consume the declaration-scope marker on an explicit specialization.
     ///
     /// The translation-unit loop calls this only after giving inline-template
@@ -123,7 +159,15 @@ impl Parser {
             .split('<')
             .next()
             .and_then(|name| name.rsplit("::").next())?;
-        let layout = self.instantiate_struct_template_layout(template_name, argument);
+        let identity = tag
+            .strip_suffix('>')?
+            .split_once('<')
+            .map(|(_, argument)| argument.to_owned());
+        let layout = self.instantiate_struct_template_layout_with_identity(
+            template_name,
+            argument,
+            identity,
+        );
         self.finish_template_instance_type(tag, layout, end)
     }
 
@@ -198,7 +242,11 @@ impl Parser {
         else {
             return false;
         };
-        self.instantiate_struct_template_layout(template_name, argument)
+        let identity = tag
+            .strip_suffix('>')
+            .and_then(|tag| tag.split_once('<'))
+            .map(|(_, argument)| argument.to_owned());
+        self.instantiate_struct_template_layout_with_identity(template_name, argument, identity)
             .is_some()
     }
 
@@ -237,6 +285,7 @@ impl Parser {
                 arguments.push(ResolvedTemplateType {
                     declared: Type::Void,
                     known: true,
+                    identity: None,
                     tag: None,
                     layout: None,
                     constant: Some(constant),
@@ -255,6 +304,7 @@ impl Parser {
                 arguments.push(ResolvedTemplateType {
                     declared: declared.unwrap_or(Type::Void),
                     known,
+                    identity: identity.clone(),
                     tag: None,
                     layout: None,
                     constant: None,
@@ -336,8 +386,16 @@ impl Parser {
                 .split('<')
                 .next()
                 .and_then(|name| name.rsplit("::").next())?;
+            let identity = tag
+                .strip_suffix('>')
+                .and_then(|tag| tag.split_once('<'))
+                .map(|(_, argument)| argument.to_owned());
             let instance = self
-                .instantiate_struct_template_layout(template_name, argument)
+                .instantiate_struct_template_layout_with_identity(
+                    template_name,
+                    argument,
+                    identity,
+                )
                 .map(|layout| Type::Struct {
                     size: layout.size,
                     align: layout.align,
@@ -373,8 +431,19 @@ impl Parser {
             _ => None,
         });
         if declared.is_some() || matches!(token, Token::Identifier(_)) {
-            let identity = declared
-                .and_then(crate::cxx::encode_template_argument_type)
+            // `wchar_t` and `bool` have ABI identities distinct from their
+            // storage-equivalent integer types. Preserve the written builtin
+            // before falling back to storage-derived template spelling.
+            let identity = match token {
+                Token::Identifier(name) if self.cplusplus && name == "wchar_t" => {
+                    Some("w".to_owned())
+                }
+                Token::Identifier(name) if self.cplusplus && name == "bool" => {
+                    Some("b".to_owned())
+                }
+                _ => None,
+            }
+            .or_else(|| declared.and_then(crate::cxx::encode_template_argument_type))
                 .or_else(|| match token {
                     Token::Identifier(name) => crate::cxx::encode_qualified_type_name(name).ok(),
                     _ => None,
@@ -404,9 +473,19 @@ impl Parser {
         template_name: &str,
         argument: Option<Type>,
     ) -> Option<StructLayout> {
+        self.instantiate_struct_template_layout_with_identity(template_name, argument, None)
+    }
+
+    fn instantiate_struct_template_layout_with_identity(
+        &self,
+        template_name: &str,
+        argument: Option<Type>,
+        identity: Option<String>,
+    ) -> Option<StructLayout> {
         let arguments = [ResolvedTemplateType {
             declared: argument.unwrap_or(Type::Void),
             known: argument.is_some(),
+            identity,
             tag: None,
             layout: None,
             constant: None,
@@ -429,6 +508,7 @@ impl Parser {
                         align: layout.align,
                     },
                     known: true,
+                    identity: Some(name.clone()),
                     tag: Some(name.clone()),
                     layout: Some(layout),
                     constant: None,
@@ -444,13 +524,15 @@ impl Parser {
                     .collect::<Option<Vec<_>>>()?;
                 let layout =
                     self.instantiate_struct_template_layout_with_arguments(name, &resolved)?;
+                let identity = self.concrete_template_identity(name, &resolved);
                 Some(ResolvedTemplateType {
                     declared: Type::Struct {
                         size: layout.size,
                         align: layout.align,
                     },
                     known: true,
-                    tag: self.concrete_template_identity(name, &resolved),
+                    identity: identity.clone(),
+                    tag: identity,
                     layout: Some(layout),
                     constant: None,
                 })
@@ -471,13 +553,18 @@ impl Parser {
     }
 
     fn resolved_template_argument_identity(argument: &ResolvedTemplateType) -> Option<String> {
-        argument.constant.map(|value| value.to_string()).or_else(|| argument.tag.clone()).or_else(|| {
-            if argument.known {
-                crate::cxx::encode_template_argument_type(argument.declared)
-            } else {
-                None
-            }
-        })
+        argument
+            .identity
+            .clone()
+            .or_else(|| argument.constant.map(|value| value.to_string()))
+            .or_else(|| argument.tag.clone())
+            .or_else(|| {
+                if argument.known {
+                    crate::cxx::encode_template_argument_type(argument.declared)
+                } else {
+                    None
+                }
+            })
     }
 
     fn template_pattern_identity(
@@ -540,6 +627,7 @@ impl Parser {
                     (
                         argument.declared,
                         argument.known,
+                        argument.identity.clone(),
                         argument.tag.clone(),
                         argument.constant,
                     )

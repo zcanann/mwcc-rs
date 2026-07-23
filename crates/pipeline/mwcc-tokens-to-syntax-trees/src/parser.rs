@@ -159,7 +159,7 @@ pub(crate) struct StructTemplate {
 #[derive(Clone, PartialEq)]
 pub(crate) struct TemplateInstantiationKey {
     pub(crate) name: String,
-    pub(crate) arguments: Vec<(Type, bool, Option<String>, Option<u32>)>,
+    pub(crate) arguments: Vec<(Type, bool, Option<String>, Option<String>, Option<u32>)>,
 }
 
 #[derive(Clone)]

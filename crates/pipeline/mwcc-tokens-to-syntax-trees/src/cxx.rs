@@ -2277,13 +2277,12 @@ impl Parser {
                 )));
             }
         }
-        // A complete class layout retains the declaration owner needed to
-        // devirtualize calls on concrete objects. Prefer that richer lookup;
-        // declaration-only classes still use the slot-only table below.
-        if self.cxx_classes.contains_key(&resolved) {
-            if let Some(call) = self.resolve_member_call_in_class(&resolved, member, arguments)? {
-                return Ok(Some(call));
-            }
+        // The shared resolver uses complete layouts when available and safely
+        // falls back to a declaration-only primary-base chain. The latter is
+        // important for templates whose concrete layout could not be recovered:
+        // their primary base remains at offset zero and can still own members.
+        if let Some(call) = self.resolve_member_call_in_class(&resolved, member, arguments)? {
+            return Ok(Some(call));
         }
         if let Some((dispatch, return_struct_tag, parameters)) =
             self.resolve_virtual_member_call(&resolved, member, argument_count)?
