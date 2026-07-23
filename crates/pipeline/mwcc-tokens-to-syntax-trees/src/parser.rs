@@ -183,8 +183,13 @@ pub(crate) struct Parser {
     pub(crate) skipped_function_template_label_base: u8,
     /// Anonymous-label cost of each explicit parameter on a dropped inline body.
     pub(crate) dropped_inline_parameter_label_weight: u8,
+    /// Anonymous-label cost of each automatic declarator in a dropped inline body.
+    pub(crate) dropped_inline_local_declaration_label_weight: u8,
+    pub(crate) dropped_inline_class_automatic_label_base: u8,
+    pub(crate) dropped_inline_class_automatic_label_weight: u8,
     /// Anonymous-label cost of an anonymous struct/union definition.
     pub(crate) anonymous_aggregate_definition_label_weight: u8,
+    pub(crate) nested_anonymous_aggregate_definition_label_weight: u8,
     /// Declared struct layouts, by tag name.
     pub(crate) structs: HashMap<String, StructLayout>,
     /// Unambiguous storage extents proven by generated
@@ -457,6 +462,13 @@ pub(crate) struct Parser {
     /// C++ class/inline syntax retained for version-specific anonymous-symbol
     /// accounting after parsing.
     pub(crate) cxx_inline_ordinal_facts: mwcc_syntax_trees::CxxInlineOrdinalFacts,
+    /// Class identities with a user-declared nonvirtual destructor.
+    pub(crate) cxx_nonvirtual_destructor_classes: std::collections::HashSet<String>,
+    /// Constructor targets observed inside dropped in-class inline bodies.
+    pub(crate) cxx_temporary_construction_targets: Vec<String>,
+    /// Return classes whose reusable automatic-construction analysis has
+    /// already been charged by a dropped inline.
+    pub(crate) dropped_inline_class_automatic_groups: std::collections::HashSet<String>,
     /// Source-written function-parameter names already charged to the anonymous
     /// symbol sequence. Parser recovery deliberately revisits class declarations
     /// and inline bodies, so token identity—not parse-path identity—is the only
@@ -467,6 +479,9 @@ pub(crate) struct Parser {
     pub(crate) named_prototype_parameters: usize,
     /// One-time names on primary template definitions removed by materialization.
     pub(crate) removed_template_named_parameters: usize,
+    /// Class-template parameter names whose analysis was reused by a later
+    /// explicit instantiation.
+    pub(crate) reused_template_named_parameters: usize,
     /// Per static-local NAME, the skipped-inline bump total at its DECLARATION
     /// point — a static numbers off the anonymous counter AS OF that position
     /// (measured: mp4 uart's initialized$4 inside the FIRST inline vs pikmin's

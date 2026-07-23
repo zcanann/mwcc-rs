@@ -17,6 +17,7 @@ mod cxx_rtti;
 mod expressions;
 mod explicit_instantiations;
 mod items;
+mod inline_body_analysis;
 mod lvalues;
 mod parameter_names;
 mod parser;
@@ -95,6 +96,10 @@ pub fn parse_located_translation_unit_with_enum_min(
         0,
         0,
         0,
+        0,
+        0,
+        0,
+        0,
         enum_min,
     )
 }
@@ -110,7 +115,11 @@ pub fn parse_located_translation_unit_with_behavior(
     skipped_plain_inline_label_base: u8,
     skipped_function_template_label_base: u8,
     dropped_inline_parameter_label_weight: u8,
+    dropped_inline_local_declaration_label_weight: u8,
+    dropped_inline_class_automatic_label_base: u8,
+    dropped_inline_class_automatic_label_weight: u8,
     anonymous_aggregate_definition_label_weight: u8,
+    nested_anonymous_aggregate_definition_label_weight: u8,
     enum_min: bool,
 ) -> Compilation<TranslationUnit> {
     // East pointee qualifiers are codegen-transparent, but C++ `const`
@@ -118,12 +127,15 @@ pub fn parse_located_translation_unit_with_behavior(
     // a parser-internal marker: declaration lookahead keeps seeing canonical
     // `T*`, while parse_type consumes the marker before the declarator name.
     let mut tokens = cxx::normalize_linkage_specifications(tokens);
-    let removed_template_named_parameters = if cplusplus {
+    let (removed_template_named_parameters, reused_template_named_parameters) = if cplusplus {
         let materialization = explicit_instantiations::materialize(tokens);
         tokens = materialization.tokens;
-        materialization.removed_member_parameter_names
+        (
+            materialization.removed_member_parameter_names,
+            materialization.reused_class_parameter_names,
+        )
     } else {
-        0
+        (0, 0)
     };
     tokens = cxx::normalize_constructor_declarators(tokens);
     let mut index = 0;
@@ -155,8 +167,9 @@ pub fn parse_located_translation_unit_with_behavior(
     } else {
         std::collections::HashSet::new()
     };
-    let named_prototype_parameters =
-        counted_named_parameter_positions.len() + removed_template_named_parameters;
+    let named_prototype_parameters = (counted_named_parameter_positions.len()
+        + removed_template_named_parameters)
+        .saturating_sub(reused_template_named_parameters);
     let asserted_aggregate_sizes = aggregate_size_assertions::collect(&tokens);
     let asserted_aggregate_aliases =
         aggregate_size_assertions::unambiguous_aliases(&asserted_aggregate_sizes);
@@ -170,7 +183,11 @@ pub fn parse_located_translation_unit_with_behavior(
         skipped_plain_inline_label_base,
         skipped_function_template_label_base,
         dropped_inline_parameter_label_weight,
+        dropped_inline_local_declaration_label_weight,
+        dropped_inline_class_automatic_label_base,
+        dropped_inline_class_automatic_label_weight,
         anonymous_aggregate_definition_label_weight,
+        nested_anonymous_aggregate_definition_label_weight,
         last_member_array_bytes: None,
         global_structs: std::collections::HashMap::new(),
         block_renames: Vec::new(),
@@ -180,9 +197,13 @@ pub fn parse_located_translation_unit_with_behavior(
         skipped_inline_functions: 0,
         function_inline_prebumps: std::collections::HashMap::new(),
         cxx_inline_ordinal_facts: mwcc_syntax_trees::CxxInlineOrdinalFacts::default(),
+        cxx_nonvirtual_destructor_classes: std::collections::HashSet::new(),
+        cxx_temporary_construction_targets: Vec::new(),
+        dropped_inline_class_automatic_groups: std::collections::HashSet::new(),
         counted_named_parameter_positions,
         named_prototype_parameters,
         removed_template_named_parameters,
+        reused_template_named_parameters,
         static_local_prebumps: std::collections::HashMap::new(),
         counted_enum_positions: std::collections::HashSet::new(),
         counted_anonymous_aggregate_positions: std::collections::HashSet::new(),
@@ -326,6 +347,10 @@ mod tests {
             1,
             1,
             1,
+            0,
+            0,
+            1,
+            2,
             false,
         )
         .unwrap();
@@ -348,6 +373,10 @@ mod tests {
             1,
             1,
             1,
+            0,
+            0,
+            1,
+            2,
             false,
         )
         .unwrap();
@@ -383,7 +412,40 @@ mod tests {
     }
 
     #[test]
-    fn retains_names_from_materialized_primary_template_members_once() {
+    fn records_inline_facts_from_nested_typedef_classes() {
+        let source = r#"
+            class Outer {
+                typedef struct Filter {
+                    bool differs(const Filter& rhs) const { return value != rhs.value; }
+                    int value;
+                } Filter;
+                typedef struct Cache {
+                    bool differs(const Cache& rhs) const { return slot != rhs.slot; }
+                    void reset() { slot = 0; }
+                    int slot;
+                } Cache;
+            };
+            int f(int x) { return x; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(unit.cxx_inline_ordinal_facts.class_definitions, 3);
+        assert_eq!(unit.cxx_inline_ordinal_facts.inline_definitions, 3);
+        assert_eq!(
+            unit.cxx_inline_ordinal_facts.inline_definition_parameters,
+            2
+        );
+    }
+
+    #[test]
+    fn reuses_class_parameter_analysis_after_first_materialization() {
         let source = r#"
             template <typename T> class C { public: void set(T* pointer, int count); };
             template <typename T> void C<T>::set(T* pointer, int count) {}
@@ -400,7 +462,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(unit.named_prototype_parameters, 13);
+        assert_eq!(unit.named_prototype_parameters, 11);
     }
 
     #[test]
@@ -2734,6 +2796,10 @@ blr\n\
                 class_definitions: 1,
                 inline_definitions: 4,
                 inline_definition_parameters: 0,
+                inline_definition_local_declarators: 0,
+                nonvirtual_destructors: 0,
+                trivial_class_temporary_constructions: 0,
+                nontrivial_class_temporary_constructions: 0,
                 virtual_destructors: 1,
                 virtual_method_declarations: 0,
                 virtual_destructor_declarations: 1,

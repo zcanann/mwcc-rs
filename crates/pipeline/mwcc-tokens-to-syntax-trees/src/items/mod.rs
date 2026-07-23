@@ -1068,6 +1068,15 @@ impl Parser {
                 })
             })
             .collect::<Compilation<Vec<_>>>()?;
+        for target in std::mem::take(&mut self.cxx_temporary_construction_targets) {
+            if self.cxx_nonvirtual_destructor_classes.contains(&target) {
+                self.cxx_inline_ordinal_facts
+                    .nontrivial_class_temporary_constructions += 1;
+            } else {
+                self.cxx_inline_ordinal_facts
+                    .trivial_class_temporary_constructions += 1;
+            }
+        }
         Ok(TranslationUnit {
             globals,
             functions,
@@ -3615,7 +3624,7 @@ impl Parser {
         None
     }
 
-    pub(crate) fn skipped_inline_label_bump(&self) -> Compilation<Option<usize>> {
+    pub(crate) fn skipped_inline_label_bump(&mut self) -> Compilation<Option<usize>> {
         let parameter_count = self
             .skipped_function_name()
             .and_then(|name| {
@@ -3668,6 +3677,22 @@ impl Parser {
                     } else {
                         parameter_count * usize::from(self.dropped_inline_parameter_label_weight)
                     };
+                    let local_declarators =
+                        crate::inline_body_analysis::local_declarators(&self.tokens, index);
+                    bump += local_declarators
+                        * usize::from(self.dropped_inline_local_declaration_label_weight);
+                    if let Some(class) = crate::inline_body_analysis::same_class_automatic(
+                        &self.tokens,
+                        self.position,
+                        index,
+                    )
+                    .filter(|class| self.struct_typedefs.contains_key(class))
+                    {
+                        bump += usize::from(self.dropped_inline_class_automatic_label_weight);
+                        if self.dropped_inline_class_automatic_groups.insert(class) {
+                            bump += usize::from(self.dropped_inline_class_automatic_label_base);
+                        }
+                    }
                     let mut brace_depth = 0i32;
                     // `&&`/`||` count ONLY inside a CONDITION's parens (fire 493:
                     // value-position short-circuits add nothing).
@@ -3949,6 +3974,11 @@ impl Parser {
                 {
                     self.skipped_inline_functions +=
                         usize::from(self.anonymous_aggregate_definition_label_weight);
+                    if brace_depth > 1 {
+                        self.skipped_inline_functions += usize::from(
+                            self.nested_anonymous_aggregate_definition_label_weight,
+                        );
+                    }
                 }
             }
             match token {

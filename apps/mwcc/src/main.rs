@@ -509,7 +509,11 @@ fn compile(
         behavior.skipped_plain_inline_label_base,
         behavior.skipped_function_template_label_base,
         behavior.dropped_inline_parameter_label_weight,
+        behavior.dropped_inline_local_declaration_label_weight,
+        behavior.dropped_inline_class_automatic_label_base,
+        behavior.dropped_inline_class_automatic_label_weight,
         behavior.anonymous_aggregate_definition_label_weight,
+        behavior.nested_anonymous_aggregate_definition_label_weight,
         config.flags.enum_storage == mwcc_versions::EnumStorage::Minimum,
     )?;
     if is_cxx && config.flags.rtti {
@@ -866,8 +870,16 @@ fn compile(
             * usize::from(behavior.cxx_inline_definition_label_bump)
         + cxx_inline_facts.inline_definition_parameters
             * usize::from(behavior.dropped_inline_parameter_label_weight)
+        + cxx_inline_facts.inline_definition_local_declarators
+            * usize::from(behavior.dropped_inline_local_declaration_label_weight)
         + cxx_inline_facts.control_flow_labels
             * usize::from(behavior.cxx_inline_control_flow_label_weight)
+        + cxx_inline_facts.nonvirtual_destructors
+            * usize::from(behavior.cxx_nonvirtual_destructor_label_bump)
+        + cxx_inline_facts.trivial_class_temporary_constructions
+            * usize::from(behavior.cxx_trivial_class_temporary_label_bump)
+        + cxx_inline_facts.nontrivial_class_temporary_constructions
+            * usize::from(behavior.cxx_nontrivial_class_temporary_label_bump)
         + cxx_inline_facts.virtual_destructors
             * usize::from(behavior.cxx_virtual_destructor_label_bump)
         + cxx_inline_facts.direct_calls * usize::from(behavior.cxx_inline_ipa_call_label_bump);
@@ -906,6 +918,14 @@ fn compile(
                 * usize::from(behavior.cxx_rtti_inline_definition_label_bump)
             + cxx_inline_facts.control_flow_labels
                 * usize::from(behavior.cxx_inline_control_flow_label_weight)
+            + cxx_inline_facts.inline_definition_local_declarators
+                * usize::from(behavior.dropped_inline_local_declaration_label_weight)
+            + cxx_inline_facts.nonvirtual_destructors
+                * usize::from(behavior.cxx_nonvirtual_destructor_label_bump)
+            + cxx_inline_facts.trivial_class_temporary_constructions
+                * usize::from(behavior.cxx_trivial_class_temporary_label_bump)
+            + cxx_inline_facts.nontrivial_class_temporary_constructions
+                * usize::from(behavior.cxx_nontrivial_class_temporary_label_bump)
             + cxx_inline_facts.virtual_destructors
                 * usize::from(behavior.cxx_virtual_destructor_label_bump)
             + cxx_inline_facts.direct_calls

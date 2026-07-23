@@ -36,6 +36,11 @@ pub(crate) struct Materialization {
     /// concrete materialization. Generated copies do not replace this one-time
     /// front-end analysis cost.
     pub(crate) removed_member_parameter_names: usize,
+    /// Parameter-name analysis on a class template is reused after its first
+    /// concrete materialization. Generated class copies still provide parser
+    /// semantics, but later explicit instantiations do not charge the same
+    /// source declarations again.
+    pub(crate) reused_class_parameter_names: usize,
 }
 
 pub(crate) fn materialize(tokens: Vec<LocatedToken>) -> Materialization {
@@ -69,6 +74,8 @@ pub(crate) fn materialize(tokens: Vec<LocatedToken>) -> Materialization {
         .flatten()
         .map(|member| member_parameter_name_count(&member.tokens))
         .sum();
+    let mut materialized_classes = HashSet::new();
+    let mut reused_class_parameter_names = 0usize;
     let mut output = Vec::with_capacity(tokens.len());
     index = 0;
     while index < tokens.len() {
@@ -87,6 +94,8 @@ pub(crate) fn materialize(tokens: Vec<LocatedToken>) -> Materialization {
                             &instantiation.argument,
                             &classes,
                             &mut emitted_classes,
+                            &mut materialized_classes,
+                            &mut reused_class_parameter_names,
                             &mut output,
                         );
                     }
@@ -100,11 +109,15 @@ pub(crate) fn materialize(tokens: Vec<LocatedToken>) -> Materialization {
                             &instantiation.argument,
                             &classes,
                             &mut emitted_classes,
+                            &mut materialized_classes,
+                            &mut reused_class_parameter_names,
                             &mut output,
                         );
                     }
                 }
                 if let Some(class) = classes.get(&instantiation.class) {
+                    reused_class_parameter_names +=
+                        reused_class_parameter_count(class, &mut materialized_classes);
                     if let Some(concrete) = instantiate_class(class, &instantiation.argument) {
                         output.extend(concrete);
                     }
@@ -125,7 +138,23 @@ pub(crate) fn materialize(tokens: Vec<LocatedToken>) -> Materialization {
     Materialization {
         tokens: output,
         removed_member_parameter_names,
+        reused_class_parameter_names,
     }
+}
+
+fn reused_class_parameter_count(
+    class: &ClassTemplate,
+    materialized: &mut HashSet<String>,
+) -> usize {
+    if materialized.insert(class.class.clone()) {
+        return 0;
+    }
+    let plain = class
+        .tokens
+        .iter()
+        .map(|located| located.token.clone())
+        .collect::<Vec<_>>();
+    crate::parameter_names::translation_unit_positions(&plain).len()
 }
 
 fn member_parameter_name_count(tokens: &[LocatedToken]) -> usize {
@@ -156,6 +185,8 @@ fn emit_dependent_class(
     argument: &LocatedToken,
     classes: &HashMap<String, ClassTemplate>,
     emitted: &mut HashSet<String>,
+    materialized: &mut HashSet<String>,
+    reused_class_parameter_names: &mut usize,
     output: &mut Vec<LocatedToken>,
 ) {
     if !emitted.insert(class.to_string()) {
@@ -165,8 +196,17 @@ fn emit_dependent_class(
         return;
     };
     for dependency in dependent_templates(&definition.tokens, &definition.parameter, classes) {
-        emit_dependent_class(&dependency, argument, classes, emitted, output);
+        emit_dependent_class(
+            &dependency,
+            argument,
+            classes,
+            emitted,
+            materialized,
+            reused_class_parameter_names,
+            output,
+        );
     }
+    *reused_class_parameter_names += reused_class_parameter_count(definition, materialized);
     if let Some(concrete) = instantiate_class(definition, argument) {
         output.extend(concrete);
     }

@@ -696,12 +696,20 @@ pub struct Behavior {
     pub skipped_function_template_label_base: u8,
     /// Anonymous-label cost of each explicit parameter on a dropped inline body.
     pub dropped_inline_parameter_label_weight: u8,
+    /// Anonymous-label cost of each automatic declarator in a dropped inline body.
+    pub dropped_inline_local_declaration_label_weight: u8,
+    pub dropped_inline_class_automatic_label_base: u8,
+    pub dropped_inline_class_automatic_label_weight: u8,
     /// Anonymous-label cost of an anonymous struct/union definition.
     pub anonymous_aggregate_definition_label_weight: u8,
+    pub nested_anonymous_aggregate_definition_label_weight: u8,
     /// Version-specific weights applied to parser-recorded C++ inline facts.
     pub cxx_class_definition_label_bump: u8,
     pub cxx_inline_definition_label_bump: u8,
     pub cxx_inline_control_flow_label_weight: u8,
+    pub cxx_nonvirtual_destructor_label_bump: u8,
+    pub cxx_trivial_class_temporary_label_bump: u8,
+    pub cxx_nontrivial_class_temporary_label_bump: u8,
     pub cxx_virtual_destructor_label_bump: u8,
     pub cxx_inline_ipa_call_label_bump: u8,
     pub cxx_rtti_virtual_method_label_weight: u8,
@@ -993,10 +1001,26 @@ impl Behavior {
                 .build
                 .profile
                 .dropped_inline_parameter_label_weight(),
+            dropped_inline_local_declaration_label_weight: config
+                .build
+                .profile
+                .dropped_inline_local_declaration_label_weight(),
+            dropped_inline_class_automatic_label_base: config
+                .build
+                .profile
+                .dropped_inline_class_automatic_label_base(),
+            dropped_inline_class_automatic_label_weight: config
+                .build
+                .profile
+                .dropped_inline_class_automatic_label_weight(),
             anonymous_aggregate_definition_label_weight: config
                 .build
                 .profile
                 .anonymous_aggregate_definition_label_weight(),
+            nested_anonymous_aggregate_definition_label_weight: config
+                .build
+                .profile
+                .nested_anonymous_aggregate_definition_label_weight(),
             cxx_class_definition_label_bump: config.build.profile.cxx_class_definition_label_bump(),
             cxx_inline_definition_label_bump: config
                 .build
@@ -1006,6 +1030,18 @@ impl Behavior {
                 .build
                 .profile
                 .cxx_inline_control_flow_label_weight(),
+            cxx_nonvirtual_destructor_label_bump: config
+                .build
+                .profile
+                .cxx_nonvirtual_destructor_label_bump(),
+            cxx_trivial_class_temporary_label_bump: config
+                .build
+                .profile
+                .cxx_trivial_class_temporary_label_bump(),
+            cxx_nontrivial_class_temporary_label_bump: config
+                .build
+                .profile
+                .cxx_nontrivial_class_temporary_label_bump(),
             cxx_virtual_destructor_label_bump: config
                 .build
                 .profile
@@ -1835,8 +1871,15 @@ mod tests {
         assert_eq!(wii43.skipped_plain_inline_label_base, 3);
         assert_eq!(wii43.skipped_function_template_label_base, 1);
         assert_eq!(wii43.dropped_inline_parameter_label_weight, 1);
+        assert_eq!(wii43.dropped_inline_local_declaration_label_weight, 1);
+        assert_eq!(wii43.dropped_inline_class_automatic_label_base, 5);
+        assert_eq!(wii43.dropped_inline_class_automatic_label_weight, 1);
         assert_eq!(wii43.anonymous_aggregate_definition_label_weight, 1);
+        assert_eq!(wii43.nested_anonymous_aggregate_definition_label_weight, 2);
         assert_eq!(wii43.cxx_inline_definition_label_bump, 4);
+        assert_eq!(wii43.cxx_nonvirtual_destructor_label_bump, 3);
+        assert_eq!(wii43.cxx_trivial_class_temporary_label_bump, 2);
+        assert_eq!(wii43.cxx_nontrivial_class_temporary_label_bump, 1);
         assert!(gc41
             .active_quirks()
             .iter()

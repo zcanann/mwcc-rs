@@ -263,6 +263,13 @@ pub struct CxxInlineOrdinalFacts {
     /// Explicit source parameters across in-class inline definitions. Wii 4.3
     /// charges one analysis ordinal per parameter in addition to any written name.
     pub inline_definition_parameters: usize,
+    /// Automatic declarators inside in-class inline definitions.
+    pub inline_definition_local_declarators: usize,
+    /// User-declared nonvirtual destructors defined in class bodies.
+    pub nonvirtual_destructors: usize,
+    /// Class-valued temporary constructions split by destructor complexity.
+    pub trivial_class_temporary_constructions: usize,
+    pub nontrivial_class_temporary_constructions: usize,
     pub virtual_destructors: usize,
     /// Source-declared ordinary virtual members. RTTI names are assigned by a
     /// class-analysis walk whose weights differ from executable functions.

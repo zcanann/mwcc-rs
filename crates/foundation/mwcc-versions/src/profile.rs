@@ -1102,9 +1102,30 @@ pub trait CodegenProfile: core::fmt::Debug {
         0
     }
 
+    /// Per-automatic-declarator analysis cost inside a dropped inline body.
+    fn dropped_inline_local_declaration_label_weight(&self) -> u8 {
+        0
+    }
+
+    /// One-time and per-definition costs of class-valued dropped inlines that
+    /// construct an automatic of their return type.
+    fn dropped_inline_class_automatic_label_base(&self) -> u8 {
+        0
+    }
+
+    fn dropped_inline_class_automatic_label_weight(&self) -> u8 {
+        0
+    }
+
     /// Anonymous aggregate definitions are ordinarily discarded without
     /// advancing the source-analysis ordinal stream.
     fn anonymous_aggregate_definition_label_weight(&self) -> u8 {
+        0
+    }
+
+    /// Additional cost when an anonymous aggregate is nested at least two
+    /// aggregate bodies deep.
+    fn nested_anonymous_aggregate_definition_label_weight(&self) -> u8 {
         0
     }
 
@@ -1125,6 +1146,18 @@ pub trait CodegenProfile: core::fmt::Debug {
 
     fn cxx_virtual_destructor_label_bump(&self) -> u8 {
         2
+    }
+
+    fn cxx_nonvirtual_destructor_label_bump(&self) -> u8 {
+        0
+    }
+
+    fn cxx_trivial_class_temporary_label_bump(&self) -> u8 {
+        0
+    }
+
+    fn cxx_nontrivial_class_temporary_label_bump(&self) -> u8 {
+        0
     }
 
     fn cxx_inline_ipa_call_label_bump(&self) -> u8 {
@@ -1353,12 +1386,40 @@ impl CodegenProfile for Wii43Build145 {
         1
     }
 
+    fn dropped_inline_local_declaration_label_weight(&self) -> u8 {
+        1
+    }
+
+    fn dropped_inline_class_automatic_label_base(&self) -> u8 {
+        5
+    }
+
+    fn dropped_inline_class_automatic_label_weight(&self) -> u8 {
+        1
+    }
+
     fn anonymous_aggregate_definition_label_weight(&self) -> u8 {
         1
     }
 
+    fn nested_anonymous_aggregate_definition_label_weight(&self) -> u8 {
+        2
+    }
+
     fn cxx_inline_definition_label_bump(&self) -> u8 {
         4
+    }
+
+    fn cxx_nonvirtual_destructor_label_bump(&self) -> u8 {
+        3
+    }
+
+    fn cxx_trivial_class_temporary_label_bump(&self) -> u8 {
+        2
+    }
+
+    fn cxx_nontrivial_class_temporary_label_bump(&self) -> u8 {
+        1
     }
 
     fn pointer_call_store_epilogue_style(&self) -> PointerCallStoreEpilogueStyle {

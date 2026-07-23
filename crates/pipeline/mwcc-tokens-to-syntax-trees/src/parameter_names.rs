@@ -8,7 +8,9 @@ pub(crate) fn translation_unit_positions(tokens: &[Token]) -> HashSet<usize> {
     let mut names = HashSet::new();
     let mut index = 0usize;
     while index < tokens.len() {
-        if tokens.get(index) == Some(&Token::ParenOpen) {
+        if tokens.get(index) == Some(&Token::ParenOpen)
+            && could_be_parameter_list(tokens, index)
+        {
             if let Some((_, positions)) = positions(tokens, index) {
                 names.extend(positions);
             }
@@ -23,6 +25,57 @@ pub(crate) fn translation_unit_positions(tokens: &[Token]) -> HashSet<usize> {
         index += 1;
     }
     names
+}
+
+/// A declaration parameter list follows a function name (or an overloaded
+/// operator token). This excludes `sizeof(...)`, casts, calls, and array-bound
+/// expressions without requiring the semantic parser to understand the type.
+pub(crate) fn could_be_parameter_list(tokens: &[Token], open: usize) -> bool {
+    let Some(previous) = open.checked_sub(1).and_then(|index| tokens.get(index)) else {
+        return false;
+    };
+    match previous {
+        Token::Identifier(word) => !matches!(
+            word.as_str(),
+            "sizeof"
+                | "alignof"
+                | "__alignof__"
+                | "decltype"
+                | "__decltype__"
+                | "typeid"
+        ),
+        Token::Equals
+        | Token::Plus
+        | Token::Minus
+        | Token::Star
+        | Token::Slash
+        | Token::Percent
+        | Token::Ampersand
+        | Token::Pipe
+        | Token::Caret
+        | Token::Tilde
+        | Token::Bang
+        | Token::Less
+        | Token::Greater
+        | Token::LessEqual
+        | Token::GreaterEqual
+        | Token::EqualEqual
+        | Token::BangEqual
+        | Token::ShiftLeft
+        | Token::ShiftRight
+        | Token::BracketClose => declaration_contains_operator(tokens, open),
+        _ => false,
+    }
+}
+
+fn declaration_contains_operator(tokens: &[Token], open: usize) -> bool {
+    let start = tokens[..open]
+        .iter()
+        .rposition(|token| matches!(token, Token::Semicolon | Token::BraceOpen | Token::BraceClose))
+        .map_or(0, |position| position + 1);
+    tokens[start..open]
+        .iter()
+        .any(|token| matches!(token, Token::Identifier(word) if word == "operator"))
 }
 
 fn collect_block_prototype_positions(
@@ -122,10 +175,14 @@ fn collect_segment(tokens: &[Token], start: usize, end: usize, names: &mut Vec<u
     while index < end {
         if tokens.get(index) == Some(&Token::ParenOpen) {
             if let Some(close) = matching_paren_bounded(tokens, index, end) {
-                let has_star = tokens[index + 1..close]
-                    .iter()
-                    .any(|token| *token == Token::Star);
-                if has_star {
+                let group = &tokens[index + 1..close];
+                let is_pointer_declarator = group.first() == Some(&Token::Star)
+                    || group.windows(3).any(|window| {
+                        window[0] == Token::Colon
+                            && window[1] == Token::Colon
+                            && window[2] == Token::Star
+                    });
+                if is_pointer_declarator {
                     if let Some(position) = (index + 1..close).rev().find(|position| {
                         matches!(tokens.get(*position), Some(Token::Identifier(word)) if !is_specifier(word))
                     }) {
@@ -335,6 +392,26 @@ mod tests {
     }
 
     #[test]
+    fn callback_signature_does_not_treat_unnamed_alias_as_a_declarator() {
+        let tokens = vec![
+            Token::ParenOpen,
+            Token::KeywordVoid,
+            Token::ParenOpen,
+            Token::Star,
+            Token::Identifier("visitor".into()),
+            Token::ParenClose,
+            Token::ParenOpen,
+            Token::KeywordVoid,
+            Token::Star,
+            Token::Comma,
+            Token::Identifier("u32".into()),
+            Token::ParenClose,
+            Token::ParenClose,
+        ];
+        assert_eq!(positions(&tokens, 0).unwrap().1, vec![4]);
+    }
+
+    #[test]
     fn declaration_walk_skips_executable_function_bodies() {
         let tokens = vec![
             Token::Identifier("class".into()),
@@ -368,5 +445,18 @@ mod tests {
         ];
 
         assert_eq!(translation_unit_positions(&tokens), HashSet::from([7, 22]));
+    }
+
+    #[test]
+    fn declaration_walk_rejects_sizeof_array_bounds() {
+        let tokens = mwcc_source_to_tokens::tokenize(
+            "struct S { int bytes[sizeof(S)]; void method(int value); };",
+        )
+        .unwrap();
+        let value = tokens
+            .iter()
+            .position(|token| *token == Token::Identifier("value".into()))
+            .unwrap();
+        assert_eq!(translation_unit_positions(&tokens), HashSet::from([value]));
     }
 }

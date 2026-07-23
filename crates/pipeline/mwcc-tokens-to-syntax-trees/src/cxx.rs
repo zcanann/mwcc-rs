@@ -572,8 +572,9 @@ impl Parser {
     pub(crate) fn remove_named_parameters_in(&mut self, open: usize, close: usize) {
         self.counted_named_parameter_positions
             .retain(|position| *position <= open || *position >= close);
-        self.named_prototype_parameters = self.counted_named_parameter_positions.len()
-            + self.removed_template_named_parameters;
+        self.named_prototype_parameters = (self.counted_named_parameter_positions.len()
+            + self.removed_template_named_parameters)
+            .saturating_sub(self.reused_template_named_parameters);
     }
 
     /// Consume the source-only facts left by `parse_type` into one ABI type.
@@ -1136,7 +1137,7 @@ impl Parser {
         // fact even when layout recovery later rejects the body, so pointers to
         // the class retain their semantic tag.
         self.struct_typedefs
-            .entry(source_class)
+            .entry(source_class.clone())
             .or_insert_with(|| class.clone());
         let mut index = aggregate_start + 2;
         while !matches!(
@@ -1215,6 +1216,7 @@ impl Parser {
             if brace_depth == 1
                 && paren_depth == 0
                 && self.tokens.get(index) == Some(&Token::ParenOpen)
+                && crate::parameter_names::could_be_parameter_list(&self.tokens, index)
             {
                 if let Some((_, positions)) = crate::parameter_names::positions(&self.tokens, index)
                 {
@@ -1298,9 +1300,20 @@ impl Parser {
                     }
                 }
             }
-            let nested_class = begins_member
-                && (matches!(token, Token::Identifier(word) if word == "class")
-                    || token == &Token::KeywordStruct);
+            let nested_class = if !begins_member {
+                None
+            } else if matches!(token, Token::Identifier(word) if word == "class")
+                || token == &Token::KeywordStruct
+            {
+                Some(index)
+            } else if matches!(token, Token::Identifier(word) if word == "typedef")
+                && (self.tokens.get(index + 1) == Some(&Token::KeywordStruct)
+                    || matches!(self.tokens.get(index + 1), Some(Token::Identifier(word)) if word == "class"))
+            {
+                Some(index + 1)
+            } else {
+                None
+            };
             let nested_enum =
                 begins_member && matches!(token, Token::Identifier(word) if word == "enum");
             match token {
@@ -1316,11 +1329,17 @@ impl Parser {
                             self.cxx_inline_ordinal_facts.inline_definition_parameters +=
                                 member_parameter_count.unwrap_or(0);
                             let declaration = &self.tokens[member_declaration_start..index];
-                            if declaration.iter().any(
+                            let is_virtual = declaration.iter().any(
                                 |token| matches!(token, Token::Identifier(word) if word == "virtual"),
-                            ) && declaration.iter().any(|token| token == &Token::Tilde)
-                            {
-                                self.cxx_inline_ordinal_facts.virtual_destructors += 1;
+                            );
+                            if declaration.iter().any(|token| token == &Token::Tilde) {
+                                if is_virtual {
+                                    self.cxx_inline_ordinal_facts.virtual_destructors += 1;
+                                } else {
+                                    self.cxx_inline_ordinal_facts.nonvirtual_destructors += 1;
+                                    self.cxx_nonvirtual_destructor_classes
+                                        .insert(source_class.clone());
+                                }
                             }
                             inline_body = Some((member_declaration_start, index + 1));
                         }
@@ -1334,6 +1353,12 @@ impl Parser {
                     }
                     if brace_depth == 1 {
                         if let Some((declaration_start, body_start)) = inline_body.take() {
+                            self.cxx_inline_ordinal_facts
+                                .inline_definition_local_declarators +=
+                                crate::inline_body_analysis::local_declarators(
+                                    &self.tokens,
+                                    body_start - 1,
+                                );
                             self.cxx_inline_ordinal_facts.control_flow_labels +=
                                 inline_control_flow_labels(&self.tokens[body_start..index]);
                             self.cxx_inline_ordinal_facts.direct_calls += self.tokens
@@ -1344,6 +1369,20 @@ impl Parser {
                                         && tokens[1] == Token::ParenOpen
                                 })
                                 .count();
+                            self.cxx_temporary_construction_targets.extend(
+                                self.tokens[body_start..index]
+                                    .windows(2)
+                                    .filter_map(|tokens| match &tokens[0] {
+                                        Token::Identifier(target)
+                                            if tokens[1] == Token::ParenOpen
+                                                && (target == &source_class
+                                                    || self.struct_typedefs.contains_key(target)) =>
+                                        {
+                                            Some(target.clone())
+                                        }
+                                        _ => None,
+                                    }),
+                            );
                             self.capture_cxx_inline_definition(
                                 declaration_start,
                                 index,
@@ -1368,16 +1407,17 @@ impl Parser {
                 Token::EndOfFile => return prototypes,
                 _ => {}
             }
-            if nested_class {
+            if let Some(nested_class) = nested_class {
                 let nested = nested_explicit_virtual_declarations(
                     &self.tokens,
-                    index,
+                    nested_class,
                     &mut self.counted_nested_virtual_positions,
                 );
                 self.cxx_inline_ordinal_facts.virtual_method_declarations += nested.0;
                 self.cxx_inline_ordinal_facts
                     .virtual_destructor_declarations += nested.1;
-                self.capture_nested_cxx_class_layout(index, &class);
+                self.capture_nested_cxx_inline_facts(nested_class);
+                self.capture_nested_cxx_class_layout(nested_class, &class);
             }
             if nested_enum {
                 self.capture_nested_cxx_enum(index, &class);
@@ -1401,6 +1441,33 @@ impl Parser {
             index += 1;
         }
         prototypes
+    }
+
+    /// Reuse the ordinary class analysis for a nested definition, but merge
+    /// only syntax facts. Layout and callable recovery remain owned by the
+    /// containing parser, while the frontend's dropped-inline timeline still
+    /// observes methods defined inside the nested class.
+    fn capture_nested_cxx_inline_facts(&mut self, index: usize) {
+        let mut probe = self.clone();
+        probe.position = index;
+        probe.cxx_inline_ordinal_facts = mwcc_syntax_trees::CxxInlineOrdinalFacts::default();
+        probe.cxx_temporary_construction_targets.clear();
+        let _ = probe.capture_cxx_class_declarations();
+        let facts = probe.cxx_inline_ordinal_facts;
+        self.cxx_inline_ordinal_facts.class_definitions += facts.class_definitions;
+        self.cxx_inline_ordinal_facts.inline_definitions += facts.inline_definitions;
+        self.cxx_inline_ordinal_facts.inline_definition_parameters +=
+            facts.inline_definition_parameters;
+        self.cxx_inline_ordinal_facts
+            .inline_definition_local_declarators += facts.inline_definition_local_declarators;
+        self.cxx_inline_ordinal_facts.nonvirtual_destructors += facts.nonvirtual_destructors;
+        self.cxx_inline_ordinal_facts.virtual_destructors += facts.virtual_destructors;
+        self.cxx_inline_ordinal_facts.direct_calls += facts.direct_calls;
+        self.cxx_inline_ordinal_facts.control_flow_labels += facts.control_flow_labels;
+        self.cxx_temporary_construction_targets
+            .extend(probe.cxx_temporary_construction_targets);
+        self.cxx_nonvirtual_destructor_classes
+            .extend(probe.cxx_nonvirtual_destructor_classes);
     }
 
     /// Recover one constructor declaration without requiring the containing
