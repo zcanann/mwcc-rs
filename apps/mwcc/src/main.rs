@@ -2225,6 +2225,44 @@ mod tests {
     }
 
     #[test]
+    fn preserves_a_tested_call_result_until_the_function_return() {
+        let source = br#"
+            extern int load_result(void);
+            extern void consume(void);
+            int compiled(void) {
+                int result = load_result();
+                if (result == 4) {
+                    consume();
+                }
+                return result;
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_3_2,
+            flags,
+        };
+        let object = compile(
+            source,
+            "returned-call-result.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the call result must survive the conditional call");
+
+        assert!(object
+            .windows(4)
+            .any(|bytes| bytes == [0x7c, 0x7f, 0x1b, 0x78])); // mr r31,r3
+        assert!(object
+            .windows(4)
+            .any(|bytes| bytes == [0x7f, 0xe3, 0xfb, 0x78])); // mr r3,r31
+    }
+
+    #[test]
     fn scalar_array_layout_and_comment_alignment_are_independent() {
         assert_eq!(
             global_alignments(1, None, true, 1, true),

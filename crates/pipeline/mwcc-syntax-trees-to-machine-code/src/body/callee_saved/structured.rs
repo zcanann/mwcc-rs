@@ -1356,9 +1356,19 @@ impl Generator {
                         .expect("eligibility checked");
                     let previous = self.locations.get(name).map(|location| location.register);
                     let remaining = &statements[statement_index + 1..];
+                    // The source-level return is emitted after every statement, but is not
+                    // part of `remaining`.  A value tested before a later call and returned
+                    // afterward is therefore not terminal in a volatile register: the call
+                    // result must stay in its planned callee-saved home through that call.
+                    let returned_after_later_call = function
+                        .return_expression
+                        .as_ref()
+                        .is_some_and(|expression| expression_reads_name(expression, name))
+                        && remaining.iter().any(statement_has_call);
                     let terminal_volatile = matches!(declared_type, Type::Int | Type::UnsignedInt)
                         && value_read_before_redefinition(remaining, name)
-                        && !read_after_possible_call(remaining, name, false).read_after_call;
+                        && !read_after_possible_call(remaining, name, false).read_after_call
+                        && !returned_after_later_call;
                     if terminal_volatile && matches!(value, Expression::Call { .. }) {
                         self.evaluate(value, declared_type, Eabi::general_result().number)?;
                         self.locations
