@@ -61,31 +61,44 @@ impl Generator {
         let same_base_member_forward = match (function.parameters.as_slice(), arguments.as_slice()) {
             (
                 [parameter],
-                [
-                    Expression::MemberAddress {
-                        base: first_base,
-                        index_stride: None,
-                        ..
-                    },
-                    Expression::Member {
-                        base: second_base,
-                        member_type:
-                            Type::Int
-                            | Type::UnsignedInt
-                            | Type::Pointer(_)
-                            | Type::StructPointer { .. },
-                        index_stride: None,
-                        ..
-                    },
-                ],
+                [first, Expression::Member {
+                    base: second_base,
+                    member_type:
+                        Type::Int
+                        | Type::UnsignedInt
+                        | Type::Pointer(_)
+                        | Type::StructPointer { .. },
+                    index_stride: None,
+                    ..
+                }],
             ) => {
+                // The parser's direct-source path may retain `&object->member`
+                // as AddressOf(Member), while preprocessed and newer paths
+                // normalize it to MemberAddress. They are the same forwarding
+                // value and share the argument scheduler below.
+                let first_base = match first {
+                    Expression::MemberAddress {
+                        base,
+                        index_stride: None,
+                        ..
+                    } => Some(base.as_ref()),
+                    Expression::AddressOf { operand } => match operand.as_ref() {
+                        Expression::Member {
+                            base,
+                            index_stride: None,
+                            ..
+                        } => Some(base.as_ref()),
+                        _ => None,
+                    },
+                    _ => None,
+                };
                 let pointer_parameter = matches!(
                     parameter.parameter_type,
                     Type::Pointer(_) | Type::StructPointer { .. }
                 );
                 let same_parameter = matches!(
-                    (first_base.as_ref(), second_base.as_ref()),
-                    (Expression::Variable(first), Expression::Variable(second))
+                    (first_base, second_base.as_ref()),
+                    (Some(Expression::Variable(first)), Expression::Variable(second))
                         if first == &parameter.name && second == &parameter.name
                 );
                 pointer_parameter
