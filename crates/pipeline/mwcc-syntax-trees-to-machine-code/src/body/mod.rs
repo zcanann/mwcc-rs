@@ -41,6 +41,7 @@ mod legacy_constant_store;
 mod leading_store_guard;
 mod leading_store_guarded_call;
 mod local_select;
+mod local_member_call_dispatch;
 mod long_long_initialize;
 mod long_long_serial_fold;
 mod long_long_support;

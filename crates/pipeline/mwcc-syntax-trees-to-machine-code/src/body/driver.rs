@@ -1154,6 +1154,12 @@ impl Generator {
         if let Some(inlined) = inline_immutable_pointer_aliases(function) {
             return self.evaluate_body(&inlined);
         }
+        // A pointer local loaded solely for an if/else discriminator is
+        // copy-propagated into the condition; the original object stays in r3
+        // and feeds either call arm without a callee-saved live range.
+        if self.try_local_member_call_dispatch(function)? {
+            return Ok(());
+        }
         if let Some(scalarized) = scalarize_in_place_aggregate_local(function) {
             return self.evaluate_body(&scalarized);
         }
