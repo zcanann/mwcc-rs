@@ -15,6 +15,11 @@ use crate::cxx::{
 };
 use crate::parser::Parser;
 
+pub(super) struct DeleteCall {
+    name: String,
+    object_size: Option<u32>,
+}
+
 /// Rebuild trivial written destructors after the complete class graph exists,
 /// and add implicit derived destructors required by an emitted vtable.
 pub(super) fn prepare_required(
@@ -66,6 +71,44 @@ pub(super) fn prepare_required(
     Ok(())
 }
 
+/// Ensure one inline or implicit destructor requested by a virtual delete is
+/// available for immediate weak emission after its caller.
+pub(super) fn prepare_requested(
+    parser: &mut Parser,
+    scope: &str,
+) -> Compilation<Option<String>> {
+    let scopes = scope.split("::").collect::<Vec<_>>();
+    let destructor = mangle_qualified_member_function(&scopes, "__dt", &[])?;
+    if let Some(index) = parser
+        .cxx_inline_materializations
+        .iter()
+        .position(|function| function.name == destructor)
+    {
+        if is_trivial_generated_destructor(&parser.cxx_inline_materializations[index])
+            && bases_are_trivial(parser, scope)?
+        {
+            let original = &parser.cxx_inline_materializations[index];
+            let section = original.section.clone();
+            let preceded_by_asm = original.preceded_by_asm;
+            let mut rebuilt = build(parser, scope, destructor.clone())?;
+            rebuilt.section = section;
+            rebuilt.preceded_by_asm = preceded_by_asm;
+            parser.cxx_inline_materializations[index] = rebuilt;
+        }
+        return Ok(Some(destructor));
+    }
+    let Some(class) = parser.cxx_classes.get(scope) else {
+        return Ok(None);
+    };
+    if class.declares_destructor || !bases_are_trivial(parser, scope)? {
+        return Ok(None);
+    }
+    parser
+        .cxx_inline_materializations
+        .push(build(parser, scope, destructor.clone())?);
+    Ok(Some(destructor))
+}
+
 fn bases_are_trivial(parser: &Parser, scope: &str) -> Compilation<bool> {
     let Some(class) = parser.cxx_classes.get(scope) else {
         return Ok(false);
@@ -102,12 +145,7 @@ fn build(parser: &Parser, scope: &str, name: String) -> Compilation<Function> {
             body.push(call);
         }
     }
-    body.push(deleting_guard(
-        parser
-            .cxx_delete_forwarder
-            .clone()
-            .unwrap_or_else(|| "__dl__FPv".to_string()),
-    ));
+    body.push(deleting_guard(delete_call(parser, scope, size)));
 
     Ok(Function {
         return_type: Type::StructPointer { element_size: size },
@@ -202,7 +240,35 @@ fn vptr_stores(scope: &str, class: &ClassLayout, object_bias: u32) -> Compilatio
         .collect())
 }
 
-fn deleting_guard(delete: String) -> Statement {
+pub(super) fn delete_call(parser: &Parser, scope: &str, object_size: u32) -> DeleteCall {
+    let mut owner = Some(scope);
+    while let Some(class_name) = owner {
+        if let Some((name, arity)) = parser.cxx_class_deletes.get(class_name) {
+            return DeleteCall {
+                name: name.clone(),
+                object_size: (*arity >= 2).then_some(object_size),
+            };
+        }
+        owner = parser
+            .cxx_classes
+            .get(class_name)
+            .and_then(|class| class.bases.iter().find(|base| !base.is_virtual))
+            .map(|base| base.name.as_str());
+    }
+    DeleteCall {
+        name: parser
+            .cxx_delete_forwarder
+            .clone()
+            .unwrap_or_else(|| "__dl__FPv".to_string()),
+        object_size: None,
+    }
+}
+
+fn deleting_guard(delete: DeleteCall) -> Statement {
+    let mut arguments = vec![Expression::Variable("this".to_string())];
+    if let Some(size) = delete.object_size {
+        arguments.push(Expression::IntegerLiteral(i64::from(size)));
+    }
     Statement::If {
         condition: Expression::Binary {
             operator: BinaryOperator::Greater,
@@ -210,8 +276,8 @@ fn deleting_guard(delete: String) -> Statement {
             right: Box::new(Expression::IntegerLiteral(0)),
         },
         then_body: vec![Statement::Expression(Expression::Call {
-            name: delete,
-            arguments: vec![Expression::Variable("this".to_string())],
+            name: delete.name,
+            arguments,
         })],
         else_body: Vec::new(),
     }
@@ -225,7 +291,7 @@ pub(super) fn wrap_written(
     object_size: u32,
     mut before_source: Vec<Statement>,
     mut after_source: Vec<Statement>,
-    delete: String,
+    delete: DeleteCall,
 ) {
     let mut body = Vec::new();
     body.append(&mut before_source);
@@ -285,7 +351,8 @@ fn is_generated_delete_guard(statement: &Statement) -> bool {
     matches!(left.as_ref(), Expression::Variable(name) if name == "__destroy")
         && matches!(right.as_ref(), Expression::IntegerLiteral(0))
         && matches!(then_body.as_slice(), [Statement::Expression(Expression::Call { arguments, .. })]
-            if matches!(arguments.as_slice(), [Expression::Variable(name)] if name == "this"))
+            if matches!(arguments.as_slice(), [Expression::Variable(name)] if name == "this")
+                || matches!(arguments.as_slice(), [Expression::Variable(name), Expression::IntegerLiteral(_)] if name == "this"))
         && else_body.is_empty()
 }
 

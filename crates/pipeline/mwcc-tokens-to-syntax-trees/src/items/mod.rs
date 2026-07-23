@@ -726,6 +726,7 @@ impl Parser {
             let bump_before_item = self.skipped_inline_functions;
             let materialization_requests_before =
                 self.cxx_inline_materialization_requests.len();
+            let destructor_requests_before = self.cxx_inline_destructor_requests.len();
             let item_result = if skippable_inline_member {
                 // Route definitions whose inherited inline status was proven by
                 // declaration recovery through the same dropped-inline accounting
@@ -739,6 +740,8 @@ impl Parser {
             if let Err(error) = item_result {
                 self.cxx_inline_materialization_requests
                     .truncate(materialization_requests_before);
+                self.cxx_inline_destructor_requests
+                    .truncate(destructor_requests_before);
                 if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() {
                     eprintln!(
                         "skipped top-level item at token {start} ({:?}): {error}",
@@ -886,6 +889,44 @@ impl Parser {
                 self.skip_top_level_declaration();
             }
             if functions.len() > functions_before {
+                let destructor_classes = self
+                    .cxx_inline_destructor_requests
+                    .split_off(destructor_requests_before);
+                let caller = functions[functions_before].name.clone();
+                for class_name in destructor_classes {
+                    let Some(name) =
+                        cxx_destructors::prepare_requested(self, &class_name)?
+                    else {
+                        continue;
+                    };
+                    let scopes = class_name.split("::").collect::<Vec<_>>();
+                    let vtable = format!(
+                        "__vt__{}",
+                        crate::cxx::encode_qualified_scope(&scopes)?
+                    );
+                    if !globals.iter().any(|global| global.name == vtable) {
+                        let class = &self.cxx_classes[&class_name];
+                        let mut table = cxx_vtables::global(class, vtable, Some(&name));
+                        table.is_weak = true;
+                        globals.push(table);
+                    }
+                    let Some(position) = self
+                        .cxx_inline_materializations
+                        .iter()
+                        .position(|candidate| candidate.name == name)
+                    else {
+                        continue;
+                    };
+                    let function = self.cxx_inline_materializations.remove(position);
+                    let source = self
+                        .cxx_inline_materialization_sources
+                        .remove(&function.name);
+                    self.weak_materialized.push(function.name.clone());
+                    self.immediate_weak_materializations
+                        .push((caller.clone(), function.name.clone()));
+                    functions.push(function);
+                    self.function_sources.push(source);
+                }
                 let requests = self
                     .cxx_inline_materialization_requests
                     .split_off(materialization_requests_before);
@@ -902,6 +943,8 @@ impl Parser {
                         .cxx_inline_materialization_sources
                         .remove(&function.name);
                     self.weak_materialized.push(function.name.clone());
+                    self.immediate_weak_materializations
+                        .push((caller.clone(), function.name.clone()));
                     functions.push(function);
                     self.function_sources.push(source);
                 }
@@ -1122,6 +1165,9 @@ impl Parser {
                 &mut self.materialized_inline_candidates,
             ),
             weak_materialized: std::mem::take(&mut self.weak_materialized),
+            immediate_weak_materializations: std::mem::take(
+                &mut self.immediate_weak_materializations,
+            ),
             section_prototypes: std::mem::take(&mut self.section_prototype_order),
             skipped_inline_names: std::mem::take(&mut self.skipped_inline_names),
             skipped_inline_definitions: std::mem::take(
@@ -3281,14 +3327,14 @@ impl Parser {
             if let Some(scope) = &destructor_scope {
                 let class = &self.cxx_classes[scope];
                 if !class.has_virtual_destructor {
+                    let object_size = self.structs.get(scope).map_or(0, |layout| layout.size);
+                    let delete = cxx_destructors::delete_call(self, scope, object_size);
                     cxx_destructors::wrap_written(
                         &mut function,
-                        self.structs.get(scope).map_or(0, |layout| layout.size),
+                        object_size,
                         Vec::new(),
                         std::mem::take(&mut destructor_subobject_calls),
-                        self.cxx_delete_forwarder
-                            .clone()
-                            .unwrap_or_else(|| "__dl__FPv".to_string()),
+                        delete,
                     );
                 }
             }
@@ -3340,14 +3386,16 @@ impl Parser {
                                 .then_some(vptr_store)
                                 .into_iter()
                                 .collect();
+                            let object_size =
+                                self.structs.get(scope).map_or(0, |layout| layout.size);
+                            let delete =
+                                cxx_destructors::delete_call(self, scope, object_size);
                             cxx_destructors::wrap_written(
                                 &mut function,
-                                self.structs.get(scope).map_or(0, |layout| layout.size),
+                                object_size,
                                 before_source,
                                 std::mem::take(&mut destructor_subobject_calls),
-                                self.cxx_delete_forwarder
-                                    .clone()
-                                    .unwrap_or_else(|| "__dl__FPv".to_string()),
+                                delete,
                             );
 
                             if !globals.iter().any(|global| global.name == vtable) {

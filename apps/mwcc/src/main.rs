@@ -1039,6 +1039,7 @@ fn compile(
             behavior.deferred_source_function_label_bump,
             behavior.deferred_post_function_label_bump,
             behavior.deferred_function_emission_style,
+            &unit.immediate_weak_materializations,
         );
     }
     // `#pragma defer_codegen on` defers the covered functions the same way:

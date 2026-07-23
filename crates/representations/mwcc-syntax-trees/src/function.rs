@@ -382,6 +382,10 @@ pub struct TranslationUnit {
     /// PLAIN-inline materializations — weak FUNC symbols carrying the
     /// weak-OBJECT 0x0d comment flag (not declspec-weak's 0x0e).
     pub weak_materialized: Vec<String>,
+    /// `(caller, weak body)` edges for inline definitions ODR-used while the
+    /// caller was compiled. Deferred emission anchors these bodies immediately
+    /// after that caller instead of placing them in the unreferenced weak tail.
+    pub immediate_weak_materializations: Vec<(String, String)>,
     /// Function prototypes carrying `__declspec(section "…")`, in first
     /// declaration order. Early compilers retain unused ones in the symbol table.
     pub section_prototypes: Vec<String>,

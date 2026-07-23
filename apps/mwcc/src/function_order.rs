@@ -105,6 +105,7 @@ pub(crate) fn apply_deferred_emission_order(
     source_function_label_bump: u8,
     post_function_label_bump: u8,
     emission_style: DeferredFunctionEmissionStyle,
+    immediate_weak_edges: &[(String, String)],
 ) {
     let mut source_order = std::mem::take(functions);
 
@@ -146,9 +147,24 @@ pub(crate) fn apply_deferred_emission_order(
     // generated weak bodies in their own reversed recovery order. Reversing
     // the combined list instead incorrectly places vtable-owned destructors
     // before source-written constructors.
-    let (mut source_definitions, mut generated_weak): (Vec<_>, Vec<_>) = source_order
-        .into_iter()
-        .partition(|function| !function.weak_inline);
+    let immediate_names: HashSet<&str> = immediate_weak_edges
+        .iter()
+        .map(|(_, body)| body.as_str())
+        .collect();
+    let mut immediate_weak = HashMap::new();
+    let mut immediate_order = Vec::new();
+    let mut source_definitions = Vec::new();
+    let mut generated_weak = Vec::new();
+    for function in source_order {
+        if immediate_names.contains(function.name.as_str()) {
+            immediate_order.push(function.name.clone());
+            immediate_weak.insert(function.name.clone(), function);
+        } else if function.weak_inline {
+            generated_weak.push(function);
+        } else {
+            source_definitions.push(function);
+        }
+    }
     generated_weak.reverse();
 
     let mut emission_order = match emission_style {
@@ -167,6 +183,24 @@ pub(crate) fn apply_deferred_emission_order(
             source_definitions
         }
     };
+    let mut children: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (caller, body) in immediate_weak_edges {
+        children.entry(caller).or_default().push(body);
+    }
+    let roots = std::mem::take(&mut emission_order);
+    for function in roots {
+        emit_with_immediate_weak(function, &children, &mut immediate_weak, &mut emission_order);
+    }
+    for name in immediate_order.into_iter().rev() {
+        if let Some(function) = immediate_weak.remove(&name) {
+            emit_with_immediate_weak(
+                function,
+                &children,
+                &mut immediate_weak,
+                &mut emission_order,
+            );
+        }
+    }
     if let Some(head) = emission_order.iter_mut().find(|function| !function.is_asm) {
         // A capture-owned source prefix is the complete transaction for its
         // source body. Adding the generic per-body transaction as well double
@@ -184,6 +218,23 @@ pub(crate) fn apply_deferred_emission_order(
         }
     }
     *functions = emission_order;
+}
+
+fn emit_with_immediate_weak(
+    function: MachineFunction,
+    children: &HashMap<&str, Vec<&str>>,
+    pending: &mut HashMap<String, MachineFunction>,
+    output: &mut Vec<MachineFunction>,
+) {
+    let caller = function.name.clone();
+    output.push(function);
+    if let Some(bodies) = children.get(caller.as_str()) {
+        for body in bodies.iter().rev() {
+            if let Some(function) = pending.remove(*body) {
+                emit_with_immediate_weak(function, children, pending, output);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -211,6 +262,7 @@ mod tests {
             3,
             1,
             DeferredFunctionEmissionStyle::ImmediateAsmThenReverseCompiled,
+            &[],
         );
 
         assert_eq!(
@@ -235,6 +287,7 @@ mod tests {
             3,
             1,
             DeferredFunctionEmissionStyle::ReverseAll,
+            &[],
         );
 
         assert_eq!(
@@ -264,6 +317,7 @@ mod tests {
             3,
             1,
             DeferredFunctionEmissionStyle::ImmediateAsmThenReverseCompiled,
+            &[],
         );
 
         assert_eq!(
@@ -281,6 +335,40 @@ mod tests {
     }
 
     #[test]
+    fn caller_requested_weak_bodies_anchor_after_the_deferred_caller() {
+        let mut first_requested = function("first_requested", false);
+        first_requested.weak_inline = true;
+        let mut second_requested = function("second_requested", false);
+        second_requested.weak_inline = true;
+        let mut functions = vec![
+            function("source_first", false),
+            function("caller", false),
+            first_requested,
+            second_requested,
+        ];
+        let edges = vec![
+            ("caller".to_string(), "first_requested".to_string()),
+            ("caller".to_string(), "second_requested".to_string()),
+        ];
+
+        apply_deferred_emission_order(
+            &mut functions,
+            3,
+            1,
+            DeferredFunctionEmissionStyle::ImmediateAsmThenReverseCompiled,
+            &edges,
+        );
+
+        assert_eq!(
+            functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            ["caller", "second_requested", "first_requested", "source_first"]
+        );
+    }
+
+    #[test]
     fn transparent_source_leaf_advances_first_anonymous_owner() {
         let mut owner = function("owner", false);
         owner.string_literals.push(b"owned".to_vec());
@@ -291,6 +379,7 @@ mod tests {
             3,
             1,
             DeferredFunctionEmissionStyle::ImmediateAsmThenReverseCompiled,
+            &[],
         );
 
         assert_eq!(functions[0].name, "owner");
@@ -314,6 +403,7 @@ mod tests {
             3,
             1,
             DeferredFunctionEmissionStyle::ImmediateAsmThenReverseCompiled,
+            &[],
         );
 
         assert_eq!(
@@ -343,6 +433,7 @@ mod tests {
             3,
             1,
             DeferredFunctionEmissionStyle::ImmediateAsmThenReverseCompiled,
+            &[],
         );
 
         assert_eq!(functions[0].name, "empty_after");
@@ -362,6 +453,7 @@ mod tests {
             3,
             1,
             DeferredFunctionEmissionStyle::ImmediateAsmThenReverseCompiled,
+            &[],
         );
 
         assert_eq!(functions[0].name, "later");

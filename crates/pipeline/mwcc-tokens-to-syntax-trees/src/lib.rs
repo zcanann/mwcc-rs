@@ -210,6 +210,7 @@ pub fn parse_located_translation_unit_with_behavior(
         implicitly_materialized: Vec::new(),
         materialized_inline_candidates: Vec::new(),
         weak_materialized: Vec::new(),
+        immediate_weak_materializations: Vec::new(),
         weak_functions: std::collections::HashSet::new(),
         static_functions: std::collections::HashSet::new(),
         c_linkage_functions: std::collections::HashSet::new(),
@@ -250,7 +251,9 @@ pub fn parse_located_translation_unit_with_behavior(
         cxx_inline_materializations: Vec::new(),
         cxx_inline_materialization_sources: std::collections::HashMap::new(),
         cxx_inline_materialization_requests: Vec::new(),
+        cxx_inline_destructor_requests: Vec::new(),
         cxx_static_methods: HashMap::new(),
+        cxx_class_deletes: HashMap::new(),
         cxx_constructors: HashMap::new(),
         cxx_free_functions: HashMap::new(),
         cxx_instance_methods: HashMap::new(),
@@ -4917,6 +4920,40 @@ blr\n\
                 }
             )] if matches!(arguments.as_slice(), [mwcc_syntax_trees::Expression::IntegerLiteral(1)])
         ));
+    }
+
+    #[test]
+    fn virtual_delete_materializes_an_inline_destructor_and_vtable() {
+        let source = r#"
+            class Item { public: virtual ~Item() {} };
+            void destroy(Item* item) { delete item; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            ["destroy__FP4Item", "__dt__4ItemFv"]
+        );
+        assert!(unit.functions[1].is_weak);
+        assert_eq!(
+            unit.immediate_weak_materializations,
+            [("destroy__FP4Item".to_string(), "__dt__4ItemFv".to_string())]
+        );
+        assert!(unit
+            .globals
+            .iter()
+            .find(|global| global.name == "__vt__4Item")
+            .is_some_and(|global| global.is_weak));
     }
 
     #[test]

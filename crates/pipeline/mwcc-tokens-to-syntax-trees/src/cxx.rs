@@ -3454,6 +3454,21 @@ impl Parser {
             // the method path below after consuming the source-only `&`.
             self.eat_keyword(Token::Ampersand);
             if self.eat_word("operator") {
+                if self.eat_word("delete") {
+                    let signature = self.parse_class_parameter_types()?;
+                    let scopes = qualified_name.split("::").collect::<Vec<_>>();
+                    let mangled = mangle_qualified_member_function_typed(
+                        &scopes,
+                        "__dl",
+                        &signature.cxx_parameters,
+                    )?;
+                    self.cxx_class_deletes.insert(
+                        qualified_name.clone(),
+                        (mangled, signature.parameters.len()),
+                    );
+                    self.skip_class_method_tail()?;
+                    continue;
+                }
                 self.skip_class_member()?;
                 continue;
             }
@@ -3786,7 +3801,7 @@ impl Parser {
     }
 
     /// Resolve `delete pointer` for a polymorphic class to the ABI's virtual
-    /// deleting-destructor entry. The caller supplies the implicit `-1` destroy
+    /// deleting-destructor entry. The caller supplies the implicit `1` destroy
     /// flag and null guard when building the normalized statement.
     pub(crate) fn resolve_virtual_deleting_destructor(
         &self,
@@ -3808,6 +3823,28 @@ impl Parser {
             return_type: Type::Void,
             variadic: false,
         })
+    }
+
+    /// A virtual delete ODR-uses an available inline deleting destructor even
+    /// though the call itself remains indirect. Queue that weak body beside the
+    /// caller; TU orchestration also materializes its weak vtable dependency.
+    pub(crate) fn request_inline_deleting_destructor(
+        &mut self,
+        class_name: &str,
+    ) -> Compilation<()> {
+        let Some(class) = self.cxx_classes.get(class_name) else {
+            return Ok(());
+        };
+        if class.has_virtual_destructor
+            && !self
+                .cxx_inline_destructor_requests
+                .iter()
+                .any(|requested| requested == class_name)
+        {
+            self.cxx_inline_destructor_requests
+                .push(class_name.to_string());
+        }
+        Ok(())
     }
 
     /// Resolve a placement-construction expression by source class and arity.

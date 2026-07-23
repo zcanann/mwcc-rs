@@ -164,6 +164,7 @@ impl Parser {
         }
         .ok_or_else(|| Diagnostic::error("the class type of a delete target is not known"))?;
         let dispatch = self.resolve_virtual_deleting_destructor(&class_name)?;
+        self.request_inline_deleting_destructor(&class_name)?;
         Ok(Statement::If {
             condition: Expression::Binary {
                 operator: mwcc_syntax_trees::BinaryOperator::NotEqual,

@@ -455,7 +455,8 @@ fn is_deleting_guard(statement: &Statement) -> bool {
     variable(left, "__destroy")
         && constant_value(right) == Some(0)
         && matches!(then_body.as_slice(), [Statement::Expression(Expression::Call { arguments, .. })]
-            if matches!(arguments.as_slice(), [Expression::Variable(name)] if name == "this"))
+            if matches!(arguments.as_slice(), [Expression::Variable(name)] if name == "this")
+                || matches!(arguments.as_slice(), [Expression::Variable(name), Expression::IntegerLiteral(_)] if name == "this"))
         && else_body.is_empty()
 }
 

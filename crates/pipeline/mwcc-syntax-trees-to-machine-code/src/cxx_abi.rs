@@ -784,9 +784,13 @@ pub(crate) fn lower_composed_destructor(
     else {
         return None;
     };
-    if !matches!(delete_arguments.as_slice(), [Expression::Variable(name)] if name == "this") {
-        return None;
-    }
+    let delete_size = match delete_arguments.as_slice() {
+        [Expression::Variable(name)] if name == "this" => None,
+        [Expression::Variable(name), Expression::IntegerLiteral(size)] if name == "this" => {
+            Some(i16::try_from(*size).ok()?)
+        }
+        _ => return None,
+    };
 
     if Behavior::resolve(&config).frame_convention == FrameConvention::Predecrement
         && base_calls.len() == 1
@@ -803,6 +807,7 @@ pub(crate) fn lower_composed_destructor(
                 base.vtable.clone(),
                 base.vptr_offset,
                 delete_callee.clone(),
+                delete_size,
                 config,
             );
         }
@@ -984,6 +989,7 @@ fn lower_inlined_trivial_base_destructor(
     base_vtable: String,
     base_offset: u32,
     delete_callee: String,
+    delete_size: Option<i16>,
     config: CompilerConfig,
 ) -> Option<MachineFunction> {
     let own_offset = i16::try_from(own_offset).ok()?;
@@ -995,7 +1001,7 @@ fn lower_inlined_trivial_base_destructor(
         Instruction::StoreWord { s: 0, a: 1, offset: 20 },
         Instruction::StoreWord { s: 31, a: 1, offset: 12 },
         Instruction::OrRecord { a: 31, s: 3, b: 3 },
-        Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 17 },
+        Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 0 },
         Instruction::load_immediate_shifted(3, 0),
         Instruction::AddImmediate { d: 0, a: 3, immediate: 0 },
         Instruction::StoreWord { s: 0, a: 31, offset: own_offset },
@@ -1004,8 +1010,16 @@ fn lower_inlined_trivial_base_destructor(
         Instruction::AddImmediate { d: 0, a: 3, immediate: 0 },
         Instruction::StoreWord { s: 0, a: 31, offset: base_offset },
         Instruction::ExtendSignHalfwordRecord { a: 0, s: 4 },
-        Instruction::BranchConditionalForward { options: 4, condition_bit: 1, target: 17 },
-        Instruction::Or { a: 3, s: 31, b: 31 },
+        Instruction::BranchConditionalForward { options: 4, condition_bit: 1, target: 0 },
+    ];
+    output
+        .instructions
+        .push(Instruction::Or { a: 3, s: 31, b: 31 });
+    if let Some(size) = delete_size {
+        output.instructions.push(Instruction::AddImmediate { d: 4, a: 0, immediate: size });
+    }
+    let delete_call = output.instructions.len();
+    output.instructions.extend([
         Instruction::BranchAndLink { target: delete_callee.clone() },
         Instruction::LoadWord { d: 0, a: 1, offset: 20 },
         Instruction::Or { a: 3, s: 31, b: 31 },
@@ -1013,7 +1027,15 @@ fn lower_inlined_trivial_base_destructor(
         Instruction::MoveToLinkRegister { s: 0 },
         Instruction::AddImmediate { d: 1, a: 1, immediate: 16 },
         Instruction::BranchToLinkRegister,
-    ];
+    ]);
+    let epilogue = delete_call + 1;
+    for branch in [5usize, 14] {
+        if let Instruction::BranchConditionalForward { target, .. } =
+            &mut output.instructions[branch]
+        {
+            *target = epilogue;
+        }
+    }
     output.relocations = vec![
         Relocation {
             instruction_index: 6,
@@ -1036,7 +1058,7 @@ fn lower_inlined_trivial_base_destructor(
             target: RelocationTarget::External(base_vtable.clone()),
         },
         Relocation {
-            instruction_index: 16,
+            instruction_index: delete_call,
             kind: RelocationKind::Rel24,
             target: RelocationTarget::External(delete_callee.clone()),
         },
@@ -1222,7 +1244,7 @@ pub(crate) fn lower_virtual_destructor(
     // lowering. Do not infer this from the vtable's callable relocations: a
     // pure virtual destructor has an out-of-line body but deliberately leaves
     // its callable slot zero.
-    let (vptr_offset, deleting_callee, vtable_name) = function
+    let (vptr_offset, deleting_callee, vtable_name, delete_size) = function
         .statements
         .first()
         .and_then(|statement| {
@@ -1254,13 +1276,18 @@ pub(crate) fn lower_virtual_destructor(
             else {
                 return None;
             };
-            if !matches!(arguments.as_slice(), [mwcc_syntax_trees::Expression::Variable(name)] if name == "this") {
-                return None;
-            }
+            let delete_size = match arguments.as_slice() {
+                [mwcc_syntax_trees::Expression::Variable(name)] if name == "this" => None,
+                [mwcc_syntax_trees::Expression::Variable(name), mwcc_syntax_trees::Expression::IntegerLiteral(size)] if name == "this" => {
+                    Some(i16::try_from(*size).ok()?)
+                }
+                _ => return None,
+            };
             Some((
                 i16::try_from(*offset).ok()?,
                 name.clone(),
                 vtable_name.clone(),
+                delete_size,
             ))
         })?;
     let vtable = globals.iter().find(|global| global.name == vtable_name)?;
@@ -1482,12 +1509,30 @@ pub(crate) fn lower_virtual_destructor(
             Instruction::BranchToLinkRegister,
         ]
     };
-    let (vtable_hi, vtable_lo, delete_call) =
+    let (vtable_hi, vtable_lo, base_delete_call) =
         if behavior.frame_convention == FrameConvention::Predecrement {
             (6, 8, 11)
         } else {
             (6, 7, 12)
         };
+    if let Some(size) = delete_size {
+        output.instructions.insert(
+            base_delete_call,
+            Instruction::AddImmediate {
+                d: 4,
+                a: 0,
+                immediate: size,
+            },
+        );
+        for instruction in &mut output.instructions {
+            if let Instruction::BranchConditionalForward { target, .. } = instruction {
+                if *target >= base_delete_call {
+                    *target += 1;
+                }
+            }
+        }
+    }
+    let delete_call = base_delete_call + usize::from(delete_size.is_some());
     output.relocations = vec![
         Relocation {
             instruction_index: vtable_hi,

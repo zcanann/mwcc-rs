@@ -22,16 +22,26 @@ pub fn materialize(unit: &mut TranslationUnit) {
         .iter()
         .map(String::as_str)
         .collect();
+    let immediate_materialized: HashSet<&str> = unit
+        .immediate_weak_materializations
+        .iter()
+        .map(|(_, body)| body.as_str())
+        .collect();
     let late_function_count = unit
         .functions
         .iter()
-        .filter(|function| weak_materialized.contains(function.name.as_str()))
+        .filter(|function| {
+            weak_materialized.contains(function.name.as_str())
+                && !immediate_materialized.contains(function.name.as_str())
+        })
         .count();
     let late_non_static_count = unit
         .functions
         .iter()
         .filter(|function| {
-            !function.is_static && weak_materialized.contains(function.name.as_str())
+            !function.is_static
+                && weak_materialized.contains(function.name.as_str())
+                && !immediate_materialized.contains(function.name.as_str())
         })
         .count();
     let classes: HashMap<&str, &CxxAbiClass> = unit

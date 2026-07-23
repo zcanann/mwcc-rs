@@ -261,10 +261,18 @@ pub(crate) struct Parser {
     /// being parsed. MWCC emits their weak fallback bodies immediately after
     /// that first caller, rather than at the declaration's header position.
     pub(crate) cxx_inline_materialization_requests: Vec<String>,
+    /// Static classes whose inline deleting destructors are ODR-used by a
+    /// virtual `delete`. These are ordered separately from ordinary inline
+    /// virtual calls because MWCC emits the destructor set in reverse class
+    /// declaration order after the caller.
+    pub(crate) cxx_inline_destructor_requests: Vec<String>,
     /// Static class-member overloads recovered from aggregate declarations,
     /// keyed by fully-qualified `(class, member)` name. Calls carry no implicit
     /// `this`, but still require CodeWarrior member-function mangling.
     pub(crate) cxx_static_methods: HashMap<(String, String), Vec<crate::cxx::RecoveredCxxMethod>>,
+    /// Class-specific scalar deallocation functions, preserving whether the
+    /// explicit object-size argument belongs in deleting-destructor calls.
+    pub(crate) cxx_class_deletes: HashMap<String, (String, usize)>,
     /// Constructor overloads recovered independently of object layout. Large
     /// headers may contain unsupported unrelated methods while their constructor
     /// signatures and inline bodies remain fully usable.
@@ -514,6 +522,9 @@ pub(crate) struct Parser {
     pub(crate) materialized_inline_candidates: Vec<String>,
     /// PLAIN-inline materializations (WEAK globals with the 0x0d comment flag).
     pub(crate) weak_materialized: Vec<String>,
+    /// Caller/body edges for weak inline definitions requested while parsing a
+    /// concrete function body.
+    pub(crate) immediate_weak_materializations: Vec<(String, String)>,
     /// Names declared `__declspec(weak)` — their definitions emit WEAK symbols.
     pub(crate) weak_functions: std::collections::HashSet<String>,
     /// Names given internal linkage by an earlier `static` function declaration.

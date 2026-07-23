@@ -394,6 +394,7 @@ impl InlineBodySet {
                             .iter()
                             .map(|statement| substitute_statement(statement, &replacements)),
                     );
+                    substituted = fold_constant_inline_branches(substituted);
                     // A return exits the callee instance, not its caller.  Give
                     // every expansion a private forward boundary so nested
                     // control flow preserves that distinction through the
@@ -600,6 +601,63 @@ impl InlineBodySet {
             | Expression::CompoundLiteral { .. } => false,
         }
     }
+}
+
+/// Parameter substitution can turn a callee guard into a compile-time branch
+/// (`base::~base(this, 0)` makes its deleting guard `0 > 0`). Eliminate that
+/// dead path before structured lowering sees an expression with no register.
+fn fold_constant_inline_branches(statements: Vec<Statement>) -> Vec<Statement> {
+    let mut output = Vec::new();
+    for statement in statements {
+        match statement {
+            Statement::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                if let Some(value) = constant_inline_condition(&condition) {
+                    let selected = if value { then_body } else { else_body };
+                    output.extend(fold_constant_inline_branches(selected));
+                } else {
+                    output.push(Statement::If {
+                        condition,
+                        then_body: fold_constant_inline_branches(then_body),
+                        else_body: fold_constant_inline_branches(else_body),
+                    });
+                }
+            }
+            statement => output.push(statement),
+        }
+    }
+    output
+}
+
+fn constant_inline_condition(condition: &Expression) -> Option<bool> {
+    if let Some(value) = crate::analysis::constant_value(condition) {
+        return Some(value != 0);
+    }
+    let Expression::Binary {
+        operator,
+        left,
+        right,
+    } = condition
+    else {
+        return None;
+    };
+    let left = crate::analysis::constant_value(left)?;
+    let right = crate::analysis::constant_value(right)?;
+    use mwcc_syntax_trees::BinaryOperator;
+    Some(match operator {
+        BinaryOperator::Equal => left == right,
+        BinaryOperator::NotEqual => left != right,
+        BinaryOperator::Less => left < right,
+        BinaryOperator::LessEqual => left <= right,
+        BinaryOperator::Greater => left > right,
+        BinaryOperator::GreaterEqual => left >= right,
+        BinaryOperator::LogicalAnd => left != 0 && right != 0,
+        BinaryOperator::LogicalOr => left != 0 || right != 0,
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -928,9 +986,8 @@ mod tests {
         assert_eq!(expanded.statements.len(), 2);
         assert!(matches!(
             &expanded.statements[0],
-            Statement::If {
-                condition: Expression::Binary { left, .. }, ..
-            } if matches!(left.as_ref(), Expression::IntegerLiteral(1))
+            Statement::Expression(Expression::Call { name, arguments })
+                if name == "overflow" && arguments.is_empty()
         ));
         assert!(matches!(
             &expanded.statements[1],
