@@ -1010,6 +1010,14 @@ impl Generator {
             operand,
         } = condition
         {
+            // Negating a comparison only reverses the branch sense; the compare
+            // itself (including floating arithmetic and NaN-aware <=/>= setup)
+            // remains owned by its ordinary condition path.
+            if matches!(operand.as_ref(), Expression::Binary { operator, .. } if is_comparison(*operator))
+            {
+                let (options, condition_bit) = self.emit_condition_test(operand)?;
+                return Ok((options ^ 8, condition_bit));
+            }
             // Floating truthiness is an IEEE equality test against +0.0, not an
             // integer register test. Reuse the ordinary float-comparison path so
             // `if (!f)` emits `fcmpu f,0; bne` (and memory operands retain their
@@ -1193,8 +1201,10 @@ impl Generator {
             }
             if is_comparison(*operator) {
                 // A floating-point comparison branches off `fcmpo`/`fcmpu`, not `cmpw`.
-                // Either side being a float value (leaf, global, or member) selects it.
-                if self.is_float_operand(left) || self.is_float_operand(right) {
+                // Either side yielding a float (leaf, load, or arithmetic
+                // subtree) selects it. Restricting this to direct operands sent
+                // `(member * parameter) < 0` through integer register placement.
+                if self.is_float_value(left) || self.is_float_value(right) {
                     return self.emit_float_condition(*operator, left, right);
                 }
                 // Integer immediates are encoded on the right by `cmpwi`/`cmplwi`.
