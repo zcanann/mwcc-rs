@@ -2029,14 +2029,11 @@ fn compile(
                     // A prior ordinary prototype suppresses the otherwise
                     // retained section-only UND symbol (measured: CARDNet's
                     // plain `__start` declaration followed by an `.init`
-                    // redeclaration). A lone section prototype remains
-                    // materialized on the generations that own this policy.
-                    && unit
-                        .prototypes
-                        .iter()
-                        .filter(|(prototype, _, _)| prototype == *name)
-                        .count()
-                        <= 1
+                    // redeclaration). Repeated section declarations alone do
+                    // not suppress it (OSSync in Strikers and TP).
+                    && !unit
+                        .section_prototypes_with_prior_plain_declaration
+                        .contains(*name)
             })
             .cloned()
             .collect()

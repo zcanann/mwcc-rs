@@ -216,6 +216,9 @@ pub fn parse_located_translation_unit_with_behavior(
         c_linkage_functions: std::collections::HashSet::new(),
         section_functions: std::collections::HashMap::new(),
         section_prototype_order: Vec::new(),
+        plain_function_prototypes: std::collections::HashSet::new(),
+        section_prototypes_with_prior_plain_declaration:
+            std::collections::HashSet::new(),
         skipped_inline_names: std::collections::HashSet::new(),
         skipped_inline_definitions: Vec::new(),
         skipped_inline_signatures: Vec::new(),
@@ -1014,6 +1017,31 @@ mod tests {
         assert_eq!(unit.section_prototypes, ["early", "later"]);
         assert_eq!(unit.prototypes.len(), 0);
         assert_eq!(unit.functions.len(), 1);
+    }
+
+    #[test]
+    fn distinguishes_plain_and_repeated_section_prototypes() {
+        let source = r#"
+            void suppressed(void);
+            __declspec(section ".init") void suppressed(void);
+            __declspec(section ".init") void repeated(void);
+            __declspec(section ".init") extern void repeated(void);
+            __declspec(section ".init") void lone(void);
+            void body(void) {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.section_prototypes, ["suppressed", "repeated", "lone"]);
+        assert_eq!(
+            unit.section_prototypes_with_prior_plain_declaration,
+            ["suppressed".to_string()].into_iter().collect()
+        );
     }
 
     #[test]

@@ -392,6 +392,11 @@ pub struct TranslationUnit {
     /// Function prototypes carrying `__declspec(section "…")`, in first
     /// declaration order. Early compilers retain unused ones in the symbol table.
     pub section_prototypes: Vec<String>,
+    /// Section-attributed prototypes which followed an ordinary prototype of
+    /// the same function. Some early compilers suppress the otherwise-retained
+    /// undefined symbol for this redeclaration shape.
+    pub section_prototypes_with_prior_plain_declaration:
+        std::collections::HashSet<String>,
     /// The skipped inline functions' NAMES: a body that calls one must defer
     /// at codegen (mwcc inlines the body; a `bl` to the undefined local would
     /// be wrong bytes) — checked AFTER the exact-match templates get a claim.

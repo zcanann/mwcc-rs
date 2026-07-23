@@ -1183,6 +1183,9 @@ impl Parser {
                 &mut self.immediate_weak_materializations,
             ),
             section_prototypes: std::mem::take(&mut self.section_prototype_order),
+            section_prototypes_with_prior_plain_declaration: std::mem::take(
+                &mut self.section_prototypes_with_prior_plain_declaration,
+            ),
             skipped_inline_names: std::mem::take(&mut self.skipped_inline_names),
             skipped_inline_definitions: std::mem::take(
                 &mut self.skipped_inline_definitions,
@@ -1838,6 +1841,10 @@ impl Parser {
                         .or_else(|| self.section_functions.get(&function.name).cloned());
                     functions.push(function);
                 } else if let Some(section) = &declspec_section {
+                    if self.plain_function_prototypes.contains(&name) {
+                        self.section_prototypes_with_prior_plain_declaration
+                            .insert(name.clone());
+                    }
                     if self
                         .section_functions
                         .insert(name.clone(), section.clone())
@@ -1845,6 +1852,8 @@ impl Parser {
                     {
                         self.section_prototype_order.push(name);
                     }
+                } else {
+                    self.plain_function_prototypes.insert(name);
                 }
                 return Ok(());
             }
@@ -1869,6 +1878,10 @@ impl Parser {
                         .or_else(|| self.section_functions.get(&function.name).cloned());
                     functions.push(function);
                 } else if let Some(section) = &declspec_section {
+                    if self.plain_function_prototypes.contains(&name) {
+                        self.section_prototypes_with_prior_plain_declaration
+                            .insert(name.clone());
+                    }
                     if self
                         .section_functions
                         .insert(name.clone(), section.clone())
@@ -1876,6 +1889,8 @@ impl Parser {
                     {
                         self.section_prototype_order.push(name);
                     }
+                } else {
+                    self.plain_function_prototypes.insert(name);
                 }
                 return Ok(());
             }
@@ -3175,6 +3190,10 @@ impl Parser {
                     self.static_functions.insert(name.clone());
                 }
                 if let Some(section) = &declspec_section {
+                    if self.plain_function_prototypes.contains(&name) {
+                        self.section_prototypes_with_prior_plain_declaration
+                            .insert(name.clone());
+                    }
                     if self
                         .section_functions
                         .insert(name.clone(), section.clone())
@@ -3182,6 +3201,8 @@ impl Parser {
                     {
                         self.section_prototype_order.push(name.clone());
                     }
+                } else {
+                    self.plain_function_prototypes.insert(name.clone());
                 }
                 if is_variadic {
                     self.variadic_definitions.insert(name.clone());

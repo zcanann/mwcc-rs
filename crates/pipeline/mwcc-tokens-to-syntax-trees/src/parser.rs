@@ -550,6 +550,12 @@ pub(crate) struct Parser {
     /// Section-attributed function prototypes, in first-declaration order.
     /// Build 163 retains otherwise-unused declarations as GLOBAL UND symbols.
     pub(crate) section_prototype_order: Vec<String>,
+    /// Plain function prototypes observed so far. This preserves declaration
+    /// ordering when a later section-attributed redeclaration is parsed.
+    pub(crate) plain_function_prototypes: std::collections::HashSet<String>,
+    /// Section prototypes preceded by a plain declaration of the same name.
+    pub(crate) section_prototypes_with_prior_plain_declaration:
+        std::collections::HashSet<String>,
     /// Names of SKIPPED inline definitions — a call to one defers the unit.
     pub(crate) skipped_inline_names: std::collections::HashSet<String>,
     /// Fully parsed bodies of skipped inline definitions. These are never
