@@ -6,6 +6,7 @@
 
 mod asm;
 mod aggregate_assignments;
+mod bit_fields;
 mod cxx_vtables;
 mod cxx_destructors;
 mod initializers;

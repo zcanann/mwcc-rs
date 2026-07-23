@@ -4934,6 +4934,104 @@ blr\n\
     }
 
     #[test]
+    fn coalesces_partial_mixed_type_bit_field_units() {
+        let source = r#"
+            struct NarrowWide {
+                unsigned char narrow : 7;
+                unsigned short wide : 3;
+                unsigned char after;
+            };
+            struct WideNarrow {
+                unsigned short wide : 7;
+                unsigned char narrow : 3;
+                unsigned char after;
+            };
+            struct ExpandedWord {
+                unsigned char narrow : 7;
+                unsigned int word : 3;
+                unsigned char after;
+            };
+            struct NarrowOverflow {
+                unsigned char narrow : 7;
+                unsigned short wide : 10;
+                unsigned char after;
+            };
+            struct WideOverflow {
+                unsigned short wide : 10;
+                unsigned char narrow : 7;
+                unsigned char after;
+            };
+            unsigned char read_narrow_wide(struct NarrowWide* value) { return value->after; }
+            unsigned char read_wide_narrow(struct WideNarrow* value) { return value->after; }
+            unsigned char read_expanded_word(struct ExpandedWord* value) { return value->after; }
+            unsigned char read_narrow_overflow(struct NarrowOverflow* value) { return value->after; }
+            unsigned char read_wide_overflow(struct WideOverflow* value) { return value->after; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let offset = |name: &str| match unit
+            .functions
+            .iter()
+            .find(|function| function.name == name)
+            .and_then(|function| function.return_expression.as_ref())
+        {
+            Some(mwcc_syntax_trees::Expression::Member { offset, .. }) => *offset,
+            expression => panic!("{name} did not return a member: {expression:?}"),
+        };
+        assert_eq!(offset("read_narrow_wide"), 2);
+        assert_eq!(offset("read_wide_narrow"), 2);
+        assert_eq!(offset("read_expanded_word"), 2);
+        assert_eq!(offset("read_narrow_overflow"), 4);
+        assert_eq!(offset("read_wide_overflow"), 3);
+    }
+
+    #[test]
+    fn mixed_bit_field_layout_does_not_inflate_an_anonymous_union() {
+        let source = r#"
+            struct Layout {
+                union {
+                    struct {
+                        unsigned char b0 : 1;
+                        unsigned char b1 : 1;
+                        unsigned char b2 : 1;
+                        unsigned char b3 : 1;
+                        unsigned char b4 : 1;
+                        unsigned char b5 : 1;
+                        unsigned char b6 : 1;
+                        unsigned char b7 : 1;
+                        struct {
+                            unsigned char low : 7;
+                            unsigned short high : 3;
+                        } mixed;
+                    };
+                    unsigned int word;
+                };
+                int after;
+            };
+            int read_after(struct Layout* value) { return value->after; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.aggregate_definitions["Layout"].byte_size, 8);
+        assert!(matches!(
+            unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 4, .. })
+        ));
+    }
+
+    #[test]
     fn defers_unlowered_kr_function_definitions_instead_of_dropping_text() {
         let source = r#"
             int add(left, right)

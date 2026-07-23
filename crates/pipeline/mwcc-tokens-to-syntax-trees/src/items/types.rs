@@ -3,6 +3,7 @@
 //! the struct/union field-layout builders. Part of the `items` module.
 
 use super::*;
+use super::bit_fields::{close_bit_field_unit, place_bit_field, BitFieldUnit};
 use crate::parser::{Parser, StructField, StructLayout};
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_syntax_trees::{
@@ -11,14 +12,14 @@ use mwcc_syntax_trees::{
 };
 use mwcc_tokens::Token;
 
-fn align_layout_offset(offset: u32, alignment: u32) -> Compilation<u32> {
+pub(super) fn align_layout_offset(offset: u32, alignment: u32) -> Compilation<u32> {
     offset
         .div_ceil(alignment)
         .checked_mul(alignment)
         .ok_or_else(|| Diagnostic::error("aggregate layout exceeds the 32-bit address space"))
 }
 
-fn advance_layout_offset(offset: u32, size: u32) -> Compilation<u32> {
+pub(super) fn advance_layout_offset(offset: u32, size: u32) -> Compilation<u32> {
     offset
         .checked_add(size)
         .ok_or_else(|| Diagnostic::error("aggregate layout exceeds the 32-bit address space"))
@@ -73,38 +74,6 @@ fn scalar_pointee(declared: Type) -> Option<Pointee> {
 
 fn merged_attribute_alignment(before: Option<u16>, after: Option<u16>) -> u32 {
     u32::from(before.unwrap_or(1).max(after.unwrap_or(1)))
-}
-
-fn place_bit_field(
-    bit_unit: &mut Option<(Type, u32, u8)>,
-    offset: &mut u32,
-    alignment_max: &mut u32,
-    field_type: Type,
-    width: u8,
-    requested_alignment: u32,
-) -> Compilation<(u32, u8)> {
-    let unit_bits = (type_size(field_type) * 8) as u8;
-    if width == 0 || width > unit_bits {
-        return Err(Diagnostic::error(
-            "an unsupported bit-field width (roadmap)",
-        ));
-    }
-    if let Some((unit_type, unit_offset, bits_used)) = *bit_unit {
-        if unit_type == field_type && bits_used + width <= unit_bits {
-            *bit_unit = Some((field_type, unit_offset, bits_used + width));
-            return Ok((unit_offset, bits_used));
-        }
-        // A new storage-unit type closes the previous unit at the bytes its
-        // bits actually occupied. MWCC does not pad a partially used `u16`
-        // unit to two bytes before a following `u8` field.
-        *offset = unit_offset + u32::from(bits_used).div_ceil(8);
-    }
-    let alignment = type_alignment(field_type).max(1).max(requested_alignment);
-    let unit_offset = align_layout_offset(*offset, alignment)?;
-    *offset = advance_layout_offset(unit_offset, type_size(field_type))?;
-    *alignment_max = (*alignment_max).max(alignment);
-    *bit_unit = Some((field_type, unit_offset, width));
-    Ok((unit_offset, 0))
 }
 
 impl Parser {
@@ -890,9 +859,9 @@ impl Parser {
         let mut layout = StructLayout::default();
         let mut offset: u32 = 0;
         let mut alignment_max: u32 = 1;
-        // The open bit-field allocation unit (its type, byte offset, bits used so
-        // far); an ordinary member or a different-typed bit-field closes it.
-        let mut bit_unit: Option<(Type, u32, u8)> = None;
+        // The open bit-field allocation unit. Mixed declared types may widen and
+        // continue the same unit; the dedicated layout helper owns that policy.
+        let mut bit_unit: Option<BitFieldUnit> = None;
         while *self.peek() != Token::BraceClose {
             if self.cxx_struct_member_is_method() {
                 self.skip_class_member()?;
@@ -921,12 +890,7 @@ impl Parser {
                 && (self.tokens.get(self.position + 1) == Some(&Token::BraceOpen)
                     || self.tokens.get(self.position + 2) == Some(&Token::BraceOpen))
             {
-                if let Some((_, unit_offset, bits_used)) = bit_unit.take() {
-                    // mwcc TRIMS the container to the bytes its bits use
-                    // (measured: 4 bits -> next byte member at +1; 9-12 bits
-                    // -> +2; the container type still sets the alignment).
-                    offset = unit_offset + u32::from(bits_used).div_ceil(8);
-                }
+                close_bit_field_unit(&mut bit_unit, &mut offset);
                 self.parse_and_place_inline_struct(
                     &mut layout,
                     &mut offset,
@@ -943,12 +907,7 @@ impl Parser {
                 && (self.tokens.get(self.position + 1) == Some(&Token::BraceOpen)
                     || self.tokens.get(self.position + 2) == Some(&Token::BraceOpen))
             {
-                if let Some((_, unit_offset, bits_used)) = bit_unit.take() {
-                    // mwcc TRIMS the container to the bytes its bits use
-                    // (measured: 4 bits -> next byte member at +1; 9-12 bits
-                    // -> +2; the container type still sets the alignment).
-                    offset = unit_offset + u32::from(bits_used).div_ceil(8);
-                }
+                close_bit_field_unit(&mut bit_unit, &mut offset);
                 self.parse_and_place_inline_union(
                     &mut layout,
                     &mut offset,
@@ -1010,12 +969,7 @@ impl Parser {
                     let alignment = type_alignment(element)
                         .max(1)
                         .max(merged_attribute_alignment(attr_align, trailing_attr_align));
-                    if let Some((_, unit_offset, bits_used)) = bit_unit.take() {
-                        // mwcc TRIMS the container to the bytes its bits use
-                        // (measured: 4 bits -> next byte member at +1; 9-12 bits
-                        // -> +2; the container type still sets the alignment).
-                        offset = unit_offset + u32::from(bits_used).div_ceil(8);
-                    }
+                    close_bit_field_unit(&mut bit_unit, &mut offset);
                     alignment_max = alignment_max.max(alignment);
                     offset = align_layout_offset(offset, alignment)?;
                     layout.insert_field(
@@ -1108,12 +1062,7 @@ impl Parser {
                             "a parenthesized pointer member must declare a function or array",
                         ));
                     };
-                    if let Some((_, unit_offset, bits_used)) = bit_unit.take() {
-                        // mwcc TRIMS the container to the bytes its bits use
-                        // (measured: 4 bits -> next byte member at +1; 9-12 bits
-                        // -> +2; the container type still sets the alignment).
-                        offset = unit_offset + u32::from(bits_used).div_ceil(8);
-                    }
+                    close_bit_field_unit(&mut bit_unit, &mut offset);
                     let alignment = 4u32;
                     alignment_max = alignment_max.max(alignment);
                     offset = align_layout_offset(offset, alignment)?;
@@ -1202,12 +1151,7 @@ impl Parser {
                     continue;
                 }
                 // An ordinary member closes any open bit-field unit.
-                if let Some((_, unit_offset, bits_used)) = bit_unit.take() {
-                    // mwcc TRIMS the container to the bytes its bits use
-                    // (measured: 4 bits -> next byte member at +1; 9-12 bits
-                    // -> +2; the container type still sets the alignment).
-                    offset = unit_offset + u32::from(bits_used).div_ceil(8);
-                }
+                close_bit_field_unit(&mut bit_unit, &mut offset);
                 // An array member `type name[N]` occupies `N` elements; its access
                 // yields the array address rather than a loaded value.
                 let mut array_element = None;
