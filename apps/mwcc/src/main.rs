@@ -1398,7 +1398,7 @@ fn compile(
             // directly into the read-only section.
             if let Some(bytes) = &global.data_bytes {
                 defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal {
-                    section: None,
+                    section: global.section.clone(),
                     anonymous_adjust: 0,
                     static_local_owner: None,
                     is_weak: global.is_weak,
@@ -1433,7 +1433,7 @@ fn compile(
             })?;
             let initial_bytes = serialize(values, element_size, size);
             defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal {
-                section: None,
+                section: global.section.clone(),
                 anonymous_adjust: 0,
                 static_local_owner: None,
                 is_weak: global.is_weak,
@@ -1500,7 +1500,7 @@ fn compile(
             None => (None, false),
         };
         defined_globals.push(mwcc_machine_code_to_object::DefinedGlobal {
-            section: None,
+            section: global.section.clone(),
             anonymous_adjust: 0,
             static_local_owner: None,
             is_weak: global.is_weak,

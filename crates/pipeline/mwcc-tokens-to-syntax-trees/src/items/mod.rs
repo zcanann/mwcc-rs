@@ -2369,7 +2369,8 @@ impl Parser {
             // following token the real `;`/`[`/`=`, so the global-variable branch below is
             // entered (otherwise the stray `__attribute__` falls to the function path and
             // the declaration is skipped — a missing-symbol DIFF). `None` when absent.
-            let attribute_alignment_name = self.skip_attributes()?;
+            let (attribute_alignment_name, attribute_section_name) =
+                self.skip_attributes_with_section()?;
             if let Some(scope) = &member_scope {
                 if *self.peek() != Token::ParenOpen {
                     name = self.mangle_data_member_in_current_namespace(scope, &name)?;
@@ -2522,12 +2523,15 @@ impl Parser {
                     // A `__attribute__((aligned(n)))` AFTER the dimensions (`u8 buf[32]
                     // ATTRIBUTE_ALIGN(32);` — the common dolphin DMA-buffer form). Combine
                     // with any post-name attribute; the larger requested alignment wins.
-                    let attribute_alignment_dims = self.skip_attributes()?;
+                    let (attribute_alignment_dims, attribute_section_dims) =
+                        self.skip_attributes_with_section()?;
                     let attribute_alignment =
                         match (attribute_alignment_name, attribute_alignment_dims) {
                             (Some(a), Some(b)) => Some(a.max(b)),
                             (a, b) => a.or(b),
                         };
+                    let attribute_section = attribute_section_dims
+                        .or_else(|| attribute_section_name.clone());
                     // A pointer global initialized with addresses (`int *p = &g;` or
                     // a `{&a, &b}` array) is a set of data relocations, not constants.
                     // An array of word-field structs with a pointer field (a
@@ -2741,7 +2745,7 @@ impl Parser {
                         address_initializer,
                         data_bytes,
                         data_relocations: std::mem::take(&mut data_relocations),
-                        section: declspec_section.clone(),
+                        section: attribute_section.or_else(|| declspec_section.clone()),
                         attribute_alignment,
                     });
                     if *self.peek() == Token::Comma {

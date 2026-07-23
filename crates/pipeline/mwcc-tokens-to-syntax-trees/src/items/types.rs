@@ -744,17 +744,19 @@ impl Parser {
     /// Parse a struct body `{ field; … }` (the cursor is at the `{`), returning its
     /// layout. Does not consume any trailing `;` — the caller (a definition or a
     /// typedef) does.
-    /// Skip any `__attribute__((...))` specifiers at the cursor — GCC/CodeWarrior
-    /// attributes that survive preprocessing (e.g. `ATTRIBUTE_ALIGN(n)` expands to
-    /// `__attribute__((aligned(n)))`). Returns the largest `aligned(n)` requested,
-    /// if any, so the declarator that follows is laid out with that alignment.
-    pub(crate) fn skip_attributes(&mut self) -> Compilation<Option<u16>> {
+    /// Consume GCC/CodeWarrior attributes and retain the two declarator facts the
+    /// compiler needs: requested alignment and explicit output section.
+    pub(crate) fn skip_attributes_with_section(
+        &mut self,
+    ) -> Compilation<(Option<u16>, Option<String>)> {
         let mut align: Option<u16> = None;
+        let mut section: Option<String> = None;
         while matches!(self.peek(), Token::Identifier(name) if name == "__attribute__") {
             self.advance();
             self.expect(Token::ParenOpen)?;
             self.expect(Token::ParenOpen)?;
             let mut depth = 2;
+            let mut saw_section = false;
             while depth > 0 {
                 match self.advance() {
                     Token::ParenOpen => depth += 1,
@@ -767,6 +769,11 @@ impl Parser {
                             align = Some(align.unwrap_or(1).max(requested));
                         }
                     }
+                    Token::Identifier(name) if name == "section" => saw_section = true,
+                    Token::StringLiteral(bytes) if saw_section => {
+                        section = Some(String::from_utf8_lossy(&bytes).into_owned());
+                        saw_section = false;
+                    }
                     Token::EndOfFile => {
                         return Err(Diagnostic::error("unterminated __attribute__"))
                     }
@@ -774,7 +781,12 @@ impl Parser {
                 }
             }
         }
-        Ok(align)
+        Ok((align, section))
+    }
+
+    /// Skip attributes where only alignment affects the current declaration.
+    pub(crate) fn skip_attributes(&mut self) -> Compilation<Option<u16>> {
+        self.skip_attributes_with_section().map(|(align, _)| align)
     }
 
     /// Decide whether the declaration at the struct-body cursor is a C++ member

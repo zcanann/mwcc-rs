@@ -159,6 +159,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             return match section {
                 ".ctors" => ".ctors",
                 ".dtors" => ".dtors",
+                ".sdata" => ".sdata",
+                ".sbss" => ".sbss",
+                ".sdata2" => ".sdata2",
+                ".rodata" => ".rodata",
+                ".bss" => ".bss",
                 _ => ".data",
             };
         }

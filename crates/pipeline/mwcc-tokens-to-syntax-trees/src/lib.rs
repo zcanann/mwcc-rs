@@ -4230,6 +4230,24 @@ blr\n\
     }
 
     #[test]
+    fn retains_gnu_section_attribute_on_global() {
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(
+                "unsigned char value __attribute__((section(\".sdata2\"))) = 1;",
+            )
+            .unwrap(),
+            true,
+            true,
+            2,
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(unit.globals[0].section.as_deref(), Some(".sdata2"));
+        assert_eq!(unit.globals[0].initializer, Some(vec![1]));
+    }
+
+    #[test]
     fn retains_named_cxx_enum_parameter_identity() {
         let source = r#"
             enum Material { Solid, Water };
