@@ -173,8 +173,19 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--timeout",
         type=int,
+        help="set both work and audit timeouts (compatibility override)",
+    )
+    parser.add_argument(
+        "--work-timeout",
+        type=int,
+        default=60,
+        help="maximum seconds per work-queue configuration (default: 60)",
+    )
+    parser.add_argument(
+        "--audit-timeout",
+        type=int,
         default=300,
-        help="maximum seconds per reference configuration (default: 300)",
+        help="maximum seconds per representative-audit configuration (default: 300)",
     )
     parser.add_argument("--reference-root", type=Path)
     parser.add_argument("--state-dir", type=Path, default=Path("target/reference-parity/frontier"))
@@ -233,8 +244,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.jobs < 1:
         print("--jobs must be positive", file=sys.stderr)
         return 2
-    if args.timeout < 1:
-        print("--timeout must be positive", file=sys.stderr)
+    work_timeout = args.timeout if args.timeout is not None else args.work_timeout
+    audit_timeout = args.timeout if args.timeout is not None else args.audit_timeout
+    if work_timeout < 1 or audit_timeout < 1:
+        print("timeouts must be positive", file=sys.stderr)
         return 2
     run_audit = args.audit_only or args.with_audit
     run_frontier = not args.audit_only
@@ -371,7 +384,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "--jobs",
             str(args.jobs),
             "--timeout",
-            str(args.timeout),
+            str(audit_timeout),
             "--configured-only",
             *filters,
         ]
@@ -396,7 +409,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "--jobs",
             str(args.jobs),
             "--timeout",
-            str(args.timeout),
+            str(work_timeout),
             *filters,
         ]
         if args.rerun:
