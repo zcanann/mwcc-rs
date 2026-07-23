@@ -1298,6 +1298,17 @@ impl Generator {
                 self.load_float_literal(FLOAT_SCRATCH, *literal, pointee == Pointee::Double);
                 return Ok(FLOAT_SCRATCH);
             }
+            // C folds an integer constant converted for a floating store at
+            // compile time. Materialize the converted value at the target's
+            // width instead of routing the literal through integer evaluation.
+            if let Expression::IntegerLiteral(literal) = value {
+                self.load_float_literal(
+                    FLOAT_SCRATCH,
+                    *literal as f64,
+                    pointee == Pointee::Double,
+                );
+                return Ok(FLOAT_SCRATCH);
+            }
             if let Expression::Variable(name) = value {
                 // A float parameter/local lives in a register; a float global is not in
                 // `locations`, so it falls through to the general float evaluator, which

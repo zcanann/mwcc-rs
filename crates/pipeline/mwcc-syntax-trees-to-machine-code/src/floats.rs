@@ -133,6 +133,16 @@ impl Generator {
                 if self.try_emit_mixed_promotion(*operator, left, right, destination, double)? {
                     return Ok(());
                 }
+                if *operator == BinaryOperator::Multiply
+                    && self.try_emit_negated_located_product(
+                        left,
+                        right,
+                        destination,
+                        double,
+                    )?
+                {
+                    return Ok(());
+                }
                 // A commutative float op (`+`/`*`) with a NEGATE operand diverges: `-a + b` keeps the
                 // fneg but swaps the fadds operand order (mwcc puts the fneg result FIRST), and
                 // `-(a*b) + c` contracts to a single `fnmsubs` we emit un-fused (fmuls; fneg; fadds).
