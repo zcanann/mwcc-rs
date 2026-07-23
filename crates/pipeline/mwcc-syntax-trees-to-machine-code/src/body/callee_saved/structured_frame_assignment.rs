@@ -335,7 +335,15 @@ pub(super) fn is_transient_direct_call_argument_local(
             expression, candidate,
         ));
     }
-    assigned && total != 0 && total == direct
+    assigned
+        && total != 0
+        && total == direct
+        // A direct call argument is transient only when it reaches its consumer
+        // without crossing another call. Otherwise its assigned value needs a
+        // callee-saved home just like any other survivor (notably an FPR local
+        // loaded before later calls prepare the rest of the argument list).
+        && !super::structured_liveness::read_after_possible_call(statements, candidate, false)
+            .read_after_call
 }
 
 fn is_shifted_member_high_mask(expression: &Expression) -> bool {
@@ -963,6 +971,30 @@ mod tests {
             &statements,
             Some(&Expression::Variable("length".into())),
             "length"
+        ));
+    }
+
+    #[test]
+    fn direct_argument_crossing_another_call_is_not_transient() {
+        let statements = vec![
+            Statement::Assign {
+                name: "saved".into(),
+                value: Expression::IntegerLiteral(20),
+            },
+            Statement::Expression(Expression::Call {
+                name: "intervening".into(),
+                arguments: Vec::new(),
+            }),
+            Statement::Expression(Expression::Call {
+                name: "consume".into(),
+                arguments: vec![Expression::Variable("saved".into())],
+            }),
+        ];
+
+        assert!(!is_transient_direct_call_argument_local(
+            &statements,
+            None,
+            "saved"
         ));
     }
 }

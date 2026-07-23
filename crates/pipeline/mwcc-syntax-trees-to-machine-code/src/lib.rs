@@ -492,7 +492,7 @@ pub fn lower_function(
     // dependencies that block a hoist, and allocation then colors the scheduled
     // order — reproducing mwcc's interleaving of the two phases.
     schedule_instructions(&mut generator);
-    allocate_registers(&mut generator).map_err(|mut diagnostic| {
+    let allocated_float_saves = allocate_registers(&mut generator).map_err(|mut diagnostic| {
         let context = format!("function '{}'", function.name);
         if !diagnostic.message.contains(&context) {
             diagnostic.message.push_str(&format!(" (in {context})"));
@@ -508,6 +508,10 @@ pub fn lower_function(
     // Symmetrically, delay the prologue's saved-LR store past the first call's ready
     // argument materializations (mwcc fills the mflr->store latency gap).
     schedule_link_register_save(&mut generator);
+    generator.materialize_allocated_float_frame(
+        &allocated_float_saves,
+        config.build.version >= (4, 3, 0),
+    )?;
     // Build 163 shares the selected body schedule, but wraps GPR survivors in a
     // larger linkage-first frame. Normalize only the verified allocator shape;
     // convention-aware owners already emitted their final frame and are skipped.
@@ -573,10 +577,10 @@ pub(crate) fn allocation_operator_returns_pointer(name: &str) -> bool {
 /// emit virtuals, this pass becomes where their physical registers are decided —
 /// each migration step verified byte-exact against the oracle. Running it
 /// unconditionally keeps one pipeline (no fork between a legacy and a vreg path).
-fn allocate_registers(generator: &mut Generator) -> Compilation<()> {
+fn allocate_registers(generator: &mut Generator) -> Compilation<Vec<u8>> {
     let mut liveness = mwcc_vreg::analyze(&generator.output.instructions);
     if liveness.intervals.is_empty() {
-        return Ok(()); // no virtuals — selection chose physical registers directly
+        return Ok(Vec::new()); // no virtuals — selection chose physical registers directly
     }
     // Apply selection's placement hints: registers a given virtual must avoid,
     // and the consumer-tree preference it should take when free (policy #1).
@@ -610,6 +614,7 @@ fn allocate_registers(generator: &mut Generator) -> Compilation<()> {
     .map_err(|error| {
         mwcc_core::Diagnostic::error(format!("register allocation failed: {error:?}"))
     })?;
+    let used_float = allocation.assigned_float_callee_saved(&generator.constraints);
     mwcc_vreg::apply(&mut generator.output.instructions, &allocation);
     // FRAME-METADATA CONSISTENCY: every callee-saved register the allocation used
     // must correspond to a save slot the arm declared (generator.callee_saved, one
@@ -623,7 +628,7 @@ fn allocate_registers(generator: &mut Generator) -> Compilation<()> {
             generator.callee_saved.len()
         )));
     }
-    Ok(())
+    Ok(used_float)
 }
 
 /// The instruction-scheduling pass (Phase E): reorder instructions within the

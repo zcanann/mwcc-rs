@@ -131,13 +131,13 @@ fn crosses_call(interval: &LiveInterval, calls: &[usize]) -> bool {
 /// The result of allocation: each virtual register's physical home.
 #[derive(Debug, Clone, Default)]
 pub struct Allocation {
-    assignments: HashMap<u32, u8>,
+    assignments: HashMap<VirtualRegister, u8>,
 }
 
 impl Allocation {
     /// The physical register assigned to a virtual register.
     pub fn physical(&self, vreg: VirtualRegister) -> Option<u8> {
-        self.assignments.get(&vreg.id).copied()
+        self.assignments.get(&vreg).copied()
     }
 
     /// The number of virtual registers placed.
@@ -151,9 +151,31 @@ impl Allocation {
     pub fn assigned_callee_saved(&self, constraints: &RegisterConstraints) -> Vec<u8> {
         let mut used: Vec<u8> = self
             .assignments
-            .values()
-            .copied()
-            .filter(|register| constraints.general_callee_saved.contains(register))
+            .iter()
+            .filter(|(virtual_register, register)| {
+                virtual_register.class == Class::General
+                    && constraints.general_callee_saved.contains(register)
+            })
+            .map(|(_, register)| *register)
+            .collect();
+        used.sort_unstable_by(|left, right| right.cmp(left));
+        used.dedup();
+        used
+    }
+
+    /// Callee-saved FPRs selected by this allocation, highest first.
+    pub fn assigned_float_callee_saved(
+        &self,
+        constraints: &RegisterConstraints,
+    ) -> Vec<u8> {
+        let mut used: Vec<u8> = self
+            .assignments
+            .iter()
+            .filter(|(virtual_register, register)| {
+                virtual_register.class == Class::Float
+                    && constraints.float_callee_saved.contains(register)
+            })
+            .map(|(_, register)| *register)
             .collect();
         used.sort_unstable_by(|left, right| right.cmp(left));
         used.dedup();
@@ -232,13 +254,13 @@ impl Allocator for LinearScan {
             // A value live ACROSS a call (strictly inside its range — a result defined
             // at the call or an argument last used at it needs no saving) must survive
             // the callee: it draws from the callee-saved pool, highest first (r31, r30,
-            // …), exactly mwcc's assignment order. Floats keep the volatile pool until
-            // an FPR callee-saved case is captured.
+            // …), exactly mwcc's assignment order. Floating values use the
+            // corresponding f31-down pool so calls cannot clobber live values.
             let crosses_call = crosses_call(interval, calls);
-            let pool: &[u8] = if crosses_call && class == Class::General {
-                &constraints.general_callee_saved
-            } else {
-                constraints.pool(class)
+            let pool: &[u8] = match (crosses_call, class) {
+                (true, Class::General) => &constraints.general_callee_saved,
+                (true, Class::Float) => &constraints.float_callee_saved,
+                (false, _) => constraints.pool(class),
             };
             // The consumer-tree preference wins when free (policy #1); the pool
             // order is the fallback. The class SCRATCH (r0) is a legal preference —
@@ -262,7 +284,7 @@ impl Allocator for LinearScan {
                     .ok_or(AllocationError::OutOfRegisters { class, at: interval.start })?,
             };
 
-            allocation.assignments.insert(interval.vreg.id, choice);
+            allocation.assignments.insert(interval.vreg, choice);
             active.push((interval, choice));
         }
 
@@ -339,7 +361,7 @@ impl Allocator for DescendingScan {
                 .find(|register| !busy.contains(register) && !interval.avoid.contains(register))
                 .ok_or(AllocationError::OutOfRegisters { class, at: interval.start })?;
 
-            allocation.assignments.insert(interval.vreg.id, choice);
+            allocation.assignments.insert(interval.vreg, choice);
             active.push((interval, choice));
         }
 
@@ -391,6 +413,29 @@ mod tests {
         assert_eq!(allocation.physical(Reg::general(0).virtual_register().unwrap()), Some(31));
         assert_eq!(allocation.physical(Reg::general(1).virtual_register().unwrap()), Some(30));
         assert_eq!(allocation.physical(Reg::general(2).virtual_register().unwrap()), Some(3));
+    }
+
+    #[test]
+    fn a_float_crossing_a_call_draws_from_the_fpr_callee_saved_pool() {
+        let intervals = [fpr(0, 0, 4), fpr(1, 1, 4), fpr(2, 3, 4)];
+        let constraints = RegisterConstraints::gekko();
+        let allocation = LinearScan.allocate(&intervals, &[], &[2], &constraints).unwrap();
+        assert_eq!(
+            allocation.physical(Reg::float(0).virtual_register().unwrap()),
+            Some(31)
+        );
+        assert_eq!(
+            allocation.physical(Reg::float(1).virtual_register().unwrap()),
+            Some(30)
+        );
+        assert_eq!(
+            allocation.physical(Reg::float(2).virtual_register().unwrap()),
+            Some(1)
+        );
+        assert_eq!(
+            allocation.assigned_float_callee_saved(&constraints),
+            vec![31, 30]
+        );
     }
     fn fpr(id: u32, start: usize, end: usize) -> LiveInterval {
         LiveInterval::new(Reg::float(id).virtual_register().unwrap(), start, end)

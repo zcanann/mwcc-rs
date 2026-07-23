@@ -25,6 +25,9 @@ pub struct RegisterConstraints {
     /// Floating-point registers the allocator may assign, in preference order.
     /// `f1..=f13` — `f0` is the scratch, `f14+` callee-saved.
     pub float_pool: Vec<u8>,
+    /// Callee-saved floating-point registers, highest first (`f31..=f14`).
+    /// A floating value live across a call must draw from this pool.
+    pub float_callee_saved: Vec<u8>,
     /// The general scratch (`r0`): a transient for a value consumed immediately.
     pub general_scratch: u8,
     /// The float scratch (`f0`).
@@ -38,6 +41,7 @@ impl RegisterConstraints {
             general_pool: (3..=12).collect(),
             general_callee_saved: (14..=31).rev().collect(),
             float_pool: (1..=13).collect(),
+            float_callee_saved: (14..=31).rev().collect(),
             general_scratch: 0,
             float_scratch: 0,
         }
@@ -79,6 +83,8 @@ mod tests {
         assert_eq!(constraints.pool(Class::General).first(), Some(&3));
         assert_eq!(constraints.pool(Class::General).last(), Some(&12));
         assert_eq!(constraints.pool(Class::Float).first(), Some(&1));
+        assert_eq!(constraints.float_callee_saved.first(), Some(&31));
+        assert_eq!(constraints.float_callee_saved.last(), Some(&14));
         assert!(!constraints.pool(Class::General).contains(&constraints.general_scratch));
         assert!(!constraints.pool(Class::Float).contains(&constraints.float_scratch));
     }

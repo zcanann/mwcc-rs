@@ -2,6 +2,7 @@
 //!
 //! Split by family (fire 547); behavior-identical.
 
+mod allocated_float_frame;
 mod combine;
 mod async_state_callback;
 mod bitmask_call_chain;
