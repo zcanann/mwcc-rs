@@ -162,8 +162,15 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                 index += 1;
                 if let Some(value) = arguments.get(index) {
                     invocation.flags.inline_enabled = value != "off";
-                    invocation.flags.inline_deferred =
-                        value.split(',').any(|part| part == "deferred");
+                    let deferred = value.split(',').any(|part| part.trim() == "deferred");
+                    let deferred_continuation = value.trim_end().ends_with(',')
+                        && arguments
+                            .get(index + 1)
+                            .is_some_and(|part| part.trim() == "deferred");
+                    if deferred_continuation {
+                        index += 1;
+                    }
+                    invocation.flags.inline_deferred = deferred || deferred_continuation;
                 }
             }
             // `-str reuse,readonly` pools string literals in read-only data.
@@ -2795,6 +2802,14 @@ mod tests {
         ]);
         assert!(parsed.flags.inline_enabled);
         assert!(!parsed.flags.inline_deferred);
+
+        let parsed = parse_invocation(&[
+            "-inline".into(),
+            "auto,".into(),
+            "deferred".into(),
+        ]);
+        assert!(parsed.flags.inline_enabled);
+        assert!(parsed.flags.inline_deferred);
     }
 
     #[test]
