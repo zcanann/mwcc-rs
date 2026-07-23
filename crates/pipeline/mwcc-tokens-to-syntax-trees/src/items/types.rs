@@ -351,8 +351,28 @@ impl Parser {
             return Ok(self.parse_aggregate_pointer_declarator(element_size));
         }
         if *self.peek() == Token::KeywordStruct {
+            let definition_position = self.position;
             self.advance();
-            let tag = self.parse_identifier()?;
+            // An anonymous aggregate can be declared directly as a pointer object:
+            // `extern struct { int count; } *state;`. Give its layout an internal,
+            // source-position identity so the ordinary declarator machinery can
+            // retain the pointee tag and resolve `state->count` later. This is a
+            // type specifier, not the trailing-value form handled by the top-level
+            // named-struct declaration path.
+            let tag = if *self.peek() == Token::BraceOpen {
+                let tag = format!("@anonymous:{definition_position}");
+                let mut layout = self.parse_struct_body()?;
+                layout.source_tag = None;
+                if let Some(align) = self.skip_attributes()? {
+                    layout.align = layout.align.max(align as u8);
+                    let align = u32::from(align);
+                    layout.size = layout.size.div_ceil(align) * align;
+                }
+                self.structs.insert(tag.clone(), layout);
+                tag
+            } else {
+                self.parse_identifier()?
+            };
             self.consume_trailing_qualifiers();
             if !matches!(self.peek(), Token::Star | Token::Ampersand) {
                 // A struct *value*: a known layout becomes a sized struct value

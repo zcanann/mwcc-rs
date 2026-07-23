@@ -5918,6 +5918,38 @@ blr\n\
     }
 
     #[test]
+    fn resolves_members_through_an_anonymous_struct_pointer_global() {
+        let source = r#"
+            extern struct {
+                int* values;
+                int count;
+            } *state;
+            int read_count(void) { return state->count; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let tag = unit
+            .global_aggregate_tags
+            .get("state")
+            .expect("anonymous pointee tag should survive the declarator");
+        assert!(tag.starts_with("@anonymous:"));
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member {
+                offset: 4,
+                member_type: mwcc_syntax_trees::Type::Int,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn retains_struct_layout_across_static_cxx_method_declarations() {
         let source = r#"
             struct Slice {
