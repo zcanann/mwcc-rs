@@ -71,6 +71,105 @@ fn immediate(expression: &Expression) -> Option<i16> {
 }
 
 impl Generator {
+    /// Whole-file optimization hoists a sibling integer literal ahead of a
+    /// constructor's first parameter-valued member store. The two stores share
+    /// the incoming `this` base and the constructor returns it unchanged.
+    pub(crate) fn try_ipa_member_parameter_constant_initialization(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if !self.behavior.whole_file_optimization
+            || !function.name.starts_with("__ct__")
+            || !matches!(function.return_type, Type::StructPointer { .. })
+            || !function.locals.is_empty()
+            || !function.guards.is_empty()
+            || function_makes_call(function)
+            || !matches!(
+                function.return_expression.as_ref(),
+                Some(Expression::Variable(name)) if name == "this"
+            )
+        {
+            return Ok(false);
+        }
+        let [this, value_parameter] = function.parameters.as_slice() else {
+            return Ok(false);
+        };
+        if this.name != "this"
+            || !matches!(this.parameter_type, Type::StructPointer { .. })
+            || self
+                .locations
+                .get(&this.name)
+                .map(|location| (location.class, location.register))
+                != Some((ValueClass::General, Eabi::FIRST_GENERAL_ARGUMENT))
+            || self
+                .locations
+                .get(&value_parameter.name)
+                .map(|location| (location.class, location.register))
+                != Some((ValueClass::General, Eabi::FIRST_GENERAL_ARGUMENT + 1))
+        {
+            return Ok(false);
+        }
+        let [
+            Statement::Store {
+                target:
+                    Expression::Member {
+                        base: first_base,
+                        offset: first_offset,
+                        member_type: first_type,
+                        index_stride: None,
+                    },
+                value: Expression::Variable(stored_parameter),
+            },
+            Statement::Store {
+                target:
+                    Expression::Member {
+                        base: second_base,
+                        offset: second_offset,
+                        member_type: second_type,
+                        index_stride: None,
+                    },
+                value: Expression::IntegerLiteral(constant),
+            },
+        ] = function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        if !variable(first_base, "this")
+            || !variable(second_base, "this")
+            || stored_parameter != &value_parameter.name
+            || !matches!(
+                first_type,
+                Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. }
+            )
+            || !matches!(second_type, Type::Int | Type::UnsignedInt)
+        {
+            return Ok(false);
+        }
+        let (Ok(first_offset), Ok(second_offset), Ok(constant)) = (
+            i16::try_from(*first_offset),
+            i16::try_from(*second_offset),
+            i16::try_from(*constant),
+        ) else {
+            return Ok(false);
+        };
+
+        self.output.instructions.extend([
+            Instruction::load_immediate(0, constant),
+            Instruction::StoreWord {
+                s: Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                a: Eabi::FIRST_GENERAL_ARGUMENT,
+                offset: first_offset,
+            },
+            Instruction::StoreWord {
+                s: 0,
+                a: Eabi::FIRST_GENERAL_ARGUMENT,
+                offset: second_offset,
+            },
+            Instruction::BranchToLinkRegister,
+        ]);
+        Ok(true)
+    }
+
     /// Lower two narrow stores through one struct parameter when the first value is a signed-short
     /// indirect load plus an immediate and the second is a literal. mwcc fills the load latency
     /// with the sibling literal, then completes the add and emits both stores in source order.

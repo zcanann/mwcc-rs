@@ -68,6 +68,7 @@ mod switch_call_return;
 mod tail_call;
 mod tokenizer;
 mod trig_quadrant_dispatch;
+mod unoptimized_integer_round_up;
 mod variadic;
 
 pub(crate) use callee_saved::{

@@ -1370,6 +1370,9 @@ impl Generator {
         if self.try_align_diamond(function)? {
             return Ok(());
         }
+        if self.try_unoptimized_integer_round_up(function)? {
+            return Ok(());
+        }
         if self.try_writeback_norm(function)? {
             return Ok(());
         }
@@ -2491,6 +2494,9 @@ impl Generator {
             return Ok(());
         }
         if self.try_member_copy_then_call(function)? {
+            return Ok(());
+        }
+        if self.try_ipa_member_parameter_constant_initialization(function)? {
             return Ok(());
         }
         if self.try_narrow_member_initialization(function)? {
