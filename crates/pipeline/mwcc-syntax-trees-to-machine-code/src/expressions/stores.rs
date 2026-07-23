@@ -321,6 +321,9 @@ impl Generator {
         // supplies its element width while value-position evaluation still
         // decays the variable to the slot address.
         if let Expression::Index { base, index } = target {
+            if self.try_emit_fixed_address_mask_insert(target, value)? {
+                return Ok(());
+            }
             if let Expression::Variable(name) = base.as_ref() {
                 if let Some(slot) = self
                     .frame_slots

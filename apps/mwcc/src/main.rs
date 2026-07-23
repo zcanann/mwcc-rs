@@ -2182,6 +2182,34 @@ mod tests {
     }
 
     #[test]
+    fn lowers_fixed_halfword_mask_insert_inside_an_ordinary_function() {
+        let source = br#"
+            typedef volatile unsigned short vu16;
+            vu16 regs[32] : (0xCC005000);
+            void update(int unused) {
+                regs[5] = ((unsigned short)regs[5] & ~0x28) | 0x80;
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::DEFAULT,
+            flags,
+        };
+        let object = compile(
+            source,
+            "fixed-mask-insert.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("fixed-address RMW should share one absolute base");
+        assert!(!object.is_empty());
+    }
+
+    #[test]
     fn lowers_discarded_assignments_introduced_by_inline_aggregate_scalarization() {
         let source = br#"
             class Vec {

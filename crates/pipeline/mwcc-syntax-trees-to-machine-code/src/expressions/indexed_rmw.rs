@@ -3,6 +3,108 @@
 use super::*;
 
 impl Generator {
+    /// Emit an explicit constant-slot update of a fixed-address halfword bank:
+    /// `bank[k] = ((u16)bank[k] & MASK) | BITS`.
+    ///
+    /// This is deliberately owned beside indexed RMW lowering rather than the
+    /// generic fixed-address load/store paths. The load and store must share one
+    /// absolute base, while the source-level narrowing cast remains observable as
+    /// a separate `clrlwi` in MWCC's scheduled instruction stream.
+    pub(crate) fn try_emit_fixed_address_mask_insert(
+        &mut self,
+        target: &Expression,
+        value: &Expression,
+    ) -> Compilation<bool> {
+        let Expression::Index { base, index } = target else {
+            return Ok(false);
+        };
+        let Expression::Variable(bank) = base.as_ref() else {
+            return Ok(false);
+        };
+        let Some(index) = constant_value(index) else {
+            return Ok(false);
+        };
+        let Some(&(address, Type::UnsignedShort)) = self.fixed_address_arrays.get(bank) else {
+            return Ok(false);
+        };
+        let Expression::Binary {
+            operator: BinaryOperator::BitOr,
+            left: preserved,
+            right: inserted,
+        } = value
+        else {
+            return Ok(false);
+        };
+        let Expression::Binary {
+            operator: BinaryOperator::BitAnd,
+            left: loaded,
+            right: mask,
+        } = preserved.as_ref()
+        else {
+            return Ok(false);
+        };
+        let Expression::Cast {
+            target_type: Type::UnsignedShort,
+            operand: loaded,
+        } = loaded.as_ref()
+        else {
+            return Ok(false);
+        };
+        if !same_operand(target, loaded) {
+            return Ok(false);
+        }
+        let (Some(mask), Some(inserted)) = (constant_value(mask), constant_value(inserted)) else {
+            return Ok(false);
+        };
+        let (Ok(mask), Ok(inserted)) = (i16::try_from(mask), u16::try_from(inserted)) else {
+            return Ok(false);
+        };
+
+        let (high, low) = split_address(address);
+        let offset = i16::try_from(i64::from(low) + index * 2).map_err(|_| {
+            Diagnostic::error("fixed-address mask-insert displacement is out of range")
+        })?;
+        let base = self.fresh_virtual_general();
+        let loaded = self.fresh_virtual_general();
+        let narrowed = self.fresh_virtual_general();
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(base, high));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(GENERAL_SCRATCH, mask));
+        self.output.instructions.push(displacement_load(
+            Pointee::UnsignedShort,
+            loaded,
+            base,
+            offset,
+        )?);
+        self.output
+            .instructions
+            .push(Instruction::ClearLeftImmediate {
+                a: narrowed,
+                s: loaded,
+                clear: 16,
+            });
+        self.output.instructions.push(Instruction::And {
+            a: GENERAL_SCRATCH,
+            s: narrowed,
+            b: GENERAL_SCRATCH,
+        });
+        self.output.instructions.push(Instruction::OrImmediate {
+            a: GENERAL_SCRATCH,
+            s: GENERAL_SCRATCH,
+            immediate: inserted,
+        });
+        self.output.instructions.push(displacement_store(
+            Pointee::UnsignedShort,
+            GENERAL_SCRATCH,
+            base,
+            offset,
+        )?);
+        Ok(true)
+    }
+
     /// Emit a variable-index word read/modify/write with a leaf or encodable
     /// constant right-hand side. `indexed_update_syntax` retains the frontend
     /// distinction between `a[i] op= rhs`/`a[i]++` and the explicitly spelled
