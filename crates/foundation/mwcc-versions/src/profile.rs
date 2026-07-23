@@ -1045,6 +1045,11 @@ pub trait CodegenProfile: core::fmt::Debug {
         0
     }
 
+    /// Hidden labels added specifically by the parity-tail dispatcher CFG.
+    fn trig_parity_tail_hidden_label_bump(&self) -> u8 {
+        self.trig_dispatcher_hidden_label_bump()
+    }
+
     /// Additional hidden labels retained when whole-file IPA is enabled.
     fn trig_dispatcher_ipa_label_bump(&self) -> u8 {
         0
@@ -1402,7 +1407,11 @@ impl CodegenProfile for Gc41Build51213 {
     }
 
     fn trig_dispatcher_hidden_label_bump(&self) -> u8 {
-        3
+        10
+    }
+
+    fn trig_parity_tail_hidden_label_bump(&self) -> u8 {
+        2
     }
 
     fn trig_dispatcher_ipa_label_bump(&self) -> u8 {

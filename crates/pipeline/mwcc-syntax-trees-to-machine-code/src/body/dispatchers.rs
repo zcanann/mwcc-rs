@@ -771,11 +771,11 @@ impl Generator {
                 .instructions
                 .push(Instruction::BranchToLinkRegister);
             // Pre-pool labels. The parity-tail CFG costs seven labels in build
-            // 163 and eight in the live-parameter family. Every measured
-            // deferred build retains two additional internal labels without
-            // changing the emitted instructions.
+            // 163 and eight in the live-parameter family. Its later-generation
+            // hidden blocks are tracked separately from the quadrant dispatcher
+            // because those CFGs contract at different rates.
             let parity_label_bump = if legacy_reloading { 7_u32 } else { 8_u32 }
-                + u32::from(self.behavior.trig_dispatcher_hidden_label_bump);
+                + u32::from(self.behavior.trig_parity_tail_hidden_label_bump);
             let deferred_label_bump = if self.behavior.deferred_inlining {
                 2_u32
             } else {

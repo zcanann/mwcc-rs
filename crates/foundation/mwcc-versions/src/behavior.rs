@@ -666,6 +666,8 @@ pub struct Behavior {
     pub trig_zero_constant_placement: TrigZeroConstantPlacement,
     /// Later-generation hidden labels retained by every trig dispatcher.
     pub trig_dispatcher_hidden_label_bump: u8,
+    /// Later-generation hidden labels retained by the trig parity-tail CFG.
+    pub trig_parity_tail_hidden_label_bump: u8,
     /// Additional hidden trig-dispatcher labels retained under whole-file IPA.
     pub trig_dispatcher_ipa_label_bump: u8,
     /// Encoding of generation-specific integer value materializations.
@@ -996,6 +998,10 @@ impl Behavior {
                 .build
                 .profile
                 .trig_dispatcher_hidden_label_bump(),
+            trig_parity_tail_hidden_label_bump: config
+                .build
+                .profile
+                .trig_parity_tail_hidden_label_bump(),
             trig_dispatcher_ipa_label_bump: config.build.profile.trig_dispatcher_ipa_label_bump(),
             materialization_copy_style: config.build.profile.materialization_copy_style(),
             wide_constant_add_schedule: config.build.profile.wide_constant_add_schedule(),
@@ -1863,7 +1869,9 @@ mod tests {
 
     #[test]
     fn later_trig_dispatchers_resolve_eager_zero_and_ipa_labels() {
-        for compiler_build in [build::GC_3_0A3P1, build::WII_1_0] {
+        for (compiler_build, dispatcher_labels, parity_tail_labels) in
+            [(build::GC_3_0A3P1, 10, 2), (build::WII_1_0, 3, 3)]
+        {
             let mut config = CompilerConfig::new(compiler_build);
             let plain = Behavior::resolve(&config);
             assert_eq!(
@@ -1874,7 +1882,8 @@ mod tests {
                 plain.trig_zero_constant_placement,
                 TrigZeroConstantPlacement::Prologue
             );
-            assert_eq!(plain.trig_dispatcher_hidden_label_bump, 3);
+            assert_eq!(plain.trig_dispatcher_hidden_label_bump, dispatcher_labels);
+            assert_eq!(plain.trig_parity_tail_hidden_label_bump, parity_tail_labels);
             assert_eq!(plain.trig_dispatcher_ipa_label_bump, 4);
             assert!(plain.terminal_indirect_tail_call);
             assert!(plain
