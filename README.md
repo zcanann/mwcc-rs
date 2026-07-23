@@ -78,6 +78,12 @@ they are never silently counted as compiler failures or successes. Deterministic
 out-of-sample canaries cover every project x compiler-version x language cell,
 while remaining outside the statistical estimator.
 
+Declaring an audit `fresh-holdout` also removes every configuration ID found in
+prior result caches before sampling. The manifest records that exclusion set,
+and the dashboard validates and reports both the untouched sampling frame and
+the full corpus. Excluded prior observations receive no current parity credit;
+the full-corpus identification range conservatively treats them as unknown.
+
 The edit loop's compact output always labels these evidence layers separately.
 In particular, its failure-biased queue is explicitly *not* a parity estimate;
 if the fixed audit has not been run for the current compiler+harness fingerprint,

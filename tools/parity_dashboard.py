@@ -869,7 +869,11 @@ def representative_audit(
     selection: set[str],
     manifest: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    universe = {row["configuration_id"] for row in rows if row["source_exists"]}
+    full_universe = {row["configuration_id"] for row in rows if row["source_exists"]}
+    manifest = manifest or {}
+    declared_excluded = set(manifest.get("excluded_configuration_ids", []))
+    excluded = full_universe & declared_excluded
+    universe = full_universe - excluded
     selected = universe & selection
     selected_rows = [
         row
@@ -879,7 +883,6 @@ def representative_audit(
     direct = {identity: observations[identity] for identity in selected if identity in observations}
     counts = Counter(observation["status"] for observation in direct.values())
     complete = len(direct) == len(selected)
-    manifest = manifest or {}
     execution_requested = set(manifest.get("configuration_ids", selection))
     execution_selected = universe & execution_requested
     execution_direct = {
@@ -906,8 +909,19 @@ def representative_audit(
     ]
     declared_population = manifest.get("population_size")
     population_matches = declared_population is None or declared_population == len(universe)
+    declared_full_population = manifest.get("full_population_size")
+    full_population_matches = (
+        declared_full_population is None
+        or declared_full_population == len(full_universe)
+    )
+    excluded_members_present = len(excluded) == len(declared_excluded)
     selection_members_present = len(selected) == len(selection)
-    design_valid = population_matches and selection_members_present
+    design_valid = (
+        population_matches
+        and full_population_matches
+        and excluded_members_present
+        and selection_members_present
+    )
     blockers = blocker_breakdown(selected_rows, direct, set())
     result: Dict[str, Any] = {
         "method": manifest.get("kind", "simple_random_sample_without_replacement"),
@@ -915,9 +929,14 @@ def representative_audit(
         "seed": manifest.get("seed"),
         "epoch": manifest.get("epoch"),
         "population_size": len(universe),
+        "full_population_size": len(full_universe),
+        "excluded_population_size": len(excluded),
         "declared_population_size": declared_population,
+        "declared_full_population_size": declared_full_population,
         "design_valid": design_valid,
         "population_matches": population_matches,
+        "full_population_matches": full_population_matches,
+        "excluded_members_present": excluded_members_present,
         "selection_members_present": selection_members_present,
         "requested": len(selection),
         "selected": len(selected),
@@ -1199,6 +1218,29 @@ def representative_audit(
                 rows, selected, direct, authoritative=provenance_complete
             ),
         }
+        frame_weight = len(universe) / len(full_universe) if full_universe else 0.0
+        excluded_weight = len(excluded) / len(full_universe) if full_universe else 0.0
+        result["estimate"].update(
+            {
+                "sampling_frame_weight": frame_weight,
+                "excluded_population_weight": excluded_weight,
+                # Prior-observation exclusions deliberately receive no current
+                # parity credit. The lower endpoint treats all as non-exact;
+                # the upper endpoint treats all as exact.
+                "full_population_confirmed_proportion": (
+                    successes / len(selected) * frame_weight
+                ),
+                "full_population_confirmed_interval_low": confirmed_low * frame_weight,
+                "full_population_confirmed_interval_high": confirmed_high * frame_weight,
+                "full_population_identification_low": (
+                    successes / len(selected) * frame_weight
+                ),
+                "full_population_identification_high": (
+                    (successes + unknown) / len(selected) * frame_weight
+                    + excluded_weight
+                ),
+            }
+        )
     return result
 
 
@@ -1300,6 +1342,14 @@ def print_brief(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]]) 
             print(
                 f"audit role — {purpose}; useful for paired movement, not an unbiased "
                 "current-population estimate after sample-guided tuning"
+            )
+        if audit["excluded_population_size"]:
+            print(
+                "audit sampling frame — previously unobserved configurations "
+                f"{audit['population_size']}/{audit['full_population_size']}; excluded prior "
+                f"observations {audit['excluded_population_size']}; full-corpus conservative "
+                f"identification range {estimate['full_population_identification_low']:.1%}.."
+                f"{estimate['full_population_identification_high']:.1%}"
             )
         print(
             "representative whole-object audit — "
@@ -1564,6 +1614,12 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
             f"({'complete' if audit['complete'] else 'INCOMPLETE'}; "
             f"design {'valid' if audit['design_valid'] else 'INVALID'})"
         )
+        if audit["excluded_population_size"]:
+            print(
+                "audit frame excludes prior observations: "
+                f"{audit['excluded_population_size']}/{audit['full_population_size']}; "
+                f"unseen frame {audit['population_size']}/{audit['full_population_size']}"
+            )
         runtime = audit["runtime"]
         if audit["version_coverage"]:
             covered = sum(status != "UNTESTED" for status in audit["version_coverage"].values())

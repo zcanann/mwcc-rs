@@ -1540,6 +1540,34 @@ class DashboardTests(unittest.TestCase):
         self.assertFalse(report["design_valid"])
         self.assertIsNone(report["estimate"])
 
+    def test_audit_validates_and_reports_an_unseen_sampling_frame(self):
+        rows = [row(source=f"src/{index}.c") for index in range(4)]
+        excluded = rows[0]["configuration_id"]
+        selection = {item["configuration_id"] for item in rows[1:]}
+        observations = {identity: {"status": "BYTE"} for identity in selection}
+        report = representative_audit(
+            rows,
+            observations,
+            selection,
+            {
+                "kind": "simple_random_sample_without_replacement",
+                "population_size": 3,
+                "full_population_size": 4,
+                "excluded_configuration_ids": [excluded],
+                "configuration_ids": sorted(selection),
+            },
+        )
+        self.assertTrue(report["design_valid"])
+        self.assertEqual(report["excluded_population_size"], 1)
+        self.assertEqual(report["population_size"], 3)
+        self.assertEqual(report["full_population_size"], 4)
+        self.assertEqual(
+            report["estimate"]["full_population_confirmed_proportion"], 0.75
+        )
+        self.assertEqual(
+            report["estimate"]["full_population_identification_high"], 1.0
+        )
+
     def test_frontier_is_explicitly_not_a_parity_estimate(self):
         rows = [row(source="src/a.c"), row(source="src/b.c")]
         selection = {item["configuration_id"] for item in rows}
@@ -1571,6 +1599,17 @@ class AuditSelectionTests(unittest.TestCase):
         rows = [row(source="src/a.c")]
         audit = build_audit(rows, 1, "seed", "1", "fresh-holdout")
         self.assertEqual(audit["purpose"], "fresh-holdout")
+
+    def test_fresh_audit_can_exclude_every_prior_observation(self):
+        rows = [row(source=f"src/{index}.c") for index in range(10)]
+        excluded = {rows[0]["configuration_id"], rows[1]["configuration_id"]}
+        audit = build_audit(
+            rows, 5, "seed", "1", "fresh-holdout", excluded
+        )
+        self.assertEqual(audit["full_population_size"], 10)
+        self.assertEqual(audit["population_size"], 8)
+        self.assertEqual(set(audit["excluded_configuration_ids"]), excluded)
+        self.assertTrue(excluded.isdisjoint(audit["sample_configuration_ids"]))
 
     def test_fixed_audit_adds_rare_version_sentinel_outside_sample(self):
         rows = [row(source=f"src/{index}.c") for index in range(20)]

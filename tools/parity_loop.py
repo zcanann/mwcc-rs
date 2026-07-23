@@ -374,6 +374,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         args.audit_purpose,
         *filters,
     ]
+    if args.audit_purpose == "fresh-holdout":
+        for path in previous_results:
+            audit_command.extend(("--exclude-result", str(path)))
     if run_audit and subprocess.run(audit_command).returncode:
         return 2
     if args.frontier_only:

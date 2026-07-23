@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Set
 
 from parity_dashboard import load_inventory
 from parity_identity import configuration_id
@@ -61,8 +61,13 @@ def build_audit(
     seed: str,
     epoch: str,
     purpose: str = "paired-panel",
+    excluded_identities: Optional[Set[str]] = None,
 ) -> Dict[str, Any]:
-    identities = sorted({row["configuration_id"] for row in rows})
+    full_identities = {row["configuration_id"] for row in rows}
+    excluded = full_identities & (excluded_identities or set())
+    identities = sorted(full_identities - excluded)
+    identity_set = set(identities)
+    rows = [row for row in rows if row["configuration_id"] in identity_set]
     sample = sorted(identities, key=lambda identity: audit_rank(identity, seed, epoch))[
         : min(size, len(identities))
     ]
@@ -126,13 +131,15 @@ def build_audit(
             }
         )
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "kind": "simple_random_sample_without_replacement",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "seed": seed,
         "epoch": epoch,
         "purpose": purpose,
         "population_size": len(identities),
+        "full_population_size": len(full_identities),
+        "excluded_configuration_ids": sorted(excluded),
         # Execution is the statistically representative sample plus only the
         # sentinels needed to exercise build identities and breadth cells
         # missed by chance.
@@ -163,7 +170,31 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--version", action="append")
     parser.add_argument("--language", choices=("c", "c++"), action="append")
     parser.add_argument("--matching-only", action="store_true")
+    parser.add_argument(
+        "--exclude-result",
+        type=Path,
+        action="append",
+        default=[],
+        help="exclude every configuration ID present in a prior JSONL result cache",
+    )
     return parser.parse_args(argv)
+
+
+def result_identities(paths: Sequence[Path]) -> Set[str]:
+    identities: Set[str] = set()
+    for path in paths:
+        with path.open(encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, 1):
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError as error:
+                    raise ValueError(f"{path}:{line_number}: {error}") from error
+                identity = record.get("configuration_id")
+                if isinstance(identity, str):
+                    identities.add(identity)
+    return identities
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -179,6 +210,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.seed,
             args.epoch,
             args.purpose,
+            result_identities(args.exclude_result),
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -189,7 +221,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         f"representative audit: {len(audit['sample_configuration_ids'])}/"
         f"{audit['population_size']} sample configurations + "
         f"{len(audit['version_sentinel_configuration_ids'])} version sentinels + "
-        f"{len(audit['coverage_sentinel_configuration_ids'])} breadth sentinels -> {args.output}"
+        f"{len(audit['coverage_sentinel_configuration_ids'])} breadth sentinels; "
+        f"excluded prior observations {len(audit['excluded_configuration_ids'])}/"
+        f"{audit['full_population_size']} -> {args.output}"
     )
     return 0
 
