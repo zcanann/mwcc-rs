@@ -106,6 +106,9 @@ pub struct Flags {
     /// `-schedule off` disables mwcc's instruction-overlap scheduler while
     /// leaving optimization and register allocation enabled.
     pub scheduler_enabled: bool,
+    /// `-fp_contract on` allows multiply-add/subtract contraction. `off`
+    /// preserves the source-level multiply and add/subtract instructions.
+    pub fp_contract: bool,
     /// `-sym on` requests CodeWarrior `.line` and `.debug` sections. This is
     /// tracked even before the sections can be emitted so the driver never
     /// silently produces a partial object for a debug-enabled invocation.
@@ -138,6 +141,7 @@ impl Default for Flags {
             pooling_enabled: true,
             use_lmw_stmw: false,
             scheduler_enabled: true,
+            fp_contract: true,
             debug_info: false,
             ipa_file: false,
             function_alignment: None,

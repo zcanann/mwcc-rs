@@ -63,6 +63,21 @@ enum Tree {
     },
 }
 
+fn tree_contains_contracted_operation(tree: &Tree) -> bool {
+    match tree {
+        Tree::Madd { .. } | Tree::Fnmsub { .. } | Tree::Fmsub { .. } => true,
+        Tree::Mul { left, right }
+        | Tree::Fadd { left, right }
+        | Tree::Fsub { left, right } => {
+            tree_contains_contracted_operation(left) || tree_contains_contracted_operation(right)
+        }
+        Tree::Param(_)
+        | Tree::LocalRef(_)
+        | Tree::Const(_)
+        | Tree::TableConst(_) => false,
+    }
+}
+
 /// One emitted node, operands in the final instruction slots (the measured
 /// convention: a CONSTANT factor takes the A slot, otherwise source order).
 enum FloatOp {

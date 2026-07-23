@@ -372,6 +372,9 @@ impl Generator {
         destination: u8,
         double: bool,
     ) -> Compilation<bool> {
+        if !self.behavior.contract_floating_point {
+            return Ok(false);
+        }
         if let Some((x, y)) = as_multiplication(left) {
             let multiplicand = self.float_register_of_leaf(x)?;
             let multiplier = self.float_register_of_leaf(y)?;

@@ -189,6 +189,11 @@ impl Generator {
             ) else {
                 return Ok(false);
             };
+            if !self.behavior.contract_floating_point
+                && super::tree_contains_contracted_operation(&local_tree)
+            {
+                return Ok(false);
+            }
             if count_arith(&local_tree) != 1 || !seen_literals.is_empty() {
                 return Ok(false);
             }
@@ -203,6 +208,11 @@ impl Generator {
         ) else {
             return Ok(false);
         };
+        if !self.behavior.contract_floating_point
+            && super::tree_contains_contracted_operation(&tree)
+        {
+            return Ok(false);
+        }
         if table_context.name.is_some() {
             // An arith mixing a POOL constant and a TABLE constant ties
             // their deaths — the register tiebreak is unfitted (probed:

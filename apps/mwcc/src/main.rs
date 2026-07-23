@@ -218,6 +218,16 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                     _ => invocation.flags.scheduler_enabled,
                 };
             }
+            // Floating-point contraction is independent from the O-level and
+            // follows the last command-line occurrence.
+            "-fp_contract" => {
+                index += 1;
+                invocation.flags.fp_contract = match arguments.get(index).map(String::as_str) {
+                    Some("off") => false,
+                    Some("on") => true,
+                    _ => invocation.flags.fp_contract,
+                };
+            }
             // `-sym on` emits CodeWarrior `.line` and `.debug` sections. Keep
             // last-wins behavior even while object-level debug emission is a
             // deliberate capability boundary.
@@ -2590,6 +2600,20 @@ mod tests {
             "on".into(),
         ]);
         assert!(last_wins.flags.scheduler_enabled);
+    }
+
+    #[test]
+    fn command_line_fp_contract_mode_is_last_wins() {
+        let off = parse_invocation(&["-fp_contract".into(), "off".into()]);
+        assert!(!off.flags.fp_contract);
+
+        let last_wins = parse_invocation(&[
+            "-fp_contract".into(),
+            "off".into(),
+            "-fp_contract".into(),
+            "on".into(),
+        ]);
+        assert!(last_wins.flags.fp_contract);
     }
 
     #[test]

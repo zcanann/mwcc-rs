@@ -224,6 +224,7 @@ mod ivt_atan_ff;
 mod ivt_atanf;
 mod ivt_inv_sqrtf;
 mod krem_p2;
+mod ksin_uncontracted;
 mod ktan;
 mod ktan_ww;
 mod ktn_tan;
@@ -1132,6 +1133,7 @@ impl Generator {
             || self.try_satan(function)?
             || self.try_satan_pik(function)?
             || self.try_satan_sun(function)?
+            || self.try_ksin_uncontracted(function)?
             || self.try_ktan(function)?
             || self.try_ktan_ww(function)?
             || self.try_easin(function)?

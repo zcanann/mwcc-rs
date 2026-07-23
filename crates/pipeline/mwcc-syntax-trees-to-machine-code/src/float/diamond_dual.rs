@@ -127,6 +127,11 @@ impl Generator {
             let Some(tree) = build_tree(init, &param_ids, &local_names, &mut chain_literals) else {
                 return Ok(false);
             };
+            if !self.behavior.contract_floating_point
+                && super::tree_contains_contracted_operation(&tree)
+            {
+                return Ok(false);
+            }
             // A literal duplicated across locals shares its load — unmodeled.
             if chain_literals
                 .iter()

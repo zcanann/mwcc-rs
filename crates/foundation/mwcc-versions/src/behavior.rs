@@ -737,6 +737,9 @@ pub struct Behavior {
     pub use_lmw_stmw: bool,
     /// Whether independent instructions may fill one another's latency slots.
     pub scheduler_enabled: bool,
+    /// Whether floating multiply/add and multiply/subtract expressions may
+    /// contract into fused instructions.
+    pub contract_floating_point: bool,
     /// Whether whole-file IPA may replace a terminal call/return with a sibling
     /// branch after marshaling its arguments.
     pub tail_call_optimization: bool,
@@ -1043,6 +1046,7 @@ impl Behavior {
             deferred_inlining: config.flags.inline_deferred,
             use_lmw_stmw: config.flags.use_lmw_stmw,
             scheduler_enabled: config.flags.scheduler_enabled,
+            contract_floating_point: config.flags.fp_contract,
             tail_call_optimization: config.flags.whole_file_optimization_enabled(),
             terminal_indirect_tail_call: config.build.profile.terminal_indirect_tail_call(),
         }
