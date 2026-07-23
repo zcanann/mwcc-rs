@@ -2,9 +2,9 @@
 
 Last fresh holdout: 2026-07-23 14:55 UTC at compiler commit `018cffe0`
 
-Latest paired checkpoint: 2026-07-23 16:48 UTC at compiler commit `7c7f881e`
+Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest compiler + harness fingerprint: `ab9c4c7c0d6d47f2416ccee0f6d083b8e78ca188723857a0cdc19f6775912750:c71332f6aa2301c5456ab14a75db04edeefe9702cd6c7ce3a84d5f93b8024ff6`
+Latest compiler + harness fingerprint: `689d6aa704a1c5c00d40abd701323393906aaef27170b84530ed065ff321e03f:c71332f6aa2301c5456ab14a75db04edeefe9702cd6c7ce3a84d5f93b8024ff6`
 
 This file records a measurement checkpoint, not a claim that the numbers stay
 current after compiler or harness changes. Canary pass counts and work-queue
@@ -14,14 +14,14 @@ counts are deliberately absent: neither is a corpus parity estimate.
 
 The configured corpus contains 47,879 translation units across 13 MWCC-configured
 projects. All 13 compiler identities in the corpus are recognized. No project
-matrix is complete yet. The latest fingerprint directly observed 413 configured
-TUs and proved 48 whole-object exact: 32 statistical sample rows plus 16 breadth
-sentinels. Old-fingerprint exact observations are not counted as proof about the
-current compiler, so the literal current-fingerprint proof is:
+matrix is complete yet. The latest fully measured fingerprint directly observed
+413 configured TUs and proved 50 whole-object exact: 33 statistical sample rows
+plus 17 breadth sentinels. Old-fingerprint exact observations are not counted as
+proof about a newer compiler, so the literal proof at that measured fingerprint is:
 
 | Measure | Result |
 | --- | ---: |
-| Configured TUs proven whole-object exact | 48 / 47,879 |
+| Configured TUs proven whole-object exact | 50 / 47,879 |
 | Project matrices proven complete | 0 / 13 |
 | Directly observed configurations at this fingerprint | 413 / 47,879 |
 
@@ -103,41 +103,52 @@ These diagnostics do not earn whole-object parity credit.
 
 ## Latest paired checkpoint
 
-Compiler commit `7c7f881e` was run over the exact 384-row untouched-frame sample
+Compiler commit `869596ad` was run over the exact 384-row untouched-frame sample
 that was first revealed at `018cffe0`, plus its 29 out-of-estimator breadth
 sentinels. Membership is now known, so this is a paired movement measurement,
 not a new unbiased estimate of the current compiler.
 
-| Whole-object outcome | `018cffe0` | `7c7f881e` | Change |
+| Whole-object outcome | `018cffe0` | `869596ad` | Change |
 | --- | ---: | ---: | ---: |
-| Exact | 31 / 384 | 32 / 384 | +1 |
-| Confirmed non-parity (`DIFF` or compiler `DEFER`) | 193 / 384 | 195 / 384 | +2 |
-| Measurement unknown | 160 / 384 | 157 / 384 | -3 |
+| Exact | 31 / 384 | 33 / 384 | +2 |
+| Confirmed non-parity (`DIFF` or compiler `DEFER`) | 193 / 384 | 187 / 384 | -6 |
+| Measurement unknown | 160 / 384 | 164 / 384 | +4 |
 
-The current panel is 8.3% exact, with a descriptive 95% interval of 6.0%-11.5%
-and an exact-or-unknown identification range of 8.3%-49.2%. Conservatively
+The current panel is 8.6% exact, with a descriptive 95% interval of 6.2%-11.8%
+and an exact-or-unknown identification range of 8.6%-51.3%. Conservatively
 projecting the untouched frame over the excluded prior-observation stratum gives
-a full-corpus identification range of 8.1%-50.5%. The still-unbiased status
+a full-corpus identification range of 8.4%-52.5%. The still-unbiased status
 estimate remains the 8.1% fresh-holdout result recorded above.
 
-Among 224 rows with authoritative resolved outcomes at both fingerprints,
-whole-object exact movement was +1/-0. The exact gain was:
+Among 220 rows with authoritative resolved outcomes at both fingerprints,
+whole-object exact movement was +2/-0. The exact gains were:
 
 - `super_mario_sunshine/src/JSystem/JStage/JSGObject.cpp` (`DIFF -> BYTE`)
+- `metroid_prime/src/Kyoto/Particles/CElectricDescription.cpp` (`DIFF -> BYTE`)
 
 `twilight_princess/src/SSystem/SComponent/c_m3d_g_vtx.cpp` changed
-`DIFF -> DEFER`, so it remains confirmed non-parity. Three former timeouts now
-produce precise compiler `DEFER` diagnostics. Unknown attribution is 104
+`DIFF -> DEFER`, so it remains confirmed non-parity. Unknown attribution is 111
 60-second timeouts, 41 missing dependencies, and 12 invalid configurations.
 
-Of the 35 statistical rows that emitted objects, 32 were whole-object exact and
-three differed. Relocation-aware diagnostics covered 12 objects: 46/51 reference
-functions and 4,060/4,792 reference code bytes were exact. These are conditional
+Of the 35 statistical rows that emitted objects, 33 were whole-object exact and
+two differed. Relocation-aware diagnostics covered 12 objects: 49/51 reference
+functions and 4,380/4,792 reference code bytes were exact. These are conditional
 backend-quality diagnostics and earn no additional whole-object parity credit.
 
-The run compiled the 287 quick rows once, then retried only the 126 initial
-timeouts at 60 seconds. It took 631.3 seconds of active wall time and 7,607.8
-aggregate row-seconds; median row time was 2.28 seconds and p95 was 60.01 seconds.
+The run compiled every row at a 15-second cap, then retried only the 130 initial
+timeouts at 60 seconds. It took 653.8 seconds of active wall time and 7,900.7
+aggregate row-seconds; median row time was 2.38 seconds and p95 was 60.01 seconds.
+
+Compared directly with the preceding `7c7f881e` paired checkpoint, this is +1
+exact and -0 exact regressions among 220 jointly resolved rows. The gain is the
+CElectricDescription sample row. Seven prior compiler `DEFER` rows instead hit
+the 60-second ceiling, so parity moved forward while measurement precision moved
+backward. Outside the estimator, Melee `src/MetroTRK/msg.c` also changed
+`DIFF -> BYTE` as a breadth-sentinel gain.
+
+Post-checkpoint commit `0aeceac7` re-armed the already measured Pikmin 2 UART
+writer family and directly proved both configured variants whole-object exact.
+Those targeted observations are not folded into the 384-row checkpoint above.
 
 ## Historical paired checkpoint at `93db2a25`
 
