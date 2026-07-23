@@ -25,6 +25,58 @@ fn direct_member_address(expression: &Expression) -> Option<(&Expression, u32)> 
 }
 
 impl Generator {
+    /// Marshal the two values of a terminal object-member forwarding call
+    /// without first moving the shared object pointer out of r3.
+    ///
+    /// For `callee(&object->payload, object->length)`, the second argument has
+    /// to consume the original object pointer before the first argument turns
+    /// r3 into the payload address. The pre-sibling-call compiler schedules the
+    /// independent load first (`lwz r4,length(r3); addi r3,r3,payload`).
+    /// Keeping this beside the other argument schedules also lets the terminal
+    /// wrapper owner avoid inventing a callee-saved home for `object`.
+    pub(crate) fn try_emit_same_base_member_forward_arguments(
+        &mut self,
+        arguments: &[Expression],
+        direct_call: bool,
+    ) -> Compilation<bool> {
+        let [first, second @ Expression::Member {
+            base: second_base,
+            member_type,
+            index_stride: None,
+            ..
+        }] = arguments
+        else {
+            return Ok(false);
+        };
+        let Some((first_base, _)) = direct_member_address(first) else {
+            return Ok(false);
+        };
+        let (Expression::Variable(first_name), Expression::Variable(second_name)) =
+            (first_base, second_base.as_ref())
+        else {
+            return Ok(false);
+        };
+        let word_member = matches!(
+            member_type,
+            Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. }
+        );
+        if !direct_call
+            || !word_member
+            || first_name != second_name
+            || self
+                .locations
+                .get(first_name.as_str())
+                .map(|location| location.register)
+                != Some(Eabi::FIRST_GENERAL_ARGUMENT)
+        {
+            return Ok(false);
+        }
+
+        self.evaluate_general(second, Eabi::FIRST_GENERAL_ARGUMENT + 1)?;
+        self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT)?;
+        Ok(true)
+    }
+
     /// Preserve an incoming first parameter when constructing a global-member
     /// receiver for argument zero would otherwise overwrite its `r3` home
     /// before argument one takes the address of one of its members.

@@ -3,9 +3,9 @@
 use super::*;
 
 impl Generator {
-    /// Lower the pre-sibling-call generation's simplest terminal forwarding
-    /// wrapper: every entry parameter is passed unchanged, in order, to one
-    /// direct call whose result is returned unchanged.
+    /// Lower the pre-sibling-call generation's terminal forwarding wrappers:
+    /// either every entry parameter is passed unchanged, or one object pointer
+    /// supplies an addressed member and a word member to the direct call.
     ///
     /// This topology has no value live across the call. Keeping it here beside
     /// sibling-call lowering prevents the broad callee-saved recognizers from
@@ -42,28 +42,66 @@ impl Generator {
                     | Type::StructPointer { .. }
             )
         };
-        let parameter_types_match = self.call_parameter_types.get(name).is_some_and(|types| {
+        let unchanged_parameter_forward = self.call_parameter_types.get(name).is_some_and(|types| {
             types.len() == function.parameters.len()
                 && types
                     .iter()
                     .zip(&function.parameters)
                     .all(|(callee, caller)| *callee == caller.parameter_type)
+                && arguments.len() == function.parameters.len()
+                && arguments
+                    .iter()
+                    .zip(&function.parameters)
+                    .all(|(argument, parameter)| {
+                        matches!(argument, Expression::Variable(argument_name)
+                            if argument_name == &parameter.name)
+                            && single_general(parameter.parameter_type)
+                    })
         });
+        let same_base_member_forward = match (function.parameters.as_slice(), arguments.as_slice()) {
+            (
+                [parameter],
+                [
+                    Expression::MemberAddress {
+                        base: first_base,
+                        index_stride: None,
+                        ..
+                    },
+                    Expression::Member {
+                        base: second_base,
+                        member_type:
+                            Type::Int
+                            | Type::UnsignedInt
+                            | Type::Pointer(_)
+                            | Type::StructPointer { .. },
+                        index_stride: None,
+                        ..
+                    },
+                ],
+            ) => {
+                let pointer_parameter = matches!(
+                    parameter.parameter_type,
+                    Type::Pointer(_) | Type::StructPointer { .. }
+                );
+                let same_parameter = matches!(
+                    (first_base.as_ref(), second_base.as_ref()),
+                    (Expression::Variable(first), Expression::Variable(second))
+                        if first == &parameter.name && second == &parameter.name
+                );
+                pointer_parameter
+                    && same_parameter
+                    && self.call_parameter_types.get(name).is_some_and(|types| {
+                        types.len() == 2 && types.iter().all(|ty| single_general(*ty))
+                    })
+            }
+            _ => false,
+        };
         if self.locations.contains_key(name)
             || self.globals.contains_key(name)
             || self.variadic_callees.contains(name)
             || !single_general(function.return_type)
             || self.call_return_types.get(name) != Some(&function.return_type)
-            || !parameter_types_match
-            || arguments.len() != function.parameters.len()
-            || !arguments
-                .iter()
-                .zip(&function.parameters)
-                .all(|(argument, parameter)| {
-                    matches!(argument, Expression::Variable(argument_name)
-                        if argument_name == &parameter.name)
-                        && single_general(parameter.parameter_type)
-                })
+            || !(unchanged_parameter_forward || same_base_member_forward)
         {
             return Ok(false);
         }
