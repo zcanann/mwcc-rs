@@ -41,6 +41,9 @@ There is a standing rule: **fail honestly**. When a construct is not yet support
 
 ### Measuring reference-project parity
 
+The latest denominator-qualified measurement checkpoint is recorded in
+[`docs/parity-status.md`](docs/parity-status.md).
+
 Canary totals and a hand-picked green gate are regression aids, not a measure of
 overall parity. The persistent frontier loop uses every configured translation
 unit in `reference_projects/*` as its denominator, spends each iteration on
