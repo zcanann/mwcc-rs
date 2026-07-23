@@ -198,6 +198,7 @@ pub(crate) struct Parser {
     pub(crate) dropped_inline_parameter_label_weight: u8,
     /// Anonymous-label cost of each automatic declarator in a dropped inline body.
     pub(crate) dropped_inline_local_declaration_label_weight: u8,
+    pub(crate) dropped_inline_const_local_declaration_label_weight: u8,
     pub(crate) dropped_inline_class_automatic_label_base: u8,
     pub(crate) dropped_inline_class_automatic_label_weight: u8,
     /// Anonymous-label cost of an anonymous struct/union definition.

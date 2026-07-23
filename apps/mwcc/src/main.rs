@@ -529,6 +529,7 @@ fn compile(
         behavior.skipped_function_template_label_base,
         behavior.dropped_inline_parameter_label_weight,
         behavior.dropped_inline_local_declaration_label_weight,
+        behavior.dropped_inline_const_local_declaration_label_weight,
         behavior.dropped_inline_class_automatic_label_base,
         behavior.dropped_inline_class_automatic_label_weight,
         behavior.anonymous_aggregate_definition_label_weight,
@@ -1214,17 +1215,15 @@ fn compile(
             // emit at the data object's position, reverse-slot first-seen — measured
             // `{e1,e2}` -> tbl,e2,e1; shuffled `{e2,e1,e3}` -> tbl,e3,e1,e2; a
             // duplicated element hoists once by its LAST slot.)
-            // A `static` (non-const) symbol ARRAY whose targets are ALL unit functions
-            // (`static void (*tbl[])(void) = { e1, e2 };` — item.c's dispatch tables):
-            // measured layout is the table LOCAL in the local-statics run and the
-            // hoisted callee FUNC symbols at the table's source position in the GLOBAL
-            // run — both handled by the writer now, so it passes through. A CONST
-            // table (.sdata2/.rodata) and a static table with EXTERN targets (their
-            // undef-symbol placement is unmeasured) keep the defer.
-            let static_unit_function_table = global_initializers::private_unit_function_table(
+            // A `static` (non-const) function-pointer ARRAY can target unit functions
+            // or declared extern functions. The writer binds the table LOCAL and owns
+            // both the hoisted defined-function ordering and the relocated UND-symbol
+            // first-use ordering. CONST tables (.sdata2/.rodata) keep the defer.
+            let static_function_table = global_initializers::private_function_table(
                 global,
                 elements,
                 &machine_functions,
+                &prototyped_names,
             );
             let static_unit_data_table =
                 global_initializers::private_unit_data_table(global, elements, &unit.globals);
@@ -1234,7 +1233,7 @@ fn compile(
                 && global.section.is_none()
                 && !single_target
                 && !all_null
-                && !static_unit_function_table
+                && !static_function_table
                 && !static_unit_data_table
                 && !static_string_table
             {
@@ -1350,13 +1349,13 @@ fn compile(
                 is_const: global.is_const && global.section.is_none(),
                 force_full_data_section,
                 // A section-attributed static (`.dtors`), a `static const` reference,
-                // or a static unit-function TABLE binds LOCAL; a plain writable
+                // or a static function-pointer TABLE binds LOCAL; a plain writable
                 // pointer global stays GLOBAL as before.
                 is_static: global.is_static
                     && (global.section.is_some()
                         || global.is_const
                         || all_null
-                        || static_unit_function_table
+                        || static_function_table
                         || static_unit_data_table
                         || static_string_table),
                 is_explicit_zero,

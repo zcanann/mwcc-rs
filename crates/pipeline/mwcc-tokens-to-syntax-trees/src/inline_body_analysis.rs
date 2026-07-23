@@ -5,11 +5,23 @@ use mwcc_tokens::Token;
 /// code generation. This lexical pass deliberately recognizes declarations,
 /// not arbitrary parenthesized expressions.
 pub(crate) fn local_declarators(tokens: &[Token], body_open: usize) -> usize {
+    local_declarator_counts(tokens, body_open).0
+}
+
+/// Count the const-qualified subset separately. Older frontend generations
+/// retain folded const automatics in their discarded-inline analysis even when
+/// mutable locals do not consume an ordinal.
+pub(crate) fn const_local_declarators(tokens: &[Token], body_open: usize) -> usize {
+    local_declarator_counts(tokens, body_open).1
+}
+
+fn local_declarator_counts(tokens: &[Token], body_open: usize) -> (usize, usize) {
     if tokens.get(body_open) != Some(&Token::BraceOpen) {
-        return 0;
+        return (0, 0);
     }
 
     let mut count = 0usize;
+    let mut const_count = 0usize;
     let mut statement_start = body_open + 1;
     let mut braces = 1usize;
     let mut index = statement_start;
@@ -29,13 +41,14 @@ pub(crate) fn local_declarators(tokens: &[Token], body_open: usize) -> usize {
             Token::Semicolon => {
                 let statement = &tokens[statement_start..index];
                 count += declaration_statement(statement);
+                const_count += const_declaration_statement(statement);
                 statement_start = index + 1;
             }
             _ => {}
         }
         index += 1;
     }
-    count
+    (count, const_count)
 }
 
 /// Return the class name when a dropped inline returns that class by value and
@@ -141,6 +154,28 @@ fn declaration_statement(mut tokens: &[Token]) -> usize {
         .skip(1)
         .filter(|segment| declarator_name(segment).is_some())
         .count()
+}
+
+fn const_declaration_statement(mut tokens: &[Token]) -> usize {
+    let declarators = declaration_statement(tokens);
+    if declarators == 0 {
+        return 0;
+    }
+    tokens = trim(tokens);
+    if tokens.first() == Some(&Token::KeywordFor) {
+        let Some(open) = tokens.iter().position(|token| *token == Token::ParenOpen) else {
+            return 0;
+        };
+        tokens = trim(&tokens[open + 1..]);
+    }
+    let Some(first) = top_level_segments(tokens).into_iter().next() else {
+        return 0;
+    };
+    before_initializer(first)
+        .iter()
+        .any(|token| matches!(token, Token::Identifier(word) if word == "const"))
+        .then_some(declarators)
+        .unwrap_or(0)
 }
 
 fn trim(mut tokens: &[Token]) -> &[Token] {
@@ -294,7 +329,7 @@ fn is_specifier(word: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{local_declarators, same_class_automatic};
+    use super::{const_local_declarators, local_declarators, same_class_automatic};
     use mwcc_tokens::Token;
 
     fn count(source: &str) -> usize {
@@ -304,6 +339,15 @@ mod tests {
             .position(|token| *token == mwcc_tokens::Token::BraceOpen)
             .unwrap();
         local_declarators(&tokens, open)
+    }
+
+    fn const_count(source: &str) -> usize {
+        let tokens = mwcc_source_to_tokens::tokenize(source).unwrap();
+        let open = tokens
+            .iter()
+            .position(|token| *token == mwcc_tokens::Token::BraceOpen)
+            .unwrap();
+        const_local_declarators(&tokens, open)
     }
 
     #[test]
@@ -329,6 +373,13 @@ mod tests {
     fn counts_nested_and_for_initializer_declarations() {
         assert_eq!(
             count("void f() { { const Type& value = source; } for (int i = 0; i < 2; ++i) {} }"),
+            2
+        );
+        assert_eq!(
+            const_count(
+                "void f() { { const Type& first = source, second = first; } \
+                 for (int i = 0; i < 2; ++i) {} }"
+            ),
             2
         );
     }

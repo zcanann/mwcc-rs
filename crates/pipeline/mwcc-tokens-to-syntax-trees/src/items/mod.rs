@@ -3791,8 +3791,14 @@ impl Parser {
                     };
                     let local_declarators =
                         crate::inline_body_analysis::local_declarators(&self.tokens, index);
-                    bump += local_declarators
+                    let const_local_declarators =
+                        crate::inline_body_analysis::const_local_declarators(&self.tokens, index);
+                    bump += (local_declarators - const_local_declarators)
                         * usize::from(self.dropped_inline_local_declaration_label_weight);
+                    bump += const_local_declarators
+                        * usize::from(
+                            self.dropped_inline_const_local_declaration_label_weight,
+                        );
                     if let Some(class) = crate::inline_body_analysis::same_class_automatic(
                         &self.tokens,
                         self.position,

@@ -1232,6 +1232,13 @@ pub trait CodegenProfile: core::fmt::Debug {
         0
     }
 
+    /// Per-const-automatic-declarator analysis cost inside a dropped inline
+    /// body. Legacy and mainline frontends retain these folded declarations in
+    /// the analysis ordinal stream even when mutable automatics are free.
+    fn dropped_inline_const_local_declaration_label_weight(&self) -> u8 {
+        1
+    }
+
     /// One-time and per-definition costs of class-valued dropped inlines that
     /// construct an automatic of their return type.
     fn dropped_inline_class_automatic_label_base(&self) -> u8 {
@@ -1415,6 +1422,18 @@ impl CodegenProfile for Gc41Build51213 {
 
     fn prototype_parameter_names_consume_labels(&self) -> bool {
         true
+    }
+
+    fn dropped_inline_parameter_label_weight(&self) -> u8 {
+        1
+    }
+
+    fn dropped_inline_local_declaration_label_weight(&self) -> u8 {
+        1
+    }
+
+    fn dropped_inline_const_local_declaration_label_weight(&self) -> u8 {
+        2
     }
 
     fn deferred_call_dispatcher_labels_per_case(&self) -> u8 {
