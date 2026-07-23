@@ -2346,6 +2346,60 @@ mod tests {
     }
 
     #[test]
+    fn schedules_symmetric_member_clamps_as_one_region() {
+        let source = br#"
+            struct Body { float velocity; };
+            void direct(struct Body* body, float limit) {
+                if (body->velocity < -limit) {
+                    body->velocity = -limit;
+                } else if (body->velocity > limit) {
+                    body->velocity = limit;
+                }
+            }
+            void through_local(struct Body* body, float limit) {
+                float velocity = body->velocity;
+                if (velocity < -limit) {
+                    body->velocity = -limit;
+                } else if (velocity > limit) {
+                    body->velocity = limit;
+                }
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "symmetric-member-clamp.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("both source spellings should retain one member load");
+        let direct = [
+            0xfc, 0x00, 0x08, 0x50, 0xc0, 0x43, 0x00, 0x00, 0xfc, 0x02, 0x00, 0x40, 0x40, 0x80,
+            0x00, 0x0c, 0xd0, 0x03, 0x00, 0x00, 0x4e, 0x80, 0x00, 0x20, 0xfc, 0x02, 0x08, 0x40,
+            0x4c, 0x81, 0x00, 0x20, 0xd0, 0x23, 0x00, 0x00, 0x4e, 0x80, 0x00, 0x20,
+        ];
+        let through_local = [
+            0xfc, 0x40, 0x08, 0x50, 0xc0, 0x03, 0x00, 0x00, 0xfc, 0x00, 0x10, 0x40, 0x40, 0x80,
+            0x00, 0x0c, 0xd0, 0x43, 0x00, 0x00, 0x4e, 0x80, 0x00, 0x20, 0xfc, 0x00, 0x08, 0x40,
+            0x4c, 0x81, 0x00, 0x20, 0xd0, 0x23, 0x00, 0x00, 0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object
+            .windows(direct.len())
+            .any(|bytes| bytes == direct));
+        assert!(object
+            .windows(through_local.len())
+            .any(|bytes| bytes == through_local));
+    }
+
+    #[test]
     fn dispatches_on_a_member_of_a_freshly_loaded_pointer_local() {
         let source = br#"
             struct State { int mode; };
