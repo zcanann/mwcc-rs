@@ -212,9 +212,24 @@ def function_matches(
             reference.size == candidate.size
             and body(reference_bytes, reference) == body(candidate_bytes, candidate)
         )
-        relocations_equal = bytes_equal and function_relocations(
+        reference_function_relocations = function_relocations(
             reference_relocations, reference
-        ) == function_relocations(candidate_relocations, candidate)
+        )
+        candidate_function_relocations = function_relocations(
+            candidate_relocations, candidate
+        )
+        # Anonymous ordinals are object-local numbering, not symbol identity.
+        # Partial-TU projection can omit unrelated functions and consequently
+        # renumber an otherwise identical literal-pool target.  Its section
+        # data is measured independently; code parity must not count that
+        # bookkeeping drift as a function regression.
+        relocations_equal = bytes_equal and [
+            (relocation.offset, relocation.kind, relocation.normalized_target)
+            for relocation in reference_function_relocations
+        ] == [
+            (relocation.offset, relocation.kind, relocation.normalized_target)
+            for relocation in candidate_function_relocations
+        ]
         result[name] = FunctionMatch(
             reference.size,
             True,

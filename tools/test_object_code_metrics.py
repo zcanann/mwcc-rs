@@ -123,6 +123,19 @@ OFFSET   TYPE              VALUE
             describe_function_parity(parity, True),
         )
 
+    def test_function_parity_ignores_object_local_anonymous_ordinals(self):
+        parity = function_parity(
+            bytes.fromhex("c0200000"),
+            bytes.fromhex("c0200000"),
+            [TextRelocation(0, "R_PPC_EMB_SDA21", "@277")],
+            [TextRelocation(0, "R_PPC_EMB_SDA21", "@243")],
+            [TextFunction(0, 4, "load_literal")],
+            [TextFunction(0, 4, "load_literal")],
+        )
+
+        self.assertEqual(parity.text_exact_functions, 1)
+        self.assertEqual(parity.code_exact_functions, 1)
+
     def test_describes_paired_function_gains_and_regressions(self):
         baseline = {
             "still_exact": FunctionMatch(4, True, True, True),
