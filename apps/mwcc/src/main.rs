@@ -2202,6 +2202,64 @@ mod tests {
     }
 
     #[test]
+    fn lowers_wii_member_tab_with_integer_conversion_frame() {
+        let source = br#"
+            struct Writer {
+                int tabWidth() const;
+                int widthFixed() const;
+                float fixedWidth() const;
+                float fontWidth() const;
+                float cursorX() const;
+                void setCursorX(float);
+            };
+            struct Context {
+                Writer* writer;
+                int padding;
+                float xOrigin;
+            };
+            struct Handler { void tab(Context*); };
+            void Handler::tab(Context* context) {
+                (void)0;
+                Writer& writer = *context->writer;
+                int tabWidth = writer.tabWidth();
+                if (tabWidth > 0) {
+                    float charWidth = writer.widthFixed()
+                        ? writer.fixedWidth()
+                        : writer.fontWidth();
+                    float dx = writer.cursorX() - context->xOrigin;
+                    float tabPixels = (float)tabWidth * charWidth;
+                    int tabCount = (int)(dx / tabPixels) + 1;
+                    float cursorX = tabPixels * (float)tabCount + context->xOrigin;
+                    writer.setCursorX(cursorX);
+                }
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.inline_enabled = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::WII_1_0,
+            flags,
+        };
+        let object = compile(
+            source,
+            "member-tab.cpp",
+            config,
+            Some(SourceLanguage::Cxx),
+            None,
+            false,
+        )
+        .expect("the structural Wii tab schedule should lower");
+        assert!(object
+            .windows(4)
+            .any(|instruction| instruction == [0x94, 0x21, 0xff, 0x70]));
+        assert!(object
+            .windows(4)
+            .any(|instruction| instruction == [0xfc, 0x00, 0x00, 0x1e]));
+    }
+
+    #[test]
     fn preserves_a_later_member_address_while_materializing_a_global_receiver() {
         let source = br#"
             class Sink {

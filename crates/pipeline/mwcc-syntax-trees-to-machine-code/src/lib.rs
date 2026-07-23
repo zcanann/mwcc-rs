@@ -117,6 +117,14 @@ pub fn lower_function(
     ) {
         return Ok(output);
     }
+    if let Some(output) = body::lower_member_tab(
+        function,
+        &Behavior::resolve(&config),
+        config.flags.cpp_exceptions,
+        config.build.version >= (4, 3, 0),
+    ) {
+        return Ok(output);
+    }
     // An inline-`asm` function is emitted verbatim — no register allocation,
     // scheduling, or optimizer — so it bypasses the ordinary codegen path entirely.
     if function.asm_body.is_some() {
