@@ -717,16 +717,18 @@ pub trait CodegenProfile: core::fmt::Debug {
         1
     }
 
-    /// Additional base cost of an in-class inline definition under the legacy
-    /// deferred analyzer. Ordinary mainline analysis otherwise charges only
-    /// the definition's control-flow labels.
+    /// Additional base cost of an ordinary in-class inline definition under
+    /// deferred analysis. The 2.4.x oracle charges no generic base cost; its
+    /// non-virtual destructor transaction is modeled separately below.
     fn deferred_cxx_inline_definition_label_bump(&self) -> u8 {
-        1
+        0
     }
 
-    /// Additional legacy deferred-analysis cost for a non-virtual destructor.
+    /// Deferred-analysis cost for a user-declared non-virtual destructor. This
+    /// is the complete two-slot transaction, not an increment on the generic
+    /// in-class-definition cost.
     fn deferred_cxx_nonvirtual_destructor_label_bump(&self) -> u8 {
-        1
+        2
     }
 
     /// Anonymous-label residue of one statement-body inline substitution under

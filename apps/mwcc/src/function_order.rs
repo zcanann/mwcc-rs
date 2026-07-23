@@ -134,7 +134,15 @@ pub(crate) fn apply_deferred_emission_order(
         .partition(|function| function.is_asm);
     deferred_compiled.reverse();
     if let Some(head) = deferred_compiled.first_mut() {
-        head.anonymous_label_bump += source_transaction_prefix + deferred_source_prefix;
+        // A capture-owned source prefix is the complete transaction for its
+        // source body. Adding the generic per-body transaction as well double
+        // counts that analysis (the long-long wait capture exposes this).
+        let generic_source_prefix = if deferred_source_prefix == 0 {
+            source_transaction_prefix
+        } else {
+            0
+        };
+        head.anonymous_label_bump += generic_source_prefix + deferred_source_prefix;
         if deferred_source_prefix != 0 {
             // The source-order analysis already bridges these reversed bodies;
             // MWCC does not insert its ordinary compiled-function gap again.
@@ -226,7 +234,7 @@ mod tests {
         apply_deferred_emission_order(&mut functions, 3, 1);
 
         assert_eq!(functions[0].name, "later");
-        assert_eq!(functions[0].anonymous_label_bump, 12);
+        assert_eq!(functions[0].anonymous_label_bump, 9);
         assert_eq!(functions[0].post_function_anonymous_bump, Some(0));
         assert_eq!(functions[1].anonymous_label_bump, 7);
     }

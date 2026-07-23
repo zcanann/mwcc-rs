@@ -676,6 +676,11 @@ fn compile(
     let diagnose_syntax_tree = std::env::var_os("MWCC_DIAGNOSTIC_SYNTAX_TREE").is_some();
     if diagnose_syntax_tree {
         eprintln!(
+            "cxx-inline-ordinal-facts {:#?}",
+            unit.cxx_inline_ordinal_facts
+        );
+        eprintln!("skipped-inline-ordinal-total {}", unit.skipped_inline_functions);
+        eprintln!(
             "materialized-inline-candidates {:#?}",
             unit.materialized_inline_candidates
         );
@@ -1006,6 +1011,19 @@ fn compile(
     } else {
         0
     };
+    if diagnose_syntax_tree {
+        eprintln!("leading-source-ordinal-bump {leading_source_ordinal_bump}");
+        for function in &machine_functions {
+            eprintln!(
+                "machine-ordinal-facts {}: front={}, source_prefix={}, post={:?}, framed={}",
+                function.name,
+                function.anonymous_label_bump,
+                function.deferred_source_prefix_bump,
+                function.post_function_anonymous_bump,
+                function.frame.is_some()
+            );
+        }
+    }
     // Deferred inlining has its own translation-unit emission schedule. Keep the
     // policy isolated from lowering and object layout: both consume its result.
     if config.flags.inline_deferred {

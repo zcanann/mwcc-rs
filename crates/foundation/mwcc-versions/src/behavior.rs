@@ -1985,8 +1985,8 @@ mod tests {
 
         assert_eq!(behavior.deferred_source_function_label_bump, 3);
         assert_eq!(behavior.deferred_post_function_label_bump, 1);
-        assert_eq!(behavior.deferred_cxx_inline_definition_label_bump, 1);
-        assert_eq!(behavior.deferred_cxx_nonvirtual_destructor_label_bump, 1);
+        assert_eq!(behavior.deferred_cxx_inline_definition_label_bump, 0);
+        assert_eq!(behavior.deferred_cxx_nonvirtual_destructor_label_bump, 2);
         assert_eq!(behavior.inline_statement_substitution_label_weight, 1);
     }
 
