@@ -749,6 +749,9 @@ fn compile(
                 .get(&function.name)
                 .copied()
                 .unwrap_or_default(),
+            unit.function_return_fundamentals
+                .get(&function.name)
+                .copied(),
             function_config,
         ) {
             Ok(machine_function) => machine_functions.push(machine_function),

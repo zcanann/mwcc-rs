@@ -336,6 +336,12 @@ pub struct TranslationUnit {
     /// Source enum identity for each enum-returning function. The executable
     /// return type is its configured integer storage class.
     pub function_return_enumeration_tags: std::collections::HashMap<String, String>,
+    /// Source scalar identity for function returns whose executable storage
+    /// type is shared with another language type. In particular, C++ `bool`
+    /// and `unsigned char` are both one-byte values but have distinct result
+    /// normalization and ABI behavior.
+    pub function_return_fundamentals:
+        std::collections::HashMap<String, SourceFundamentalType>,
     /// Function prototypes (`type name(params);`) by name, return type, and
     /// parameter types, so a call to an externally-defined function knows its
     /// result type (e.g. a `double`-returning math routine) and its parameter

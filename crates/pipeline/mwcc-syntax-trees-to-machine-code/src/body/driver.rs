@@ -4093,6 +4093,32 @@ impl Generator {
         value_type: Type,
         result: u8,
     ) -> Compilation<()> {
+        // `bool` shares one-byte storage with `unsigned char` in the compact
+        // type IR, but a relational/equality/logical-not expression already
+        // materializes the canonical word value 0 or 1. MWCC returns that word
+        // directly; applying the unsigned-byte return truncation adds a
+        // redundant `clrlwi` and can force the comparison into r0 first.
+        let canonical_boolean = matches!(
+            expression,
+            Expression::Binary {
+                operator: BinaryOperator::Less
+                    | BinaryOperator::Greater
+                    | BinaryOperator::LessEqual
+                    | BinaryOperator::GreaterEqual
+                    | BinaryOperator::Equal
+                    | BinaryOperator::NotEqual,
+                ..
+            } | Expression::Unary {
+                operator: UnaryOperator::LogicalNot,
+                ..
+            }
+        );
+        if self.return_source_fundamental
+            == Some(mwcc_syntax_trees::SourceFundamentalType::Boolean)
+            && canonical_boolean
+        {
+            return self.evaluate(expression, Type::Int, result);
+        }
         if self.behavior.narrow_computed_return_style == NarrowComputedReturnStyle::FullWidthResult
             && is_narrow_int(value_type)
         {

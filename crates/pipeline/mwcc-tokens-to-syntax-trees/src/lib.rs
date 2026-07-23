@@ -268,6 +268,7 @@ pub fn parse_located_translation_unit_with_behavior(
         variable_structs: HashMap::new(),
         cxx_reference_variables: std::collections::HashSet::new(),
         function_return_structs: HashMap::new(),
+        function_return_fundamentals: HashMap::new(),
         fixed_address_globals: HashMap::new(),
         fixed_address_arrays: HashMap::new(),
         variable_types: HashMap::new(),
@@ -4200,6 +4201,25 @@ blr\n\
         assert_eq!(unit.globals.len(), 2);
         assert_eq!(unit.globals[0].initializer, Some(vec![1]));
         assert_eq!(unit.globals[1].initializer, Some(vec![0]));
+    }
+
+    #[test]
+    fn retains_boolean_function_return_identity() {
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize("bool is_one(int value) { return value == 1; }")
+                .unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(unit.functions[0].return_type, Type::UnsignedChar);
+        assert_eq!(
+            unit.function_return_fundamentals.get("is_one__Fi"),
+            Some(&mwcc_syntax_trees::SourceFundamentalType::Boolean)
+        );
     }
 
     #[test]

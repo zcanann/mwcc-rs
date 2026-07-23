@@ -1105,6 +1105,9 @@ impl Parser {
             function_return_enumeration_tags: std::mem::take(
                 &mut self.function_return_enums,
             ),
+            function_return_fundamentals: std::mem::take(
+                &mut self.function_return_fundamentals,
+            ),
             prototypes,
             named_prototype_parameters: self.named_prototype_parameters,
             inline_asm_symbols: std::mem::take(&mut self.inline_asm_symbols),
@@ -1243,6 +1246,11 @@ impl Parser {
                 self.function_return_enums
                     .entry(name.clone())
                     .or_insert_with(|| tag.clone());
+            }
+            for (name, fundamental) in &probe.function_return_fundamentals {
+                self.function_return_fundamentals
+                    .entry(name.clone())
+                    .or_insert(*fundamental);
             }
             for (source_name, methods) in probe.cxx_free_functions {
                 let retained = self.cxx_free_functions.entry(source_name).or_default();
@@ -3085,6 +3093,10 @@ impl Parser {
             if let Some(tag) = &return_enum_tag {
                 self.function_return_enums
                     .insert(name.clone(), tag.clone());
+            }
+            if let Some(fundamental) = declared_source_fundamental {
+                self.function_return_fundamentals
+                    .insert(name.clone(), fundamental);
             }
 
             if *self.peek() == Token::Semicolon {

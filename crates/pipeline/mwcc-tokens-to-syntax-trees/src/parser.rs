@@ -327,6 +327,8 @@ pub(crate) struct Parser {
     /// so `get()->field` resolves the returned pointer's layout (populated when a
     /// `struct S *get(...)` prototype/definition is parsed).
     pub(crate) function_return_structs: HashMap<String, String>,
+    /// Source scalar return identity keyed by final emitted function name.
+    pub(crate) function_return_fundamentals: HashMap<String, SourceFundamentalType>,
     /// Fixed-address globals declared with `AT_ADDRESS` (`Type Name : addr;` — mwcc's `: (addr)`
     /// placement): name -> (address, cast-target POINTER type, struct/union tag). A reference to one
     /// desugars to a const-address deref `*(cast-target)addr` at its use site — a `StructPointer`

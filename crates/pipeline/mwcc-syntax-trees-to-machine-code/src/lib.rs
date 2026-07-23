@@ -93,6 +93,7 @@ pub fn lower_function(
     inline_bodies: &InlineBodySet,
     inline_summaries: &InlineSummaries,
     inline_expansion_facts: mwcc_syntax_trees::InlineExpansionFacts,
+    return_source_fundamental: Option<mwcc_syntax_trees::SourceFundamentalType>,
     config: CompilerConfig,
 ) -> Compilation<MachineFunction> {
     if let Some(output) = body::lower_register_inline_asm_wrapper(
@@ -339,6 +340,7 @@ pub fn lower_function(
             .map(|global| global.name.clone())
             .collect(),
         behavior: Behavior::resolve(&config),
+        return_source_fundamental,
         constraints: mwcc_vreg::RegisterConstraints::gekko(),
         non_leaf: false,
         callee_saved_float: 0,
