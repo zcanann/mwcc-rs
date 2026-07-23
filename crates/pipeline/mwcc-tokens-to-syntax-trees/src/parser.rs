@@ -55,6 +55,11 @@ pub(crate) struct StructLayout {
     /// resolved fields lets postfix parsing distinguish `s->callback()` from a
     /// C++ instance-method call without guessing from a four-byte type.
     pub(crate) function_pointer_fields: std::collections::HashSet<String>,
+    /// Complete source signatures for callable fields when declaration parsing
+    /// retained them. Kept separately from layout so codegen can continue to
+    /// use the compact callable-field set.
+    pub(crate) function_pointer_types:
+        HashMap<String, crate::cxx::CxxFunctionType>,
     /// The struct's total size in bytes (members plus trailing padding to the
     /// struct's alignment) — the stride for an array/pointer of this struct.
     pub(crate) size: u32,
@@ -102,6 +107,10 @@ impl StructLayout {
                     aggregate_tag: field.struct_tag.clone(),
                     array_length: field.array_bytes.map(|bytes| bytes / element_size.max(1)),
                     bit_field: field.bit_field,
+                    function_type: self
+                        .function_pointer_types
+                        .get(member_name)
+                        .map(crate::cxx::CxxFunctionType::source_identity),
                 }
             })
             .collect();

@@ -696,6 +696,13 @@ pub enum CallDispatcherStyle {
 /// 2.4.x mainline (mwcceppc build 81 through 2.4.7 build 108); a build that
 /// diverges implements this trait and overrides just the differing methods.
 pub trait CodegenProfile: core::fmt::Debug {
+    /// Alignment recorded in `.comment` for aggregate objects larger than the
+    /// small-data limit. This metadata convention is independent of their
+    /// actual storage alignment.
+    fn large_aggregate_comment_alignment(&self) -> u32 {
+        4
+    }
+
     /// Whether unused C inline assembly helpers remain as UND symbols: LOCAL
     /// for `static inline`, GLOBAL for plain `inline`. The 2.3.3 line drops
     /// both forms; the 2.4.x line retains them.
@@ -1466,6 +1473,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn large_aggregate_comment_alignment(&self) -> u32 {
+        8
+    }
+
     fn deferred_function_emission_style(&self) -> DeferredFunctionEmissionStyle {
         DeferredFunctionEmissionStyle::ReverseAll
     }

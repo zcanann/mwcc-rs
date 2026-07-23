@@ -396,6 +396,7 @@ mod tests {
             assert_eq!(build.initial_anonymous_counter, 5);
             assert_eq!(build.post_leaf_function_anonymous_bump, 4);
             assert_eq!(build.post_framed_function_anonymous_bump, 4);
+            assert_eq!(build.profile.large_aggregate_comment_alignment(), 4);
         }
     }
 
@@ -408,6 +409,7 @@ mod tests {
         assert_eq!(build.comment_marker, 0x0f);
         assert_eq!(build.comment_version, (4, 0, 0));
         assert_eq!(build.code_alignment, 16);
+        assert_eq!(build.profile.large_aggregate_comment_alignment(), 8);
         assert!(!build.sdata2_writable);
     }
 }

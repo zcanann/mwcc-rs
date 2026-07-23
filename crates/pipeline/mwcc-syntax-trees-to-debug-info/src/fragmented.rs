@@ -742,6 +742,11 @@ pub(super) fn lower_aggregate_data_unit(
 
     let line_header = ".line..1".to_string();
     let compile_unit = ".dwarf.0011..3".to_string();
+    let callable_fragments = fragments
+        .iter()
+        .filter(|fragment| fragment.name.starts_with(".dwarf.0015.."))
+        .count() as u32;
+    let first_null_ordinal = 4 + callable_fragments;
     sections.layout = DebugLayout::AfterDataGrouped;
     sections.symbols = vec![
         symbol(
@@ -774,8 +779,25 @@ pub(super) fn lower_aggregate_data_unit(
             0,
             DebugSymbolPlacement::Early,
         ),
+    ];
+    for fragment in fragments
+        .iter()
+        .filter(|fragment| fragment.binding == DebugSymbolBinding::Local)
+    {
+        sections.symbols.push(symbol(
+            fragment.name.clone(),
+            DebugSection::Debug,
+            fragment.offset,
+            fragment.size,
+            1,
+            fragment.binding,
+            fragment.comment_flags,
+            DebugSymbolPlacement::Early,
+        ));
+    }
+    sections.symbols.extend([
         symbol(
-            ".dwarf.0000..4".into(),
+            format!(".dwarf.0000..{first_null_ordinal}"),
             DebugSection::Debug,
             first_null_offset,
             4,
@@ -785,7 +807,7 @@ pub(super) fn lower_aggregate_data_unit(
             DebugSymbolPlacement::Early,
         ),
         symbol(
-            ".dwarf.0000..5".into(),
+            format!(".dwarf.0000..{}", first_null_ordinal + 1),
             DebugSection::Debug,
             second_null_offset,
             second_null_size,
@@ -794,8 +816,11 @@ pub(super) fn lower_aggregate_data_unit(
             0,
             DebugSymbolPlacement::Early,
         ),
-    ];
-    for fragment in &fragments {
+    ]);
+    for fragment in fragments
+        .iter()
+        .filter(|fragment| fragment.binding != DebugSymbolBinding::Local)
+    {
         sections.symbols.push(symbol(
             fragment.name.clone(),
             DebugSection::Debug,
@@ -821,11 +846,27 @@ pub(super) fn lower_aggregate_data_unit(
                 relocation.target = DebugRelocationTarget::Symbol(line_header.clone());
             }
             DebugRelocationTarget::Section(name) if name == ".debug" => {
-                if let Some(fragment) = reference_fragment(
-                    &fragments,
-                    relocation.offset,
-                    u32::try_from(relocation.addend).unwrap_or(u32::MAX),
-                ) {
+                let target_offset = u32::try_from(relocation.addend).unwrap_or(u32::MAX);
+                let is_sibling = relocation
+                    .offset
+                    .checked_sub(2)
+                    .and_then(|start| {
+                        sections
+                            .debug
+                            .get(start as usize..relocation.offset as usize)
+                    }) == Some(&[0x00, 0x12][..]);
+                let exact_target = (!is_sibling).then(|| {
+                    fragments
+                        .iter()
+                        .find(|fragment| fragment.offset == target_offset)
+                });
+                if let Some(fragment) = exact_target.flatten().or_else(|| {
+                    reference_fragment(
+                        &fragments,
+                        relocation.offset,
+                        target_offset,
+                    )
+                }) {
                     relocation.target = DebugRelocationTarget::Symbol(fragment.name.clone());
                     relocation.addend -= fragment.offset as i32;
                 }
@@ -871,8 +912,51 @@ fn data_fragment_boundaries(
 ) -> Compilation<(Vec<DataFragmentBoundary>, u32, u32, u32)> {
     let mut cursor = start_offset;
     let mut fragments = Vec::new();
+    let mut callable_ordinal = 4u32;
     for item in fragmented_plan(unit)? {
         match item {
+            FragmentedDataItem::Callable { function_type } => {
+                if !unit.functions.is_empty() {
+                    return Err(Diagnostic::error(
+                        "debug-info: callable data fragments alongside functions are not implemented yet (roadmap)",
+                    ));
+                }
+                let return_offset = cursor;
+                cursor = advance_record(bytes, cursor)?;
+                fragments.push(DataFragmentBoundary {
+                    name: format!(".dwarf.0015..{callable_ordinal}"),
+                    offset: return_offset,
+                    size: cursor - return_offset,
+                    binding: DebugSymbolBinding::Local,
+                    comment_flags: 0,
+                });
+                callable_ordinal += 1;
+
+                let callable_offset = cursor;
+                cursor = advance_record(bytes, cursor)?;
+                // A source `void(void)` callable has one DWARF formal-parameter
+                // sentinel followed by its child-list terminator.
+                if function_type.variadic || !function_type.parameters.is_empty() {
+                    return Err(Diagnostic::error(
+                        "debug-info: this callable data fragment is not implemented yet (roadmap)",
+                    ));
+                }
+                cursor = advance_record(bytes, cursor)?;
+                if read_u32(bytes, cursor)? != 4 {
+                    return Err(Diagnostic::error(
+                        "debug-info: invalid callable child terminator",
+                    ));
+                }
+                cursor += 4;
+                fragments.push(DataFragmentBoundary {
+                    name: format!(".dwarf.0015..{callable_ordinal}"),
+                    offset: callable_offset,
+                    size: cursor - callable_offset,
+                    binding: DebugSymbolBinding::Local,
+                    comment_flags: 0,
+                });
+                callable_ordinal += 1;
+            }
             FragmentedDataItem::Aggregate { definition, .. } => {
                 let offset = cursor;
                 cursor = advance_record(bytes, cursor)?;
@@ -886,7 +970,13 @@ fn data_fragment_boundaries(
                 }
                 cursor += 4;
                 let tag = if definition.is_union { "0017" } else { "0013" };
-                let name = definition.source_tag.as_deref().unwrap_or(&definition.name);
+                let ordinary_name = definition.source_tag.as_deref().unwrap_or(&definition.name);
+                let qualified_callable_name = definition
+                    .members
+                    .iter()
+                    .any(|member| member.function_type.is_some())
+                    .then(|| format!("{ordinary_name}::{ordinary_name}"));
+                let name = qualified_callable_name.as_deref().unwrap_or(ordinary_name);
                 fragments.push(DataFragmentBoundary {
                     name: format!(".dwarf.{tag}.{name}"),
                     offset,

@@ -243,9 +243,36 @@ impl CxxFunctionType {
             variadic,
         }
     }
+
+    pub(crate) fn source_identity(&self) -> mwcc_syntax_trees::SourceFunctionType {
+        mwcc_syntax_trees::SourceFunctionType {
+            return_type: self.return_type.source_identity(),
+            parameters: self
+                .parameters
+                .iter()
+                .map(CxxParameterType::source_identity)
+                .collect(),
+            variadic: self.variadic,
+        }
+    }
 }
 
 impl CxxParameterType {
+    fn source_identity(&self) -> mwcc_syntax_trees::SourceTypeIdentity {
+        mwcc_syntax_trees::SourceTypeIdentity {
+            declared_type: self.source_type,
+            source_fundamental: self.source_fundamental,
+            aggregate_tag: self.qualified_name.clone(),
+            pointer_depth: self.pointer_depth,
+            is_reference: self.is_reference,
+            function_type: self
+                .function_type
+                .as_deref()
+                .map(CxxFunctionType::source_identity)
+                .map(Box::new),
+        }
+    }
+
     /// Compare source-level callable identity without allowing the recovered
     /// size of an aggregate to change its type. A self-reference parsed inside
     /// its own class is necessarily incomplete (size zero), while the same
@@ -3119,6 +3146,11 @@ impl Parser {
                     );
                     if base.function_pointer_fields.contains(field_name) {
                         layout.function_pointer_fields.insert(field_name.clone());
+                        if let Some(function_type) = base.function_pointer_types.get(field_name) {
+                            layout
+                                .function_pointer_types
+                                .insert(field_name.clone(), function_type.clone());
+                        }
                     }
                 }
                 let is_primary_base = class.bases.is_empty();
@@ -3386,6 +3418,9 @@ impl Parser {
                 }
                 Err(error) => return Err(error),
             };
+            let field_function_type = field_is_function_pointer_typedef
+                .then(|| self.last_cxx_function_type.take())
+                .flatten();
             if matches!(self.tokens.get(declaration_start), Some(Token::Identifier(word)) if word == "enum")
                 && self.eat_keyword(Token::Semicolon)
             {
@@ -3423,7 +3458,7 @@ impl Parser {
                 self.skip_class_member()?;
                 continue;
             }
-            if let Some((field_name, _, _callback_type)) = self
+            if let Some((field_name, _, callback_type)) = self
                 .try_cxx_function_pointer_declarator(CxxParameterType::plain(field_type))?
             {
                 if *self.peek() != Token::Semicolon {
@@ -3451,6 +3486,9 @@ impl Parser {
                     },
                 );
                 layout.function_pointer_fields.insert(field_name.clone());
+                layout
+                    .function_pointer_types
+                    .insert(field_name.clone(), callback_type);
                 class.fields.push(field_name);
                 offset = offset.checked_add(type_size(field_type)).ok_or_else(|| {
                     Diagnostic::error("C++ class layout exceeds the 32-bit address space")
@@ -3556,9 +3594,6 @@ impl Parser {
                     });
                 continue;
             }
-            if field_is_function_pointer_typedef {
-                self.last_cxx_function_type.take();
-            }
             if matches!(self.peek(), Token::Colon) {
                 return Err(Diagnostic::error(
                     "a C++ bit-field member is not supported yet (roadmap)",
@@ -3610,6 +3645,11 @@ impl Parser {
             );
             if field_is_function_pointer_typedef {
                 layout.function_pointer_fields.insert(field_name.clone());
+                if let Some(function_type) = field_function_type {
+                    layout
+                        .function_pointer_types
+                        .insert(field_name.clone(), function_type);
+                }
             }
             class.fields.push(field_name);
             offset = offset.checked_add(field_size).ok_or_else(|| {
@@ -3687,6 +3727,11 @@ impl Parser {
                 );
                 if base.function_pointer_fields.contains(field_name) {
                     layout.function_pointer_fields.insert(field_name.clone());
+                    if let Some(function_type) = base.function_pointer_types.get(field_name) {
+                        layout
+                            .function_pointer_types
+                            .insert(field_name.clone(), function_type.clone());
+                    }
                 }
             }
             class.bases.insert(
@@ -3716,6 +3761,7 @@ impl Parser {
         }
         // C++ gives an otherwise empty class size one. Empty-base optimization is
         // deliberately outside this subset.
+        layout.source_tag = Some(name.clone());
         layout.size = offset.max(1).div_ceil(max_align) * max_align;
         layout.align = max_align as u8;
         Ok((name, layout, class))

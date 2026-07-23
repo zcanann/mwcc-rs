@@ -9,7 +9,10 @@ mod function;
 mod operators;
 mod types;
 
-pub use aggregate::{AggregateDefinition, AggregateMember, SourceFundamentalType};
+pub use aggregate::{
+    AggregateDefinition, AggregateMember, SourceFunctionType, SourceFundamentalType,
+    SourceTypeIdentity,
+};
 pub use enumeration::{EnumerationDefinition, Enumerator};
 pub use expression::{ConditionalOrigin, Expression};
 pub use function::{

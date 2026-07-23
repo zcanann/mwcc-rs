@@ -1007,6 +1007,9 @@ impl Parser {
             }
             let field_is_function_pointer_typedef = matches!(self.peek(), Token::Identifier(word) if self.function_pointer_typedefs.contains_key(word));
             let mut field_type = self.parse_type()?;
+            let field_function_type = field_is_function_pointer_typedef
+                .then(|| self.last_cxx_function_type.take())
+                .flatten();
             let source_fundamental = self.last_source_fundamental;
             while self.eat_keyword(Token::Star) {
                 field_type = Type::Pointer(Pointee::Pointer);
@@ -1224,7 +1227,12 @@ impl Parser {
                     },
                 );
                 if field_is_function_pointer_typedef && !is_array {
-                    layout.function_pointer_fields.insert(field_name);
+                    layout.function_pointer_fields.insert(field_name.clone());
+                    if let Some(function_type) = &field_function_type {
+                        layout
+                            .function_pointer_types
+                            .insert(field_name, function_type.clone());
+                    }
                 }
                 offset = advance_layout_offset(offset, size)?;
                 if !self.eat_keyword(Token::Comma) {
@@ -1358,6 +1366,9 @@ impl Parser {
                 layout
                     .function_pointer_fields
                     .extend(inner.function_pointer_fields.iter().cloned());
+                layout
+                    .function_pointer_types
+                    .extend(inner.function_pointer_types.clone());
                 *offset = advance_layout_offset(*offset, inner_size)?;
                 Ok(names)
             }
@@ -1518,6 +1529,9 @@ impl Parser {
                 layout
                     .function_pointer_fields
                     .extend(inner.function_pointer_fields.iter().cloned());
+                layout
+                    .function_pointer_types
+                    .extend(inner.function_pointer_types.clone());
                 *offset = advance_layout_offset(*offset, inner_size)?;
                 names
             }
@@ -1672,6 +1686,9 @@ impl Parser {
                     layout
                         .function_pointer_fields
                         .extend(inner.function_pointer_fields.iter().cloned());
+                    layout
+                        .function_pointer_types
+                        .extend(inner.function_pointer_types.clone());
                 }
                 max_size = max_size.max(inner_size);
                 max_align = max_align.max(inner_align);

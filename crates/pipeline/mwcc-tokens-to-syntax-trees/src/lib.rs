@@ -4265,6 +4265,15 @@ blr\n\
         .unwrap();
 
         assert_eq!(unit.prototypes[0].0, "target__Fv");
+        let function_type = unit.aggregate_definitions["Interface"].members[0]
+            .function_type
+            .as_ref()
+            .expect("function-pointer member signature");
+        assert_eq!(
+            function_type.return_type.source_fundamental,
+            Some(mwcc_syntax_trees::SourceFundamentalType::Void)
+        );
+        assert!(function_type.parameters.is_empty());
         assert_eq!(
             unit.globals[0].data_relocations,
             vec![(0, "target__Fv".to_string(), 0)]

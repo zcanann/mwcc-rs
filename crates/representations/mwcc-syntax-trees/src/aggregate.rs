@@ -31,6 +31,27 @@ pub enum SourceFundamentalType {
     UnsignedLongLong,
 }
 
+/// Declaration identity for one source type used inside a callable signature.
+/// Executable [`Type`] remains compact; debug and ABI consumers retain the
+/// spelling facts that storage width alone cannot recover.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceTypeIdentity {
+    pub declared_type: Type,
+    pub source_fundamental: Option<SourceFundamentalType>,
+    pub aggregate_tag: Option<String>,
+    pub pointer_depth: u8,
+    pub is_reference: bool,
+    pub function_type: Option<Box<SourceFunctionType>>,
+}
+
+/// Source-level signature behind a function-pointer declaration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceFunctionType {
+    pub return_type: SourceTypeIdentity,
+    pub parameters: Vec<SourceTypeIdentity>,
+    pub variadic: bool,
+}
+
 /// One named struct or union declaration retained by the translation unit.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AggregateDefinition {
@@ -60,4 +81,6 @@ pub struct AggregateMember {
     pub array_length: Option<u32>,
     /// `(bit offset from the most-significant end, width)` for a bit-field.
     pub bit_field: Option<(u8, u8)>,
+    /// Complete callable identity when this member stores a function pointer.
+    pub function_type: Option<SourceFunctionType>,
 }

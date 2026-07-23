@@ -466,6 +466,7 @@ fn global_alignments(
     is_array: bool,
     requested_alignment: u32,
     unoptimized: bool,
+    large_aggregate_comment_alignment: u32,
 ) -> GlobalAlignments {
     let layout = match struct_alignment {
         // Arrays of aggregate elements receive MWCC's minimum word object
@@ -482,6 +483,11 @@ fn global_alignments(
     .max(requested_alignment);
     let comment = if unoptimized && struct_alignment.is_none() {
         element_size.max(requested_alignment)
+    } else if struct_alignment.is_some_and(|alignment| alignment >= 4) && element_size > 8 {
+        // A build may give full-section aggregate symbols a metadata alignment
+        // larger than their actual member layout. Keep that convention in the
+        // build profile rather than inferring it from source language here.
+        layout.max(large_aggregate_comment_alignment)
     } else {
         layout
     };
@@ -1380,6 +1386,7 @@ fn compile(
             global.array_length.is_some(),
             global.attribute_alignment.map_or(1, u32::from),
             config.flags.optimization == mwcc_versions::Optimization::O0,
+            config.build.profile.large_aggregate_comment_alignment(),
         );
         let alignment = alignments.layout;
         let comment_alignment = alignments.comment;
@@ -2037,10 +2044,17 @@ fn compile(
         Vec::new()
     };
 
-    let code_alignment = config
-        .flags
-        .function_alignment
-        .unwrap_or(u32::from(config.build.code_alignment));
+    let code_alignment = if machine_functions.is_empty() {
+        // A data-only unit still carries an empty `.text` section. Later Wii
+        // builds normally align real functions to 16, but MWCC gives this
+        // placeholder section the EABI minimum word alignment.
+        4
+    } else {
+        config
+            .flags
+            .function_alignment
+            .unwrap_or(u32::from(config.build.code_alignment))
+    };
     let object_format = mwcc_machine_code_to_object::ObjectFormat {
         comment: mwcc_machine_code_to_object::CommentFormat {
             marker: config.build.comment_marker,
@@ -2716,45 +2730,52 @@ mod tests {
     #[test]
     fn scalar_array_layout_and_comment_alignment_are_independent() {
         assert_eq!(
-            global_alignments(1, None, true, 1, true),
+            global_alignments(1, None, true, 1, true, 4),
             GlobalAlignments {
                 layout: 4,
                 comment: 1,
             }
         );
         assert_eq!(
-            global_alignments(2, None, true, 1, true),
+            global_alignments(2, None, true, 1, true, 4),
             GlobalAlignments {
                 layout: 4,
                 comment: 2,
             }
         );
         assert_eq!(
-            global_alignments(1, None, true, 32, true),
+            global_alignments(1, None, true, 32, true, 4),
             GlobalAlignments {
                 layout: 32,
                 comment: 32,
             }
         );
         assert_eq!(
-            global_alignments(1, None, true, 1, false),
+            global_alignments(1, None, true, 1, false, 4),
             GlobalAlignments {
                 layout: 4,
                 comment: 4,
             }
         );
         assert_eq!(
-            global_alignments(14, Some(1), false, 1, false),
+            global_alignments(14, Some(1), false, 1, false, 4),
             GlobalAlignments {
                 layout: 1,
                 comment: 1,
             }
         );
         assert_eq!(
-            global_alignments(4, Some(1), true, 1, false),
+            global_alignments(4, Some(1), true, 1, false, 4),
             GlobalAlignments {
                 layout: 4,
                 comment: 4,
+            }
+        );
+        assert_eq!(
+            global_alignments(24, Some(4), false, 1, false, 8),
+            GlobalAlignments {
+                layout: 4,
+                comment: 8,
             }
         );
     }

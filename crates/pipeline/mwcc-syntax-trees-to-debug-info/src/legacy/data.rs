@@ -32,6 +32,9 @@ pub(super) struct DataRecords {
 /// DIE construction and the later ELF-fragment partition, keeping source type
 /// ownership out of the object-container layer.
 pub(crate) enum FragmentedDataItem<'a> {
+    Callable {
+        function_type: &'a mwcc_syntax_trees::SourceFunctionType,
+    },
     Aggregate {
         key: String,
         definition: &'a AggregateDefinition,
@@ -130,6 +133,20 @@ fn collect_fragmented_types<'a>(
             collect_fragmented_types(unit, member_key, root_key, roots, emitted, output)?;
         }
     }
+    let mut callable_types = Vec::new();
+    for member in &definition.members {
+        let Some(function_type) = member.function_type.as_ref() else {
+            continue;
+        };
+        if callable_types
+            .iter()
+            .any(|seen: &&mwcc_syntax_trees::SourceFunctionType| *seen == function_type)
+        {
+            continue;
+        }
+        callable_types.push(function_type);
+        output.push(FragmentedDataItem::Callable { function_type });
+    }
     emitted.push(key.to_string());
     output.push(FragmentedDataItem::Aggregate {
         key: key.to_string(),
@@ -147,6 +164,7 @@ pub(super) fn fragmented_records(
         kind: PlannedKind<'a>,
     }
     enum PlannedKind<'a> {
+        Callable(CallablePlan<'a>),
         Aggregate(AggregatePlan<'a>),
         Global {
             global: &'a GlobalDeclaration,
@@ -158,9 +176,28 @@ pub(super) fn fragmented_records(
     let plan = fragmented_plan(unit)?;
     let mut next_id = first_id.0;
     let mut aggregate_ids = HashMap::new();
+    let mut callable_ids = Vec::new();
     let mut planned = Vec::with_capacity(plan.len());
     for item in plan {
         match item {
+            FragmentedDataItem::Callable { function_type } => {
+                validate_void_callable(function_type)?;
+                let return_id = allocate(&mut next_id);
+                let callable_id = allocate(&mut next_id);
+                let parameter_id = allocate(&mut next_id);
+                let children_end = allocate(&mut next_id);
+                callable_ids.push((function_type, return_id));
+                planned.push(PlannedItem {
+                    start_id: return_id,
+                    kind: PlannedKind::Callable(CallablePlan {
+                        return_id,
+                        callable_id,
+                        parameter_id,
+                        children_end,
+                        function_type,
+                    }),
+                });
+            }
             FragmentedDataItem::Aggregate { key, definition } => {
                 let type_id = allocate(&mut next_id);
                 aggregate_ids.insert(key, type_id);
@@ -176,6 +213,7 @@ pub(super) fn fragmented_records(
                         type_id,
                         member_ids,
                         member_type_ids: Vec::new(),
+                        member_callable_type_ids: Vec::new(),
                         member_array_type_ids: vec![None; definition.members.len()],
                         children_end,
                         definition,
@@ -211,6 +249,19 @@ pub(super) fn fragmented_records(
                         .and_then(|key| aggregate_ids.get(key).copied())
                 })
                 .collect();
+            aggregate.member_callable_type_ids = aggregate
+                .definition
+                .members
+                .iter()
+                .map(|member| {
+                    member.function_type.as_ref().and_then(|signature| {
+                        callable_ids
+                            .iter()
+                            .find(|(candidate, _)| *candidate == signature)
+                            .map(|(_, id)| *id)
+                    })
+                })
+                .collect();
         }
     }
 
@@ -220,6 +271,9 @@ pub(super) fn fragmented_records(
             .get(index + 1)
             .map_or(DATA_END, |following| following.start_id);
         match &item.kind {
+            PlannedKind::Callable(callable) => {
+                records.extend(callable_records(callable, sibling)?);
+            }
             PlannedKind::Aggregate(aggregate) => {
                 let mut attributes = vec![attribute(
                     AttributeName::Sibling,
@@ -250,25 +304,37 @@ pub(super) fn fragmented_records(
                         .get(member_index + 1)
                         .copied()
                         .unwrap_or(aggregate.children_end);
+                    let mut attributes = vec![
+                        attribute(
+                            AttributeName::Sibling,
+                            AttributeValue::Reference(member_sibling),
+                        ),
+                        attribute(
+                            AttributeName::Name,
+                            AttributeValue::String(member.name.clone()),
+                        ),
+                        aggregate.member_callable_type_ids[member_index].map_or_else(
+                            || {
+                                member_type_attribute(
+                                    member.declared_type,
+                                    aggregate.member_type_ids[member_index],
+                                    member.source_fundamental,
+                                )
+                            },
+                            |id| Ok(modified_user_defined_type_with_modifier(id, 1)),
+                        )?,
+                    ];
+                    if member.function_type.is_some() {
+                        attributes.push(attribute(
+                            AttributeName::MwMemberFlags,
+                            AttributeValue::String(String::new()),
+                        ));
+                    }
+                    attributes.push(member_location(member.offset));
                     records.push(DebugRecord::Entry(DebugEntry {
                         id: aggregate.member_ids[member_index],
                         tag: Tag::Member,
-                        attributes: vec![
-                            attribute(
-                                AttributeName::Sibling,
-                                AttributeValue::Reference(member_sibling),
-                            ),
-                            attribute(
-                                AttributeName::Name,
-                                AttributeValue::String(member.name.clone()),
-                            ),
-                            member_type_attribute(
-                                member.declared_type,
-                                aggregate.member_type_ids[member_index],
-                                member.source_fundamental,
-                            )?,
-                            member_location(member.offset),
-                        ],
+                        attributes,
                     }));
                 }
                 records.push(DebugRecord::Marker(aggregate.children_end));
@@ -314,11 +380,20 @@ struct AggregatePlan<'a> {
     type_id: DebugEntryId,
     member_ids: Vec<DebugEntryId>,
     member_type_ids: Vec<Option<DebugEntryId>>,
+    member_callable_type_ids: Vec<Option<DebugEntryId>>,
     /// Array type emitted immediately before this aggregate, by member index.
     /// Members reference the array DIE rather than their scalar element type.
     member_array_type_ids: Vec<Option<DebugEntryId>>,
     children_end: DebugEntryId,
     definition: &'a AggregateDefinition,
+}
+
+struct CallablePlan<'a> {
+    return_id: DebugEntryId,
+    callable_id: DebugEntryId,
+    parameter_id: DebugEntryId,
+    children_end: DebugEntryId,
+    function_type: &'a mwcc_syntax_trees::SourceFunctionType,
 }
 
 impl AggregatePlan<'_> {
@@ -626,6 +701,66 @@ fn allocate(next_id: &mut u32) -> DebugEntryId {
     id
 }
 
+fn validate_void_callable(
+    function_type: &mwcc_syntax_trees::SourceFunctionType,
+) -> Compilation<()> {
+    let result = &function_type.return_type;
+    if function_type.variadic
+        || !function_type.parameters.is_empty()
+        || result.declared_type != Type::Void
+        || result.source_fundamental != Some(SourceFundamentalType::Void)
+        || result.pointer_depth != 0
+        || result.is_reference
+        || result.function_type.is_some()
+    {
+        return Err(Diagnostic::error(
+            "debug-info: this function-pointer member signature is not implemented yet (roadmap)",
+        ));
+    }
+    Ok(())
+}
+
+fn callable_records(
+    callable: &CallablePlan<'_>,
+    sibling: DebugEntryId,
+) -> Compilation<Vec<DebugRecord>> {
+    validate_void_callable(callable.function_type)?;
+    Ok(vec![
+        DebugRecord::Entry(DebugEntry {
+            id: callable.return_id,
+            tag: Tag::ModifiedType,
+            attributes: vec![
+                attribute(
+                    AttributeName::Sibling,
+                    AttributeValue::Reference(callable.callable_id),
+                ),
+                fundamental_attribute(FundamentalType::Void),
+            ],
+        }),
+        DebugRecord::Entry(DebugEntry {
+            id: callable.callable_id,
+            tag: Tag::ModifiedType,
+            attributes: vec![
+                attribute(AttributeName::Sibling, AttributeValue::Reference(sibling)),
+                modified_user_defined_type_with_modifier(sibling, 2),
+            ],
+        }),
+        DebugRecord::Entry(DebugEntry {
+            id: callable.parameter_id,
+            tag: Tag::FormalParameter,
+            attributes: vec![
+                attribute(
+                    AttributeName::Sibling,
+                    AttributeValue::Reference(callable.children_end),
+                ),
+                modified_user_defined_type_with_modifier(sibling, 2),
+            ],
+        }),
+        DebugRecord::Marker(callable.children_end),
+        DebugRecord::Raw(vec![0, 0, 0, 4]),
+    ])
+}
+
 /// Build the reachable aggregate type graph in MWCC's measured postorder:
 /// dependencies appear before the aggregate that references them, and a shared
 /// dependency is emitted only once for each global's type graph.
@@ -691,6 +826,7 @@ fn plan_aggregate<'a>(
         type_id,
         member_ids,
         member_type_ids,
+        member_callable_type_ids: vec![None; definition.members.len()],
         member_array_type_ids,
         children_end,
         definition,
@@ -830,10 +966,14 @@ fn source_fundamental_type(source: SourceFundamentalType) -> Compilation<Fundame
 }
 
 fn modified_user_defined_type(id: DebugEntryId) -> Attribute {
+    modified_user_defined_type_with_modifier(id, 1)
+}
+
+fn modified_user_defined_type_with_modifier(id: DebugEntryId, modifier: u8) -> Attribute {
     attribute(
         AttributeName::ModifiedUserDefinedType,
         AttributeValue::RelocatableBlock2(Block {
-            bytes: vec![1, 0, 0, 0, 0],
+            bytes: vec![modifier, 0, 0, 0, 0],
             relocations: vec![BlockRelocation {
                 offset: 1,
                 address: Address::debug_entry(id),
