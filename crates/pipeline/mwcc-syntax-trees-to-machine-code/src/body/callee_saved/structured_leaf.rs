@@ -16,14 +16,45 @@ impl Generator {
     ) -> Compilation<bool> {
         if function_makes_call(function)
             || !function.guards.is_empty()
-            || !function.locals.is_empty()
             || !self.frame_slots.is_empty()
-            || function.return_type != Type::Void
-            || function.return_expression.is_some()
+            || !leaf_return_shape_is_supported(function)
             || !contains_nested_or_else_if(&function.statements)
             || !supports_leaf_structured_statements(&function.statements)
+            || function.locals.iter().any(|local| {
+                local.is_static
+                    || local.array_length.is_some()
+                    || !matches!(
+                        class_of(local.declared_type),
+                        Ok(ValueClass::General | ValueClass::Float)
+                    )
+            })
         {
             return Ok(false);
+        }
+
+        for local in &function.locals {
+            let class = class_of(local.declared_type).expect("eligibility checked");
+            let home = match class {
+                ValueClass::General => self.fresh_virtual_general_preferring(4),
+                ValueClass::Float => self.fresh_virtual_float_preferring(1),
+            };
+            if let Some(initializer) = &local.initializer {
+                self.evaluate(initializer, local.declared_type, home)?;
+            }
+            self.locations.insert(
+                local.name.clone(),
+                Location {
+                    class,
+                    register: home,
+                    signed: self.signed_of(local.declared_type),
+                    width: local.declared_type.width(),
+                    pointee: match local.declared_type {
+                        Type::Pointer(pointee) => Some(pointee),
+                        _ => None,
+                    },
+                    stride: pointer_stride(local.declared_type),
+                },
+            );
         }
 
         let mut return_branches = Vec::new();
@@ -39,8 +70,20 @@ impl Generator {
             &mut pending_gotos,
             &mut None,
         )?;
-        debug_assert!(return_branches.is_empty());
         debug_assert!(pending_gotos.is_empty());
+        if let Some(return_expression) = &function.return_expression {
+            let result = match function.return_type {
+                Type::Float | Type::Double => Eabi::float_result().number,
+                _ => Eabi::general_result().number,
+            };
+            self.evaluate(return_expression, function.return_type, result)?;
+        }
+        let epilogue = self.output.instructions.len();
+        for branch in return_branches {
+            if let Instruction::Branch { target } = &mut self.output.instructions[branch] {
+                *target = epilogue;
+            }
+        }
         self.output.anonymous_label_bump += structured_hidden_label_count(&function.statements);
         self.emit_epilogue_and_return();
         Ok(true)
@@ -65,7 +108,7 @@ fn contains_nested_or_else_if(statements: &[Statement]) -> bool {
 
 fn supports_leaf_structured_statements(statements: &[Statement]) -> bool {
     statements.iter().all(|statement| match statement {
-        Statement::Assign { .. } | Statement::Store { .. } => true,
+        Statement::Assign { .. } | Statement::Store { .. } | Statement::Return(_) => true,
         Statement::If {
             then_body,
             else_body,
@@ -76,4 +119,21 @@ fn supports_leaf_structured_statements(statements: &[Statement]) -> bool {
         }
         _ => false,
     })
+}
+
+fn leaf_return_shape_is_supported(function: &Function) -> bool {
+    (function.return_type == Type::Void && function.return_expression.is_none())
+        || (matches!(
+            function.return_type,
+            Type::Char
+                | Type::UnsignedChar
+                | Type::Short
+                | Type::UnsignedShort
+                | Type::Int
+                | Type::UnsignedInt
+                | Type::Pointer(_)
+                | Type::StructPointer { .. }
+                | Type::Float
+                | Type::Double
+        ) && function.return_expression.is_some())
 }

@@ -1342,6 +1342,11 @@ impl Generator {
             left_is_float = true;
         }
         let dual_legacy = self.try_emit_legacy_dual_float_condition(left, right, double)?;
+        let loaded_literal_live_argument = if right_literal && !left_literal {
+            self.try_place_loaded_literal_with_live_float_argument(left, right, double)?
+        } else {
+            None
+        };
         let product_literal = if right_literal && !left_literal {
             self.try_place_float_product_literal_condition(left, right, double)?
         } else {
@@ -1352,6 +1357,8 @@ impl Generator {
         let loaded_left_negated_leaf =
             self.try_place_loaded_left_negated_leaf_float_condition(left, right)?;
         let (a, b) = if let Some(registers) = dual_legacy {
+            registers
+        } else if let Some(registers) = loaded_literal_live_argument {
             registers
         } else if let Some(registers) = product_literal {
             registers
@@ -1597,7 +1604,7 @@ impl Generator {
 
     /// Whether f1 currently holds a float argument (a float parameter lives there),
     /// so it can't double as the compare scratch without the FP register allocator.
-    fn f1_holds_float_argument(&self) -> bool {
+    pub(crate) fn f1_holds_float_argument(&self) -> bool {
         self.locations
             .values()
             .any(|location| location.class == ValueClass::Float && location.register == 1)
