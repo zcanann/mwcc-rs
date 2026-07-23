@@ -704,15 +704,33 @@ impl Parser {
         if self.cxx_namespaces.contains(namespace) {
             return Some(namespace.to_owned());
         }
-        let scopes = self.named_namespace_scopes();
-        for depth in (0..=scopes.len()).rev() {
+        let lexical_scopes = self.named_namespace_scopes();
+        for depth in (0..=lexical_scopes.len()).rev() {
             let candidate = if depth == 0 {
                 namespace.to_owned()
             } else {
-                format!("{}::{namespace}", scopes[..depth].join("::"))
+                format!("{}::{namespace}", lexical_scopes[..depth].join("::"))
             };
             if self.cxx_namespaces.contains(&candidate) {
                 return Some(candidate);
+            }
+        }
+        // In-class inline bodies are reparsed as fully qualified out-of-class
+        // definitions on an isolated parser. Their lexical namespace stack is
+        // intentionally empty, but ordinary lookup still begins in the class's
+        // enclosing namespace. Walk each enclosing component; non-namespace
+        // components (for nested classes) naturally fail the membership test.
+        if let Some(class) = self.current_cxx_member_class.as_deref() {
+            let class_scopes = class.split("::").collect::<Vec<_>>();
+            for depth in (0..class_scopes.len()).rev() {
+                let candidate = if depth == 0 {
+                    namespace.to_owned()
+                } else {
+                    format!("{}::{namespace}", class_scopes[..depth].join("::"))
+                };
+                if self.cxx_namespaces.contains(&candidate) {
+                    return Some(candidate);
+                }
             }
         }
         None

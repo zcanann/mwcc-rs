@@ -3303,6 +3303,41 @@ blr\n\
     }
 
     #[test]
+    fn inline_member_resolves_a_sibling_namespace_function() {
+        let source = r#"
+            namespace root {
+                namespace math { float choose(float value); }
+                namespace ui {
+                    struct Box {
+                        float value;
+                        void adjust() { value = math::choose(value); }
+                    };
+                }
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let adjust = unit
+            .skipped_inline_definitions
+            .iter()
+            .find(|function| function.name == "adjust__Q34root2ui3BoxFv")
+            .expect("the inline member should be retained");
+        assert!(matches!(
+            adjust.statements.as_slice(),
+            [Statement::Store {
+                value: Expression::Call { name, .. },
+                ..
+            }] if name == "choose__Q24root4mathFf"
+        ));
+    }
+
+    #[test]
     fn scalarizes_inline_aggregate_assignment_before_erasing_field_types() {
         let source = r#"
             struct Vec { float x; float y; float z; };
