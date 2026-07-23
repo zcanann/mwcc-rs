@@ -59,6 +59,7 @@ mod store_fill;
 mod store_return_schedule;
 mod switch_assignment_call_tail;
 mod switch_call_dispatcher;
+mod switch_call_return;
 mod tail_call;
 mod tokenizer;
 mod variadic;

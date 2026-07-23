@@ -2798,6 +2798,12 @@ impl Generator {
         if self.try_switch_call_dispatcher(function)? {
             return Ok(());
         }
+        // A two-case member dispatcher forwards two pointer parameters to one
+        // call per arm and returns an arm-specific constant through a shared
+        // callee-saved epilogue (NW4R TagProcessorBase::Process).
+        if self.try_switch_call_return(function)? {
+            return Ok(());
+        }
         // A function whose body is a single `switch` lowers to the dispatch tree:
         // the comparisons, then the case bodies, then the default (the `default:`
         // arm if present, else the function's trailing `return`). The cases and
