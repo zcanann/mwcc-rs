@@ -2263,6 +2263,39 @@ mod tests {
     }
 
     #[test]
+    fn tests_a_discarded_placement_address_through_the_r0_scratch() {
+        let source = br#"
+            class Base { public: Base(); };
+            class Derived : public Base {};
+            extern int consume(Derived*);
+            int compiled(Derived* object) {
+                new (object) Derived();
+                return consume(object);
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_3_2,
+            flags,
+        };
+        let object = compile(
+            source,
+            "placement-scratch.cpp",
+            config,
+            Some(SourceLanguage::Cxx),
+            None,
+            false,
+        )
+        .expect("discarded placement construction should retain its null guard");
+
+        assert!(object
+            .windows(4)
+            .any(|bytes| bytes == [0x7f, 0xe0, 0xfb, 0x79])); // mr. r0,r31
+    }
+
+    #[test]
     fn scalar_array_layout_and_comment_alignment_are_independent() {
         assert_eq!(
             global_alignments(1, None, true, 1, true),

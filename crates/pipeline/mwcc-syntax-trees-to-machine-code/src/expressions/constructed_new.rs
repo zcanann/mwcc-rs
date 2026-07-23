@@ -61,8 +61,6 @@ impl Generator {
             ));
         }
 
-        self.evaluate_general(allocation, Eabi::FIRST_GENERAL_ARGUMENT)?;
-
         let inline_result_name = format!("__mwcc_constructed_new_{}", self.next_virtual);
         let inline_body = self.inline_bodies.expand_constructed_new_body(
             constructor,
@@ -77,13 +75,39 @@ impl Generator {
         } else {
             0
         });
-        self.output.instructions.push(Instruction::OrRecord {
-            a: retained,
-            s: Eabi::FIRST_GENERAL_ARGUMENT,
-            b: Eabi::FIRST_GENERAL_ARGUMENT,
-        });
         let done = self.fresh_label();
-        self.emit_branch_conditional_to(12, 2, done); // beq: allocation failed
+        let direct_discarded_placement = if destination.is_none() && inline_body.is_some() {
+            match allocation {
+                Expression::Variable(name) => self.lookup_general(name),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Some(source) = direct_discarded_placement {
+            // Placement new used only for its construction side effects keeps
+            // the source object in place. MWCC records the null test through
+            // its r0 scratch, branches, then promotes the non-null pointer to
+            // the callee-saved home used by the inlined constructor graph.
+            let tested = self.fresh_virtual_general_preferring(0);
+            self.output.instructions.push(Instruction::OrRecord {
+                a: tested,
+                s: source,
+                b: source,
+            });
+            self.emit_branch_conditional_to(12, 2, done); // beq: placement address is null
+            self.output
+                .instructions
+                .push(Instruction::move_register(retained, tested));
+        } else {
+            self.evaluate_general(allocation, Eabi::FIRST_GENERAL_ARGUMENT)?;
+            self.output.instructions.push(Instruction::OrRecord {
+                a: retained,
+                s: Eabi::FIRST_GENERAL_ARGUMENT,
+                b: Eabi::FIRST_GENERAL_ARGUMENT,
+            });
+            self.emit_branch_conditional_to(12, 2, done); // beq: allocation failed
+        }
 
         if let Some(inline_body) = inline_body {
             self.locations.insert(
