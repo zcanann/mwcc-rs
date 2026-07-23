@@ -156,6 +156,34 @@ def manifest_configuration_ids(path: Path) -> set[str]:
     return set(document.get("configuration_ids", []))
 
 
+def reusable_audit_manifest(path: Path, args: argparse.Namespace) -> bool:
+    """Keep one epoch's membership frozen after its first selection.
+
+    A fresh holdout's exclusion frame grows as soon as its results are cached.
+    Regenerating the same epoch would therefore silently change membership and
+    destroy paired/reproducible semantics. A new epoch is the explicit rotation
+    mechanism.
+    """
+
+    if not path.is_file():
+        return False
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    filters = manifest.get("selection_filters", {})
+    return (
+        manifest.get("seed") == args.audit_seed
+        and manifest.get("epoch") == args.audit_epoch
+        and manifest.get("purpose") == args.audit_purpose
+        and len(manifest.get("sample_configuration_ids", [])) == args.audit_size
+        and filters.get("project", []) == []
+        and filters.get("language", []) == []
+        and filters.get("matching_only", False) is False
+        and filters.get("version", []) == sorted(args.version or [])
+    )
+
+
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--compiler", type=Path, default=Path("target/debug/mwcc"))
@@ -377,8 +405,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.audit_purpose == "fresh-holdout":
         for path in previous_results:
             audit_command.extend(("--exclude-result", str(path)))
-    if run_audit and subprocess.run(audit_command).returncode:
-        return 2
+    if run_audit:
+        if reusable_audit_manifest(audit, args):
+            print(
+                f"representative audit: reusing frozen seed={args.audit_seed!r} "
+                f"epoch={args.audit_epoch!r} membership from {audit}"
+            )
+        elif subprocess.run(audit_command).returncode:
+            return 2
     if args.frontier_only:
         return 0
 

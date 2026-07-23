@@ -212,6 +212,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.purpose,
             result_identities(args.exclude_result),
         )
+        audit["selection_filters"] = {
+            "project": sorted(args.project or []),
+            "version": sorted(args.version or []),
+            "language": sorted(args.language or []),
+            "matching_only": args.matching_only,
+        }
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     except (OSError, ValueError, json.JSONDecodeError) as error:

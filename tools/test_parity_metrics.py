@@ -6,6 +6,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 import contextlib
 import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -40,6 +41,7 @@ from parity_loop import (
     most_comparable_other_tool,
     parse_args as parse_loop_args,
     persistent_compiler_image,
+    reusable_audit_manifest,
 )
 from reference_parity import (
     bounded_completion_order,
@@ -506,6 +508,44 @@ class IdentityTests(unittest.TestCase):
 
             replacement = acquire_state_lock(state)
             replacement.close()
+
+    def test_parity_loop_reuses_one_audit_epoch_membership(self):
+        args = parse_loop_args(
+            [
+                "--audit-size",
+                "2",
+                "--audit-seed",
+                "seed",
+                "--audit-epoch",
+                "epoch",
+                "--audit-purpose",
+                "fresh-holdout",
+                "--version",
+                "GC/2.6",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "audit.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "seed": "seed",
+                        "epoch": "epoch",
+                        "purpose": "fresh-holdout",
+                        "sample_configuration_ids": ["a", "b"],
+                        "selection_filters": {
+                            "project": [],
+                            "version": ["GC/2.6"],
+                            "language": [],
+                            "matching_only": False,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertTrue(reusable_audit_manifest(manifest, args))
+            args.audit_epoch = "rotated"
+            self.assertFalse(reusable_audit_manifest(manifest, args))
 
     def test_reference_runner_parallelism_is_explicit_and_bounded(self):
         defaults = parse_reference_args([])
