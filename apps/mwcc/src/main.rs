@@ -2121,6 +2121,50 @@ mod tests {
     }
 
     #[test]
+    fn preserves_a_store_base_while_chasing_its_value_member_chain() {
+        let source = br#"
+            struct Fighter;
+            struct Object {
+                int padding[11];
+                struct Fighter* user_data;
+            };
+            struct Fighter {
+                float facing;
+                char padding[40];
+                struct Object* victim;
+            };
+            void compiled(struct Fighter* fighter) {
+                fighter->facing = fighter->victim->user_data->facing;
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::DEFAULT,
+            flags,
+        };
+        let object = compile(
+            source,
+            "member-chain-store.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the target object must survive evaluation of its value chain");
+        let expected = [
+            0x80, 0x83, 0x00, 0x2c, // lwz r4,44(r3): fighter->victim
+            0x80, 0x84, 0x00, 0x2c, // lwz r4,44(r4): victim->user_data
+            0xc0, 0x04, 0x00, 0x00, // lfs f0,0(r4): nested facing
+            0xd0, 0x03, 0x00, 0x00, // stfs f0,0(r3): original fighter
+        ];
+        assert!(object
+            .windows(expected.len())
+            .any(|bytes| bytes == expected));
+    }
+
+    #[test]
     fn lowers_an_inlined_pointer_parameter_based_on_an_embedded_member_address() {
         let source = br#"
             class Status {

@@ -743,11 +743,22 @@ impl Generator {
                 offset,
                 ..
             } => {
-                let register = self.member_base_register(inner)?;
-                let displacement = self.emit_member_base_adjustment(register, *offset);
+                let base_register = self.member_base_register(inner)?;
+                // A store target may keep the root object live while its value
+                // follows another pointer chain rooted at that same object. Do
+                // not destructively chase the chain through the reserved root;
+                // doing so changes `p->field = p->other->field` into a store
+                // through `p->other`. A fresh virtual makes the overlap explicit
+                // to the allocator and may still coalesce when the root is dead.
+                let register = if self.reserved.contains(&base_register) {
+                    self.fresh_virtual_general()
+                } else {
+                    base_register
+                };
+                let displacement = self.emit_member_base_adjustment(base_register, *offset);
                 self.output.instructions.push(Instruction::LoadWord {
                     d: register,
-                    a: register,
+                    a: base_register,
                     offset: displacement,
                 });
                 Ok(register)
