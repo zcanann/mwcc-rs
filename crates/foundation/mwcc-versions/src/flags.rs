@@ -76,6 +76,10 @@ pub struct Flags {
     pub read_only_global_addressing: GlobalAddressing,
     pub char_default: CharDefault,
     pub enum_storage: EnumStorage,
+    /// Whether source and compiler-generated inline expansion is enabled.
+    /// Command-line `-inline` options are last-wins; `off` materializes every
+    /// reachable inline definition instead of composing it at call sites.
+    pub inline_enabled: bool,
     /// `-inline …,deferred`: deferred inlining emits the object's compiler-generated
     /// functions in REVERSE definition order (and thus their symbols/records too).
     /// Hand-written `asm` functions are emitted immediately and retain source order.
@@ -132,6 +136,7 @@ impl Default for Flags {
             read_only_global_addressing: GlobalAddressing::SmallData,
             char_default: CharDefault::BuildDefault,
             enum_storage: EnumStorage::Int,
+            inline_enabled: true,
             inline_deferred: false,
             cpp_exceptions: true,
             rtti: false,

@@ -743,6 +743,17 @@ impl Parser {
                 // function definitions can still be compiled; a function definition we
                 // are expected to compile is propagated, deferring the unit honestly.
                 self.position = start;
+                // A deliberately skipped inline is still recoverable for
+                // call-graph analysis and `-inline off` materialization. Do this
+                // before the generic function-definition guard: embedded asm
+                // makes that conservative scanner classify the body as a real
+                // definition even though this specific diagnostic is expected.
+                if error
+                    .message
+                    .contains("an inline function definition is skipped")
+                {
+                    self.try_recover_skipped_inline_definition();
+                }
                 // An unparsed explicit specialization is concrete, not a primary
                 // template declaration. Static data-member specializations such
                 // as `template <> Pool<T> Owner<T>::pool;` emit storage, startup
@@ -769,11 +780,6 @@ impl Parser {
                 // mwcc; skipping it would silently drop that symbol (a whole-object DIFF), so defer.
                 if self.item_is_uninitialized_definition() {
                     return Err(error);
-                }
-                // A skipped `static inline` function with an inline `asm {}` body
-                // still contributes a local undefined symbol (mwcc cannot inline it).
-                if error.message == "an inline function definition is skipped (inlined at call sites)" {
-                    self.try_recover_skipped_inline_definition();
                 }
                 if let Some((name, is_static)) = self.inline_asm_function_name() {
                     if is_static {
@@ -949,6 +955,7 @@ impl Parser {
                 section: None,
                 preceded_by_asm: functions.iter().any(|function| function.asm_body.is_some()),
                 asm_body: None,
+                inline_asm_blocks: Vec::new(),
                 force_active: false,
             });
             self.function_sources.push(None);
@@ -1191,14 +1198,16 @@ impl Parser {
         let mut globals = Vec::new();
         let mut functions = Vec::new();
         let mut prototypes = Vec::new();
-        if probe
-            .parse_top_level_item(&mut globals, &mut functions, &mut prototypes)
-            .is_ok()
+        let parsed = probe.parse_top_level_item(&mut globals, &mut functions, &mut prototypes);
+        if parsed.is_ok()
             && globals.is_empty()
             && functions.len() == 1
         {
             self.merge_generated_inline_definitions_from(&probe);
             let function = functions.pop().expect("length checked");
+            if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() {
+                eprintln!("retained skipped inline definition: {}", function.name);
+            }
             for (name, tag) in &probe.function_return_structs {
                 self.function_return_structs
                     .entry(name.clone())
@@ -1228,6 +1237,12 @@ impl Parser {
             {
                 self.skipped_inline_definitions.push(function);
             }
+        } else if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() {
+            eprintln!(
+                "failed to retain skipped inline definition: {parsed:?}; globals: {}, functions: {}",
+                globals.len(),
+                functions.len()
+            );
         }
     }
 
@@ -4408,6 +4423,7 @@ impl Parser {
         let mut block_locals: Vec<LocalDeclaration> = Vec::new();
         let mut statements = Vec::new();
         let mut statement_lines = Vec::new();
+        let mut inline_asm_blocks = Vec::new();
         // Zero or more guarded early returns: `if (condition) return value;`. An
         // `if (c) return x; else return y;` terminates the function as a single
         // conditional return (the ternary `c ? x : y`).
@@ -4461,6 +4477,22 @@ impl Parser {
                 }
                 if let Some(statement) = self.parse_jump_statement()? {
                     statements.push(statement);
+                    continue;
+                }
+                // Embedded `asm { ... }` remains part of an ordinary C/C++
+                // function. Keep its position separately from naked asm-function
+                // bodies so codegen can synthesize the surrounding ABI frame and
+                // the object writer still catalogs this as compiled code.
+                if *self.peek() == Token::Asm {
+                    let source_line = self.current_location().line;
+                    self.advance();
+                    self.expect(Token::BraceOpen)?;
+                    let items = self.parse_asm_body()?;
+                    inline_asm_blocks.push(mwcc_syntax_trees::InlineAsmBlock {
+                        statement_index: statements.len(),
+                        items,
+                    });
+                    statement_lines.push(source_line);
                     continue;
                 }
                 // C++ and C99 allow a declaration after earlier statements in
@@ -4708,6 +4740,7 @@ impl Parser {
             section: None,
             preceded_by_asm: false,
             asm_body: None,
+            inline_asm_blocks,
             force_active: self.force_active,
         })
     }

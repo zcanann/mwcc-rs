@@ -75,6 +75,7 @@ impl Generator {
             section: function.section.clone(),
             preceded_by_asm: function.preceded_by_asm,
             asm_body: None,
+            inline_asm_blocks: Vec::new(),
             force_active: function.force_active,
             text_deferred: function.text_deferred,
             peephole_disabled: function.peephole_disabled,

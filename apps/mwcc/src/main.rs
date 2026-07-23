@@ -160,11 +160,10 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
             // `-inline …`: a `deferred` setting emits functions in reverse order.
             "-inline" => {
                 index += 1;
-                if arguments
-                    .get(index)
-                    .is_some_and(|value| value.split(',').any(|part| part == "deferred"))
-                {
-                    invocation.flags.inline_deferred = true;
+                if let Some(value) = arguments.get(index) {
+                    invocation.flags.inline_enabled = value != "off";
+                    invocation.flags.inline_deferred =
+                        value.split(',').any(|part| part == "deferred");
                 }
             }
             // `-str reuse,readonly` pools string literals in read-only data.
@@ -512,6 +511,31 @@ fn compile(
     if is_cxx && config.flags.rtti {
         mwcc_tokens_to_syntax_trees::materialize_cxx_rtti(&mut unit);
     }
+    if !config.flags.inline_enabled {
+        let referenced = reference_analysis::referenced_disabled_inlines(&unit);
+        let mut materialized = Vec::new();
+        for definition in &unit.skipped_inline_definitions {
+            if !referenced.contains(&definition.name) {
+                continue;
+            }
+            let mut definition = definition.clone();
+            if !definition.is_static {
+                definition.is_weak = true;
+                if !unit.weak_materialized.contains(&definition.name) {
+                    unit.weak_materialized.push(definition.name.clone());
+                }
+            }
+            unit.skipped_inline_names.remove(&definition.name);
+            materialized.push(definition);
+        }
+        unit.functions.extend(materialized);
+        // These fallback symbol lists describe helpers dropped by automatic
+        // inlining. Disabled inlining instead emits every reachable recovered
+        // definition above; retaining the fallbacks would duplicate or invent
+        // undefined symbols.
+        unit.inline_asm_symbols.clear();
+        unit.plain_inline_asm_helpers.clear();
+    }
     // Every callable's return type (prototypes + this unit's definitions) so a
     // call's result type is known during lowering.
     let call_return_types: std::collections::HashMap<String, mwcc_syntax_trees::Type> = unit
@@ -589,21 +613,40 @@ fn compile(
     // Prototype-only names (file-scope declarations, NOT definitions) — the
     // implicit-callee classifier keys on these: a call with no prototype is
     // implicit even when the unit defines the callee later.
-    let weak_materialized_names: std::collections::HashSet<String> =
-        unit.weak_materialized.iter().cloned().collect();
+    // Under automatic inlining, a weak materialization may still be re-inlined
+    // at a native caller and needs measured call-site policy. Final `-inline off`
+    // makes every such edge an ordinary direct call; retain the unit list for
+    // weak-inline object flags, but do not route those callers through the
+    // automatic-inlining safety guard.
+    let weak_materialized_names: std::collections::HashSet<String> = if config
+        .flags
+        .inline_enabled
+    {
+        unit.weak_materialized.iter().cloned().collect()
+    } else {
+        std::collections::HashSet::new()
+    };
     let prototyped_names: std::collections::HashSet<String> = unit
         .prototypes
         .iter()
         .map(|(name, _, _)| name.clone())
         .collect();
-    let inline_summaries = mwcc_syntax_trees_to_machine_code::InlineSummaries::analyze_with_skipped(
-        &unit.functions,
-        &unit.skipped_inline_definitions,
-    );
-    let inline_bodies = mwcc_syntax_trees_to_machine_code::InlineBodySet::analyze_with_definitions(
-        &unit.functions,
-        &unit.skipped_inline_definitions,
-    );
+    let inline_summaries = if config.flags.inline_enabled {
+        mwcc_syntax_trees_to_machine_code::InlineSummaries::analyze_with_skipped(
+            &unit.functions,
+            &unit.skipped_inline_definitions,
+        )
+    } else {
+        mwcc_syntax_trees_to_machine_code::InlineSummaries::default()
+    };
+    let inline_bodies = if config.flags.inline_enabled {
+        mwcc_syntax_trees_to_machine_code::InlineBodySet::analyze_with_definitions(
+            &unit.functions,
+            &unit.skipped_inline_definitions,
+        )
+    } else {
+        mwcc_syntax_trees_to_machine_code::InlineBodySet::default()
+    };
     let materialized_inline_names: std::collections::HashSet<String> = unit
         .materialized_inline_candidates
         .iter()
@@ -2448,6 +2491,27 @@ mod tests {
             parsed.include_paths,
             ["first", "second", "third", "fourth"].map(std::path::PathBuf::from)
         );
+    }
+
+    #[test]
+    fn command_line_inline_mode_is_last_wins() {
+        let parsed = parse_invocation(&[
+            "-inline".into(),
+            "auto,deferred".into(),
+            "-inline".into(),
+            "off".into(),
+        ]);
+        assert!(!parsed.flags.inline_enabled);
+        assert!(!parsed.flags.inline_deferred);
+
+        let parsed = parse_invocation(&[
+            "-inline".into(),
+            "off".into(),
+            "-inline".into(),
+            "auto".into(),
+        ]);
+        assert!(parsed.flags.inline_enabled);
+        assert!(!parsed.flags.inline_deferred);
     }
 
     #[test]

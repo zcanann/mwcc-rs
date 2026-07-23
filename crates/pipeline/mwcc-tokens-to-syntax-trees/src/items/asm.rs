@@ -193,6 +193,7 @@ impl Parser {
                 section: None,
                 preceded_by_asm: false,
                 asm_body: Some(asm_body),
+                inline_asm_blocks: Vec::new(),
                 force_active: self.force_active,
             }),
         ))
@@ -221,7 +222,7 @@ impl Parser {
     /// asm blocks) separates instructions; blank lines are skipped. A leading
     /// `identifier :` is a label definition (`lbl_X:`), otherwise the line is a
     /// mnemonic and its operands.
-    fn parse_asm_body(&mut self) -> Compilation<Vec<AsmItem>> {
+    pub(crate) fn parse_asm_body(&mut self) -> Compilation<Vec<AsmItem>> {
         let mut items = Vec::new();
         loop {
             // Blank separators between instructions: newlines, and (some sources —

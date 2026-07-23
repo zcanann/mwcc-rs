@@ -480,6 +480,10 @@ pub struct Function {
     /// `section` so the capture `ast_hash` strip (which truncates from `, section: `
     /// onward) also elides it, preserving every template's hash (fire-465 hazard).
     pub asm_body: Option<Vec<AsmItem>>,
+    /// Inline-asm blocks embedded in an ordinary C/C++ body. Unlike `asm_body`,
+    /// these participate in compiler-generated prologue/epilogue, debug, and
+    /// `.mwcats` handling. Kept after `section` for capture-hash stability.
+    pub inline_asm_blocks: Vec<InlineAsmBlock>,
     /// Defined under `#pragma force_active on`: the symbol is forced live in the link
     /// and carries a `.comment` attribute (0x00080000) — animal_crossing's runtime.c
     /// wraps its register save/restore in it. Also AFTER `section` so the `ast_hash`
@@ -565,4 +569,13 @@ pub struct AsmInstruction {
     /// Inline asm maps one source instruction to one emitted word, making this
     /// the authoritative input for its legacy DWARF line program.
     pub source_line: u32,
+}
+
+/// An `asm { ... }` block embedded in an otherwise ordinary C/C++ function.
+/// `statement_index` preserves its position among the function's semantic
+/// statements without misclassifying the entire function as a naked asm body.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InlineAsmBlock {
+    pub statement_index: usize,
+    pub items: Vec<AsmItem>,
 }

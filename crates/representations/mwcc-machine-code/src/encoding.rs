@@ -117,6 +117,7 @@ impl Instruction {
             Instruction::FloatMultiplySubtractSingle { d, a, c, b } => a_form(59, d, a, b, c, 28),
             Instruction::FloatNegativeMultiplySubtractSingle { d, a, c, b } => a_form(59, d, a, b, c, 30),
             Instruction::FloatNegativeMultiplyAddSingle { d, a, c, b } => a_form(59, d, a, b, c, 31),
+            Instruction::FloatSelect { d, a, c, b } => a_form(63, d, a, b, c, 23),
             Instruction::FloatAddDouble { d, a, b } => a_form(63, d, a, b, 0, 21),
             Instruction::FloatSubtractDouble { d, a, b } => a_form(63, d, a, b, 0, 20),
             Instruction::FloatMultiplyDouble { d, a, c } => a_form(63, d, a, 0, c, 25),
@@ -254,6 +255,20 @@ mod tests {
         assert_eq!(
             Instruction::MoveToSegmentRegister { segment: 15, s: 31 }.encode(),
             0x7fef_01a4
+        );
+    }
+
+    #[test]
+    fn encodes_float_select_operand_order() {
+        assert_eq!(
+            Instruction::FloatSelect {
+                d: 31,
+                a: 1,
+                c: 2,
+                b: 3,
+            }
+            .encode(),
+            0xffe1_18ae
         );
     }
 }

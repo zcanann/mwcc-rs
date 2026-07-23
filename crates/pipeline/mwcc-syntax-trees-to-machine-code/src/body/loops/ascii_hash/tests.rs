@@ -109,6 +109,7 @@ fn function() -> Function {
         section: None,
         preceded_by_asm: false,
         asm_body: None,
+        inline_asm_blocks: Vec::new(),
         force_active: false,
         text_deferred: false,
         peephole_disabled: false,

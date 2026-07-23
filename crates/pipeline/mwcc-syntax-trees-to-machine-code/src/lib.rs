@@ -95,6 +95,13 @@ pub fn lower_function(
     inline_expansion_facts: mwcc_syntax_trees::InlineExpansionFacts,
     config: CompilerConfig,
 ) -> Compilation<MachineFunction> {
+    if let Some(output) = body::lower_register_inline_asm_wrapper(
+        function,
+        &Behavior::resolve(&config),
+        config.flags.cpp_exceptions,
+    ) {
+        return Ok(output);
+    }
     // An inline-`asm` function is emitted verbatim — no register allocation,
     // scheduling, or optimizer — so it bypasses the ordinary codegen path entirely.
     if function.asm_body.is_some() {

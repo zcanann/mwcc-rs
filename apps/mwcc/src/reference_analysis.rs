@@ -53,6 +53,47 @@ pub(crate) fn referenced_function_candidates(
     referenced
 }
 
+/// Reachable inline definitions when `-inline off` turns call-site composition
+/// into ordinary out-of-line calls. Unlike speculative materialization, skipped
+/// inline bodies are graph nodes rather than roots: only an emitted function or
+/// data relocation can pull one (and its transitive callees) into the object.
+pub(crate) fn referenced_disabled_inlines(unit: &TranslationUnit) -> HashSet<String> {
+    let candidates: HashSet<String> = unit
+        .skipped_inline_definitions
+        .iter()
+        .map(|function| function.name.clone())
+        .collect();
+    let mut referenced = HashSet::new();
+    let mut candidate_edges = HashMap::new();
+    for function in &unit.functions {
+        referenced.extend(function_candidate_references(function, &candidates));
+    }
+    for function in &unit.skipped_inline_definitions {
+        candidate_edges.insert(
+            function.name.clone(),
+            function_candidate_references(function, &candidates),
+        );
+    }
+    for global in &unit.globals {
+        for (_, target, _) in &global.data_relocations {
+            if candidates.contains(target) {
+                referenced.insert(target.clone());
+            }
+        }
+        if let Some(elements) = &global.address_initializer {
+            for element in elements {
+                if let mwcc_syntax_trees::PointerElement::Symbol(target) = element {
+                    if candidates.contains(target) {
+                        referenced.insert(target.clone());
+                    }
+                }
+            }
+        }
+    }
+    extend_reachable_candidates(&mut referenced, &candidate_edges);
+    referenced
+}
+
 fn extend_reachable_candidates(
     referenced: &mut HashSet<String>,
     candidate_edges: &HashMap<String, HashSet<String>>,

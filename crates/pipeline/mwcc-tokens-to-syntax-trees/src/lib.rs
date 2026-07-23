@@ -3338,6 +3338,41 @@ blr\n\
     }
 
     #[test]
+    fn retains_a_cpp_inline_function_containing_register_asm() {
+        let source = r#"
+            namespace math {
+                inline float choose(register float condition, register float positive, register float negative) {
+                    register float result;
+                    asm { fsel result, condition, positive, negative }
+                    return result;
+                }
+            }
+            float use(float condition, float positive, float negative) {
+                return math::choose(condition, positive, negative);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let retained = unit
+            .skipped_inline_definitions
+            .iter()
+            .find(|function| function.name == "choose__4mathFfff")
+            .expect("the embedded-asm inline should be retained");
+        assert_eq!(retained.inline_asm_blocks.len(), 1);
+        assert!(matches!(
+            retained.inline_asm_blocks[0].items.as_slice(),
+            [mwcc_syntax_trees::AsmItem::Instruction(instruction)]
+                if instruction.mnemonic == "fsel"
+        ));
+    }
+
+    #[test]
     fn scalarizes_inline_aggregate_assignment_before_erasing_field_types() {
         let source = r#"
             struct Vec { float x; float y; float z; };

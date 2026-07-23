@@ -531,6 +531,7 @@ impl Generator {
             section: None,
             preceded_by_asm: function.preceded_by_asm,
             asm_body: None,
+            inline_asm_blocks: Vec::new(),
             force_active: false,
             name: function.name.clone(),
             is_static: function.is_static,

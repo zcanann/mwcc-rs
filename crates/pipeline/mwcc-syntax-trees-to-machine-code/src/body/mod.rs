@@ -54,6 +54,7 @@ mod punned_select;
 mod punned_writeback;
 mod queue_callback_fold;
 mod range_guarded_array_address;
+mod register_inline_asm;
 mod sorted_intrusive_insert;
 mod store_fill;
 mod store_return_schedule;
@@ -78,6 +79,7 @@ pub(crate) use local_select::{
 pub(crate) use passes::*;
 
 pub(crate) use crate::analysis::*;
+pub(crate) use register_inline_asm::lower_register_inline_asm_wrapper;
 pub(crate) use crate::expressions::pointer_stride;
 pub(crate) use crate::expressions::{
     const_address_pointer, displacement_store, pointee_of_type, split_address,

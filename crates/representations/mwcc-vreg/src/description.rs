@@ -189,6 +189,7 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
         FloatMultiplyAddSingle { d, a, c, b } | FloatMultiplySubtractSingle { d, a, c, b }
         | FloatNegativeMultiplySubtractSingle { d, a, c, b }
         | FloatNegativeMultiplyAddSingle { d, a, c, b }
+        | FloatSelect { d, a, c, b }
         | FloatMultiplyAddDouble { d, a, c, b } | FloatMultiplySubtractDouble { d, a, c, b }
         | FloatNegativeMultiplySubtractDouble { d, a, c, b } => {
             visit(D, F, d);

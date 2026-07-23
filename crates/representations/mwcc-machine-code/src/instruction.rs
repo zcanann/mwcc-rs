@@ -196,6 +196,8 @@ pub enum Instruction {
     FloatNegativeMultiplySubtractSingle { d: u8, a: u8, c: u8, b: u8 },
     /// `fnmadds fD, fA, fC, fB` — negative multiply-add single.
     FloatNegativeMultiplyAddSingle { d: u8, a: u8, c: u8, b: u8 },
+    /// `fsel frD, frA, frC, frB` — choose C when A is nonnegative, otherwise B.
+    FloatSelect { d: u8, a: u8, c: u8, b: u8 },
     /// Double-precision arithmetic (opcode 63 vs the single forms' 59).
     /// `fadd frD, frA, frB`
     FloatAddDouble { d: u8, a: u8, b: u8 },
@@ -423,6 +425,7 @@ impl Instruction {
                 | FloatMultiplyAddDouble { .. }
                 | FloatMultiplySubtractDouble { .. }
                 | FloatNegativeMultiplySubtractDouble { .. }
+                | FloatSelect { .. }
                 | RoundToSingle { .. }
                 | FloatMove { .. }
                 | FloatNegate { .. }

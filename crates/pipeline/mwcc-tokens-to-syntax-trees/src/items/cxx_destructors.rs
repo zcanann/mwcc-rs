@@ -137,6 +137,7 @@ fn build(parser: &Parser, scope: &str, name: String) -> Compilation<Function> {
         section: None,
         preceded_by_asm: false,
         asm_body: None,
+        inline_asm_blocks: Vec::new(),
         force_active: false,
     })
 }
