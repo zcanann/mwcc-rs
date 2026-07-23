@@ -1216,6 +1216,15 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         && data_relocation_targets_section(".rodata");
     let rodata_anchor_needed = rodata_anchor_needed_by_code || rodata_anchor_needed_by_data;
     let mut rodata_anchor_emitted = false;
+    // The writable anchor follows the same creation-time rule as the read-only
+    // anchor: emit it immediately before the first local `.data` object.  Keep
+    // the state alive through every local-symbol phase because the first such
+    // object may be an upfront file static, a function-owned string, or an
+    // interleaved declaration.
+    let mut data_marker_pending = functions.iter().any(|function| {
+        function.relocations.iter().any(|relocation| matches!(&relocation.target, RelocationTarget::External(name) if name == "...data.0"))
+    }) || (input.object_format.data_relocations_use_section_anchors
+        && data_relocation_targets_section(".data"));
     if rodata_anchor_needed_by_code && input.object_format.rodata_anchor_before_data_symbols {
         local_data_symbols.insert("...rodata.0", (symtab.len() / SYMBOL_SIZE) as u32);
         write_symbol(
@@ -1244,6 +1253,20 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         {
             if is_pending_zero_static(object) {
                 emitted_zero_static.insert(object.name);
+            }
+            if data_marker_pending && data_section[object.name] == ".data" {
+                local_data_symbols.insert("...data.0", (symtab.len() / SYMBOL_SIZE) as u32);
+                write_symbol(
+                    &mut symtab,
+                    strtab.add("...data.0"),
+                    0,
+                    0,
+                    0,
+                    0,
+                    index_of(".data") as u16,
+                );
+                comment_values.push((1, input.object_format.data_anchor_comment_flags));
+                data_marker_pending = false;
             }
             local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(data_section[object.name]) as u16;
@@ -1420,10 +1443,6 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // before the unit's first `.data`-section string/object symbol (measured:
     // strikers — after 5 static FUNC symbols, before @229; wind_waker — after
     // ctzl's symbol, before @797).
-    let mut data_marker_pending = functions.iter().any(|function| {
-        function.relocations.iter().any(|relocation| matches!(&relocation.target, RelocationTarget::External(name) if name == "...data.0"))
-    }) || (input.object_format.data_relocations_use_section_anchors
-        && data_relocation_targets_section(".data"));
     // ONE creation-order pass: per function, its file-scope statics, static
     // locals, strings, blobs, pooled constants, unwind entries, jump table,
     // then — for a STATIC function — its own FUNC symbol at definition end
@@ -3706,52 +3725,5 @@ fn write_section_header(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn constant(byte_width: u8, image: bool) -> Sdata2Constant {
-        Sdata2Constant {
-            bits: 0,
-            byte_width,
-            static_slot: false,
-            image,
-            force_new: image,
-            force_full_data_section: false,
-        }
-    }
-
-    #[test]
-    fn discarded_inline_images_use_aggregate_alignment() {
-        assert_eq!(constant_alignment(&constant(8, true)), 4);
-        assert_eq!(constant_alignment(&constant(8, false)), 8);
-    }
-
-    #[test]
-    fn pool_numbers_can_precede_the_ordinary_function_position() {
-        assert_eq!(adjusted_pool_number(192, -1), 191);
-    }
-
-    #[test]
-    fn comment_header_records_pooling_mode() {
-        let enabled = comment_record(
-            CommentFormat {
-                marker: 0x08,
-                version: (2, 3, 0),
-                pooling_enabled: true,
-            },
-            &[],
-        );
-        let disabled = comment_record(
-            CommentFormat {
-                marker: 0x08,
-                version: (2, 3, 0),
-                pooling_enabled: false,
-            },
-            &[],
-        );
-        assert_eq!(enabled[11], 0x08);
-        assert_eq!(&enabled[12..16], &[2, 3, 0, 1]);
-        assert_eq!(enabled[16], 1);
-        assert_eq!(disabled[16], 0);
-    }
-}
+#[path = "writer_tests.rs"]
+mod tests;
