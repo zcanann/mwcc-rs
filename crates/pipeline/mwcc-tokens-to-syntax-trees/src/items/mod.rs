@@ -2642,6 +2642,7 @@ impl Parser {
 
             let mut parameters = Vec::new();
             let mut cxx_parameters = Vec::new();
+            let mut cxx_reference_parameters = std::collections::HashSet::new();
             let mut is_variadic = false;
             // Row-stride records are scoped to ONE function's parameters — a stale
             // entry from a previous function would mis-stride a same-named variable.
@@ -2764,6 +2765,9 @@ impl Parser {
                             if !name.is_empty() {
                                 self.variable_structs.insert(name.clone(), tag.clone());
                             }
+                        }
+                        if is_reference && !name.is_empty() {
+                            cxx_reference_parameters.insert(name.clone());
                         }
                         // Record the row stride for a decayed array-typedef / row-pointer
                         // parameter so `m[i][j]` desugars to the strided Member access.
@@ -3116,6 +3120,7 @@ impl Parser {
                 name,
                 function_is_static,
                 parameters,
+                cxx_reference_parameters,
             );
             self.current_member_scope = previous_member_scope;
             self.current_cxx_member_class = previous_member_class;
@@ -3821,6 +3826,7 @@ impl Parser {
         name: String,
         is_static: bool,
         parameters: Vec<Parameter>,
+        cxx_reference_parameters: std::collections::HashSet<String>,
     ) -> Compilation<Function> {
         self.inline_substitution_count = 0;
         let body_start_line = self.current_location().line;
@@ -3838,6 +3844,7 @@ impl Parser {
         // folds to a `size_t` constant.
         self.variable_types.clear();
         self.variable_array_bytes.clear();
+        self.cxx_reference_variables = cxx_reference_parameters;
         for parameter in &parameters {
             self.variable_types
                 .insert(parameter.name.clone(), parameter.parameter_type);

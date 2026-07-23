@@ -304,6 +304,11 @@ pub(crate) struct Parser {
     /// In-scope variables that are struct pointers, mapped to their struct tag,
     /// so `variable->field` resolves to the right layout.
     pub(crate) variable_structs: HashMap<String, String>,
+    /// Function-scoped C++ reference parameters. Their EABI storage is a
+    /// pointer, but an unadorned use is the referenced aggregate value. This
+    /// distinction prevents ordinary `T*` assignments from entering aggregate
+    /// field-copy scalarization while preserving `T const&` setters.
+    pub(crate) cxx_reference_variables: std::collections::HashSet<String>,
     /// Functions that RETURN a struct pointer, mapped to the pointee's struct tag,
     /// so `get()->field` resolves the returned pointer's layout (populated when a
     /// `struct S *get(...)` prototype/definition is parsed).

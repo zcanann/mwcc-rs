@@ -982,6 +982,72 @@ mod tests {
     }
 
     #[test]
+    fn folds_an_embedded_object_receiver_into_an_inlined_pointer_member_store() {
+        let setter = function(
+            "set_status",
+            vec![
+                Parameter {
+                    parameter_type: Type::StructPointer { element_size: 300 },
+                    name: "this".into(),
+                },
+                Parameter {
+                    parameter_type: Type::StructPointer { element_size: 60 },
+                    name: "status".into(),
+                },
+            ],
+            vec![Statement::Store {
+                target: Expression::Member {
+                    base: Box::new(Expression::Variable("this".into())),
+                    offset: 68,
+                    member_type: Type::StructPointer { element_size: 60 },
+                    index_stride: None,
+                },
+                value: Expression::Variable("status".into()),
+            }],
+        );
+        let addressed_status = Expression::AddressOf {
+            operand: Box::new(Expression::Member {
+                base: Box::new(Expression::Variable("actor".into())),
+                offset: 668,
+                member_type: Type::Struct { size: 60, align: 4 },
+                index_stride: None,
+            }),
+        };
+        let caller = function(
+            "caller",
+            vec![Parameter {
+                parameter_type: Type::StructPointer { element_size: 1028 },
+                name: "actor".into(),
+            }],
+            vec![Statement::Expression(Expression::Call {
+                name: "set_status".into(),
+                arguments: vec![
+                    Expression::Member {
+                        base: Box::new(Expression::Variable("actor".into())),
+                        offset: 728,
+                        member_type: Type::Struct { size: 300, align: 4 },
+                        index_stride: None,
+                    },
+                    addressed_status.clone(),
+                ],
+            })],
+        );
+
+        let expanded = InlineBodySet::analyze(&[setter])
+            .expand_calls(&caller)
+            .expect("the embedded receiver should compose into the final field");
+        assert!(matches!(expanded.statements.as_slice(), [
+            Statement::Store {
+                target: Expression::Member { base, offset: 796, member_type: Type::StructPointer { element_size: 60 }, .. },
+                value,
+            }
+        ] if matches!(base.as_ref(), Expression::Variable(name) if name == "actor")
+            && matches!(value, Expression::AddressOf { operand }
+                if matches!(operand.as_ref(), Expression::Member { base, offset: 668, member_type: Type::Struct { size: 60, align: 4 }, .. }
+                    if matches!(base.as_ref(), Expression::Variable(name) if name == "actor")))));
+    }
+
+    #[test]
     fn expands_a_scalarized_copy_through_an_embedded_adjusted_object() {
         let aggregate = Type::Struct { size: 12, align: 4 };
         let setter = function(
@@ -1048,8 +1114,8 @@ mod tests {
             Statement::Expression(Expression::Assign { target, value })
         ] if matches!(target.as_ref(), Expression::Member { base, offset: 1008, member_type: Type::Float, .. }
                 if matches!(base.as_ref(), Expression::Variable(name) if name == "object"))
-            && matches!(value.as_ref(), Expression::Member { base, offset: 0, member_type: Type::Float, .. }
-                if matches!(base.as_ref(), Expression::Member { offset: 504, member_type, .. } if *member_type == aggregate))));
+            && matches!(value.as_ref(), Expression::Member { base, offset: 504, member_type: Type::Float, .. }
+                if matches!(base.as_ref(), Expression::Variable(name) if name == "object"))));
     }
 
     #[test]

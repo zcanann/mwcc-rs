@@ -24,6 +24,20 @@ impl Parser {
         if !self.recover_skipped_inline_definition {
             return None;
         }
+        // A pointer/reference expression carries its pointee's struct tag for
+        // overload resolution, but that does not make the pointer itself an
+        // aggregate value. Require aggregate storage on both sides before
+        // expanding fields; otherwise `member_ptr = parameter_ptr` would be
+        // miscompiled as `*member_ptr = *parameter_ptr`.
+        let is_aggregate_value = |expression: &Expression| {
+            matches!(self.cxx_expression_type(expression), Some(Type::Struct { .. }))
+                || matches!(expression, Expression::Variable(name)
+                    if self.cxx_reference_variables.contains(name))
+        };
+        if !is_aggregate_value(target) || !is_aggregate_value(value)
+        {
+            return None;
+        }
         let target_tag = target_tag?;
         let value_tag = value_tag?;
         if target_tag != value_tag {

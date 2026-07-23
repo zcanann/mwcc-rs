@@ -129,6 +129,22 @@ pub(super) fn substitute_expression(
             // without materializing a temporary pointer or loading an embedded
             // struct as though it were a pointer member.
             if index_stride.is_none() {
+                if let Expression::Member {
+                    base: embedded_base,
+                    offset: embedded_offset,
+                    member_type: mwcc_syntax_trees::Type::Struct { .. },
+                    index_stride: None,
+                } = &substituted_base
+                {
+                    if let Some(total) = embedded_offset.checked_add(*offset) {
+                        return Expression::Member {
+                            base: embedded_base.clone(),
+                            offset: total,
+                            member_type: *member_type,
+                            index_stride: None,
+                        };
+                    }
+                }
                 if let Expression::MemberAddress {
                     base: address_base,
                     offset: address_offset,

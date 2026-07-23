@@ -191,6 +191,7 @@ pub fn parse_located_translation_unit_with_enum_min(
         incomplete_cxx_dispatch: std::collections::HashSet::new(),
         template_aliases: HashMap::new(),
         variable_structs: HashMap::new(),
+        cxx_reference_variables: std::collections::HashSet::new(),
         function_return_structs: HashMap::new(),
         fixed_address_globals: HashMap::new(),
         fixed_address_arrays: HashMap::new(),
@@ -1270,6 +1271,44 @@ blr\n\
             arguments.as_slice(),
             [Expression::Member { offset: 4, .. }, Expression::Variable(name)]
                 if name == "source"
+        ));
+    }
+
+    #[test]
+    fn does_not_scalarize_an_inline_struct_pointer_assignment() {
+        let source = r#"
+            struct Status { float x; float y; float z; };
+            class Object {
+            public:
+                Status* status;
+                void SetStatus(Status* value) { status = value; }
+            };
+            void compiled(Object* object, Status* status) {
+                object->SetStatus(status);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        let setter = unit
+            .skipped_inline_definitions
+            .iter()
+            .find(|function| function.name.contains("SetStatus"))
+            .expect("the inline setter should be retained");
+        assert!(matches!(
+            setter.statements.as_slice(),
+            [Statement::Store {
+                target: Expression::Member {
+                    member_type: Type::StructPointer { .. },
+                    ..
+                },
+                value: Expression::Variable(name),
+            }] if name == "value"
         ));
     }
 
