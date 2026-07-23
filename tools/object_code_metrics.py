@@ -53,6 +53,14 @@ class FunctionParity:
     candidate_only_functions: int
 
 
+@dataclass(frozen=True)
+class FunctionMatch:
+    reference_bytes: int
+    candidate_present: bool
+    text_exact: bool
+    code_exact: bool
+
+
 def run_objdump(objdump: Path, *arguments: str) -> str:
     result = subprocess.run(
         [str(objdump), *arguments],
@@ -137,11 +145,45 @@ def function_parity(
 
     reference_by_name = {function.name: function for function in reference_functions}
     candidate_by_name = {function.name: function for function in candidate_functions}
-    comparable = reference_by_name.keys() & candidate_by_name.keys()
-    text_exact = 0
-    code_exact = 0
-    text_exact_bytes = 0
-    code_exact_bytes = 0
+    matches = function_matches(
+        reference_bytes,
+        candidate_bytes,
+        reference_relocations,
+        candidate_relocations,
+        reference_functions,
+        candidate_functions,
+    )
+
+    return FunctionParity(
+        reference_functions=len(reference_by_name),
+        candidate_functions=len(candidate_by_name),
+        comparable_functions=sum(match.candidate_present for match in matches.values()),
+        text_exact_functions=sum(match.text_exact for match in matches.values()),
+        code_exact_functions=sum(match.code_exact for match in matches.values()),
+        reference_function_bytes=sum(match.reference_bytes for match in matches.values()),
+        text_exact_reference_bytes=sum(
+            match.reference_bytes for match in matches.values() if match.text_exact
+        ),
+        code_exact_reference_bytes=sum(
+            match.reference_bytes for match in matches.values() if match.code_exact
+        ),
+        missing_functions=sum(not match.candidate_present for match in matches.values()),
+        candidate_only_functions=len(candidate_by_name.keys() - reference_by_name.keys()),
+    )
+
+
+def function_matches(
+    reference_bytes: bytes,
+    candidate_bytes: bytes,
+    reference_relocations: Sequence[TextRelocation],
+    candidate_relocations: Sequence[TextRelocation],
+    reference_functions: Sequence[TextFunction],
+    candidate_functions: Sequence[TextFunction],
+) -> dict[str, FunctionMatch]:
+    """Return named per-function evidence for checkpoint-to-checkpoint deltas."""
+
+    reference_by_name = {function.name: function for function in reference_functions}
+    candidate_by_name = {function.name: function for function in candidate_functions}
 
     def body(section: bytes, function: TextFunction) -> bytes:
         return section[function.address : function.address + function.size]
@@ -160,34 +202,57 @@ def function_parity(
             if function.address <= relocation.offset < end
         ]
 
-    for name in comparable:
-        reference = reference_by_name[name]
-        candidate = candidate_by_name[name]
+    result: dict[str, FunctionMatch] = {}
+    for name, reference in reference_by_name.items():
+        candidate = candidate_by_name.get(name)
+        if candidate is None:
+            result[name] = FunctionMatch(reference.size, False, False, False)
+            continue
         bytes_equal = (
             reference.size == candidate.size
             and body(reference_bytes, reference) == body(candidate_bytes, candidate)
         )
-        if bytes_equal:
-            text_exact += 1
-            text_exact_bytes += reference.size
-            if function_relocations(
-                reference_relocations, reference
-            ) == function_relocations(candidate_relocations, candidate):
-                code_exact += 1
-                code_exact_bytes += reference.size
+        relocations_equal = bytes_equal and function_relocations(
+            reference_relocations, reference
+        ) == function_relocations(candidate_relocations, candidate)
+        result[name] = FunctionMatch(
+            reference.size,
+            True,
+            bytes_equal,
+            relocations_equal,
+        )
+    return result
 
-    return FunctionParity(
-        reference_functions=len(reference_by_name),
-        candidate_functions=len(candidate_by_name),
-        comparable_functions=len(comparable),
-        text_exact_functions=text_exact,
-        code_exact_functions=code_exact,
-        reference_function_bytes=sum(function.size for function in reference_by_name.values()),
-        text_exact_reference_bytes=text_exact_bytes,
-        code_exact_reference_bytes=code_exact_bytes,
-        missing_functions=len(reference_by_name.keys() - candidate_by_name.keys()),
-        candidate_only_functions=len(candidate_by_name.keys() - reference_by_name.keys()),
-    )
+
+def describe_function_delta(
+    baseline: dict[str, FunctionMatch],
+    candidate: dict[str, FunctionMatch],
+) -> list[str]:
+    """Describe coverage and exactness movement against a prior checkpoint."""
+
+    dimensions = [
+        ("COVERAGE", lambda match: match.candidate_present),
+        ("TEXT", lambda match: match.text_exact),
+        ("CODE", lambda match: match.code_exact),
+    ]
+    lines: list[str] = []
+    for label, predicate in dimensions:
+        baseline_names = {name for name, match in baseline.items() if predicate(match)}
+        candidate_names = {name for name, match in candidate.items() if predicate(match)}
+        gained = sorted(candidate_names - baseline_names)
+        regressed = sorted(baseline_names - candidate_names)
+        function_delta = len(candidate_names) - len(baseline_names)
+        byte_delta = sum(
+            candidate[name].reference_bytes for name in candidate_names
+        ) - sum(baseline[name].reference_bytes for name in baseline_names)
+        gained_names = ", ".join(gained) if gained else "none"
+        regressed_names = ", ".join(regressed) if regressed else "none"
+        lines.append(
+            f"FUNCTION_{label}_DELTA {function_delta:+d} functions, "
+            f"{byte_delta:+d} reference bytes; gained: {gained_names}; "
+            f"regressed: {regressed_names}"
+        )
+    return lines
 
 
 def describe_function_parity(parity: FunctionParity, relocation_aware: bool) -> str:
@@ -325,6 +390,11 @@ def main() -> int:
     parser.add_argument("reference", type=Path)
     parser.add_argument("candidate", type=Path)
     parser.add_argument("--context", default="")
+    parser.add_argument(
+        "--baseline",
+        type=Path,
+        help="prior candidate object used to report paired function movement",
+    )
     args = parser.parse_args()
 
     reference_bytes, reference_relocations = measure(args.objdump, args.reference)
@@ -347,6 +417,26 @@ def main() -> int:
         print(f"{line}{suffix}")
     print(f"FUNCTION_TEXT {describe_function_parity(parity, False)}{suffix}")
     print(f"FUNCTION_CODE {describe_function_parity(parity, True)}{suffix}")
+    if args.baseline is not None:
+        baseline_bytes, baseline_relocations = measure(args.objdump, args.baseline)
+        baseline_matches = function_matches(
+            reference_bytes,
+            baseline_bytes,
+            reference_relocations,
+            baseline_relocations,
+            measure_functions(args.objdump, args.reference),
+            measure_functions(args.objdump, args.baseline),
+        )
+        candidate_matches = function_matches(
+            reference_bytes,
+            candidate_bytes,
+            reference_relocations,
+            candidate_relocations,
+            measure_functions(args.objdump, args.reference),
+            measure_functions(args.objdump, args.candidate),
+        )
+        for line in describe_function_delta(baseline_matches, candidate_matches):
+            print(f"{line}{suffix}")
     return 0
 
 

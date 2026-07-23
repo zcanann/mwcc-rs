@@ -6,8 +6,10 @@ import subprocess
 from pathlib import Path
 
 from object_code_metrics import (
+    FunctionMatch,
     TextFunction,
     TextRelocation,
+    describe_function_delta,
     describe_function_parity,
     function_parity,
     parse_section_bytes,
@@ -119,6 +121,32 @@ OFFSET   TYPE              VALUE
         self.assertIn(
             "1/3 relocation-aware functions exact",
             describe_function_parity(parity, True),
+        )
+
+    def test_describes_paired_function_gains_and_regressions(self):
+        baseline = {
+            "still_exact": FunctionMatch(4, True, True, True),
+            "new_coverage": FunctionMatch(12, False, False, False),
+            "new_text": FunctionMatch(8, True, False, False),
+            "regressed": FunctionMatch(16, True, True, True),
+        }
+        candidate = {
+            "still_exact": FunctionMatch(4, True, True, True),
+            "new_coverage": FunctionMatch(12, True, False, False),
+            "new_text": FunctionMatch(8, True, True, False),
+            "regressed": FunctionMatch(16, True, False, False),
+        }
+
+        self.assertEqual(
+            describe_function_delta(baseline, candidate),
+            [
+                "FUNCTION_COVERAGE_DELTA +1 functions, +12 reference bytes; "
+                "gained: new_coverage; regressed: none",
+                "FUNCTION_TEXT_DELTA +0 functions, -8 reference bytes; "
+                "gained: new_text; regressed: regressed",
+                "FUNCTION_CODE_DELTA -1 functions, -16 reference bytes; "
+                "gained: none; regressed: regressed",
+            ],
         )
 
 
