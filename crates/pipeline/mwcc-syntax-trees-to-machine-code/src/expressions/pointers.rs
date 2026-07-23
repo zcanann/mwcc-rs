@@ -26,6 +26,19 @@ impl Generator {
                 .push(displacement_load(pointee, destination, 1, offset)?);
             return Ok(());
         }
+        // A type-pun through the address of a scalar global reads that global's
+        // storage directly. In particular, `*(u32 *)&pointer_global` is the
+        // pointer's raw word, not a dereference through its value.
+        if let Expression::Cast { operand, .. } = pointer {
+            if let Expression::AddressOf { operand } = operand.as_ref() {
+                if let Expression::Variable(name) = operand.as_ref() {
+                    if self.globals.contains_key(name.as_str()) {
+                        self.emit_global_load(name, destination)?;
+                        return Ok(());
+                    }
+                }
+            }
+        }
         // `*(T *)(bytes + k)`: the addition happens as byte-pointer
         // arithmetic before the cast, so k is already the final displacement.
         if let Some((pointee, address, offset)) = self.punned_displacement_address(pointer) {

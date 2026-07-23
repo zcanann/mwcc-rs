@@ -122,7 +122,19 @@ pub(crate) fn const_address_pointer(pointer: &Expression) -> Option<(Pointee, u3
         // Integer/char/short pointees only — a float/double const-address access needs an
         // FPR destination and a separate path, so leave those to defer.
         if !matches!(pointee, Pointee::Float | Pointee::Double) {
-            return constant_value(operand).map(|address| (*pointee, address as u32));
+            if let Some(address) = constant_value(operand) {
+                return Some((*pointee, address as u32));
+            }
+            // Macros for fixed-address lvalues commonly produce
+            // `*(T *)&(*(T *)ADDRESS)`. Cancel the inner `&*` while retaining
+            // the outer cast's requested access width.
+            if let Expression::AddressOf { operand } = operand.as_ref() {
+                if let Expression::Dereference { pointer } = operand.as_ref() {
+                    if let Some((_, address)) = const_address_pointer(pointer) {
+                        return Some((*pointee, address));
+                    }
+                }
+            }
         }
     }
     None
@@ -152,6 +164,32 @@ pub(crate) fn const_address_of(pointer: &Expression) -> Option<u32> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancels_address_of_fixed_address_dereference() {
+        let inner = Expression::Cast {
+            target_type: Type::Pointer(Pointee::UnsignedInt),
+            operand: Box::new(Expression::IntegerLiteral(0x812f_dff0)),
+        };
+        let pointer = Expression::Cast {
+            target_type: Type::Pointer(Pointee::UnsignedInt),
+            operand: Box::new(Expression::AddressOf {
+                operand: Box::new(Expression::Dereference {
+                    pointer: Box::new(inner),
+                }),
+            }),
+        };
+
+        assert_eq!(
+            const_address_pointer(&pointer),
+            Some((Pointee::UnsignedInt, 0x812f_dff0))
+        );
+    }
 }
 
 /// The indexed store for a pointee type (`stwx`/`stbx`/`sthx`/`stfsx`).

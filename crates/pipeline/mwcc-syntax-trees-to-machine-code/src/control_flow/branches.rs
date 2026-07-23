@@ -1191,6 +1191,35 @@ impl Generator {
                     };
                     return self.emit_condition_test(&normalized);
                 }
+                // Equality against a 32-bit constant with a zero low half does
+                // not need a materialized constant register. MWCC subtracts the
+                // high half with `addis` and compares the result with zero:
+                // `call(); result != 0x80000000` becomes
+                // `addis r0,r3,-32768; cmplwi r0,0`.
+                if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
+                    if let Some(constant) = constant_value(right)
+                        .and_then(|value| u32::try_from(value).ok())
+                        .filter(|value| (*value & 0xffff) == 0 && *value > 0x7fff)
+                    {
+                        let left_register = self.condition_operand_register(left)?;
+                        if left_register != GENERAL_SCRATCH {
+                            let high = (constant >> 16) as u16 as i16;
+                            self.output.instructions.push(Instruction::AddImmediateShifted {
+                                d: GENERAL_SCRATCH,
+                                a: left_register,
+                                immediate: high.wrapping_neg(),
+                            });
+                            self.output.instructions.push(
+                                Instruction::CompareLogicalWordImmediate {
+                                    a: GENERAL_SCRATCH,
+                                    immediate: 0,
+                                },
+                            );
+                            return Ok(false_branch_bo_bi(*operator)
+                                .expect("equality is a comparison"));
+                        }
+                    }
+                }
                 // Two member loads need distinct temporaries. Keep r3 for the
                 // left value and reserve it while selecting the right member's
                 // address, which naturally gives a global pointer base r4 and
