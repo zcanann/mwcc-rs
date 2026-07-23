@@ -386,6 +386,18 @@ pub enum TrigQuadrantDispatchStyle {
     LinearChain,
 }
 
+/// String representation and independent-argument issue order when a call
+/// result is forwarded into the third argument of a trace-like consumer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForwardedTraceStringStyle {
+    /// The 2.4.x line uses an anonymous `@N` string and issues the leading
+    /// integer argument before completing the string address.
+    AnonymousIntegerBeforeLow,
+    /// GC 4.1 and Wii 4.3 use a packed `@stringBaseN` object and complete the
+    /// string address before issuing the leading integer argument.
+    PackedLowBeforeInteger,
+}
+
 /// Encoding used for generation-specific integer value materializations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaterializationCopyStyle {
@@ -1104,6 +1116,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         TrigQuadrantDispatchStyle::BinarySearch
     }
 
+    fn forwarded_trace_string_style(&self) -> ForwardedTraceStringStyle {
+        ForwardedTraceStringStyle::AnonymousIntegerBeforeLow
+    }
+
     /// Hidden labels added to every trigonometric dispatcher's pool counter.
     fn trig_dispatcher_hidden_label_bump(&self) -> u8 {
         0
@@ -1358,6 +1374,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn forwarded_trace_string_style(&self) -> ForwardedTraceStringStyle {
+        ForwardedTraceStringStyle::PackedLowBeforeInteger
+    }
+
     fn deferred_function_emission_style(&self) -> DeferredFunctionEmissionStyle {
         DeferredFunctionEmissionStyle::ReverseAll
     }
@@ -1508,6 +1528,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn forwarded_trace_string_style(&self) -> ForwardedTraceStringStyle {
+        ForwardedTraceStringStyle::PackedLowBeforeInteger
+    }
+
     fn large_aggregate_comment_alignment(&self) -> u32 {
         8
     }

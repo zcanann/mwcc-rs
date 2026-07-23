@@ -3188,6 +3188,12 @@ impl Generator {
             if self.try_computed_local_call_forward(function)? {
                 return Ok(());
             }
+            // A producer result forwarded as the third argument of a trace-like
+            // consumer dies at that call; stage it directly into r5 while the
+            // consumer's split string address is in flight.
+            if self.try_result_trace_forward_constant_return(function)? {
+                return Ok(());
+            }
             // `x = f(parameters...); g(x, constants...);` — all parameters die
             // in f and x remains in r3 for g's first argument, so neither value
             // needs a callee-saved home. The mixed GPR/FPR tail lives separately

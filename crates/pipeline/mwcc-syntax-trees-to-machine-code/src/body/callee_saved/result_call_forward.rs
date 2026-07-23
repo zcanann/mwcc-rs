@@ -8,6 +8,123 @@
 use super::*;
 
 impl Generator {
+    /// `int x = make(...); trace(K, "...", x); return C;` on the predecrement
+    /// generations. The producer consumes every live-in before its result is
+    /// forwarded, so `x` never needs a callee-saved home: it remains in r3 until
+    /// the consumer setup moves it directly to r5. MWCC splits the string address
+    /// around that move and the leading integer argument, filling the `lis`
+    /// latency window without extending the result's lifetime.
+    pub(crate) fn try_result_trace_forward_constant_return(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if self.behavior.frame_convention != FrameConvention::Predecrement
+            || !self.frame_slots.is_empty()
+            || !function.guards.is_empty()
+            || !matches!(function.return_type, Type::Int | Type::UnsignedInt)
+        {
+            return Ok(false);
+        }
+        let Some(return_constant) = function
+            .return_expression
+            .as_ref()
+            .and_then(constant_value)
+            .filter(|value| i16::try_from(*value).is_ok())
+        else {
+            return Ok(false);
+        };
+        let [local] = function.locals.as_slice() else {
+            return Ok(false);
+        };
+        if local.is_static
+            || local.array_length.is_some()
+            || !matches!(local.declared_type, Type::Int | Type::UnsignedInt)
+        {
+            return Ok(false);
+        }
+        let Some((producer_name, producer_arguments)) =
+            direct_call_through_value_cast(local.initializer.as_ref())
+        else {
+            return Ok(false);
+        };
+        let [Statement::Expression(Expression::Call {
+            name: consumer_name,
+            arguments: consumer_arguments,
+        })] = function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        let [Expression::IntegerLiteral(leading), Expression::StringLiteral(string), Expression::Variable(forwarded)] =
+            consumer_arguments.as_slice()
+        else {
+            return Ok(false);
+        };
+        if forwarded != &local.name || i16::try_from(*leading).is_err() {
+            return Ok(false);
+        }
+        // A short literal may use SDA21 rather than the measured split absolute
+        // address. This owner only claims strings whose address is known to be a
+        // `lis`/`addi` pair under the active data model.
+        if self.behavior.global_addressing != GlobalAddressing::Absolute && string.len() + 1 <= 8 {
+            return Ok(false);
+        }
+        for name in [producer_name, consumer_name.as_str()] {
+            if self.locations.contains_key(name) || self.globals.contains_key(name) {
+                return Ok(false);
+            }
+        }
+        let packed = self.behavior.forwarded_trace_string_style
+            == mwcc_versions::ForwardedTraceStringStyle::PackedLowBeforeInteger;
+        if self.behavior.string_literals_packed && !packed {
+            return Ok(false);
+        }
+
+        self.non_leaf = true;
+        self.frame_size = 16;
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 20,
+        });
+        self.emit_call(producer_name, producer_arguments, None, false)?;
+
+        self.output.packed_string_literals = packed;
+        let placeholder = self.string_literal_placeholder(string);
+        self.emit_address_high(Eabi::FIRST_GENERAL_ARGUMENT + 1, &placeholder);
+        self.output.instructions.push(Instruction::move_register(
+            Eabi::FIRST_GENERAL_ARGUMENT + 2,
+            Eabi::general_result().number,
+        ));
+        if packed {
+            self.emit_string_address_low(
+                &placeholder,
+                Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                Eabi::FIRST_GENERAL_ARGUMENT + 1,
+            );
+            self.load_integer_constant(Eabi::FIRST_GENERAL_ARGUMENT, *leading);
+        } else {
+            self.load_integer_constant(Eabi::FIRST_GENERAL_ARGUMENT, *leading);
+            self.emit_string_address_low(
+                &placeholder,
+                Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                Eabi::FIRST_GENERAL_ARGUMENT + 1,
+            );
+        }
+        self.emit_forward_consumer_link(consumer_name);
+        self.emit_non_leaf_constant_join_epilogue(return_constant);
+        Ok(true)
+    }
+
     /// `x = parameter->member; use(x, integer, float);` for the legacy
     /// linkage-first frame convention.
     ///

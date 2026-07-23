@@ -517,9 +517,12 @@ pub fn lower_function(
         .collect();
     // A call target with no prototype/definition (absent from `call_return_types`) was
     // IMPLICITLY declared — K&R first-use. mwcc creates its symbol at the call site inside
-    // the body, so the writer emits it AFTER the function symbol (a prototyped external,
-    // created at its file-scope declaration, precedes the function). Collected from the
-    // call (Rel24) relocations, in first-call order, deduplicated.
+    // the body, so the older writers emit it AFTER the function symbol (a prototyped
+    // external, created at its file-scope declaration, precedes the function). GC 3/Wii's
+    // relocation-order policy deliberately preserves one stream across both categories;
+    // do not re-partition that stream by prototype status after deriving it above.
+    if generator.behavior.symbol_traversal_style
+        != mwcc_versions::SymbolTraversalStyle::RelocationOrder
     {
         use mwcc_machine_code::{RelocationKind, RelocationTarget};
         let mut seen = HashSet::new();

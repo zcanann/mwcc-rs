@@ -20,6 +20,7 @@ use crate::profile::{
     DeferredFunctionEmissionStyle, FieldMergeStyle, FixedAddressConstantStoreStyle,
     FixedAddressParameterizedRmwStyle,
     FixedAddressPollAddressStyle, FixedAddressRmwStyle, FoldedFloatCompareLinkageStyle,
+    ForwardedTraceStringStyle,
     FrameConvention, FrexpFamilyStyle, FunctionAddressStoreStyle, FunctionOrdinalAccountingStyle,
     CxxTrivialDestructorStyle, GlobalArrayDecayStoreStyle, GlobalArrayIndexStyle,
     GuardedByteCopyStyle,
@@ -523,6 +524,8 @@ pub struct Behavior {
     pub optimization_goal: OptimizationGoal,
     /// Whether string literals use a packed per-function `@stringBaseN`.
     pub string_literals_packed: bool,
+    /// Representation and issue order for a forwarded-result trace call.
+    pub forwarded_trace_string_style: ForwardedTraceStringStyle,
     /// Register, literal-pool, and epilogue family for dense call dispatchers.
     pub call_dispatcher_style: CallDispatcherStyle,
     /// Instruction-selection family for optimized empty deleting destructors.
@@ -830,6 +833,10 @@ impl Behavior {
             optimization: config.flags.optimization,
             optimization_goal: config.flags.optimization_goal,
             string_literals_packed: config.flags.string_literals_packed,
+            forwarded_trace_string_style: config
+                .build
+                .profile
+                .forwarded_trace_string_style(),
             call_dispatcher_style: config.build.profile.call_dispatcher_style(),
             cxx_trivial_destructor_style: config
                 .build
@@ -1918,6 +1925,11 @@ mod tests {
 
     #[test]
     fn later_trig_dispatchers_resolve_eager_zero_and_ipa_labels() {
+        assert_eq!(
+            Behavior::resolve(&CompilerConfig::new(build::GC_2_7))
+                .forwarded_trace_string_style,
+            ForwardedTraceStringStyle::AnonymousIntegerBeforeLow
+        );
         for (compiler_build, dispatcher_labels, parity_tail_labels, quadrant_style) in [
             (
                 build::GC_3_0A3P1,
@@ -1956,6 +1968,10 @@ mod tests {
                 TrigZeroConstantPlacement::Prologue
             );
             assert_eq!(plain.trig_quadrant_dispatch_style, quadrant_style);
+            assert_eq!(
+                plain.forwarded_trace_string_style,
+                ForwardedTraceStringStyle::PackedLowBeforeInteger
+            );
             assert_eq!(plain.trig_dispatcher_hidden_label_bump, dispatcher_labels);
             assert_eq!(plain.trig_parity_tail_hidden_label_bump, parity_tail_labels);
             assert_eq!(plain.trig_dispatcher_ipa_label_bump, 4);
