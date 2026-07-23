@@ -9,6 +9,16 @@ use mwcc_machine_code::MachineFunction;
 use mwcc_versions::DeferredFunctionEmissionStyle;
 use std::collections::{HashMap, HashSet};
 
+/// Whether a compiled body contributes the ordinary source-analysis ordinal
+/// transaction before deferred emission starts. A truly empty `void f() {}` is
+/// already reduced to its lone `blr`; MWCC does not open an optimizer/DAG
+/// transaction for that body, so it must not move a later pool object's `@N`.
+fn contributes_deferred_source_transaction(function: &MachineFunction) -> bool {
+    !function.is_asm
+        && function.instructions.as_slice()
+            != [mwcc_machine_code::Instruction::BranchToLinkRegister]
+}
+
 /// Whether every earlier call site consumed a terminal implicitly-materialized
 /// inline. A surviving relocation proves the out-of-line copy is still needed.
 pub(crate) fn terminal_implicit_inline_is_consumed(
@@ -106,7 +116,7 @@ pub(crate) fn apply_deferred_emission_order(
     // make the observed distance `2 + post_function_label_bump`.
     let compiled_count = source_order
         .iter()
-        .filter(|function| !function.is_asm)
+        .filter(|function| contributes_deferred_source_transaction(function))
         .count();
     let source_transaction_prefix = compiled_count
         .saturating_sub(1)
@@ -271,6 +281,26 @@ mod tests {
         assert!(functions
             .iter()
             .all(|function| function.post_function_anonymous_bump == Some(1)));
+    }
+
+    #[test]
+    fn empty_bodies_do_not_prefix_a_later_pool_owner() {
+        let mut empty_before = function("empty_before", false);
+        empty_before.instructions = vec![mwcc_machine_code::Instruction::BranchToLinkRegister];
+        let owner = function("owner", false);
+        let mut empty_after = function("empty_after", false);
+        empty_after.instructions = vec![mwcc_machine_code::Instruction::BranchToLinkRegister];
+        let mut functions = vec![empty_before, owner, empty_after];
+
+        apply_deferred_emission_order(
+            &mut functions,
+            3,
+            1,
+            DeferredFunctionEmissionStyle::ImmediateAsmThenReverseCompiled,
+        );
+
+        assert_eq!(functions[0].name, "empty_after");
+        assert_eq!(functions[0].anonymous_label_bump, 0);
     }
 
     #[test]
