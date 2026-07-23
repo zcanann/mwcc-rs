@@ -1074,22 +1074,15 @@ impl Generator {
                 // that (e.g. two members of one struct) by pre-copying the shared
                 // base; that choreography is not modeled yet.
                 //
-                // A passthrough reuse like `f(x, x)` writes nothing for arg0, and
-                // the single trailing `mr r4,r3` it produces is now hoisted into the
-                // prologue slot — so the two-argument case is byte-exact. But three+
-                // arguments (multiple trailing moves) or a computed trailing argument
-                // need the full argument scheduler, so this still defers for now to
-                // avoid emitting their unscheduled form.
-                // A leaf argument already in its target register is a passthrough — no evaluation, so
-                // it clobbers nothing and stays live for a later repeat's `mr` (`g(a, a)` is a in r3,
-                // then `mr r4,r3`, the pre-copy hoisted into the prologue slot). Only for a 2-argument
-                // call: 3+ arguments produce multiple trailing moves that need the full argument
-                // scheduler, so those still defer via the clobber guard below.
-                let passthrough_in_place = arguments.len() == 2
-                    && self
-                        .leaf_info(argument)
-                        .map(|(register, _, _)| register == next_general)
-                        .unwrap_or(false);
+                // A leaf argument already in its target register is a
+                // passthrough regardless of arity: evaluating it emits no
+                // instruction, so it cannot clobber a shared base needed by a
+                // later member argument. Later actual moves/computations still
+                // pass through this guard independently.
+                let passthrough_in_place = self
+                    .leaf_info(argument)
+                    .map(|(register, _, _)| register == next_general)
+                    .unwrap_or(false);
                 if !passthrough_in_place
                     && arguments[index + 1..]
                         .iter()
