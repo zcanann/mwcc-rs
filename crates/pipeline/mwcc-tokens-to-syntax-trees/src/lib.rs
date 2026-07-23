@@ -2165,6 +2165,32 @@ blr\n\
     }
 
     #[test]
+    fn keeps_a_const_static_data_member_externally_linked() {
+        let source = r#"
+            class CallStack {
+            public:
+                static const char unknown[];
+            };
+            const char CallStack::unknown[] = "unknown";
+            const char file_local[] = "local";
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(unit.globals[0].name, "unknown__9CallStack");
+        assert!(!unit.globals[0].is_static);
+        assert!(unit.globals[0].is_const);
+        assert_eq!(unit.globals[1].name, "file_local");
+        assert!(unit.globals[1].is_static);
+    }
+
+    #[test]
     fn retains_source_aggregate_graph_for_debug_lowering() {
         let source = r#"
             typedef unsigned char u8;

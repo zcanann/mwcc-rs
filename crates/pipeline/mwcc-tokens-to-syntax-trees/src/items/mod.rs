@@ -2714,10 +2714,17 @@ impl Parser {
                         name: emitted_declarator_name,
                         is_extern,
                         // A non-extern namespace-scope const object has internal
-                        // linkage in C++. Preserve that source-language rule so
-                        // the object pass can elide a scalar whose value was
-                        // folded, while an address-taken survivor binds LOCAL.
-                        is_static: is_static || (self.cplusplus && object_is_const && !is_extern),
+                        // linkage in C++. An out-of-class static data-member
+                        // definition is different: its linkage belongs to the
+                        // class member declared earlier, so `const T C::value`
+                        // remains external unless that declaration says otherwise.
+                        // Preserve the distinction after both shapes have been
+                        // lowered into the same file-scope global representation.
+                        is_static: is_static
+                            || (self.cplusplus
+                                && object_is_const
+                                && !is_extern
+                                && member_scope.is_none()),
                         is_volatile: declared_is_volatile,
                         array_length,
                         array_length_inferred,
