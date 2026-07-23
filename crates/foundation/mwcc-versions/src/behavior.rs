@@ -643,6 +643,8 @@ pub struct Behavior {
     pub negate_before_zero_equality: bool,
     /// Frame/merge convention for type-punned floating parameters.
     pub punned_float_frame_convention: PunnedFloatFrameConvention,
+    /// Anonymous labels retained by the uncontracted `__kernel_sin` lowering.
+    pub ksin_uncontracted_label_bump: u8,
     /// Additional labels retained by deferred punned-float else compositions.
     /// Zero for ordinary compilation.
     pub punned_float_composition_deferred_label_bump: u8,
@@ -935,6 +937,7 @@ impl Behavior {
             stored_global_read_style: config.build.profile.stored_global_read_style(),
             negate_before_zero_equality: config.build.profile.negate_before_zero_equality(),
             punned_float_frame_convention: config.build.profile.punned_float_frame_convention(),
+            ksin_uncontracted_label_bump: config.build.profile.ksin_uncontracted_label_bump(),
             punned_float_composition_deferred_label_bump: if config.flags.inline_deferred {
                 config
                     .build
@@ -1747,6 +1750,23 @@ mod tests {
             BitFieldLoadPlacement::ResultRegister
         );
         assert!(Behavior::resolve(&CompilerConfig::new(build::GC_1_3_2)).emit_leaf_frame_unwind);
+    }
+
+    #[test]
+    fn four_x_folds_three_uncontracted_ksin_labels() {
+        assert_eq!(
+            Behavior::resolve(&CompilerConfig::new(build::GC_2_7)).ksin_uncontracted_label_bump,
+            16
+        );
+        assert_eq!(
+            Behavior::resolve(&CompilerConfig::new(build::GC_3_0A3P1))
+                .ksin_uncontracted_label_bump,
+            13
+        );
+        assert_eq!(
+            Behavior::resolve(&CompilerConfig::new(build::WII_1_0)).ksin_uncontracted_label_bump,
+            13
+        );
     }
 
     #[test]

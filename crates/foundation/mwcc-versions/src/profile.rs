@@ -989,6 +989,11 @@ pub trait CodegenProfile: core::fmt::Debug {
         PunnedFloatFrameConvention::CompactLiveParameter
     }
 
+    /// Anonymous labels retained by the uncontracted `__kernel_sin` lowering.
+    fn ksin_uncontracted_label_bump(&self) -> u8 {
+        16
+    }
+
     /// Hidden labels retained by the deferred k_cos-style else composition.
     /// Build 81 and later retain two; earlier builds override with seven.
     fn punned_float_composition_deferred_label_bump(&self) -> u8 {
@@ -1256,6 +1261,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn ksin_uncontracted_label_bump(&self) -> u8 {
+        13
+    }
+
     fn pointer_call_store_epilogue_style(&self) -> PointerCallStoreEpilogueStyle {
         PointerCallStoreEpilogueStyle::SavedPointerFirst
     }
@@ -1374,6 +1383,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn ksin_uncontracted_label_bump(&self) -> u8 {
+        13
+    }
+
     fn skipped_plain_inline_label_base(&self) -> u8 {
         3
     }

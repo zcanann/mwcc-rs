@@ -1,4 +1,4 @@
-//! Wii 1.0 `__kernel_sin` with `-fp_contract off`.
+//! CodeWarrior 4.x `__kernel_sin` with `-fp_contract off`.
 //!
 //! This keeps fdlibm's source-level multiply/add chain unfused and preserves
 //! the build's measured load schedule and anonymous pool ordinals.
@@ -27,7 +27,8 @@ impl Generator {
         self.frame_size = 32;
         self.output.pre_scheduled = true;
         self.output.has_conversion = true;
-        self.output.anonymous_label_bump = 16;
+        self.output.anonymous_label_bump =
+            u32::from(self.behavior.ksin_uncontracted_label_bump);
         for bits in [
             0x3f81_1111_1110_f8a6,
             0xbf2a_01a0_19c1_61d5,
