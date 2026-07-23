@@ -223,8 +223,6 @@ def selected_rows(rows: Iterable[Dict[str, Any]], args: argparse.Namespace) -> L
     source_pattern = re.compile(args.source) if args.source else None
     selected = []
     for row in rows:
-        if not row["source_exists"]:
-            continue
         if args.project and row["project"] not in args.project:
             continue
         if args.variant and row["variant"] not in args.variant:
@@ -341,6 +339,12 @@ def run_row(
     code_projection: bool,
     configured_only: bool = False,
 ) -> Tuple[str, str]:
+    if not row["source_exists"]:
+        return (
+            "MISSING_DEPENDENCY",
+            "PARITY_META source_exists=false\n"
+            f'MISSING_DEPENDENCY  {row["source"]} — source path was absent when the inventory was captured',
+        )
     project = reference_root / row["project"]
     command = [
         str(refctx),

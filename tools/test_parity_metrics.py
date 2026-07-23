@@ -52,6 +52,7 @@ from reference_parity import (
     result_cache_name,
     run_row,
     register_active_row_process,
+    selected_rows,
     selection_is_probability_sample,
     stable_sample,
     terminate_active_row_processes,
@@ -536,6 +537,23 @@ class IdentityTests(unittest.TestCase):
                 (3, "later", "LATER"),
             ],
         )
+
+    def test_reference_runner_keeps_missing_sources_in_the_denominator(self):
+        missing = row(source="src/generated.c", source_exists=False)
+        selected = selected_rows([missing], parse_reference_args([]))
+        self.assertEqual(selected, [missing])
+
+        status, detail = run_row(
+            missing,
+            Path("/unused/reference-root"),
+            Path("/unused/refctx"),
+            Path("/unused/compiler"),
+            1,
+            False,
+        )
+        self.assertEqual(status, "MISSING_DEPENDENCY")
+        self.assertEqual(parity_metadata(detail), {"source_exists": "false"})
+        self.assertIn("source path was absent", detail)
 
     def test_reference_timeout_kills_the_entire_refctx_process_group(self):
         with tempfile.TemporaryDirectory() as directory:
