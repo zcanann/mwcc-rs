@@ -66,6 +66,19 @@ fn symbol_address(expression: &Expression) -> Option<&str> {
     }
 }
 
+fn has_sync_inline_asm_at(function: &Function, statement_index: usize) -> bool {
+    matches!(
+        function.inline_asm_blocks.as_slice(),
+        [mwcc_syntax_trees::InlineAsmBlock { statement_index: index, items }]
+            if *index == statement_index
+                && matches!(
+                    items.as_slice(),
+                    [mwcc_syntax_trees::AsmItem::Instruction(instruction)]
+                        if instruction.mnemonic == "sync" && instruction.operands.is_empty()
+                )
+    )
+}
+
 fn recognize(function: &Function) -> Option<CopyBarrier<'_>> {
     if function.return_type != Type::Void
         || !function.parameters.is_empty()
@@ -87,14 +100,22 @@ fn recognize(function: &Function) -> Option<CopyBarrier<'_>> {
     }
     let address = constant_through_casts(destination.initializer.as_ref()?)? as u32;
 
-    let [copy_statement, flush_statement, barrier_statement, invalidate_statement] =
-        function.statements.as_slice()
-    else {
-        return None;
-    };
+    let (copy_statement, flush_statement, invalidate_statement) =
+        match function.statements.as_slice() {
+            [copy, flush, barrier, invalidate] if function.inline_asm_blocks.is_empty() => {
+                let (barrier, barrier_arguments) = direct_call(barrier)?;
+                if barrier != "__sync" || !barrier_arguments.is_empty() {
+                    return None;
+                }
+                (copy, flush, invalidate)
+            }
+            [copy, flush, invalidate] if has_sync_inline_asm_at(function, 2) => {
+                (copy, flush, invalidate)
+            }
+            _ => return None,
+        };
     let (copy, copy_arguments) = direct_call(copy_statement)?;
     let (flush, flush_arguments) = direct_call(flush_statement)?;
-    let (barrier, barrier_arguments) = direct_call(barrier_statement)?;
     let (invalidate, invalidate_arguments) = direct_call(invalidate_statement)?;
     let [Expression::Variable(copy_destination), start_argument, range] = copy_arguments else {
         return None;
@@ -123,8 +144,6 @@ fn recognize(function: &Function) -> Option<CopyBarrier<'_>> {
         || invalidate_destination != &destination.name
         || repeated_start != start
         || constant_through_casts(invalidate_size) != Some(i64::from(size))
-        || barrier != "__sync"
-        || !barrier_arguments.is_empty()
     {
         return None;
     }
@@ -332,6 +351,23 @@ mod tests {
         assert_eq!(shape.start, "vector_begin");
         assert_eq!(shape.end, "vector_end");
         assert_eq!(shape.copy, "copy_range");
+    }
+
+    #[test]
+    fn recognizes_positioned_inline_asm_barrier() {
+        let mut function = function();
+        function.statements.remove(2);
+        function.inline_asm_blocks.push(mwcc_syntax_trees::InlineAsmBlock {
+            statement_index: 2,
+            items: vec![mwcc_syntax_trees::AsmItem::Instruction(
+                mwcc_syntax_trees::AsmInstruction {
+                    mnemonic: "sync".to_string(),
+                    operands: Vec::new(),
+                    source_line: 1,
+                },
+            )],
+        });
+        assert!(recognize(&function).is_some());
     }
 
     #[test]
