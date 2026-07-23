@@ -525,6 +525,9 @@ impl Generator {
             }
         }
         let direct_call = !self.globals.contains_key(name) && !self.locations.contains_key(name);
+        if self.try_emit_interleaved_member_float_forward_arguments(arguments, name, direct_call)? {
+            return Ok(());
+        }
         if self.try_emit_member_prefixed_float_shift_arguments(arguments, name, direct_call)? {
             return Ok(());
         }

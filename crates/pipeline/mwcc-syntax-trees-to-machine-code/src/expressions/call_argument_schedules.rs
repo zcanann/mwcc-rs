@@ -25,6 +25,77 @@ fn direct_member_address(expression: &Expression) -> Option<(&Expression, u32)> 
 }
 
 impl Generator {
+    /// Marshal `(object, object->float, f2, f3, object->float)` after a small
+    /// forwarding wrapper has been inlined. The middle values already occupy
+    /// their ABI registers; MWCC issues the independent high member load first,
+    /// then the low member load, filling f4 and f1 without temporary moves.
+    pub(crate) fn try_emit_interleaved_member_float_forward_arguments(
+        &mut self,
+        arguments: &[Expression],
+        name: &str,
+        direct_call: bool,
+    ) -> Compilation<bool> {
+        let [
+            first @ Expression::Variable(first_name),
+            low @ Expression::Member {
+                base: low_base,
+                member_type: Type::Float,
+                index_stride: None,
+                ..
+            },
+            Expression::Variable(second_name),
+            Expression::Variable(third_name),
+            high @ Expression::Member {
+                base: high_base,
+                member_type: Type::Float,
+                index_stride: None,
+                ..
+            },
+        ] = arguments
+        else {
+            return Ok(false);
+        };
+        let (
+            Expression::Variable(low_base_name),
+            Expression::Variable(high_base_name),
+        ) = (low_base.as_ref(), high_base.as_ref())
+        else {
+            return Ok(false);
+        };
+        let expected_types = self.call_parameter_types.get(name).is_some_and(|types| {
+            types.len() >= 5
+                && !matches!(types[0], Type::Float | Type::Double)
+                && types[1..5].iter().all(|ty| *ty == Type::Float)
+        });
+        if !direct_call
+            || !self.behavior.schedule_latency_slots
+            || !expected_types
+            || first_name != low_base_name
+            || first_name != high_base_name
+            || self.leaf_info(first).ok().map(|value| value.0)
+                != Some(Eabi::FIRST_GENERAL_ARGUMENT)
+        {
+            return Ok(false);
+        }
+
+        let (Ok(second), Ok(third)) = (
+            self.float_register_of(second_name),
+            self.float_register_of(third_name),
+        ) else {
+            return Ok(false);
+        };
+
+        self.evaluate_float(high, 4)?;
+        self.evaluate_float(low, Eabi::FIRST_FLOAT_ARGUMENT)?;
+        self.output
+            .instructions
+            .push(Instruction::FloatMove { d: 2, b: second });
+        self.output
+            .instructions
+            .push(Instruction::FloatMove { d: 3, b: third });
+        Ok(true)
+    }
+
     /// Marshal `(object, object->float, f1, f2, f3)` without destroying the
     /// three incoming floating parameters before they shift up one ABI slot.
     ///

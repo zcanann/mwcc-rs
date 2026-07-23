@@ -167,7 +167,7 @@ pub(super) fn stable_arguments(
     })
 }
 
-fn expression_use_count(expression: &Expression, name: &str) -> usize {
+pub(super) fn expression_use_count(expression: &Expression, name: &str) -> usize {
     match expression {
         Expression::Variable(variable) => usize::from(variable == name),
         Expression::AggregateLiteral(elements) => elements

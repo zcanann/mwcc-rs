@@ -99,6 +99,10 @@ impl InlineBodySet {
         for function in definitions {
             if let Some(body) = value_body::summarize_automatic(function) {
                 values.entry(function.name.clone()).or_insert(body);
+            } else if call_counts.get(&function.name).copied() == Some(1) {
+                if let Some(body) = value_body::summarize_automatic_void_forward(function) {
+                    values.entry(function.name.clone()).or_insert(body);
+                }
             }
         }
         if let Some(needle) = std::env::var_os("MWCC_CAPTURE_INLINE") {
@@ -1420,6 +1424,107 @@ mod tests {
         let repeated =
             InlineBodySet::analyze_with_definitions(&[helper, caller.clone(), second_caller], &[]);
         assert!(repeated.expand_calls(&caller).is_none());
+    }
+
+    #[test]
+    fn composes_a_one_use_void_forwarder_with_changing_arguments() {
+        let helper = function(
+            "helper",
+            vec![
+                Parameter {
+                    parameter_type: Type::Float,
+                    name: "left".into(),
+                },
+                Parameter {
+                    parameter_type: Type::Float,
+                    name: "right".into(),
+                },
+            ],
+            vec![Statement::Expression(Expression::Call {
+                name: "consume".into(),
+                arguments: vec![
+                    Expression::Variable("left".into()),
+                    Expression::Variable("right".into()),
+                ],
+            })],
+        );
+        let mut caller = function(
+            "caller",
+            vec![Parameter {
+                parameter_type: Type::Int,
+                name: "condition".into(),
+            }],
+            vec![
+                Statement::If {
+                    condition: Expression::Variable("condition".into()),
+                    then_body: vec![
+                        Statement::Assign {
+                            name: "left".into(),
+                            value: Expression::FloatLiteral(1.0),
+                        },
+                        Statement::Assign {
+                            name: "right".into(),
+                            value: Expression::FloatLiteral(2.0),
+                        },
+                    ],
+                    else_body: vec![
+                        Statement::Assign {
+                            name: "left".into(),
+                            value: Expression::FloatLiteral(3.0),
+                        },
+                        Statement::Assign {
+                            name: "right".into(),
+                            value: Expression::FloatLiteral(4.0),
+                        },
+                    ],
+                },
+                Statement::Expression(Expression::Call {
+                    name: "helper".into(),
+                    arguments: vec![
+                        Expression::Variable("left".into()),
+                        Expression::Variable("right".into()),
+                    ],
+                }),
+            ],
+        );
+        caller.locals = vec![
+            LocalDeclaration {
+                declared_type: Type::Float,
+                name: "left".into(),
+                initializer: None,
+                is_volatile: false,
+                array_length: None,
+                is_static: false,
+                data_bytes: None,
+                data_relocations: Vec::new(),
+                is_const: false,
+                row_bytes: None,
+            },
+            LocalDeclaration {
+                declared_type: Type::Float,
+                name: "right".into(),
+                initializer: None,
+                is_volatile: false,
+                array_length: None,
+                is_static: false,
+                data_bytes: None,
+                data_relocations: Vec::new(),
+                is_const: false,
+                row_bytes: None,
+            },
+        ];
+
+        let expanded = InlineBodySet::analyze_with_definitions(
+            &[helper, caller.clone()],
+            &[],
+        )
+        .expand_calls(&caller)
+        .expect("a one-use forwarder should materialize changing arguments once");
+        let mut calls = HashMap::new();
+        collect_function_calls(&expanded, &mut calls);
+        assert!(!calls.contains_key("helper"));
+        assert!(calls.contains_key("consume"));
+        assert_eq!(expanded.locals.len(), 2);
     }
 
     #[test]

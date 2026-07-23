@@ -64,6 +64,20 @@ impl Generator {
             }
             Ok(branches)
         })();
+        let retained_multiply_plan = condition_abs_value(condition).and_then(|value| {
+            let source = self.observed_condition_float_register(value)?;
+            let [first, second] = then_body else {
+                return None;
+            };
+            Some((
+                source,
+                value.clone(),
+                [
+                    float_multiply_assignment(first, value)?,
+                    float_multiply_assignment(second, value)?,
+                ],
+            ))
+        });
         self.restore_condition_global_cache(previous_cache);
         self.restore_condition_float_cache(previous_float_cache);
         let branches = branches?;
@@ -72,7 +86,26 @@ impl Generator {
         }
         self.commit_structured_float_handoff();
 
-        if !self.try_emit_structured_frame_bitfield_stores(then_body)? {
+        if let Some((source, value, assignments)) = retained_multiply_plan {
+            let double = self.is_double_value(&value);
+            for (destination_name, factor_name) in assignments {
+                let destination = self.float_register_of(&destination_name)?;
+                let factor = self.float_register_of(&factor_name)?;
+                self.output.instructions.push(if double {
+                    Instruction::FloatMultiplyDouble {
+                        d: destination,
+                        a: source,
+                        c: factor,
+                    }
+                } else {
+                    Instruction::FloatMultiplySingle {
+                        d: destination,
+                        a: source,
+                        c: factor,
+                    }
+                });
+            }
+        } else if !self.try_emit_structured_frame_bitfield_stores(then_body)? {
             self.emit_structured_statements(
                 then_body,
                 function,
@@ -103,7 +136,9 @@ impl Generator {
                 *target = else_start;
             }
         }
-        if !self.try_emit_structured_frame_bitfield_stores(else_body)? {
+        if !self.try_emit_shared_float_zero_assignments(else_body)?
+            && !self.try_emit_structured_frame_bitfield_stores(else_body)?
+        {
             self.emit_structured_statements(
                 else_body,
                 function,
@@ -127,4 +162,92 @@ impl Generator {
         }
         Ok(())
     }
+
+    /// Two float locals selected to zero in the same arm share one literal
+    /// load. MWCC loads the first source-order destination, then copies it to
+    /// the second; independently evaluating both assignments duplicates the
+    /// pool relocation and loses the measured branch schedule.
+    fn try_emit_shared_float_zero_assignments(
+        &mut self,
+        statements: &[Statement],
+    ) -> Compilation<bool> {
+        let [
+            Statement::Assign {
+                name: first,
+                value: first_value,
+            },
+            Statement::Assign {
+                name: second,
+                value: second_value,
+            },
+        ] = statements
+        else {
+            return Ok(false);
+        };
+        if !crate::analysis::is_zero_literal(first_value)
+            || !crate::analysis::is_zero_literal(second_value)
+        {
+            return Ok(false);
+        }
+        let (Ok(first_register), Ok(second_register)) =
+            (self.float_register_of(first), self.float_register_of(second))
+        else {
+            return Ok(false);
+        };
+        let first_expression = Expression::Variable(first.clone());
+        let second_expression = Expression::Variable(second.clone());
+        let double = self.is_double_value(&first_expression);
+        if first_register == second_register
+            || double != self.is_double_value(&second_expression)
+        {
+            return Ok(false);
+        }
+
+        self.load_float_literal_into(first_register, first_value, double)?;
+        self.output.instructions.push(Instruction::FloatMove {
+            d: second_register,
+            b: first_register,
+        });
+        Ok(true)
+    }
+}
+
+fn condition_abs_value(condition: &Expression) -> Option<&Expression> {
+    if let Some(value) = crate::float_abs_select::abs_select_value(condition) {
+        return Some(value);
+    }
+    let Expression::Binary { left, right, .. } = condition else {
+        return None;
+    };
+    crate::float_abs_select::abs_select_value(left)
+        .or_else(|| crate::float_abs_select::abs_select_value(right))
+}
+
+fn float_multiply_assignment(
+    statement: &Statement,
+    shared: &Expression,
+) -> Option<(String, String)> {
+    let Statement::Assign {
+        name,
+        value:
+            Expression::Binary {
+                operator: BinaryOperator::Multiply,
+                left,
+                right,
+            },
+    } = statement
+    else {
+        return None;
+    };
+    let factor = if crate::analysis::structurally_equal(left, shared) {
+        right.as_ref()
+    } else if crate::analysis::structurally_equal(right, shared) {
+        left.as_ref()
+    } else {
+        return None;
+    };
+    let Expression::Variable(factor) = factor else {
+        return None;
+    };
+    Some((name.clone(), factor.clone()))
 }

@@ -21,13 +21,23 @@ impl Generator {
             return Ok(false);
         };
         let source = if self.is_float_located(value) {
+            let double = self.is_double_value(value);
+            // MWCC materializes the comparison zero before an independent
+            // memory operand. Keeping the literal live in f0 also lets the
+            // following diamond reuse the single load.
+            self.load_float_literal_into(
+                FLOAT_SCRATCH,
+                &Expression::IntegerLiteral(0),
+                double,
+            )?;
             let source = if destination == FLOAT_SCRATCH {
                 self.fresh_virtual_float_preferring(1)
             } else {
                 destination
             };
-            self.emit_located_operand(value, source)?;
-            source
+            let source = self.place_condition_float_load(value, source)?;
+            self.emit_float_abs_select_after_zero(source, destination)?;
+            return Ok(true);
         } else if self.is_float_leaf(value) {
             self.float_register_of_leaf(value)?
         } else {
@@ -48,6 +58,14 @@ impl Generator {
             &Expression::IntegerLiteral(0),
             double,
         )?;
+        self.emit_float_abs_select_after_zero(source, destination)
+    }
+
+    fn emit_float_abs_select_after_zero(
+        &mut self,
+        source: u8,
+        destination: u8,
+    ) -> Compilation<()> {
         self.output
             .instructions
             .push(Instruction::FloatCompareOrdered {

@@ -240,8 +240,14 @@ pub(super) fn expand_expression(
             }
             let mut replacements = HashMap::new();
             let mut argument_initializers = Vec::new();
+            let forwards_once_in_order = body.arguments_forwarded_once_in_order();
             for (parameter, argument) in body.source.parameters.iter().zip(arguments) {
-                if stable_argument(&argument, stable_variables) {
+                let pure_single_use = !crate::analysis::expression_has_side_effect(&argument)
+                    && body.parameter_used_once_in_forwarded_call(&parameter.name);
+                if forwards_once_in_order
+                    || pure_single_use
+                    || stable_argument(&argument, stable_variables)
+                {
                     replacements.insert(parameter.name.clone(), argument);
                     continue;
                 }

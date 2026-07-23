@@ -16,6 +16,54 @@ pub(super) struct ValueInlineBody {
     pub(super) expression: Expression,
 }
 
+impl ValueInlineBody {
+    fn forwarded_call_arguments(&self) -> Option<&[Expression]> {
+        match &self.expression {
+            Expression::Call { arguments, .. } => Some(arguments),
+            Expression::Comma { left, right }
+                if matches!(right.as_ref(), Expression::IntegerLiteral(0)) =>
+            {
+                match left.as_ref() {
+                    Expression::Call { arguments, .. } => Some(arguments),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether substituting caller arguments directly preserves both their
+    /// single evaluation and source order. A pure forwarding wrapper uses
+    /// every parameter exactly once, in its original position, so changing or
+    /// side-effecting arguments do not need hygienic temporaries.
+    pub(super) fn arguments_forwarded_once_in_order(&self) -> bool {
+        let Some(forwarded) = self.forwarded_call_arguments() else {
+            return false;
+        };
+        forwarded.len() == self.source.parameters.len()
+            && forwarded
+                .iter()
+                .zip(&self.source.parameters)
+                .all(|(argument, parameter)| {
+                    matches!(argument, Expression::Variable(name) if name == &parameter.name)
+                })
+    }
+
+    /// A pure caller expression can be substituted directly when the wrapper
+    /// is one call and consumes this parameter exactly once. With no wrapper
+    /// side effect before that call, materializing a compiler-only temporary
+    /// would preserve semantics but lose MWCC's forwarding schedule.
+    pub(super) fn parameter_used_once_in_forwarded_call(&self, name: &str) -> bool {
+        self.forwarded_call_arguments().is_some_and(|arguments| {
+            arguments
+                .iter()
+                .map(|argument| super::safety::expression_use_count(argument, name))
+                .sum::<usize>()
+                == 1
+        })
+    }
+}
+
 pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
     if !function.guards.is_empty() || function.asm_body.is_some() {
         return None;
@@ -288,6 +336,31 @@ pub(super) fn summarize_automatic(function: &Function) -> Option<ValueInlineBody
     summarize(function)
 }
 
+/// Ordinary one-use void wrappers are also automatic-inline candidates when
+/// their entire body is one expression. Unlike statement-body composition,
+/// the value representation can materialize changing caller arguments once at
+/// the call site before substituting the wrapper, so branch-assigned values do
+/// not prevent a semantics-preserving expansion.
+pub(super) fn summarize_automatic_void_forward(function: &Function) -> Option<ValueInlineBody> {
+    if function.return_type != Type::Void
+        || !function.locals.is_empty()
+        || function.return_expression.is_some()
+        || !matches!(function.statements.as_slice(), [Statement::Expression(_)])
+    {
+        return None;
+    }
+    let [Statement::Expression(expression)] = function.statements.as_slice() else {
+        unreachable!("single expression was checked")
+    };
+    Some(ValueInlineBody {
+        source: function.clone(),
+        expression: Expression::Comma {
+            left: Box::new(expression.clone()),
+            right: Box::new(Expression::IntegerLiteral(0)),
+        },
+    })
+}
+
 fn is_boolean_expression(expression: &Expression) -> bool {
     match expression {
         Expression::Binary { operator, .. } => matches!(
@@ -354,6 +427,39 @@ mod tests {
             summary.expression,
             Expression::Member { offset: 4, .. }
         ));
+    }
+
+    #[test]
+    fn recognizes_single_use_parameters_in_an_interleaved_forwarding_call() {
+        let mut function = empty_function("forward", Type::Void);
+        function.parameters = vec![
+            Parameter {
+                parameter_type: Type::StructPointer { element_size: 16 },
+                name: "object".into(),
+            },
+            Parameter {
+                parameter_type: Type::Float,
+                name: "value".into(),
+            },
+        ];
+        function.statements = vec![Statement::Expression(Expression::Call {
+            name: "consume".into(),
+            arguments: vec![
+                Expression::Variable("object".into()),
+                Expression::Member {
+                    base: Box::new(Expression::Variable("object".into())),
+                    offset: 4,
+                    member_type: Type::Float,
+                    index_stride: None,
+                },
+                Expression::Variable("value".into()),
+            ],
+        })];
+
+        let summary = summarize_automatic_void_forward(&function).expect("void forwarder");
+        assert!(!summary.arguments_forwarded_once_in_order());
+        assert!(summary.parameter_used_once_in_forwarded_call("value"));
+        assert!(!summary.parameter_used_once_in_forwarded_call("object"));
     }
 
     #[test]

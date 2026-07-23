@@ -1,9 +1,10 @@
 //! Float memory values retained along side-effect-free condition edges.
 //!
-//! MWCC can keep a loaded float live when an early-return guard falls through
-//! into the next condition.  This cache models only that control-flow edge. It
-//! is restored before the guarded body is emitted, and calls or mutations make
-//! a condition ineligible to feed a later one.
+//! MWCC can keep a loaded float live within the selected arm of a condition or
+//! when an early-return guard falls through into the next condition. This cache
+//! records those condition loads until the structured owner has emitted the
+//! relevant edge. Calls or mutations make a condition ineligible to feed a
+//! later one.
 
 use crate::generator::Generator;
 use mwcc_syntax_trees::Expression;
@@ -86,6 +87,17 @@ impl Generator {
                 expression: operand.clone(),
                 register,
             });
+    }
+
+    pub(crate) fn observed_condition_float_register(
+        &self,
+        operand: &Expression,
+    ) -> Option<u8> {
+        self.condition_float_cache
+            .observed
+            .iter()
+            .find(|value| same_direct_float_memory_load(&value.expression, operand))
+            .map(|value| value.register)
     }
 }
 
