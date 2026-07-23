@@ -4615,10 +4615,11 @@ impl Parser {
         })
     }
 
-    /// Synthesize non-virtual base destruction in language-mandated reverse
-    /// declaration order. Base destructors receive deleting flag zero: only
-    /// the complete-object destructor may invoke operator delete.
-    pub(crate) fn synthesize_base_destructor_calls(
+    /// Synthesize class-valued member destruction followed by non-virtual base
+    /// destruction, each in language-mandated reverse declaration order.
+    /// Subobject destructors receive deleting flag zero: only the
+    /// complete-object destructor may invoke operator delete.
+    pub(crate) fn synthesize_subobject_destructor_calls(
         &self,
         scope: &str,
     ) -> Compilation<Vec<Statement>> {
@@ -4628,6 +4629,48 @@ impl Parser {
             ))
         })?;
         let mut statements = Vec::new();
+        let layout = self.structs.get(scope).ok_or_else(|| {
+            Diagnostic::error(format!(
+                "aggregate layout for destructor '{scope}' was not recovered"
+            ))
+        })?;
+        for field_name in class.fields.iter().rev() {
+            let Some(field) = layout.fields.get(field_name) else {
+                continue;
+            };
+            let Some(field_class) = field.struct_tag.as_deref() else {
+                continue;
+            };
+            // Pointer members name their pointee class in `struct_tag`, but
+            // destroying the containing object never destroys the pointee.
+            if !matches!(field.member_type, Type::Struct { .. }) {
+                continue;
+            }
+            // Array destruction needs a reverse element loop and is not
+            // equivalent to one complete-object call at the field address.
+            if field.array_bytes.is_some() {
+                continue;
+            }
+            let has_destructor = self.cxx_nonvirtual_destructor_classes.contains(field_class)
+                || self
+                    .cxx_classes
+                    .get(field_class)
+                    .is_some_and(|class| class.has_virtual_destructor || class.declares_destructor);
+            if !has_destructor {
+                continue;
+            }
+            statements.push(Statement::Expression(Expression::Call {
+                name: self.mangle_typed_member_in_current_namespace(
+                    field_class,
+                    "__dt",
+                    &[],
+                )?,
+                arguments: vec![
+                    adjusted_this(field.offset),
+                    Expression::IntegerLiteral(0),
+                ],
+            }));
+        }
         for base in class.bases.iter().rev() {
             let Some(base_class) = self.cxx_classes.get(&base.name) else {
                 continue;
@@ -4635,26 +4678,29 @@ impl Parser {
             if !base_class.has_virtual_destructor {
                 continue;
             }
-            let this = if base.offset == 0 {
-                Expression::Variable("this".to_string())
-            } else {
-                Expression::MemberAddress {
-                    base: Box::new(Expression::Variable("this".to_string())),
-                    offset: base.offset,
-                    element: mwcc_syntax_trees::Pointee::UnsignedChar,
-                    index_stride: None,
-                }
-            };
             statements.push(Statement::Expression(Expression::Call {
                 name: self.mangle_typed_member_in_current_namespace(
                     &base.name,
                     "__dt",
                     &[],
                 )?,
-                arguments: vec![this, Expression::IntegerLiteral(0)],
+                arguments: vec![adjusted_this(base.offset), Expression::IntegerLiteral(0)],
             }));
         }
         Ok(statements)
+    }
+}
+
+fn adjusted_this(offset: u32) -> Expression {
+    if offset == 0 {
+        Expression::Variable("this".to_string())
+    } else {
+        Expression::MemberAddress {
+            base: Box::new(Expression::Variable("this".to_string())),
+            offset,
+            element: mwcc_syntax_trees::Pointee::UnsignedChar,
+            index_stride: None,
+        }
     }
 }
 

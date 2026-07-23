@@ -3273,8 +3273,8 @@ impl Parser {
                     .statements
                     .splice(0..0, constructor_initialization.statements);
             }
-            let mut destructor_base_calls = if let Some(scope) = &destructor_scope {
-                self.synthesize_base_destructor_calls(scope)?
+            let mut destructor_subobject_calls = if let Some(scope) = &destructor_scope {
+                self.synthesize_subobject_destructor_calls(scope)?
             } else {
                 Vec::new()
             };
@@ -3285,7 +3285,7 @@ impl Parser {
                         &mut function,
                         self.structs.get(scope).map_or(0, |layout| layout.size),
                         Vec::new(),
-                        std::mem::take(&mut destructor_base_calls),
+                        std::mem::take(&mut destructor_subobject_calls),
                         self.cxx_delete_forwarder
                             .clone()
                             .unwrap_or_else(|| "__dl__FPv".to_string()),
@@ -3335,7 +3335,7 @@ impl Parser {
                             .collect();
                         if destructor_scope.is_some() && class.has_virtual_destructor {
                             let vptr_store = vptr_stores[0].clone();
-                            let before_source = destructor_base_calls
+                            let before_source = destructor_subobject_calls
                                 .is_empty()
                                 .then_some(vptr_store)
                                 .into_iter()
@@ -3344,7 +3344,7 @@ impl Parser {
                                 &mut function,
                                 self.structs.get(scope).map_or(0, |layout| layout.size),
                                 before_source,
-                                std::mem::take(&mut destructor_base_calls),
+                                std::mem::take(&mut destructor_subobject_calls),
                                 self.cxx_delete_forwarder
                                     .clone()
                                     .unwrap_or_else(|| "__dl__FPv".to_string()),

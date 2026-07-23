@@ -2687,6 +2687,60 @@ blr\n\
     }
 
     #[test]
+    fn destructor_calls_class_members_in_reverse_declaration_order() {
+        let source = r#"
+            class Token {
+            public:
+                ~Token();
+                int value;
+            };
+            class Owner {
+                Token first;
+                Token second;
+            public:
+                ~Owner();
+            };
+            Owner::~Owner() {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        let destructor = &unit.functions[0];
+        let [mwcc_syntax_trees::Statement::If { then_body, .. }] =
+            destructor.statements.as_slice()
+        else {
+            panic!("expected the complete-object guard");
+        };
+        let member_offset = |statement: &mwcc_syntax_trees::Statement| {
+            let mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Call { name, arguments },
+            ) = statement
+            else {
+                panic!("expected a member destructor call");
+            };
+            assert_eq!(name, "__dt__5TokenFv");
+            assert!(matches!(
+                arguments.get(1),
+                Some(mwcc_syntax_trees::Expression::IntegerLiteral(0))
+            ));
+            match &arguments[0] {
+                mwcc_syntax_trees::Expression::Variable(name) if name == "this" => 0,
+                mwcc_syntax_trees::Expression::MemberAddress { offset, .. } => *offset,
+                other => panic!("unexpected member object address: {other:?}"),
+            }
+        };
+        assert_eq!(member_offset(&then_body[0]), 4);
+        assert_eq!(member_offset(&then_body[1]), 0);
+        assert_eq!(then_body.len(), 3, "the deleting guard follows subobjects");
+    }
+
+    #[test]
     fn pure_virtual_destructor_body_does_not_populate_its_vtable_slot() {
         let source = r#"
             class Abstract {
