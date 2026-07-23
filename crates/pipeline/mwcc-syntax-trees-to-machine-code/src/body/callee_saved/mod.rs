@@ -15,6 +15,7 @@ mod computed_between_calls;
 mod counted_resource_search;
 mod conditional;
 mod conditional_member_callback;
+mod dual_conditional_member_callbacks;
 mod context_callback_handler;
 mod critical_globals;
 mod fixed_address_copy_barrier;

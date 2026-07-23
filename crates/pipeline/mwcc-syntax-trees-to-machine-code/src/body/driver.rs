@@ -1280,6 +1280,9 @@ impl Generator {
         if self.try_conditional_member_callback(function)? {
             return Ok(());
         }
+        if self.try_dual_conditional_member_callbacks(function)? {
+            return Ok(());
+        }
         if self.try_guarded_display_list_packet(function)? {
             return Ok(());
         }

@@ -2605,6 +2605,66 @@ mod tests {
     }
 
     #[test]
+    fn schedules_two_guarded_callbacks_after_shared_alias_calls() {
+        let source = br#"
+            struct Object;
+            typedef void (*Callback)(struct Object*);
+            struct Fighter {
+                char callback_padding[8668];
+                Callback first_callback;
+                Callback second_callback;
+            };
+            struct Object {
+                char user_padding[44];
+                struct Fighter* user_data;
+            };
+            extern void prepare(struct Fighter*);
+            extern void update(struct Fighter*);
+            void dispatch_callbacks(struct Object* object) {
+                struct Fighter* fighter = object->user_data;
+                prepare(fighter);
+                update(fighter);
+                if (fighter->first_callback != 0) {
+                    fighter->first_callback(object);
+                }
+                if (fighter->second_callback != 0) {
+                    fighter->second_callback(object);
+                }
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "dual-conditional-member-callbacks.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the object and member alias should survive the complete call sequence");
+        let expected = [
+            0x7c, 0x08, 0x02, 0xa6, 0x90, 0x01, 0x00, 0x04, 0x94, 0x21, 0xff, 0xe8, 0x93, 0xe1,
+            0x00, 0x14, 0x93, 0xc1, 0x00, 0x10, 0x7c, 0x7e, 0x1b, 0x78, 0x83, 0xe3, 0x00, 0x2c,
+            0x7f, 0xe3, 0xfb, 0x78, 0x48, 0x00, 0x00, 0x01, 0x7f, 0xe3, 0xfb, 0x78, 0x48, 0x00,
+            0x00, 0x01, 0x81, 0x9f, 0x21, 0xdc, 0x28, 0x0c, 0x00, 0x00, 0x41, 0x82, 0x00, 0x10,
+            0x7d, 0x88, 0x03, 0xa6, 0x38, 0x7e, 0x00, 0x00, 0x4e, 0x80, 0x00, 0x21, 0x81, 0x9f,
+            0x21, 0xe0, 0x28, 0x0c, 0x00, 0x00, 0x41, 0x82, 0x00, 0x10, 0x7d, 0x88, 0x03, 0xa6,
+            0x38, 0x7e, 0x00, 0x00, 0x4e, 0x80, 0x00, 0x21, 0x80, 0x01, 0x00, 0x1c, 0x83, 0xe1,
+            0x00, 0x14, 0x83, 0xc1, 0x00, 0x10, 0x38, 0x21, 0x00, 0x18, 0x7c, 0x08, 0x03, 0xa6,
+            0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected.len())
+            .any(|bytes| bytes == expected));
+    }
+
+    #[test]
     fn retains_a_shared_zero_across_a_bit_field_update_and_guard() {
         let source = br#"
             struct CommonData { void* padding; int value; };
