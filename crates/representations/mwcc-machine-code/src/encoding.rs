@@ -127,6 +127,7 @@ impl Instruction {
             Instruction::FloatNegativeMultiplySubtractDouble { d, a, c, b } => a_form(63, d, a, b, c, 30),
             Instruction::RoundToSingle { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (12 << 1),
             Instruction::FloatMove { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (72 << 1),
+            Instruction::PairedSingleMove { d, b } => (4 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (72 << 1),
             // frsqrte: opcode 63, A-form xo 26 (fc 40 08 34 = frsqrte f2,f1)
             Instruction::FloatReciprocalSqrtEstimate { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (26 << 1),
             Instruction::FloatNegate { d, b } => (63 << 26) | ((d as u32) << 21) | ((b as u32) << 11) | (40 << 1),

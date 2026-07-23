@@ -241,7 +241,8 @@ fn fpr(mnemonic: &str, operand: &AsmOperand) -> Compilation<u8> {
 fn memory(mnemonic: &str, operand: &AsmOperand) -> Compilation<(i16, u8)> {
     match operand {
         AsmOperand::Memory { displacement, base } => Ok((*displacement, *base)),
-        AsmOperand::SymbolMemory { base, .. } => Ok((0, *base)),
+        AsmOperand::SymbolMemory { base, .. }
+        | AsmOperand::SmallDataSymbolMemory { base, .. } => Ok((0, *base)),
         _ => Err(Diagnostic::error(format!(
             "inline-asm '{mnemonic}' expected a `<disp>(<reg>)` memory operand"
         ))),

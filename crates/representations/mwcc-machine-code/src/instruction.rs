@@ -219,6 +219,8 @@ pub enum Instruction {
     FloatReciprocalSqrtEstimate { d: u8, b: u8 },
     /// `fmr frD, frB`
     FloatMove { d: u8, b: u8 },
+    /// `ps_mr frD, frB` — Gekko paired-single register move.
+    PairedSingleMove { d: u8, b: u8 },
     /// `fneg frD, frB`
     FloatNegate { d: u8, b: u8 },
     /// `fabs frD, frB` — floating absolute value.
@@ -434,6 +436,7 @@ impl Instruction {
                 | FloatSelect { .. }
                 | RoundToSingle { .. }
                 | FloatMove { .. }
+                | PairedSingleMove { .. }
                 | FloatNegate { .. }
                 | FloatAbsolute { .. }
                 | ConvertToIntegerWordZero { .. }

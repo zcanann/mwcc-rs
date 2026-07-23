@@ -421,6 +421,10 @@ impl Parser {
                     }
                     return Ok(AsmOperand::Symbol { name: word, suffix });
                 }
+                if *self.peek() == Token::ParenOpen {
+                    let base = self.parse_asm_memory_base()?;
+                    return Ok(AsmOperand::SmallDataSymbolMemory { name: word, base });
+                }
                 Ok(AsmOperand::Label(word))
             }
             // Parenthesized symbolic displacement arithmetic, used by the TRK runtime:

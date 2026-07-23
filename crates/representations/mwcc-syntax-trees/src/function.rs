@@ -577,6 +577,10 @@ pub enum AsmOperand {
         suffix: AsmRelocSuffix,
         base: u8,
     },
+    /// A small-data symbol displacement with a base register, `symbol(<gpr>)`.
+    /// The encoded displacement is zero and an `R_PPC_EMB_SDA21` relocation
+    /// patches both the displacement and base-register fields.
+    SmallDataSymbolMemory { name: String, base: u8 },
 }
 
 /// The `@`-suffix on an inline-`asm` symbol operand, selecting which 16-bit part of

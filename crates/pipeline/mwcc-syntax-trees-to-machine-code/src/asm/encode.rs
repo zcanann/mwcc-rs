@@ -326,6 +326,10 @@ pub(super) fn assemble_line(
             let [d, b] = fprs(mnemonic, operands)?;
             Instruction::FloatMove { d, b }
         }
+        "ps_mr" => {
+            let [d, b] = fprs(mnemonic, operands)?;
+            Instruction::PairedSingleMove { d, b }
+        }
         "fctiwz" => {
             let [d, b] = fprs(mnemonic, operands)?;
             Instruction::ConvertToIntegerWordZero { d, b }
@@ -1160,6 +1164,18 @@ mod tests {
             ],
         )
         .is_err());
+    }
+
+    #[test]
+    fn assembles_paired_single_register_move() {
+        assert_eq!(
+            assemble("ps_mr", vec![AsmOperand::Fpr(31), AsmOperand::Fpr(0)]).unwrap(),
+            Instruction::PairedSingleMove { d: 31, b: 0 }
+        );
+        assert_eq!(
+            Instruction::PairedSingleMove { d: 31, b: 0 }.encode(),
+            0x13e0_0090
+        );
     }
 
     #[test]

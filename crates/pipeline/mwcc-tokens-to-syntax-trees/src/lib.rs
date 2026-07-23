@@ -1147,6 +1147,35 @@ mod tests {
     }
 
     #[test]
+    fn parses_bare_small_data_asm_memory_symbol() {
+        let source = r#"
+            asm void initialize(void) {
+                nofralloc
+                lfd f0, ZeroF(r13)
+                blr
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let body = unit.functions[0].asm_body.as_ref().unwrap();
+        assert!(matches!(
+            &body[1],
+            mwcc_syntax_trees::AsmItem::Instruction(instruction)
+                if instruction.operands[1]
+                    == mwcc_syntax_trees::AsmOperand::SmallDataSymbolMemory {
+                        name: "ZeroF".to_string(),
+                        base: 13,
+                    }
+        ));
+    }
+
+    #[test]
     fn folds_bitwise_complemented_asm_immediates() {
         let source = r#"
             asm void flush(void) {

@@ -101,12 +101,20 @@ pub(crate) fn assemble_asm_function(
             if let Some(instruction) = assemble_line(line, &labels, instruction_index)? {
                 instructions.push(instruction);
                 for operand in &line.operands {
-                    if let AsmOperand::Symbol { name, suffix }
-                    | AsmOperand::SymbolMemory { name, suffix, .. } = operand
-                    {
+                    let relocation = match operand {
+                        AsmOperand::Symbol { name, suffix }
+                        | AsmOperand::SymbolMemory { name, suffix, .. } => {
+                            Some((name, relocation_kind(*suffix)))
+                        }
+                        AsmOperand::SmallDataSymbolMemory { name, .. } => {
+                            Some((name, RelocationKind::EmbSda21))
+                        }
+                        _ => None,
+                    };
+                    if let Some((name, kind)) = relocation {
                         relocations.push(Relocation {
                             instruction_index,
-                            kind: relocation_kind(*suffix),
+                            kind,
                             target: RelocationTarget::External(name.clone()),
                         });
                         if !symbol_order.contains(name) {
