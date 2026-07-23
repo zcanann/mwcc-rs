@@ -120,6 +120,37 @@ fn leading_pure_vtable_slot_defers_defined_function_symbols() {
 }
 
 #[test]
+fn deferred_weak_vtable_waits_for_its_function_reference() {
+    let vtable = DataObject {
+        name: "__vt__8Inline",
+        size: 12,
+        alignment: 4,
+        comment_alignment: 4,
+        initial_bytes: Some(vec![0; 12]),
+        is_const: false,
+        force_full_data_section: true,
+        is_static: false,
+        is_explicit_zero: false,
+        preassigned_anonymous_ordinal: None,
+        relocations: Vec::new(),
+        non_static_functions_before: 0,
+        functions_before: 0,
+        is_weak: true,
+        static_local_owner: None,
+        anonymous_adjust: 0,
+        section: None,
+    };
+    assert!(!initialized_object_is_upfront(&vtable, true));
+
+    let ordinary = DataObject {
+        name: "ordinary",
+        is_weak: false,
+        ..vtable
+    };
+    assert!(initialized_object_is_upfront(&ordinary, true));
+}
+
+#[test]
 fn data_anchor_precedes_the_first_upfront_local_data_object() {
     let data = [
         DataObject {

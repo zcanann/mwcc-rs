@@ -1090,7 +1090,7 @@ pub(crate) fn lower_virtual_constructor(
     config: CompilerConfig,
 ) -> Option<MachineFunction> {
     if !function.name.starts_with("__ct__")
-        || function.parameters.len() != 1
+        || function.parameters.is_empty()
         || function.parameters[0].name != "this"
         || !matches!(
             function.parameters[0].parameter_type,

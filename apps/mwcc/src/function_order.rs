@@ -141,18 +141,30 @@ pub(crate) fn apply_deferred_emission_order(
         .map(|(_, function)| function.deferred_source_prefix_bump)
         .sum();
 
+    // Compiler-generated weak inline bodies form a distinct deferred stream.
+    // MWCC finishes the reversed source-definition stream first, then emits
+    // generated weak bodies in their own reversed recovery order. Reversing
+    // the combined list instead incorrectly places vtable-owned destructors
+    // before source-written constructors.
+    let (mut source_definitions, mut generated_weak): (Vec<_>, Vec<_>) = source_order
+        .into_iter()
+        .partition(|function| !function.weak_inline);
+    generated_weak.reverse();
+
     let mut emission_order = match emission_style {
         DeferredFunctionEmissionStyle::ImmediateAsmThenReverseCompiled => {
-            let (mut immediate_asm, mut deferred_compiled): (Vec<_>, Vec<_>) = source_order
+            let (mut immediate_asm, mut deferred_compiled): (Vec<_>, Vec<_>) = source_definitions
                 .into_iter()
                 .partition(|function| function.is_asm);
             deferred_compiled.reverse();
             immediate_asm.extend(deferred_compiled);
+            immediate_asm.extend(generated_weak);
             immediate_asm
         }
         DeferredFunctionEmissionStyle::ReverseAll => {
-            source_order.reverse();
-            source_order
+            source_definitions.reverse();
+            source_definitions.extend(generated_weak);
+            source_definitions
         }
     };
     if let Some(head) = emission_order.iter_mut().find(|function| !function.is_asm) {
@@ -231,6 +243,40 @@ mod tests {
                 .map(|function| function.name.as_str())
                 .collect::<Vec<_>>(),
             ["compiled_last", "asm_middle", "compiled_first"]
+        );
+    }
+
+    #[test]
+    fn generated_weak_bodies_follow_reversed_source_definitions() {
+        let mut generated_first = function("generated_first", false);
+        generated_first.weak_inline = true;
+        let mut generated_last = function("generated_last", false);
+        generated_last.weak_inline = true;
+        let mut functions = vec![
+            function("source_first", false),
+            function("source_last", false),
+            generated_first,
+            generated_last,
+        ];
+
+        apply_deferred_emission_order(
+            &mut functions,
+            3,
+            1,
+            DeferredFunctionEmissionStyle::ImmediateAsmThenReverseCompiled,
+        );
+
+        assert_eq!(
+            functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "source_last",
+                "source_first",
+                "generated_last",
+                "generated_first",
+            ]
         );
     }
 

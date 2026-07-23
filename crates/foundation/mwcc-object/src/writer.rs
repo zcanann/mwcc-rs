@@ -30,6 +30,19 @@ fn defers_defined_vtable_function_targets(object: &DataObject<'_>) -> bool {
             .any(|relocation| relocation.offset == 8)
 }
 
+/// All-inline C++ classes own weak vtables through the constructor/destructor
+/// that first needs them. Even under deferred compilation those tables are not
+/// part of the generic upfront initialized-global pass: a constructor's body
+/// reference discovers the table immediately before the constructor symbol.
+fn initialized_object_is_upfront(
+    object: &DataObject<'_>,
+    initialized_globals_before_deferred_functions: bool,
+) -> bool {
+    !(object.is_weak && object.name.starts_with("__vt__"))
+        && (object.non_static_functions_before == 0
+            || initialized_globals_before_deferred_functions)
+}
+
 /// Metrowerks' private section type for `.mwcats.text` (readelf renders it as
 /// "LOUSER+0x4a2a82c2").
 const SHT_MWCATS: u32 = 0xCA2A_82C2;
@@ -2293,12 +2306,6 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 ".sdata" | ".data" | ".sdata2" | ".rodata" | ".ctors" | ".dtors"
             ) || (section_name == ".sbss" && object.is_explicit_zero))
     };
-    let initialized_object_is_upfront = |object: &DataObject| {
-        object.non_static_functions_before == 0
-            || input
-                .object_format
-                .initialized_globals_before_deferred_functions
-    };
     // Retained weak inline statics are registered while parsing headers before
     // section-attributed asm prototypes. Build 163 emits that leading weak run
     // first, then the otherwise-early UND prototypes, then ordinary initialized
@@ -2306,9 +2313,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // __CARDVendorID). Keep the prefix narrow so ordinary declaration ordering
     // is unchanged once a non-weak object has been encountered.
     for object in input.data_objects.iter().take_while(|object| {
-        object.is_weak
+            object.is_weak
             && is_initialized_run_object(object)
-            && initialized_object_is_upfront(object)
+            && initialized_object_is_upfront(
+                object,
+                input
+                    .object_format
+                    .initialized_globals_before_deferred_functions,
+            )
     }) {
         emit_initialized_object!(object);
     }
@@ -2341,7 +2353,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // UNINITIALIZED zero globals trail the functions in reverse. (Large `.bss`
     // follows its own reference-order rule, untouched here.)
     for object in &input.data_objects {
-        if is_initialized_run_object(object) && initialized_object_is_upfront(object) {
+        if is_initialized_run_object(object)
+            && initialized_object_is_upfront(
+                object,
+                input
+                    .object_format
+                    .initialized_globals_before_deferred_functions,
+            )
+        {
             emit_initialized_object!(object);
         } else if matches!(
             input.object_format.function_symbol_order,
