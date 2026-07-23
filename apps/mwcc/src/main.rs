@@ -464,6 +464,7 @@ fn global_alignments(
     element_size: u32,
     struct_alignment: Option<u32>,
     is_array: bool,
+    is_read_only: bool,
     requested_alignment: u32,
     unoptimized: bool,
     large_aggregate_comment_alignment: u32,
@@ -483,10 +484,15 @@ fn global_alignments(
     .max(requested_alignment);
     let comment = if unoptimized && struct_alignment.is_none() {
         element_size.max(requested_alignment)
-    } else if struct_alignment.is_some_and(|alignment| alignment >= 4) && element_size > 8 {
-        // A build may give full-section aggregate symbols a metadata alignment
-        // larger than their actual member layout. Keep that convention in the
-        // build profile rather than inferring it from source language here.
+    } else if !is_read_only
+        && struct_alignment.is_some_and(|alignment| alignment >= 4)
+        && element_size > 8
+    {
+        // A build may give writable full-section aggregate symbols a metadata
+        // alignment larger than their actual member layout. Read-only
+        // aggregates retain their declared alignment even in `.rodata`.
+        // Keep that convention in the build profile rather than inferring it
+        // from source language here.
         layout.max(large_aggregate_comment_alignment)
     } else {
         layout
@@ -1386,6 +1392,7 @@ fn compile(
             element_size,
             struct_alignment,
             global.array_length.is_some(),
+            global.is_const,
             global.attribute_alignment.map_or(1, u32::from),
             config.flags.optimization == mwcc_versions::Optimization::O0,
             config.build.profile.large_aggregate_comment_alignment(),
@@ -2732,52 +2739,59 @@ mod tests {
     #[test]
     fn scalar_array_layout_and_comment_alignment_are_independent() {
         assert_eq!(
-            global_alignments(1, None, true, 1, true, 4),
+            global_alignments(1, None, true, false, 1, true, 4),
             GlobalAlignments {
                 layout: 4,
                 comment: 1,
             }
         );
         assert_eq!(
-            global_alignments(2, None, true, 1, true, 4),
+            global_alignments(2, None, true, false, 1, true, 4),
             GlobalAlignments {
                 layout: 4,
                 comment: 2,
             }
         );
         assert_eq!(
-            global_alignments(1, None, true, 32, true, 4),
+            global_alignments(1, None, true, false, 32, true, 4),
             GlobalAlignments {
                 layout: 32,
                 comment: 32,
             }
         );
         assert_eq!(
-            global_alignments(1, None, true, 1, false, 4),
+            global_alignments(1, None, true, false, 1, false, 4),
             GlobalAlignments {
                 layout: 4,
                 comment: 4,
             }
         );
         assert_eq!(
-            global_alignments(14, Some(1), false, 1, false, 4),
+            global_alignments(14, Some(1), false, false, 1, false, 4),
             GlobalAlignments {
                 layout: 1,
                 comment: 1,
             }
         );
         assert_eq!(
-            global_alignments(4, Some(1), true, 1, false, 4),
+            global_alignments(4, Some(1), true, false, 1, false, 4),
             GlobalAlignments {
                 layout: 4,
                 comment: 4,
             }
         );
         assert_eq!(
-            global_alignments(24, Some(4), false, 1, false, 8),
+            global_alignments(24, Some(4), false, false, 1, false, 8),
             GlobalAlignments {
                 layout: 4,
                 comment: 8,
+            }
+        );
+        assert_eq!(
+            global_alignments(12, Some(4), false, true, 1, true, 8),
+            GlobalAlignments {
+                layout: 4,
+                comment: 4,
             }
         );
     }
