@@ -1192,6 +1192,9 @@ impl Generator {
         if self.try_captures(function)? {
             return Ok(());
         }
+        if self.try_float_friction_select(function)? {
+            return Ok(());
+        }
         // SDK vector installers retain one fixed destination across a copy,
         // cache flush, ordering barrier, and instruction-cache invalidate.  The
         // destination and the symbol-range operands share one measured schedule.

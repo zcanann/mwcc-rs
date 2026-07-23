@@ -22,6 +22,7 @@ mod endian_stack_pack;
 mod endian_stack_unpack;
 mod expression_statement;
 mod float_store_fill;
+mod float_friction_select;
 mod fixed_address_object_flush;
 mod fixed_port_bitfield;
 mod fixed_port_indexed_bitfield;
