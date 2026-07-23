@@ -242,6 +242,31 @@ impl CxxFunctionType {
 }
 
 impl CxxParameterType {
+    /// Compare source-level callable identity without allowing the recovered
+    /// size of an aggregate to change its type. A self-reference parsed inside
+    /// its own class is necessarily incomplete (size zero), while the same
+    /// qualified type is complete by the time a derived override is parsed.
+    fn same_declaration_identity(&self, other: &Self) -> bool {
+        let source_type_matches = self.source_type == other.source_type
+            || (self.qualified_name.is_some()
+                && self.qualified_name == other.qualified_name
+                && matches!(
+                    (self.source_type, other.source_type),
+                    (Type::Struct { .. }, Type::Struct { .. })
+                        | (Type::StructPointer { .. }, Type::StructPointer { .. })
+                ));
+        source_type_matches
+            && self.source_fundamental == other.source_fundamental
+            && self.qualified_name == other.qualified_name
+            && self.is_wchar == other.is_wchar
+            && self.is_reference == other.is_reference
+            && self.pointee_const == other.pointee_const
+            && self.pointer_const == other.pointer_const
+            && self.pointer_depth == other.pointer_depth
+            && self.pointer_base == other.pointer_base
+            && self.function_type == other.function_type
+    }
+
     pub(crate) fn parsed(
         source_type: Type,
         qualified_name: Option<String>,
@@ -2773,7 +2798,12 @@ impl Parser {
                         // pointers. Override resolution must use the retained
                         // C++ source identities or an overload set of unrelated
                         // aggregate references appears ambiguous.
-                        method.cxx_parameters == parameters
+                        method.cxx_parameters.len() == parameters.len()
+                            && method
+                                .cxx_parameters
+                                .iter()
+                                .zip(parameters)
+                                .all(|(left, right)| left.same_declaration_identity(right))
                             && method.is_const_member == is_const_member
                             && method.virtual_dispatch.is_some()
                     })

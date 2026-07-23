@@ -3629,6 +3629,87 @@ blr\n\
     }
 
     #[test]
+    fn overriding_a_primary_vtable_does_not_grow_its_secondary_address_point() {
+        let source = r#"
+            struct Point {}; struct Capsule {}; struct Triangle {};
+            struct Box {}; struct Cylinder {}; struct Sphere {};
+            struct Aab { virtual ~Aab() {} };
+            struct Shape {
+                Aab bounds;
+                Shape() {}
+                virtual ~Shape() {}
+                virtual bool at(Shape const&, int*) const = 0;
+                virtual bool at(Point const&, int*) const = 0;
+                virtual bool at(Capsule const&, int*) const = 0;
+                virtual bool at(Triangle const&, int*) const = 0;
+                virtual bool at(Box const&, int*) const = 0;
+                virtual bool at(Cylinder const&, int*) const = 0;
+                virtual bool at(Sphere const&, int*) const = 0;
+                virtual bool co(Shape const&, float*) const = 0;
+                virtual bool co(Point const&, float*) const = 0;
+                virtual bool co(Capsule const&, float*) const = 0;
+                virtual bool co(Triangle const&, float*) const = 0;
+                virtual bool co(Box const&, float*) const = 0;
+                virtual bool co(Cylinder const&, float*) const = 0;
+                virtual bool co(Sphere const&, float*) const = 0;
+                virtual int get() const = 0;
+                virtual int get() = 0;
+                virtual void calculate() = 0;
+                virtual bool normal(int const&, int*) const = 0;
+            };
+            struct Geometry { virtual ~Geometry() {} };
+            struct SphAttr : Shape, Geometry {
+                SphAttr() {}
+                virtual ~SphAttr() {}
+                virtual bool at(Shape const&, int*) const;
+                virtual bool at(Point const&, int*) const;
+                virtual bool at(Capsule const&, int*) const;
+                virtual bool at(Triangle const&, int*) const;
+                virtual bool at(Box const&, int*) const;
+                virtual bool at(Cylinder const&, int*) const;
+                virtual bool at(Sphere const&, int*) const;
+                virtual bool co(Shape const&, float*) const;
+                virtual bool co(Point const&, float*) const;
+                virtual bool co(Capsule const&, float*) const;
+                virtual bool co(Triangle const&, float*) const;
+                virtual bool co(Box const&, float*) const;
+                virtual bool co(Cylinder const&, float*) const;
+                virtual bool co(Sphere const&, float*) const;
+                virtual int get() const;
+                virtual int get();
+                virtual void calculate();
+                virtual bool normal(int const&, int*) const;
+            };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let constructor = unit
+            .skipped_inline_definitions
+            .iter()
+            .find(|function| function.name == "__ct__7SphAttrFv")
+            .expect("the derived constructor should be retained");
+        assert!(constructor.statements.iter().any(|statement| matches!(
+            statement,
+            Statement::Store {
+                value: Expression::MemberAddress {
+                    base,
+                    offset: 84,
+                    ..
+                },
+                ..
+            } if matches!(base.as_ref(), Expression::AddressOf { operand }
+                if matches!(operand.as_ref(), Expression::Variable(vtable)
+                    if vtable == "__vt__7SphAttr"))
+        )));
+    }
+
+    #[test]
     fn resolves_local_typeof_aliases_for_anonymous_member_elements() {
         let source = r#"
             struct Asset {
