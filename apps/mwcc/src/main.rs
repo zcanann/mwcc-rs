@@ -2339,6 +2339,46 @@ mod tests {
     }
 
     #[test]
+    fn spills_the_o0_virtual_destructor_deleting_flag() {
+        let source = br#"
+            template <typename T>
+            struct Empty {
+                virtual ~Empty();
+            };
+            template <typename T>
+            Empty<T>::~Empty() {}
+            template class Empty<char>;
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.inline_enabled = false;
+        flags.optimization = mwcc_versions::Optimization::O0;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::WII_1_0,
+            flags,
+        };
+        let object = compile(
+            source,
+            "o0-virtual-destructor.cpp",
+            config,
+            Some(SourceLanguage::Cxx),
+            None,
+            false,
+        )
+        .expect("the unoptimized virtual destructor should lower");
+        assert!(object
+            .windows(4)
+            .any(|instruction| instruction == [0x94, 0x21, 0xff, 0xe0]));
+        assert!(object
+            .windows(4)
+            .any(|instruction| instruction == [0xb0, 0x81, 0x00, 0x08]));
+        assert!(object
+            .windows(4)
+            .any(|instruction| instruction == [0xa8, 0x01, 0x00, 0x08]));
+    }
+
+    #[test]
     fn preserves_a_later_member_address_while_materializing_a_global_receiver() {
         let source = br#"
             class Sink {

@@ -6,6 +6,7 @@
 //! into the ordinary C control-flow and register-allocation owners.
 
 mod adjustor_thunks;
+mod virtual_destructor;
 
 pub(crate) use adjustor_thunks::lower_vtable_adjustor_thunks;
 
@@ -1257,8 +1258,17 @@ pub(crate) fn lower_virtual_destructor(
         Some((i16::try_from(*offset).ok()?, name.clone()))
     })?;
 
-    let mut output = MachineFunction::new(function.name.clone());
     let behavior = Behavior::resolve(&config);
+    if let Some(output) = virtual_destructor::lower_unoptimized_weak(
+        function,
+        &behavior,
+        &config,
+        vtable.is_weak,
+        &deleting_callee,
+    ) {
+        return Some(output);
+    }
+    let mut output = MachineFunction::new(function.name.clone());
     if vtable.is_weak
         && !config.flags.inline_deferred
         && behavior.frame_convention == FrameConvention::Predecrement
