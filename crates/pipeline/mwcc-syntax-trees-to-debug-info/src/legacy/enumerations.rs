@@ -17,9 +17,14 @@ pub(super) struct EnumerationPlan {
 }
 
 pub(super) fn referenced<'a>(unit: &'a TranslationUnit) -> Vec<&'a EnumerationDefinition> {
+    // The side map also retains prototypes encountered through headers. DWARF
+    // for this object owns only definitions emitted by this translation unit;
+    // pulling prototype-only enum identities into the closure creates unrelated
+    // type DIEs (for example GX enums in a tiny runtime source).
     let identities = unit
-        .function_return_enumeration_tags
-        .values()
+        .functions
+        .iter()
+        .filter_map(|function| unit.function_return_enumeration_tags.get(&function.name))
         .collect::<HashSet<_>>();
     unit.enumeration_definitions
         .iter()
@@ -98,6 +103,48 @@ fn attribute(name: AttributeName, value: AttributeValue) -> Attribute {
 mod tests {
     use super::*;
     use mwcc_syntax_trees::Enumerator;
+
+    fn parse(source: &[u8]) -> TranslationUnit {
+        mwcc_tokens_to_syntax_trees::parse_located_translation_unit(
+            mwcc_source_to_tokens::tokenize_bytes_located(source).expect("tokens"),
+            false,
+            true,
+            3,
+            1,
+        )
+        .expect("translation unit")
+    }
+
+    #[test]
+    fn prototype_only_return_enums_do_not_join_the_object_type_closure() {
+        let unit = parse(
+            br#"
+                typedef enum HeaderResult { HeaderOk } HeaderResult;
+                HeaderResult header_api(void);
+                int local_definition(void) { return 1; }
+            "#,
+        );
+
+        assert!(referenced(&unit).is_empty());
+    }
+
+    #[test]
+    fn defined_function_return_enum_joins_the_object_type_closure() {
+        let unit = parse(
+            br#"
+                typedef enum Result { Failed = -1, Ok = 0 } Result;
+                Result acquire(void) { return Ok; }
+            "#,
+        );
+
+        assert_eq!(
+            referenced(&unit)
+                .iter()
+                .map(|definition| definition.source_name.as_deref())
+                .collect::<Vec<_>>(),
+            [Some("Result")]
+        );
+    }
 
     #[test]
     fn element_list_places_each_value_before_its_source_name() {
