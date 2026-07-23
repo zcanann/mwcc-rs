@@ -2258,6 +2258,53 @@ mod tests {
     }
 
     #[test]
+    fn schedules_in_place_float_updates_with_their_trailing_clamps() {
+        let source = br#"
+            struct Body { float velocity; };
+            void fall(struct Body* body, float acceleration, float limit) {
+                body->velocity -= acceleration;
+                if (body->velocity < -limit) {
+                    body->velocity = -limit;
+                }
+            }
+            void ascend(struct Body* body, float acceleration, float limit) {
+                body->velocity += acceleration;
+                if (body->velocity > limit) {
+                    body->velocity = limit;
+                }
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "float-update-clamp.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("in-place float updates should share a schedule with their clamps");
+        let fall = [
+            0xc0, 0x03, 0x00, 0x00, 0xfc, 0x40, 0x10, 0x50, 0xec, 0x00, 0x08, 0x28, 0xd0, 0x03,
+            0x00, 0x00, 0xc0, 0x03, 0x00, 0x00, 0xfc, 0x00, 0x10, 0x40, 0x4c, 0x80, 0x00, 0x20,
+            0xd0, 0x43, 0x00, 0x00, 0x4e, 0x80, 0x00, 0x20,
+        ];
+        let ascend = [
+            0xc0, 0x03, 0x00, 0x00, 0xec, 0x00, 0x08, 0x2a, 0xd0, 0x03, 0x00, 0x00, 0xc0, 0x03,
+            0x00, 0x00, 0xfc, 0x00, 0x10, 0x40, 0x4c, 0x81, 0x00, 0x20, 0xd0, 0x43, 0x00, 0x00,
+            0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object.windows(fall.len()).any(|bytes| bytes == fall));
+        assert!(object.windows(ascend.len()).any(|bytes| bytes == ascend));
+    }
+
+    #[test]
     fn lowers_discarded_assignments_introduced_by_inline_aggregate_scalarization() {
         let source = br#"
             class Vec {

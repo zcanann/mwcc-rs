@@ -3352,6 +3352,11 @@ impl Generator {
         if self.try_leading_store_guard(function)? {
             return Ok(());
         }
+        // An in-place float update followed by a clamp is one scheduling
+        // region: the optional bound negation fills the first member-load gap.
+        if self.try_leading_float_update_clamp(function)? {
+            return Ok(());
+        }
         // A leading store (or store run) before a trailing `if` needs mwcc's cross-statement
         // scheduler: it hoists the if's condition test as early as possible — into the leading
         // store's value-materialize latency gap (`li r0,1; cmpwi; stw r0,g; beqlr; …`) or to the

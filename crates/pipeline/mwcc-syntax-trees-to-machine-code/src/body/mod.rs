@@ -4,6 +4,7 @@
 
 mod call_prologue;
 mod leading_member_store_call;
+mod leading_float_update_clamp;
 mod aggregate_return_temporaries;
 mod ascii_pointer_compare;
 mod assertion_expression;
