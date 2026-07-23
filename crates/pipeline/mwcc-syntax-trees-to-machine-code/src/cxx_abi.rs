@@ -1216,47 +1216,52 @@ pub(crate) fn lower_virtual_destructor(
     {
         return None;
     }
-    // The vtable relocation is the frontend's durable marker that this was an
-    // ABI-synthesized *virtual* destructor, not a source function whose name
-    // merely resembles one.
-    let vtable = globals.iter().find(|global| {
-        global.name.starts_with("__vt__")
-            && global
-                .data_relocations
-                .iter()
-                .any(|(offset, target, addend)| {
-                    *offset == 8 && target == &function.name && *addend == 0
-                })
-    })?;
-
-    let (vptr_offset, deleting_callee) = function.statements.first().and_then(|statement| {
-        let mwcc_syntax_trees::Statement::If { then_body, .. } = statement else {
-            return None;
-        };
-        let mwcc_syntax_trees::Statement::Store { target, .. } = then_body.first()? else {
-            return None;
-        };
-        let mwcc_syntax_trees::Expression::Member { offset, .. } = target else {
-            return None;
-        };
-        let mwcc_syntax_trees::Statement::If {
-            then_body: delete_body,
-            ..
-        } = then_body.get(1)?
-        else {
-            return None;
-        };
-        let [mwcc_syntax_trees::Statement::Expression(
-            mwcc_syntax_trees::Expression::Call { name, arguments },
-        )] = delete_body.as_slice()
-        else {
-            return None;
-        };
-        if !matches!(arguments.as_slice(), [mwcc_syntax_trees::Expression::Variable(name)] if name == "this") {
-            return None;
-        }
-        Some((i16::try_from(*offset).ok()?, name.clone()))
-    })?;
+    // The synthesized vptr store is the durable marker for virtual-destructor
+    // lowering. Do not infer this from the vtable's callable relocations: a
+    // pure virtual destructor has an out-of-line body but deliberately leaves
+    // its callable slot zero.
+    let (vptr_offset, deleting_callee, vtable_name) = function
+        .statements
+        .first()
+        .and_then(|statement| {
+            let mwcc_syntax_trees::Statement::If { then_body, .. } = statement else {
+                return None;
+            };
+            let mwcc_syntax_trees::Statement::Store { target, value } = then_body.first()? else {
+                return None;
+            };
+            let mwcc_syntax_trees::Expression::Member { offset, .. } = target else {
+                return None;
+            };
+            let mwcc_syntax_trees::Expression::AddressOf { operand } = value else {
+                return None;
+            };
+            let mwcc_syntax_trees::Expression::Variable(vtable_name) = operand.as_ref() else {
+                return None;
+            };
+            let mwcc_syntax_trees::Statement::If {
+                then_body: delete_body,
+                ..
+            } = then_body.get(1)?
+            else {
+                return None;
+            };
+            let [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Call { name, arguments },
+            )] = delete_body.as_slice()
+            else {
+                return None;
+            };
+            if !matches!(arguments.as_slice(), [mwcc_syntax_trees::Expression::Variable(name)] if name == "this") {
+                return None;
+            }
+            Some((
+                i16::try_from(*offset).ok()?,
+                name.clone(),
+                vtable_name.clone(),
+            ))
+        })?;
+    let vtable = globals.iter().find(|global| global.name == vtable_name)?;
 
     let behavior = Behavior::resolve(&config);
     if let Some(output) = virtual_destructor::lower_unoptimized_weak(
@@ -1539,6 +1544,7 @@ mod tests {
                     offset: index as u32 * 4,
                     aggregate_tag: None,
                     array_length: None,
+                    function_type: None,
                     bit_field: None,
                 })
                 .collect(),

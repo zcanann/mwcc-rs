@@ -77,6 +77,10 @@ pub(crate) struct ClassLayout {
     pub(crate) declares_destructor: bool,
     /// Primary-vtable byte offset of the deleting-destructor entry.
     pub(crate) virtual_destructor_slot: Option<u16>,
+    /// Whether this class's deleting-destructor slot is pure. A pure virtual
+    /// destructor may still have an out-of-line body, but that definition does
+    /// not populate the vtable entry.
+    pub(crate) virtual_destructor_is_pure: bool,
     /// Every polymorphic non-virtual base subobject contributing a vptr to the
     /// complete object, in depth-first declaration order. The first component
     /// is the primary table; later components become contiguous subtables in
@@ -93,6 +97,7 @@ pub(crate) struct VtableComponent {
     pub(crate) vptr_offset: u32,
     pub(crate) virtual_slots: usize,
     pub(crate) virtual_destructor_slot: Option<u16>,
+    pub(crate) virtual_destructor_is_pure: bool,
 }
 
 #[derive(Clone)]
@@ -1926,23 +1931,11 @@ impl Parser {
                         }
                         Err(error) => return Err(error),
                     };
-                    let struct_tag = self.last_struct_tag.take();
-                    let enum_tag = self.last_enum_tag.take();
-                    let is_wchar = self.last_type_was_wchar;
-                    let source_is_aggregate_value = self.last_type_was_aggregate_reference;
-                    let qualified_name = enum_tag.or_else(|| {
-                        struct_tag.map(|tag| {
-                            self.struct_typedefs.get(&tag).cloned().unwrap_or(tag)
-                        })
-                    });
                     self.last_array_typedef.take();
-                    let pointee_const = self.last_type_was_const;
-                    let pointer_const = self.last_pointer_const;
-                    let pointer_depth = self.last_cxx_pointer_depth;
-                    let pointer_base = self.last_cxx_pointer_base;
-                    let function_type = self.last_cxx_function_type.take();
                     let is_reference = self.eat_keyword(Token::Ampersand);
                     let cxx_storage_type = parameter_type;
+                    let source_identity =
+                        self.take_cxx_type_identity(cxx_storage_type, is_reference);
                     if is_reference {
                         parameter_type = Type::StructPointer { element_size: 0 };
                     }
@@ -1952,19 +1945,7 @@ impl Parser {
                         self.record_named_parameter_at(name_position);
                     }
                     self.skip_cxx_default_argument()?;
-                    cxx_parameters.push(
-                        CxxParameterType::parsed(
-                            cxx_storage_type,
-                            qualified_name,
-                            is_wchar,
-                            is_reference,
-                            source_is_aggregate_value,
-                            pointee_const,
-                            pointer_const,
-                        )
-                        .with_pointer_shape(pointer_depth, pointer_base)
-                        .with_function_type(function_type),
-                    );
+                    cxx_parameters.push(source_identity);
                     parameters.push(parameter_type);
                     if !self.eat_keyword(Token::Comma) {
                         break;
@@ -3168,6 +3149,8 @@ impl Parser {
                     if let Some(base_class) = &base_class {
                         class.has_virtual_destructor = base_class.has_virtual_destructor;
                         class.virtual_destructor_slot = base_class.virtual_destructor_slot;
+                        class.virtual_destructor_is_pure =
+                            base_class.virtual_destructor_is_pure;
                     }
                 }
                 if let Some(base_class) = base_class {
@@ -3181,6 +3164,7 @@ impl Parser {
                             vptr_offset: base_offset + component.vptr_offset,
                             virtual_slots: component.virtual_slots,
                             virtual_destructor_slot: component.virtual_destructor_slot,
+                            virtual_destructor_is_pure: component.virtual_destructor_is_pure,
                             }),
                     );
                 }
@@ -3322,6 +3306,7 @@ impl Parser {
                         vptr_offset: offset,
                         virtual_slots: 0,
                         virtual_destructor_slot: None,
+                        virtual_destructor_is_pure: false,
                     });
                     offset += 4;
                     max_align = max_align.max(4);
@@ -3359,10 +3344,18 @@ impl Parser {
                 if !signature.parameters.is_empty() {
                     return Err(Diagnostic::error("a destructor cannot have parameters"));
                 }
+                let mut tail = self.position;
+                while matches!(self.tokens.get(tail), Some(Token::Identifier(word))
+                    if matches!(word.as_str(), "const" | "override" | "final"))
+                {
+                    tail += 1;
+                }
+                let is_pure = self.tokens.get(tail) == Some(&Token::Equals)
+                    && self.tokens.get(tail + 1) == Some(&Token::IntegerLiteral(0));
                 let is_inline = self.skip_class_method_tail()?;
                 let is_virtual_destructor = is_virtual || class.has_virtual_destructor;
                 if is_virtual_destructor {
-                    if !is_inline && class.vtable_key_function.is_none() {
+                    if !is_inline && !is_pure && class.vtable_key_function.is_none() {
                         let qualified = self.qualify_cxx_class_name(&name);
                         let scopes: Vec<&str> = qualified.split("::").collect();
                         class.vtable_key_function = Some(
@@ -3383,6 +3376,10 @@ impl Parser {
                         class.virtual_slots += 1;
                     }
                     class.has_virtual_destructor = true;
+                    class.virtual_destructor_is_pure = is_pure;
+                    for component in &mut class.vtable_components {
+                        component.virtual_destructor_is_pure = is_pure;
+                    }
                     if let Some(primary) = class.vtable_components.first_mut() {
                         primary.virtual_slots = class.virtual_slots;
                         primary.virtual_destructor_slot = class.virtual_destructor_slot;
@@ -3674,12 +3671,14 @@ impl Parser {
                 class.virtual_slots = dispatch_base.virtual_slots;
                 class.has_virtual_destructor = dispatch_base.has_virtual_destructor;
                 class.virtual_destructor_slot = dispatch_base.virtual_destructor_slot;
+                class.virtual_destructor_is_pure = dispatch_base.virtual_destructor_is_pure;
             }
             class.vtable_components.push(VtableComponent {
                 object_offset: 0,
                 vptr_offset: offset,
                 virtual_slots: class.virtual_slots,
                 virtual_destructor_slot: class.virtual_destructor_slot,
+                virtual_destructor_is_pure: class.virtual_destructor_is_pure,
             });
             offset = offset.checked_add(4).ok_or_else(|| {
                 Diagnostic::error("C++ virtual-base layout exceeds the 32-bit address space")
@@ -3751,6 +3750,7 @@ impl Parser {
                         vptr_offset: base_offset + component.vptr_offset,
                         virtual_slots: component.virtual_slots,
                         virtual_destructor_slot: component.virtual_destructor_slot,
+                        virtual_destructor_is_pure: component.virtual_destructor_is_pure,
                     },
                 ));
             }
@@ -4168,31 +4168,9 @@ impl Parser {
             while *self.peek() != Token::ParenClose {
                 let mut parameter_type = self.parse_type()?;
                 let source_type = parameter_type;
-                let is_wchar = self.last_type_was_wchar;
-                let source_is_aggregate_value = self.last_type_was_aggregate_reference;
                 self.last_array_typedef.take();
-                let struct_tag = self.last_struct_tag.take();
-                let enum_tag = self.last_enum_tag.take();
-                let qualified_name = enum_tag.or_else(|| {
-                    struct_tag.map(|tag| self.struct_typedefs.get(&tag).cloned().unwrap_or(tag))
-                });
-                let pointee_const = self.last_type_was_const;
-                let pointer_const = self.last_pointer_const;
-                let pointer_depth = self.last_cxx_pointer_depth;
-                let pointer_base = self.last_cxx_pointer_base;
-                let function_type = self.last_cxx_function_type.take();
-                let source_identity = CxxParameterType::parsed(
-                    source_type,
-                    qualified_name,
-                    is_wchar,
-                    false,
-                    source_is_aggregate_value,
-                    pointee_const,
-                    pointer_const,
-                )
-                .with_pointer_shape(pointer_depth, pointer_base)
-                .with_function_type(function_type);
                 let is_reference = self.eat_keyword(Token::Ampersand);
+                let source_identity = self.take_cxx_type_identity(source_type, is_reference);
                 if is_reference {
                     parameter_type = Type::StructPointer { element_size: 0 };
                 }
@@ -4830,6 +4808,7 @@ fn encode_type(parameter: &CxxParameterType) -> Compilation<String> {
     }
     let encoded_source = parameter.pointer_base.unwrap_or(parameter.source_type);
     let source_spelling = match parameter.source_fundamental {
+        Some(SourceFundamentalType::Boolean) => Some("b"),
         Some(SourceFundamentalType::PlainChar) => Some("c"),
         Some(SourceFundamentalType::SignedLong) => Some("l"),
         Some(SourceFundamentalType::UnsignedLong) => Some("Ul"),
@@ -5048,6 +5027,30 @@ mod tests {
         .with_pointer_shape(1, Some(Type::Void));
         assert_eq!(encode_type(&char_pointer_pointer).unwrap(), "PPc");
         assert_eq!(encode_type(&void_pointer).unwrap(), "Pv");
+    }
+
+    #[test]
+    fn mangles_erased_boolean_long_and_aggregate_pointer_depth() {
+        let boolean = CxxParameterType::plain(Type::UnsignedChar)
+            .with_source_fundamental(Some(SourceFundamentalType::Boolean));
+        let unsigned_long = CxxParameterType::plain(Type::UnsignedInt)
+            .with_source_fundamental(Some(SourceFundamentalType::UnsignedLong));
+        let aggregate_pointer_pointer = CxxParameterType::parsed(
+            Type::Pointer(Pointee::Pointer),
+            Some("JStage::TObject".to_string()),
+            false,
+            false,
+            false,
+            false,
+            false,
+        )
+        .with_pointer_shape(2, None);
+        assert_eq!(encode_type(&boolean).unwrap(), "b");
+        assert_eq!(encode_type(&unsigned_long).unwrap(), "Ul");
+        assert_eq!(
+            encode_type(&aggregate_pointer_pointer).unwrap(),
+            "PPQ26JStage7TObject"
+        );
     }
 
     #[test]

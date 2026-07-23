@@ -77,6 +77,23 @@ fn merged_attribute_alignment(before: Option<u16>, after: Option<u16>) -> u32 {
 }
 
 impl Parser {
+    /// Consume the `*` portion of an aggregate declarator while retaining the
+    /// source pointer depth needed by C++ name mangling. Aggregate layout only
+    /// distinguishes `T*` from the word-classed `T**`, so keeping this ABI fact
+    /// here prevents the several aggregate spelling paths from drifting apart.
+    fn parse_aggregate_pointer_declarator(&mut self, element_size: u32) -> Type {
+        debug_assert_eq!(*self.peek(), Token::Star);
+        self.advance();
+        self.last_cxx_pointer_depth = 1;
+        if *self.peek() == Token::Star {
+            self.advance();
+            self.last_cxx_pointer_depth = 2;
+            Type::Pointer(Pointee::Pointer)
+        } else {
+            Type::StructPointer { element_size }
+        }
+    }
+
     /// Consume one or more constant array dimensions and return the total byte
     /// extent plus the first-index stride for a multidimensional declaration.
     /// Keeping the arithmetic here gives C structs, unions, and C++ classes one
@@ -279,17 +296,12 @@ impl Parser {
                         .entry(local)
                         .or_insert_with(|| qualified.clone());
                     if *self.peek() == Token::Star {
-                        self.advance();
                         let element_size = self
                             .structs
                             .get(&layout_key)
                             .map_or(0, |layout| layout.size);
                         self.last_struct_tag = Some(layout_key);
-                        if *self.peek() == Token::Star {
-                            self.advance();
-                            return Ok(Type::Pointer(Pointee::Pointer));
-                        }
-                        return Ok(Type::StructPointer { element_size });
+                        return Ok(self.parse_aggregate_pointer_declarator(element_size));
                     }
                     if *self.peek() == Token::Ampersand {
                         let element_size = self
@@ -336,12 +348,7 @@ impl Parser {
                 self.last_type_was_aggregate_reference = true;
                 return Ok(Type::StructPointer { element_size });
             }
-            self.advance();
-            if *self.peek() == Token::Star {
-                self.advance();
-                return Ok(Type::Pointer(Pointee::Pointer));
-            }
-            return Ok(Type::StructPointer { element_size });
+            return Ok(self.parse_aggregate_pointer_declarator(element_size));
         }
         if *self.peek() == Token::KeywordStruct {
             self.advance();
@@ -366,14 +373,7 @@ impl Parser {
                 self.last_type_was_aggregate_reference = true;
                 return Ok(Type::StructPointer { element_size });
             }
-            self.advance();
-            if *self.peek() == Token::Star {
-                // `S**` — a pointer to a struct pointer: a word-classed
-                // pointer whose element is itself a pointer.
-                self.advance();
-                return Ok(Type::Pointer(Pointee::Pointer));
-            }
-            return Ok(Type::StructPointer { element_size });
+            return Ok(self.parse_aggregate_pointer_declarator(element_size));
         }
         // `union Name*` / `union Name` — a union is laid out like a struct with every member
         // at offset 0 (overlapping storage), so it reuses the struct machinery once the layout
@@ -399,14 +399,7 @@ impl Parser {
                 self.last_type_was_aggregate_reference = true;
                 return Ok(Type::StructPointer { element_size });
             }
-            self.advance();
-            if *self.peek() == Token::Star {
-                // `S**` — a pointer to a struct pointer: a word-classed
-                // pointer whose element is itself a pointer.
-                self.advance();
-                return Ok(Type::Pointer(Pointee::Pointer));
-            }
-            return Ok(Type::StructPointer { element_size });
+            return Ok(self.parse_aggregate_pointer_declarator(element_size));
         }
         // A named C++ enum may be used without the `enum` prefix. Its configured
         // storage is separate from the source identity retained for mangling.
@@ -437,8 +430,10 @@ impl Parser {
                 self.consume_trailing_qualifiers();
                 let element_size = self.structs.get(&tag).map_or(0, |layout| layout.size);
                 self.last_struct_tag = Some(tag);
+                self.last_cxx_pointer_depth = 1;
                 if *self.peek() == Token::Star {
                     self.advance();
+                    self.last_cxx_pointer_depth = 2;
                     return Ok(Type::Pointer(Pointee::Pointer));
                 }
                 return Ok(Type::StructPointer { element_size });
@@ -482,12 +477,7 @@ impl Parser {
                         self.last_type_was_aggregate_reference = true;
                         return Ok(Type::StructPointer { element_size });
                     }
-                    self.advance();
-                    if *self.peek() == Token::Star {
-                        self.advance();
-                        return Ok(Type::Pointer(Pointee::Pointer));
-                    }
-                    return Ok(Type::StructPointer { element_size });
+                    return Ok(self.parse_aggregate_pointer_declarator(element_size));
                 }
             }
         }

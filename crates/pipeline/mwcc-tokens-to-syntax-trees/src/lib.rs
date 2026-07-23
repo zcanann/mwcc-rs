@@ -2650,6 +2650,38 @@ blr\n\
     }
 
     #[test]
+    fn pure_virtual_destructor_body_does_not_populate_its_vtable_slot() {
+        let source = r#"
+            class Abstract {
+            public:
+                virtual ~Abstract() = 0;
+                virtual int read();
+            };
+            Abstract::~Abstract() {}
+            int Abstract::read() { return 1; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        let vtable = unit
+            .globals
+            .iter()
+            .find(|global| global.name == "__vt__8Abstract")
+            .expect("the out-of-line destructor materializes the class vtable");
+        assert_eq!(vtable.data_bytes.as_deref(), Some(&[0; 16][..]));
+        assert_eq!(
+            vtable.data_relocations,
+            vec![(12, "read__8AbstractFv".to_string(), 0)]
+        );
+    }
+
+    #[test]
     fn first_out_of_line_virtual_method_owns_the_class_vtable() {
         let source = r#"
             class Reader {

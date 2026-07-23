@@ -82,6 +82,44 @@ fn comment_header_records_pooling_mode() {
 }
 
 #[test]
+fn leading_pure_vtable_slot_defers_defined_function_symbols() {
+    let vtable = DataObject {
+        name: "__vt__8Abstract",
+        size: 16,
+        alignment: 4,
+        comment_alignment: 4,
+        initial_bytes: Some(vec![0; 16]),
+        is_const: false,
+        force_full_data_section: true,
+        is_static: false,
+        is_explicit_zero: false,
+        preassigned_anonymous_ordinal: None,
+        relocations: vec![crate::DataRelocation {
+            offset: 12,
+            target: "read__8AbstractFv".into(),
+            addend: 0,
+        }],
+        non_static_functions_before: 0,
+        functions_before: 0,
+        is_weak: false,
+        static_local_owner: None,
+        anonymous_adjust: 0,
+        section: None,
+    };
+    assert!(defers_defined_vtable_function_targets(&vtable));
+
+    let concrete = DataObject {
+        relocations: vec![crate::DataRelocation {
+            offset: 8,
+            target: "read__8ConcreteFv".into(),
+            addend: 0,
+        }],
+        ..vtable
+    };
+    assert!(!defers_defined_vtable_function_targets(&concrete));
+}
+
+#[test]
 fn data_anchor_precedes_the_first_upfront_local_data_object() {
     let data = [
         DataObject {

@@ -35,7 +35,10 @@ pub(super) fn global(
     );
     if let Some(destructor) = destructor {
         for component in &class.vtable_components {
-            if let Some(slot) = component.virtual_destructor_slot {
+            if let Some(slot) = component
+                .virtual_destructor_slot
+                .filter(|_| !component.virtual_destructor_is_pure)
+            {
                 let target = if component.object_offset == 0 {
                     destructor.to_string()
                 } else {

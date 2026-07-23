@@ -13,7 +13,22 @@ use crate::{
     DebugSymbolPlacement, FunctionSymbolOrder, ObjectInput, RelocationTarget,
     Sdata2Constant,
 };
+
 use std::collections::HashMap;
+
+/// A strong vtable whose first callable slot remains zero (a leading pure
+/// virtual) is registered before code, but CodeWarrior leaves its later,
+/// locally-defined function symbols in definition order. Ordinary dispatch
+/// tables and vtables with a concrete first slot retain reverse-relocation
+/// discovery order.
+fn defers_defined_vtable_function_targets(object: &DataObject<'_>) -> bool {
+    object.name.starts_with("__vt__")
+        && !object.is_weak
+        && !object
+            .relocations
+            .iter()
+            .any(|relocation| relocation.offset == 8)
+}
 
 /// Metrowerks' private section type for `.mwcats.text` (readelf renders it as
 /// "LOUSER+0x4a2a82c2").
@@ -2060,6 +2075,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     macro_rules! emit_object_targets {
         ($object:expr) => {{
             let object = $object;
+            let defer_defined_vtable_functions = defers_defined_vtable_function_targets(object);
             for relocation in object.relocations.iter().rev() {
                 let target = relocation.target.as_str();
                 // A STATIC function's LOCAL symbol satisfies a data reloc too —
@@ -2068,6 +2084,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 if global_symbols.contains_key(target)
                     || local_data_symbols.contains_key(target)
                     || local_function_symbols.contains_key(target)
+                {
+                    continue;
+                }
+                if defer_defined_vtable_functions
+                    && functions
+                        .iter()
+                        .any(|function| !function.is_static && function.name == target)
                 {
                     continue;
                 }
