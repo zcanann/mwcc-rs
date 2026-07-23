@@ -45,4 +45,51 @@ impl Generator {
         // shape that does not fuse also retains correct semantics here.
         self.evaluate_general(extracted, destination)
     }
+
+    /// Emit a bit-field used directly as a condition. PowerPC rotate-and-mask
+    /// extraction has a record form, so MWCC lets the extraction set CR0 and
+    /// branches without materializing the field and comparing it to zero.
+    pub(crate) fn evaluate_bit_field_condition(
+        &mut self,
+        extracted: &Expression,
+        destination: u8,
+    ) -> Compilation<()> {
+        self.evaluate_bit_field_read(extracted, destination)?;
+        let Some(last) = self.output.instructions.last_mut() else {
+            return Err(Diagnostic::error(
+                "a bit-field condition emitted no extraction instructions",
+            ));
+        };
+        *last = match *last {
+            Instruction::RotateAndMask {
+                a,
+                s,
+                shift,
+                begin,
+                end,
+            } => Instruction::RotateAndMaskRecord {
+                a,
+                s,
+                shift,
+                begin,
+                end,
+            },
+            Instruction::ClearLeftImmediate { a, s, clear } => {
+                Instruction::ClearLeftImmediateRecord { a, s, clear }
+            }
+            Instruction::AndContiguousMask { a, s, begin, end } => {
+                Instruction::AndMaskRecord { a, s, begin, end }
+            }
+            _ => {
+                self.output
+                    .instructions
+                    .push(Instruction::CompareLogicalWordImmediate {
+                        a: destination,
+                        immediate: 0,
+                    });
+                return Ok(());
+            }
+        };
+        Ok(())
+    }
 }

@@ -1050,6 +1050,10 @@ impl Generator {
                     return Ok((4, 2)); // bne — skip when the masked bits are set
                 }
             }
+            if let Expression::BitFieldRead { extracted, .. } = operand.as_ref() {
+                self.evaluate_bit_field_condition(extracted, GENERAL_SCRATCH)?;
+                return Ok((4, 2)); // bne — skip when the field is nonzero
+            }
             let register = self.condition_operand_register(operand)?;
             // A signed `char` is sign-extended with the record-form `extsb.` (sets cr0)
             // — ours loads it with `lbz` (zero-extend), so the explicit sign-extend both
@@ -1585,6 +1589,10 @@ impl Generator {
             if self.try_emit_record_mask_test(left, right)? {
                 return Ok((12, 2)); // beq — skip when the masked bits are all zero
             }
+        }
+        if let Expression::BitFieldRead { extracted, .. } = condition {
+            self.evaluate_bit_field_condition(extracted, GENERAL_SCRATCH)?;
+            return Ok((12, 2)); // beq — skip when the field is zero
         }
         if self.try_emit_computed_record_condition(condition)? {
             return Ok((12, 2)); // beq — skip when the recorded result is zero

@@ -2216,6 +2216,48 @@ mod tests {
     }
 
     #[test]
+    fn records_bare_bit_field_conditions_during_extraction() {
+        let source = br#"
+            struct Flags { unsigned char enabled : 1; };
+            extern void enabled(void);
+            extern void disabled(void);
+            void test(struct Flags* flags) {
+                if (flags->enabled) {
+                    enabled();
+                }
+            }
+            void test_not(struct Flags* flags) {
+                if (!flags->enabled) {
+                    disabled();
+                }
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "bit-field-condition.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("a bare bit-field condition should lower through record-form extraction");
+        assert_eq!(
+            object
+                .windows(4)
+                .filter(|instruction| *instruction == [0x54, 0x00, 0xcf, 0xff])
+                .count(),
+            2
+        );
+    }
+
+    #[test]
     fn lowers_discarded_assignments_introduced_by_inline_aggregate_scalarization() {
         let source = br#"
             class Vec {
