@@ -171,8 +171,10 @@ impl Generator {
                     .map_or(default_offset, |&source_index| body_offsets[source_index])
             })
             .collect();
-        // Modern dispatchers retain a label per arm plus a three-label dispatch
-        // block, and deferred inlining retains one more hidden label per arm.
+        // Modern dispatchers retain a label per arm plus a build-specific
+        // fixed dispatch block; deferred inlining retains one more hidden label
+        // per arm. The fixed residue is independent of the register/string
+        // family, so it is resolved explicitly by the compiler profile.
         // The legacy specialized owner accounts its labels before its strings.
         let anonymous_offset = match self.behavior.call_dispatcher_style {
             // The specialized legacy dispatcher accounts its internal labels
@@ -180,7 +182,7 @@ impl Generator {
             CallDispatcherStyle::Legacy24x => 0,
             CallDispatcherStyle::Packed41 => {
                 arms.len() as u32
-                    + 3
+                    + u32::from(self.behavior.call_dispatcher_table_base_labels)
                     + arms.len() as u32
                         * u32::from(self.behavior.deferred_call_dispatcher_labels_per_case)
             }

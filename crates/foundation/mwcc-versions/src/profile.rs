@@ -763,6 +763,13 @@ pub trait CodegenProfile: core::fmt::Debug {
         0
     }
 
+    /// Packed dispatchers retain a build-specific fixed label block between
+    /// their string base and jump table. Legacy dispatchers account this block
+    /// before their separately numbered strings instead.
+    fn call_dispatcher_table_base_labels(&self) -> u8 {
+        0
+    }
+
     /// Lowering family for dense call-dispatch switches.
     fn call_dispatcher_style(&self) -> CallDispatcherStyle {
         CallDispatcherStyle::Legacy24x
@@ -1414,6 +1421,10 @@ impl CodegenProfile for Gc41Build51213 {
         1
     }
 
+    fn call_dispatcher_table_base_labels(&self) -> u8 {
+        2
+    }
+
     fn call_dispatcher_style(&self) -> CallDispatcherStyle {
         CallDispatcherStyle::Packed41
     }
@@ -1658,6 +1669,10 @@ impl CodegenProfile for Wii43Build145 {
 
     fn deferred_call_dispatcher_labels_per_case(&self) -> u8 {
         1
+    }
+
+    fn call_dispatcher_table_base_labels(&self) -> u8 {
+        0
     }
 
     fn call_dispatcher_style(&self) -> CallDispatcherStyle {

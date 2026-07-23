@@ -547,6 +547,9 @@ pub struct Behavior {
     /// Hidden deferred-inlining labels retained per call-dispatch switch arm.
     /// Zero for ordinary compilation and for unmeasured compiler generations.
     pub deferred_call_dispatcher_labels_per_case: u8,
+    /// Fixed hidden-label block between a packed dispatcher's string base and
+    /// jump table. The GC 4.1 and Wii optimizers retain different residues.
+    pub call_dispatcher_table_base_labels: u8,
     /// Whether plain `char` is signed. Cascades through read/operand extension,
     /// `>>`/`/`/`%` strength reduction, comparison folding, and the int->float bias.
     pub char_is_signed: bool,
@@ -887,6 +890,10 @@ impl Behavior {
             } else {
                 0
             },
+            call_dispatcher_table_base_labels: config
+                .build
+                .profile
+                .call_dispatcher_table_base_labels(),
             char_is_signed: config.char_is_signed(),
             float_cast_value_store_first: config.build.profile.float_cast_value_store_first(),
             legacy_float_cast_schedule: config.build.profile.legacy_float_cast_schedule(),
@@ -2035,11 +2042,14 @@ mod tests {
             mainline.call_dispatcher_style,
             CallDispatcherStyle::Legacy24x
         );
+        assert_eq!(mainline.call_dispatcher_table_base_labels, 0);
         assert_eq!(gc41.call_dispatcher_style, CallDispatcherStyle::Packed41);
+        assert_eq!(gc41.call_dispatcher_table_base_labels, 2);
         let wii43 = Behavior::resolve(&CompilerConfig::new(
             crate::build::by_label_experimental("Wii/1.0").unwrap(),
         ));
         assert_eq!(wii43.call_dispatcher_style, CallDispatcherStyle::Packed41);
+        assert_eq!(wii43.call_dispatcher_table_base_labels, 0);
         assert_eq!(wii43.skipped_plain_inline_label_base, 3);
         assert_eq!(wii43.skipped_function_template_label_base, 1);
         assert_eq!(wii43.dropped_inline_parameter_label_weight, 1);
