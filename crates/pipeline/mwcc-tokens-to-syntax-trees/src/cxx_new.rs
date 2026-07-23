@@ -60,6 +60,10 @@ impl Parser {
             let constructor = self.resolve_placement_constructor(&class_name, &arguments)?;
             self.expression_struct_tag = Some(class_name);
             return Ok(Expression::ConstructedNew {
+                allocation: Box::new(Expression::Call {
+                    name: "__nw__FUl".to_owned(),
+                    arguments: vec![Expression::IntegerLiteral(i64::from(allocation_size))],
+                }),
                 allocation_size,
                 constructor,
                 arguments,
@@ -134,12 +138,24 @@ impl Parser {
         } else {
             self.resolve_placement_constructor(&class_name, &arguments)?
         };
-        let mut call_arguments = placement_arguments;
-        call_arguments.extend(arguments);
+        let Type::Struct {
+            size: allocation_size,
+            ..
+        } = allocated_type
+        else {
+            return Err(Diagnostic::error(
+                "internal: a placement-constructed C++ class has no layout",
+            ));
+        };
+        let allocation = placement_arguments
+            .pop()
+            .expect("single placement argument was checked");
         self.expression_struct_tag = Some(class_name);
-        Ok(Expression::Call {
-            name: constructor,
-            arguments: call_arguments,
+        Ok(Expression::ConstructedNew {
+            allocation: Box::new(allocation),
+            allocation_size,
+            constructor,
+            arguments,
         })
     }
 

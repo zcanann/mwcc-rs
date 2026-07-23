@@ -290,11 +290,21 @@ fn expression_assignment_count(expression: &Expression, name: &str) -> usize {
         Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
             expression_assignment_count(base, name)
         }
-        Expression::Call { arguments, .. }
-        | Expression::ConstructedNew { arguments, .. } => arguments
+        Expression::Call { arguments, .. } => arguments
             .iter()
             .map(|argument| expression_assignment_count(argument, name))
             .sum(),
+        Expression::ConstructedNew {
+            allocation,
+            arguments,
+            ..
+        } => {
+            expression_assignment_count(allocation, name)
+                + arguments
+                    .iter()
+                    .map(|argument| expression_assignment_count(argument, name))
+                    .sum::<usize>()
+        }
         Expression::CallThrough { target, arguments } => {
             expression_assignment_count(target, name)
                 + arguments
@@ -644,8 +654,17 @@ fn expression_initialization_flow(
         Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
             expression_initialization_flow(base, name, initialized)
         }
-        Expression::Call { arguments, .. }
-        | Expression::ConstructedNew { arguments, .. } => sequence(arguments, name, initialized),
+        Expression::Call { arguments, .. } => sequence(arguments, name, initialized),
+        Expression::ConstructedNew {
+            allocation,
+            arguments,
+            ..
+        } => {
+            let (initialized, allocation_assigned) =
+                expression_initialization_flow(allocation, name, initialized)?;
+            let (initialized, arguments_assigned) = sequence(arguments, name, initialized)?;
+            Some((initialized, allocation_assigned || arguments_assigned))
+        }
         Expression::CallThrough { target, arguments } => {
             let (initialized, target_assigned) =
                 expression_initialization_flow(target, name, initialized)?;

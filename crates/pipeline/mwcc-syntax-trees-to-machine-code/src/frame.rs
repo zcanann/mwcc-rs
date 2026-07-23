@@ -3044,8 +3044,17 @@ fn walk(expression: &Expression, names: &mut HashSet<String>) {
             walk(target, names);
             walk(value, names);
         }
-        Expression::Call { arguments, .. }
-        | Expression::ConstructedNew { arguments, .. } => {
+        Expression::Call { arguments, .. } => {
+            for argument in arguments {
+                walk(argument, names);
+            }
+        }
+        Expression::ConstructedNew {
+            allocation,
+            arguments,
+            ..
+        } => {
+            walk(allocation, names);
             for argument in arguments {
                 walk(argument, names);
             }

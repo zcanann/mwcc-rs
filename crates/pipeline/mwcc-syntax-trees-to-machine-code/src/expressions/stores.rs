@@ -1204,6 +1204,10 @@ impl Generator {
             // address/value placement and rejects any schedule it cannot prove.
             // The comma layer only needs to preserve ordering between effects.
             Expression::Assign { target, value } => self.emit_store(target, value),
+            // Inline value composition can leave an address/member/cast leaf at
+            // the end of a discarded constructor expression. Its value is not
+            // observed, so a proven side-effect-free residual emits nothing.
+            _ if !expression_has_side_effect(expression) => Ok(()),
             _ => Err(Diagnostic::error(
                 "a comma-operator side effect of this form is not supported yet (roadmap)",
             )),

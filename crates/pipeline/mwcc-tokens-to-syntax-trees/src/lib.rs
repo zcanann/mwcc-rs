@@ -4071,7 +4071,7 @@ blr\n\
     }
 
     #[test]
-    fn normalizes_placement_new_to_a_pointer_returning_constructor_call() {
+    fn retains_placement_new_as_a_null_guarded_construction_expression() {
         let source = r#"
             void* allocate(int);
             class Item { public: Item(int); int value; };
@@ -4087,8 +4087,17 @@ blr\n\
         .unwrap();
         assert!(matches!(
             &unit.functions[0].return_expression,
-            Some(mwcc_syntax_trees::Expression::Call { name, arguments })
-                if name.starts_with("__ct__4ItemF") && arguments.len() == 2
+            Some(mwcc_syntax_trees::Expression::ConstructedNew {
+                allocation,
+                allocation_size: 4,
+                constructor,
+                arguments,
+            }) if constructor.starts_with("__ct__4ItemF")
+                && arguments.len() == 1
+                && matches!(allocation.as_ref(), mwcc_syntax_trees::Expression::Call {
+                    name,
+                    arguments,
+                } if name.starts_with("allocate") && arguments.len() == 1)
         ));
     }
 
@@ -4113,6 +4122,7 @@ blr\n\
                 allocation_size: 8,
                 constructor,
                 arguments,
+                ..
             }) if constructor == "__ct__4ItemFv" && arguments.is_empty()
         ));
     }

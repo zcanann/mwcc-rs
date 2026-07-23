@@ -134,11 +134,13 @@ pub enum Expression {
         variadic: bool,
         arguments: Vec<Expression>,
     },
-    /// `new Class(arguments...)` after C++ overload resolution. The allocation
-    /// call and constructor remain one semantic expression because the ABI must
-    /// call the constructor only when allocation succeeds while evaluating the
-    /// allocation exactly once.
+    /// `new Class(arguments...)` after C++ overload resolution. `allocation`
+    /// produces the destination address: either an EABI heap-allocation call or
+    /// the address expression from placement new. It remains joined to the
+    /// constructor because the ABI evaluates that expression exactly once and
+    /// calls the constructor only when the resulting pointer is non-null.
     ConstructedNew {
+        allocation: Box<Expression>,
         allocation_size: u32,
         constructor: String,
         arguments: Vec<Expression>,

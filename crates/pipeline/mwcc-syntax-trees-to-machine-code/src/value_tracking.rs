@@ -1072,10 +1072,19 @@ fn used_in_sign_sensitive_op(
         Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
             used_in_sign_sensitive_op(base, names)
         }
-        Expression::Call { arguments, .. }
-        | Expression::ConstructedNew { arguments, .. } => arguments
+        Expression::Call { arguments, .. } => arguments
             .iter()
             .any(|argument| used_in_sign_sensitive_op(argument, names)),
+        Expression::ConstructedNew {
+            allocation,
+            arguments,
+            ..
+        } => {
+            used_in_sign_sensitive_op(allocation, names)
+                || arguments
+                    .iter()
+                    .any(|argument| used_in_sign_sensitive_op(argument, names))
+        }
         Expression::Assign { target, value } => {
             used_in_sign_sensitive_op(target, names) || used_in_sign_sensitive_op(value, names)
         }
@@ -1159,10 +1168,12 @@ fn has_additive_chain(expression: &Expression) -> bool {
             has_additive_chain(target) || has_additive_chain(value)
         }
         Expression::Comma { left, right } => has_additive_chain(left) || has_additive_chain(right),
-        Expression::Call { arguments, .. }
-        | Expression::ConstructedNew { arguments, .. } => {
-            arguments.iter().any(has_additive_chain)
-        }
+        Expression::Call { arguments, .. } => arguments.iter().any(has_additive_chain),
+        Expression::ConstructedNew {
+            allocation,
+            arguments,
+            ..
+        } => has_additive_chain(allocation) || arguments.iter().any(has_additive_chain),
         Expression::Variable(_)
         | Expression::IntegerLiteral(_)
         | Expression::FloatLiteral(_)
@@ -1239,11 +1250,21 @@ fn count_references(name: &str, expression: &Expression) -> usize {
         Expression::Comma { left, right } => {
             count_references(name, left) + count_references(name, right)
         }
-        Expression::Call { arguments, .. }
-        | Expression::ConstructedNew { arguments, .. } => arguments
+        Expression::Call { arguments, .. } => arguments
             .iter()
             .map(|argument| count_references(name, argument))
             .sum(),
+        Expression::ConstructedNew {
+            allocation,
+            arguments,
+            ..
+        } => {
+            count_references(name, allocation)
+                + arguments
+                    .iter()
+                    .map(|argument| count_references(name, argument))
+                    .sum::<usize>()
+        }
     }
 }
 
@@ -1373,10 +1394,12 @@ pub(crate) fn substitute(
                 .collect(),
         },
         Expression::ConstructedNew {
+            allocation,
             allocation_size,
             constructor,
             arguments,
         } => Expression::ConstructedNew {
+            allocation: Box::new(substitute(allocation, values)),
             allocation_size: *allocation_size,
             constructor: constructor.clone(),
             arguments: arguments

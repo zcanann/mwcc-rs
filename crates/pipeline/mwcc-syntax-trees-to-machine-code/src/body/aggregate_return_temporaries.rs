@@ -191,12 +191,21 @@ fn rewrite_expression(
             let index_changed = rewrite_expression(index, names, next_temporary, added);
             base_changed || index_changed
         }
-        Expression::Call { arguments, .. }
-        | Expression::ConstructedNew { arguments, .. } => arguments
+        Expression::Call { arguments, .. } => arguments
             .iter_mut()
             .fold(false, |changed, argument| {
                 rewrite_expression(argument, names, next_temporary, added) || changed
             }),
+        Expression::ConstructedNew {
+            allocation,
+            arguments,
+            ..
+        } => {
+            let allocation_changed = rewrite_expression(allocation, names, next_temporary, added);
+            arguments.iter_mut().fold(allocation_changed, |changed, argument| {
+                rewrite_expression(argument, names, next_temporary, added) || changed
+            })
+        }
         Expression::CallThrough { target, arguments } => {
             let target_changed = rewrite_expression(target, names, next_temporary, added);
             let arguments_changed = arguments

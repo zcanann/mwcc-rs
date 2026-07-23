@@ -578,9 +578,16 @@ impl InlineBodySet {
                         .iter()
                         .any(|argument| self.expression_contains_call(argument))
             }
-            Expression::ConstructedNew { arguments, .. } => arguments
-                .iter()
-                .any(|argument| self.expression_contains_call(argument)),
+            Expression::ConstructedNew {
+                allocation,
+                arguments,
+                ..
+            } => {
+                self.expression_contains_call(allocation)
+                    || arguments
+                        .iter()
+                        .any(|argument| self.expression_contains_call(argument))
+            }
             Expression::AggregateLiteral(elements) => elements
                 .iter()
                 .any(|element| self.expression_contains_call(element)),

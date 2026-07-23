@@ -3949,6 +3949,17 @@ impl Generator {
                 None,
                 false,
             ),
+            Statement::Expression(Expression::ConstructedNew {
+                allocation,
+                allocation_size,
+                constructor,
+                arguments,
+            }) => self.emit_discarded_constructed_new(
+                allocation,
+                *allocation_size,
+                constructor,
+                arguments,
+            ),
             Statement::Expression(expression @ Expression::Comma { .. }) => {
                 self.emit_discarded_comma_sequence(expression)
             }
@@ -4327,9 +4338,16 @@ impl Generator {
                 Expression::Call { arguments, .. } => arguments
                     .iter()
                     .any(|argument| feeds_an_addition(name, argument)),
-                Expression::ConstructedNew { arguments, .. } => arguments
-                    .iter()
-                    .any(|argument| feeds_an_addition(name, argument)),
+                Expression::ConstructedNew {
+                    allocation,
+                    arguments,
+                    ..
+                } => {
+                    feeds_an_addition(name, allocation)
+                        || arguments
+                            .iter()
+                            .any(|argument| feeds_an_addition(name, argument))
+                }
                 Expression::Variable(_)
                 | Expression::IntegerLiteral(_)
                 | Expression::FloatLiteral(_)

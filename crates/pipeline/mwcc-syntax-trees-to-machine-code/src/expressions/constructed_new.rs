@@ -3,15 +3,49 @@
 use super::*;
 
 impl Generator {
-    /// Emit the CodeWarrior EABI sequence for `new Class(args...)`:
-    /// allocate once, retain/test the returned pointer, and invoke the
-    /// constructor only for a non-null allocation result.
+    /// Emit the CodeWarrior EABI sequence for `new Class(args...)` or placement
+    /// new: evaluate the address producer once, retain/test the resulting
+    /// pointer, and invoke the constructor only when it is non-null.
     pub(crate) fn emit_constructed_new(
         &mut self,
+        allocation: &Expression,
         allocation_size: u32,
         constructor: &str,
         arguments: &[Expression],
         destination: u8,
+    ) -> Compilation<()> {
+        self.emit_constructed_new_impl(
+            allocation,
+            allocation_size,
+            constructor,
+            arguments,
+            Some(destination),
+        )
+    }
+
+    pub(crate) fn emit_discarded_constructed_new(
+        &mut self,
+        allocation: &Expression,
+        allocation_size: u32,
+        constructor: &str,
+        arguments: &[Expression],
+    ) -> Compilation<()> {
+        self.emit_constructed_new_impl(
+            allocation,
+            allocation_size,
+            constructor,
+            arguments,
+            None,
+        )
+    }
+
+    fn emit_constructed_new_impl(
+        &mut self,
+        allocation: &Expression,
+        allocation_size: u32,
+        constructor: &str,
+        arguments: &[Expression],
+        destination: Option<u8>,
     ) -> Compilation<()> {
         if arguments.len() > usize::from(Eabi::LAST_GENERAL_ARGUMENT - 3) {
             return Err(Diagnostic::error(
@@ -27,12 +61,7 @@ impl Generator {
             ));
         }
 
-        self.emit_call(
-            "__nw__FUl",
-            &[Expression::IntegerLiteral(i64::from(allocation_size))],
-            None,
-            false,
-        )?;
+        self.evaluate_general(allocation, Eabi::FIRST_GENERAL_ARGUMENT)?;
 
         let inline_result_name = format!("__mwcc_constructed_new_{}", self.next_virtual);
         let inline_body = self.inline_bodies.expand_constructed_new_body(
@@ -44,7 +73,7 @@ impl Generator {
         // An out-of-line constructor still uses r3 for `this` and its return, so
         // retain the old r0 preference until the call completes.
         let retained = self.fresh_virtual_general_preferring(if inline_body.is_some() {
-            destination
+            destination.unwrap_or(0)
         } else {
             0
         });
@@ -87,10 +116,12 @@ impl Generator {
         }
 
         self.bind_label(done);
-        if destination != retained {
-            self.output
-                .instructions
-                .push(Instruction::move_register(destination, retained));
+        if let Some(destination) = destination {
+            if destination != retained {
+                self.output
+                    .instructions
+                    .push(Instruction::move_register(destination, retained));
+            }
         }
         Ok(())
     }

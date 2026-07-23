@@ -209,11 +209,21 @@ fn expression_use_count(expression: &Expression, name: &str) -> usize {
         Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
             expression_use_count(base, name)
         }
-        Expression::Call { arguments, .. }
-        | Expression::ConstructedNew { arguments, .. } => arguments
+        Expression::Call { arguments, .. } => arguments
             .iter()
             .map(|argument| expression_use_count(argument, name))
             .sum(),
+        Expression::ConstructedNew {
+            allocation,
+            arguments,
+            ..
+        } => {
+            expression_use_count(allocation, name)
+                + arguments
+                    .iter()
+                    .map(|argument| expression_use_count(argument, name))
+                    .sum::<usize>()
+        }
         Expression::CallThrough { target, arguments } => {
             expression_use_count(target, name)
                 + arguments
@@ -399,10 +409,19 @@ fn expression_modifies_or_escapes(expression: &Expression, name: &str) -> bool {
         Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
             expression_modifies_or_escapes(base, name)
         }
-        Expression::Call { arguments, .. }
-        | Expression::ConstructedNew { arguments, .. } => arguments
+        Expression::Call { arguments, .. } => arguments
             .iter()
             .any(|argument| expression_modifies_or_escapes(argument, name)),
+        Expression::ConstructedNew {
+            allocation,
+            arguments,
+            ..
+        } => {
+            expression_modifies_or_escapes(allocation, name)
+                || arguments
+                    .iter()
+                    .any(|argument| expression_modifies_or_escapes(argument, name))
+        }
         Expression::CallThrough { target, arguments } => {
             expression_modifies_or_escapes(target, name)
                 || arguments
@@ -466,10 +485,19 @@ fn expression_mentions(expression: &Expression, name: &str) -> bool {
         Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
             expression_mentions(base, name)
         }
-        Expression::Call { arguments, .. }
-        | Expression::ConstructedNew { arguments, .. } => arguments
+        Expression::Call { arguments, .. } => arguments
             .iter()
             .any(|argument| expression_mentions(argument, name)),
+        Expression::ConstructedNew {
+            allocation,
+            arguments,
+            ..
+        } => {
+            expression_mentions(allocation, name)
+                || arguments
+                    .iter()
+                    .any(|argument| expression_mentions(argument, name))
+        }
         Expression::CallThrough { target, arguments } => {
             expression_mentions(target, name)
                 || arguments

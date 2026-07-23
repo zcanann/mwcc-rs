@@ -157,7 +157,12 @@ fn collect_member_pointer_base_order(
                 collect_member_pointer_base_order(argument, names, seen);
             }
         }
-        Expression::ConstructedNew { arguments, .. } => {
+        Expression::ConstructedNew {
+            allocation,
+            arguments,
+            ..
+        } => {
+            collect_member_pointer_base_order(allocation, names, seen);
             for argument in arguments {
                 collect_member_pointer_base_order(argument, names, seen);
             }

@@ -436,10 +436,17 @@ pub(super) fn expand_expression(
                 .collect(),
         },
         Expression::ConstructedNew {
+            allocation,
             allocation_size,
             constructor,
             arguments,
         } => Expression::ConstructedNew {
+            allocation: Box::new(recurse(
+                allocation,
+                active,
+                changed,
+                value_body_substitutions,
+            )),
             allocation_size: *allocation_size,
             constructor: constructor.clone(),
             arguments: arguments

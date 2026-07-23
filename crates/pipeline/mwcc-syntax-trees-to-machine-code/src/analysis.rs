@@ -171,10 +171,19 @@ pub(crate) fn expression_assigns_name(expression: &Expression, name: &str) -> bo
         Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
             expression_assigns_name(base, name)
         }
-        Expression::Call { arguments, .. }
-        | Expression::ConstructedNew { arguments, .. } => arguments
+        Expression::Call { arguments, .. } => arguments
             .iter()
             .any(|argument| expression_assigns_name(argument, name)),
+        Expression::ConstructedNew {
+            allocation,
+            arguments,
+            ..
+        } => {
+            expression_assigns_name(allocation, name)
+                || arguments
+                    .iter()
+                    .any(|argument| expression_assigns_name(argument, name))
+        }
         Expression::CallThrough { target, arguments } => {
             expression_assigns_name(target, name)
                 || arguments
@@ -314,10 +323,17 @@ pub(crate) fn count_name_occurrences(expression: &Expression, name: &str) -> usi
                     .map(|argument| count_name_occurrences(argument, name))
                     .sum::<usize>()
         }
-        Expression::ConstructedNew { arguments, .. } => arguments
-            .iter()
-            .map(|argument| count_name_occurrences(argument, name))
-            .sum(),
+        Expression::ConstructedNew {
+            allocation,
+            arguments,
+            ..
+        } => {
+            count_name_occurrences(allocation, name)
+                + arguments
+                    .iter()
+                    .map(|argument| count_name_occurrences(argument, name))
+                    .sum::<usize>()
+        }
         Expression::AggregateLiteral(_) => 0,
         Expression::Variable(variable) => usize::from(variable == name),
         Expression::IntegerLiteral(_)
@@ -403,10 +419,13 @@ pub(crate) fn count_direct_call_argument_occurrences(expression: &Expression, na
             ..
         } => count_direct_call_argument_occurrences(object, name) + arguments(call_arguments),
         Expression::ConstructedNew {
+            allocation,
             arguments: call_arguments,
             ..
+        } => {
+            count_direct_call_argument_occurrences(allocation, name) + arguments(call_arguments)
         }
-        | Expression::Call {
+        Expression::Call {
             arguments: call_arguments,
             ..
         } => arguments(call_arguments),
@@ -752,7 +771,12 @@ fn collect_register_reads(
                 collect_register_reads(argument, registers, collected);
             }
         }
-        Expression::ConstructedNew { arguments, .. } => {
+        Expression::ConstructedNew {
+            allocation,
+            arguments,
+            ..
+        } => {
+            collect_register_reads(allocation, registers, collected);
             for argument in arguments {
                 collect_register_reads(argument, registers, collected);
             }
@@ -968,9 +992,17 @@ fn reads_register_after_call(expression: &Expression, registers: &HashSet<&str>)
         }
         // Allocation completes before constructor arguments are marshaled, so
         // every register-backed constructor argument crosses a real call.
-        Expression::ConstructedNew { arguments, .. } => arguments
-            .iter()
-            .any(|argument| reads_register(argument, registers)),
+        Expression::ConstructedNew {
+            allocation,
+            arguments,
+            ..
+        } => {
+            reads_register_after_call(allocation, registers)
+                || (expression_has_call(allocation)
+                    && arguments
+                    .iter()
+                    .any(|argument| reads_register(argument, registers)))
+        }
         Expression::CompoundLiteral { .. } => false,
         Expression::AggregateLiteral(_) => false,
         Expression::PostStep { target, .. } => {
@@ -1067,9 +1099,16 @@ pub(crate) fn reads_register(expression: &Expression, registers: &HashSet<&str>)
                     .iter()
                     .any(|argument| reads_register(argument, registers))
         }
-        Expression::ConstructedNew { arguments, .. } => arguments
-            .iter()
-            .any(|argument| reads_register(argument, registers)),
+        Expression::ConstructedNew {
+            allocation,
+            arguments,
+            ..
+        } => {
+            reads_register(allocation, registers)
+                || arguments
+                    .iter()
+                    .any(|argument| reads_register(argument, registers))
+        }
         Expression::AggregateLiteral(_) => false,
         Expression::PostStep { target, .. } => reads_register(target, registers),
         Expression::Variable(name) => registers.contains(name.as_str()),
@@ -1662,7 +1701,12 @@ fn collect_computed_subexpressions<'a>(expression: &'a Expression, into: &mut Ve
                 collect_computed_subexpressions(argument, into);
             }
         }
-        Expression::ConstructedNew { arguments, .. } => {
+        Expression::ConstructedNew {
+            allocation,
+            arguments,
+            ..
+        } => {
+            collect_computed_subexpressions(allocation, into);
             for argument in arguments {
                 collect_computed_subexpressions(argument, into);
             }

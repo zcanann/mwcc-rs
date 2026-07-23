@@ -147,7 +147,12 @@ fn collect_expression_calls(expression: &Expression, counts: &mut HashMap<String
         }
         // Allocation and construction are one guarded ABI expression, not an
         // ordinary source call site that this source-body expander may replace.
-        Expression::ConstructedNew { arguments, .. } => {
+        Expression::ConstructedNew {
+            allocation,
+            arguments,
+            ..
+        } => {
+            collect_expression_calls(allocation, counts);
             for argument in arguments {
                 collect_expression_calls(argument, counts);
             }

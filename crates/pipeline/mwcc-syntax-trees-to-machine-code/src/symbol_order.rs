@@ -330,14 +330,15 @@ fn collect(expression: &Expression, names: &mut Names) {
             names.push_call(name.clone());
         }
         Expression::ConstructedNew {
+            allocation,
             constructor,
             arguments,
             ..
         } => {
+            collect(allocation, names);
             for argument in arguments {
                 collect(argument, names);
             }
-            names.push_call("__nw__FUl".to_owned());
             names.push_call(constructor.clone());
         }
         Expression::Assign { target, value } => collect_assignment(target, value, names),

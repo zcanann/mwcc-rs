@@ -384,10 +384,12 @@ impl Generator {
                 )
             }
             Expression::ConstructedNew {
+                allocation,
                 allocation_size,
                 constructor,
                 arguments,
             } => self.emit_constructed_new(
+                allocation,
                 *allocation_size,
                 constructor,
                 arguments,

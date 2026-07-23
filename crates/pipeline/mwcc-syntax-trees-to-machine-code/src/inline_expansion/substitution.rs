@@ -230,10 +230,12 @@ pub(super) fn substitute_expression(
                 .collect(),
         },
         Expression::ConstructedNew {
+            allocation,
             allocation_size,
             constructor,
             arguments,
         } => Expression::ConstructedNew {
+            allocation: Box::new(substitute_expression(allocation, replacements)),
             allocation_size: *allocation_size,
             constructor: constructor.clone(),
             arguments: arguments
