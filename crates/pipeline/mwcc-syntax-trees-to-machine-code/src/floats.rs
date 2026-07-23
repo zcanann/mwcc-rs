@@ -251,6 +251,9 @@ impl Generator {
                 when_false,
                 ..
             } => {
+                if self.try_emit_float_abs_select(expression, destination)? {
+                    return Ok(());
+                }
                 self.emit_float_conditional(condition, when_true, when_false, destination, false)
             }
             Expression::Cast { operand, target_type } => self.emit_cast_to_float(operand, destination, *target_type == Type::Double),
