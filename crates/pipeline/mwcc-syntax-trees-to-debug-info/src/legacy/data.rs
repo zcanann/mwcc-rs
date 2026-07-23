@@ -28,6 +28,13 @@ pub(super) struct DataRecords {
     pub aggregate_ids: HashMap<String, DebugEntryId>,
 }
 
+#[derive(Clone, Copy)]
+enum Continuation {
+    Standalone,
+    FunctionsAfterDataEnd,
+    FunctionsDirectly,
+}
+
 /// Semantic record order used by GC 4.x data-only units. The same plan drives
 /// DIE construction and the later ELF-fragment partition, keeping source type
 /// ownership out of the object-container layer.
@@ -420,6 +427,40 @@ pub(super) fn records<'a>(
     first_id: DebugEntryId,
     has_following_functions: bool,
 ) -> Compilation<DataRecords> {
+    records_with_continuation(
+        unit,
+        globals,
+        first_id,
+        if has_following_functions {
+            Continuation::FunctionsAfterDataEnd
+        } else {
+            Continuation::Standalone
+        },
+    )
+}
+
+/// Emit data DIEs whose final sibling is the first immediately-following
+/// function DIE. Build 163 uses this composition for vector installers with
+/// retained inline statics, omitting the usual intervening data-end marker.
+pub(super) fn records_directly_followed_by_functions<'a>(
+    unit: &'a TranslationUnit,
+    globals: &[&'a GlobalDeclaration],
+    first_id: DebugEntryId,
+) -> Compilation<DataRecords> {
+    records_with_continuation(
+        unit,
+        globals,
+        first_id,
+        Continuation::FunctionsDirectly,
+    )
+}
+
+fn records_with_continuation<'a>(
+    unit: &'a TranslationUnit,
+    globals: &[&'a GlobalDeclaration],
+    first_id: DebugEntryId,
+    continuation: Continuation,
+) -> Compilation<DataRecords> {
     let mut next_id = first_id.0;
     let mut plans = Vec::with_capacity(globals.len());
     let mut aggregate_ids = HashMap::new();
@@ -491,11 +532,15 @@ pub(super) fn records<'a>(
         });
     }
 
+    let terminal_sibling = match continuation {
+        Continuation::FunctionsDirectly => DebugEntryId(next_id),
+        Continuation::Standalone | Continuation::FunctionsAfterDataEnd => DATA_END,
+    };
     let mut records = Vec::new();
     for (index, plan) in plans.iter().enumerate() {
         let next = plans
             .get(index + 1)
-            .map_or(DATA_END, |following| following.start_id);
+            .map_or(terminal_sibling, |following| following.start_id);
         match &plan.kind {
             PlanKind::Scalar => records.push(DebugRecord::Entry(global_entry(
                 plan.global,
@@ -680,12 +725,16 @@ pub(super) fn records<'a>(
             }
         }
     }
-    records.push(DebugRecord::Marker(DATA_END));
-    if !has_following_functions {
-        records.extend([
-            DebugRecord::Raw(vec![0, 0, 0, 4]),
-            DebugRecord::Raw(vec![0, 0, 0, 4]),
-        ]);
+    match continuation {
+        Continuation::Standalone => {
+            records.push(DebugRecord::Marker(DATA_END));
+            records.extend([
+                DebugRecord::Raw(vec![0, 0, 0, 4]),
+                DebugRecord::Raw(vec![0, 0, 0, 4]),
+            ]);
+        }
+        Continuation::FunctionsAfterDataEnd => records.push(DebugRecord::Marker(DATA_END)),
+        Continuation::FunctionsDirectly => {}
     }
     debug_assert_ne!(DATA_END, UNIT_END);
     Ok(DataRecords {

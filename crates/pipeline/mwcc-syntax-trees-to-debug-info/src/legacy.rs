@@ -54,6 +54,9 @@ enum MeasuredShape {
     /// A local no-frame exception vector followed by the exported cache-aware
     /// vector installer that copies it to a fixed address.
     VectorInstaller,
+    /// The vector-installer plan preceded by weak read-only objects retained
+    /// from otherwise-dropped inline definitions.
+    VectorInstallerWithInlineStatics,
 }
 
 pub(super) fn lower(
@@ -143,7 +146,10 @@ pub(super) fn lower(
             machine_functions,
             &layout,
         )?);
-    } else if shape == MeasuredShape::VectorInstaller {
+    } else if matches!(
+        shape,
+        MeasuredShape::VectorInstaller | MeasuredShape::VectorInstallerWithInlineStatics
+    ) {
         line_records.extend(vector_installers::line_records(
             &source_functions,
             machine_functions,
@@ -382,6 +388,22 @@ pub(super) fn lower(
         return finish(line, records, DebugLayout::BeforeDataGrouped);
     }
 
+    if shape == MeasuredShape::VectorInstallerWithInlineStatics {
+        let mut records: Vec<_> = entries.into_iter().map(DebugRecord::Entry).collect();
+        let data =
+            data::records_directly_followed_by_functions(unit, &globals, first_global_id)?;
+        records.extend(data.records);
+        records.extend(vector_installers::records(
+            &source_functions
+                .iter()
+                .map(|(function, _)| *function)
+                .collect::<Vec<_>>(),
+            &layout,
+            data.next_id,
+        )?);
+        return finish(line, records, DebugLayout::BeforeDataGrouped);
+    }
+
     for (index, global) in globals.iter().enumerate() {
         let next = if index + 1 < globals.len() {
             DebugEntryId(first_global_id.0 + index as u32 + 1)
@@ -511,6 +533,9 @@ pub(super) fn lower(
         }
         MeasuredShape::VectorInstaller => {
             unreachable!("vector-installer units return before legacy function records")
+        }
+        MeasuredShape::VectorInstallerWithInlineStatics => {
+            unreachable!("combined vector/data units return before legacy function records")
         }
     }
     finish(line, records, DebugLayout::BeforeDataGrouped)
@@ -687,11 +712,16 @@ fn classify_shape(
         return Ok(MeasuredShape::SimpleVoidFunctions);
     }
 
-    if globals.is_empty()
-        && build.version == (2, 3, 3)
-        && vector_installers::matches(unit, machine_functions)
-    {
-        return Ok(MeasuredShape::VectorInstaller);
+    if build.version == (2, 3, 3) && vector_installers::matches(unit, machine_functions) {
+        if globals.is_empty() {
+            return Ok(MeasuredShape::VectorInstaller);
+        }
+        if globals
+            .iter()
+            .all(|global| is_retained_inline_static(global))
+        {
+            return Ok(MeasuredShape::VectorInstallerWithInlineStatics);
+        }
     }
 
     Err(Diagnostic::error(
