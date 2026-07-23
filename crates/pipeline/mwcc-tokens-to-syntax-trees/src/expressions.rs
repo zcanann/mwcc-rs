@@ -809,8 +809,12 @@ impl Parser {
                         }
                         _ => {
                             let name = if self.cplusplus {
-                                self.resolve_free_cxx_call(&name, &arguments)?
-                                    .unwrap_or(name)
+                                match self.resolve_cxx_data_object(&name) {
+                                    Some(data_object) => data_object,
+                                    None => self
+                                        .resolve_free_cxx_call(&name, &arguments)?
+                                        .unwrap_or(name),
+                                }
                             } else {
                                 name
                             };
@@ -865,7 +869,8 @@ impl Parser {
                     Expression::IntegerLiteral(value)
                 } else if self.cplusplus {
                     Expression::Variable(
-                        self.resolve_free_cxx_function_address(&name)
+                        self.resolve_cxx_data_object(&name)
+                            .or_else(|| self.resolve_free_cxx_function_address(&name))
                             .unwrap_or(resolved),
                     )
                 } else {

@@ -147,7 +147,11 @@ impl Parser {
                     "a pointer initializer with an offset is not supported yet (roadmap)",
                 ));
             }
-            return Ok(PointerElement::Symbol(name));
+            let symbol = self
+                .resolve_free_cxx_function_address(&name)
+                .or_else(|| self.resolve_cxx_data_object(&name))
+                .unwrap_or(name);
+            return Ok(PointerElement::Symbol(symbol));
         }
         if matches!(self.peek(), Token::IntegerLiteral(0)) {
             self.advance();
@@ -179,7 +183,11 @@ impl Parser {
         if let Token::Identifier(name) = self.peek() {
             let name = name.clone();
             self.advance();
-            return Ok(PointerElement::Symbol(name));
+            let symbol = self
+                .resolve_free_cxx_function_address(&name)
+                .or_else(|| self.resolve_cxx_data_object(&name))
+                .unwrap_or(name);
+            return Ok(PointerElement::Symbol(symbol));
         }
         Err(Diagnostic::error(
             "a pointer global initializer must be a string, &symbol, a symbol, or 0 (roadmap)",

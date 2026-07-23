@@ -228,6 +228,7 @@ pub fn parse_located_translation_unit_with_behavior(
         pragma_stack: Vec::new(),
         namespace_stack: Vec::new(),
         cxx_namespaces: std::collections::HashSet::new(),
+        cxx_data_objects: std::collections::HashMap::new(),
         current_cxx_layout_scope: None,
         current_member_scope: None,
         force_active: false,
@@ -5755,6 +5756,63 @@ blr\n\
 
         assert!(cxx.globals[0].is_static);
         assert!(!c.globals[0].is_static);
+    }
+
+    #[test]
+    fn namespace_data_objects_use_abi_names_at_symbol_boundaries() {
+        let source = r#"
+            namespace std {
+                int value;
+                int read() { return value; }
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(unit.globals[0].name, "value__3std");
+        assert!(matches!(
+            unit.functions[0].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Variable(name)) if name == "value__3std"
+        ));
+    }
+
+    #[test]
+    fn namespace_pointer_initializers_resolve_function_abi_names() {
+        let source = r#"
+            namespace std {
+                typedef void (*handler_type)();
+                void callback() {}
+                handler_type active = callback;
+                void invoke() { active(); }
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(unit.globals[0].name, "active__3std");
+        assert!(matches!(
+            unit.globals[0].address_initializer.as_deref(),
+            Some([mwcc_syntax_trees::PointerElement::Symbol(name)])
+                if name == "callback__3stdFv"
+        ));
+        assert!(matches!(
+            unit.functions[1].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Call { name, .. }
+            )] if name == "active__3std"
+        ));
     }
 
     #[test]

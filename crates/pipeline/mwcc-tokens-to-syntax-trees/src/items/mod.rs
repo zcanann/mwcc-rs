@@ -2475,6 +2475,11 @@ impl Parser {
                 }
                 let mut declarator_name = name.clone();
                 loop {
+                    let emitted_declarator_name = if self.cplusplus && member_scope.is_none() {
+                        self.register_cxx_data_object(&declarator_name)?
+                    } else {
+                        declarator_name.clone()
+                    };
                     // Array dimensions `[A][B]…`: each `[N]` is an explicit length,
                     // `[]` (only the first dimension) is inferred from the
                     // initializer; no brackets is a scalar. A multi-dimensional array
@@ -2693,7 +2698,7 @@ impl Parser {
                         functions_before: functions.len(),
                         declared_type: return_type,
                         source_fundamental: declared_source_fundamental,
-                        name: declarator_name,
+                        name: emitted_declarator_name,
                         is_extern,
                         // A non-extern namespace-scope const object has internal
                         // linkage in C++. Preserve that source-language rule so

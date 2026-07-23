@@ -2608,6 +2608,33 @@ impl Parser {
         mangle_qualified_data_member(&scopes, member)
     }
 
+    /// Register one namespace-scope data object and return its ABI symbol.
+    /// Anonymous namespaces have no scope spelling in this compiler family.
+    pub(crate) fn register_cxx_data_object(
+        &mut self,
+        source_name: &str,
+    ) -> Compilation<String> {
+        let scopes = self.named_namespace_scopes();
+        if scopes.is_empty() {
+            return Ok(source_name.to_owned());
+        }
+        let qualified_source = format!("{}::{source_name}", scopes.join("::"));
+        let mangled = mangle_qualified_data_member(&scopes, source_name)?;
+        self.cxx_data_objects
+            .insert(qualified_source, mangled.clone());
+        Ok(mangled)
+    }
+
+    /// Resolve an unqualified data-object use from the innermost active
+    /// namespace outward, following ordinary C++ lexical lookup.
+    pub(crate) fn resolve_cxx_data_object(&self, source_name: &str) -> Option<String> {
+        let scopes = self.named_namespace_scopes();
+        (1..=scopes.len()).rev().find_map(|depth| {
+            let qualified = format!("{}::{source_name}", scopes[..depth].join("::"));
+            self.cxx_data_objects.get(&qualified).cloned()
+        })
+    }
+
     /// Resolve a bare static-data-member name inside one of its class methods.
     /// The out-of-class definition is already registered under its ABI name;
     /// this lookup keeps ordinary local/instance-member shadowing in the

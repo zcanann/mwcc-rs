@@ -544,6 +544,10 @@ pub(crate) struct Parser {
     /// distinguishes `N::free_function()` from `Class::static_method()` when
     /// both use the same surface qualification syntax.
     pub(crate) cxx_namespaces: std::collections::HashSet<String>,
+    /// Namespace-qualified source names of C++ data objects mapped to their
+    /// CodeWarrior ABI symbols. Semantic lookup stays source-shaped while ELF
+    /// declarations and relocations use the mangled boundary name.
+    pub(crate) cxx_data_objects: std::collections::HashMap<String, String>,
     /// Lexical class scope used only while recovering one object layout.
     /// Unqualified nested value types must resolve against their containing
     /// class before namespace/global names with the same terminal spelling.
