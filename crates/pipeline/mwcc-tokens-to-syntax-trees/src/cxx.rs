@@ -107,6 +107,15 @@ pub(crate) struct ClassParameterTypes {
     pub(crate) cxx_parameters: Vec<CxxParameterType>,
 }
 
+/// Constructor work split at the point where CodeWarrior installs this
+/// class's vptrs: non-virtual bases are initialized first, then the vptrs,
+/// followed by class-valued members and the source-written body.
+#[derive(Default)]
+pub(crate) struct ConstructorInitialization {
+    pub(crate) statements: Vec<Statement>,
+    pub(crate) vptr_insertion_index: usize,
+}
+
 /// A callable class declaration recovered without requiring class layout.
 /// The ready-mangled name keeps overload selection independent of expression
 /// type inference; fixed arity plus the variadic bit is enough to reject
@@ -1404,6 +1413,7 @@ impl Parser {
         let mut prototypes = Vec::new();
         let parsed = probe.parse_top_level_item(&mut globals, &mut functions, &mut prototypes);
         if parsed.is_ok() && functions.len() == 1 {
+            self.merge_generated_inline_definitions_from(&probe);
             let source = probe.function_sources.pop().flatten();
             let mut function = functions.pop().expect("length checked");
             if matches!(function.return_type, Type::Struct { .. }) {
@@ -1450,6 +1460,25 @@ impl Parser {
                 "failed to retain inline definition for {class}::{member_name}: {parsed:?}; recovered functions: {}",
                 functions.len()
             );
+        }
+    }
+
+    /// Keep compiler-generated constructors discovered while parsing an inline
+    /// body on an isolated parser. The probe begins as a clone of this parser,
+    /// so merge by function identity instead of copying its whole definition
+    /// pool back. Without this step a retained outer constructor can call a
+    /// synthesized member constructor whose body exists only in the probe.
+    pub(crate) fn merge_generated_inline_definitions_from(&mut self, probe: &Parser) {
+        for function in &probe.skipped_inline_definitions {
+            if self
+                .skipped_inline_definitions
+                .iter()
+                .any(|existing| existing.name == function.name)
+            {
+                continue;
+            }
+            self.skipped_inline_names.insert(function.name.clone());
+            self.skipped_inline_definitions.push(function.clone());
         }
     }
 
@@ -4064,7 +4093,7 @@ impl Parser {
         &mut self,
         scope: &str,
         parameters: &[mwcc_syntax_trees::Parameter],
-    ) -> Compilation<Vec<Statement>> {
+    ) -> Compilation<ConstructorInitialization> {
         let class = self.cxx_classes.get(scope).ok_or_else(|| {
             Diagnostic::error(format!(
                 "class layout for constructor '{scope}' was not recovered"
@@ -4109,16 +4138,19 @@ impl Parser {
                         .flatten()
                 })
                 .unwrap_or_default();
-            let signatures = &self
-                .cxx_classes
-                .get(&base.name)
-                .ok_or_else(|| {
-                    Diagnostic::error(format!(
-                        "base class layout for '{}' was not recovered",
-                        base.name
-                    ))
-                })?
-                .constructors;
+            let Some(base_class) = self.cxx_classes.get(&base.name) else {
+                // A C aggregate may be used as a C++ base (SDK vector wrappers
+                // do this heavily). It has no constructor semantics, so its
+                // implicit default initialization is intentionally empty.
+                if arguments.is_empty() {
+                    continue;
+                }
+                return Err(Diagnostic::error(format!(
+                    "constructor arguments for non-class base '{}' are not supported (roadmap)",
+                    base.name
+                )));
+            };
+            let signatures = &base_class.constructors;
             let candidates: Vec<&ClassParameterTypes> = signatures
                 .iter()
                 .filter(|signature| signature.parameters.len() == arguments.len())
@@ -4129,12 +4161,6 @@ impl Parser {
             // work installs its vptr; materialize that work directly so inline
             // expansion does not silently drop the base construction.
             if candidates.is_empty() && arguments.is_empty() {
-                let base_class = self.cxx_classes.get(&base.name).ok_or_else(|| {
-                    Diagnostic::error(format!(
-                        "base class layout for '{}' was not recovered",
-                        base.name
-                    ))
-                })?;
                 if !base.is_virtual && !base_class.vtable_components.is_empty() {
                     let scopes: Vec<&str> = base.name.split("::").collect();
                     let vtable = format!(
@@ -4198,20 +4224,50 @@ impl Parser {
                 arguments: call_arguments,
             }));
         }
-        let layout = self.structs.get(scope).ok_or_else(|| {
+        let vptr_insertion_index = statements.len();
+        let layout = self.structs.get(scope).cloned().ok_or_else(|| {
             Diagnostic::error(format!(
                 "class layout for constructor '{scope}' was not recovered"
             ))
         })?;
         for field_name in field_names {
-            let Some(mut arguments) = initializers.remove(&field_name) else {
-                continue;
-            };
             let field = layout.fields.get(&field_name).ok_or_else(|| {
                 Diagnostic::error(format!(
                     "member '{field_name}' is absent from class '{scope}'"
                 ))
             })?;
+            let Some(mut arguments) = initializers.remove(&field_name) else {
+                let Some(field_class) = field.struct_tag.as_deref() else {
+                    continue;
+                };
+                // Arrays require one construction per element. Do not mistake
+                // their aggregate tag for a single class subobject.
+                if field.array_element.is_some() || !self.cxx_classes.contains_key(field_class) {
+                    continue;
+                }
+                let constructor = if self.has_declared_default_constructor(field_class) {
+                    Some(self.resolve_placement_constructor(field_class, &[])?)
+                } else {
+                    self.ensure_implicit_default_constructor(field_class)?
+                };
+                if let Some(name) = constructor {
+                    let this = if field.offset == 0 {
+                        Expression::Variable("this".to_string())
+                    } else {
+                        Expression::MemberAddress {
+                            base: Box::new(Expression::Variable("this".to_string())),
+                            offset: field.offset,
+                            element: Pointee::UnsignedChar,
+                            index_stride: None,
+                        }
+                    };
+                    statements.push(Statement::Expression(Expression::Call {
+                        name,
+                        arguments: vec![this],
+                    }));
+                }
+                continue;
+            };
             let aggregate_copy = !matches!(field.member_type, Type::Struct { .. })
                 || matches!(
                     arguments.as_slice(),
@@ -4299,7 +4355,10 @@ impl Parser {
                 "unknown constructor initializer '{unknown}' in class '{scope}'"
             )));
         }
-        Ok(statements)
+        Ok(ConstructorInitialization {
+            statements,
+            vptr_insertion_index,
+        })
     }
 
     /// Synthesize non-virtual base destruction in language-mandated reverse

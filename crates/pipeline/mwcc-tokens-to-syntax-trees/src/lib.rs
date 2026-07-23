@@ -3532,6 +3532,103 @@ blr\n\
     }
 
     #[test]
+    fn source_written_constructor_default_constructs_class_members() {
+        let source = r#"
+            struct Member {
+                int value;
+                virtual ~Member() {}
+            };
+            struct Owner {
+                Owner() {}
+                Member member;
+            };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let constructor = unit
+            .skipped_inline_definitions
+            .iter()
+            .find(|function| function.name == "__ct__5OwnerFv")
+            .expect("the source-written constructor should be retained");
+        assert!(matches!(constructor.statements.as_slice(), [
+            Statement::Expression(Expression::Call { name, arguments })
+        ] if name == "__ct__6MemberFv"
+            && matches!(arguments.as_slice(), [Expression::Variable(this)] if this == "this")));
+        assert!(unit.skipped_inline_definitions.iter().any(|function| {
+            function.name == "__ct__6MemberFv"
+                && matches!(function.statements.as_slice(), [
+                    Statement::Store {
+                        value: Expression::AddressOf { operand },
+                        ..
+                    }
+                ] if matches!(operand.as_ref(), Expression::Variable(vtable)
+                    if vtable == "__vt__6Member"))
+        }));
+    }
+
+    #[test]
+    fn source_written_constructor_accepts_a_trivial_c_aggregate_base() {
+        let source = r#"
+            struct Vec { float x; float y; float z; };
+            struct Point : Vec { Point() {} };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let constructor = unit
+            .skipped_inline_definitions
+            .iter()
+            .find(|function| function.name == "__ct__5PointFv")
+            .expect("the empty wrapper constructor should be retained");
+        assert!(constructor.statements.is_empty());
+    }
+
+    #[test]
+    fn constructor_installs_its_vptr_before_default_constructing_members() {
+        let source = r#"
+            struct Member { Member(); int value; };
+            struct Owner {
+                Owner() {}
+                Member member;
+                virtual void act();
+            };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let constructor = unit
+            .skipped_inline_definitions
+            .iter()
+            .find(|function| function.name == "__ct__5OwnerFv")
+            .expect("the owner constructor should be retained");
+        assert!(matches!(constructor.statements.as_slice(), [
+            Statement::Store {
+                value: Expression::AddressOf { operand },
+                ..
+            },
+            Statement::Expression(Expression::Call { name, .. }),
+        ] if matches!(operand.as_ref(), Expression::Variable(vtable)
+                if vtable == "__vt__5Owner")
+            && name == "__ct__6MemberFv"));
+    }
+
+    #[test]
     fn resolves_local_typeof_aliases_for_anonymous_member_elements() {
         let source = r#"
             struct Asset {

@@ -1165,6 +1165,7 @@ impl Parser {
             && globals.is_empty()
             && functions.len() == 1
         {
+            self.merge_generated_inline_definitions_from(&probe);
             let function = functions.pop().expect("length checked");
             for (name, tag) in &probe.function_return_structs {
                 self.function_return_structs
@@ -2834,10 +2835,10 @@ impl Parser {
                 .as_ref()
                 .filter(|_| name == "__dt")
                 .cloned();
-            let constructor_initializers = if let Some(scope) = &constructor_scope {
+            let constructor_initialization = if let Some(scope) = &constructor_scope {
                 self.parse_constructor_initializers(scope, &parameters)?
             } else {
-                Vec::new()
+                crate::cxx::ConstructorInitialization::default()
             };
             let source_function_name = name.clone();
             // C language linkage belongs to a qualified declaration identity.
@@ -3133,9 +3134,12 @@ impl Parser {
                 }
             }
             let mut function = parsed_function?;
-            let constructor_prefix_len = constructor_initializers.len();
-            if !constructor_initializers.is_empty() {
-                function.statements.splice(0..0, constructor_initializers);
+            let constructor_vptr_insertion_index =
+                constructor_initialization.vptr_insertion_index;
+            if !constructor_initialization.statements.is_empty() {
+                function
+                    .statements
+                    .splice(0..0, constructor_initialization.statements);
             }
             let destructor_base_calls = if let Some(scope) = &destructor_scope {
                 self.synthesize_base_destructor_calls(scope)?
@@ -3231,7 +3235,8 @@ impl Parser {
                             }
                         } else if constructor_scope.is_some() {
                             function.statements.splice(
-                                constructor_prefix_len..constructor_prefix_len,
+                                constructor_vptr_insertion_index
+                                    ..constructor_vptr_insertion_index,
                                 vptr_stores,
                             );
                             // A class whose virtuals are all inline has no strong
