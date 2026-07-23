@@ -1,11 +1,8 @@
 //! Path-sensitive saved-home liveness for structured control flow.
 
 use crate::analysis::*;
-use mwcc_syntax_trees::Statement;
+use mwcc_syntax_trees::{Expression, Statement};
 use std::collections::{HashMap, HashSet};
-
-#[cfg(test)]
-use mwcc_syntax_trees::Expression;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Flow {
@@ -32,6 +29,22 @@ pub(super) fn read_after_possible_call(
         &mut pending_gotos,
         &mut seen_labels,
     )
+}
+
+/// Whether `name` needs a saved home across the structured body and its
+/// fallthrough return expression. Reads used only to marshal a call's
+/// arguments happen before that call and therefore remain volatile-safe.
+pub(super) fn read_after_possible_call_in_return(
+    statements: &[Statement],
+    return_expression: Option<&Expression>,
+    name: &str,
+) -> bool {
+    let body = read_after_possible_call(statements, name, false);
+    body.read_after_call
+        || (body.falls_through
+            && return_expression.is_some_and(|expression| {
+                expression_reads_name_across_call(expression, name, body.call_on_fallthrough)
+            }))
 }
 
 fn flow(
@@ -248,6 +261,32 @@ mod tests {
             Statement::Expression(Expression::Variable("value".into())),
         ];
         assert!(read_after_possible_call(&statements, "value", false).read_after_call);
+    }
+
+    #[test]
+    fn direct_return_call_arguments_do_not_invent_saved_homes() {
+        let tail = Expression::Call {
+            name: "atan2f".into(),
+            arguments: vec![Expression::Variable("object".into())],
+        };
+
+        assert!(!read_after_possible_call_in_return(
+            &[],
+            Some(&tail),
+            "object"
+        ));
+    }
+
+    #[test]
+    fn a_return_read_after_a_body_call_needs_a_saved_home() {
+        let statements = vec![call("mutate")];
+        let tail = Expression::Variable("object".into());
+
+        assert!(read_after_possible_call_in_return(
+            &statements,
+            Some(&tail),
+            "object"
+        ));
     }
 
     #[test]

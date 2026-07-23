@@ -26,7 +26,9 @@ use super::structured_frame_entry::structured_dense_frame_entry_index;
 use super::structured_home_layout::{
     dense_eager_deferred_preferences, dense_eager_home_preference,
 };
-use super::structured_liveness::read_after_possible_call;
+use super::structured_liveness::{
+    read_after_possible_call, read_after_possible_call_in_return,
+};
 use super::structured_locals::{
     body_uses_local, dead_ephemeral_float_locals, is_definitely_assigned_before_reads,
     plan_deferred_saved_homes, plan_ephemeral_locals,
@@ -206,12 +208,11 @@ impl Generator {
         let survivors: std::collections::HashSet<&str> = candidates
             .into_iter()
             .filter(|name| {
-                read_after_possible_call(&function.statements, name, false).read_after_call
-                    || (function_makes_call(function)
-                        && function
-                            .return_expression
-                            .as_ref()
-                            .is_some_and(|expression| expression_reads_name(expression, name)))
+                read_after_possible_call_in_return(
+                    &function.statements,
+                    function.return_expression.as_ref(),
+                    name,
+                )
             })
             .collect();
         let call_accumulators = call_accumulator_names(function);
