@@ -178,7 +178,12 @@ impl Generator {
                 Expression::Unary {
                     operator: UnaryOperator::LogicalNot,
                     operand,
-                } => self.is_float_value(operand),
+                } => match operand.as_ref() {
+                    Expression::Binary { left, right, .. } => {
+                        self.is_float_value(left) || self.is_float_value(right)
+                    }
+                    operand => self.is_float_value(operand),
+                },
                 _ => self.is_float_value(condition),
             };
             self.output.anonymous_label_bump += if floating_condition { 2 } else { 3 };

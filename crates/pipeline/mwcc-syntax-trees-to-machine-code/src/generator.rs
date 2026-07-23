@@ -571,6 +571,10 @@ impl Generator {
             Expression::Cast { target_type, .. } => {
                 matches!(target_type, Type::Float | Type::Double)
             }
+            Expression::Unary {
+                operator: UnaryOperator::Negate,
+                operand,
+            } => self.is_float_operand(operand),
             Expression::Comma { right, .. } => self.is_float_operand(right),
             Expression::Conditional {
                 when_true,

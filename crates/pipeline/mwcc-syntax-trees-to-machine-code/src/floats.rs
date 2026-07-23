@@ -610,6 +610,27 @@ impl Generator {
                 self.emit_located_operand(right, FLOAT_SCRATCH)?;
                 return Operands::ordered(destination, FLOAT_SCRATCH);
             }
+            // A transformed value (notably `-member - other_member`) is a
+            // computed FP operand, not a register leaf.  Materialize it in the
+            // result home before using the ordinary scratch for the direct
+            // memory side.  Structured condition-value reuse can later remove
+            // a redundant load without changing this placement invariant.
+            if matches!(
+                left,
+                Expression::Unary { .. }
+                    | Expression::Binary { .. }
+                    | Expression::Cast { .. }
+                    | Expression::Conditional { .. }
+            ) {
+                let computed = if destination == FLOAT_SCRATCH {
+                    self.fresh_virtual_float_preferring(1)
+                } else {
+                    destination
+                };
+                self.evaluate_float(left, computed)?;
+                self.emit_located_operand(right, FLOAT_SCRATCH)?;
+                return Operands::ordered(computed, FLOAT_SCRATCH);
+            }
             let left_register = self.float_register_of_leaf(left)?;
             self.emit_located_operand(right, FLOAT_SCRATCH)?;
             return Operands::ordered(left_register, FLOAT_SCRATCH);

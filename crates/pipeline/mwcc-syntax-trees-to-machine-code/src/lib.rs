@@ -27,6 +27,8 @@ mod division;
 mod expressions;
 mod float;
 mod float_compare_schedules;
+mod float_computed_loaded_condition;
+mod float_product_condition;
 mod floats;
 mod frame;
 mod frexp_family;

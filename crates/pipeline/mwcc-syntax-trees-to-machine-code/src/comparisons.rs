@@ -1342,7 +1342,18 @@ impl Generator {
             left_is_float = true;
         }
         let dual_legacy = self.try_emit_legacy_dual_float_condition(left, right, double)?;
+        let product_literal = if right_literal && !left_literal {
+            self.try_place_float_product_literal_condition(left, right, double)?
+        } else {
+            None
+        };
+        let computed_left_loaded =
+            self.try_place_computed_left_loaded_float_condition(left, right)?;
         let (a, b) = if let Some(registers) = dual_legacy {
+            registers
+        } else if let Some(registers) = product_literal {
+            registers
+        } else if let Some(registers) = computed_left_loaded {
             registers
         } else if !left_is_float && right_is_float {
             // Usual arithmetic conversions promote the integer side to the
@@ -1543,7 +1554,7 @@ impl Generator {
     /// Load a float or (promoted) integer literal into `dest` at the comparison's
     /// precision — `lfs`/`lfd` from the pool, the same promotion mwcc applies to a
     /// written `a > 0`.
-    fn load_float_literal_into(
+    pub(crate) fn load_float_literal_into(
         &mut self,
         dest: u8,
         operand: &Expression,
@@ -1616,6 +1627,22 @@ impl Generator {
         if self.is_float_leaf(operand) {
             return self.float_register_of_leaf(operand);
         }
+        // A computed FP operand is not a member/global load. Give its result a
+        // virtual home so the allocator can coalesce it with a dead input (the
+        // leaf product can overwrite its factor) or preserve that input when it
+        // remains live in the surrounding structured body. Direct loads retain
+        // the measured fixed-register rules below.
+        if matches!(
+            operand,
+            Expression::Binary { .. }
+                | Expression::Unary { .. }
+                | Expression::Cast { .. }
+                | Expression::Conditional { .. }
+        ) {
+            let destination = self.fresh_virtual_float_preferring(FLOAT_FIRST);
+            self.evaluate_float(operand, destination)?;
+            return Ok(destination);
+        }
         if let Some(register) = self.retained_float_compare_register(operand) {
             return Ok(register);
         }
@@ -1635,7 +1662,7 @@ impl Generator {
         self.place_condition_float_load(operand, destination)
     }
 
-    fn place_condition_float_load(
+    pub(crate) fn place_condition_float_load(
         &mut self,
         operand: &Expression,
         destination: u8,
