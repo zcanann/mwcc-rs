@@ -355,7 +355,7 @@ fn parse_define(directive: &str) -> Option<MacroDefinition<'_>> {
     if rest.starts_with('(') {
         let close = rest.find(')')?;
         let parameter_text = &rest[1..close];
-        let parameters = if parameter_text.trim().is_empty() {
+        let mut parameters = if parameter_text.trim().is_empty() {
             Vec::new()
         } else {
             parameter_text
@@ -364,6 +364,10 @@ fn parse_define(directive: &str) -> Option<MacroDefinition<'_>> {
                 .map(str::to_string)
                 .collect::<Vec<_>>()
         };
+        let variadic = parameters.last().is_some_and(|parameter| parameter == "...");
+        if variadic {
+            *parameters.last_mut().expect("variadic parameter") = "__VA_ARGS__".to_string();
+        }
         let valid_parameters = parameters.iter().all(|parameter| {
             parameter
                 .as_bytes()
@@ -379,6 +383,7 @@ fn parse_define(directive: &str) -> Option<MacroDefinition<'_>> {
             conditional_value: "1",
             expansion: valid_parameters.then(|| macro_expansion::Macro::Function {
                 parameters,
+                variadic,
                 replacement: rest[close + 1..]
                     .trim()
                     .split("//")
@@ -688,6 +693,33 @@ mod tests {
         assert_eq!(
             loaded,
             b"#define DECLARE(name, T) \\\n\nstatic void GXCmd1u8( u8 value);\n"
+        );
+    }
+
+    #[test]
+    fn variadic_function_macros_expand_through_wrapper_macros() {
+        let scratch = Scratch::new();
+        std::fs::write(
+            scratch.0.join("unit.c"),
+            concat!(
+                "#define ASSERT_MSG(line, expression, ...) (void)0\n",
+                "#define ASSERT(line, expression) ASSERT_MSG(line, expression, \"failed: \" #expression)\n",
+                "void f(int value) { ASSERT(7, value != 0); }\n"
+            ),
+        )
+        .unwrap();
+
+        let loaded = SourceLoader::default()
+            .load(&scratch.0.join("unit.c"))
+            .unwrap();
+        assert_eq!(
+            loaded,
+            concat!(
+                "#define ASSERT_MSG(line, expression, ...) (void)0\n",
+                "#define ASSERT(line, expression) ASSERT_MSG(line, expression, \"failed: \" #expression)\n",
+                "void f(int value) { (void)0; }\n"
+            )
+            .as_bytes()
         );
     }
 

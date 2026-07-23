@@ -5,6 +5,7 @@ pub(super) enum Macro {
     Object(Vec<u8>),
     Function {
         parameters: Vec<String>,
+        variadic: bool,
         replacement: Vec<u8>,
     },
 }
@@ -79,17 +80,35 @@ fn expand(
                 Macro::Object(replacement) => (replacement.clone(), index, None),
                 Macro::Function {
                     parameters,
+                    variadic,
                     replacement,
                 } => {
                     let Some((arguments, invocation_end)) = parse_invocation(input, index) else {
                         output.extend_from_slice(identifier);
                         continue;
                     };
-                    if arguments.len() != parameters.len() {
+                    let fixed_count = parameters.len() - usize::from(*variadic);
+                    if (!variadic && arguments.len() != fixed_count)
+                        || (*variadic && arguments.len() < fixed_count)
+                    {
                         output.extend_from_slice(&input[start..invocation_end]);
                         index = invocation_end;
                         continue;
                     }
+                    let arguments = if *variadic {
+                        let mut normalized = arguments[..fixed_count].to_vec();
+                        let mut trailing = Vec::new();
+                        for (position, argument) in arguments[fixed_count..].iter().enumerate() {
+                            if position != 0 {
+                                trailing.push(b',');
+                            }
+                            trailing.extend_from_slice(argument);
+                        }
+                        normalized.push(trailing);
+                        normalized
+                    } else {
+                        arguments
+                    };
                     // C/C++ stringification uses the original (unexpanded)
                     // argument spelling. Resolve those `#parameter` operators
                     // before installing the expanded argument macros below;
@@ -164,7 +183,7 @@ fn expand(
 fn stringify_parameter_uses(
     replacement: &[u8],
     parameters: &[String],
-    arguments: &[&[u8]],
+    arguments: &[Vec<u8>],
 ) -> Vec<u8> {
     let mut output = Vec::with_capacity(replacement.len());
     let mut index = 0;
@@ -302,7 +321,7 @@ fn paste_tokens(input: &[u8]) -> Vec<u8> {
     output
 }
 
-fn parse_invocation(input: &[u8], after_name: usize) -> Option<(Vec<&[u8]>, usize)> {
+fn parse_invocation(input: &[u8], after_name: usize) -> Option<(Vec<Vec<u8>>, usize)> {
     let mut open = after_name;
     while input.get(open).is_some_and(u8::is_ascii_whitespace) {
         open += 1;
@@ -339,13 +358,13 @@ fn parse_invocation(input: &[u8], after_name: usize) -> Option<(Vec<&[u8]>, usiz
                         .any(|byte| !byte.is_ascii_whitespace())
                         || !arguments.is_empty()
                     {
-                        arguments.push(&input[argument_start..index]);
+                        arguments.push(input[argument_start..index].to_vec());
                     }
                     return Some((arguments, index + 1));
                 }
             }
             b',' if depth == 1 => {
-                arguments.push(&input[argument_start..index]);
+                arguments.push(input[argument_start..index].to_vec());
                 argument_start = index + 1;
             }
             _ => {}
@@ -424,6 +443,7 @@ mod tests {
                 "PROTO".to_string(),
                 Macro::Function {
                     parameters: vec!["p".to_string()],
+                    variadic: false,
                     replacement: b"p".to_vec(),
                 },
             ),
@@ -431,6 +451,7 @@ mod tests {
                 "PAIR".to_string(),
                 Macro::Function {
                     parameters: vec!["a".to_string(), "b".to_string()],
+                    variadic: false,
                     replacement: b"a + b".to_vec(),
                 },
             ),
@@ -439,6 +460,7 @@ mod tests {
                 "EMPTY".to_string(),
                 Macro::Function {
                     parameters: Vec::new(),
+                    variadic: false,
                     replacement: b"7".to_vec(),
                 },
             ),
@@ -461,6 +483,7 @@ mod tests {
                 "ASSERT".to_string(),
                 Macro::Function {
                     parameters: vec!["condition".to_string()],
+                    variadic: false,
                     replacement: b"show(#condition); if (condition) { pass(); }".to_vec(),
                 },
             ),
@@ -479,6 +502,7 @@ mod tests {
             "TEXT".to_string(),
             Macro::Function {
                 parameters: vec!["value".to_string()],
+                variadic: false,
                 replacement: b"# value".to_vec(),
             },
         )]);
@@ -496,6 +520,7 @@ mod tests {
                 "DECLARE".to_string(),
                 Macro::Function {
                     parameters: vec!["name".to_string(), "suffix".to_string()],
+                    variadic: false,
                     replacement: b"int name ## 1 ## suffix;".to_vec(),
                 },
             ),
@@ -515,6 +540,7 @@ mod tests {
             "TEXT".to_string(),
             Macro::Function {
                 parameters: Vec::new(),
+                variadic: false,
                 replacement: b"\"a ## b\" /* c ## d */ value ## 2".to_vec(),
             },
         )]);
