@@ -347,6 +347,9 @@ pub struct TranslationUnit {
     /// result type (e.g. a `double`-returning math routine) and its parameter
     /// types (so an argument's int<->float register placement is correct).
     pub prototypes: Vec<(String, Type, Vec<Type>)>,
+    /// C++ member declarations recovered by class analysis rather than the
+    /// ordinary top-level prototype parser, stored by emitted ABI identity.
+    pub cxx_declared_function_names: std::collections::HashSet<String>,
     /// Source-written function-parameter names whose declarations survive the
     /// front-end analysis walk. The historical field name is retained for
     /// capture compatibility.

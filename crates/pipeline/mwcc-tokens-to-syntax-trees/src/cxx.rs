@@ -3344,6 +3344,10 @@ impl Parser {
                 if !signature.parameters.is_empty() {
                     return Err(Diagnostic::error("a destructor cannot have parameters"));
                 }
+                let qualified = self.qualify_cxx_class_name(&name);
+                let scopes: Vec<&str> = qualified.split("::").collect();
+                let destructor = mangle_qualified_member_function(&scopes, "__dt", &[])?;
+                self.cxx_declared_function_names.insert(destructor.clone());
                 let mut tail = self.position;
                 while matches!(self.tokens.get(tail), Some(Token::Identifier(word))
                     if matches!(word.as_str(), "const" | "override" | "final"))
@@ -3356,11 +3360,7 @@ impl Parser {
                 let is_virtual_destructor = is_virtual || class.has_virtual_destructor;
                 if is_virtual_destructor {
                     if !is_inline && !is_pure && class.vtable_key_function.is_none() {
-                        let qualified = self.qualify_cxx_class_name(&name);
-                        let scopes: Vec<&str> = qualified.split("::").collect();
-                        class.vtable_key_function = Some(
-                            mangle_qualified_member_function(&scopes, "__dt", &[])?,
-                        );
+                        class.vtable_key_function = Some(destructor);
                     }
                     if class.virtual_destructor_slot.is_none() {
                         class.virtual_destructor_slot = Some(u16::try_from(
@@ -3462,8 +3462,9 @@ impl Parser {
                     )?;
                     self.cxx_class_deletes.insert(
                         qualified_name.clone(),
-                        (mangled, signature.parameters.len()),
+                        (mangled.clone(), signature.parameters.len()),
                     );
+                    self.cxx_declared_function_names.insert(mangled);
                     self.skip_class_method_tail()?;
                     continue;
                 }

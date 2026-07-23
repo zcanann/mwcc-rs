@@ -255,6 +255,7 @@ pub fn parse_located_translation_unit_with_behavior(
         cxx_deferred_weak_materialization_requests: Vec::new(),
         cxx_static_methods: HashMap::new(),
         cxx_class_deletes: HashMap::new(),
+        cxx_declared_function_names: std::collections::HashSet::new(),
         cxx_constructors: HashMap::new(),
         cxx_free_functions: HashMap::new(),
         cxx_instance_methods: HashMap::new(),
@@ -2062,6 +2063,41 @@ blr\n\
             .iter()
             .find(|global| global.name == "__vt__4Base")
             .is_some_and(|global| global.is_weak));
+        let tables = unit
+            .globals
+            .iter()
+            .filter(|global| matches!(global.name.as_str(), "__vt__4Base" | "__vt__7Derived"))
+            .map(|global| global.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(tables, ["__vt__4Base", "__vt__7Derived"]);
+    }
+
+    #[test]
+    fn class_analysis_exports_destructor_and_delete_declarations() {
+        let source = r#"
+            typedef unsigned long size_t;
+            class Item {
+            public:
+                virtual ~Item();
+                void operator delete(void* value, size_t size);
+            };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(unit
+            .cxx_declared_function_names
+            .contains("__dt__4ItemFv"));
+        assert!(unit
+            .cxx_declared_function_names
+            .iter()
+            .any(|name| name.starts_with("__dl__4ItemF")));
     }
 
     #[test]

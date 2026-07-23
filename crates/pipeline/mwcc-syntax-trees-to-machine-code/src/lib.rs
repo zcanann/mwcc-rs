@@ -169,13 +169,19 @@ pub fn lower_function(
     if let Some(output) =
         cxx_abi::lower_composed_destructor(function, inline_summaries, config.clone())
     {
-        return Ok(output);
+        return Ok(classify_specialized_call_declarations(
+            output,
+            prototyped_names,
+        ));
     }
     if let Some(output) = cxx_abi::lower_trivial_destructor(function, config.clone()) {
         return Ok(output);
     }
     if let Some(output) = cxx_abi::lower_virtual_destructor(function, globals, config.clone()) {
-        return Ok(output);
+        return Ok(classify_specialized_call_declarations(
+            output,
+            prototyped_names,
+        ));
     }
     // A STATIC CONST float/double global is DE-NAMED by mwcc: every read compiles
     // as the literal value, pooled anonymously (@N in .sdata2) with no named
@@ -620,6 +626,20 @@ pub fn lower_function(
     Ok(generator.output)
 }
 
+/// Specialized ABI lowerers bypass the ordinary `Generator` finalization pass.
+/// Reconcile their call-site metadata with declarations recovered by the
+/// frontend so the object writer does not treat a declared member destructor
+/// or class-specific delete as an implicit K&R-era call.
+fn classify_specialized_call_declarations(
+    mut output: MachineFunction,
+    prototyped_names: &HashSet<String>,
+) -> MachineFunction {
+    output
+        .implicit_external_callees
+        .retain(|name| !prototyped_names.contains(name));
+    output
+}
+
 pub(crate) fn allocation_operator_returns_pointer(name: &str) -> bool {
     name.starts_with("__nw__F") || name.starts_with("__nwa__F")
 }
@@ -857,5 +877,19 @@ mod instruction_index_tests {
 
         assert_eq!(target, 2);
         assert!(matches!(instructions[target], Instruction::Or { a: 3, .. }));
+    }
+
+    #[test]
+    fn specialized_abi_calls_honor_recovered_declarations() {
+        let mut function = MachineFunction::new("__dt__5OwnerFv");
+        function.implicit_external_callees = vec![
+            "__dt__4ItemFv".into(),
+            "undeclared_helper".into(),
+        ];
+        let declared = HashSet::from(["__dt__4ItemFv".to_string()]);
+
+        let function = classify_specialized_call_declarations(function, &declared);
+
+        assert_eq!(function.implicit_external_callees, ["undeclared_helper"]);
     }
 }

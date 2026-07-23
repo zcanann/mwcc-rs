@@ -279,6 +279,9 @@ pub(crate) struct Parser {
     /// Class-specific scalar deallocation functions, preserving whether the
     /// explicit object-size argument belongs in deleting-destructor calls.
     pub(crate) cxx_class_deletes: HashMap<String, (String, usize)>,
+    /// ABI names of member declarations recovered outside the ordinary
+    /// prototype grammar (currently destructors and class-specific delete).
+    pub(crate) cxx_declared_function_names: std::collections::HashSet<String>,
     /// Constructor overloads recovered independently of object layout. Large
     /// headers may contain unsupported unrelated methods while their constructor
     /// signatures and inline bodies remain fully usable.

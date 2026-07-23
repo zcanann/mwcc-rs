@@ -653,6 +653,7 @@ fn compile(
         .prototypes
         .iter()
         .map(|(name, _, _)| name.clone())
+        .chain(unit.cxx_declared_function_names.iter().cloned())
         .collect();
     let inline_summaries = if config.flags.inline_enabled {
         mwcc_syntax_trees_to_machine_code::InlineSummaries::analyze_with_skipped(

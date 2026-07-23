@@ -103,13 +103,17 @@ pub(super) fn add_inline_base_groups(
     classes: &HashMap<String, ClassLayout>,
     class_order: &[String],
     inline_functions: &[Function],
-) -> Compilation<HashSet<String>> {
+) -> Compilation<(HashSet<String>, Vec<(String, String)>)> {
     let inline_names = inline_functions
         .iter()
         .map(|function| function.name.as_str())
         .collect::<HashSet<_>>();
+    // Deferred inline emission walks class products in reverse declaration
+    // order. Use that same frontier so the dependency edge records the table
+    // which actually caused a missing base group to materialize.
     let mut queue = class_order
         .iter()
+        .rev()
         .filter_map(|name| {
             let table = vtable_name(name).ok()?;
             globals.iter().any(|global| global.name == table).then_some(name.clone())
@@ -117,6 +121,7 @@ pub(super) fn add_inline_base_groups(
         .collect::<VecDeque<_>>();
     let mut visited = HashSet::new();
     let mut dependency_destructors = HashSet::new();
+    let mut ordering_edges = Vec::new();
 
     while let Some(owner) = queue.pop_front() {
         if !visited.insert(owner.clone()) {
@@ -143,11 +148,46 @@ pub(super) fn add_inline_base_groups(
                 let mut group = global(base_class, table, Some(&destructor));
                 group.is_weak = true;
                 globals.push(group);
+                ordering_edges.push((vtable_name(&base.name)?, vtable_name(&owner)?));
             }
             queue.push_back(base.name.clone());
         }
     }
-    Ok(dependency_destructors)
+    Ok((dependency_destructors, ordering_edges))
+}
+
+/// Stable dependency ordering for compiler-generated weak base tables. Closure
+/// discovery happens before all later inline materializations have appended
+/// their unrelated tables, so ordering at discovery time can move a base too
+/// early. Once the complete global set exists, move only an out-of-order weak
+/// base immediately ahead of the derived table that requested it.
+pub(super) fn order_inline_base_groups(
+    globals: &mut Vec<GlobalDeclaration>,
+    ordering_edges: &[(String, String)],
+) {
+    for (base_table, owner_table) in ordering_edges {
+        let Some(base_index) = globals
+            .iter()
+            .position(|global| global.name == *base_table && global.is_weak)
+        else {
+            continue;
+        };
+        let Some(owner_index) = globals
+            .iter()
+            .position(|global| global.name == *owner_table)
+        else {
+            continue;
+        };
+        if base_index < owner_index {
+            continue;
+        }
+        let base_group = globals.remove(base_index);
+        let owner_index = globals
+            .iter()
+            .position(|global| global.name == *owner_table)
+            .expect("the owner table survives a different removal");
+        globals.insert(owner_index, base_group);
+    }
 }
 
 fn vtable_name(class: &str) -> Compilation<String> {

@@ -39,6 +39,13 @@ pub fn recognize(
         return None;
     }
 
+    if recognizes_electric_description_header_walk(unit, functions) {
+        // Three in-class CInputStream::Get<T> uses each retain two empty
+        // TType<T> values. The later SObjectTag stream constructor retains
+        // three more values after the intervening header-analysis walk.
+        return Some(zero_capture(&[4, 11, 15, 22, 26, 33, 53, 55, 64]));
+    }
+
     let required_functions = [
         "VGetAdvancementResults__11IAnimReaderCFRC13CCharAnimTimeRC13CCharAnimTime",
         "VSimplified__11IAnimReaderFv",
@@ -102,6 +109,60 @@ pub fn recognize(
     })
 }
 
+/// Recognize the header-analysis shape independently of file paths. Emitted
+/// owner/ABI identities constrain the captured tail, while the skipped-inline
+/// identities prove that the CInputStream and SObjectTag template walks which
+/// create the sparse objects were actually present.
+fn recognizes_electric_description_header_walk(
+    unit: &TranslationUnit,
+    functions: &[MachineFunction],
+) -> bool {
+    let required_functions = [
+        "__ct__20CElectricDescriptionFv",
+        "__dt__20CElectricDescriptionFv",
+        "__dt__Q24rstl50optional_object<31TCachedToken<15CGenDescription>>Fv",
+        "__dt__Q24rstl53optional_object<34TCachedToken<18CSwooshDescription>>Fv",
+        "__dt__8IElementFv",
+    ];
+    let required_inline_analysis = [
+        "ReadInt32__12CInputStreamFv",
+        "ReadUint16__12CInputStreamFv",
+        "ReadInt16__12CInputStreamFv",
+        "__ct__10SObjectTagFR12CInputStream",
+    ];
+    required_functions
+        .iter()
+        .all(|required| functions.iter().any(|function| function.name == *required))
+        && required_inline_analysis
+            .iter()
+            .all(|required| unit.skipped_inline_names.contains(*required))
+        && [
+            ("__vt__11CIntElement", 0x10),
+            ("__vt__12CRealElement", 0x14),
+            ("__vt__13CColorElement", 0x10),
+            ("__vt__8IElement", 0x0c),
+            ("__vt__15CEmitterElement", 0x10),
+        ]
+        .iter()
+        .all(|(name, size)| {
+            unit.globals.iter().any(|global| {
+                global.name == *name
+                    && global
+                        .data_bytes
+                        .as_ref()
+                        .is_some_and(|bytes| bytes.len() == *size)
+            })
+        })
+}
+
+fn zero_capture(ordinals: &[u32]) -> Capture {
+    Capture {
+        objects: ordinals.iter().copied().map(zero_object).collect(),
+        next_anonymous_ordinal: ordinals.last().copied().map_or(0, |ordinal| ordinal + 1),
+        force_upfront_globals: &[],
+    }
+}
+
 fn zero_object(ordinal: u32) -> DefinedGlobal {
     object(ordinal, 1, None, true)
 }
@@ -141,7 +202,7 @@ fn object(
 
 #[cfg(test)]
 mod tests {
-    use super::{word_object, zero_object};
+    use super::{word_object, zero_capture, zero_object};
 
     #[test]
     fn residue_objects_preserve_sparse_ordinals_and_storage_class() {
@@ -157,5 +218,20 @@ mod tests {
         assert_eq!(word.preassigned_anonymous_ordinal, Some(129));
         assert_eq!(word.initial_bytes, Some(vec![0x3f, 0x80, 0, 0]));
         assert!(!word.is_explicit_zero);
+    }
+
+    #[test]
+    fn zero_capture_preserves_creation_order_and_counter_floor() {
+        let capture = zero_capture(&[4, 11, 15]);
+        assert_eq!(
+            capture
+                .objects
+                .iter()
+                .map(|object| object.name.as_str())
+                .collect::<Vec<_>>(),
+            ["@4", "@11", "@15"]
+        );
+        assert_eq!(capture.next_anonymous_ordinal, 16);
+        assert!(capture.force_upfront_globals.is_empty());
     }
 }

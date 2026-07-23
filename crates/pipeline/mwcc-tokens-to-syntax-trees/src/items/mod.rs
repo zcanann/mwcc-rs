@@ -1041,12 +1041,13 @@ impl Parser {
                 attribute_alignment: None,
             });
         }
-        let early_inline_destructors = cxx_vtables::add_inline_base_groups(
-            &mut globals,
-            &self.cxx_classes,
-            &self.cxx_class_declaration_order,
-            &self.cxx_inline_materializations,
-        )?;
+        let (early_inline_destructors, inline_base_vtable_edges) =
+            cxx_vtables::add_inline_base_groups(
+                &mut globals,
+                &self.cxx_classes,
+                &self.cxx_class_declaration_order,
+                &self.cxx_inline_materializations,
+            )?;
         cxx_destructors::prepare_required(self, &globals, &functions)?;
         let referenced_functions: std::collections::HashSet<&str> = globals
             .iter()
@@ -1083,6 +1084,7 @@ impl Parser {
             functions.insert(index, function);
             self.function_sources.insert(index, source);
         }
+        cxx_vtables::order_inline_base_groups(&mut globals, &inline_base_vtable_edges);
         cxx_vtables::position_after_functions(&mut globals, &functions);
         debug_assert_eq!(
             functions.len(),
@@ -1161,6 +1163,9 @@ impl Parser {
                 &mut self.function_return_fundamentals,
             ),
             prototypes,
+            cxx_declared_function_names: std::mem::take(
+                &mut self.cxx_declared_function_names,
+            ),
             named_prototype_parameters: self.named_prototype_parameters,
             inline_asm_symbols: std::mem::take(&mut self.inline_asm_symbols),
             plain_inline_asm_helpers: std::mem::take(&mut self.plain_inline_asm_helpers),
