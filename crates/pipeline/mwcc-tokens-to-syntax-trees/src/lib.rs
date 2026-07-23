@@ -4206,8 +4206,11 @@ blr\n\
     #[test]
     fn retains_boolean_function_return_identity() {
         let unit = parse_translation_unit(
-            mwcc_source_to_tokens::tokenize("bool is_one(int value) { return value == 1; }")
-                .unwrap(),
+            mwcc_source_to_tokens::tokenize(
+                "extern bool external_bool(int value);\n\
+                 bool is_one(int value) { return value == 1; }",
+            )
+            .unwrap(),
             true,
             true,
             1,
@@ -4218,6 +4221,10 @@ blr\n\
         assert_eq!(unit.functions[0].return_type, Type::UnsignedChar);
         assert_eq!(
             unit.function_return_fundamentals.get("is_one__Fi"),
+            Some(&mwcc_syntax_trees::SourceFundamentalType::Boolean)
+        );
+        assert_eq!(
+            unit.function_return_fundamentals.get("external_bool__Fi"),
             Some(&mwcc_syntax_trees::SourceFundamentalType::Boolean)
         );
     }

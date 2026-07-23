@@ -217,6 +217,10 @@ pub(crate) struct Generator {
     /// Source spelling of this function's return type when compact executable
     /// types have merged it with a storage-equivalent scalar.
     pub(crate) return_source_fundamental: Option<mwcc_syntax_trees::SourceFundamentalType>,
+    /// Source spelling of each callable's return type. This keeps forwarding a
+    /// `bool` result distinct from converting an `unsigned char` result to bool.
+    pub(crate) call_return_fundamentals:
+        HashMap<String, mwcc_syntax_trees::SourceFundamentalType>,
     /// The target's register-allocation rules — the allocatable pools and scratch.
     /// The free-register helpers draw from here, so the pools have one authoritative
     /// home (shared with the future allocator) rather than literals in placement.

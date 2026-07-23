@@ -1,8 +1,84 @@
-//! Whole-file IPA sibling-call elimination.
+//! Terminal call forwarding and whole-file IPA sibling-call elimination.
 
 use super::*;
 
 impl Generator {
+    /// Lower the pre-sibling-call generation's simplest terminal forwarding
+    /// wrapper: every entry parameter is passed unchanged, in order, to one
+    /// direct call whose result is returned unchanged.
+    ///
+    /// This topology has no value live across the call. Keeping it here beside
+    /// sibling-call lowering prevents the broad callee-saved recognizers from
+    /// mistaking an opaque struct-pointer argument for a survivor and growing a
+    /// spurious save slot.
+    pub(crate) fn try_non_tail_call_forward(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if self.behavior.tail_call_optimization
+            || self.behavior.terminal_indirect_tail_call
+            || self.variadic_definition
+            || !self.frame_slots.is_empty()
+            || !function.locals.is_empty()
+            || !function.guards.is_empty()
+            || !function.statements.is_empty()
+        {
+            return Ok(false);
+        }
+        let Some(Expression::Call { name, arguments }) = function.return_expression.as_ref()
+        else {
+            return Ok(false);
+        };
+        let single_general = |value_type: Type| {
+            matches!(
+                value_type,
+                Type::Int
+                    | Type::UnsignedInt
+                    | Type::Char
+                    | Type::UnsignedChar
+                    | Type::Short
+                    | Type::UnsignedShort
+                    | Type::Pointer(_)
+                    | Type::StructPointer { .. }
+            )
+        };
+        let parameter_types_match = self.call_parameter_types.get(name).is_some_and(|types| {
+            types.len() == function.parameters.len()
+                && types
+                    .iter()
+                    .zip(&function.parameters)
+                    .all(|(callee, caller)| *callee == caller.parameter_type)
+        });
+        if self.locations.contains_key(name)
+            || self.globals.contains_key(name)
+            || self.variadic_callees.contains(name)
+            || !single_general(function.return_type)
+            || self.call_return_types.get(name) != Some(&function.return_type)
+            || !parameter_types_match
+            || arguments.len() != function.parameters.len()
+            || !arguments
+                .iter()
+                .zip(&function.parameters)
+                .all(|(argument, parameter)| {
+                    matches!(argument, Expression::Variable(argument_name)
+                        if argument_name == &parameter.name)
+                        && single_general(parameter.parameter_type)
+                })
+        {
+            return Ok(false);
+        }
+
+        self.emit_plain_nonleaf_prologue();
+        self.emit_call(
+            name,
+            arguments,
+            Some(Eabi::general_result().number),
+            false,
+        )?;
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
     /// Marshal a call through a named function-pointer parameter/local/global
     /// and leave its address in r12 for an unlinked sibling transfer.
     fn emit_named_indirect_sibling_call(

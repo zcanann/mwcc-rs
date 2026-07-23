@@ -77,6 +77,8 @@ pub fn lower_vtable_adjustor_thunks(
 /// `call_return_types` maps callable names (prototypes and definitions) to their
 /// return type, so a call's result type is known (e.g. a `double`-returning math
 /// routine drives the `frsp` of `(float)cos(x)`).
+/// `call_return_fundamentals` retains source identities that the compact type IR
+/// merges, so same-type forwarding remains distinct from a required conversion.
 pub fn lower_function(
     function: &Function,
     globals: &[GlobalDeclaration],
@@ -93,7 +95,7 @@ pub fn lower_function(
     inline_bodies: &InlineBodySet,
     inline_summaries: &InlineSummaries,
     inline_expansion_facts: mwcc_syntax_trees::InlineExpansionFacts,
-    return_source_fundamental: Option<mwcc_syntax_trees::SourceFundamentalType>,
+    call_return_fundamentals: &HashMap<String, mwcc_syntax_trees::SourceFundamentalType>,
     config: CompilerConfig,
 ) -> Compilation<MachineFunction> {
     if let Some(output) = body::lower_register_inline_asm_wrapper(
@@ -340,7 +342,8 @@ pub fn lower_function(
             .map(|global| global.name.clone())
             .collect(),
         behavior: Behavior::resolve(&config),
-        return_source_fundamental,
+        return_source_fundamental: call_return_fundamentals.get(&function.name).copied(),
+        call_return_fundamentals: call_return_fundamentals.clone(),
         constraints: mwcc_vreg::RegisterConstraints::gekko(),
         non_leaf: false,
         callee_saved_float: 0,

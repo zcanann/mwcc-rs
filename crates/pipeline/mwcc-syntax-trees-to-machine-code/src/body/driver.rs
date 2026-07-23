@@ -1227,6 +1227,9 @@ impl Generator {
         if !calls_skipped_inline && self.try_tail_call(function)? {
             return Ok(());
         }
+        if !calls_skipped_inline && self.try_non_tail_call_forward(function)? {
+            return Ok(());
+        }
         if !calls_skipped_inline && self.try_conditional_member_select_tail(function)? {
             return Ok(());
         }
@@ -4118,6 +4121,21 @@ impl Generator {
             && canonical_boolean
         {
             return self.evaluate(expression, Type::Int, result);
+        }
+        // A call whose source return type is exactly the caller's return type
+        // has already satisfied that type's value representation. In
+        // particular, both `bool -> bool` and `unsigned char -> unsigned char`
+        // forward r3 unchanged; `unsigned char -> bool` is deliberately not
+        // covered because it requires boolean normalization.
+        if let Expression::Call { name, .. } = expression {
+            if is_narrow_int(value_type)
+                && self.return_source_fundamental.is_some()
+                && self.return_source_fundamental
+                    == self.call_return_fundamentals.get(name).copied()
+                && self.call_return_types.get(name) == Some(&value_type)
+            {
+                return self.evaluate(expression, Type::Int, result);
+            }
         }
         if self.behavior.narrow_computed_return_style == NarrowComputedReturnStyle::FullWidthResult
             && is_narrow_int(value_type)
