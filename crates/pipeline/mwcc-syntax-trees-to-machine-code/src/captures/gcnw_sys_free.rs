@@ -28,7 +28,7 @@ impl Generator {
         // template). Register measured (fingerprint -> bump) pairs only.
         let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
         let bump: u32 = match context {
-            0x2305ef54da2848f2 => 8, // wind_waker (measured: strings @23/@24)
+            0x2305ef54da2848f2 => 9, // wind_waker D44J01 (strings @24/@25)
             _ => {
                 eprintln!("gcnw_sys_free context candidate: {context:#x}");
                 return Ok(false);
@@ -36,13 +36,8 @@ impl Generator {
         };
         // -- emit (the capture, verbatim) --
         self.frame_size = 32;
-        // The OSFastCast asm helpers surface as UND globals from the dropped
-        // inline compilation (ww carries THREE, ahead of the heap externals).
-        self.output.phantom_externals = vec![
-            "__OSf32tos16".to_string(),
-            "__OSf32tou8".to_string(),
-            "__OSf32tos8".to_string(),
-        ];
+        // This Runtime.PPCEABI.H configuration drops the OSFastCast inline-asm
+        // helpers without registering phantom global symbols.
         // Same materialization order as strikers/pikmin2 gcn_sys_free.
         self.output.symbol_order = [
             "__OSCurrHeap",
