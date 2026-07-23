@@ -507,6 +507,7 @@ fn compile(
         behavior.plain_inline_localstatic_base,
         behavior.skipped_static_inline_label_base,
         behavior.skipped_plain_inline_label_base,
+        behavior.skipped_function_template_label_base,
         behavior.dropped_inline_parameter_label_weight,
         behavior.anonymous_aggregate_definition_label_weight,
         config.flags.enum_storage == mwcc_versions::EnumStorage::Minimum,

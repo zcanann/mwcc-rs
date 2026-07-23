@@ -94,6 +94,7 @@ pub fn parse_located_translation_unit_with_enum_min(
         0,
         0,
         0,
+        0,
         enum_min,
     )
 }
@@ -107,6 +108,7 @@ pub fn parse_located_translation_unit_with_behavior(
     plain_inline_localstatic_base: u8,
     skipped_static_inline_label_base: u8,
     skipped_plain_inline_label_base: u8,
+    skipped_function_template_label_base: u8,
     dropped_inline_parameter_label_weight: u8,
     anonymous_aggregate_definition_label_weight: u8,
     enum_min: bool,
@@ -166,6 +168,7 @@ pub fn parse_located_translation_unit_with_behavior(
         plain_inline_localstatic_base,
         skipped_static_inline_label_base,
         skipped_plain_inline_label_base,
+        skipped_function_template_label_base,
         dropped_inline_parameter_label_weight,
         anonymous_aggregate_definition_label_weight,
         last_member_array_bytes: None,
@@ -322,11 +325,35 @@ mod tests {
             3,
             1,
             1,
+            1,
             false,
         )
         .unwrap();
 
         assert_eq!(unit.skipped_inline_functions, 3);
+    }
+
+    #[test]
+    fn records_wii_function_template_body_separately_from_parameter_name() {
+        let unit = parse_located_translation_unit_with_behavior(
+            located(
+                "template <typename T> inline double convert(T value) { return value; } \
+                 int f(int x) { return x; }",
+            ),
+            true,
+            true,
+            1,
+            3,
+            3,
+            1,
+            1,
+            1,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(unit.skipped_inline_functions, 1);
+        assert_eq!(unit.named_prototype_parameters, 2);
     }
 
     #[test]

@@ -1089,6 +1089,13 @@ pub trait CodegenProfile: core::fmt::Debug {
         0
     }
 
+    /// Base anonymous-label cost of analyzing an uninstantiated function
+    /// template body. This is distinct from compiling and dropping an ordinary
+    /// inline definition.
+    fn skipped_function_template_label_base(&self) -> u8 {
+        0
+    }
+
     /// Per-parameter analysis cost on compiled-then-dropped inline definitions,
     /// independently of source-written names.
     fn dropped_inline_parameter_label_weight(&self) -> u8 {
@@ -1336,6 +1343,10 @@ pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
     fn skipped_plain_inline_label_base(&self) -> u8 {
         3
+    }
+
+    fn skipped_function_template_label_base(&self) -> u8 {
+        1
     }
 
     fn dropped_inline_parameter_label_weight(&self) -> u8 {

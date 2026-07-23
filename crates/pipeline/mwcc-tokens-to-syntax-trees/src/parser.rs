@@ -179,6 +179,8 @@ pub(crate) struct Parser {
     pub(crate) skipped_static_inline_label_base: u8,
     /// Base anonymous-label cost of a skipped plain-inline definition.
     pub(crate) skipped_plain_inline_label_base: u8,
+    /// Base anonymous-label cost of an uninstantiated function-template body.
+    pub(crate) skipped_function_template_label_base: u8,
     /// Anonymous-label cost of each explicit parameter on a dropped inline body.
     pub(crate) dropped_inline_parameter_label_weight: u8,
     /// Anonymous-label cost of an anonymous struct/union definition.

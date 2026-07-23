@@ -3635,9 +3635,11 @@ impl Parser {
         let mut saw_parameter_list = false;
         let mut saw_inline = self.item_is_skippable_inline_member_definition();
         let mut saw_static = false;
+        let mut saw_function_template = false;
         while let Some(token) = self.tokens.get(index) {
             match token {
                 Token::Identifier(word) if word == "typedef" => return Ok(None),
+                Token::Identifier(word) if word == "template" => saw_function_template = true,
                 Token::Identifier(word) if word == "static" => saw_static = true,
                 Token::Identifier(word) if word == "inline" || word == "__inline" => {
                     saw_inline = true
@@ -3655,12 +3657,17 @@ impl Parser {
                         return Ok(None);
                     }
                     // Scan the body braces, summing the measured label weights.
-                    let mut bump = if saw_static {
+                    let mut bump = if saw_function_template {
+                        usize::from(self.skipped_function_template_label_base)
+                    } else if saw_static {
                         usize::from(self.skipped_static_inline_label_base)
                     } else {
                         usize::from(self.skipped_plain_inline_label_base)
-                    } + parameter_count
-                        * usize::from(self.dropped_inline_parameter_label_weight);
+                    } + if saw_function_template {
+                        0
+                    } else {
+                        parameter_count * usize::from(self.dropped_inline_parameter_label_weight)
+                    };
                     let mut brace_depth = 0i32;
                     // `&&`/`||` count ONLY inside a CONDITION's parens (fire 493:
                     // value-position short-circuits add nothing).

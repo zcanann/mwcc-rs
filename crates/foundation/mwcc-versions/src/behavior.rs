@@ -692,6 +692,8 @@ pub struct Behavior {
     pub skipped_static_inline_label_base: u8,
     /// Base anonymous-label cost of a skipped plain-inline definition.
     pub skipped_plain_inline_label_base: u8,
+    /// Base anonymous-label cost of an uninstantiated function-template body.
+    pub skipped_function_template_label_base: u8,
     /// Anonymous-label cost of each explicit parameter on a dropped inline body.
     pub dropped_inline_parameter_label_weight: u8,
     /// Anonymous-label cost of an anonymous struct/union definition.
@@ -983,6 +985,10 @@ impl Behavior {
                 .build
                 .profile
                 .skipped_plain_inline_label_base(),
+            skipped_function_template_label_base: config
+                .build
+                .profile
+                .skipped_function_template_label_base(),
             dropped_inline_parameter_label_weight: config
                 .build
                 .profile
@@ -1827,6 +1833,7 @@ mod tests {
         ));
         assert_eq!(wii43.call_dispatcher_style, CallDispatcherStyle::Packed41);
         assert_eq!(wii43.skipped_plain_inline_label_base, 3);
+        assert_eq!(wii43.skipped_function_template_label_base, 1);
         assert_eq!(wii43.dropped_inline_parameter_label_weight, 1);
         assert_eq!(wii43.anonymous_aggregate_definition_label_weight, 1);
         assert_eq!(wii43.cxx_inline_definition_label_bump, 4);
