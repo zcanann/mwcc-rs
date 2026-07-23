@@ -379,8 +379,8 @@ pub(crate) struct Parser {
     /// declarator parser can associate the variable name with the struct tag.
     pub(crate) last_struct_tag: Option<String>,
     /// C++ enum identity from the most recently parsed type. Enums use `int`
-    /// storage under `-enum int`, but member-function mangling must retain the
-    /// declared type name instead of encoding the parameter as fundamental int.
+    /// storage under `-enum int`, but mangling and debug information must retain
+    /// the declared type name instead of treating it as fundamental int.
     pub(crate) last_enum_tag: Option<String>,
     /// Whether the most recently parsed scalar base was C++ `wchar_t`. Storage
     /// is unsigned 16-bit on this target, but its ABI mangling code is `w`.
@@ -575,6 +575,14 @@ pub(crate) struct Parser {
     /// Named enum types and their configured storage. C++ permits the bare
     /// `Name` spelling; C continues to require `enum Name` or a typedef.
     pub(crate) enum_types: HashMap<String, Type>,
+    /// Enum declarations retained for debug lowering after executable types
+    /// have collapsed to their integer storage class.
+    pub(crate) enumeration_definitions: Vec<mwcc_syntax_trees::EnumerationDefinition>,
+    /// Typedef alias to enumeration parser identity. C needs this side map
+    /// because its ordinary typedef map intentionally stores only `Type`.
+    pub(crate) enum_typedefs: HashMap<String, String>,
+    /// Enum-returning functions keyed by their emitted symbol name.
+    pub(crate) function_return_enums: HashMap<String, String>,
     /// Whether `-enum min` selects storage from the enumerator value range.
     pub(crate) enum_min: bool,
     pub(crate) function_sources: Vec<Option<mwcc_syntax_trees::FunctionSource>>,

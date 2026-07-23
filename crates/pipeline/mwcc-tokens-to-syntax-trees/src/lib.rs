@@ -226,6 +226,9 @@ pub fn parse_located_translation_unit_with_enum_min(
         decayed_row_pointers: HashMap::new(),
         enum_constants: HashMap::new(),
         enum_types: HashMap::new(),
+        enumeration_definitions: Vec::new(),
+        enum_typedefs: HashMap::new(),
+        function_return_enums: HashMap::new(),
         enum_min,
         function_sources: Vec::new(),
         variadic_definitions: std::collections::HashSet::new(),
@@ -488,6 +491,52 @@ mod tests {
             panic!("expected a member store");
         };
         assert_eq!(*member_type, mwcc_syntax_trees::Type::UnsignedChar);
+    }
+
+    #[test]
+    fn retains_enum_declarations_and_function_return_identity() {
+        let source = b"\
+            typedef enum DSError {\n\
+                kUARTError = -1,\n\
+                kNoError = 0,\n\
+                kWaitACKError = 0x800\n\
+            } DSError;\n\
+            DSError acquire(void) { return kNoError; }\n";
+        let unit = parse_located_translation_unit(
+            mwcc_source_to_tokens::tokenize_bytes_located(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.enumeration_definitions,
+            [mwcc_syntax_trees::EnumerationDefinition {
+                name: "DSError".into(),
+                source_name: Some("DSError".into()),
+                byte_size: 4,
+                enumerators: vec![
+                    mwcc_syntax_trees::Enumerator {
+                        name: "kUARTError".into(),
+                        value: -1,
+                    },
+                    mwcc_syntax_trees::Enumerator {
+                        name: "kNoError".into(),
+                        value: 0,
+                    },
+                    mwcc_syntax_trees::Enumerator {
+                        name: "kWaitACKError".into(),
+                        value: 0x800,
+                    },
+                ],
+            }]
+        );
+        assert_eq!(
+            unit.function_return_enumeration_tags.get("acquire"),
+            Some(&"DSError".to_string())
+        );
     }
 
     #[test]

@@ -199,9 +199,9 @@ impl Parser {
                 None
             };
             let tagged = tag.is_some();
-            if self.cplusplus {
-                self.last_enum_tag = tag.clone();
-            }
+            // Source identity is needed by both C debug information and C++
+            // mangling even though executable storage is scalar.
+            self.last_enum_tag = tag.clone();
             let storage = if *self.peek() == Token::BraceOpen {
                 // An ANONYMOUS enum definition consumes one anonymous-`@N` number
                 // (measured fire 494: `typedef enum {…} E;` shifts the next pool
@@ -211,15 +211,26 @@ impl Parser {
                 if !tagged && self.counted_enum_positions.insert(self.position) {
                     self.skipped_inline_functions += 1;
                 }
-                let (minimum, maximum) = self.parse_enum_body()?;
+                let definition_position = self.position;
+                let (minimum, maximum, enumerators) = self.parse_enum_body()?;
                 let storage = if self.enum_min {
                     minimum_enum_storage(minimum, maximum)
                 } else {
                     Type::Int
                 };
-                if let Some(tag) = &tag {
-                    self.enum_types.insert(tag.clone(), storage);
-                }
+                let identity = tag
+                    .clone()
+                    .unwrap_or_else(|| format!("@enum:{definition_position}"));
+                self.enum_types.insert(identity.clone(), storage);
+                self.enumeration_definitions.push(
+                    mwcc_syntax_trees::EnumerationDefinition {
+                        name: identity.clone(),
+                        source_name: tag.clone(),
+                        byte_size: storage.width().div_ceil(8),
+                        enumerators,
+                    },
+                );
+                self.last_enum_tag = Some(identity);
                 storage
             } else {
                 tag.as_ref()
@@ -513,11 +524,15 @@ impl Parser {
         }
         // A `typedef`-declared alias resolves to its underlying type.
         if let Token::Identifier(name) = self.peek() {
-            if let Some(&aliased) = self.typedefs.get(name) {
-                let function_type = self.function_pointer_typedefs.get(name).cloned();
+            let name = name.clone();
+            if let Some(&aliased) = self.typedefs.get(&name) {
+                if let Some(identity) = self.enum_typedefs.get(&name).cloned() {
+                    self.last_enum_tag = Some(identity);
+                }
+                let function_type = self.function_pointer_typedefs.get(&name).cloned();
                 self.last_source_fundamental = self
                     .typedef_source_fundamentals
-                    .get(name)
+                    .get(&name)
                     .copied()
                     .or_else(|| source_fundamental(aliased));
                 self.advance();

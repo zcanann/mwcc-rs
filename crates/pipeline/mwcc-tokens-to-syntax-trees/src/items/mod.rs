@@ -295,11 +295,14 @@ impl Parser {
     /// Parse a single integer constant: an integer literal, optionally negated.
     /// Parse an enum body `{ NAME [= value], … }` (cursor at the `{`), registering
     /// each enumerator's value (auto-incrementing from 0, or an explicit constant).
-    pub(crate) fn parse_enum_body(&mut self) -> Compilation<(i64, i64)> {
+    pub(crate) fn parse_enum_body(
+        &mut self,
+    ) -> Compilation<(i64, i64, Vec<mwcc_syntax_trees::Enumerator>)> {
         self.expect(Token::BraceOpen)?;
         let mut next = 0i64;
         let mut minimum = i64::MAX;
         let mut maximum = i64::MIN;
+        let mut enumerators = Vec::new();
         while *self.peek() != Token::BraceClose {
             let name = self.parse_identifier()?;
             let value = if self.eat_keyword(Token::Equals) {
@@ -307,7 +310,8 @@ impl Parser {
             } else {
                 next
             };
-            self.enum_constants.insert(name, value);
+            self.enum_constants.insert(name.clone(), value);
+            enumerators.push(mwcc_syntax_trees::Enumerator { name, value });
             minimum = minimum.min(value);
             maximum = maximum.max(value);
             next = value + 1;
@@ -318,7 +322,7 @@ impl Parser {
             }
         }
         self.expect(Token::BraceClose)?;
-        Ok((minimum, maximum))
+        Ok((minimum, maximum, enumerators))
     }
 
     /// Evaluate a constant enumerator expression — integer/char literals, prior
@@ -1037,9 +1041,13 @@ impl Parser {
                 &mut self.cxx_class_declaration_order,
             ),
             aggregate_definitions,
+            enumeration_definitions: std::mem::take(&mut self.enumeration_definitions),
             global_aggregate_tags: std::mem::take(&mut self.global_structs),
             function_parameter_aggregate_tags: std::mem::take(&mut self.function_parameter_structs),
             function_return_aggregate_tags: std::mem::take(&mut self.function_return_structs),
+            function_return_enumeration_tags: std::mem::take(
+                &mut self.function_return_enums,
+            ),
             prototypes,
             named_prototype_parameters: self.named_prototype_parameters,
             inline_asm_symbols: std::mem::take(&mut self.inline_asm_symbols),
@@ -1169,6 +1177,11 @@ impl Parser {
             let function = functions.pop().expect("length checked");
             for (name, tag) in &probe.function_return_structs {
                 self.function_return_structs
+                    .entry(name.clone())
+                    .or_insert_with(|| tag.clone());
+            }
+            for (name, tag) in &probe.function_return_enums {
+                self.function_return_enums
                     .entry(name.clone())
                     .or_insert_with(|| tag.clone());
             }
@@ -1862,10 +1875,13 @@ impl Parser {
                     let existing = existing.clone();
                     let struct_tag = self.struct_typedefs.get(&existing).cloned();
                     let pointer_tag = self.struct_pointer_typedefs.get(&existing).cloned();
+                    let enum_tag = self.enum_typedefs.get(&existing).cloned();
+                    let enum_storage = self.typedefs.get(&existing).copied();
                     let array_entry = self.array_typedefs.get(&existing).cloned();
                     let function_pointer = self.function_pointer_typedefs.get(&existing).cloned();
                     if struct_tag.is_some()
                         || pointer_tag.is_some()
+                        || enum_tag.is_some()
                         || array_entry.is_some()
                         || function_pointer.is_some()
                     {
@@ -1887,6 +1903,13 @@ impl Parser {
                         if let Some(tag) = pointer_tag {
                             self.struct_pointer_typedefs.insert(alias.clone(), tag);
                         }
+                        if let Some(tag) = enum_tag {
+                            self.enum_typedefs.insert(alias.clone(), tag);
+                            self.typedefs.insert(
+                                alias.clone(),
+                                enum_storage.expect("enum typedef has scalar storage"),
+                            );
+                        }
                         if let Some(entry) = array_entry {
                             self.array_typedefs.insert(alias.clone(), entry);
                         }
@@ -1904,6 +1927,7 @@ impl Parser {
                 // such as `typedef Vector3<float> Vector3f` still mangles a later
                 // `Vector3f&` parameter as that concrete class type.
                 let aliased_struct_tag = self.last_struct_tag.clone();
+                let aliased_enum_tag = self.last_enum_tag.clone();
                 let aliased_source_fundamental = self.last_source_fundamental;
                 // `typedef RET (*name)(params);` (function pointer, a 4-byte word
                 // pointer) or `typedef T (*name)[N];` (pointer to array — a ROW
@@ -1961,6 +1985,18 @@ impl Parser {
                 }
                 if let Some(tag) = aliased_struct_tag {
                     self.struct_typedefs.insert(name.clone(), tag);
+                }
+                if let Some(identity) = aliased_enum_tag {
+                    self.enum_typedefs.insert(name.clone(), identity.clone());
+                    if let Some(definition) = self
+                        .enumeration_definitions
+                        .iter_mut()
+                        .find(|definition| definition.name == identity)
+                    {
+                        definition
+                            .source_name
+                            .get_or_insert_with(|| name.clone());
+                    }
                 }
                 self.typedefs.insert(name, aliased);
                 return Ok(());
@@ -2079,6 +2115,7 @@ impl Parser {
             // expressions, or initializers: each may contain a cast whose own parse_type call
             // overwrites `last_struct_tag` (notably `T hw : (u32)(void*)ADDRESS`).
             let declared_struct_tag = self.last_struct_tag.clone();
+            let declared_enum_tag = self.last_enum_tag.clone();
             // An array-typedef type (`Mtx g;`): parse_type returned the DECAYED pointer
             // (right for a function's return type) and left `(element, total, inner)`
             // in the marker — the GLOBAL branch below declares the real array object
@@ -2093,6 +2130,12 @@ impl Parser {
             } else {
                 None
             };
+            let return_enum_tag =
+                if matches!(return_type, Type::Pointer(_) | Type::StructPointer { .. }) {
+                    None
+                } else {
+                    declared_enum_tag
+                };
             // A bare type with no declarator (`enum E { … };`, a forward decl) just
             // registers the type; there is nothing else to emit.
             if *self.peek() == Token::Semicolon {
@@ -2964,6 +3007,11 @@ impl Parser {
                     self.function_return_structs
                         .insert(name.clone(), tag.clone());
                 }
+            }
+
+            if let Some(tag) = &return_enum_tag {
+                self.function_return_enums
+                    .insert(name.clone(), tag.clone());
             }
 
             if *self.peek() == Token::Semicolon {

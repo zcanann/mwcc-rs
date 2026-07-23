@@ -3,12 +3,14 @@
 //! representation modules.
 
 mod aggregate;
+mod enumeration;
 mod expression;
 mod function;
 mod operators;
 mod types;
 
 pub use aggregate::{AggregateDefinition, AggregateMember, SourceFundamentalType};
+pub use enumeration::{EnumerationDefinition, Enumerator};
 pub use expression::{ConditionalOrigin, Expression};
 pub use function::{
     ArmBody, AsmInstruction, AsmItem, AsmOperand, AsmRelocSuffix, CxxAbiBase, CxxAbiClass,

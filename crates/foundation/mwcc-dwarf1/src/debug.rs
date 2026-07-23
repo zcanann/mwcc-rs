@@ -10,6 +10,7 @@ pub struct DebugEntryId(pub u32);
 pub enum Tag {
     ArrayType = 0x0001,
     ClassType = 0x0002,
+    EnumerationType = 0x0004,
     FormalParameter = 0x0005,
     GlobalSubroutine = 0x0006,
     GlobalVariable = 0x0007,
@@ -35,6 +36,7 @@ pub enum AttributeName {
     ModifiedUserDefinedType = 0x0080,
     SubscriptData = 0x00a0,
     ByteSize = 0x00b0,
+    ElementList = 0x00f0,
     StatementList = 0x0100,
     LowPc = 0x0110,
     HighPc = 0x0120,

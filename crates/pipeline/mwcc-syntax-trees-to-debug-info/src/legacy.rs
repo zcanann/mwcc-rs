@@ -3,6 +3,7 @@
 mod captures;
 mod classes;
 pub(super) mod data;
+mod enumerations;
 mod functions;
 mod simple_void_functions;
 mod vector_installers;
@@ -205,7 +206,20 @@ pub(super) fn lower(
     .encode();
 
     let first_global_id = DebugEntryId(1);
-    let first_function_id = DebugEntryId(1 + globals.len() as u32);
+    let referenced_enumerations = if shape == MeasuredShape::ConstantFunctions {
+        enumerations::referenced(unit)
+    } else {
+        Vec::new()
+    };
+    let first_enumeration_id = DebugEntryId(1 + globals.len() as u32);
+    let first_function_id = DebugEntryId(
+        first_enumeration_id.0 + referenced_enumerations.len() as u32,
+    );
+    let enumeration_plan = enumerations::records(
+        &referenced_enumerations,
+        first_enumeration_id,
+        first_function_id,
+    );
     let parameter_id = DebugEntryId(first_function_id.0 + machine_functions.len() as u32);
     let mut entries = Vec::new();
     entries.push(DebugEntry {
@@ -371,6 +385,8 @@ pub(super) fn lower(
     for (index, global) in globals.iter().enumerate() {
         let next = if index + 1 < globals.len() {
             DebugEntryId(first_global_id.0 + index as u32 + 1)
+        } else if !referenced_enumerations.is_empty() {
+            first_enumeration_id
         } else {
             first_function_id
         };
@@ -417,7 +433,7 @@ pub(super) fn lower(
                     AttributeName::Name,
                     AttributeValue::String(function.name.clone()),
                 ),
-                signed_int_type(),
+                function_return_type(unit, function, &enumeration_plan.ids),
                 attribute(
                     AttributeName::LowPc,
                     AttributeValue::Address(Address::external(&function.name)),
@@ -456,7 +472,11 @@ pub(super) fn lower(
         }
     }
 
+    let function_entry_start = 1 + globals.len();
+    let function_entries = entries.split_off(function_entry_start);
     let mut records: Vec<_> = entries.into_iter().map(DebugRecord::Entry).collect();
+    records.extend(enumeration_plan.records);
+    records.extend(function_entries.into_iter().map(DebugRecord::Entry));
     match shape {
         MeasuredShape::BasicParameter => records.extend([
             DebugRecord::Marker(PARAMETER_END),
@@ -715,6 +735,22 @@ fn signed_int_type() -> Attribute {
     )
 }
 
+fn function_return_type(
+    unit: &TranslationUnit,
+    function: &Function,
+    enumeration_ids: &std::collections::HashMap<String, DebugEntryId>,
+) -> Attribute {
+    unit.function_return_enumeration_tags
+        .get(&function.name)
+        .and_then(|identity| enumeration_ids.get(identity))
+        .map_or_else(signed_int_type, |id| {
+            attribute(
+                AttributeName::UserDefinedType,
+                AttributeValue::Reference(*id),
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -799,5 +835,31 @@ mod tests {
         );
         assert!(!globals[0].is_extern);
         assert!(globals[1].is_extern);
+    }
+
+    #[test]
+    fn enum_return_uses_the_referenced_type_die() {
+        let source = br#"
+            typedef enum Error { Negative = -1, Ok = 0 } Error;
+            Error acquire(void) { return Ok; }
+        "#;
+        let unit = mwcc_tokens_to_syntax_trees::parse_located_translation_unit(
+            mwcc_source_to_tokens::tokenize_bytes_located(source).expect("tokens"),
+            false,
+            true,
+            3,
+            1,
+        )
+        .expect("translation unit");
+        let id = DebugEntryId(7);
+        let ids = std::collections::HashMap::from([("Error".to_string(), id)]);
+
+        assert_eq!(
+            function_return_type(&unit, &unit.functions[0], &ids),
+            Attribute {
+                name: AttributeName::UserDefinedType,
+                value: AttributeValue::Reference(id),
+            }
+        );
     }
 }

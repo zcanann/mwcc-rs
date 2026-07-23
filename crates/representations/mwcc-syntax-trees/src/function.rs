@@ -303,6 +303,9 @@ pub struct TranslationUnit {
     /// graph to recover source names, member order, and member types.
     pub aggregate_definitions:
         std::collections::HashMap<String, crate::AggregateDefinition>,
+    /// Enum declarations in source order. Executable types retain only their
+    /// configured integer storage; debug lowering follows this side graph.
+    pub enumeration_definitions: Vec<crate::EnumerationDefinition>,
     /// Aggregate identity for globals whose compact type is a struct value or
     /// pointer. Kept separately so ordinary codegen does not carry debug-only
     /// declaration names through every expression.
@@ -317,6 +320,9 @@ pub struct TranslationUnit {
     /// lowering uses this parallel tag to copy fields with their real scalar
     /// load/store classes.
     pub function_return_aggregate_tags: std::collections::HashMap<String, String>,
+    /// Source enum identity for each enum-returning function. The executable
+    /// return type is its configured integer storage class.
+    pub function_return_enumeration_tags: std::collections::HashMap<String, String>,
     /// Function prototypes (`type name(params);`) by name, return type, and
     /// parameter types, so a call to an externally-defined function knows its
     /// result type (e.g. a `double`-returning math routine) and its parameter
