@@ -1418,6 +1418,13 @@ impl Generator {
         if self.try_status_indexed_call_loop(function)? {
             return Ok(());
         }
+        // `return live * local_call(argument) + C;` either preserves the live
+        // parameter across an actual call or lets whole-file IPA substitute
+        // the same-TU body. This boundary must precede generic inline-body
+        // composition, which otherwise cannot distinguish IPA from noauto.
+        if self.try_call_result_product_return(function)? {
+            return Ok(());
+        }
         if calls_skipped_inline {
             if let Some(expanded) = self.inline_bodies.expand_calls_with_facts(function) {
                 self.output.anonymous_label_bump += crate::inline_expansion::ordinal_residue(

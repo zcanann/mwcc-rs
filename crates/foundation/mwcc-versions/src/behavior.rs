@@ -519,6 +519,10 @@ pub struct Behavior {
     /// below, but source-local allocation is itself observable at `-O0` and needs
     /// the actual stage boundary rather than inferring it from an unrelated knob.
     pub optimization: Optimization,
+    /// Whether whole-file IPA transformations are active after optimization
+    /// flags have been resolved. Call-site owners use this to distinguish an
+    /// emitted local call from the same-TU body substituted by IPA.
+    pub whole_file_optimization: bool,
     /// The `,p`/`,s` objective retained independently from the optimization
     /// level so loop lowering can reproduce size-sensitive unrolling.
     pub optimization_goal: OptimizationGoal,
@@ -831,6 +835,7 @@ impl Behavior {
     pub fn resolve(config: &CompilerConfig) -> Self {
         Behavior {
             optimization: config.flags.optimization,
+            whole_file_optimization: config.flags.whole_file_optimization_enabled(),
             optimization_goal: config.flags.optimization_goal,
             string_literals_packed: config.flags.string_literals_packed,
             forwarded_trace_string_style: config

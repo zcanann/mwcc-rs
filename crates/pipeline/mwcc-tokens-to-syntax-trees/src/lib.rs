@@ -3297,6 +3297,42 @@ blr\n\
     }
 
     #[test]
+    fn resolves_an_unqualified_static_call_inside_a_static_member_definition() {
+        let source = r#"
+            struct Capture {
+                static int align(int);
+                static int size(int, int);
+            };
+            int Capture::align(int x) { return x + 3; }
+            int Capture::size(int x, int y) { return y * align(x) + 54; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let size = unit
+            .functions
+            .iter()
+            .find(|function| function.name == "size__7CaptureFii")
+            .unwrap();
+        let Some(Expression::Binary { left, .. }) = &size.return_expression else {
+            panic!("size should retain its addition");
+        };
+        let Expression::Binary { right, .. } = left.as_ref() else {
+            panic!("size should retain its multiplication");
+        };
+        assert!(matches!(
+            right.as_ref(),
+            Expression::Call { name, arguments }
+                if name == "align__7CaptureFi" && arguments.len() == 1
+        ));
+    }
+
+    #[test]
     fn lowers_base_qualified_virtual_calls_as_direct_calls_with_this() {
         let source = r#"
             namespace Game {

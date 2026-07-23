@@ -179,6 +179,10 @@ pub(crate) struct VirtualDispatch {
 }
 
 pub(crate) enum ImplicitMemberCall {
+    Static {
+        name: String,
+        parameters: Vec<Type>,
+    },
     Direct {
         name: String,
         is_inline: bool,
@@ -198,7 +202,9 @@ pub(crate) enum ImplicitMemberCall {
 impl ImplicitMemberCall {
     pub(crate) fn parameters(&self) -> &[Type] {
         match self {
-            Self::Direct { parameters, .. } | Self::Virtual { parameters, .. } => parameters,
+            Self::Static { parameters, .. }
+            | Self::Direct { parameters, .. }
+            | Self::Virtual { parameters, .. } => parameters,
         }
     }
 }
@@ -2677,7 +2683,29 @@ impl Parser {
         let Some(class_name) = self.current_cxx_member_class.as_deref() else {
             return Ok(None);
         };
-        self.resolve_member_call_in_class(class_name, function, arguments)
+        if let Some(call) = self.resolve_member_call_in_class(class_name, function, arguments)? {
+            return Ok(Some(call));
+        }
+        let candidates = self
+            .cxx_static_methods
+            .get(&(class_name.to_string(), function.to_string()))
+            .into_iter()
+            .flatten()
+            .filter(|method| {
+                method.fixed_parameter_count == arguments.len()
+                    || (method.variadic && arguments.len() >= method.fixed_parameter_count)
+            })
+            .collect::<Vec<_>>();
+        match candidates.as_slice() {
+            [method] => Ok(Some(ImplicitMemberCall::Static {
+                name: method.mangled.clone(),
+                parameters: method.parameters.clone(),
+            })),
+            [] => Ok(None),
+            _ => Err(Diagnostic::error(format!(
+                "static member overload resolution for '{class_name}::{function}' is ambiguous (roadmap)"
+            ))),
+        }
     }
 
     /// Resolve ordinary member lookup for a known object class. Both implicit

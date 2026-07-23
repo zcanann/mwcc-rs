@@ -728,6 +728,13 @@ impl Parser {
                         );
                     }
                     match member_call {
+                        crate::cxx::ImplicitMemberCall::Static {
+                            name: mangled,
+                            parameters: _,
+                        } => Expression::Call {
+                            name: mangled,
+                            arguments,
+                        },
                         crate::cxx::ImplicitMemberCall::Direct {
                             name: mangled,
                             is_inline,
@@ -1491,6 +1498,7 @@ impl Parser {
             )));
         };
         let retained_inline_call = match &member_call {
+            crate::cxx::ImplicitMemberCall::Static { .. } => false,
             crate::cxx::ImplicitMemberCall::Direct { is_inline, .. } => *is_inline,
             crate::cxx::ImplicitMemberCall::Virtual {
                 direct_name,
@@ -1505,6 +1513,10 @@ impl Parser {
             );
         }
         Ok(match member_call {
+            crate::cxx::ImplicitMemberCall::Static {
+                name,
+                parameters: _,
+            } => Expression::Call { name, arguments },
             crate::cxx::ImplicitMemberCall::Direct {
                 name,
                 is_inline,
