@@ -1081,6 +1081,17 @@ impl Generator {
             } else {
                 self.evaluate(return_expression, function.return_type, result)?;
             }
+            // A structured non-leaf returning a double-valued expression from
+            // a `float` function needs the same explicit result rounding as
+            // the ordinary body owner. Calls are the common case: the callee
+            // leaves a double in f1 and MWCC emits `frsp` before linkage
+            // teardown.
+            if function.return_type == Type::Float && self.is_double_value(return_expression) {
+                self.output.instructions.push(Instruction::RoundToSingle {
+                    d: result,
+                    b: result,
+                });
+            }
         }
         let lowered_accumulator_return =
             !call_accumulators.is_empty() && self.lower_structured_call_accumulator_return();
