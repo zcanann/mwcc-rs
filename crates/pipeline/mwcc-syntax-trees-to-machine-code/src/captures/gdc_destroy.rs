@@ -125,9 +125,9 @@ impl Generator {
             return Ok(false);
         }
         // No context gate: no pooled constants / anonymous labels here, so the
-        // skipped-inline fingerprint carries no @N bump — the semantic shape identifies
-        // the function and its bytes are identical across every project sharing
-        // the runtime source (the ctx fingerprint varies: ww/strikers differ from pik).
+        // skipped-inline fingerprint carries no @N bump. The semantic shape
+        // identifies the function; the shared indirect-call policy selects the
+        // generation's LR/BLRL or CTR/BCTRL pair.
         // -- emit (non-leaf, 16-byte frame, only LR saved) --
         self.frame_size = 16;
         self.non_leaf = true;
@@ -177,12 +177,7 @@ impl Generator {
             a: 3,
             offset: 8,
         }); // iter->object
-        self.output
-            .instructions
-            .push(Instruction::MoveToCountRegister { s: 12 });
-        self.output
-            .instructions
-            .push(Instruction::BranchToCountRegisterAndLink); // (*destructor)(object, -1)
+        self.emit_indirect_branch_and_link(12); // (*destructor)(object, -1)
         self.bind_label(labels[&11]); // test: iter = head
         self.record_relocation(RelocationKind::EmbSda21, "__global_destructor_chain");
         self.output.instructions.push(Instruction::LoadWord {

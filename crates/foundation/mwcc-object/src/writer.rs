@@ -2343,7 +2343,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     for object in &input.data_objects {
         if is_initialized_run_object(object) && initialized_object_is_upfront(object) {
             emit_initialized_object!(object);
-        } else if input.object_format.function_symbol_order == FunctionSymbolOrder::Deferred
+        } else if matches!(
+            input.object_format.function_symbol_order,
+            FunctionSymbolOrder::LegacyDeferred | FunctionSymbolOrder::Deferred
+        )
             && is_static_chain_reference(object)
         {
             emit_deferred_chain_transaction!(object);
