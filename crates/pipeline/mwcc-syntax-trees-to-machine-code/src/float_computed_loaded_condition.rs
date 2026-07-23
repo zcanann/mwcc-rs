@@ -11,6 +11,28 @@ use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{Expression, UnaryOperator};
 
 impl Generator {
+    pub(crate) fn try_place_loaded_left_negated_leaf_float_condition(
+        &mut self,
+        left: &Expression,
+        right: &Expression,
+    ) -> Compilation<Option<(u8, u8)>> {
+        let Expression::Unary {
+            operator: UnaryOperator::Negate,
+            operand,
+        } = right
+        else {
+            return Ok(None);
+        };
+        if !self.is_float_located(left) || !self.is_float_leaf(operand) {
+            return Ok(None);
+        }
+
+        self.evaluate_float(right, FLOAT_SCRATCH)?;
+        let loaded_home = self.fresh_virtual_float_preferring(2);
+        let loaded = self.place_condition_float_load(left, loaded_home)?;
+        Ok(Some((loaded, FLOAT_SCRATCH)))
+    }
+
     pub(crate) fn try_place_computed_left_loaded_float_condition(
         &mut self,
         left: &Expression,

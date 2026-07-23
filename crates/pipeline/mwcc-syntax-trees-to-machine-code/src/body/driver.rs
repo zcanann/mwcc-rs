@@ -2425,6 +2425,9 @@ impl Generator {
         // and `int x = a; gi = x; return x;` becomes `gi = a; return a;`. The store paths
         // (or the un-schedulable-store deferral) own the cleaned body. Checked before the
         // value-tracking path, which cannot fold a void function's store-feeding locals.
+        if self.try_materialized_store_pointer_locals(function)? {
+            return Ok(());
+        }
         if let Some(inlined) = inline_store_bearing_locals(function) {
             return self.evaluate_body(&inlined);
         }

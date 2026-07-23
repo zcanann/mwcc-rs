@@ -1349,11 +1349,15 @@ impl Generator {
         };
         let computed_left_loaded =
             self.try_place_computed_left_loaded_float_condition(left, right)?;
+        let loaded_left_negated_leaf =
+            self.try_place_loaded_left_negated_leaf_float_condition(left, right)?;
         let (a, b) = if let Some(registers) = dual_legacy {
             registers
         } else if let Some(registers) = product_literal {
             registers
         } else if let Some(registers) = computed_left_loaded {
+            registers
+        } else if let Some(registers) = loaded_left_negated_leaf {
             registers
         } else if !left_is_float && right_is_float {
             // Usual arithmetic conversions promote the integer side to the
