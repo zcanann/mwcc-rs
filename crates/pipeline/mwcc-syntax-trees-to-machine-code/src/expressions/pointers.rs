@@ -569,6 +569,21 @@ impl Generator {
             if let Some(register) = leaf_name(operand).and_then(|name| self.lookup_general(name)) {
                 return Ok((*pointee, register));
             }
+            // A cast may reinterpret a computed pointer value such as a
+            // pointer-typed struct member: `((float*)object->data)[i]` first
+            // loads `data`, then indexes through that address. Keep the loaded
+            // pointer in an allocator-backed result-preferred home rather than
+            // requiring the cast operand to be a named leaf.
+            if matches!(
+                operand.as_ref(),
+                Expression::Member { .. }
+                    | Expression::Dereference { .. }
+                    | Expression::Index { .. }
+            ) {
+                let register = self.fresh_virtual_general_preferring(3);
+                self.evaluate_general(operand, register)?;
+                return Ok((*pointee, register));
+            }
         }
         if let Some((member_base, offset, member_type)) = as_member(base) {
             let pointee = match member_type {

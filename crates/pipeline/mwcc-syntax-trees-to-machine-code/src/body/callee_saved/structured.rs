@@ -1687,6 +1687,8 @@ fn structured_return_is_supported(function: &Function) -> bool {
                 | Type::UnsignedInt
                 | Type::Pointer(_)
                 | Type::StructPointer { .. }
+                | Type::Float
+                | Type::Double
         ) && function.return_expression.is_some())
 }
 

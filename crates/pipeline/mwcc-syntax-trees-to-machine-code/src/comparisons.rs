@@ -1342,6 +1342,7 @@ impl Generator {
             left_is_float = true;
         }
         let dual_legacy = self.try_emit_legacy_dual_float_condition(left, right, double)?;
+        let abs_pair = self.try_place_float_abs_pair_condition(left, right, double)?;
         let loaded_literal_live_argument = if right_literal && !left_literal {
             self.try_place_loaded_literal_with_live_float_argument(left, right, double)?
         } else {
@@ -1357,6 +1358,8 @@ impl Generator {
         let loaded_left_negated_leaf =
             self.try_place_loaded_left_negated_leaf_float_condition(left, right)?;
         let (a, b) = if let Some(registers) = dual_legacy {
+            registers
+        } else if let Some(registers) = abs_pair {
             registers
         } else if let Some(registers) = loaded_literal_live_argument {
             registers
@@ -1441,13 +1444,19 @@ impl Generator {
             // the source-left value in f1 and source-right in f0. They are
             // loaded once each before the ordered/unordered compare.
             if self.f1_holds_float_argument() {
-                return Err(Diagnostic::error(
-                    "two loaded float operands with a float argument in f1 need the FP register allocator (roadmap)",
-                ));
+                // With a live float argument, evaluate the right subtree first
+                // into an allocated home, then the left. This is MWCC's
+                // heavier-memory-side-first schedule for paired ABS/computed
+                // comparisons; liveness keeps f1 pinned and lets dead argument
+                // homes re-enter the pool naturally.
+                let b = self.place_float_compare_value(right)?;
+                let a = self.place_float_compare_value(left)?;
+                (a, b)
+            } else {
+                let a = self.place_condition_float_load(left, FLOAT_FIRST)?;
+                let b = self.place_condition_float_load(right, FLOAT_SCRATCH)?;
+                (a, b)
             }
-            let a = self.place_condition_float_load(left, FLOAT_FIRST)?;
-            let b = self.place_condition_float_load(right, FLOAT_SCRATCH)?;
-            (a, b)
         } else if eq && (left_load || right_load) {
             // `==`/`!=` against a loaded value (member/global) uses a *swapped* register
             // assignment versus the ordered form: the constant in f1 (loaded first), the

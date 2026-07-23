@@ -86,6 +86,23 @@ impl LoadContext<'_> {
         if !self.loaded.insert(canonical.clone()) {
             return Ok(Vec::new());
         }
+        // `__FILE__` is a context-sensitive predefined macro, not a normal
+        // translation-unit definition. Install the basename while expanding
+        // this physical file and restore the including file's value after a
+        // recursive include returns. MWCC's GameCube driver exposes basenames
+        // here (for example `ftcommon.c`).
+        let file_name = canonical
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        let file_value = format!("\"{file_name}\"");
+        let previous_file_definition = self
+            .definitions
+            .insert("__FILE__".to_string(), file_value.clone());
+        let previous_file_macro = self.macros.insert(
+            "__FILE__".to_string(),
+            macro_expansion::Macro::Object(file_value.as_bytes().to_vec()),
+        );
         let source = std::fs::read(&canonical).map_err(|error| {
             Diagnostic::error(format!("cannot read {}: {error}", canonical.display()))
         })?;
@@ -168,6 +185,22 @@ impl LoadContext<'_> {
                 output.push(b'\n');
             }
             append_line_directive(&mut output, line_index as u32 + 2);
+        }
+        match previous_file_definition {
+            Some(value) => {
+                self.definitions.insert("__FILE__".to_string(), value);
+            }
+            None => {
+                self.definitions.remove("__FILE__");
+            }
+        }
+        match previous_file_macro {
+            Some(value) => {
+                self.macros.insert("__FILE__".to_string(), value);
+            }
+            None => {
+                self.macros.remove("__FILE__");
+            }
         }
         Ok(output)
     }
@@ -599,6 +632,36 @@ mod tests {
         assert_eq!(
             loaded,
             b"#line 1\n#line 1\nchar *s = \"\x82\xa0\";\n#line 2\n#line 3\n#line 2\nint f(void);\n"
+        );
+    }
+
+    #[test]
+    fn file_macro_tracks_includes_and_restores_the_including_basename() {
+        let scratch = Scratch::new();
+        std::fs::write(
+            scratch.0.join("header.h"),
+            b"char *header_file = __FILE__;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            scratch.0.join("unit.c"),
+            b"char *before = __FILE__;\n#include \"header.h\"\nchar *after = __FILE__;\n",
+        )
+        .unwrap();
+
+        let loaded = SourceLoader::default()
+            .load(&scratch.0.join("unit.c"))
+            .unwrap();
+        assert_eq!(
+            loaded,
+            concat!(
+                "char *before = \"unit.c\";\n",
+                "#line 1\n",
+                "char *header_file = \"header.h\";\n",
+                "#line 3\n",
+                "char *after = \"unit.c\";\n"
+            )
+            .as_bytes()
         );
     }
 

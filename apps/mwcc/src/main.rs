@@ -1238,6 +1238,13 @@ fn compile(
                 && !static_unit_data_table
                 && !static_string_table
             {
+                if parity_keep_going {
+                    eprintln!(
+                        "mwcc: parity skipped global '{}': a static/const pointer-address global is not supported yet (roadmap)",
+                        global.name
+                    );
+                    continue;
+                }
                 return Err(Diagnostic::error(
                     "a static/const pointer-address global is not supported yet (roadmap)",
                 ));
