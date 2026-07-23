@@ -6,9 +6,11 @@
 //! into the ordinary C control-flow and register-allocation owners.
 
 mod adjustor_thunks;
+mod trivial_destructor;
 mod virtual_destructor;
 
 pub(crate) use adjustor_thunks::lower_vtable_adjustor_thunks;
+pub(crate) use trivial_destructor::lower as lower_trivial_destructor;
 
 use crate::InlineSummaries;
 use mwcc_machine_code::{

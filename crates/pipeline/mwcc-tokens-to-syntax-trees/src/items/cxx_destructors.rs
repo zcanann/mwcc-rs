@@ -217,6 +217,33 @@ fn deleting_guard(delete: String) -> Statement {
     }
 }
 
+/// Wrap a source-written destructor body in MWCC's complete-object deleting
+/// ABI. The source signature remains `~T()`, while executable IR receives the
+/// hidden signed-short flag and returns `this` after optional lifetime work.
+pub(super) fn wrap_written(
+    function: &mut Function,
+    object_size: u32,
+    mut before_source: Vec<Statement>,
+    mut after_source: Vec<Statement>,
+    delete: String,
+) {
+    let mut body = Vec::new();
+    body.append(&mut before_source);
+    body.append(&mut function.statements);
+    body.append(&mut after_source);
+    body.push(deleting_guard(delete));
+
+    function.return_type = Type::StructPointer {
+        element_size: object_size,
+    };
+    function.statements = vec![Statement::If {
+        condition: Expression::Variable("this".to_string()),
+        then_body: body,
+        else_body: Vec::new(),
+    }];
+    function.return_expression = Some(Expression::Variable("this".to_string()));
+}
+
 /// The ordinary parser has already inserted ABI vptr/base/delete statements.
 /// A body containing only those statements corresponds to a written `{}` and
 /// can be safely rebuilt once all class layouts are available.

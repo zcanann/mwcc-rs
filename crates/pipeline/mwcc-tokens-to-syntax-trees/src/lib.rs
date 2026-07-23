@@ -2650,6 +2650,43 @@ blr\n\
     }
 
     #[test]
+    fn nonvirtual_destructor_receives_complete_object_deleting_abi() {
+        let source = r#"
+            class Plain {
+            public:
+                ~Plain();
+                int value;
+            };
+            Plain::~Plain() {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        let destructor = &unit.functions[0];
+        assert_eq!(destructor.name, "__dt__5PlainFv");
+        assert_eq!(
+            destructor.return_type,
+            mwcc_syntax_trees::Type::StructPointer { element_size: 4 }
+        );
+        assert_eq!(destructor.parameters.len(), 2);
+        assert_eq!(destructor.parameters[1].name, "__destroy");
+        assert!(matches!(
+            destructor.statements.as_slice(),
+            [mwcc_syntax_trees::Statement::If { then_body, .. }] if then_body.len() == 1
+        ));
+        assert!(matches!(
+            destructor.return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Variable(name)) if name == "this"
+        ));
+    }
+
+    #[test]
     fn pure_virtual_destructor_body_does_not_populate_its_vtable_slot() {
         let source = r#"
             class Abstract {

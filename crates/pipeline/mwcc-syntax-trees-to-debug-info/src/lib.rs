@@ -6,6 +6,7 @@
 
 mod fragmented;
 mod legacy;
+mod source_view;
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_dwarf1::{DebugEntryId, RelocationTarget};
@@ -44,6 +45,13 @@ pub fn lower_debug_info(
     {
         return Ok(Some(capture));
     }
+    // Executable C++ IR carries ABI-only destructor state (`__destroy`, the
+    // deleting guard, and a synthetic `this` return). DWARF describes the
+    // written `~T()` declaration instead. Keep that projection at the debug
+    // boundary so machine lowering and source type records do not compromise
+    // one another.
+    let source_unit = source_view::normalize(unit);
+    let unit = &source_unit;
     let fragmented_generation = build.version.0 >= 4;
     if fragmented_generation && legacy::matches_fragmented_class_unit(unit, machine_functions) {
         let grouped = legacy::lower(

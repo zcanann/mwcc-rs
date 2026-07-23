@@ -692,6 +692,19 @@ pub enum CallDispatcherStyle {
     Packed41,
 }
 
+/// Optimizer family used for an otherwise empty C++ deleting destructor.
+///
+/// The hidden signed-short deleting argument is common to every generation,
+/// but the 4.x optimizer stopped folding the object/flag tests into record-form
+/// moves and extensions at its higher optimization levels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CxxTrivialDestructorStyle {
+    /// GC 1.x through 2.7: `mr.` / `extsh.` record-form tests.
+    RecordTests,
+    /// GC 4.1 and Wii 4.3: separately scheduled signed comparisons.
+    ExplicitTests,
+}
+
 /// The version-varying codegen decisions. Every method defaults to the GameCube
 /// 2.4.x mainline (mwcceppc build 81 through 2.4.7 build 108); a build that
 /// diverges implements this trait and overrides just the differing methods.
@@ -732,6 +745,11 @@ pub trait CodegenProfile: core::fmt::Debug {
     /// Lowering family for dense call-dispatch switches.
     fn call_dispatcher_style(&self) -> CallDispatcherStyle {
         CallDispatcherStyle::Legacy24x
+    }
+
+    /// Instruction-selection family for optimized empty deleting destructors.
+    fn cxx_trivial_destructor_style(&self) -> CxxTrivialDestructorStyle {
+        CxxTrivialDestructorStyle::RecordTests
     }
 
     /// Source-analysis transaction contributed by each earlier compiled body
@@ -1367,6 +1385,10 @@ impl CodegenProfile for Gc41Build51213 {
         CallDispatcherStyle::Packed41
     }
 
+    fn cxx_trivial_destructor_style(&self) -> CxxTrivialDestructorStyle {
+        CxxTrivialDestructorStyle::ExplicitTests
+    }
+
     fn deferred_source_function_label_bump(&self) -> u8 {
         4
     }
@@ -1603,6 +1625,10 @@ impl CodegenProfile for Wii43Build145 {
 
     fn call_dispatcher_style(&self) -> CallDispatcherStyle {
         CallDispatcherStyle::Packed41
+    }
+
+    fn cxx_trivial_destructor_style(&self) -> CxxTrivialDestructorStyle {
+        CxxTrivialDestructorStyle::ExplicitTests
     }
 
     fn deferred_source_function_label_bump(&self) -> u8 {

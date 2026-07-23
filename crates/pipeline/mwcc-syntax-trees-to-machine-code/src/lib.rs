@@ -168,6 +168,9 @@ pub fn lower_function(
     {
         return Ok(output);
     }
+    if let Some(output) = cxx_abi::lower_trivial_destructor(function, config.clone()) {
+        return Ok(output);
+    }
     if let Some(output) = cxx_abi::lower_virtual_destructor(function, globals, config.clone()) {
         return Ok(output);
     }

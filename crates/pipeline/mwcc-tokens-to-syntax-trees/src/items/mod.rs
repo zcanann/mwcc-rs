@@ -3032,15 +3032,11 @@ impl Parser {
                         },
                     );
                 }
-                // A virtual destructor has an ABI-only signed-short deleting
+                // Every destructor has an ABI-only signed-short deleting
                 // flag in r4. It is deliberately absent from the mangled type,
-                // but must be present in executable IR so the ordinary
-                // conditional/call lowering can generate the deleting form.
-                if destructor_scope
-                    .as_deref()
-                    .and_then(|layout_scope| self.cxx_classes.get(layout_scope))
-                    .is_some_and(|class| class.has_virtual_destructor)
-                {
+                // but must be present in executable IR so both virtual and
+                // non-virtual complete-object destructors can delete storage.
+                if destructor_scope.is_some() {
                     parameters.push(Parameter {
                         parameter_type: Type::Short,
                         name: "__destroy".to_string(),
@@ -3277,11 +3273,25 @@ impl Parser {
                     .statements
                     .splice(0..0, constructor_initialization.statements);
             }
-            let destructor_base_calls = if let Some(scope) = &destructor_scope {
+            let mut destructor_base_calls = if let Some(scope) = &destructor_scope {
                 self.synthesize_base_destructor_calls(scope)?
             } else {
                 Vec::new()
             };
+            if let Some(scope) = &destructor_scope {
+                let class = &self.cxx_classes[scope];
+                if !class.has_virtual_destructor {
+                    cxx_destructors::wrap_written(
+                        &mut function,
+                        self.structs.get(scope).map_or(0, |layout| layout.size),
+                        Vec::new(),
+                        std::mem::take(&mut destructor_base_calls),
+                        self.cxx_delete_forwarder
+                            .clone()
+                            .unwrap_or_else(|| "__dl__FPv".to_string()),
+                    );
+                }
+            }
             let special_member_scope = constructor_scope.as_ref().or(destructor_scope.as_ref());
             if let Some(scope) = special_member_scope {
                 if let Some(class) = self.cxx_classes.get(scope) {
@@ -3325,42 +3335,20 @@ impl Parser {
                             .collect();
                         if destructor_scope.is_some() && class.has_virtual_destructor {
                             let vptr_store = vptr_stores[0].clone();
-                            function.return_type = Type::StructPointer {
-                                element_size: self
-                                    .structs
-                                    .get(scope)
-                                    .map_or(0, |layout| layout.size),
-                            };
-                            let mut destructor_body = Vec::new();
-                            if destructor_base_calls.is_empty() {
-                                destructor_body.push(vptr_store);
-                            }
-                            destructor_body.append(&mut function.statements);
-                            destructor_body.extend(destructor_base_calls);
-                            destructor_body.push(Statement::If {
-                                condition: Expression::Binary {
-                                    operator: mwcc_syntax_trees::BinaryOperator::Greater,
-                                    left: Box::new(Expression::Variable(
-                                        "__destroy".to_string(),
-                                    )),
-                                    right: Box::new(Expression::IntegerLiteral(0)),
-                                },
-                                then_body: vec![Statement::Expression(Expression::Call {
-                                    name: self
-                                        .cxx_delete_forwarder
-                                        .clone()
-                                        .unwrap_or_else(|| "__dl__FPv".to_string()),
-                                    arguments: vec![Expression::Variable("this".to_string())],
-                                })],
-                                else_body: Vec::new(),
-                            });
-                            function.statements = vec![Statement::If {
-                                condition: Expression::Variable("this".to_string()),
-                                then_body: destructor_body,
-                                else_body: Vec::new(),
-                            }];
-                            function.return_expression =
-                                Some(Expression::Variable("this".to_string()));
+                            let before_source = destructor_base_calls
+                                .is_empty()
+                                .then_some(vptr_store)
+                                .into_iter()
+                                .collect();
+                            cxx_destructors::wrap_written(
+                                &mut function,
+                                self.structs.get(scope).map_or(0, |layout| layout.size),
+                                before_source,
+                                std::mem::take(&mut destructor_base_calls),
+                                self.cxx_delete_forwarder
+                                    .clone()
+                                    .unwrap_or_else(|| "__dl__FPv".to_string()),
+                            );
 
                             if !globals.iter().any(|global| global.name == vtable) {
                                 let mut table = cxx_vtables::global(

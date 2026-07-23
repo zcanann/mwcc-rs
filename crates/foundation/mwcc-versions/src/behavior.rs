@@ -21,7 +21,8 @@ use crate::profile::{
     FixedAddressParameterizedRmwStyle,
     FixedAddressPollAddressStyle, FixedAddressRmwStyle, FoldedFloatCompareLinkageStyle,
     FrameConvention, FrexpFamilyStyle, FunctionAddressStoreStyle, FunctionOrdinalAccountingStyle,
-    GlobalArrayDecayStoreStyle, GlobalArrayIndexStyle, GuardedByteCopyStyle,
+    CxxTrivialDestructorStyle, GlobalArrayDecayStoreStyle, GlobalArrayIndexStyle,
+    GuardedByteCopyStyle,
     GuardedMemberInitializationStyle,
     IndexedRmwAssignmentStyle, IntCallResultConversionStyle, IntegerComparisonValueStyle,
     IntegerDagStyle, IntegerLoopStyle, IntegerSelectStyle, JumpTableBaseStyle,
@@ -518,6 +519,8 @@ pub struct Behavior {
     pub string_literals_packed: bool,
     /// Register, literal-pool, and epilogue family for dense call dispatchers.
     pub call_dispatcher_style: CallDispatcherStyle,
+    /// Instruction-selection family for optimized empty deleting destructors.
+    pub cxx_trivial_destructor_style: CxxTrivialDestructorStyle,
     /// Source-analysis cost per earlier compiled body under deferred emission.
     pub deferred_source_function_label_bump: u8,
     /// Boundary cost after each reversed deferred-emission body.
@@ -820,6 +823,10 @@ impl Behavior {
             optimization_goal: config.flags.optimization_goal,
             string_literals_packed: config.flags.string_literals_packed,
             call_dispatcher_style: config.build.profile.call_dispatcher_style(),
+            cxx_trivial_destructor_style: config
+                .build
+                .profile
+                .cxx_trivial_destructor_style(),
             deferred_source_function_label_bump: config
                 .build
                 .profile
