@@ -19,8 +19,9 @@ use crate::profile::{
     ComputedStoreIssueStyle, ConstantStoreScheduleStyle, DataSectionRelocationStyle,
     FieldMergeStyle, FixedAddressConstantStoreStyle, FixedAddressParameterizedRmwStyle,
     FixedAddressPollAddressStyle, FixedAddressRmwStyle, FoldedFloatCompareLinkageStyle,
-    FrameConvention, FrexpFamilyStyle, FunctionOrdinalAccountingStyle, GlobalArrayDecayStoreStyle,
-    GlobalArrayIndexStyle, GuardedByteCopyStyle, GuardedMemberInitializationStyle,
+    FrameConvention, FrexpFamilyStyle, FunctionAddressStoreStyle, FunctionOrdinalAccountingStyle,
+    GlobalArrayDecayStoreStyle, GlobalArrayIndexStyle, GuardedByteCopyStyle,
+    GuardedMemberInitializationStyle,
     IndexedRmwAssignmentStyle, IntCallResultConversionStyle, IntegerComparisonValueStyle,
     IntegerDagStyle, IntegerLoopStyle, IntegerSelectStyle, JumpTableBaseStyle,
     LeadingFrameGuardStoreStyle, LocalDataSymbolOrder, LogicalOrValueStyle, LongLongTimerStyle,
@@ -147,6 +148,7 @@ pub enum Quirk {
     LegacyPartialNarrowStoreConversionElision,
     LegacyExplicitGlobalArrayAddress,
     LaterDirectGlobalArrayDecayStore,
+    LaterDirectFunctionAddressStore,
     LegacyExplicitIndexedRmwAddress,
     LegacyReloadAfterGlobalStore,
     LegacyZeroEqualityNegate,
@@ -224,6 +226,7 @@ impl Quirk {
             Quirk::LegacyPartialNarrowStoreConversionElision => QuirkKind::Intentional,
             Quirk::LegacyExplicitGlobalArrayAddress => QuirkKind::Intentional,
             Quirk::LaterDirectGlobalArrayDecayStore => QuirkKind::Intentional,
+            Quirk::LaterDirectFunctionAddressStore => QuirkKind::Intentional,
             Quirk::LegacyExplicitIndexedRmwAddress => QuirkKind::Intentional,
             Quirk::LegacyReloadAfterGlobalStore => QuirkKind::Intentional,
             Quirk::LegacyZeroEqualityNegate => QuirkKind::Intentional,
@@ -338,6 +341,9 @@ impl Quirk {
             }
             Quirk::LaterDirectGlobalArrayDecayStore => {
                 "later compilers store a decayed global-array address directly from its address register"
+            }
+            Quirk::LaterDirectFunctionAddressStore => {
+                "later compilers store a function address directly from its address register"
             }
             Quirk::LegacyExplicitIndexedRmwAddress => {
                 "explicit indexed read/modify/write assignments preserve an element address in build 163"
@@ -643,6 +649,8 @@ pub struct Behavior {
     pub global_array_index_style: GlobalArrayIndexStyle,
     /// Register placement for a bare array address stored to a pointer global.
     pub global_array_decay_store_style: GlobalArrayDecayStoreStyle,
+    /// Register placement for a function address stored to a pointer global.
+    pub function_address_store_style: FunctionAddressStoreStyle,
     /// Addressing distinction between compound and explicit indexed RMW syntax.
     pub indexed_rmw_assignment_style: IndexedRmwAssignmentStyle,
     /// Treatment of an immediate read following a store to the same global.
@@ -974,6 +982,7 @@ impl Behavior {
             comma_value_placement_style: config.build.profile.comma_value_placement_style(),
             global_array_index_style: config.build.profile.global_array_index_style(),
             global_array_decay_store_style: config.build.profile.global_array_decay_store_style(),
+            function_address_store_style: config.build.profile.function_address_store_style(),
             indexed_rmw_assignment_style: config.build.profile.indexed_rmw_assignment_style(),
             stored_global_read_style: config.build.profile.stored_global_read_style(),
             negate_before_zero_equality: config.build.profile.negate_before_zero_equality(),
@@ -1268,6 +1277,9 @@ impl Behavior {
         }
         if self.global_array_decay_store_style == GlobalArrayDecayStoreStyle::DirectAddress {
             quirks.push(ActiveQuirk::of(Quirk::LaterDirectGlobalArrayDecayStore));
+        }
+        if self.function_address_store_style == FunctionAddressStoreStyle::DirectAddress {
+            quirks.push(ActiveQuirk::of(Quirk::LaterDirectFunctionAddressStore));
         }
         if self.indexed_rmw_assignment_style == IndexedRmwAssignmentStyle::PreserveExplicitAddress {
             quirks.push(ActiveQuirk::of(Quirk::LegacyExplicitIndexedRmwAddress));
@@ -1877,6 +1889,14 @@ mod tests {
             assert_eq!(
                 plain.global_array_decay_store_style,
                 GlobalArrayDecayStoreStyle::DirectAddress
+            );
+            assert_eq!(
+                plain.function_address_store_style,
+                FunctionAddressStoreStyle::DirectAddress
+            );
+            assert_eq!(
+                plain.symbol_traversal_style,
+                SymbolTraversalStyle::RelocationOrder
             );
             assert_eq!(
                 plain.trig_zero_constant_placement,

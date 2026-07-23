@@ -1432,12 +1432,19 @@ impl Generator {
                 let high = self.fresh_virtual_general();
                 self.emit_address_high(high, name);
                 self.record_relocation(RelocationKind::Addr16Lo, name);
+                let source = if self.behavior.function_address_store_style
+                    == FunctionAddressStoreStyle::DirectAddress
+                {
+                    high
+                } else {
+                    GENERAL_SCRATCH
+                };
                 self.output.instructions.push(Instruction::AddImmediate {
-                    d: GENERAL_SCRATCH,
+                    d: source,
                     a: high,
                     immediate: 0,
                 });
-                return Ok(GENERAL_SCRATCH);
+                return Ok(source);
             }
             // A data GLOBAL value is loaded into the scratch — `gi = gj` is `lwz r0,gj; stw r0,gi`
             // — since a global is not held in a register like a parameter or local. A NARROW store

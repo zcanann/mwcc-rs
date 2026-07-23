@@ -5,7 +5,7 @@
 //! modules together and exposes the entry point; the work lives in them.
 
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_machine_code::{FrameInfo, Instruction, MachineFunction};
+use mwcc_machine_code::{FrameInfo, Instruction, MachineFunction, RelocationTarget};
 use mwcc_syntax_trees::{Function, GlobalDeclaration};
 use mwcc_versions::{Behavior, CompilerConfig};
 use std::collections::{HashMap, HashSet};
@@ -445,9 +445,29 @@ pub fn lower_function(
     // (options, condition_bit) already encode the same BO/BI, so reusing them yields the
     // exact `b<cc>lr` mwcc emits.
     collapse_forward_branch_to_terminal_blr(&mut generator.output.instructions);
-    // The names this function references, in mwcc's symbol-table order (an AST
-    // traversal); the writer assigns its external/global symbols in this order.
+    // The names this function references, in mwcc's symbol-table discovery
+    // order; the writer assigns its external/global symbols in this order.
     if generator.output.symbol_order.is_empty() {
+        // GC 3/Wii create referenced symbols as their instruction relocations
+        // are emitted, preserving order across data and function kinds. Keep
+        // this separate from the older AST traversals: their grouping and
+        // assignment visitation rules remain independently versioned.
+        if generator.behavior.symbol_traversal_style
+            == mwcc_versions::SymbolTraversalStyle::RelocationOrder
+        {
+            let mut seen = HashSet::new();
+            generator.output.symbol_order = generator
+                .output
+                .relocations
+                .iter()
+                .filter_map(|relocation| match &relocation.target {
+                    RelocationTarget::External(name)
+                    | RelocationTarget::ExternalWithAddend(name, _) => Some(name.clone()),
+                    _ => None,
+                })
+                .filter(|name| seen.insert(name.clone()))
+                .collect();
+        }
         // A capture template may pin its own measured order (atof, pikmin
         // s_ldexp) — only derive from the AST when it didn't.
         if generator.output.symbol_order.is_empty() {

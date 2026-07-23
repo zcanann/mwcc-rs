@@ -289,6 +289,16 @@ pub enum GlobalArrayDecayStoreStyle {
     DirectAddress,
 }
 
+/// Register holding a function address assigned to a pointer global.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FunctionAddressStoreStyle {
+    /// GC 1.x/2.x completes the address in r0 before storing it.
+    ScratchValue,
+    /// GC 3/Wii complete the address in its high-half register and store that
+    /// register directly.
+    DirectAddress,
+}
+
 /// Whether an indexed read/modify/write preserves the frontend assignment form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexedRmwAssignmentStyle {
@@ -460,7 +470,7 @@ pub enum CommaValuePlacementStyle {
     ParameterHome,
 }
 
-/// AST traversal used to assign external/data symbol indices.
+/// Discovery order used to assign external/data symbol indices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolTraversalStyle {
     /// Collect data references first, then call/function references.
@@ -468,6 +478,8 @@ pub enum SymbolTraversalStyle {
     /// Preserve creation/evaluation order across symbol kinds; assignment
     /// values precede targets and data-only subtraction visits right-first.
     LegacyCreationOrder,
+    /// GC 3/Wii create referenced symbols as instruction relocations are emitted.
+    RelocationOrder,
 }
 
 /// Ordering of file-scope LOCAL data symbols across initialized and zero-filled
@@ -994,6 +1006,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         GlobalArrayDecayStoreStyle::ScratchValue
     }
 
+    fn function_address_store_style(&self) -> FunctionAddressStoreStyle {
+        FunctionAddressStoreStyle::ScratchValue
+    }
+
     fn indexed_rmw_assignment_style(&self) -> IndexedRmwAssignmentStyle {
         IndexedRmwAssignmentStyle::UniformIndexed
     }
@@ -1290,6 +1306,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn symbol_traversal_style(&self) -> SymbolTraversalStyle {
+        SymbolTraversalStyle::RelocationOrder
+    }
+
     fn ksin_uncontracted_label_bump(&self) -> u8 {
         13
     }
@@ -1402,6 +1422,10 @@ impl CodegenProfile for Gc41Build51213 {
         GlobalArrayDecayStoreStyle::DirectAddress
     }
 
+    fn function_address_store_style(&self) -> FunctionAddressStoreStyle {
+        FunctionAddressStoreStyle::DirectAddress
+    }
+
     fn trig_zero_constant_placement(&self) -> TrigZeroConstantPlacement {
         TrigZeroConstantPlacement::Prologue
     }
@@ -1424,6 +1448,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn symbol_traversal_style(&self) -> SymbolTraversalStyle {
+        SymbolTraversalStyle::RelocationOrder
+    }
+
     fn ksin_uncontracted_label_bump(&self) -> u8 {
         13
     }
@@ -1562,6 +1590,10 @@ impl CodegenProfile for Wii43Build145 {
 
     fn global_array_decay_store_style(&self) -> GlobalArrayDecayStoreStyle {
         GlobalArrayDecayStoreStyle::DirectAddress
+    }
+
+    fn function_address_store_style(&self) -> FunctionAddressStoreStyle {
+        FunctionAddressStoreStyle::DirectAddress
     }
 
     fn trig_zero_constant_placement(&self) -> TrigZeroConstantPlacement {
