@@ -1031,6 +1031,7 @@ fn compile(
             &mut machine_functions,
             behavior.deferred_source_function_label_bump,
             behavior.deferred_post_function_label_bump,
+            behavior.deferred_function_emission_style,
         );
     }
     // `#pragma defer_codegen on` defers the covered functions the same way:

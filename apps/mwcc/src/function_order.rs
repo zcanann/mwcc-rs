@@ -6,6 +6,7 @@
 //! accumulating partial versions of the same policy.
 
 use mwcc_machine_code::MachineFunction;
+use mwcc_versions::DeferredFunctionEmissionStyle;
 use std::collections::{HashMap, HashSet};
 
 /// Whether every earlier call site consumed a terminal implicitly-materialized
@@ -93,6 +94,7 @@ pub(crate) fn apply_deferred_emission_order(
     functions: &mut Vec<MachineFunction>,
     source_function_label_bump: u8,
     post_function_label_bump: u8,
+    emission_style: DeferredFunctionEmissionStyle,
 ) {
     let mut source_order = std::mem::take(functions);
 
@@ -129,11 +131,21 @@ pub(crate) fn apply_deferred_emission_order(
         .map(|(_, function)| function.deferred_source_prefix_bump)
         .sum();
 
-    let (mut immediate_asm, mut deferred_compiled): (Vec<_>, Vec<_>) = source_order
-        .into_iter()
-        .partition(|function| function.is_asm);
-    deferred_compiled.reverse();
-    if let Some(head) = deferred_compiled.first_mut() {
+    let mut emission_order = match emission_style {
+        DeferredFunctionEmissionStyle::ImmediateAsmThenReverseCompiled => {
+            let (mut immediate_asm, mut deferred_compiled): (Vec<_>, Vec<_>) = source_order
+                .into_iter()
+                .partition(|function| function.is_asm);
+            deferred_compiled.reverse();
+            immediate_asm.extend(deferred_compiled);
+            immediate_asm
+        }
+        DeferredFunctionEmissionStyle::ReverseAll => {
+            source_order.reverse();
+            source_order
+        }
+    };
+    if let Some(head) = emission_order.iter_mut().find(|function| !function.is_asm) {
         // A capture-owned source prefix is the complete transaction for its
         // source body. Adding the generic per-body transaction as well double
         // counts that analysis (the long-long wait capture exposes this).
@@ -149,8 +161,7 @@ pub(crate) fn apply_deferred_emission_order(
             head.post_function_anonymous_bump = Some(0);
         }
     }
-    immediate_asm.extend(deferred_compiled);
-    *functions = immediate_asm;
+    *functions = emission_order;
 }
 
 #[cfg(test)]
@@ -173,7 +184,12 @@ mod tests {
             function("last", false),
         ];
 
-        apply_deferred_emission_order(&mut functions, 3, 1);
+        apply_deferred_emission_order(
+            &mut functions,
+            3,
+            1,
+            DeferredFunctionEmissionStyle::ImmediateAsmThenReverseCompiled,
+        );
 
         assert_eq!(
             functions
@@ -185,12 +201,41 @@ mod tests {
     }
 
     #[test]
+    fn later_deferred_order_reverses_asm_with_compiled_bodies() {
+        let mut functions = vec![
+            function("compiled_first", false),
+            function("asm_middle", true),
+            function("compiled_last", false),
+        ];
+
+        apply_deferred_emission_order(
+            &mut functions,
+            3,
+            1,
+            DeferredFunctionEmissionStyle::ReverseAll,
+        );
+
+        assert_eq!(
+            functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            ["compiled_last", "asm_middle", "compiled_first"]
+        );
+    }
+
+    #[test]
     fn transparent_source_leaf_advances_first_anonymous_owner() {
         let mut owner = function("owner", false);
         owner.string_literals.push(b"owned".to_vec());
         let mut functions = vec![function("leaf", false), owner];
 
-        apply_deferred_emission_order(&mut functions, 3, 1);
+        apply_deferred_emission_order(
+            &mut functions,
+            3,
+            1,
+            DeferredFunctionEmissionStyle::ImmediateAsmThenReverseCompiled,
+        );
 
         assert_eq!(functions[0].name, "owner");
         assert_eq!(functions[0].anonymous_label_bump, 3);
@@ -208,7 +253,12 @@ mod tests {
             function("f4", false),
         ];
 
-        apply_deferred_emission_order(&mut functions, 3, 1);
+        apply_deferred_emission_order(
+            &mut functions,
+            3,
+            1,
+            DeferredFunctionEmissionStyle::ImmediateAsmThenReverseCompiled,
+        );
 
         assert_eq!(
             functions
@@ -231,7 +281,12 @@ mod tests {
         let later = function("later", false);
         let mut functions = vec![source_first, later];
 
-        apply_deferred_emission_order(&mut functions, 3, 1);
+        apply_deferred_emission_order(
+            &mut functions,
+            3,
+            1,
+            DeferredFunctionEmissionStyle::ImmediateAsmThenReverseCompiled,
+        );
 
         assert_eq!(functions[0].name, "later");
         assert_eq!(functions[0].anonymous_label_bump, 9);

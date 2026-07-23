@@ -482,6 +482,16 @@ pub enum SymbolTraversalStyle {
     RelocationOrder,
 }
 
+/// Translation-unit emission order under `-inline ...,deferred`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeferredFunctionEmissionStyle {
+    /// GC 1.x/2.x assemble inline-asm bodies immediately, then emit compiled
+    /// bodies in reverse source order.
+    ImmediateAsmThenReverseCompiled,
+    /// GC 3/Wii emit every body, including inline asm, in reverse source order.
+    ReverseAll,
+}
+
 /// Ordering of file-scope LOCAL data symbols across initialized and zero-filled
 /// sections.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1083,6 +1093,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         SymbolTraversalStyle::GroupedByKind
     }
 
+    fn deferred_function_emission_style(&self) -> DeferredFunctionEmissionStyle {
+        DeferredFunctionEmissionStyle::ImmediateAsmThenReverseCompiled
+    }
+
     fn local_data_symbol_order(&self) -> LocalDataSymbolOrder {
         LocalDataSymbolOrder::GroupedByInitialization
     }
@@ -1306,6 +1320,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn deferred_function_emission_style(&self) -> DeferredFunctionEmissionStyle {
+        DeferredFunctionEmissionStyle::ReverseAll
+    }
+
     fn symbol_traversal_style(&self) -> SymbolTraversalStyle {
         SymbolTraversalStyle::RelocationOrder
     }
@@ -1448,6 +1466,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn deferred_function_emission_style(&self) -> DeferredFunctionEmissionStyle {
+        DeferredFunctionEmissionStyle::ReverseAll
+    }
+
     fn symbol_traversal_style(&self) -> SymbolTraversalStyle {
         SymbolTraversalStyle::RelocationOrder
     }

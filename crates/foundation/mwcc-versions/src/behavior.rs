@@ -17,7 +17,8 @@ use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
     CallDispatcherStyle, CoefficientTableRelocationStyle, CommaValuePlacementStyle,
     ComputedStoreIssueStyle, ConstantStoreScheduleStyle, DataSectionRelocationStyle,
-    FieldMergeStyle, FixedAddressConstantStoreStyle, FixedAddressParameterizedRmwStyle,
+    DeferredFunctionEmissionStyle, FieldMergeStyle, FixedAddressConstantStoreStyle,
+    FixedAddressParameterizedRmwStyle,
     FixedAddressPollAddressStyle, FixedAddressRmwStyle, FoldedFloatCompareLinkageStyle,
     FrameConvention, FrexpFamilyStyle, FunctionAddressStoreStyle, FunctionOrdinalAccountingStyle,
     GlobalArrayDecayStoreStyle, GlobalArrayIndexStyle, GuardedByteCopyStyle,
@@ -149,6 +150,7 @@ pub enum Quirk {
     LegacyExplicitGlobalArrayAddress,
     LaterDirectGlobalArrayDecayStore,
     LaterDirectFunctionAddressStore,
+    LaterReverseDeferredAsm,
     LegacyExplicitIndexedRmwAddress,
     LegacyReloadAfterGlobalStore,
     LegacyZeroEqualityNegate,
@@ -227,6 +229,7 @@ impl Quirk {
             Quirk::LegacyExplicitGlobalArrayAddress => QuirkKind::Intentional,
             Quirk::LaterDirectGlobalArrayDecayStore => QuirkKind::Intentional,
             Quirk::LaterDirectFunctionAddressStore => QuirkKind::Intentional,
+            Quirk::LaterReverseDeferredAsm => QuirkKind::Intentional,
             Quirk::LegacyExplicitIndexedRmwAddress => QuirkKind::Intentional,
             Quirk::LegacyReloadAfterGlobalStore => QuirkKind::Intentional,
             Quirk::LegacyZeroEqualityNegate => QuirkKind::Intentional,
@@ -344,6 +347,9 @@ impl Quirk {
             }
             Quirk::LaterDirectFunctionAddressStore => {
                 "later compilers store a function address directly from its address register"
+            }
+            Quirk::LaterReverseDeferredAsm => {
+                "later compilers include inline-asm bodies in deferred reverse emission"
             }
             Quirk::LegacyExplicitIndexedRmwAddress => {
                 "explicit indexed read/modify/write assignments preserve an element address in build 163"
@@ -684,6 +690,8 @@ pub struct Behavior {
     pub wide_constant_add_schedule: WideConstantAddSchedule,
     /// AST traversal used to assign referenced symbol indices.
     pub symbol_traversal_style: SymbolTraversalStyle,
+    /// Translation-unit function ordering under deferred inlining.
+    pub deferred_function_emission_style: DeferredFunctionEmissionStyle,
     /// Ordering of file-scope LOCAL data symbols across data sections.
     pub local_data_symbol_order: LocalDataSymbolOrder,
     /// Physical layout of `.sbss` objects.
@@ -1015,6 +1023,10 @@ impl Behavior {
             materialization_copy_style: config.build.profile.materialization_copy_style(),
             wide_constant_add_schedule: config.build.profile.wide_constant_add_schedule(),
             symbol_traversal_style: config.build.profile.symbol_traversal_style(),
+            deferred_function_emission_style: config
+                .build
+                .profile
+                .deferred_function_emission_style(),
             local_data_symbol_order: config.build.profile.local_data_symbol_order(),
             small_zero_data_layout_style: config.build.profile.small_zero_data_layout_style(),
             coefficient_table_relocation_style: config
@@ -1326,6 +1338,9 @@ impl Behavior {
         }
         if self.symbol_traversal_style == SymbolTraversalStyle::LegacyCreationOrder {
             quirks.push(ActiveQuirk::of(Quirk::LegacySymbolCreationOrder));
+        }
+        if self.deferred_function_emission_style == DeferredFunctionEmissionStyle::ReverseAll {
+            quirks.push(ActiveQuirk::of(Quirk::LaterReverseDeferredAsm));
         }
         if self.local_data_symbol_order == LocalDataSymbolOrder::DeclarationOrder {
             quirks.push(ActiveQuirk::of(Quirk::LegacyLocalDataDeclarationOrder));
@@ -1897,6 +1912,10 @@ mod tests {
             assert_eq!(
                 plain.symbol_traversal_style,
                 SymbolTraversalStyle::RelocationOrder
+            );
+            assert_eq!(
+                plain.deferred_function_emission_style,
+                DeferredFunctionEmissionStyle::ReverseAll
             );
             assert_eq!(
                 plain.trig_zero_constant_placement,
