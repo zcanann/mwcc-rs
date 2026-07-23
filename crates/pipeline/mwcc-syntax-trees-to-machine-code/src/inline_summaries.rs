@@ -56,6 +56,15 @@ pub(crate) struct SingleBaseDestructorSummary {
     pub(crate) adjustment: u32,
 }
 
+/// A trivial virtual destructor whose only lifetime action is restoring its
+/// own vptr before the deleting guard. A derived destructor can inline that
+/// restoration without carrying the base wrapper call into the final object.
+#[derive(Clone, Debug)]
+pub(crate) struct TrivialVirtualDestructorSummary {
+    pub(crate) vtable: String,
+    pub(crate) vptr_offset: u32,
+}
+
 /// A NULL-terminated function-pointer table walker eligible for whole-file
 /// inlining. The loop body is summarized to its only externally visible input:
 /// the table symbol whose entries it invokes.
@@ -91,6 +100,7 @@ pub struct InlineSummaries {
     fixed_size_copies: HashMap<String, FixedSizeCopySummary>,
     guarded_aggregate_updates: HashMap<String, GuardedAggregateUpdateSummary>,
     single_base_destructors: HashMap<String, SingleBaseDestructorSummary>,
+    trivial_virtual_destructors: HashMap<String, TrivialVirtualDestructorSummary>,
     ipa_elided_functions: HashSet<String>,
 }
 
@@ -143,6 +153,11 @@ impl InlineSummaries {
             if let Some(summary) = summarize_single_base_destructor(function) {
                 summaries
                     .single_base_destructors
+                    .insert(function.name.clone(), summary);
+            }
+            if let Some(summary) = summarize_trivial_virtual_destructor(function) {
+                summaries
+                    .trivial_virtual_destructors
                     .insert(function.name.clone(), summary);
             }
             if let Some(summary) = summarize_call_wrapper(function, false) {
@@ -236,6 +251,13 @@ impl InlineSummaries {
         name: &str,
     ) -> Option<&SingleBaseDestructorSummary> {
         self.single_base_destructors.get(name)
+    }
+
+    pub(crate) fn trivial_virtual_destructor(
+        &self,
+        name: &str,
+    ) -> Option<&TrivialVirtualDestructorSummary> {
+        self.trivial_virtual_destructors.get(name)
     }
 
     pub(crate) fn pointer_walker(&self, name: &str) -> Option<&PointerWalkerSummary> {
@@ -363,6 +385,78 @@ fn summarize_single_base_destructor(function: &Function) -> Option<SingleBaseDes
         callee: name.clone(),
         adjustment,
     })
+}
+
+fn summarize_trivial_virtual_destructor(
+    function: &Function,
+) -> Option<TrivialVirtualDestructorSummary> {
+    if !function.name.starts_with("__dt__")
+        || function.parameters.len() != 2
+        || function.parameters[0].name != "this"
+        || function.parameters[1].name != "__destroy"
+        || function.parameters[1].parameter_type != Type::Short
+    {
+        return None;
+    }
+    let [Statement::If {
+        condition,
+        then_body,
+        else_body,
+    }] = function.statements.as_slice()
+    else {
+        return None;
+    };
+    if !variable(condition, "this") || !else_body.is_empty() {
+        return None;
+    }
+    let [Statement::Store { target, value }, delete_guard] = then_body.as_slice() else {
+        return None;
+    };
+    let Expression::Member {
+        base,
+        offset,
+        member_type: Type::UnsignedInt,
+        index_stride: None,
+    } = target
+    else {
+        return None;
+    };
+    if !variable(base, "this") || !is_deleting_guard(delete_guard) {
+        return None;
+    }
+    let Expression::AddressOf { operand } = value else {
+        return None;
+    };
+    let Expression::Variable(vtable) = operand.as_ref() else {
+        return None;
+    };
+    vtable
+        .starts_with("__vt__")
+        .then(|| TrivialVirtualDestructorSummary {
+            vtable: vtable.clone(),
+            vptr_offset: *offset,
+        })
+}
+
+fn is_deleting_guard(statement: &Statement) -> bool {
+    let Statement::If {
+        condition:
+            Expression::Binary {
+                operator: BinaryOperator::Greater,
+                left,
+                right,
+            },
+        then_body,
+        else_body,
+    } = statement
+    else {
+        return false;
+    };
+    variable(left, "__destroy")
+        && constant_value(right) == Some(0)
+        && matches!(then_body.as_slice(), [Statement::Expression(Expression::Call { arguments, .. })]
+            if matches!(arguments.as_slice(), [Expression::Variable(name)] if name == "this"))
+        && else_body.is_empty()
 }
 
 fn struct_member(expression: &Expression, base: &str) -> Option<(i16, Type)> {

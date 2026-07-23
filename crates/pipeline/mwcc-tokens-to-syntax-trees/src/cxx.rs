@@ -71,6 +71,10 @@ pub(crate) struct ClassLayout {
     /// definition is a key function and owns the primary vtable in the subset
     /// currently materialized by the frontend.
     pub(crate) has_virtual_destructor: bool,
+    /// Whether this class writes a destructor declaration of its own. A class
+    /// can inherit virtual destruction without spelling one; that distinction
+    /// determines whether the frontend may synthesize the implicit definition.
+    pub(crate) declares_destructor: bool,
     /// Primary-vtable byte offset of the deleting-destructor entry.
     pub(crate) virtual_destructor_slot: Option<u16>,
     /// Every polymorphic non-virtual base subobject contributing a vptr to the
@@ -3121,6 +3125,7 @@ impl Parser {
                 ));
             }
             if *self.peek() == Token::Tilde {
+                class.declares_destructor = true;
                 self.advance();
                 let destructor_name = self.parse_identifier()?;
                 if destructor_name != name {
@@ -3277,18 +3282,17 @@ impl Parser {
                 let is_pure = self.tokens.get(tail) == Some(&Token::Equals)
                     && self.tokens.get(tail + 1) == Some(&Token::IntegerLiteral(0));
                 let is_inline = self.skip_class_method_tail()?;
-                let inherited_virtual = is_virtual
-                    .then(|| {
-                        self.resolve_primary_base_virtual_override(
-                            &class,
-                            &field_name,
-                            &signature.cxx_parameters,
-                            is_const_member,
-                        )
-                    })
-                    .transpose()?
-                    .flatten();
-                let virtual_dispatch = if is_virtual {
+                // Virtuality is inherited even when the overriding declaration
+                // does not repeat the `virtual` keyword. Resolve the primary
+                // base slot for every method; an explicit new virtual still
+                // allocates a slot when no inherited declaration matches.
+                let inherited_virtual = self.resolve_primary_base_virtual_override(
+                    &class,
+                    &field_name,
+                    &signature.cxx_parameters,
+                    is_const_member,
+                )?;
+                let virtual_dispatch = if is_virtual || inherited_virtual.is_some() {
                     let dispatch = if let Some(mut inherited) = inherited_virtual {
                         // Covariant returns retain the inherited slot while the
                         // call expression needs the derived declaration's type.

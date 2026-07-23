@@ -2522,6 +2522,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                             section,
                         );
                         comment_values.push((data_aligns[name], flags));
+                        // Referencing an owned (strong) C++ vtable registers
+                        // the table and its address-taken function slots as one
+                        // compiler-generated declaration transaction. Weak
+                        // dependency tables retain ordinary reference order.
+                        if name.starts_with("__vt__") && !object.is_weak {
+                            emit_object_targets!(object);
+                        }
                     } else if referenced_inline_asm.contains(name) {
                         // a CALLED static-inline asm helper stays LOCAL (info 0).
                         write_symbol(&mut symtab, strtab.add(name), 0, 0, 0, 0, SHN_UNDEF);

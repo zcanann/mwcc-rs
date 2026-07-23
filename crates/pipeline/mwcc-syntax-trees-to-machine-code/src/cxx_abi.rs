@@ -743,7 +743,11 @@ pub(crate) fn lower_composed_destructor(
     if condition != "this" || !else_body.is_empty() {
         return None;
     }
-    let (delete_guard, base_statements) = then_body.split_last()?;
+    let (delete_guard, lifetime_statements) = then_body.split_last()?;
+    let (own_vptr, base_statements) = lifetime_statements
+        .split_first()
+        .and_then(|(first, rest)| parse_vptr_store(first).map(|store| (Some(store), rest)))
+        .unwrap_or((None, lifetime_statements));
     let base_calls: Vec<(String, u32)> = base_statements
         .iter()
         .map(parse_base_destructor_call)
@@ -779,6 +783,26 @@ pub(crate) fn lower_composed_destructor(
     };
     if !matches!(delete_arguments.as_slice(), [Expression::Variable(name)] if name == "this") {
         return None;
+    }
+
+    if Behavior::resolve(&config).frame_convention == FrameConvention::Predecrement
+        && base_calls.len() == 1
+        && base_calls[0].1 == 0
+    {
+        if let (Some((own_vtable, 0, own_offset)), Some(base)) = (
+            own_vptr,
+            inline_summaries.trivial_virtual_destructor(&base_calls[0].0),
+        ) {
+            return lower_inlined_trivial_base_destructor(
+                function,
+                own_vtable,
+                own_offset,
+                base.vtable.clone(),
+                base.vptr_offset,
+                delete_callee.clone(),
+                config,
+            );
+        }
     }
 
     let mut output = MachineFunction::new(function.name.clone());
@@ -943,6 +967,89 @@ pub(crate) fn lower_composed_destructor(
     if config.flags.cpp_exceptions {
         output.frame = Some(FrameInfo {
             saved_gpr_count: 2,
+            saved_fpr_count: 0,
+            uses_fpu: false,
+        });
+    }
+    Some(output)
+}
+
+fn lower_inlined_trivial_base_destructor(
+    function: &Function,
+    own_vtable: String,
+    own_offset: u32,
+    base_vtable: String,
+    base_offset: u32,
+    delete_callee: String,
+    config: CompilerConfig,
+) -> Option<MachineFunction> {
+    let own_offset = i16::try_from(own_offset).ok()?;
+    let base_offset = i16::try_from(base_offset).ok()?;
+    let mut output = MachineFunction::new(function.name.clone());
+    output.instructions = vec![
+        Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 },
+        Instruction::MoveFromLinkRegister { d: 0 },
+        Instruction::StoreWord { s: 0, a: 1, offset: 20 },
+        Instruction::StoreWord { s: 31, a: 1, offset: 12 },
+        Instruction::OrRecord { a: 31, s: 3, b: 3 },
+        Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 17 },
+        Instruction::load_immediate_shifted(3, 0),
+        Instruction::AddImmediate { d: 0, a: 3, immediate: 0 },
+        Instruction::StoreWord { s: 0, a: 31, offset: own_offset },
+        Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 13 },
+        Instruction::load_immediate_shifted(3, 0),
+        Instruction::AddImmediate { d: 0, a: 3, immediate: 0 },
+        Instruction::StoreWord { s: 0, a: 31, offset: base_offset },
+        Instruction::ExtendSignHalfwordRecord { a: 0, s: 4 },
+        Instruction::BranchConditionalForward { options: 4, condition_bit: 1, target: 17 },
+        Instruction::Or { a: 3, s: 31, b: 31 },
+        Instruction::BranchAndLink { target: delete_callee.clone() },
+        Instruction::LoadWord { d: 0, a: 1, offset: 20 },
+        Instruction::Or { a: 3, s: 31, b: 31 },
+        Instruction::LoadWord { d: 31, a: 1, offset: 12 },
+        Instruction::MoveToLinkRegister { s: 0 },
+        Instruction::AddImmediate { d: 1, a: 1, immediate: 16 },
+        Instruction::BranchToLinkRegister,
+    ];
+    output.relocations = vec![
+        Relocation {
+            instruction_index: 6,
+            kind: RelocationKind::Addr16Ha,
+            target: RelocationTarget::External(own_vtable.clone()),
+        },
+        Relocation {
+            instruction_index: 7,
+            kind: RelocationKind::Addr16Lo,
+            target: RelocationTarget::External(own_vtable.clone()),
+        },
+        Relocation {
+            instruction_index: 10,
+            kind: RelocationKind::Addr16Ha,
+            target: RelocationTarget::External(base_vtable.clone()),
+        },
+        Relocation {
+            instruction_index: 11,
+            kind: RelocationKind::Addr16Lo,
+            target: RelocationTarget::External(base_vtable.clone()),
+        },
+        Relocation {
+            instruction_index: 16,
+            kind: RelocationKind::Rel24,
+            target: RelocationTarget::External(delete_callee.clone()),
+        },
+    ];
+    output.symbol_order = vec![own_vtable, base_vtable, delete_callee.clone()];
+    output.referenced_function_symbols = vec![delete_callee.clone()];
+    output.implicit_external_callees = vec![delete_callee];
+    output.is_static = function.is_static;
+    output.is_weak = function.is_weak;
+    output.section = function.section.clone();
+    output.force_active = function.force_active;
+    let behavior = Behavior::resolve(&config);
+    output.anonymous_label_bump = u32::from(behavior.cxx_virtual_destructor_label_bump);
+    if config.flags.cpp_exceptions {
+        output.frame = Some(FrameInfo {
+            saved_gpr_count: 1,
             saved_fpr_count: 0,
             uses_fpu: false,
         });
@@ -1152,7 +1259,10 @@ pub(crate) fn lower_virtual_destructor(
 
     let mut output = MachineFunction::new(function.name.clone());
     let behavior = Behavior::resolve(&config);
-    if vtable.is_weak && behavior.frame_convention == FrameConvention::Predecrement {
+    if vtable.is_weak
+        && !config.flags.inline_deferred
+        && behavior.frame_convention == FrameConvention::Predecrement
+    {
         output.instructions = vec![
             Instruction::StoreWordWithUpdate {
                 s: 1,

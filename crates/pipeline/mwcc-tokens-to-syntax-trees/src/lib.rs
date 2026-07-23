@@ -1786,6 +1786,56 @@ blr\n\
     }
 
     #[test]
+    fn inherited_virtual_override_materializes_implicit_destructor_closure() {
+        let source = r#"
+            class Base {
+            public:
+                virtual ~Base() {}
+                virtual void filter() const = 0;
+            };
+            class Derived : public Base {
+            public:
+                void filter() const;
+            };
+            void Derived::filter() const {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            ["__dt__4BaseFv", "filter__7DerivedCFv", "__dt__7DerivedFv"]
+        );
+        let derived_table = unit
+            .globals
+            .iter()
+            .find(|global| global.name == "__vt__7Derived")
+            .expect("the inherited override is the derived key function");
+        assert!(!derived_table.is_weak);
+        assert_eq!(
+            derived_table.data_relocations,
+            vec![
+                (12, "filter__7DerivedCFv".to_string(), 0),
+                (8, "__dt__7DerivedFv".to_string(), 0),
+            ]
+        );
+        assert!(unit
+            .globals
+            .iter()
+            .find(|global| global.name == "__vt__4Base")
+            .is_some_and(|global| global.is_weak));
+    }
+
+    #[test]
     fn retains_named_parameter_identity_in_member_definition_symbols() {
         let source = r#"
             struct Creature { int value; };
@@ -2416,8 +2466,8 @@ blr\n\
         assert_eq!(
             vtable.data_relocations,
             vec![
-                (12, "__dt__6ReaderFv".to_string(), 0),
                 (8, "value__6ReaderFv".to_string(), 0),
+                (12, "__dt__6ReaderFv".to_string(), 0),
             ]
         );
         assert_eq!(vtable.functions_before, 2);

@@ -7,6 +7,7 @@
 mod asm;
 mod aggregate_assignments;
 mod cxx_vtables;
+mod cxx_destructors;
 mod initializers;
 mod statements;
 mod template_calls;
@@ -967,6 +968,13 @@ impl Parser {
                 attribute_alignment: None,
             });
         }
+        let early_inline_destructors = cxx_vtables::add_inline_base_groups(
+            &mut globals,
+            &self.cxx_classes,
+            &self.cxx_class_declaration_order,
+            &self.cxx_inline_materializations,
+        )?;
+        cxx_destructors::prepare_required(self, &globals, &functions)?;
         let referenced_functions: std::collections::HashSet<&str> = globals
             .iter()
             .flat_map(|global| {
@@ -976,15 +984,24 @@ impl Parser {
                     .map(|(_, target, _)| target.as_str())
             })
             .collect();
+        let mut early_materializations = Vec::new();
         for function in std::mem::take(&mut self.cxx_inline_materializations) {
             if referenced_functions.contains(function.name.as_str()) {
                 let source = self
                     .cxx_inline_materialization_sources
                     .remove(&function.name);
                 self.weak_materialized.push(function.name.clone());
-                functions.push(function);
-                self.function_sources.push(source);
+                if early_inline_destructors.contains(&function.name) {
+                    early_materializations.push((function, source));
+                } else {
+                    functions.push(function);
+                    self.function_sources.push(source);
+                }
             }
+        }
+        for (index, (function, source)) in early_materializations.into_iter().enumerate() {
+            functions.insert(index, function);
+            self.function_sources.insert(index, source);
         }
         cxx_vtables::position_after_functions(&mut globals, &functions);
         debug_assert_eq!(
