@@ -3378,6 +3378,11 @@ impl Generator {
         if self.try_leading_float_update_clamp(function)? {
             return Ok(());
         }
+        // A float result rounded through int, conditionally scaled, and rounded
+        // again shares one 64-byte conversion frame and one signed-int bias.
+        if self.try_conditional_float_requantize(function)? {
+            return Ok(());
+        }
         // A leading store (or store run) before a trailing `if` needs mwcc's cross-statement
         // scheduler: it hoists the if's condition test as early as possible — into the leading
         // store's value-materialize latency gap (`li r0,1; cmpwi; stw r0,g; beqlr; …`) or to the
