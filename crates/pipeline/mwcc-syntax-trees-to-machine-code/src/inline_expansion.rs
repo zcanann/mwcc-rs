@@ -19,7 +19,10 @@ mod value_calls;
 use call_sites::collect_function_calls;
 use mwcc_syntax_trees::{Expression, Function, Statement};
 use returns::rewrite_inline_returns;
-use safety::{composable_function, stable_arguments, stable_local_values};
+use safety::{
+    composable_function, materializable_arguments, stable_argument, stable_arguments,
+    stable_local_values,
+};
 use std::collections::{HashMap, HashSet};
 use substitution::substitute_statement;
 use value_body::ValueInlineBody;
@@ -357,22 +360,64 @@ impl InlineBodySet {
                 Statement::Expression(Expression::Call { name, arguments })
                     if self.bodies.contains_key(name)
                         && !active.contains(name)
-                        && stable_arguments(&self.bodies[name], arguments, stable_variables) =>
+                        && (stable_arguments(
+                            &self.bodies[name],
+                            arguments,
+                            stable_variables,
+                        ) || materializable_arguments(
+                            &self.bodies[name],
+                            arguments,
+                            stable_variables,
+                        )) =>
                 {
                     let callee = &self.bodies[name];
                     if callee.parameters.len() != arguments.len() {
                         output.push(statement.clone());
                         continue;
                     }
-                    let mut replacements: HashMap<String, Expression> = callee
-                        .parameters
-                        .iter()
-                        .map(|parameter| parameter.name.as_str())
-                        .zip(arguments)
-                        .map(|(name, argument)| (name.to_owned(), argument.clone()))
-                        .collect();
                     let callee_stable = stable_local_values(callee);
                     let mut nested_stable_variables = stable_variables.clone();
+                    let materialize =
+                        !stable_arguments(callee, arguments, stable_variables);
+                    let mut replacements = HashMap::new();
+                    let mut substituted = Vec::new();
+                    for (parameter, argument) in callee.parameters.iter().zip(arguments) {
+                        if !materialize || stable_argument(argument, stable_variables) {
+                            replacements.insert(parameter.name.clone(), argument.clone());
+                            continue;
+                        }
+                        let unique_name = loop {
+                            let candidate = format!(
+                                "__mwcc_inline_{}_{}_{}",
+                                name, *next_local_id, parameter.name
+                            );
+                            *next_local_id += 1;
+                            if occupied_names.insert(candidate.clone()) {
+                                break candidate;
+                            }
+                        };
+                        replacements.insert(
+                            parameter.name.clone(),
+                            Expression::Variable(unique_name.clone()),
+                        );
+                        nested_stable_variables.insert(unique_name.clone());
+                        locals.push(mwcc_syntax_trees::LocalDeclaration {
+                            declared_type: parameter.parameter_type,
+                            name: unique_name.clone(),
+                            initializer: None,
+                            is_volatile: false,
+                            array_length: None,
+                            is_static: false,
+                            data_bytes: None,
+                            data_relocations: Vec::new(),
+                            is_const: false,
+                            row_bytes: None,
+                        });
+                        substituted.push(Statement::Assign {
+                            name: unique_name,
+                            value: argument.clone(),
+                        });
+                    }
                     for local in &callee.locals {
                         let unique_name = loop {
                             let candidate =
@@ -394,22 +439,18 @@ impl InlineBodySet {
                         declaration.initializer = None;
                         locals.push(declaration);
                     }
-                    let mut substituted: Vec<_> = callee
-                        .locals
-                        .iter()
-                        .map(|local| {
-                            substitute_statement(
-                                &Statement::Assign {
-                                    name: local.name.clone(),
-                                    value: local
-                                        .initializer
-                                        .clone()
-                                        .expect("composable locals are initialized"),
-                                },
-                                &replacements,
-                            )
-                        })
-                        .collect();
+                    substituted.extend(callee.locals.iter().map(|local| {
+                        substitute_statement(
+                            &Statement::Assign {
+                                name: local.name.clone(),
+                                value: local
+                                    .initializer
+                                    .clone()
+                                    .expect("composable locals are initialized"),
+                            },
+                            &replacements,
+                        )
+                    }));
                     substituted.extend(
                         callee
                             .statements
@@ -794,6 +835,86 @@ mod tests {
                 && matches!(first_arguments.as_slice(), [Expression::Variable(name)] if name == first)
                 && second_init == second && second_update == second && second_value == "input"
                 && matches!(second_arguments.as_slice(), [Expression::Variable(name)] if name == second)
+        ));
+    }
+
+    #[test]
+    fn materializes_a_scalar_member_argument_before_statement_body_expansion() {
+        let pointer = Type::StructPointer { element_size: 8 };
+        let member = |base: &str, offset| Expression::Member {
+            base: Box::new(Expression::Variable(base.into())),
+            offset,
+            member_type: Type::Float,
+            index_stride: None,
+        };
+        let mut clamp = function(
+            "clamp",
+            vec![
+                Parameter {
+                    parameter_type: pointer,
+                    name: "object".into(),
+                },
+                Parameter {
+                    parameter_type: Type::Float,
+                    name: "limit".into(),
+                },
+            ],
+            vec![Statement::If {
+                condition: Expression::Binary {
+                    operator: BinaryOperator::Greater,
+                    left: Box::new(Expression::Variable("value".into())),
+                    right: Box::new(Expression::Variable("limit".into())),
+                },
+                then_body: vec![Statement::Store {
+                    target: member("object", 0),
+                    value: Expression::Variable("limit".into()),
+                }],
+                else_body: Vec::new(),
+            }],
+        );
+        clamp.locals = vec![local("value", Type::Float, member("object", 0))];
+        let caller = function(
+            "caller",
+            vec![Parameter {
+                parameter_type: pointer,
+                name: "object".into(),
+            }],
+            vec![Statement::Expression(Expression::Call {
+                name: "clamp".into(),
+                arguments: vec![
+                    Expression::Variable("object".into()),
+                    member("object", 4),
+                ],
+            })],
+        );
+
+        let expanded = InlineBodySet::analyze_with_definitions(
+            &[clamp, caller.clone()],
+            &[],
+        )
+        .expand_calls(&caller)
+        .expect("the member argument should be evaluated once before expansion");
+
+        assert_eq!(expanded.locals.len(), 2);
+        assert!(matches!(
+            expanded.statements.as_slice(),
+            [
+                Statement::Assign {
+                    name: parameter_temp,
+                    value: Expression::Member { offset: 4, .. },
+                },
+                Statement::Assign {
+                    name: callee_local,
+                    value: Expression::Member { offset: 0, .. },
+                },
+                Statement::If {
+                    condition: Expression::Binary { right, .. },
+                    ..
+                },
+            ] if parameter_temp == &expanded.locals[0].name
+                && callee_local == &expanded.locals[1].name
+                && matches!(right.as_ref(), Expression::Variable(name)
+                    if name == parameter_temp)
         ));
     }
 

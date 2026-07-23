@@ -13,10 +13,17 @@ struct Member<'a> {
     offset: i16,
 }
 
+enum Bound<'a> {
+    Parameter {
+        name: &'a str,
+        source_local: bool,
+    },
+    Member(Member<'a>),
+}
+
 struct SymmetricFloatClamp<'a> {
     member: Member<'a>,
-    bound: &'a str,
-    source_local: bool,
+    bound: Bound<'a>,
 }
 
 fn float_member(expression: &Expression) -> Option<Member<'_>> {
@@ -53,22 +60,12 @@ fn negated_variable(expression: &Expression, expected: &str) -> bool {
     )
 }
 
-fn classify(function: &Function) -> Option<SymmetricFloatClamp<'_>> {
-    if function.return_type != Type::Void
-        || function.return_expression.is_some()
-        || !function.guards.is_empty()
-        || function_makes_call(function)
-    {
-        return None;
-    }
-    let [base, bound] = function.parameters.as_slice() else {
-        return None;
-    };
-    if !matches!(base.parameter_type, Type::StructPointer { .. })
-        || bound.parameter_type != Type::Float
-    {
-        return None;
-    }
+fn clamp_member<'a>(
+    statements: &[Statement],
+    base: &'a str,
+    bound: &str,
+    value: impl Fn(&Expression, &Member<'_>) -> bool,
+) -> Option<Member<'a>> {
     let [Statement::If {
         condition:
             Expression::Binary {
@@ -78,7 +75,7 @@ fn classify(function: &Function) -> Option<SymmetricFloatClamp<'_>> {
             },
         then_body: lower_body,
         else_body,
-    }] = function.statements.as_slice()
+    }] = statements
     else {
         return None;
     };
@@ -110,45 +107,135 @@ fn classify(function: &Function) -> Option<SymmetricFloatClamp<'_>> {
         return None;
     };
     if !upper_else.is_empty()
-        || !negated_variable(lower_bound, &bound.name)
-        || !negated_variable(lower_store, &bound.name)
-        || !matches!(upper_bound.as_ref(), Expression::Variable(name) if name == &bound.name)
-        || upper_store != &bound.name
+        || !negated_variable(lower_bound, bound)
+        || !negated_variable(lower_store, bound)
+        || !matches!(upper_bound.as_ref(), Expression::Variable(name) if name == bound)
+        || upper_store != bound
     {
         return None;
     }
     let member = float_member(lower_target)?;
-    if member.base != base.name
+    if member.base != base
         || !same_member(upper_target, &member)
+        || !value(lower_value, &member)
+        || !value(upper_value, &member)
     {
         return None;
     }
-    let source_local = match function.locals.as_slice() {
-        [] if same_member(lower_value, &member) && same_member(upper_value, &member) => false,
-        [local]
-            if local.declared_type == Type::Float
-                && !local.is_volatile
-                && local.array_length.is_none()
-                && !local.is_static
-                && local
-                    .initializer
-                    .as_ref()
-                    .is_some_and(|initializer| same_member(initializer, &member)) =>
+    Some(Member {
+        base,
+        offset: member.offset,
+    })
+}
+
+fn automatic_float(local: &mwcc_syntax_trees::LocalDeclaration) -> bool {
+    local.declared_type == Type::Float
+        && !local.is_volatile
+        && local.array_length.is_none()
+        && !local.is_static
+}
+
+fn classify(function: &Function) -> Option<SymmetricFloatClamp<'_>> {
+    if function.return_type != Type::Void
+        || function.return_expression.is_some()
+        || !function.guards.is_empty()
+        || function_makes_call(function)
+    {
+        return None;
+    }
+    match function.parameters.as_slice() {
+        [base, bound]
+            if matches!(base.parameter_type, Type::StructPointer { .. })
+                && bound.parameter_type == Type::Float =>
         {
-            if !matches!(lower_value.as_ref(), Expression::Variable(name) if name == &local.name)
-                || !matches!(upper_value.as_ref(), Expression::Variable(name) if name == &local.name)
+            let (member, source_local) = match function.locals.as_slice() {
+                [] => {
+                    let member = clamp_member(
+                        &function.statements,
+                        &base.name,
+                        &bound.name,
+                        |expression, member| same_member(expression, member),
+                    )?;
+                    (member, false)
+                }
+                [local]
+                    if automatic_float(local)
+                        && local.initializer.as_ref().is_some_and(|initializer| {
+                            float_member(initializer)
+                                .is_some_and(|candidate| candidate.base == base.name)
+                        }) =>
+                {
+                    let member = float_member(local.initializer.as_ref()?)?;
+                    let member = clamp_member(
+                        &function.statements,
+                        &base.name,
+                        &bound.name,
+                        |expression, _| {
+                            matches!(expression, Expression::Variable(name) if name == &local.name)
+                        },
+                    )
+                    .filter(|candidate| {
+                        candidate.base == member.base && candidate.offset == member.offset
+                    })?;
+                    (member, true)
+                }
+                _ => return None,
+            };
+            Some(SymmetricFloatClamp {
+                member,
+                bound: Bound::Parameter {
+                    name: &bound.name,
+                    source_local,
+                },
+            })
+        }
+        [base] if matches!(base.parameter_type, Type::StructPointer { .. }) => {
+            let [bound_local, value_local] = function.locals.as_slice() else {
+                return None;
+            };
+            if !automatic_float(bound_local)
+                || !automatic_float(value_local)
+                || bound_local.initializer.is_some()
+                || value_local.initializer.is_some()
             {
                 return None;
             }
-            true
+            let [Statement::Assign {
+                name: assigned_bound,
+                value: bound_value,
+            }, Statement::Assign {
+                name: assigned_value,
+                value: member_value,
+            }, clamp] = function.statements.as_slice()
+            else {
+                return None;
+            };
+            if assigned_bound != &bound_local.name || assigned_value != &value_local.name {
+                return None;
+            }
+            let bound_member = float_member(bound_value)?;
+            let loaded_member = float_member(member_value)?;
+            if bound_member.base != base.name || loaded_member.base != base.name {
+                return None;
+            }
+            let member = clamp_member(
+                std::slice::from_ref(clamp),
+                &base.name,
+                &bound_local.name,
+                |expression, _| {
+                    matches!(expression, Expression::Variable(name) if name == &value_local.name)
+                },
+            )
+            .filter(|candidate| {
+                candidate.base == loaded_member.base && candidate.offset == loaded_member.offset
+            })?;
+            Some(SymmetricFloatClamp {
+                member,
+                bound: Bound::Member(bound_member),
+            })
         }
-        _ => return None,
-    };
-    Some(SymmetricFloatClamp {
-        member,
-        bound: &bound.name,
-        source_local,
-    })
+        _ => None,
+    }
 }
 
 impl Generator {
@@ -160,21 +247,48 @@ impl Generator {
             return Ok(false);
         };
         let base = self.general_register_of(shape.member.base)?;
-        let bound = self.float_register_of(shape.bound)?;
-        if base != 3 || bound != 1 {
+        if base != 3 {
             return Ok(false);
         }
-        let (negative, member) = if shape.source_local { (2, 0) } else { (0, 2) };
-        self.output.pre_scheduled = true;
-
-        self.output
-            .instructions
-            .push(Instruction::FloatNegate { d: negative, b: bound });
-        self.output.instructions.push(Instruction::LoadFloatSingle {
-            d: member,
-            a: base,
-            offset: shape.member.offset,
-        });
+        let (bound, negative, member) = match shape.bound {
+            Bound::Parameter { name, source_local } => {
+                let bound = self.float_register_of(name)?;
+                if bound != 1 {
+                    return Ok(false);
+                }
+                self.output.pre_scheduled = true;
+                let (negative, member) = if source_local { (2, 0) } else { (0, 2) };
+                self.output
+                    .instructions
+                    .push(Instruction::FloatNegate { d: negative, b: bound });
+                self.output.instructions.push(Instruction::LoadFloatSingle {
+                    d: member,
+                    a: base,
+                    offset: shape.member.offset,
+                });
+                (bound, negative, member)
+            }
+            Bound::Member(bound_member) => {
+                if bound_member.base != shape.member.base {
+                    return Ok(false);
+                }
+                self.output.pre_scheduled = true;
+                self.output.instructions.push(Instruction::LoadFloatSingle {
+                    d: 1,
+                    a: base,
+                    offset: bound_member.offset,
+                });
+                self.output.instructions.push(Instruction::LoadFloatSingle {
+                    d: 2,
+                    a: base,
+                    offset: shape.member.offset,
+                });
+                self.output
+                    .instructions
+                    .push(Instruction::FloatNegate { d: 0, b: 1 });
+                (1, 0, 2)
+            }
+        };
         self.output
             .instructions
             .push(Instruction::FloatCompareOrdered {

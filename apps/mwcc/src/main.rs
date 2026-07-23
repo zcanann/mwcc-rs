@@ -2400,6 +2400,73 @@ mod tests {
     }
 
     #[test]
+    fn materializes_member_arguments_for_automatic_float_helper_inlining() {
+        let source = br#"
+            struct Body {
+                float horizontal_velocity;
+                float vertical_velocity;
+                float gravity;
+                float terminal_velocity;
+                float drift_limit;
+            };
+            void clamp(struct Body* body, float limit) {
+                float velocity = body->horizontal_velocity;
+                if (velocity < -limit) {
+                    body->horizontal_velocity = -limit;
+                } else if (velocity > limit) {
+                    body->horizontal_velocity = limit;
+                }
+            }
+            void clamp_wrapper(struct Body* body) {
+                clamp(body, body->drift_limit);
+            }
+            void fall(struct Body* body, float gravity, float terminal_velocity) {
+                body->vertical_velocity -= gravity;
+                if (body->vertical_velocity < -terminal_velocity) {
+                    body->vertical_velocity = -terminal_velocity;
+                }
+            }
+            void fall_wrapper(struct Body* body) {
+                fall(body, body->gravity, body->terminal_velocity);
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "automatic-member-float-helpers.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("member-valued helper arguments should be evaluated once and inlined");
+        let clamp_wrapper = [
+            0xc0, 0x23, 0x00, 0x10, 0xc0, 0x43, 0x00, 0x00, 0xfc, 0x00, 0x08, 0x50, 0xfc, 0x02,
+            0x00, 0x40, 0x40, 0x80, 0x00, 0x0c, 0xd0, 0x03, 0x00, 0x00, 0x4e, 0x80, 0x00, 0x20,
+            0xfc, 0x02, 0x08, 0x40, 0x4c, 0x81, 0x00, 0x20, 0xd0, 0x23, 0x00, 0x00, 0x4e, 0x80,
+            0x00, 0x20,
+        ];
+        let fall_wrapper = [
+            0xc0, 0x23, 0x00, 0x04, 0xc0, 0x03, 0x00, 0x08, 0xc0, 0x43, 0x00, 0x0c, 0xec, 0x01,
+            0x00, 0x28, 0xfc, 0x20, 0x10, 0x50, 0xd0, 0x03, 0x00, 0x04, 0xc0, 0x03, 0x00, 0x04,
+            0xfc, 0x00, 0x08, 0x40, 0x4c, 0x80, 0x00, 0x20, 0xd0, 0x23, 0x00, 0x04, 0x4e, 0x80,
+            0x00, 0x20,
+        ];
+        assert!(object
+            .windows(clamp_wrapper.len())
+            .any(|bytes| bytes == clamp_wrapper));
+        assert!(object
+            .windows(fall_wrapper.len())
+            .any(|bytes| bytes == fall_wrapper));
+    }
+
+    #[test]
     fn keeps_a_one_use_sign_selection_in_the_float_scratch() {
         let source = br#"
             struct Body { float facing; float input; };

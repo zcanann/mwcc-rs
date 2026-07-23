@@ -167,6 +167,34 @@ pub(super) fn stable_arguments(
     })
 }
 
+/// Whether arguments that cannot be substituted repeatedly may instead be
+/// evaluated into hygienic scalar temporaries at the inline call site.
+///
+/// A scalar member read is side-effect-free but not intrinsically stable: the
+/// callee might write the same storage between uses. Materializing it once
+/// reproduces ordinary call argument semantics and lets statement-body
+/// composition handle member-valued automatic-inline arguments safely.
+pub(super) fn materializable_arguments(
+    function: &Function,
+    arguments: &[Expression],
+    stable_variables: &HashSet<String>,
+) -> bool {
+    function.parameters.len() == arguments.len()
+        && arguments.iter().all(|argument| {
+            stable_argument(argument, stable_variables)
+                || matches!(
+                    argument,
+                    Expression::Member {
+                        base,
+                        member_type,
+                        index_stride: None,
+                        ..
+                    } if !matches!(member_type, Type::Void | Type::Struct { .. })
+                        && stable_argument(base, stable_variables)
+                )
+        })
+}
+
 pub(super) fn expression_use_count(expression: &Expression, name: &str) -> usize {
     match expression {
         Expression::Variable(variable) => usize::from(variable == name),
