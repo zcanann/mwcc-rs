@@ -11,46 +11,7 @@ pub(crate) fn referenced_function_candidates(
     unit: &TranslationUnit,
     candidates: &HashSet<String>,
 ) -> HashSet<String> {
-    let mut referenced = HashSet::new();
-    let mut candidate_edges: HashMap<String, HashSet<String>> = HashMap::new();
-    for function in &unit.functions {
-        let outgoing = function_candidate_references(function, candidates);
-        if candidates.contains(&function.name) {
-            candidate_edges
-                .entry(function.name.clone())
-                .or_default()
-                .extend(outgoing);
-        } else {
-            referenced.extend(outgoing);
-        }
-    }
-    // Skipped inline definitions may be composed into an ordinary caller after
-    // this pass. Treat their outgoing references as roots until their own
-    // reachability is represented in the frontend call graph.
-    for function in &unit.skipped_inline_definitions {
-        referenced.extend(function_candidate_references(function, candidates));
-    }
-    for global in &unit.globals {
-        for (_, target, _) in &global.data_relocations {
-            if candidates.contains(target) {
-                referenced.insert(target.clone());
-            }
-        }
-        if let Some(elements) = &global.address_initializer {
-            for element in elements {
-                if let mwcc_syntax_trees::PointerElement::Symbol(target) = element {
-                    if candidates.contains(target) {
-                        referenced.insert(target.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    // Only references reachable from an emitted root keep another speculative
-    // candidate alive. A closed candidate-only cycle remains dead.
-    extend_reachable_candidates(&mut referenced, &candidate_edges);
-    referenced
+    referenced_candidates(unit, candidates)
 }
 
 /// Reachable inline definitions when `-inline off` turns call-site composition
@@ -58,32 +19,57 @@ pub(crate) fn referenced_function_candidates(
 /// inline bodies are graph nodes rather than roots: only an emitted function or
 /// data relocation can pull one (and its transitive callees) into the object.
 pub(crate) fn referenced_disabled_inlines(unit: &TranslationUnit) -> HashSet<String> {
-    let candidates: HashSet<String> = unit
+    let mut candidates: HashSet<String> = unit
         .skipped_inline_definitions
         .iter()
         .map(|function| function.name.clone())
         .collect();
+    candidates.extend(unit.materialized_inline_candidates.iter().cloned());
+    referenced_candidates(unit, &candidates)
+}
+
+/// Find candidate definitions reachable from an ordinary emitted function or
+/// data reference. Recovered skipped-inline definitions are graph nodes rather
+/// than roots: a real caller may pull their transitive dependencies, but a dead
+/// header-only inline chain cannot create object code by referring to itself.
+fn referenced_candidates(
+    unit: &TranslationUnit,
+    candidates: &HashSet<String>,
+) -> HashSet<String> {
+    let mut graph_nodes = candidates.clone();
+    graph_nodes.extend(
+        unit.skipped_inline_definitions
+            .iter()
+            .map(|function| function.name.clone()),
+    );
     let mut referenced = HashSet::new();
     let mut candidate_edges = HashMap::new();
     for function in &unit.functions {
-        referenced.extend(function_candidate_references(function, &candidates));
+        let outgoing = function_candidate_references(function, &graph_nodes);
+        if candidates.contains(&function.name) {
+            candidate_edges
+                .entry(function.name.clone())
+                .or_insert(outgoing);
+        } else {
+            referenced.extend(outgoing);
+        }
     }
     for function in &unit.skipped_inline_definitions {
         candidate_edges.insert(
             function.name.clone(),
-            function_candidate_references(function, &candidates),
+            function_candidate_references(function, &graph_nodes),
         );
     }
     for global in &unit.globals {
         for (_, target, _) in &global.data_relocations {
-            if candidates.contains(target) {
+            if graph_nodes.contains(target) {
                 referenced.insert(target.clone());
             }
         }
         if let Some(elements) = &global.address_initializer {
             for element in elements {
                 if let mwcc_syntax_trees::PointerElement::Symbol(target) = element {
-                    if candidates.contains(target) {
+                    if graph_nodes.contains(target) {
                         referenced.insert(target.clone());
                     }
                 }
@@ -91,6 +77,7 @@ pub(crate) fn referenced_disabled_inlines(unit: &TranslationUnit) -> HashSet<Str
         }
     }
     extend_reachable_candidates(&mut referenced, &candidate_edges);
+    referenced.retain(|name| candidates.contains(name));
     referenced
 }
 
@@ -365,5 +352,33 @@ mod tests {
             referenced,
             HashSet::from(["rooted".to_owned(), "leaf".to_owned()])
         );
+    }
+
+    #[test]
+    fn disabled_inlining_does_not_root_a_dead_materialization_candidate() {
+        let source = r#"
+            void external(void);
+            inline static void helper(void) { external(); }
+            inline static void speculative(void) { helper(); helper(); }
+            void real(void) {}
+        "#;
+        let unit = mwcc_tokens_to_syntax_trees::parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(unit
+            .materialized_inline_candidates
+            .iter()
+            .any(|name| name == "speculative"));
+        assert!(unit
+            .skipped_inline_definitions
+            .iter()
+            .any(|function| function.name == "helper"));
+        assert!(referenced_disabled_inlines(&unit).is_empty());
     }
 }
