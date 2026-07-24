@@ -37,6 +37,7 @@ use super::structured_home_layout::{
 use super::structured_liveness::{
     read_after_possible_call, read_after_possible_call_in_return,
 };
+use super::structured_loop_invariants::hoist_iterator_end_sentinels;
 use super::structured_loop_lowering::lower_structured_loops;
 use super::structured_locals::{
     body_uses_local, dead_ephemeral_float_locals, is_definitely_assigned_before_reads,
@@ -107,6 +108,9 @@ impl Generator {
         function: &Function,
         with_frame_array: bool,
     ) -> Compilation<bool> {
+        let hoisted_iterator_end =
+            hoist_iterator_end_sentinels(function, &self.one_word_aggregate_locals);
+        let function = hoisted_iterator_end.as_ref().unwrap_or(function);
         let capture = std::env::var_os("MWCC_CAPTURE_FUNCTION")
             .is_some_and(|name| name == std::ffi::OsStr::new(&function.name));
         macro_rules! decline {
