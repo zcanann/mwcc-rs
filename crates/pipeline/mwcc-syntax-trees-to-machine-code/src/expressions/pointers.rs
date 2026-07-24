@@ -3,6 +3,17 @@
 #[allow(unused_imports)]
 use super::*;
 
+fn pointer_member_stride(operand: &Expression) -> Option<u32> {
+    let Expression::Member { member_type, .. } = operand else {
+        return None;
+    };
+    match member_type {
+        Type::StructPointer { element_size } if *element_size != 0 => Some(*element_size),
+        Type::Pointer(pointee) => Some(u32::from(pointee.size())),
+        _ => None,
+    }
+}
+
 impl Generator {
     /// Place an operand and return the register holding it. A leaf stays in its
     /// own register. A sub-expression is computed into the destination when the
@@ -317,17 +328,10 @@ impl Generator {
         // A pointer-valued member is an address value, not inline array
         // storage. Load that pointer once, then scale arithmetic by its
         // recovered pointee type (`object->vectors[index]`, for example).
-        if let Expression::Member { member_type, .. } = operand {
-            let size = match member_type {
-                Type::StructPointer { element_size } if *element_size != 0 => *element_size,
-                Type::Pointer(pointee) => u32::from(pointee.size()),
-                _ => 0,
-            };
-            if size != 0 {
-                let register = self.fresh_virtual_general_preferring(3);
-                self.evaluate_general(operand, register)?;
-                return Ok(Some((register, size)));
-            }
+        if let Some(size) = pointer_member_stride(operand) {
+            let register = self.fresh_virtual_general_preferring(3);
+            self.evaluate_general(operand, register)?;
+            return Ok(Some((register, size)));
         }
         if let Some(size) = self.scaled_pointer(operand) {
             return Ok(Some((self.general_register_of_leaf(operand)?, size)));
@@ -619,5 +623,32 @@ impl Generator {
             return Ok((pointee, register));
         }
         self.pointer_leaf(base)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn member(member_type: Type) -> Expression {
+        Expression::Member {
+            base: Box::new(Expression::Variable("object".into())),
+            offset: 0,
+            member_type,
+            index_stride: None,
+        }
+    }
+
+    #[test]
+    fn pointer_members_retain_their_element_stride_for_arithmetic() {
+        assert_eq!(
+            pointer_member_stride(&member(Type::StructPointer { element_size: 8 })),
+            Some(8)
+        );
+        assert_eq!(
+            pointer_member_stride(&member(Type::Pointer(Pointee::Float))),
+            Some(4)
+        );
+        assert_eq!(pointer_member_stride(&member(Type::UnsignedInt)), None);
     }
 }
