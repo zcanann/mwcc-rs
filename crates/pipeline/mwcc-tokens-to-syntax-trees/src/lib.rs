@@ -5213,6 +5213,37 @@ blr\n\
     }
 
     #[test]
+    fn source_written_constructor_does_not_construct_class_pointer_members() {
+        let source = r#"
+            struct Member {
+                Member();
+                int value;
+            };
+            struct Owner {
+                Owner() {}
+                Member* member;
+            };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let constructor = unit
+            .skipped_inline_definitions
+            .iter()
+            .find(|function| function.name == "__ct__5OwnerFv")
+            .expect("the source-written constructor should be retained");
+        assert!(
+            constructor.statements.is_empty(),
+            "a pointer member does not own or construct its pointee"
+        );
+    }
+
+    #[test]
     fn source_written_constructor_accepts_a_trivial_c_aggregate_base() {
         let source = r#"
             struct Vec { float x; float y; float z; };

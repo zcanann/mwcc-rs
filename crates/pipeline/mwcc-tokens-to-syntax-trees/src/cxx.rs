@@ -5127,6 +5127,13 @@ impl Parser {
                 let Some(field_class) = field.struct_tag.as_deref() else {
                     continue;
                 };
+                // Pointer members retain their pointee class in `struct_tag`
+                // so later member expressions can recover the class layout.
+                // They are not class subobjects and must not be implicitly
+                // default-constructed with the containing object.
+                if !matches!(field.member_type, Type::Struct { .. }) {
+                    continue;
+                }
                 // Arrays require one construction per element. Do not mistake
                 // their aggregate tag for a single class subobject.
                 if field.array_element.is_some() {
