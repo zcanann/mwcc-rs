@@ -39,6 +39,7 @@ mod driver;
 mod enum_remap_member_update;
 mod endian_stack_pack;
 mod endian_stack_unpack;
+mod cached_member_guard;
 mod expression_statement;
 mod float_store_fill;
 mod float_friction_select;
