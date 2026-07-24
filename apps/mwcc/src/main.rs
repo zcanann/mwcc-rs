@@ -2478,6 +2478,9 @@ mod tests {
     #[path = "cxx_const_data.rs"]
     mod cxx_const_data;
 
+    #[path = "display_list_framebuffer_setup.rs"]
+    mod display_list_framebuffer_setup;
+
     #[path = "elf_object.rs"]
     mod elf_object;
 

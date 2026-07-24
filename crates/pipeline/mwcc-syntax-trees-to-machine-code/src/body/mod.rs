@@ -44,6 +44,7 @@ mod conditional_member_select_tail;
 mod control_block_unique_copy;
 mod cxx_global_startup;
 mod dispatchers;
+mod display_list_framebuffer_setup;
 mod driver;
 mod enum_remap_member_update;
 mod endian_stack_pack;
