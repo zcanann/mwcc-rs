@@ -1953,11 +1953,25 @@ impl Parser {
             if *self.peek() == Token::EndOfFile {
                 return Ok(());
             }
-            if self.cplusplus
-                && matches!(self.peek(), Token::Identifier(word) if word == "class")
-                && matches!(self.peek_at(1), Token::Identifier(_))
-            {
-                let (name, layout, class) = self.parse_class_definition()?;
+            let cxx_typedef_class = self.cplusplus
+                && matches!(self.peek(), Token::Identifier(word) if word == "typedef")
+                && (matches!(self.peek_at(1), Token::KeywordStruct)
+                    || matches!(self.peek_at(1), Token::Identifier(word) if word == "class"))
+                && matches!(self.peek_at(2), Token::Identifier(_))
+                && matches!(self.peek_at(3), Token::Colon);
+            let cxx_class = self.cplusplus
+                && ((matches!(self.peek(), Token::Identifier(word) if word == "class")
+                    && matches!(self.peek_at(1), Token::Identifier(_)))
+                    || (matches!(self.peek(), Token::KeywordStruct)
+                        && matches!(self.peek_at(1), Token::Identifier(_))
+                        && matches!(self.peek_at(2), Token::Colon)));
+            if cxx_typedef_class || cxx_class {
+                let (name, layout, class) = if cxx_typedef_class {
+                    self.advance(); // `typedef`
+                    self.parse_typedef_class_definition()?
+                } else {
+                    self.parse_class_definition()?
+                };
                 let class_type = Type::StructPointer {
                     element_size: layout.size,
                 };

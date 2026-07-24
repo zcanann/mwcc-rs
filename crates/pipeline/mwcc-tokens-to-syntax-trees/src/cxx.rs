@@ -1930,7 +1930,17 @@ impl Parser {
         let saved_volatile = self.last_type_was_volatile;
 
         self.position = declaration_index;
-        match self.parse_class_definition() {
+        let trailing_typedef_alias = declaration_index > 0
+            && matches!(
+                self.tokens.get(declaration_index - 1),
+                Some(Token::Identifier(word)) if word == "typedef"
+            );
+        let parsed = if trailing_typedef_alias {
+            self.parse_typedef_class_definition()
+        } else {
+            self.parse_class_definition()
+        };
+        match parsed {
             Ok((source_name, layout, class)) => {
                 self.struct_typedefs
                     .entry(source_name)
@@ -3127,7 +3137,20 @@ impl Parser {
     pub(crate) fn parse_class_definition(
         &mut self,
     ) -> Compilation<(String, StructLayout, ClassLayout)> {
-        self.parse_class_definition_in_scope(None)
+        self.parse_class_definition_in_scope(None, false)
+    }
+
+    /// Parse the C-compatible spelling of a C++ class typedef:
+    /// `typedef struct Derived : public Base { ... } Derived;`.
+    ///
+    /// The trailing identifier is an alias for the class just defined, not an
+    /// object declarator. Keeping that distinction in the C++ parser lets the
+    /// ordinary aggregate typedef machinery remain focused on data-only C
+    /// structs.
+    pub(crate) fn parse_typedef_class_definition(
+        &mut self,
+    ) -> Compilation<(String, StructLayout, ClassLayout)> {
+        self.parse_class_definition_in_scope(None, true)
     }
 
     /// Parse a class layout while retaining the lexical owner of directly
@@ -3139,6 +3162,7 @@ impl Parser {
     fn parse_class_definition_in_scope(
         &mut self,
         enclosing_class: Option<&str>,
+        trailing_typedef_alias: bool,
     ) -> Compilation<(String, StructLayout, ClassLayout)> {
         let class_keyword = self.eat_word("class");
         if !class_keyword && !self.eat_keyword(Token::KeywordStruct) {
@@ -3153,7 +3177,8 @@ impl Parser {
             .current_cxx_layout_scope
             .replace(qualified_name.clone());
         let previous_layout_constants = self.cxx_layout_constants.clone();
-        let result = self.parse_class_definition_body(name, qualified_name);
+        let result =
+            self.parse_class_definition_body(name, qualified_name, trailing_typedef_alias);
         self.cxx_layout_constants = previous_layout_constants;
         self.current_cxx_layout_scope = previous_layout_scope;
         result
@@ -3259,6 +3284,7 @@ impl Parser {
         &mut self,
         name: String,
         qualified_name: String,
+        trailing_typedef_alias: bool,
     ) -> Compilation<(String, StructLayout, ClassLayout)> {
         let mut class = ClassLayout::default();
         let mut layout = StructLayout::default();
@@ -3282,6 +3308,7 @@ impl Parser {
                 let source_base_name = self.parse_cxx_qualified_identifier()?;
                 let base_name = self
                     .resolve_scoped_cxx_class_name(&source_base_name)
+                    .or_else(|| self.struct_typedefs.get(&source_base_name).cloned())
                     .unwrap_or(source_base_name);
                 let base_class = self.cxx_classes.get(&base_name).cloned();
                 let (base_is_polymorphic, base_vptr_offset, base_virtual_slots) = base_class
@@ -3415,7 +3442,7 @@ impl Parser {
                 && matches!(self.peek_at(2), Token::BraceOpen | Token::Colon);
             if nested_definition {
                 let (nested_name, nested_layout, nested_class) =
-                    self.parse_class_definition_in_scope(Some(&qualified_name))?;
+                    self.parse_class_definition_in_scope(Some(&qualified_name), false)?;
                 let nested_qualified = format!("{qualified_name}::{nested_name}");
                 self.struct_typedefs
                     .insert(nested_name, nested_qualified.clone());
@@ -3897,6 +3924,10 @@ impl Parser {
             max_align = max_align.max(align);
         }
         self.expect(Token::BraceClose)?;
+        if trailing_typedef_alias {
+            let alias = self.parse_identifier()?;
+            self.struct_typedefs.insert(alias, name.clone());
+        }
         self.expect(Token::Semicolon)?;
         if !class.virtual_bases.is_empty() && class.vptr_offset.is_none() {
             // With no polymorphic non-virtual primary base, CodeWarrior gives
