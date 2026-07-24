@@ -2308,6 +2308,12 @@ mod tests {
             unsigned int test(struct Fighter* fighter) {
                 return fighter->input & 0x80000f00u;
             }
+            int active(struct Fighter* fighter) {
+                if (fighter->input & 0x80000f00u) {
+                    return 1;
+                }
+                return 0;
+            }
         "#;
         let mut flags = mwcc_versions::Flags::default();
         flags.debug_info = false;
@@ -2326,7 +2332,15 @@ mod tests {
             false,
         )
         .expect("a computed mask should occupy a virtual while the member base remains live");
-        assert!(!object.is_empty());
+        let expected_record_test = [
+            0x3c, 0x80, 0x80, 0x00, // lis r4,0x8000
+            0x38, 0x04, 0x0f, 0x00, // addi r0,r4,0xf00
+            0x80, 0xa3, 0x06, 0x68, // lwz r5,1640(r3)
+            0x7c, 0xa0, 0x00, 0x39, // and. r0,r5,r0
+        ];
+        assert!(object
+            .windows(expected_record_test.len())
+            .any(|bytes| bytes == expected_record_test));
     }
 
     #[test]
