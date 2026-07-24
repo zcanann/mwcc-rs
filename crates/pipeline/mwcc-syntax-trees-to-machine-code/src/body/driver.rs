@@ -3387,6 +3387,9 @@ impl Generator {
         if self.try_symmetric_float_clamp(function)? {
             return Ok(());
         }
+        if self.try_symmetric_float_decay(function)? {
+            return Ok(());
+        }
         // A one-use +/-1 float local selected from a member condition is an
         // ephemeral f0 value, not an ordinary allocated local.
         if self.try_sign_selected_member_store(function)? {
