@@ -698,6 +698,7 @@ pub fn lower_function(
     generator.finalize_structured_noncopy_tail_packet_registers();
     generator.schedule_structured_frame_packet_call();
     generator.reuse_structured_loop_packet_setup();
+    generator.schedule_structured_frame_preloop_packets();
 
     ordinal_accounting::apply(
         function,

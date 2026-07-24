@@ -79,6 +79,7 @@ mod structured_frame_bitfield_stores;
 mod structured_frame_call_schedule;
 mod structured_frame_entry;
 mod structured_frame_packet_call_schedule;
+mod structured_frame_preloop_packet_schedule;
 mod structured_frame_publication;
 mod structured_frame_value_forwarding;
 mod structured_guard_cache_schedule;
