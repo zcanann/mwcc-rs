@@ -4,6 +4,64 @@
 use super::*;
 
 impl Generator {
+    /// Canonicalize adjacent linkage-first GPR saves and restores by physical
+    /// register number. Virtual home order follows source lifetimes, but MWCC's
+    /// frame slots remain r31 downward regardless of that semantic order.
+    pub(crate) fn normalize_linkage_first_saved_register_order(&mut self) {
+        if self.behavior.frame_convention != FrameConvention::LinkageFirst {
+            return;
+        }
+        for index in 0..self.output.instructions.len().saturating_sub(1) {
+            let saved = match (
+                &self.output.instructions[index],
+                &self.output.instructions[index + 1],
+            ) {
+                (
+                    Instruction::StoreWord { s: first, a: 1, offset: first_offset },
+                    Instruction::StoreWord { s: second, a: 1, offset: second_offset },
+                ) if (14..=31).contains(first)
+                    && (14..=31).contains(second)
+                    && first < second
+                    && *first_offset == second_offset.saturating_add(4) => Some((*first, *second)),
+                _ => None,
+            };
+            if let Some((first, second)) = saved {
+                let Instruction::StoreWord { s, .. } = &mut self.output.instructions[index] else {
+                    unreachable!()
+                };
+                *s = second;
+                let Instruction::StoreWord { s, .. } = &mut self.output.instructions[index + 1] else {
+                    unreachable!()
+                };
+                *s = first;
+                continue;
+            }
+            let restored = match (
+                &self.output.instructions[index],
+                &self.output.instructions[index + 1],
+            ) {
+                (
+                    Instruction::LoadWord { d: first, a: 1, offset: first_offset },
+                    Instruction::LoadWord { d: second, a: 1, offset: second_offset },
+                ) if (14..=31).contains(first)
+                    && (14..=31).contains(second)
+                    && first < second
+                    && *first_offset == second_offset.saturating_add(4) => Some((*first, *second)),
+                _ => None,
+            };
+            if let Some((first, second)) = restored {
+                let Instruction::LoadWord { d, .. } = &mut self.output.instructions[index] else {
+                    unreachable!()
+                };
+                *d = second;
+                let Instruction::LoadWord { d, .. } = &mut self.output.instructions[index + 1] else {
+                    unreachable!()
+                };
+                *d = first;
+            }
+        }
+    }
+
     /// Fill the linkage slot left by an inlined statement body with its
     /// independent zero store value. The retained frame lane proves this is an
     /// inline-composed body rather than an ordinary local initialization.

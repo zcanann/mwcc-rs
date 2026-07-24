@@ -9,10 +9,7 @@
 use super::*;
 
 impl Generator {
-    pub(crate) fn schedule_shared_float_store_literal(&mut self, function: &Function) {
-        if !is_repeated_zero_store_body(function) {
-            return;
-        }
+    pub(crate) fn schedule_shared_float_store_literal(&mut self, _function: &Function) {
         let Some(start) = self
             .output
             .instructions
@@ -69,58 +66,6 @@ impl Generator {
     }
 }
 
-fn is_repeated_zero_store_body(function: &Function) -> bool {
-    if function_makes_call(function)
-        || function
-            .parameters
-            .iter()
-            .any(|parameter| matches!(parameter.parameter_type, Type::Float | Type::Double))
-        || function
-            .locals
-            .iter()
-            .any(|local| matches!(local.declared_type, Type::Float | Type::Double))
-    {
-        return false;
-    }
-    let [_, _, first_zero, _, _, second_zero] = function.statements.as_slice() else {
-        return false;
-    };
-    let (
-        Statement::Store {
-            target:
-                Expression::Member {
-                    base: first_base,
-                    offset: first_offset,
-                    member_type: Type::Float,
-                    index_stride: None,
-                },
-            value: first_value,
-        },
-        Statement::Store {
-            target:
-                Expression::Member {
-                    base: second_base,
-                    offset: second_offset,
-                    member_type: Type::Float,
-                    index_stride: None,
-                },
-            value: second_value,
-        },
-    ) = (first_zero, second_zero)
-    else {
-        return false;
-    };
-    is_zero(first_value)
-        && is_zero(second_value)
-        && first_offset.checked_add(12) == Some(*second_offset)
-        && structurally_equal(first_base, second_base)
-}
-
-fn is_zero(expression: &Expression) -> bool {
-    matches!(expression, Expression::IntegerLiteral(0))
-        || matches!(expression, Expression::FloatLiteral(value) if *value == 0.0)
-}
-
 fn is_reloaded_float_store_literal(window: &[Instruction]) -> bool {
     matches!(window, [
         Instruction::LoadFloatSingle { d: 0, a: 0, .. },
@@ -136,11 +81,10 @@ fn is_reloaded_float_store_literal(window: &[Instruction]) -> bool {
         Instruction::StoreFloatSingle { s: 0, a: product_store_2, .. },
         Instruction::LoadFloatSingle { d: 0, a: 0, .. },
         Instruction::StoreFloatSingle { s: 0, a: second_base, offset: second_zero_offset },
-    ] if first_base == product_base_1
-        && product_base_1 == product_base_2
+    ] if first_base == product_base_2
         && product_base_2 == product_store_1
-        && product_store_1 == product_base_3
-        && product_base_3 == product_base_4
+        && product_base_1 == product_base_3
+        && product_store_1 == product_base_4
         && product_base_4 == product_store_2
         && product_store_2 == second_base
         && first_zero_offset.checked_add(12) == Some(*second_zero_offset))

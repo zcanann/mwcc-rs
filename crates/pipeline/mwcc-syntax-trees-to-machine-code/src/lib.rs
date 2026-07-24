@@ -585,11 +585,13 @@ pub fn lower_function(
     // larger linkage-first frame. Normalize only the verified allocator shape;
     // convention-aware owners already emitted their final frame and are skipped.
     generator.normalize_linkage_first_callee_saved_frame();
+    generator.normalize_linkage_first_saved_register_order();
     generator.normalize_linkage_first_plain_nonleaf_frame();
     generator.normalize_linkage_first_indirect_call_schedule();
     generator.normalize_linkage_first_conversion_frame();
     generator.hoist_normalized_linkage_first_arg_moves();
     generator.normalize_scratch_copy_convention();
+    generator.schedule_saved_base_call_argument();
     generator.schedule_linkage_first_function_address();
     generator.schedule_linkage_first_inline_zero();
     generator.schedule_guarded_report_store(function);

@@ -5,6 +5,40 @@ use mwcc_machine_code::Instruction;
 use mwcc_versions::MaterializationCopyStyle;
 
 impl Generator {
+    /// Schedule a saved-base call argument before an independent derived alias.
+    /// Linkage-first MWCC uses its materialization-copy spelling for the ABI
+    /// argument and fills that copy's issue slot with the alias computation.
+    pub(crate) fn schedule_saved_base_call_argument(&mut self) {
+        if self.behavior.materialization_copy_style
+            != MaterializationCopyStyle::AddImmediateZero
+        {
+            return;
+        }
+        let Some(start) = self.output.instructions.windows(3).position(|window| {
+            matches!(window, [
+                Instruction::AddImmediate { d: alias, a: base, immediate },
+                Instruction::Or { a: 3, s: argument, b: duplicate },
+                Instruction::BranchAndLink { .. },
+            ] if *immediate != 0 && alias != base && base == argument && argument == duplicate)
+        }) else {
+            return;
+        };
+        let (base, alias, immediate) = match self.output.instructions[start] {
+            Instruction::AddImmediate { d, a, immediate } => (a, d, immediate),
+            _ => unreachable!(),
+        };
+        self.output.instructions[start] = Instruction::AddImmediate {
+            d: 3,
+            a: base,
+            immediate: 0,
+        };
+        self.output.instructions[start + 1] = Instruction::AddImmediate {
+            d: alias,
+            a: base,
+            immediate,
+        };
+    }
+
     /// Normalize physical, straight-line r0 snapshots after allocation. `addi`
     /// cannot read r0 as a register (rA=0 means literal zero), so self/zero-source
     /// moves retain their logical encoding. A move immediately inside a

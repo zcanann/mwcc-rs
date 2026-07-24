@@ -162,6 +162,8 @@ impl Generator {
         } else {
             None
         };
+        let unused_frame_array = frame_array
+            .is_some_and(|array| !body_uses_local(&function.statements, &array.name));
         let supported_plain_return = structured_return_is_supported(function);
         if (!with_frame_array && !supported_plain_return)
             || !supports_statements(
@@ -379,6 +381,8 @@ impl Generator {
         let count = eager_saved_locals.len()
             + saved_parameters.len()
             + parameter_home_reuse.fresh_group_count;
+        let unused_array_two_homes =
+            unused_frame_array && saved_parameters.is_empty() && count == 2;
         let first_saved = 32usize.saturating_sub(count);
         let dense_frame = uses_dense_saved_register_range(
             with_frame_array,
@@ -464,6 +468,11 @@ impl Generator {
                         .position(|candidate| *candidate == group)
                         .unwrap_or(group);
                     self.fresh_virtual_general_preferring(31u8.saturating_sub(rank as u8))
+                } else if unused_array_two_homes {
+                    // A dead scratch array keeps its source frame bytes but no
+                    // value node. The later-assigned alias takes r31 and the
+                    // entry-initialized object therefore begins in r30.
+                    self.fresh_virtual_general_preferring((first_saved + home_index) as u8)
                 } else if with_frame_array && eager_saved_locals.is_empty() && count <= 18 {
                     let preferred = if dense_entry_prefix && deferred_home_plan.group_count == 1 {
                         if home_index < saved_parameters.len() {
@@ -616,8 +625,14 @@ impl Generator {
         self.non_leaf = true;
         self.frame_size = plan.frame_size;
         self.callee_saved = homes.clone();
-        self.legacy_callee_saved_frame_layout =
-            LegacyCalleeSavedFrameLayout::RetainEntryParameterTable;
+        self.legacy_callee_saved_frame_layout = if unused_frame_array {
+            // An unused source-level scratch array still occupies its declared
+            // bytes, but creates no retained value-table lane. Its logical
+            // frame already accounts for the array and every saved home.
+            LegacyCalleeSavedFrameLayout::PreserveLogicalSize
+        } else {
+            LegacyCalleeSavedFrameLayout::RetainEntryParameterTable
+        };
         let dense_save_helper =
             dense_frame && self.behavior.frame_convention == FrameConvention::Predecrement;
         let dense_inline_save =
@@ -679,12 +694,13 @@ impl Generator {
                 .push(Instruction::BranchAndLink { target: helper });
         }
 
-        let batched_saved_home_stores = saved_home_stores_precede_initialization(
-            self.behavior.frame_convention,
-            eager_saved_locals.len(),
-            saved_parameters.len(),
-            deferred_home_plan.group_count,
-        );
+        let batched_saved_home_stores = unused_array_two_homes
+            || saved_home_stores_precede_initialization(
+                self.behavior.frame_convention,
+                eager_saved_locals.len(),
+                saved_parameters.len(),
+                deferred_home_plan.group_count,
+            );
 
         let saved_parameter_base = eager_saved_locals.len();
         let mut saved_parameter_homes = Vec::with_capacity(saved_parameters.len());
