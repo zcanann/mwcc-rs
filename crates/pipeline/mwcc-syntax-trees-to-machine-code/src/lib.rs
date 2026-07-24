@@ -189,11 +189,11 @@ pub fn lower_function(
             prototyped_names,
         ));
     }
-    // A STATIC CONST float/double global is DE-NAMED by mwcc: every read compiles
+    // A defined CONST float/double global is DE-NAMED by mwcc: every read compiles
     // as the literal value, pooled anonymously (@N in .sdata2) with no named
-    // symbol — measured: `static const double two54 = C; x * two54` emits the
-    // exact bytes of the inline literal. Substitute before lowering (a name
-    // shadowed by a parameter or local is left alone).
+    // reference — measured for both `static const double two54 = C` and
+    // external-linkage `const float NMathF::pi`. Substitute before lowering (a
+    // name shadowed by a parameter or local is left alone).
     let substituted = body::substitute_const_float_globals(function, globals);
     let function = substituted.as_ref().unwrap_or(function);
     // A `static` local has STATIC storage — an anonymous `<name>$N` object in `.sdata`/`.sbss`,

@@ -95,6 +95,7 @@ mod reciprocal_frame_fill_schedule;
 mod range_guarded_array_address;
 mod register_inline_asm;
 mod schedule_relocations;
+mod scaled_angle_call;
 mod variadic_report_member_schedule;
 mod sorted_intrusive_insert;
 mod store_fill;

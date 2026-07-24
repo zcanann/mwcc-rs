@@ -2357,6 +2357,11 @@ impl Generator {
         if self.try_float_octant_table_dispatch(function)? {
             return Ok(());
         }
+        // A narrow angle-code call followed by unsigned conversion and float
+        // scaling owns its linkage-first argument swaps and conversion frame.
+        if self.try_scaled_angle_call(function)? {
+            return Ok(());
+        }
         if self.try_callee_saved_structured_frame_body(function)? {
             return Ok(());
         }

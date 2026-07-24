@@ -725,8 +725,11 @@ pub(crate) fn is_punned_frame_read(expression: &Expression) -> bool {
     }
 }
 
-/// See `lower_function`: reads of static const float/double globals become their
-/// literal values (mwcc de-names them into the anonymous constant pool).
+/// See `lower_function`: reads of defined const float/double globals become
+/// their literal values (mwcc de-names them into the anonymous constant pool).
+/// This is not restricted to explicit `static`: a visible external-linkage
+/// const definition is equally immutable and is folded by MWCC (Pikmin's
+/// `NMathF::pi` remains an emitted global but atan2 reads a pooled literal).
 pub(crate) fn substitute_const_float_globals(
     function: &Function,
     globals: &[mwcc_syntax_trees::GlobalDeclaration],
@@ -739,7 +742,11 @@ pub(crate) fn substitute_const_float_globals(
         .collect();
     let values: std::collections::HashMap<String, Expression> = globals
         .iter()
-        .filter(|global| global.is_const && global.is_static && global.array_length.is_none())
+        .filter(|global| {
+            global.is_const
+                && global.is_data_definition()
+                && global.array_length.is_none()
+        })
         .filter(|global| !shadowed.contains(global.name.as_str()))
         .filter_map(|global| {
             let bits = *global.initializer.as_ref()?.first()?;
@@ -2047,6 +2054,57 @@ mod tests {
         let mut scratch_array = function;
         scratch_array.locals[0].array_length = Some(4);
         assert!(remove_dead_locals(&scratch_array).is_none());
+    }
+
+    #[test]
+    fn defined_external_const_float_reads_fold_to_literals() {
+        let pi_bits = std::f32::consts::PI.to_bits();
+        let global = mwcc_syntax_trees::GlobalDeclaration {
+            declared_type: Type::Float,
+            source_fundamental: None,
+            name: "pi".into(),
+            is_extern: false,
+            is_static: false,
+            is_volatile: false,
+            is_weak: false,
+            non_static_functions_before: 0,
+            functions_before: 0,
+            array_length: None,
+            array_length_inferred: false,
+            initializer: Some(vec![i64::from(pi_bits)]),
+            is_const: true,
+            address_initializer: None,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            section: None,
+            attribute_alignment: None,
+        };
+        let function = Function {
+            return_type: Type::Float,
+            name: "read_pi".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: Vec::new(),
+            statements: Vec::new(),
+            guards: Vec::new(),
+            return_expression: Some(Expression::Variable("pi".into())),
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+
+        let folded =
+            substitute_const_float_globals(&function, &[global]).expect("visible const folds");
+        assert!(matches!(
+            folded.return_expression,
+            Some(Expression::FloatLiteral(value))
+                if value == std::f32::consts::PI as f64
+        ));
     }
 
     #[test]
