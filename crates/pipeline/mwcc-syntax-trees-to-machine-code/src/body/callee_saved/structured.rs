@@ -31,7 +31,7 @@ use super::structured_liveness::{
 };
 use super::structured_locals::{
     body_uses_local, dead_ephemeral_float_locals, is_definitely_assigned_before_reads,
-    plan_deferred_saved_homes, plan_ephemeral_locals,
+    is_frame_address_null_select, plan_deferred_saved_homes, plan_ephemeral_locals,
 };
 use super::structured_parameter_home_reuse::StructuredParameterHomeReuse;
 use super::structured_prologue::{
@@ -522,6 +522,9 @@ impl Generator {
                 .iter()
                 .filter(|local| {
                     local.array_length.is_none()
+                        && !aggregate_frame_locals
+                            .iter()
+                            .any(|aggregate| aggregate.name == local.name)
                         && !deferred_saved_locals
                             .iter()
                             .any(|saved| saved.name == local.name)
@@ -915,6 +918,9 @@ impl Generator {
             let temporary = alias.unwrap_or_else(|| match class {
                 ValueClass::General if rounded_byte_pointer == Some(local.name.as_str()) => {
                     self.fresh_virtual_general_preferring(Eabi::general_result().number)
+                }
+                ValueClass::General if is_frame_address_null_select(function, &local.name) => {
+                    self.fresh_virtual_general_preferring(4)
                 }
                 ValueClass::General => self.fresh_virtual_general(),
                 ValueClass::Float => self.fresh_virtual_float_preferring(
