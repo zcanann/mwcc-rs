@@ -4533,6 +4533,87 @@ mod tests {
     }
 
     #[test]
+    fn retains_a_derived_member_alias_across_a_guarded_call() {
+        let source = br#"
+            struct Attributes {
+                char padding[88];
+                int max_jumps;
+            };
+            struct State {
+                char pad0[12];
+                unsigned char player_id;
+                char pad1[107];
+                float animation_y;
+                char pad2[100];
+                int ground_or_air;
+                char pad3[8];
+                float ground_velocity;
+                char pad4[32];
+                struct Attributes attributes;
+                char pad5[1716];
+                unsigned int collision_flags;
+                char pad6[104];
+                int lock;
+                char pad7[4312];
+                unsigned char jumps_used;
+                char pad8[2230];
+                unsigned char report_pad0 : 4;
+                unsigned char report_flag : 1;
+                unsigned char report_pad1 : 3;
+                char pad9[7];
+                unsigned char condition_flag : 1;
+                unsigned char condition_pad : 7;
+            };
+            extern void report(unsigned char player, unsigned int flag);
+            void compiled(struct State* state) {
+                struct Attributes* attributes = &state->attributes;
+                if (state->condition_flag && state->jumps_used <= 1) {
+                    report(state->player_id, state->report_flag);
+                }
+                state->ground_or_air = 1;
+                state->ground_velocity = 0;
+                state->animation_y = 0;
+                state->jumps_used = attributes->max_jumps;
+                state->lock = 5;
+                state->collision_flags |= 16;
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.emit_mwcats = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "guarded-derived-member-alias.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the receiver and derived member pointer should survive the guarded call");
+        let expected_text = [
+            0x7c, 0x08, 0x02, 0xa6, 0x90, 0x01, 0x00, 0x04, 0x94, 0x21, 0xff, 0xe8, 0x93,
+            0xe1, 0x00, 0x14, 0x93, 0xc1, 0x00, 0x10, 0x7c, 0x7e, 0x1b, 0x78, 0x3b, 0xfe,
+            0x01, 0x10, 0x88, 0x03, 0x22, 0x27, 0x54, 0x00, 0xcf, 0xff, 0x41, 0x82, 0x00,
+            0x20, 0x88, 0x1e, 0x19, 0x68, 0x28, 0x00, 0x00, 0x01, 0x41, 0x81, 0x00, 0x14,
+            0x88, 0x9e, 0x22, 0x1f, 0x88, 0x7e, 0x00, 0x0c, 0x54, 0x84, 0xef, 0xfe, 0x48,
+            0x00, 0x00, 0x01, 0x38, 0x00, 0x00, 0x01, 0x90, 0x1e, 0x00, 0xe0, 0x38, 0x00,
+            0x00, 0x05, 0xc0, 0x00, 0x00, 0x00, 0xd0, 0x1e, 0x00, 0xec, 0xd0, 0x1e, 0x00,
+            0x78, 0x80, 0x7f, 0x00, 0x58, 0x98, 0x7e, 0x19, 0x68, 0x90, 0x1e, 0x08, 0x8c,
+            0x80, 0x1e, 0x08, 0x20, 0x60, 0x00, 0x00, 0x10, 0x90, 0x1e, 0x08, 0x20, 0x80,
+            0x01, 0x00, 0x1c, 0x83, 0xe1, 0x00, 0x14, 0x83, 0xc1, 0x00, 0x10, 0x38, 0x21,
+            0x00, 0x18, 0x7c, 0x08, 0x03, 0xa6, 0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected_text.len())
+            .any(|bytes| bytes == expected_text));
+    }
+
+    #[test]
     fn command_line_pool_mode_is_last_wins() {
         let off = parse_invocation(&["-pool".into(), "off".into()]);
         assert!(!off.flags.pooling_enabled);
