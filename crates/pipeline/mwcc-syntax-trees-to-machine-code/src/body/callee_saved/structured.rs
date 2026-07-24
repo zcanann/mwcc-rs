@@ -38,6 +38,7 @@ use super::structured_liveness::{
     read_after_possible_call, read_after_possible_call_in_return,
 };
 use super::structured_loop_invariants::hoist_iterator_end_sentinels;
+use super::structured_loop_packet_invariants::hoist_repeated_packet_words;
 use super::structured_loop_assertion_strings::plan_loop_assertion_strings;
 use super::structured_loop_lowering::lower_structured_loops;
 use super::structured_loop_register_pressure::plan_dense_loop_register_window;
@@ -117,6 +118,8 @@ impl Generator {
         let coalesced_packets =
             super::super::display_list_packet_runs::coalesce_display_list_packet_runs(function);
         let function = coalesced_packets.as_ref().unwrap_or(function);
+        let hoisted_packet_words = hoist_repeated_packet_words(function);
+        let function = hoisted_packet_words.as_ref().unwrap_or(function);
         let hoisted_iterator_end =
             hoist_iterator_end_sentinels(function, &self.one_word_aggregate_locals);
         let function = hoisted_iterator_end.as_ref().unwrap_or(function);
