@@ -173,6 +173,20 @@ impl Generator {
                 if is_constant_divide(left) || is_constant_divide(right) {
                     return Err(Diagnostic::error("a constant-divide operand alongside another complex operand needs the register allocator (roadmap)"));
                 }
+                // A subtraction of two computed nodes evaluates the RIGHT subtree
+                // first into a virtual home, then the left into r0.  This lets the
+                // allocator coalesce the right result onto its dying primary input
+                // (`(a-b)-(c-d)` starts with `subf r5,r6,r5`) while preserving the
+                // noncommutative source order at the final `subf`.
+                if operator == BinaryOperator::Subtract {
+                    let right_register = self.with_reserved_inputs(left, |generator| {
+                        let temp = generator.fresh_virtual_general();
+                        generator.evaluate_general(right, temp)?;
+                        Ok(temp)
+                    })?;
+                    self.evaluate_general(left, GENERAL_SCRATCH)?;
+                    return Operands::ordered(GENERAL_SCRATCH, right_register);
+                }
                 // Sethi-Ullman for a commutative node with operands of different
                 // register need: mwcc evaluates the heavier operand first and keeps
                 // its result in the scratch, while the lighter goes to a fresh
