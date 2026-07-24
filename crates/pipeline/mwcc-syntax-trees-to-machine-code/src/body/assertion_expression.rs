@@ -133,8 +133,26 @@ impl Generator {
             return Ok(false);
         }
 
+        let retained_highs = self
+            .loop_assertion_string_high_home(file)
+            .zip(self.loop_assertion_string_high_home(asserted));
         let file = self.string_literal_placeholder(file);
         let asserted = self.string_literal_placeholder(asserted);
+        if let Some((file_high, asserted_high)) = retained_highs {
+            self.emit_string_address_low(&file, file_high, 3);
+            self.emit_string_address_low(&asserted, asserted_high, 5);
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(4, line));
+            self.output
+                .instructions
+                .push(Instruction::ConditionRegisterClear { d: 6 });
+            self.record_relocation(RelocationKind::Rel24, name);
+            self.output.instructions.push(Instruction::BranchAndLink {
+                target: name.to_string(),
+            });
+            return Ok(true);
+        }
         match self.behavior.frame_convention {
             FrameConvention::LinkageFirst
                 if self.behavior.power_pc_7400_scheduling_enabled() =>
@@ -514,6 +532,13 @@ impl<'a> SimpleDiscardedAssertion<'a> {
             arguments,
         })
     }
+}
+
+pub(crate) fn simple_discarded_assertion_call(
+    expression: &Expression,
+) -> Option<(&str, &[Expression])> {
+    let assertion = SimpleDiscardedAssertion::recognize(expression)?;
+    Some((assertion.name, assertion.arguments))
 }
 
 impl<'a> DiscardedAssertion<'a> {

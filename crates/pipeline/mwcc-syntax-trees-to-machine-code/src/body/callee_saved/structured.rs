@@ -38,6 +38,7 @@ use super::structured_liveness::{
     read_after_possible_call, read_after_possible_call_in_return,
 };
 use super::structured_loop_invariants::hoist_iterator_end_sentinels;
+use super::structured_loop_assertion_strings::plan_loop_assertion_strings;
 use super::structured_loop_lowering::lower_structured_loops;
 use super::structured_preloop_alias::fold_preloop_comma_pointer_alias;
 use super::structured_locals::{
@@ -114,6 +115,12 @@ impl Generator {
         let function = hoisted_iterator_end.as_ref().unwrap_or(function);
         let folded_preloop_alias = fold_preloop_comma_pointer_alias(function);
         let function = folded_preloop_alias.as_ref().unwrap_or(function);
+        let raw_loop_assertion_strings = plan_loop_assertion_strings(function);
+        let planned_loop_assertion_strings = raw_loop_assertion_strings.filter(|plan| {
+            self.behavior.frame_convention == FrameConvention::Predecrement
+                && self.behavior.global_addressing == GlobalAddressing::SmallData
+                && self.variadic_callees.contains(&plan.callee)
+        });
         let capture = std::env::var_os("MWCC_CAPTURE_FUNCTION")
             .is_some_and(|name| name == std::ffi::OsStr::new(&function.name));
         macro_rules! decline {
@@ -246,7 +253,9 @@ impl Generator {
                     &function.statements,
                     function.return_expression.as_ref(),
                     name,
-                )
+                ) || (self.one_word_aggregate_locals.contains(*name)
+                    && body_uses_local(&function.statements, name)
+                    && function.statements.iter().any(statement_has_call))
             })
             .collect();
         let call_accumulators = call_accumulator_names(function);
@@ -260,11 +269,12 @@ impl Generator {
                 local.array_length.is_none()
                     && survivors.contains(local.name.as_str())
                     && !call_accumulators.contains(local.name.as_str())
-                    && !is_transient_direct_call_argument_local(
-                        &function.statements,
-                        function.return_expression.as_ref(),
-                        &local.name,
-                    )
+                    && (self.one_word_aggregate_locals.contains(&local.name)
+                        || !is_transient_direct_call_argument_local(
+                            &function.statements,
+                            function.return_expression.as_ref(),
+                            &local.name,
+                        ))
             })
             .collect();
         if saved_locals.iter().any(|local| {
@@ -397,9 +407,12 @@ impl Generator {
             &saved_parameters,
             &deferred_home_plan,
         );
-        let count = eager_saved_locals.len()
+        let value_home_count = eager_saved_locals.len()
             + saved_parameters.len()
             + parameter_home_reuse.fresh_group_count;
+        let loop_assertion_strings =
+            (value_home_count == 4).then_some(planned_loop_assertion_strings).flatten();
+        let count = value_home_count + 2 * usize::from(loop_assertion_strings.is_some());
         let unused_array_two_homes = unused_frame_array
             && saved_parameters.is_empty()
             && count == 2
@@ -421,6 +434,7 @@ impl Generator {
             count,
         );
         let first_saved = 32usize.saturating_sub(count);
+        let loop_assertion_saved_range = loop_assertion_strings.is_some();
         let dense_frame = uses_dense_saved_register_range(
             with_frame_array,
             eager_saved_locals.len(),
@@ -429,6 +443,10 @@ impl Generator {
             parameter_home_reuse
                 .reuses_parameter_home(eager_saved_locals.len(), saved_parameters.len()),
         );
+        // A source loop may retain assertion string high halves alongside its
+        // values in one contiguous saved-GPR range without otherwise using
+        // dense-frame entry or body scheduling.
+        let dense_saved_range = dense_frame || loop_assertion_saved_range;
         let dense_eager_round_up = dense_frame
             .then(|| plan_dense_eager_pointer_round_up(function))
             .flatten();
@@ -491,7 +509,18 @@ impl Generator {
         );
         let homes: Vec<u8> = (0..count)
             .map(|home_index| {
-                if let Some(preferred) = paired_eager_deferred_preference(
+                if loop_assertion_strings.is_some() {
+                    let preferred = match home_index {
+                        0 => 26,
+                        1 => 27,
+                        2 => 31,
+                        3 => 30,
+                        4 => 28,
+                        5 => 29,
+                        _ => unreachable!("loop assertion plan has six saved homes"),
+                    };
+                    self.fresh_virtual_general_preferring(preferred)
+                } else if let Some(preferred) = paired_eager_deferred_preference(
                     with_frame_array,
                     eager_saved_locals.len(),
                     saved_parameters.len(),
@@ -565,6 +594,12 @@ impl Generator {
                 }
             })
             .collect();
+        if let Some(strings) = &loop_assertion_strings {
+            self.loop_assertion_string_highs = vec![
+                (strings.file.clone(), homes[value_home_count]),
+                (strings.asserted.clone(), homes[value_home_count + 1]),
+            ];
+        }
         let mut plan = mwcc_vreg::FramePlan::with_local_region(homes.clone(), local_region_bytes);
         if !aggregate_frame_locals.is_empty() {
             let placements =
@@ -782,10 +817,10 @@ impl Generator {
             LegacyCalleeSavedFrameLayout::RetainEntryParameterTable
         };
         let dense_save_helper =
-            dense_frame && self.behavior.frame_convention == FrameConvention::Predecrement;
+            dense_saved_range && self.behavior.frame_convention == FrameConvention::Predecrement;
         let dense_inline_save =
-            dense_frame && self.behavior.frame_convention == FrameConvention::LinkageFirst;
-        if dense_frame {
+            dense_saved_range && self.behavior.frame_convention == FrameConvention::LinkageFirst;
+        if dense_saved_range {
             self.output.pre_scheduled = true;
         }
         if dense_inline_save {
@@ -869,9 +904,9 @@ impl Generator {
         }
         let deferred_home_base = saved_parameter_base + saved_parameter_homes.len();
         let stagger_dense_parameter_copies =
-            dense_frame && saved_parameter_base != 0 && saved_parameter_homes.len() >= 2;
+            dense_saved_range && saved_parameter_base != 0 && saved_parameter_homes.len() >= 2;
         if batched_saved_home_stores {
-            if !dense_frame {
+            if !dense_saved_range {
                 self.emit_structured_saved_home_store_range(
                     &homes[..saved_parameter_base],
                     0,
@@ -893,7 +928,7 @@ impl Generator {
                 for (parameter_index, (_, home, incoming)) in
                     saved_parameter_homes.iter().enumerate()
                 {
-                    if !dense_frame {
+                    if !dense_saved_range {
                         self.emit_structured_saved_home_store(
                             *home,
                             saved_parameter_base + parameter_index,
@@ -905,7 +940,7 @@ impl Generator {
                         .push(Instruction::move_register(*home, *incoming));
                 }
             }
-            if !dense_frame {
+            if !dense_saved_range {
                 self.emit_structured_saved_home_store_range(
                     &homes[deferred_home_base..],
                     deferred_home_base,
@@ -920,7 +955,7 @@ impl Generator {
         for local in eager_saved_locals {
             let home = homes[home_index];
             home_index += 1;
-            if !batched_saved_home_stores && !dense_frame {
+            if !batched_saved_home_stores && !dense_saved_range {
                 self.emit_structured_saved_home_store(home, home_index - 1, plan.frame_size);
             }
             let initializer = local.initializer.as_ref().expect("partitioned as eager");
@@ -999,8 +1034,10 @@ impl Generator {
         for (_, home, incoming) in &saved_parameter_homes {
             home_index += 1;
             if !batched_saved_home_stores {
-                if !dense_frame {
+                if !dense_saved_range {
                     self.emit_structured_saved_home_store(*home, home_index - 1, plan.frame_size);
+                }
+                if !dense_frame {
                     self.output
                         .instructions
                         .push(Instruction::move_register(*home, *incoming));
@@ -1014,7 +1051,7 @@ impl Generator {
                 continue;
             }
             let home = homes[slot_index];
-            if !batched_saved_home_stores && !dense_frame {
+            if !batched_saved_home_stores && !dense_saved_range {
                 self.emit_structured_saved_home_store(home, slot_index, plan.frame_size);
             }
         }
@@ -1676,6 +1713,9 @@ impl Generator {
                     }
                 }
                 Statement::Assign { name, value } => {
+                    if name.starts_with("__mwcc_iterator_end_") {
+                        self.emit_loop_assertion_string_highs();
+                    }
                     if is_folded_terminal_pointer_load_alias(function, statement_index) {
                         continue;
                     }

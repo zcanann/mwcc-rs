@@ -4,6 +4,23 @@
 use super::*;
 
 impl Generator {
+    pub(crate) fn loop_assertion_string_high_home(&self, bytes: &[u8]) -> Option<u8> {
+        self.loop_assertion_string_highs
+            .iter()
+            .find_map(|(candidate, home)| (candidate.as_slice() == bytes).then_some(*home))
+    }
+
+    pub(crate) fn emit_loop_assertion_string_highs(&mut self) {
+        if self.loop_assertion_string_highs_emitted {
+            return;
+        }
+        self.loop_assertion_string_highs_emitted = true;
+        for (bytes, home) in self.loop_assertion_string_highs.clone() {
+            let placeholder = self.string_literal_placeholder(&bytes);
+            self.emit_address_high(home, &placeholder);
+        }
+    }
+
     /// A string literal in expression position: intern it into the function's pooled
     /// `@N` strings (deduplicated by bytes), then load that object's address. Under
     /// small-data addressing this is `addi d,0,0` + an `R_PPC_EMB_SDA21` relocation;

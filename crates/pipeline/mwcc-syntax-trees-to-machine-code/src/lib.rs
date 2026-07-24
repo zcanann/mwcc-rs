@@ -428,6 +428,8 @@ pub fn lower_function(
         narrow_truncation_context: false,
         known_locals: std::collections::HashSet::new(),
         one_word_aggregate_locals: std::collections::HashSet::new(),
+        loop_assertion_string_highs: Vec::new(),
+        loop_assertion_string_highs_emitted: false,
         call_return_types: call_return_types.clone(),
         fixed_address_arrays: fixed_address_arrays
             .iter()

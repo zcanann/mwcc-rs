@@ -174,8 +174,17 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
     for ((class, value), start, end) in ranges {
         if Reg::is_virtual_field(value) {
             let vreg = VirtualRegister::new((value - VIRTUAL_BASE) as u32, class);
-            let mut interval = LiveInterval::new(vreg, start, end);
-            interval.live_slots = Some(slots_for_range(&live_slots, (class, value), start, end));
+            // A virtual register is one value home even when its control-flow
+            // lifetime wraps around a loop backedge. Its final textual use can
+            // precede a later call that the next iteration must survive, so use
+            // the full CFG-derived slot set and widen the coarse interval to it.
+            let slots = live_slots
+                .get(&(class, value))
+                .cloned()
+                .unwrap_or_default();
+            let flow_end = slots.last().map(|slot| slot / 2).unwrap_or(end);
+            let mut interval = LiveInterval::new(vreg, start, end.max(flow_end));
+            interval.live_slots = Some(slots);
             liveness.intervals.push(interval);
         } else {
             liveness.pinned.push(PinnedOccupancy {
@@ -379,6 +388,60 @@ mod tests {
             allocation.physical(Reg::general(0).virtual_register().unwrap()),
             Some(3),
             "the dead incoming r3 is reusable before the call result redefines it"
+        );
+    }
+
+    #[test]
+    fn a_loop_invariant_used_before_a_call_is_live_across_the_backedge() {
+        let stream = [
+            Instruction::AddImmediate {
+                d: v(0),
+                a: 0,
+                immediate: 1,
+            },
+            Instruction::Branch { target: 5 },
+            Instruction::AddImmediate {
+                d: 3,
+                a: v(0),
+                immediate: 0,
+            },
+            Instruction::BranchAndLink {
+                target: "report".into(),
+            },
+            Instruction::BranchAndLink {
+                target: "visit".into(),
+            },
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 2,
+            },
+        ];
+        let liveness = analyze(&stream);
+        let invariant = liveness
+            .intervals
+            .iter()
+            .find(|interval| interval.vreg.id == 0)
+            .expect("loop invariant interval");
+        assert!(
+            invariant.live_slots.as_ref().is_some_and(|slots| {
+                slots.contains(&(2 * 4)) && slots.contains(&(2 * 4 + 1))
+            }),
+            "the invariant must remain live through the later loop call"
+        );
+
+        let constraints = RegisterConstraints::gekko();
+        let allocation = LinearScan
+            .allocate(
+                &[invariant.clone().preferring(28)],
+                &liveness.pinned,
+                &liveness.calls,
+                &constraints,
+            )
+            .unwrap();
+        assert_eq!(
+            allocation.physical(VirtualRegister::new(0, Class::General)),
+            Some(28)
         );
     }
 

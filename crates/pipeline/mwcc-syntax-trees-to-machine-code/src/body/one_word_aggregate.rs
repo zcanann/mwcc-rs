@@ -99,12 +99,17 @@ fn assigns_one_word_value(statement: &Statement, name: &str) -> bool {
 }
 
 fn expression_assigns_one_word_value(expression: &Expression, name: &str) -> bool {
-    matches!(
-        expression,
-        Expression::Assign { target, value }
-            if matches!(target.as_ref(), Expression::Variable(target) if target == name)
+    match expression {
+        Expression::Assign { target, value } => {
+            matches!(target.as_ref(), Expression::Variable(target) if target == name)
                 && is_one_word_aggregate_value(value)
-    )
+        }
+        Expression::Comma { left, right } => {
+            expression_assigns_one_word_value(left, name)
+                || expression_assigns_one_word_value(right, name)
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]

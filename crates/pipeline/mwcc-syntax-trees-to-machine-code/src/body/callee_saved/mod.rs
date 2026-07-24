@@ -85,6 +85,7 @@ mod structured_member_scale_schedule;
 mod structured_liveness;
 mod structured_loop_lowering;
 mod structured_loop_invariants;
+mod structured_loop_assertion_strings;
 mod structured_preloop_alias;
 mod structured_parameter_home_reuse;
 mod structured_prologue;
