@@ -1588,6 +1588,12 @@ impl Generator {
         operand: &Expression,
         double: bool,
     ) -> Compilation<()> {
+        let single_zero = !double
+            && (matches!(operand, Expression::FloatLiteral(value) if *value as f32 == 0.0)
+                || matches!(operand, Expression::IntegerLiteral(value) if *value == 0));
+        if single_zero && self.condition_float_zero_register() == Some(dest) {
+            return Ok(());
+        }
         if self
             .preloaded_float_compare_literal
             .is_some_and(|preload| {
@@ -1598,6 +1604,7 @@ impl Generator {
             self.preloaded_float_compare_literal = None;
             return Ok(());
         }
+        self.invalidate_condition_float_register(dest);
         match operand {
             Expression::FloatLiteral(value) => {
                 if double {
@@ -1616,7 +1623,11 @@ impl Generator {
                 Ok(())
             }
             _ => Err(Diagnostic::error("expected a float literal operand")),
+        }?;
+        if single_zero {
+            self.record_condition_float_zero(dest);
         }
+        Ok(())
     }
 
     /// Whether f1 currently holds a float argument (a float parameter lives there),
@@ -1699,6 +1710,7 @@ impl Generator {
             self.record_condition_float_value(operand, register);
             return Ok(register);
         }
+        self.invalidate_condition_float_register(destination);
         self.evaluate_float(operand, destination)?;
         self.record_condition_float_value(operand, destination);
         Ok(destination)

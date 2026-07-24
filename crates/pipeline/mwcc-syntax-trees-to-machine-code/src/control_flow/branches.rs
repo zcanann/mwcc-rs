@@ -1030,12 +1030,22 @@ impl Generator {
             if self.is_float_value(operand) {
                 let source = if self.is_float_leaf(operand) {
                     self.float_register_of_leaf(operand)?
+                } else if crate::condition_float_cache::is_direct_float_memory_load(operand) {
+                    self.place_condition_float_load(
+                        operand,
+                        mwcc_target::Eabi::float_result().number,
+                    )?
                 } else {
                     let source = mwcc_target::Eabi::float_result().number;
+                    self.invalidate_condition_float_register(source);
                     self.evaluate_float(operand, source)?;
                     source
                 };
-                self.load_float_constant(FLOAT_SCRATCH, 0.0);
+                if self.condition_float_zero_register() != Some(FLOAT_SCRATCH) {
+                    self.invalidate_condition_float_register(FLOAT_SCRATCH);
+                    self.load_float_constant(FLOAT_SCRATCH, 0.0);
+                    self.record_condition_float_zero(FLOAT_SCRATCH);
+                }
                 self.output
                     .instructions
                     .push(Instruction::FloatCompareUnordered {
@@ -1630,12 +1640,22 @@ impl Generator {
         if self.is_float_value(condition) {
             let source = if self.is_float_leaf(condition) {
                 self.float_register_of_leaf(condition)?
+            } else if crate::condition_float_cache::is_direct_float_memory_load(condition) {
+                self.place_condition_float_load(
+                    condition,
+                    mwcc_target::Eabi::float_result().number,
+                )?
             } else {
                 let source = mwcc_target::Eabi::float_result().number;
+                self.invalidate_condition_float_register(source);
                 self.evaluate_float(condition, source)?;
                 source
             };
-            self.load_float_constant(FLOAT_SCRATCH, 0.0);
+            if self.condition_float_zero_register() != Some(FLOAT_SCRATCH) {
+                self.invalidate_condition_float_register(FLOAT_SCRATCH);
+                self.load_float_constant(FLOAT_SCRATCH, 0.0);
+                self.record_condition_float_zero(FLOAT_SCRATCH);
+            }
             self.output
                 .instructions
                 .push(Instruction::FloatCompareUnordered {

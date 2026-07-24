@@ -13,6 +13,13 @@ use mwcc_syntax_trees::Expression;
 pub(crate) struct ConditionFloatValue {
     expression: Expression,
     register: u8,
+    instruction_index: usize,
+}
+
+#[derive(Clone, Copy)]
+struct ConditionFloatRegisterValue {
+    register: u8,
+    instruction_index: usize,
 }
 
 #[derive(Clone, Default)]
@@ -21,6 +28,8 @@ pub(crate) struct ConditionFloatCache {
     recording_allowed: bool,
     reusable: Vec<ConditionFloatValue>,
     observed: Vec<ConditionFloatValue>,
+    intra_condition: Vec<ConditionFloatValue>,
+    zero_register: Option<ConditionFloatRegisterValue>,
 }
 
 impl Generator {
@@ -49,28 +58,80 @@ impl Generator {
             .collect();
     }
 
+    /// Enter a nested condition produced while composing one source-level
+    /// side-effect expression. Local-memory values are safe to carry across
+    /// this edge because no intervening source statement can mutate them.
+    pub(crate) fn begin_composed_condition_float_cache(
+        &mut self,
+        condition: &Expression,
+    ) -> ConditionFloatCache {
+        let previous = std::mem::take(&mut self.condition_float_cache);
+        self.condition_float_cache.active = true;
+        self.condition_float_cache.recording_allowed = !expression_has_value_barrier(condition);
+        if previous.active && self.condition_float_cache.recording_allowed {
+            self.condition_float_cache.reusable = previous
+                .intra_condition
+                .iter()
+                .filter(|value| pure_prefix_contains(condition, &value.expression, &mut false))
+                .cloned()
+                .collect();
+            self.condition_float_cache.zero_register = previous.zero_register;
+        }
+        previous
+    }
+
     pub(crate) fn restore_condition_float_cache(&mut self, previous: ConditionFloatCache) {
         self.condition_float_cache = previous;
     }
 
     pub(crate) fn condition_float_register(&mut self, operand: &Expression) -> Option<u8> {
+        if self.non_leaf && self.has_virtual_float_location() {
+            if let Some(value) = self
+                .condition_float_cache
+                .intra_condition
+                .iter()
+                .find(|value| same_direct_float_memory_load(&value.expression, operand))
+                .cloned()
+            {
+                if self.condition_float_value_is_live(&value) {
+                    return Some(value.register);
+                }
+            }
+        }
         let index = self
             .condition_float_cache
             .reusable
             .iter()
             .position(|value| same_direct_float_memory_load(&value.expression, operand))?;
-        Some(self.condition_float_cache.reusable.remove(index).register)
+        let value = self.condition_float_cache.reusable.remove(index);
+        self.condition_float_value_is_live(&value)
+            .then_some(value.register)
     }
 
     pub(crate) fn record_condition_float_value(&mut self, operand: &Expression, register: u8) {
         if !self.condition_float_cache.active
             || !self.condition_float_cache.recording_allowed
             || !is_direct_float_memory_load(operand)
+        {
+            return;
+        }
+        if self.non_leaf && self.has_virtual_float_location() {
+            self.invalidate_condition_float_register(register);
+            self.condition_float_cache
+                .intra_condition
+                .push(ConditionFloatValue {
+                    expression: operand.clone(),
+                    register,
+                    instruction_index: self.output.instructions.len(),
+                });
+        }
+
+        if
             // MWCC keeps an entry-parameter member live here, but reloads the
             // same shape through a local pointer alias (measured in Melee's
             // CaptureWaitKirby guard). Preserve that alias boundary instead of
             // treating two syntactically equal addresses as proven identical.
-            || direct_memory_base_name(operand).is_none_or(|name| {
+            direct_memory_base_name(operand).is_none_or(|name| {
                 self.known_locals.contains(name) || !self.locations.contains_key(name)
             })
             || self
@@ -86,7 +147,59 @@ impl Generator {
             .push(ConditionFloatValue {
                 expression: operand.clone(),
                 register,
+                instruction_index: self.output.instructions.len(),
             });
+    }
+
+    fn condition_float_value_is_live(&self, value: &ConditionFloatValue) -> bool {
+        !self.output.instructions[value.instruction_index..]
+            .iter()
+            .any(|instruction| instruction.float_destination() == Some(value.register))
+    }
+
+    pub(crate) fn invalidate_condition_float_register(&mut self, register: u8) {
+        self.condition_float_cache
+            .intra_condition
+            .retain(|value| value.register != register);
+        self.condition_float_cache
+            .observed
+            .retain(|value| value.register != register);
+        if self
+            .condition_float_cache
+            .zero_register
+            .is_some_and(|value| value.register == register)
+        {
+            self.condition_float_cache.zero_register = None;
+        }
+    }
+
+    pub(crate) fn condition_float_zero_register(&self) -> Option<u8> {
+        if !self.condition_float_cache.active
+            || !self.non_leaf
+            || !self.has_virtual_float_location()
+        {
+            return None;
+        }
+        let value = self.condition_float_cache.zero_register?;
+        (!self.output.instructions[value.instruction_index..]
+            .iter()
+            .any(|instruction| instruction.float_destination() == Some(value.register)))
+        .then_some(value.register)
+    }
+
+    pub(crate) fn record_condition_float_zero(&mut self, register: u8) {
+        if !self.condition_float_cache.active
+            || !self.condition_float_cache.recording_allowed
+            || !self.non_leaf
+            || !self.has_virtual_float_location()
+        {
+            return;
+        }
+        self.invalidate_condition_float_register(register);
+        self.condition_float_cache.zero_register = Some(ConditionFloatRegisterValue {
+            register,
+            instruction_index: self.output.instructions.len(),
+        });
     }
 
     pub(crate) fn observed_condition_float_register(
