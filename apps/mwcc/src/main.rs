@@ -830,6 +830,7 @@ fn compile(
             &unit.functions,
             &unit.skipped_inline_definitions,
         )
+        .with_overwritten_vptr_elision(config.flags.whole_file_optimization_enabled())
     } else {
         mwcc_syntax_trees_to_machine_code::InlineBodySet::default()
     };

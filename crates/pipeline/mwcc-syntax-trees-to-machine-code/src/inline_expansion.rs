@@ -41,6 +41,10 @@ pub struct InlineBodySet {
     /// feeding their empty semantic-statement list through AST composition,
     /// which would erase the call and its assembly body.
     asm_fragments: HashMap<String, Vec<AsmItem>>,
+    /// Whole-file IPA may erase a base vptr immediately overwritten by the
+    /// derived constructor. Ordinary automatic inlining preserves each
+    /// construction-phase installation because MWCC does.
+    elide_overwritten_vptr_stores: bool,
 }
 
 pub(crate) fn legacy_frame_residue_bytes(
@@ -197,7 +201,13 @@ impl InlineBodySet {
             values,
             required,
             asm_fragments,
+            elide_overwritten_vptr_stores: false,
         }
+    }
+
+    pub fn with_overwritten_vptr_elision(mut self, enabled: bool) -> Self {
+        self.elide_overwritten_vptr_stores = enabled;
+        self
     }
 
     /// A zero-argument, void retained inline-assembly helper that can be
@@ -419,7 +429,11 @@ impl InlineBodySet {
         }
         drop(allocator);
         expanded.locals = locals;
-        expanded.statements = remove_overwritten_vptr_stores(statements);
+        expanded.statements = if self.elide_overwritten_vptr_stores {
+            remove_overwritten_vptr_stores(statements)
+        } else {
+            statements
+        };
         let calls_remain = self.calls_any(&expanded);
         if calls_remain
             && std::env::var_os("MWCC_CAPTURE_FUNCTION")
@@ -966,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn removes_an_inlined_base_vptr_immediately_overwritten_by_the_derived_vptr() {
+    fn elides_an_overwritten_base_vptr_only_under_whole_file_ipa() {
         fn vptr_store(vtable: &str) -> Statement {
             Statement::Store {
                 target: Expression::Member {
@@ -1002,7 +1016,21 @@ mod tests {
             ],
         );
 
+        let retained = InlineBodySet::analyze(&[base.clone(), derived.clone()])
+            .expand_calls(&derived)
+            .expect("the trivial base constructor should inline");
+        assert_eq!(
+            retained
+                .statements
+                .iter()
+                .filter(|statement| matches!(statement, Statement::Store { .. }))
+                .count(),
+            2,
+            "ordinary automatic inlining preserves construction-phase vptrs"
+        );
+
         let expanded = InlineBodySet::analyze(&[base, derived.clone()])
+            .with_overwritten_vptr_elision(true)
             .expand_calls(&derived)
             .expect("the trivial base constructor should inline");
         assert!(matches!(
