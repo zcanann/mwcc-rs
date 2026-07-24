@@ -6875,24 +6875,119 @@ blr\n\
     }
 
     #[test]
-    fn defers_unlowered_kr_function_definitions_instead_of_dropping_text() {
+    fn parses_old_style_function_parameter_declarations() {
         let source = r#"
             int add(left, right)
             int left;
-            int right;
+            short right;
             {
                 return left + right;
             }
         "#;
-        let error = parse_translation_unit(
+        let unit = parse_translation_unit(
             mwcc_source_to_tokens::tokenize(source).unwrap(),
-            true,
+            false,
             false,
             1,
             3,
         )
-        .unwrap_err();
-        assert!(error.message.contains("expected a type"));
+        .unwrap();
+        assert_eq!(unit.functions.len(), 1);
+        assert_eq!(unit.functions[0].name, "add");
+        assert_eq!(unit.functions[0].parameters.len(), 2);
+        assert_eq!(unit.functions[0].parameters[0].name, "left");
+        assert_eq!(
+            unit.functions[0].parameters[0].parameter_type,
+            mwcc_syntax_trees::Type::Int
+        );
+        assert_eq!(unit.functions[0].parameters[1].name, "right");
+        assert_eq!(
+            unit.functions[0].parameters[1].parameter_type,
+            mwcc_syntax_trees::Type::Short
+        );
+        assert!(matches!(
+            unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Binary { .. })
+        ));
+    }
+
+    #[test]
+    fn parses_typedef_pointer_old_style_parameters() {
+        let source = r#"
+            typedef unsigned long uLong;
+            typedef unsigned char Bytef;
+            typedef unsigned int uInt;
+            uLong adler32(adler, buf, len)
+                uLong adler;
+                const Bytef *buf;
+                uInt len;
+            {
+                return adler + *buf + len;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let function = &unit.functions[0];
+        assert_eq!(function.name, "adler32");
+        assert_eq!(
+            function
+                .parameters
+                .iter()
+                .map(|parameter| (parameter.name.as_str(), parameter.parameter_type))
+                .collect::<Vec<_>>(),
+            vec![
+                ("adler", mwcc_syntax_trees::Type::UnsignedInt),
+                (
+                    "buf",
+                    mwcc_syntax_trees::Type::Pointer(
+                        mwcc_syntax_trees::Pointee::UnsignedChar
+                    )
+                ),
+                ("len", mwcc_syntax_trees::Type::UnsignedInt),
+            ]
+        );
+    }
+
+    #[test]
+    fn defaults_omitted_old_style_types_to_int() {
+        let source = r#"
+            add(left, right)
+            int left;
+            {
+                return left + right;
+            }
+            int identity(value) {
+                return value;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.functions.len(), 2);
+        assert_eq!(unit.functions[0].return_type, mwcc_syntax_trees::Type::Int);
+        assert_eq!(
+            unit.functions[0]
+                .parameters
+                .iter()
+                .map(|parameter| parameter.parameter_type)
+                .collect::<Vec<_>>(),
+            vec![mwcc_syntax_trees::Type::Int; 2]
+        );
+        assert_eq!(
+            unit.functions[1].parameters[0].parameter_type,
+            mwcc_syntax_trees::Type::Int
+        );
     }
 
     #[test]

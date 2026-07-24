@@ -13,6 +13,7 @@ mod cxx_destructors;
 pub(crate) mod cxx_template_destructors;
 pub(crate) mod cxx_template_constructors;
 mod initializers;
+mod kr_functions;
 mod statements;
 mod template_calls;
 mod templates;
@@ -2445,7 +2446,25 @@ impl Parser {
                 self.expect(Token::Semicolon)?;
                 return Ok(());
             }
-            let mut return_type = self.parse_type()?;
+            let is_kr_definition = !self.cplusplus && self.item_is_kr_function_definition();
+            let implicit_int_return = is_kr_definition
+                && matches!(self.peek(), Token::Identifier(_))
+                && self.tokens.get(self.position + 1) == Some(&Token::ParenOpen);
+            let mut return_type = if implicit_int_return {
+                // C89 permits an omitted function return type. Clear the same
+                // per-type scratch state parse_type would reset so an earlier
+                // declaration cannot leak source identity into this function.
+                self.last_type_was_const = false;
+                self.last_type_was_volatile = false;
+                self.last_source_fundamental = None;
+                self.last_type_was_aggregate_reference = false;
+                self.last_struct_tag = None;
+                self.last_enum_tag = None;
+                self.last_array_typedef = None;
+                Type::Int
+            } else {
+                self.parse_type()?
+            };
             self.last_type_was_const |= declaration_const;
             self.last_type_was_volatile |= declaration_volatile;
             let declared_source_fundamental = self.last_source_fundamental;
@@ -3079,7 +3098,16 @@ impl Parser {
             self.decayed_row_pointers.clear();
             // `(void)` is an empty parameter list — but only when the `void` is the
             // whole list; `void *p` / `void (*f)()` are real first parameters.
-            if *self.peek() == Token::KeywordVoid
+            if is_kr_definition {
+                parameters = self.parse_kr_parameters()?;
+                cxx_parameters.extend(
+                    parameters
+                        .iter()
+                        .map(|parameter| {
+                            crate::cxx::CxxParameterType::plain(parameter.parameter_type)
+                        }),
+                );
+            } else if *self.peek() == Token::KeywordVoid
                 && self.tokens.get(self.position + 1) == Some(&Token::ParenClose)
             {
                 self.advance();
@@ -3246,7 +3274,9 @@ impl Parser {
                     }
                 }
             }
-            self.expect(Token::ParenClose)?;
+            if !is_kr_definition {
+                self.expect(Token::ParenClose)?;
+            }
             let mut member_is_const = false;
             if member_scope.is_some() {
                 while matches!(self.peek(), Token::Identifier(word)
@@ -4203,8 +4233,8 @@ impl Parser {
     /// `int f(a, b) int a; short b; { ... }`. The ordinary definition
     /// lookahead stops at the first parameter-declaration semicolon and used to
     /// misclassify these as skippable declarations, allowing a partial object
-    /// with missing `.text` to escape. Lowering K&R parameters is still roadmap;
-    /// this detector exists to preserve the byte-exact-or-defer invariant.
+    /// with missing `.text` to escape. The recognizer also selects the dedicated
+    /// old-style parameter grammar when the item is parsed.
     fn item_is_kr_function_definition(&self) -> bool {
         let mut index = self.position;
         while let Some(token) = self.tokens.get(index) {
@@ -4247,13 +4277,17 @@ impl Parser {
 
         // An immediate semicolon is an old-style declaration (`int f(a,b);`),
         // and another `(` is a parenthesized function typedef/declarator
-        // (`typedef int (F)(void);`). A K&R definition has one or more parameter
-        // declarations between its identifier list and body.
+        // (`typedef int (F)(void);`). A K&R definition may have parameter
+        // declarations between its identifier list and body; undeclared names
+        // retain C89's implicit `int`.
         if matches!(
             self.tokens.get(index),
             Some(Token::Semicolon | Token::ParenOpen)
         ) {
             return false;
+        }
+        if self.tokens.get(index) == Some(&Token::BraceOpen) {
+            return true;
         }
 
         let mut saw_parameter_declaration = false;
