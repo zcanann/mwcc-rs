@@ -40,6 +40,14 @@ ours="${MWCC_BIN:-$here/target/release/mwcc}"
 code_metrics="$here/tools/object_code_metrics.py"
 pch_scanner="$here/tools/refctx_pch.py"
 pragma_bridge="$here/tools/refctx_pragmas.py"
+code_metric_args=()
+rank_mismatches="${REFCTX_RANK_MISMATCHES:-0}"
+if [[ "$rank_mismatches" =~ ^[0-9]+$ ]] && ((rank_mismatches > 0)); then
+  code_metric_args=(--rank-mismatches "$rank_mismatches")
+fi
+run_code_metrics() {
+  python3 "$code_metrics" "$@" ${code_metric_args[@]+"${code_metric_args[@]}"}
+}
 
 project="$(cd "$project" && pwd)"
 # Resolve the real compiler independently from the tools checkout. Some builds
@@ -186,12 +194,12 @@ emit_configured_source_verdict() {
     BYTE)
       echo "PARITY_META verdict_input=CONFIGURED"
       echo "BYTE   $src — configured whole object byte-identical ✅"
-      python3 "$code_metrics" "$objdump" "$dir/ref.direct.o" "$dir/our.configured.o"
+      run_code_metrics "$objdump" "$dir/ref.direct.o" "$dir/our.configured.o"
       ;;
     DIFF)
       echo "PARITY_META verdict_input=CONFIGURED"
       echo "DIFF   $src — configured objects differ"
-      python3 "$code_metrics" "$objdump" "$dir/ref.direct.o" "$dir/our.configured.o"
+      run_code_metrics "$objdump" "$dir/ref.direct.o" "$dir/our.configured.o"
       ;;
     DEFER)
       echo "PARITY_META verdict_input=CONFIGURED"
@@ -200,7 +208,7 @@ emit_configured_source_verdict() {
       echo "DEFER  $src — $configured_detail"
       if [[ "$configured_partial" == "RUNNABLE" ]]; then
         echo "PARITY_META function_projection=PARTIAL"
-        python3 "$code_metrics" "$objdump" "$dir/ref.partial.o" "$dir/our.partial.o"
+        run_code_metrics "$objdump" "$dir/ref.partial.o" "$dir/our.partial.o"
       fi
       ;;
   esac
@@ -577,7 +585,7 @@ if ! "$ours" --build "$build" ${compiler_flags[@]+"${compiler_flags[@]}"} -c "$d
       echo "CODE DEFER — reference -sym off projection failed: $projected_detail"
     elif "$ours" --build "$build" ${compiler_flags[@]+"${compiler_flags[@]}"} -sym off \
         -c "$dir/ours/$ctx_name" -o "$dir/projected.o" 2>"$dir/projected.err"; then
-      python3 "$code_metrics" "$objdump" "$dir/reference.projected.o" "$dir/projected.o" \
+      run_code_metrics "$objdump" "$dir/reference.projected.o" "$dir/projected.o" \
         --context "the same-flags -sym off projection"
     else
       projected_detail="$(sed 's/^mwcc: //' "$dir/projected.err" | head -1)"
@@ -589,8 +597,8 @@ fi
 
 if cmp -s "$dir/ref.o" "$dir/our.o"; then
   echo "BYTE   $src — whole object byte-identical ✅"
-  python3 "$code_metrics" "$objdump" "$dir/ref.o" "$dir/our.o"
+  run_code_metrics "$objdump" "$dir/ref.o" "$dir/our.o"
 else
   echo "DIFF   $src — objects differ"
-  python3 "$code_metrics" "$objdump" "$dir/ref.o" "$dir/our.o"
+  run_code_metrics "$objdump" "$dir/ref.o" "$dir/our.o"
 fi
