@@ -733,6 +733,14 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::BranchToLinkRegister);
+
+        // The legacy optimizer numbers the discarded expansion bookkeeping
+        // after this function's shared constants.  It contributes five nodes
+        // for the caller's octant decision tree and six for each of the eight
+        // inlined guarded-table calls.  Keep that non-code residue behind the
+        // constants so their own @N identities stay stable while subsequent
+        // functions observe the optimizer walk.
+        self.output.post_constant_label_bump += 5 + 8 * 6;
         Ok(true)
     }
 }
