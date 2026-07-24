@@ -76,10 +76,38 @@ fn packet<'a>(statements: &'a [Statement]) -> Option<Packet<'a>> {
     })
 }
 
+fn cursor_is_replaced_by_call(statements: &[Statement], cursor: &str) -> bool {
+    statements.iter().any(|statement| match statement {
+        Statement::Assign { name, value } => name == cursor && expression_has_call(value),
+        Statement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            cursor_is_replaced_by_call(then_body, cursor)
+                || cursor_is_replaced_by_call(else_body, cursor)
+        }
+        Statement::Loop { body, .. } => cursor_is_replaced_by_call(body, cursor),
+        Statement::Switch { arms, default, .. } => {
+            arms.iter().any(|arm| {
+                matches!(
+                    &arm.body,
+                    mwcc_syntax_trees::ArmBody::Statements(body)
+                        if cursor_is_replaced_by_call(body, cursor)
+                )
+            }) || matches!(
+                default,
+                Some(mwcc_syntax_trees::ArmBody::Statements(body))
+                    if cursor_is_replaced_by_call(body, cursor)
+            )
+        }
+        _ => false,
+    })
+}
+
 fn coalesce_statements(
     statements: &[Statement],
     function: &Function,
-    address_taken: &std::collections::HashSet<String>,
     changed: &mut bool,
 ) -> Vec<Statement> {
     let mut output = Vec::with_capacity(statements.len());
@@ -93,20 +121,20 @@ fn coalesce_statements(
                     else_body,
                     ..
                 } => {
-                    *then_body = coalesce_statements(then_body, function, address_taken, changed);
-                    *else_body = coalesce_statements(else_body, function, address_taken, changed);
+                    *then_body = coalesce_statements(then_body, function, changed);
+                    *else_body = coalesce_statements(else_body, function, changed);
                 }
                 Statement::Loop { body, .. } => {
-                    *body = coalesce_statements(body, function, address_taken, changed);
+                    *body = coalesce_statements(body, function, changed);
                 }
                 Statement::Switch { arms, default, .. } => {
                     for arm in arms {
                         if let mwcc_syntax_trees::ArmBody::Statements(body) = &mut arm.body {
-                            *body = coalesce_statements(body, function, address_taken, changed);
+                            *body = coalesce_statements(body, function, changed);
                         }
                     }
                     if let Some(mwcc_syntax_trees::ArmBody::Statements(body)) = default {
-                        *body = coalesce_statements(body, function, address_taken, changed);
+                        *body = coalesce_statements(body, function, changed);
                     }
                 }
                 _ => {}
@@ -119,7 +147,7 @@ fn coalesce_statements(
             local.name == first.cursor
                 && !local.is_volatile
                 && matches!(local.declared_type, Type::StructPointer { element_size: 8 })
-        });
+        }) && !cursor_is_replaced_by_call(&function.statements, first.cursor);
         let alias_eligible = |alias: &str| {
             function.locals.iter().any(|local| {
                 local.name == alias
@@ -148,25 +176,11 @@ fn coalesce_statements(
             continue;
         }
 
-        // A register cursor can directly own the displaced store run. An
-        // address-taken cursor is memory-resident because calls may receive its
-        // address; load its current value once into the macro's first packet
-        // alias, keep the call-free run on that register, then publish one
-        // final cursor update to the frame slot.
-        let run_base = if address_taken.contains(first.cursor) {
-            output.push(Statement::Assign {
-                name: first.alias.into(),
-                value: Expression::Variable(first.cursor.into()),
-            });
-            first.alias
-        } else {
-            first.cursor
-        };
         for (packet_index, packet) in packets.iter().enumerate() {
             let offset = u32::try_from(packet_index * 8).expect("packet run offset");
             output.push(Statement::Store {
                 target: Expression::Member {
-                    base: Box::new(Expression::Variable(run_base.into())),
+                    base: Box::new(Expression::Variable(first.cursor.into())),
                     offset,
                     member_type: Type::UnsignedInt,
                     index_stride: None,
@@ -175,7 +189,7 @@ fn coalesce_statements(
             });
             output.push(Statement::Store {
                 target: Expression::Member {
-                    base: Box::new(Expression::Variable(run_base.into())),
+                    base: Box::new(Expression::Variable(first.cursor.into())),
                     offset: offset + 4,
                     member_type: Type::UnsignedInt,
                     index_stride: None,
@@ -187,7 +201,7 @@ fn coalesce_statements(
             name: first.cursor.into(),
             value: Expression::Binary {
                 operator: BinaryOperator::Add,
-                left: Box::new(Expression::Variable(run_base.into())),
+                left: Box::new(Expression::Variable(first.cursor.into())),
                 right: Box::new(Expression::IntegerLiteral(
                     i64::try_from(packets.len()).expect("packet count"),
                 )),
@@ -201,9 +215,7 @@ fn coalesce_statements(
 
 pub(crate) fn coalesce_display_list_packet_runs(function: &Function) -> Option<Function> {
     let mut changed = false;
-    let address_taken = crate::frame::collect_address_taken(function);
-    let statements =
-        coalesce_statements(&function.statements, function, &address_taken, &mut changed);
+    let statements = coalesce_statements(&function.statements, function, &mut changed);
     changed.then(|| Function {
         statements,
         ..function.clone()
@@ -323,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn coalesces_a_frame_cursor_segment_between_call_replacements() {
+    fn leaves_a_cursor_replaced_by_a_call_for_the_call_scheduler() {
         let mut statements = packet("packet0", "cursor", 1, 2);
         statements.extend(packet("packet1", "cursor", 3, 4));
         statements.push(Statement::Assign {
@@ -333,43 +345,7 @@ mod tests {
                 arguments: vec![Expression::Variable("cursor".into())],
             },
         });
-        statements.push(Statement::Expression(Expression::Call {
-            name: "observe_cursor".into(),
-            arguments: vec![Expression::AddressOf {
-                operand: Box::new(Expression::Variable("cursor".into())),
-            }],
-        }));
 
-        let rewritten =
-            coalesce_display_list_packet_runs(&function(statements)).expect("coalesced segment");
-        assert!(matches!(
-            &rewritten.statements[0],
-            Statement::Assign {
-                name,
-                value: Expression::Variable(cursor),
-            } if name == "packet0" && cursor == "cursor"
-        ));
-        assert!(rewritten.statements[1..5].iter().all(|statement| matches!(
-            statement,
-            Statement::Store {
-                target: Expression::Member { base, .. },
-                ..
-            } if matches!(base.as_ref(), Expression::Variable(name) if name == "packet0")
-        )));
-        assert!(matches!(
-            &rewritten.statements[5],
-            Statement::Assign {
-                name,
-                value: Expression::Binary { left, .. },
-            } if name == "cursor"
-                && matches!(left.as_ref(), Expression::Variable(base) if base == "packet0")
-        ));
-        assert!(matches!(
-            &rewritten.statements[6],
-            Statement::Assign {
-                name,
-                value: Expression::Call { .. },
-            } if name == "cursor"
-        ));
+        assert!(coalesce_display_list_packet_runs(&function(statements)).is_none());
     }
 }
