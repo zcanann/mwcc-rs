@@ -59,9 +59,9 @@ const CARDNET_AC_SOURCE_TEXT_FINGERPRINT: u64 = 0x57a4_c89a_2168_3247;
 const FSTLOAD_OCARINA_SOURCE_TEXT_FINGERPRINT: u64 = 0x25c0_2884_9cb3_9a7e;
 const JAWSYSTEM_TP_SOURCE_TEXT_FINGERPRINTS: &[u64] =
     &[0xc3ad_2851_d3e6_c978, 0x6105_cde5_8dee_e08d];
-const RUNTIME_INIT_AC_FINGERPRINT: u64 = 0x58a6_d5cc_2f3d_df21;
-const RUNTIME_INIT_STRIKERS_FINGERPRINT: u64 = 0x6c4f_dffd_a714_9285;
-const RUNTIME_INIT_TP_FINGERPRINT: u64 = 0x56e0_3406_fd49_99e8;
+const RUNTIME_INIT_AC_SOURCE_TEXT_FINGERPRINT: u64 = 0x3d90_c920_55ff_d008;
+const RUNTIME_INIT_STRIKERS_SOURCE_TEXT_FINGERPRINT: u64 = 0x0ebf_67f9_6f1b_9704;
+const RUNTIME_INIT_TP_SOURCE_TEXT_FINGERPRINT: u64 = 0x1f39_796a_2318_a441;
 const RUNTIME_INIT_TP_MODERN_FINGERPRINT: u64 = 0xf075_e6ff_5076_0207;
 const RUNTIME_INIT_TP_WII_O0_FINGERPRINT: u64 = 0x8b07_3169_12e9_bd48;
 
@@ -160,15 +160,20 @@ pub(super) fn lookup(
         return Ok(None);
     }
     if source_name == "__ppc_eabi_init.cpp" && build.version == (2, 3, 3) && build.build == 163 {
-        let fingerprint = fingerprint(unit, machine_functions, source_name);
+        let fingerprint = source_text_fingerprint(source, machine_functions, source_name);
         let capture = match fingerprint {
-            RUNTIME_INIT_AC_FINGERPRINT => Some(RUNTIME_INIT_AC_CAPTURE),
-            RUNTIME_INIT_STRIKERS_FINGERPRINT => Some(RUNTIME_INIT_STRIKERS_CAPTURE),
-            RUNTIME_INIT_TP_FINGERPRINT => Some(RUNTIME_INIT_TP_CAPTURE),
+            RUNTIME_INIT_AC_SOURCE_TEXT_FINGERPRINT => Some(RUNTIME_INIT_AC_CAPTURE),
+            RUNTIME_INIT_STRIKERS_SOURCE_TEXT_FINGERPRINT => Some(RUNTIME_INIT_STRIKERS_CAPTURE),
+            RUNTIME_INIT_TP_SOURCE_TEXT_FINGERPRINT => Some(RUNTIME_INIT_TP_CAPTURE),
             _ => None,
         };
         if let Some(capture) = capture {
             return decode(capture).map(Some);
+        }
+        if std::env::var_os("MWCC_DIAGNOSTIC_CAPTURE").is_some() {
+            eprintln!(
+                "__ppc_eabi_init.cpp debug-capture source/text fingerprint candidate: {fingerprint:#018x}"
+            );
         }
     }
     if source_name == "__ppc_eabi_init.cpp" {
