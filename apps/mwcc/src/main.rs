@@ -2428,6 +2428,8 @@ mod tests {
 
     #[path = "implicit_int_to_float_argument.rs"]
     mod implicit_int_to_float_argument;
+    #[path = "float_intrinsics.rs"]
+    mod float_intrinsics;
     #[path = "read_only_pool_addressing.rs"]
     mod read_only_pool_addressing;
     #[path = "narrow_shifted_divisor.rs"]

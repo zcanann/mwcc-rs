@@ -383,6 +383,39 @@ impl Generator {
         destination: u8,
         double: bool,
     ) -> Compilation<()> {
+        // Modern MSL defines `fabsf(float f)` as
+        // `(float)__fabs((double)f)`. The widening cast is a register no-op,
+        // while the narrowing cast makes mwcc keep the double absolute value
+        // in f0 and round it into the result register:
+        // `fabs f0,f1; frsp f1,f0`.
+        if !double {
+            if let Expression::Call { name, arguments } = operand {
+                if name == "__fabs" {
+                    if let [argument] = arguments.as_slice() {
+                        let source_operand = match argument {
+                            Expression::Cast {
+                                target_type: Type::Double,
+                                operand,
+                            } if self.is_float_leaf(operand) => Some(operand.as_ref()),
+                            expression if self.is_float_leaf(expression) => Some(expression),
+                            _ => None,
+                        };
+                        if let Some(source_operand) = source_operand {
+                            let source = self.float_register_of_leaf(source_operand)?;
+                            self.output.instructions.push(Instruction::FloatAbsolute {
+                                d: FLOAT_SCRATCH,
+                                b: source,
+                            });
+                            self.output.instructions.push(Instruction::RoundToSingle {
+                                d: destination,
+                                b: FLOAT_SCRATCH,
+                            });
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
         // A cast between floating types needs an instruction only when it NARROWS:
         // `(float)` of a double rounds it to single precision with `frsp`. A leaf
         // rounds in place from its own register; a sub-expression is computed into
