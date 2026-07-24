@@ -2,6 +2,7 @@
 
 #[allow(unused_imports)]
 use super::super::*;
+use super::VariadicBufferFrame;
 
 struct VariadicBufferSink<'a> {
     buffer_bytes: i16,
@@ -27,39 +28,8 @@ impl<'a> VariadicBufferSink<'a> {
     /// this owner independent of helper/function names while preventing a
     /// partial claim of an arbitrary body-bearing variadic function.
     fn recognize(function: &'a Function) -> Option<Self> {
-        if function.return_type != Type::Void
-            || !function.guards.is_empty()
-            || function.return_expression.is_some()
-        {
-            return None;
-        }
-        let [format_parameter] = function.parameters.as_slice() else {
-            return None;
-        };
-        if !matches!(
-            format_parameter.parameter_type,
-            Type::Pointer(Pointee::Char | Pointee::UnsignedChar)
-        ) {
-            return None;
-        }
-        let [va_list, buffer] = function.locals.as_slice() else {
-            return None;
-        };
-        if !matches!(va_list.declared_type, Type::Struct { size: 12, align: 4 })
-            || va_list.array_length.is_some()
-            || va_list.initializer.is_some()
-            || va_list.is_static
-            || va_list.data_bytes.is_some()
-            || !matches!(buffer.declared_type, Type::Char | Type::UnsignedChar)
-            || buffer.initializer.is_some()
-            || buffer.is_static
-            || buffer.data_bytes.is_some()
-        {
-            return None;
-        }
-        let buffer_bytes = i16::try_from(buffer.array_length?).ok()?;
-        let [Statement::Expression(va_start),
-            Statement::Expression(Expression::Call {
+        let (frame, remaining) = VariadicBufferFrame::recognize(function)?;
+        let [Statement::Expression(Expression::Call {
                 name: formatter,
                 arguments: formatter_arguments,
             }),
@@ -67,46 +37,19 @@ impl<'a> VariadicBufferSink<'a> {
                 name: sink,
                 arguments: sink_arguments,
             }),
-            Statement::Expression(noop)] = function.statements.as_slice()
+            Statement::Expression(noop)] = remaining
         else {
             return None;
         };
-        let Expression::Comma { left, right } = va_start else {
-            return None;
-        };
-        if !matches!(
-            left.as_ref(),
-            Expression::Cast {
-                target_type: Type::Void,
-                operand,
-            } if matches!(
-                operand.as_ref(),
-                Expression::Variable(name) if name == &format_parameter.name
-            )
-        ) || !matches!(
-            right.as_ref(),
-            Expression::Call { name, arguments }
-                if name == "__builtin_va_info"
-                    && matches!(
-                        arguments.as_slice(),
-                        [Expression::AddressOf { operand }]
-                            if matches!(
-                                operand.as_ref(),
-                                Expression::Variable(name) if name == &va_list.name
-                            )
-                    )
-        ) {
-            return None;
-        }
         if formatter != "vsprintf"
             || !matches!(
                 formatter_arguments.as_slice(),
                 [Expression::Variable(destination),
                     Expression::Variable(format),
                     Expression::Variable(arguments)]
-                    if destination == &buffer.name
-                        && format == &format_parameter.name
-                        && arguments == &va_list.name
+                    if destination == frame.buffer
+                        && format == frame.format_parameter
+                        && arguments == frame.va_list
             )
         {
             return None;
@@ -117,7 +60,7 @@ impl<'a> VariadicBufferSink<'a> {
             return None;
         };
         let line = i16::try_from(constant_value(line)?).ok()?;
-        if sink_buffer != &buffer.name
+        if sink_buffer != frame.buffer
             || !matches!(
                 noop,
                 Expression::Cast {
@@ -129,7 +72,7 @@ impl<'a> VariadicBufferSink<'a> {
             return None;
         }
         Some(Self {
-            buffer_bytes,
+            buffer_bytes: frame.buffer_bytes,
             sink,
             file,
             line,

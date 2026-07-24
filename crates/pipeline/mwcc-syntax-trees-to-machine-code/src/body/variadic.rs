@@ -4,6 +4,10 @@
 use super::*;
 
 mod buffer_sink;
+mod buffer_print;
+mod layout;
+
+use layout::VariadicBufferFrame;
 
 impl Generator {
     /// Emit the complete side-effect-free variadic-function family.
