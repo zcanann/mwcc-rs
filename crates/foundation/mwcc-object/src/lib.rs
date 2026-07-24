@@ -290,6 +290,9 @@ pub struct FunctionObject<'a> {
     /// this function's external/global symbols in this order, with a relocation-
     /// order fallback for anything not listed.
     pub symbol_order: Vec<String>,
+    /// Resolve this analysis transaction's defined-data references before
+    /// locally defined function targets under deferred code generation.
+    pub defined_data_precedes_defined_functions: bool,
     /// Function-designator subset of `symbol_order`.
     pub referenced_function_symbols: Vec<String>,
     /// Callees this function references that were IMPLICITLY declared (K&R first-use, no

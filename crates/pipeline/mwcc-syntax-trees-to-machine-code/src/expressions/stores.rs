@@ -162,6 +162,46 @@ impl Generator {
                 }
             }
         }
+        // An inlined constructor writes through `this`, and substituting a
+        // namespace-scope object turns that lvalue into `(&global)->field`.
+        // Small aggregate storage is directly SDA-addressable: keep the
+        // address out of a temporary and attach the member displacement to the
+        // store itself.
+        if let Expression::Member {
+            base,
+            offset,
+            member_type,
+            index_stride: None,
+        } = target
+        {
+            if let Expression::AddressOf { operand } = base.as_ref() {
+                if let Expression::Variable(name) = operand.as_ref() {
+                    if matches!(
+                        self.globals.get(name.as_str()),
+                        Some(Type::Struct { size, .. }) if *size <= 8
+                    ) && self.behavior.global_addressing == GlobalAddressing::SmallData
+                    {
+                        let pointee = pointee_of_type(*member_type).ok_or_else(|| {
+                            Diagnostic::error(
+                                "global aggregate member store of this type is not supported yet",
+                            )
+                        })?;
+                        let displacement = i16::try_from(*offset).map_err(|_| {
+                            Diagnostic::error("global aggregate member offset is out of range")
+                        })?;
+                        let source = self.place_store_value(value, pointee)?;
+                        self.record_relocation(RelocationKind::EmbSda21, name);
+                        self.output.instructions.push(displacement_store(
+                            pointee,
+                            source,
+                            0,
+                            displacement,
+                        )?);
+                        return Ok(());
+                    }
+                }
+            }
+        }
         // `*(p + i) = v` is `p[i] = v`: rewrite a pointer-plus-index dereference target to the
         // subscript store, the symmetric counterpart of the load routing in
         // emit_load_from_pointer. The pointer operand is the base, the integer the index; `+`

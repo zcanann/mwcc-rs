@@ -198,6 +198,7 @@ pub fn parse_located_translation_unit_with_behavior(
         defer_codegen: false,
         deferred_function_names: Vec::new(),
         skipped_inline_functions: 0,
+        global_destructor_inline_bump: 0,
         function_inline_prebumps: std::collections::HashMap::new(),
         cxx_inline_ordinal_facts: mwcc_syntax_trees::CxxInlineOrdinalFacts::default(),
         cxx_nonvirtual_destructor_classes: std::collections::HashSet::new(),
@@ -274,7 +275,6 @@ pub fn parse_located_translation_unit_with_behavior(
         cxx_virtual_destructor_classes: std::collections::HashSet::new(),
         counted_nested_virtual_positions: std::collections::HashSet::new(),
         cxx_template_virtual_methods: HashMap::new(),
-        incomplete_cxx_dispatch: std::collections::HashSet::new(),
         template_aliases: HashMap::new(),
         variable_structs: HashMap::new(),
         cxx_reference_variables: std::collections::HashSet::new(),
@@ -321,7 +321,7 @@ pub fn parse_located_translation_unit_with_behavior(
         variadic_definitions: std::collections::HashSet::new(),
         unfolded_float_element: None,
         initializer_pending: Vec::new(),
-        pending_sinit: Vec::new(),
+        pending_global_initializers: Vec::new(),
     };
     parser.translation_unit()
 }
@@ -4332,6 +4332,76 @@ blr\n\
             },
         ] if matches!(base_vtable.as_ref(), Expression::Variable(name) if name == "__vt__4Base")
             && matches!(derived_vtable.as_ref(), Expression::Variable(name) if name == "__vt__7Derived")));
+    }
+
+    #[test]
+    fn namespace_scope_polymorphic_object_materializes_one_startup_transaction() {
+        let source = r#"
+            class Base {
+            public:
+                virtual ~Base() = 0;
+                virtual void act() = 0;
+            };
+            inline Base::~Base() {}
+            class Derived : public Base {
+            public:
+                ~Derived() {}
+                void act() {}
+            };
+            static Derived object;
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.global_destructor_records,
+            ["@@global_destructor_record0"]
+        );
+        let startup = unit
+            .functions
+            .iter()
+            .find(|function| function.name == "__sinit_ctx_cpp")
+            .expect("namespace-scope construction needs a startup function");
+        assert!(matches!(
+            startup.statements.as_slice(),
+            [
+                Statement::Expression(Expression::Call { name: constructor, arguments }),
+                Statement::Expression(Expression::Call { name: registration, arguments: registered }),
+            ] if constructor == "__ct__7DerivedFv"
+                && matches!(arguments.as_slice(), [Expression::AddressOf { .. }])
+                && registration == "__register_global_object"
+                && registered.len() == 3
+        ));
+        let derived = unit
+            .globals
+            .iter()
+            .position(|global| global.name == "__vt__7Derived")
+            .expect("derived vtable");
+        let base = unit
+            .globals
+            .iter()
+            .position(|global| global.name == "__vt__4Base")
+            .expect("base dependency vtable");
+        assert!(derived < base);
+        assert!(unit.globals[derived].is_weak);
+        assert!(unit.globals[base].is_weak);
+        assert!(unit.globals.iter().any(|global| {
+            global.name == "@@global_destructor_record0"
+                && global.is_static
+                && matches!(
+                    global.declared_type,
+                    Type::Struct {
+                        size: 12,
+                        align: 4
+                    }
+                )
+        }));
     }
 
     #[test]

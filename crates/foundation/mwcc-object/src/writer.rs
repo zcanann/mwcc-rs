@@ -920,8 +920,24 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_frame {
         order.push(".relaextabindex");
     }
-    // The `.rela.*` sections follow their target sections' order, so `.rela.sdata`
-    // (→ `.sdata`) precedes `.rela.mwcats.text` (→ `.mwcats.text`, last).
+    let has_ctors_relocs = input
+        .data_objects
+        .iter()
+        .any(|object| section_of(object) == ".ctors" && !object.relocations.is_empty());
+    let has_compiler_generated_ctors_relocs = input.data_objects.iter().any(|object| {
+        object.name.is_empty()
+            && section_of(object) == ".ctors"
+            && !object.relocations.is_empty()
+    });
+    // A synthesized namespace-scope startup record is created as part of the
+    // text analysis transaction, so its relocation section immediately follows
+    // `.rela.text`. Source-written named `.ctors` objects remain in the ordinary
+    // data-relocation run below.
+    if has_compiler_generated_ctors_relocs {
+        order.push(".rela.ctors");
+    }
+    // The ordinary `.rela.*` sections follow their target sections' order, so
+    // `.rela.sdata` precedes `.rela.mwcats.text` (last).
     let has_data_relocs = input
         .data_objects
         .iter()
@@ -936,13 +952,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_sdata_relocs {
         order.push(".rela.sdata");
     }
-    // `.rela.ctors`/`.rela.dtors` follow their target sections' relative order —
-    // after `.rela.text` and the data relas, before `.rela.mwcats.text` (measured).
-    let has_ctors_relocs = input
-        .data_objects
-        .iter()
-        .any(|object| section_of(object) == ".ctors" && !object.relocations.is_empty());
-    if has_ctors_relocs {
+    // Named `.rela.ctors`/`.rela.dtors` follow their target sections' relative
+    // order, after the ordinary data relas and before `.rela.mwcats.text`.
+    if has_ctors_relocs && !has_compiler_generated_ctors_relocs {
         order.push(".rela.ctors");
     }
     let has_dtors_relocs = input
@@ -2460,6 +2472,22 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 }
             }
         }
+        // Build 163's deferred pass registers the current function before
+        // ordinary body-created externals, but a reference to data defined in
+        // this translation unit resolves the declaration's existing symbol
+        // first. A compiler-generated startup transaction follows that same
+        // data-first rule under modern deferred compilation.
+        let (defined_data_ordered, ordered): (Vec<&str>, Vec<&str>) =
+            if input.object_format.function_symbol_order == FunctionSymbolOrder::LegacyDeferred
+                || (input.object_format.function_symbol_order == FunctionSymbolOrder::Deferred
+                    && function.defined_data_precedes_defined_functions)
+            {
+                ordered
+                    .into_iter()
+                    .partition(|name| data_offsets.contains_key(name))
+            } else {
+                (Vec::new(), ordered)
+            };
         // Modern deferred compilation processes functions in reverse. A call to
         // another function already defined in the TU resolves that function's
         // symbol before the current function is registered; data and external
@@ -2474,18 +2502,6 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         !candidate.is_static && !candidate.implicit_local && candidate.name == *name
                     })
                 })
-            } else {
-                (Vec::new(), ordered)
-            };
-        // Build 163's deferred pass registers the current function before
-        // ordinary body-created externals, but a reference to data defined in
-        // this translation unit resolves the declaration's existing symbol
-        // first. Keep that data out of the function-first reference run.
-        let (defined_data_ordered, ordered): (Vec<&str>, Vec<&str>) =
-            if input.object_format.function_symbol_order == FunctionSymbolOrder::LegacyDeferred {
-                ordered
-                    .into_iter()
-                    .partition(|name| data_offsets.contains_key(name))
             } else {
                 (Vec::new(), ordered)
             };
@@ -3588,6 +3604,19 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             0,
         );
     }
+    if has_compiler_generated_ctors_relocs {
+        push(
+            ".rela.ctors",
+            SHT_RELA,
+            0,
+            symtab_section,
+            index_of(".ctors"),
+            4,
+            12,
+            rela_ctors.clone(),
+            0,
+        );
+    }
     if has_jump_table || has_data_relocs {
         push(
             ".rela.data",
@@ -3617,7 +3646,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // Push order MUST match the `order` vector: `.rela.dtors` (early target) before
     // `.rela.sdata2` (late target). They are mutually exclusive in practice, but keep
     // the invariant so a future TU carrying both lays out correctly.
-    if has_ctors_relocs {
+    if has_ctors_relocs && !has_compiler_generated_ctors_relocs {
         push(
             ".rela.ctors",
             SHT_RELA,

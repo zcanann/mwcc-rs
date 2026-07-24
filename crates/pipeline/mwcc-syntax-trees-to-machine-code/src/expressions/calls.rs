@@ -185,11 +185,17 @@ impl Generator {
                 object_register
             }
         } else {
+            let saved_receiver = arguments
+                .is_empty()
+                .then(|| self.leaf_info(&object_argument).ok())
+                .flatten()
+                .filter(|(register, width, _)| *register != object_register && *width == 32)
+                .map(|(register, _, _)| register);
             let mut all_arguments = Vec::with_capacity(arguments.len() + 1);
             all_arguments.push(object_argument);
             all_arguments.extend_from_slice(arguments);
             self.emit_arguments(&all_arguments, "<virtual>")?;
-            object_register
+            saved_receiver.unwrap_or(object_register)
         };
 
         let vptr_offset = i16::try_from(vptr_offset)

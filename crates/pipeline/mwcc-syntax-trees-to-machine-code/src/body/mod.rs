@@ -36,6 +36,7 @@ mod conditional;
 mod conditional_member_copy;
 mod conditional_member_select_tail;
 mod control_block_unique_copy;
+mod cxx_global_startup;
 mod dispatchers;
 mod driver;
 mod enum_remap_member_update;

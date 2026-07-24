@@ -334,10 +334,6 @@ pub(crate) struct Parser {
     /// vptr is provable without instantiating a concrete object layout.
     pub(crate) cxx_template_virtual_methods:
         HashMap<(String, String), Vec<(usize, crate::cxx::VirtualDispatch)>>,
-    /// Classes whose virtual declaration sequence could not be recovered in
-    /// full. No virtual call through one is admitted: an unknown earlier entry
-    /// would make every later slot unsafe.
-    pub(crate) incomplete_cxx_dispatch: std::collections::HashSet<String>,
     /// Concrete template typedef alias -> primary template name. This is kept
     /// separately from layout aliases because nested/multi-argument templates
     /// may be opaque for layout while still carrying inline-member semantics.
@@ -409,9 +405,10 @@ pub(crate) struct Parser {
     /// (element index, expression) pairs of the CURRENT initializer that need
     /// startup assignment; drained by the global-declaration parser.
     pub(crate) initializer_pending: Vec<(usize, mwcc_syntax_trees::Expression)>,
-    /// (array name, element index, expression) triples across the unit — the
-    /// synthesized `__sinit_ctx_c`'s assignment list (side-table, hash-safe).
-    pub(crate) pending_sinit: Vec<(String, usize, mwcc_syntax_trees::Expression)>,
+    /// Namespace-scope work which requires a startup function, retained in
+    /// declaration order. The finalizer turns these source-semantic actions
+    /// into one `__sinit` body after the complete class graph is available.
+    pub(crate) pending_global_initializers: Vec<PendingGlobalInitializer>,
     /// The current inline-`asm` function's REGISTER PARAMETERS: `(name, gpr,
     /// struct tag)` in declaration order (r3, r4, … positional). An asm operand
     /// naming a parameter resolves to its register (`mr r3,val`), and
@@ -487,6 +484,11 @@ pub(crate) struct Parser {
     /// Anonymous-label cost accumulated while mwcc compiles and then drops
     /// inline definitions; the base and body-label weights are generation-aware.
     pub(crate) skipped_inline_functions: usize,
+    /// Dropped top-level inline analysis cost in the namespace-scope dynamic
+    /// initialization stream. Function templates have a different base weight
+    /// here than in the later function-pool stream, so this cannot be
+    /// reconstructed from `skipped_inline_functions`.
+    pub(crate) global_destructor_inline_bump: usize,
     /// Cumulative skipped-inline cost sampled when each real function is parsed.
     pub(crate) function_inline_prebumps: std::collections::HashMap<String, usize>,
     /// C++ class/inline syntax retained for version-specific anonymous-symbol
@@ -665,6 +667,19 @@ pub(crate) struct Parser {
     /// Whether `-enum min` selects storage from the enumerator value range.
     pub(crate) enum_min: bool,
     pub(crate) function_sources: Vec<Option<mwcc_syntax_trees::FunctionSource>>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum PendingGlobalInitializer {
+    ArrayElement {
+        array: String,
+        index: usize,
+        expression: mwcc_syntax_trees::Expression,
+    },
+    CxxObject {
+        storage_name: String,
+        class_name: String,
+    },
 }
 
 impl Parser {

@@ -2552,11 +2552,12 @@ impl Generator {
                         });
                     return self.emit_global_array_base(name, total_size, destination);
                 }
-                // Inline constructor expansion synthesizes a reference to the
-                // class's externally owned vtable even when this translation
-                // unit does not define that table. ABI metadata symbols always
-                // use a full HA/LO address pair rather than SDA addressing.
-                if name.starts_with("__vt__") {
+                // Function designators and ABI metadata symbols are addresses
+                // even when no data-global definition exists. Both use a full
+                // HA/LO pair rather than SDA addressing.
+                if self.call_return_types.contains_key(name.as_str())
+                    || name.starts_with("__vt__")
+                {
                     self.emit_address_high(destination, name);
                     self.record_relocation(RelocationKind::Addr16Lo, name);
                     self.output.instructions.push(Instruction::AddImmediate {

@@ -199,6 +199,10 @@ pub struct MachineFunction {
     /// function's external/global symbol indices in this order (see the codegen's
     /// `symbol_order`), falling back to relocation order for anything not listed.
     pub symbol_order: Vec<String>,
+    /// This function belongs to a translation-unit analysis transaction which
+    /// resolves already-defined data before locally defined function
+    /// designators. Ordinary deferred bodies resolve function targets first.
+    pub defined_data_precedes_defined_functions: bool,
     /// Referenced names known to designate functions (direct callees or
     /// address-taken function symbols). The object writer uses this type channel
     /// to distinguish an absolute function address from absolute data.
@@ -273,6 +277,7 @@ impl MachineFunction {
             strings_are_const: false,
             local_undefined_callees: Vec::new(),
             symbol_order: Vec::new(),
+            defined_data_precedes_defined_functions: false,
             referenced_function_symbols: Vec::new(),
             local_symbol_order: Vec::new(),
             implicit_external_callees: Vec::new(),

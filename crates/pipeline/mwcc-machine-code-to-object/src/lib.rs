@@ -217,6 +217,8 @@ pub fn assemble_object(
                 .collect(),
             local_undefined_callees: function.local_undefined_callees.clone(),
             symbol_order: function.symbol_order.clone(),
+            defined_data_precedes_defined_functions: function
+                .defined_data_precedes_defined_functions,
             referenced_function_symbols: function.referenced_function_symbols.clone(),
             implicit_external_callees: function.implicit_external_callees.clone(),
             early_implicit_external_callees: function.early_implicit_external_callees.clone(),

@@ -408,6 +408,123 @@ fn source_is_cxx(source_name: &str, source_language: Option<SourceLanguage>) -> 
     }
 }
 
+fn name_translation_unit_startup(
+    unit: &mut mwcc_syntax_trees::TranslationUnit,
+    source_name: &str,
+) {
+    let file_name = std::path::Path::new(source_name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(source_name);
+    let encoded = file_name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let resolved = format!("__sinit_{encoded}");
+    let placeholders = ["__sinit_ctx_c", "__sinit_ctx_cpp"];
+    for function in &mut unit.functions {
+        if placeholders.contains(&function.name.as_str()) {
+            function.name = resolved.clone();
+        }
+    }
+    for global in &mut unit.globals {
+        if let Some(elements) = &mut global.address_initializer {
+            for element in elements {
+                if let mwcc_syntax_trees::PointerElement::Symbol(name) = element {
+                    if placeholders.contains(&name.as_str()) {
+                        *name = resolved.clone();
+                    }
+                }
+            }
+        }
+        for (_, target, _) in &mut global.data_relocations {
+            if placeholders.contains(&target.as_str()) {
+                *target = resolved.clone();
+            }
+        }
+    }
+}
+
+fn resolve_global_destructor_record_names(
+    unit: &mut mwcc_syntax_trees::TranslationUnit,
+    machine_functions: &mut [mwcc_machine_code::MachineFunction],
+    globals: &mut [mwcc_machine_code_to_object::DefinedGlobal],
+    first_ordinal: u32,
+) {
+    let renames = unit
+        .global_destructor_records
+        .iter()
+        .enumerate()
+        .map(|(index, placeholder)| {
+            (
+                placeholder.clone(),
+                format!("@{}", first_ordinal + index as u32),
+            )
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    if renames.is_empty() {
+        return;
+    }
+    for global in globals {
+        if let Some(resolved) = renames.get(&global.name) {
+            global.name = resolved.clone();
+        }
+        for relocation in &mut global.relocations {
+            if let Some(resolved) = renames.get(&relocation.target) {
+                relocation.target = resolved.clone();
+            }
+        }
+    }
+    for function in machine_functions {
+        for name in &mut function.local_symbol_order {
+            if let Some(resolved) = renames.get(name) {
+                *name = resolved.clone();
+            }
+        }
+        for relocation in &mut function.relocations {
+            match &relocation.target {
+                mwcc_machine_code::RelocationTarget::External(name) => {
+                    if let Some(resolved) = renames.get(name) {
+                        relocation.target =
+                            mwcc_machine_code::RelocationTarget::External(resolved.clone());
+                    }
+                }
+                mwcc_machine_code::RelocationTarget::ExternalWithAddend(name, addend) => {
+                    if let Some(resolved) = renames.get(name) {
+                        relocation.target =
+                            mwcc_machine_code::RelocationTarget::ExternalWithAddend(
+                                resolved.clone(),
+                                *addend,
+                            );
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    for global in &mut unit.globals {
+        if let Some(resolved) = renames.get(&global.name) {
+            global.name = resolved.clone();
+        }
+        for (_, target, _) in &mut global.data_relocations {
+            if let Some(resolved) = renames.get(target) {
+                *target = resolved.clone();
+            }
+        }
+    }
+    for name in &mut unit.global_destructor_records {
+        if let Some(resolved) = renames.get(name) {
+            *name = resolved.clone();
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let invocation = parse_invocation(&arguments);
@@ -571,6 +688,7 @@ fn compile(
         behavior.nested_anonymous_aggregate_definition_label_weight,
         config.flags.enum_storage == mwcc_versions::EnumStorage::Minimum,
     )?;
+    name_translation_unit_startup(&mut unit, source_name);
     if is_cxx && config.flags.rtti {
         mwcc_tokens_to_syntax_trees::materialize_cxx_rtti(&mut unit);
     }
@@ -1552,6 +1670,9 @@ fn compile(
             {
                 (Some(bytes), false)
             }
+            // A pure-virtual table can be an all-zero scalar aggregate, but it
+            // remains a materialized ABI data image rather than tentative BSS.
+            Some(bytes) if global.name.starts_with("__vt__") => (Some(bytes), false),
             Some(bytes) if is_array => (Some(bytes), false),
             Some(_) => (None, true),
             None => (None, false),
@@ -1632,6 +1753,17 @@ fn compile(
         });
         defined_globals.extend(pooled_string_globals.drain(..));
     }
+    let first_destructor_record = (1
+        + string_counter
+        + unit.global_destructor_inline_bump as u32
+        + unit_declaration_bump as u32)
+        .max(analysis_counter_floor);
+    resolve_global_destructor_record_names(
+        &mut unit,
+        &mut machine_functions,
+        &mut defined_globals,
+        first_destructor_record,
+    );
     // Resolve each function's pooled string literals to anonymous `@N` `.sdata` objects, numbered at
     // the FRONT of that function's per-function `@N` block (before its constants and unwind entries),
     // matching mwcc's per-function counter walk (see mwcc-object's writer). A string reuses an
@@ -1639,7 +1771,9 @@ fn compile(
     // `5 + global_strings` and advances per function by [its new strings + its new deduped constants
     // + its unwind entries] plus a fixed +4 gap. A jump table interleaves its own `@N` here in a way
     // not yet modeled, so a unit that mixes a string with a jump table defers wholesale.
-    let mut counter = (u32::from(config.build.initial_anonymous_counter) + string_counter)
+    let mut counter = (u32::from(config.build.initial_anonymous_counter)
+        + string_counter
+        + unit.global_destructor_records.len() as u32)
         .max(analysis_counter_floor);
     let mut numbered_constant: std::collections::HashSet<(u64, u8)> =
         std::collections::HashSet::new();

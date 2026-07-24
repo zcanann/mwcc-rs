@@ -7,6 +7,7 @@
 mod asm;
 mod aggregate_assignments;
 mod bit_fields;
+mod cxx_global_initializers;
 mod cxx_vtables;
 mod cxx_destructors;
 pub(crate) mod cxx_template_destructors;
@@ -229,6 +230,24 @@ pub(crate) fn statement_calls(
         }
         _ => false,
     }
+}
+
+fn function_calls(function: &Function, names: &std::collections::HashSet<String>) -> bool {
+    function
+        .statements
+        .iter()
+        .any(|statement| statement_calls(statement, names))
+        || function
+            .guards
+            .iter()
+            .any(|guard| {
+                expression_calls(&guard.condition, names)
+                    || expression_calls(&guard.value, names)
+            })
+        || function
+            .return_expression
+            .as_ref()
+            .is_some_and(|expression| expression_calls(expression, names))
 }
 // A call to a skipped inline is recorded on the unit — codegen
 // defers such functions AFTER the exact-match templates get a
@@ -982,33 +1001,28 @@ impl Parser {
         if !self.namespace_stack.is_empty() {
             return Err(Diagnostic::error("unterminated C++ namespace"));
         }
-        // Non-constant float-array globals synthesize a startup initializer:
-        // `__sinit_ctx_c` (named for the TU) assigns each unfolded element,
-        // appended LAST among the functions, plus an ANONYMOUS `.ctors` entry
-        // holding an ADDR32 to it (measured: sunshine trigf — the sinit is a
-        // LOCAL symbol at the end of .text; the .ctors word has no own symbol).
-        if !self.pending_sinit.is_empty() {
-            let statements: Vec<Statement> = self
-                .pending_sinit
-                .drain(..)
-                .map(|(array, index, expression)| Statement::Store {
-                    target: Expression::Index {
-                        base: Box::new(Expression::Variable(array)),
-                        index: Box::new(Expression::IntegerLiteral(index as i64)),
-                    },
-                    value: expression,
-                })
-                .collect();
+        // Dynamic namespace-scope initialization is one ordered startup
+        // transaction. This covers both non-constant scalar stores and C++
+        // class construction/destructor registration. The invocation layer
+        // replaces the context placeholder with the source basename once it
+        // has that information.
+        let startup = cxx_global_initializers::materialize(self, &mut globals)?;
+        if !startup.statements.is_empty() {
+            let startup_name = if self.cplusplus {
+                "__sinit_ctx_cpp"
+            } else {
+                "__sinit_ctx_c"
+            };
             functions.push(Function {
                 return_type: Type::Void,
-                name: "__sinit_ctx_c".to_string(),
+                name: startup_name.to_string(),
                 is_static: true,
                 is_weak: false,
                 text_deferred: false,
                 peephole_disabled: false,
                 parameters: Vec::new(),
                 locals: Vec::new(),
-                statements,
+                statements: startup.statements,
                 guards: Vec::new(),
                 return_expression: None,
                 section: None,
@@ -1033,7 +1047,7 @@ impl Parser {
                 initializer: None,
                 is_const: true,
                 address_initializer: Some(vec![PointerElement::Symbol(
-                    "__sinit_ctx_c".to_string(),
+                    startup_name.to_string(),
                 )]),
                 data_bytes: None,
                 data_relocations: Vec::new(),
@@ -1049,15 +1063,41 @@ impl Parser {
                 &self.cxx_inline_materializations,
             )?;
         cxx_destructors::prepare_required(self, &globals, &functions)?;
-        let referenced_functions: std::collections::HashSet<&str> = globals
+        let mut referenced_functions: std::collections::HashSet<String> = globals
             .iter()
             .flat_map(|global| {
                 global
                     .data_relocations
                     .iter()
-                    .map(|(_, target, _)| target.as_str())
+                    .map(|(_, target, _)| target.clone())
             })
             .collect();
+        // A vtable-rooted inline body can itself call another inline body
+        // (most visibly a derived deleting destructor invoking its inline base
+        // destructor). Materialization is a dependency closure, not a
+        // one-level scan of data relocations.
+        loop {
+            let mut newly_referenced = std::collections::HashSet::new();
+            for function in self
+                .cxx_inline_materializations
+                .iter()
+                .filter(|function| referenced_functions.contains(&function.name))
+            {
+                for candidate in &self.cxx_inline_materializations {
+                    if referenced_functions.contains(&candidate.name) {
+                        continue;
+                    }
+                    let names = std::iter::once(candidate.name.clone()).collect();
+                    if function_calls(function, &names) {
+                        newly_referenced.insert(candidate.name.clone());
+                    }
+                }
+            }
+            if newly_referenced.is_empty() {
+                break;
+            }
+            referenced_functions.extend(newly_referenced);
+        }
         let requested_weak_materializations = std::mem::take(
             &mut self.cxx_deferred_weak_materialization_requests,
         )
@@ -1065,7 +1105,7 @@ impl Parser {
         .collect::<std::collections::HashSet<_>>();
         let mut early_materializations = Vec::new();
         for function in std::mem::take(&mut self.cxx_inline_materializations) {
-            if referenced_functions.contains(function.name.as_str())
+            if referenced_functions.contains(&function.name)
                 || requested_weak_materializations.contains(&function.name)
             {
                 let source = self
@@ -1144,6 +1184,7 @@ impl Parser {
         Ok(TranslationUnit {
             globals,
             functions,
+            global_destructor_records: startup.destructor_records,
             function_cpp_exception_overrides: std::mem::take(
                 &mut self.function_cpp_exception_overrides,
             ),
@@ -1170,6 +1211,7 @@ impl Parser {
             inline_asm_symbols: std::mem::take(&mut self.inline_asm_symbols),
             plain_inline_asm_helpers: std::mem::take(&mut self.plain_inline_asm_helpers),
             skipped_inline_functions: self.skipped_inline_functions,
+            global_destructor_inline_bump: self.global_destructor_inline_bump,
             function_inline_prebumps: std::mem::take(&mut self.function_inline_prebumps),
             cxx_inline_ordinal_facts: self.cxx_inline_ordinal_facts,
             inline_expansion_facts: std::mem::take(&mut self.inline_expansion_facts),
@@ -1291,12 +1333,31 @@ impl Parser {
         let mut functions = Vec::new();
         let mut prototypes = Vec::new();
         let parsed = probe.parse_top_level_item(&mut globals, &mut functions, &mut prototypes);
-        if parsed.is_ok()
-            && globals.is_empty()
-            && functions.len() == 1
-        {
+        if parsed.is_ok() && functions.len() == 1 {
             self.merge_generated_inline_definitions_from(&probe);
-            let function = functions.pop().expect("length checked");
+            let source = probe.function_sources.pop().flatten();
+            let mut function = functions.pop().expect("length checked");
+            let is_virtual_body = function.name.starts_with("__dt__")
+                || self.cxx_classes.values().any(|class| {
+                    class
+                        .virtual_definitions
+                        .iter()
+                        .any(|(_, name)| name == &function.name)
+                });
+            if is_virtual_body {
+                function.is_weak = true;
+                if !self
+                    .cxx_inline_materializations
+                    .iter()
+                    .any(|existing| existing.name == function.name)
+                {
+                    self.cxx_inline_materializations.push(function.clone());
+                    if let Some(source) = source {
+                        self.cxx_inline_materialization_sources
+                            .insert(function.name.clone(), source);
+                    }
+                }
+            }
             if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() {
                 eprintln!("retained skipped inline definition: {}", function.name);
             }
@@ -2656,7 +2717,13 @@ impl Parser {
                         // become startup assignments in the synthesized
                         // `__sinit_ctx_c` (sunshine trigf's __four_over_pi_m1).
                         for (index, expression) in self.initializer_pending.drain(..) {
-                            self.pending_sinit.push((name.clone(), index, expression));
+                            self.pending_global_initializers.push(
+                                crate::parser::PendingGlobalInitializer::ArrayElement {
+                                    array: name.clone(),
+                                    index,
+                                    expression,
+                                },
+                            );
                         }
                     } else if *self.peek() == Token::Colon {
                         // A MWERKS absolute-placement declaration `T name[dims] : <address>;`
@@ -2789,6 +2856,26 @@ impl Parser {
                         } else {
                             is_const
                         };
+                    if self.cplusplus
+                        && !is_extern
+                        && dimensions.is_empty()
+                        && initializer.is_none()
+                        && address_initializer.is_none()
+                        && data_bytes.is_none()
+                        && matches!(return_type, Type::Struct { .. })
+                    {
+                        if let Some(class_name) = global_struct_tag
+                            .as_ref()
+                            .filter(|class| self.cxx_classes.contains_key(*class))
+                        {
+                            self.pending_global_initializers.push(
+                                crate::parser::PendingGlobalInitializer::CxxObject {
+                                    storage_name: emitted_declarator_name.clone(),
+                                    class_name: class_name.clone(),
+                                },
+                            );
+                        }
+                    }
                     globals.push(GlobalDeclaration {
                         is_weak: false,
                         non_static_functions_before: functions
@@ -3814,6 +3901,7 @@ impl Parser {
                             bump += usize::from(self.dropped_inline_class_automatic_label_base);
                         }
                     }
+                    let mut startup_bump = bump;
                     let mut brace_depth = 0i32;
                     // `&&`/`||` count ONLY inside a CONDITION's parens (fire 493:
                     // value-position short-circuits add nothing).
@@ -3836,33 +3924,53 @@ impl Parser {
                             Token::BraceClose => {
                                 brace_depth -= 1;
                                 if brace_depth == 0 {
+                                    self.global_destructor_inline_bump += startup_bump;
                                     return Ok(Some(bump));
                                 }
                             }
                             Token::KeywordIf => {
                                 bump += 2;
+                                startup_bump += 2;
                                 condition_pending = true;
                             }
-                            Token::Identifier(word) if word == "else" => bump += 1,
-                            Token::Identifier(word) if word == "switch" => bump += 1,
-                            Token::Identifier(word) if word == "case" => bump += 1,
-                            Token::Identifier(word) if word == "default" => bump += 1,
+                            Token::Identifier(word) if word == "else" => {
+                                bump += 1;
+                                startup_bump += 1;
+                            }
+                            Token::Identifier(word) if word == "switch" => {
+                                bump += 1;
+                                startup_bump += 1;
+                            }
+                            Token::Identifier(word) if word == "case" => {
+                                bump += 1;
+                                startup_bump += 1;
+                            }
+                            Token::Identifier(word) if word == "default" => {
+                                bump += 1;
+                                startup_bump += 1;
+                            }
                             Token::PipePipe | Token::AmpersandAmpersand if condition_depth > 0 => {
-                                bump += 1
+                                bump += 1;
+                                startup_bump += 1;
                             }
                             Token::KeywordWhile => {
                                 bump += 4;
+                                startup_bump += if saw_function_template { 2 } else { 4 };
                                 condition_pending = true;
                             }
                             Token::KeywordFor => {
                                 bump += 5;
+                                startup_bump += if saw_function_template { 2 } else { 5 };
                                 condition_pending = true;
                             }
                             // A do-while contributes +4 TOTAL (measured fire 493)
                             // — its `while` token below carries the count, so the
                             // `do` itself is transparent.
                             Token::KeywordDo => {}
-                            Token::Identifier(word) if word == "goto" => bump += 1, // measured: goto+label = +1
+                            Token::Identifier(word) if word == "goto" => {
+                                bump += 1;
+                                startup_bump += 1;
+                            } // measured: goto+label = +1
                             Token::EndOfFile => return Ok(None),
                             _ => {}
                         }

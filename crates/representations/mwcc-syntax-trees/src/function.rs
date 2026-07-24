@@ -301,6 +301,11 @@ pub struct InlineExpansionFacts {
 pub struct TranslationUnit {
     pub globals: Vec<GlobalDeclaration>,
     pub functions: Vec<Function>,
+    /// Parser-internal names of anonymous 12-byte records used by
+    /// `__register_global_object`. The invocation layer resolves these after
+    /// compiler-version ordinal accounting, because the parser deliberately
+    /// has neither a build profile nor a source filename.
+    pub global_destructor_records: Vec<String>,
     /// Explicit `#pragma exceptions on/off` state at each parsed function.
     /// Missing entries inherit the invocation's `-Cpp_exceptions` setting.
     pub function_cpp_exception_overrides: std::collections::HashMap<String, bool>,
@@ -357,6 +362,9 @@ pub struct TranslationUnit {
     /// Skipped `inline` function definitions: each advanced mwcc's `@N` counter
     /// by 3 (compiled then dropped), so the writer pre-bumps the numbering.
     pub skipped_inline_functions: usize,
+    /// Dropped-inline residue in the distinct frontend stream which assigns
+    /// namespace-scope global-destructor records.
+    pub global_destructor_inline_bump: usize,
     /// Cumulative skipped-inline ordinal cost at each emitted function's
     /// source position. Later inline definitions must not shift constants in
     /// an earlier function even though they share one translation unit.

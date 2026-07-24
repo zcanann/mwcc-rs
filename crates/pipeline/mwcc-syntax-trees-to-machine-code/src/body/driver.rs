@@ -1208,6 +1208,12 @@ impl Generator {
         if let Some(cleaned) = normalize_leading_local_assigns(function) {
             return self.evaluate_body(&cleaned);
         }
+        // A synthesized C++ startup routine is an ABI transaction rather than
+        // three unrelated expressions: constructor-expanded vptr stores and
+        // destructor registration share one measured address schedule.
+        if self.try_cxx_global_startup(function)? {
+            return Ok(());
+        }
         // The exact-match whole-function captures (src/captures/) claim FIRST
         // among the templates: they gate on the Debug-AST hash + context
         // fingerprint, so they either reproduce measured bytes exactly or

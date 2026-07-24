@@ -156,11 +156,12 @@ pub(super) fn add_inline_base_groups(
     Ok((dependency_destructors, ordering_edges))
 }
 
-/// Stable dependency ordering for compiler-generated weak base tables. Closure
-/// discovery happens before all later inline materializations have appended
-/// their unrelated tables, so ordering at discovery time can move a base too
-/// early. Once the complete global set exists, move only an out-of-order weak
-/// base immediately ahead of the derived table that requested it.
+/// Stable dependency ordering for compiler-generated weak base tables owned by
+/// a strong key-function table. Closure discovery happens before all later
+/// inline materializations have appended their unrelated tables, so ordering at
+/// discovery time can move a base too early. A weak owner first materialized by
+/// namespace-scope construction retains creation order instead: owner, then its
+/// newly discovered base dependency.
 pub(super) fn order_inline_base_groups(
     globals: &mut Vec<GlobalDeclaration>,
     ordering_edges: &[(String, String)],
@@ -178,7 +179,7 @@ pub(super) fn order_inline_base_groups(
         else {
             continue;
         };
-        if base_index < owner_index {
+        if base_index < owner_index || globals[owner_index].is_weak {
             continue;
         }
         let base_group = globals.remove(base_index);

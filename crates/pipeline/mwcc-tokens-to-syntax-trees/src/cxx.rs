@@ -159,6 +159,10 @@ pub(crate) struct RecoveredCxxVirtualMethod {
 pub(crate) struct RecoveredCxxDispatchTable {
     pub(crate) methods: std::collections::HashMap<String, Vec<RecoveredCxxVirtualMethod>>,
     pub(crate) next_slot_offset: u16,
+    /// First slot whose declaration could not be classified. Methods before
+    /// this frontier retain stable ABI offsets; later declarations are kept
+    /// for diagnostics but cannot safely drive dispatch.
+    pub(crate) unknown_from: Option<u16>,
 }
 
 impl Default for RecoveredCxxDispatchTable {
@@ -166,6 +170,7 @@ impl Default for RecoveredCxxDispatchTable {
         Self {
             methods: std::collections::HashMap::new(),
             next_slot_offset: 8,
+            unknown_from: None,
         }
     }
 }
@@ -1232,7 +1237,7 @@ impl Parser {
                         .insert(class.clone(), qualified_base.clone());
                 }
                 if multiple || virtual_base {
-                    self.incomplete_cxx_dispatch.insert(class.clone());
+                    dispatch.unknown_from = Some(dispatch.next_slot_offset);
                 } else {
                     if let Some(base_dispatch) = self
                         .cxx_dispatch_tables
@@ -1241,7 +1246,7 @@ impl Parser {
                     {
                         dispatch = base_dispatch.clone();
                     } else {
-                        self.incomplete_cxx_dispatch.insert(class.clone());
+                        dispatch.unknown_from = Some(dispatch.next_slot_offset);
                     }
                 }
             }
@@ -1476,10 +1481,31 @@ impl Parser {
                     Some(Some(prototype)) => prototypes.push(prototype),
                     Some(None) => {}
                     None if starts_virtual => {
+                        let virtual_destructor = self.tokens[index..]
+                            .iter()
+                            .take_while(|token| {
+                                !matches!(
+                                    token,
+                                    Token::Semicolon
+                                        | Token::BraceOpen
+                                        | Token::EndOfFile
+                                )
+                            })
+                            .any(|token| *token == Token::Tilde);
                         // A destructor, pointer-to-member signature, or another
-                        // unmodeled virtual declaration may consume a slot. Refuse
-                        // every virtual call through the class until it is modeled.
-                        self.incomplete_cxx_dispatch.insert(class.clone());
+                        // unmodeled virtual declaration may consume a slot.
+                        // A destructor's one-slot shape is known even though it
+                        // uses special parsing; genuinely unknown declarations
+                        // close only the suffix after the stable prefix.
+                        if let Some(dispatch) = self.cxx_dispatch_tables.get_mut(&class) {
+                            if virtual_destructor {
+                                dispatch.next_slot_offset += 4;
+                            } else {
+                                dispatch
+                                    .unknown_from
+                                    .get_or_insert(dispatch.next_slot_offset);
+                            }
+                        }
                     }
                     None => {}
                 }
@@ -1578,7 +1604,7 @@ impl Parser {
             .cloned()
             .zip(self.locations[declaration_start..=body_end].iter().copied())
             .collect();
-        let is_virtual = source.iter().any(
+        let explicitly_virtual = source.iter().any(
             |(token, _)| matches!(token, Token::Identifier(word) if word == "virtual"),
         );
         while matches!(source.first(), Some((Token::Identifier(word), _)) if matches!(word.as_str(), "virtual" | "explicit" | "inline"))
@@ -1598,6 +1624,12 @@ impl Parser {
             return;
         };
         let member_name = member_name.clone();
+        let is_virtual = explicitly_virtual
+            || self
+                .cxx_dispatch_tables
+                .get(class)
+                .and_then(|table| table.methods.get(&member_name))
+                .is_some_and(|methods| !methods.is_empty());
         let destructor = member_index > 0
             && source.get(member_index - 1).is_some_and(|(token, _)| *token == Token::Tilde);
         let constructor = !destructor
@@ -2493,9 +2525,10 @@ impl Parser {
         } else {
             source_class.to_string()
         };
-        if self.incomplete_cxx_dispatch.contains(&resolved_class) {
-            return Ok(None);
-        }
+        let unknown_from = self
+            .cxx_dispatch_tables
+            .get(&resolved_class)
+            .and_then(|table| table.unknown_from);
         let candidates: Vec<&RecoveredCxxVirtualMethod> = self
             .cxx_dispatch_tables
             .get(&resolved_class)
@@ -2503,8 +2536,10 @@ impl Parser {
             .into_iter()
             .flatten()
             .filter(|method| {
-                method.fixed_parameter_count == argument_count
+                unknown_from.map_or(true, |frontier| method.slot_offset < frontier)
+                    && (method.fixed_parameter_count == argument_count
                     || (method.variadic && argument_count >= method.fixed_parameter_count)
+                    )
             })
             .collect();
         if candidates.is_empty() {

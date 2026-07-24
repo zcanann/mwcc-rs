@@ -171,6 +171,7 @@ mod tests {
             anonymous_rodata: Vec::new(),
             local_undefined_callees: Vec::new(),
             symbol_order: Vec::new(),
+            defined_data_precedes_defined_functions: false,
             referenced_function_symbols: Vec::new(),
             implicit_external_callees: Vec::new(),
             early_implicit_external_callees: Vec::new(),
