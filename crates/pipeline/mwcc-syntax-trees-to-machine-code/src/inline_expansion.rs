@@ -111,7 +111,11 @@ impl InlineBodySet {
             .map(|function| function.name.clone())
             .collect();
         let mut call_counts = HashMap::<String, usize>::new();
-        for function in definitions.iter().chain(skipped) {
+        // Ordinary same-TU definitions are selected for automatic inlining by
+        // their calls from emitted definitions. An unreferenced retained inline
+        // body is compiled for analysis but dropped; a call written only inside
+        // it must not turn the one live call into a repeatable/multi-use case.
+        for function in definitions {
             collect_function_calls(function, &mut call_counts);
         }
         let mut bodies = HashMap::new();
@@ -215,19 +219,11 @@ impl InlineBodySet {
     /// identity. This supplements the frontend's legacy skipped-name set,
     /// whose C++ entries may still use an unmangled spelling.
     pub(crate) fn calls_any(&self, function: &Function) -> bool {
-        function
-            .locals
-            .iter()
-            .filter_map(|local| local.initializer.as_ref())
-            .any(|expression| self.expression_contains_call(expression))
-            || function.guards.iter().any(|guard| {
-                self.expression_contains_call(&guard.condition)
-                    || self.expression_contains_call(&guard.value)
-            })
-            || function
-                .return_expression
-                .as_ref()
-                .is_some_and(|expression| self.expression_contains_call(expression))
+        let mut calls = HashMap::new();
+        collect_function_calls(function, &mut calls);
+        calls
+            .keys()
+            .any(|name| self.bodies.contains_key(name) || self.values.contains_key(name))
             || function
                 .statements
                 .iter()
@@ -1762,6 +1758,7 @@ mod tests {
         let bodies =
             InlineBodySet::analyze_with_definitions(&[helper.clone(), caller.clone()], &[]);
         assert!(!bodies.calls_required(&caller));
+        assert!(bodies.calls_any(&caller));
         let expanded = bodies
             .expand_calls(&caller)
             .expect("a sole ordinary call should be an automatic-inline candidate");
@@ -1778,6 +1775,48 @@ mod tests {
         let repeated =
             InlineBodySet::analyze_with_definitions(&[helper, caller.clone(), second_caller], &[]);
         assert!(repeated.expand_calls(&caller).is_none());
+    }
+
+    #[test]
+    fn ignores_calls_from_unreferenced_retained_bodies_when_selecting_an_ordinary_inline() {
+        let helper = function(
+            "helper",
+            vec![Parameter {
+                parameter_type: Type::Int,
+                name: "value".into(),
+            }],
+            vec![Statement::Store {
+                target: Expression::Variable("output".into()),
+                value: Expression::Variable("value".into()),
+            }],
+        );
+        let caller = function(
+            "caller",
+            vec![Parameter {
+                parameter_type: Type::Int,
+                name: "value".into(),
+            }],
+            vec![Statement::Expression(Expression::Call {
+                name: "helper".into(),
+                arguments: vec![Expression::Variable("value".into())],
+            })],
+        );
+        let retained = function(
+            "unused_inline",
+            vec![Parameter {
+                parameter_type: Type::Int,
+                name: "value".into(),
+            }],
+            vec![Statement::Expression(Expression::Call {
+                name: "helper".into(),
+                arguments: vec![Expression::Variable("value".into())],
+            })],
+        );
+
+        let bodies =
+            InlineBodySet::analyze_with_definitions(&[helper, caller.clone()], &[retained]);
+        assert!(bodies.calls_any(&caller));
+        assert!(bodies.expand_calls(&caller).is_some());
     }
 
     #[test]
