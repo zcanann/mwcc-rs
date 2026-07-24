@@ -276,6 +276,34 @@ pub(crate) fn inline_immutable_pointer_aliases(function: &Function) -> Option<Fu
         let Some(initializer) = local.initializer.as_ref() else {
             continue;
         };
+        let derived_address = matches!(
+            initializer,
+            Expression::MemberAddress {
+                index_stride: None,
+                ..
+            }
+        ) || matches!(
+            initializer,
+            Expression::AddressOf { operand }
+                if matches!(operand.as_ref(), Expression::Member {
+                    member_type: Type::Struct { .. },
+                    index_stride: None,
+                    ..
+                })
+        );
+        let derived_address_live_across_call = derived_address
+            && super::callee_saved::read_after_possible_call_in_return(
+            &function.statements,
+            function.return_expression.as_ref(),
+            &local.name,
+        );
+        // A derived subobject address that crosses a call is a real live range,
+        // not merely a spelling alias. MWCC retains it beside the owning base
+        // in a second callee-saved home; folding it would recompute the address
+        // after the call and change both allocation and instruction order.
+        if derived_address_live_across_call {
+            continue;
+        }
         let alias = match initializer {
             Expression::Variable(_) => initializer.clone(),
             Expression::Cast { operand, .. }
@@ -2043,6 +2071,68 @@ mod tests {
                 && matches!(object.as_ref(), Expression::Variable(name) if name == "base")
                 && matches!(base.as_ref(), Expression::Variable(name) if name == "base")
         ));
+    }
+
+    #[test]
+    fn derived_pointer_aliases_survive_calls_when_read_afterward() {
+        let pointer = Type::StructPointer { element_size: 64 };
+        let function = Function {
+            return_type: Type::Void,
+            name: "retain_subobject".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: vec![Parameter {
+                parameter_type: pointer,
+                name: "object".into(),
+            }],
+            locals: vec![automatic_local(
+                "subobject",
+                Type::StructPointer { element_size: 16 },
+                Some(Expression::AddressOf {
+                    operand: Box::new(Expression::Member {
+                        base: Box::new(Expression::Variable("object".into())),
+                        offset: 24,
+                        member_type: Type::Struct { size: 16, align: 4 },
+                        index_stride: None,
+                    }),
+                }),
+            )],
+            statements: vec![
+                Statement::If {
+                    condition: Expression::Variable("object".into()),
+                    then_body: vec![Statement::Expression(Expression::Call {
+                        name: "touch".into(),
+                        arguments: vec![],
+                    })],
+                    else_body: vec![],
+                },
+                Statement::Store {
+                    target: Expression::Member {
+                        base: Box::new(Expression::Variable("object".into())),
+                        offset: 8,
+                        member_type: Type::Int,
+                        index_stride: None,
+                    },
+                    value: Expression::Member {
+                        base: Box::new(Expression::Variable("subobject".into())),
+                        offset: 4,
+                        member_type: Type::Int,
+                        index_stride: None,
+                    },
+                },
+            ],
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+
+        assert!(inline_immutable_pointer_aliases(&function).is_none());
     }
 
     #[test]

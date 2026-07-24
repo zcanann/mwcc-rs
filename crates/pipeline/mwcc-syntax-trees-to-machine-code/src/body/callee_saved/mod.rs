@@ -39,6 +39,7 @@ mod global_aggregate_pop;
 mod global_aggregate_post;
 mod guarded_display_list_packet;
 mod guarded_initialization;
+mod guarded_member_alias_initialization_schedule;
 mod guarded_pointer_pair_initialization;
 mod guarded_computed_survivor;
 mod guarded_bitmask_call_sequence;
@@ -86,6 +87,7 @@ mod pointer_state_call_loop;
 
 pub(crate) use queue_service::{summarize_queue_service, QueueServiceSummary};
 pub(crate) use queue_transactions::{summarize_queue_pop, QueuePopSummary};
+pub(crate) use structured_liveness::read_after_possible_call_in_return;
 
 #[allow(unused_imports)]
 use super::*;

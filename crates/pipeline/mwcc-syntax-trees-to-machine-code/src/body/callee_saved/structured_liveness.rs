@@ -34,7 +34,7 @@ pub(super) fn read_after_possible_call(
 /// Whether `name` needs a saved home across the structured body and its
 /// fallthrough return expression. Reads used only to marshal a call's
 /// arguments happen before that call and therefore remain volatile-safe.
-pub(super) fn read_after_possible_call_in_return(
+pub(crate) fn read_after_possible_call_in_return(
     statements: &[Statement],
     return_expression: Option<&Expression>,
     name: &str,
