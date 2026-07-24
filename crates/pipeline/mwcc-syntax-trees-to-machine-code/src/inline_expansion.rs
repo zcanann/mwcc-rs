@@ -17,7 +17,7 @@ mod value_body;
 mod value_calls;
 
 use call_sites::collect_function_calls;
-use mwcc_syntax_trees::{Expression, Function, Statement};
+use mwcc_syntax_trees::{AsmItem, Expression, Function, Statement, Type};
 use returns::rewrite_inline_returns;
 use safety::{
     automatic_composable_function, composable_function, materializable_arguments,
@@ -36,6 +36,11 @@ pub struct InlineBodySet {
     repeatable_bodies: HashMap<String, Function>,
     values: HashMap<String, ValueInlineBody>,
     required: HashSet<String>,
+    /// Retained pure inline-assembly helpers are already in their final
+    /// instruction vocabulary. Keep them as call-site fragments instead of
+    /// feeding their empty semantic-statement list through AST composition,
+    /// which would erase the call and its assembly body.
+    asm_fragments: HashMap<String, Vec<AsmItem>>,
 }
 
 pub(crate) fn legacy_frame_residue_bytes(
@@ -83,8 +88,26 @@ impl InlineBodySet {
     /// one-call definition remains emitted when it has external linkage, but
     /// its body is also available for call-site composition.
     pub fn analyze_with_definitions(definitions: &[Function], skipped: &[Function]) -> Self {
+        let asm_fragments: HashMap<_, _> = skipped
+            .iter()
+            .filter_map(|function| {
+                let [block] = function.inline_asm_blocks.as_slice() else {
+                    return None;
+                };
+                (function.return_type == Type::Void
+                    && function.parameters.is_empty()
+                    && function.locals.is_empty()
+                    && function.statements.is_empty()
+                    && function.guards.is_empty()
+                    && function.return_expression.is_none()
+                    && function.asm_body.is_none()
+                    && block.statement_index == 0)
+                    .then(|| (function.name.clone(), block.items.clone()))
+            })
+            .collect();
         let required: HashSet<String> = skipped
             .iter()
+            .filter(|function| !asm_fragments.contains_key(&function.name))
             .map(|function| function.name.clone())
             .collect();
         let mut call_counts = HashMap::<String, usize>::new();
@@ -94,7 +117,9 @@ impl InlineBodySet {
         let mut bodies = HashMap::new();
         for function in skipped
             .iter()
-            .filter(|function| composable_function(function))
+            .filter(|function| {
+                !asm_fragments.contains_key(&function.name) && composable_function(function)
+            })
         {
             bodies.insert(function.name.clone(), function.clone());
         }
@@ -116,6 +141,7 @@ impl InlineBodySet {
             .collect();
         let mut values: HashMap<_, _> = skipped
             .iter()
+            .filter(|function| !asm_fragments.contains_key(&function.name))
             .filter_map(|function| {
                 value_body::summarize(function).map(|body| (function.name.clone(), body))
             })
@@ -166,7 +192,14 @@ impl InlineBodySet {
             repeatable_bodies,
             values,
             required,
+            asm_fragments,
         }
+    }
+
+    /// A zero-argument, void retained inline-assembly helper that can be
+    /// assembled directly at its call site.
+    pub(crate) fn asm_fragment(&self, name: &str) -> Option<&[AsmItem]> {
+        self.asm_fragments.get(name).map(Vec::as_slice)
     }
 
     /// Whether this function calls a definition that cannot be materialized as
@@ -892,6 +925,36 @@ mod tests {
             is_const: false,
             row_bytes: None,
         }
+    }
+
+    #[test]
+    fn retained_pure_inline_asm_is_a_call_site_fragment_not_an_empty_value_body() {
+        let mut helper = function("configure", Vec::new(), Vec::new());
+        helper.inline_asm_blocks = vec![mwcc_syntax_trees::InlineAsmBlock {
+            statement_index: 0,
+            items: vec![AsmItem::Instruction(mwcc_syntax_trees::AsmInstruction {
+                mnemonic: "li".into(),
+                operands: vec![
+                    mwcc_syntax_trees::AsmOperand::Gpr(3),
+                    mwcc_syntax_trees::AsmOperand::Immediate(4),
+                ],
+                source_line: 1,
+            })],
+        }];
+        let bodies = InlineBodySet::analyze(&[helper]);
+        assert!(bodies.asm_fragment("configure").is_some());
+
+        let caller = function(
+            "caller",
+            Vec::new(),
+            vec![Statement::Expression(Expression::Call {
+                name: "configure".into(),
+                arguments: Vec::new(),
+            })],
+        );
+        assert!(!bodies.calls_required(&caller));
+        assert!(!bodies.calls_any(&caller));
+        assert!(bodies.expand_calls(&caller).is_none());
     }
 
     #[test]

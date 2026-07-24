@@ -251,6 +251,17 @@ impl Generator {
         destination: Option<u8>,
         float_result: bool,
     ) -> Compilation<()> {
+        if let Some(fragment) = self.inline_bodies.asm_fragment(name) {
+            if !arguments.is_empty() || destination.is_some() || float_result {
+                return Err(Diagnostic::error(
+                    "a retained inline-asm fragment must be a discarded, zero-argument void call",
+                ));
+            }
+            // Clone before mutably borrowing the output; InlineBodySet owns the
+            // canonical retained definition while this call emits one instance.
+            let fragment = fragment.to_vec();
+            return crate::asm::append_embedded_asm(&mut self.output, &fragment);
+        }
         // An indirect call through a function-pointer variable (a parameter/local held in
         // a register): copy it to r12 before the arguments (which would overwrite its
         // register), then `mtctr r12; bctrl`. A named function is the direct `bl` below.

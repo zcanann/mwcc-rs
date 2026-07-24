@@ -23,13 +23,90 @@ mod operands;
 use encode::assemble_line;
 use frame::{wrap_auto_frame, wrap_fralloc_frame};
 
-use mwcc_core::Compilation;
+use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{
     Instruction, MachineFunction, Relocation, RelocationKind, RelocationTarget,
 };
 use mwcc_syntax_trees::{AsmInstruction, AsmItem, AsmOperand, AsmRelocSuffix, Function};
 use mwcc_versions::{AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, Behavior};
 use std::collections::HashMap;
+
+/// Assemble a retained embedded-asm helper directly into an ordinary function.
+///
+/// Labels and relocation indices are resolved in the caller's instruction
+/// coordinate space. Unlike a naked asm function, an embedded fragment gets no
+/// generated frame or terminal return: the surrounding C/C++ function owns
+/// both.
+pub(crate) fn append_embedded_asm(
+    output: &mut MachineFunction,
+    body: &[AsmItem],
+) -> Compilation<()> {
+    let base = output.instructions.len();
+    let mut labels: HashMap<&str, usize> = HashMap::new();
+    let mut index = base;
+    for item in body {
+        match item {
+            AsmItem::Label(name) => {
+                labels.insert(name.as_str(), index);
+            }
+            AsmItem::Entry(_) => {
+                return Err(Diagnostic::error(
+                    "an `entry` directive is not valid in embedded inline assembly",
+                ));
+            }
+            AsmItem::Instruction(line) if emits_word(line) => index += 1,
+            AsmItem::Instruction(_) => {}
+        }
+    }
+
+    for item in body {
+        let AsmItem::Instruction(line) = item else {
+            continue;
+        };
+        let instruction_index = output.instructions.len();
+        let Some(instruction) = assemble_line(line, &labels, instruction_index)? else {
+            continue;
+        };
+        output.instructions.push(instruction);
+        for operand in &line.operands {
+            let relocation = match operand {
+                AsmOperand::Symbol { name, suffix }
+                | AsmOperand::SymbolMemory { name, suffix, .. } => {
+                    Some((name, relocation_kind(*suffix)))
+                }
+                AsmOperand::SmallDataSymbolMemory { name, .. } => {
+                    Some((name, RelocationKind::EmbSda21))
+                }
+                _ => None,
+            };
+            if let Some((name, kind)) = relocation {
+                output.relocations.push(Relocation {
+                    instruction_index,
+                    kind,
+                    target: RelocationTarget::External(name.clone()),
+                });
+                if !output.symbol_order.contains(name) {
+                    output.symbol_order.push(name.clone());
+                }
+            }
+        }
+        if matches!(line.mnemonic.as_str(), "b" | "bl") {
+            if let Some(AsmOperand::Label(name)) = line.operands.first() {
+                if !labels.contains_key(name.as_str()) {
+                    output.relocations.push(Relocation {
+                        instruction_index,
+                        kind: RelocationKind::Rel24,
+                        target: RelocationTarget::External(name.clone()),
+                    });
+                    if !output.symbol_order.contains(name) {
+                        output.symbol_order.push(name.clone());
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Assemble an inline-`asm` function into a finished [`MachineFunction`]. The
 /// caller has already established `function.asm_body` is `Some`.

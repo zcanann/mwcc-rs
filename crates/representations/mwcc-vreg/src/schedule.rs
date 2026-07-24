@@ -110,7 +110,50 @@ pub fn hoist_link_register_reload(instructions: &mut Vec<Instruction>) -> Vec<us
     // issues the reload early in straight-line functions, so bail when the function
     // has any forward/unconditional branch.
     if has_forward_branch(instructions) {
-        return identity;
+        // A shared framed epilogue can still issue the LR reload before an
+        // independent scalar return load. The move stays wholly inside the
+        // join block: redirect edges that named the old first instruction to
+        // the reload's old index so the caller's ordinary permutation remap
+        // keeps them at the new block start.
+        let Some(mtlr) = instructions
+            .iter()
+            .position(|instruction| matches!(instruction, Instruction::MoveToLinkRegister { .. }))
+        else {
+            return identity;
+        };
+        if mtlr < 2 {
+            return identity;
+        }
+        let reload = mtlr - 1;
+        let return_load = reload - 1;
+        if !matches!(instructions[reload], Instruction::LoadWord { d: 0, a: 1, .. })
+            || !matches!(
+                instructions[return_load],
+                Instruction::LoadWord { d, .. }
+                    | Instruction::LoadByteZero { d, .. }
+                    | Instruction::LoadHalfwordZero { d, .. }
+                    | Instruction::LoadHalfwordAlgebraic { d, .. }
+                    if d != 0
+            )
+        {
+            return identity;
+        }
+        for instruction in instructions.iter_mut() {
+            match instruction {
+                Instruction::BranchConditionalForward { target, .. }
+                | Instruction::Branch { target }
+                    if *target == return_load =>
+                {
+                    *target = reload;
+                }
+                _ => {}
+            }
+        }
+        instructions.swap(return_load, reload);
+        let mut permutation = identity;
+        permutation[return_load] = reload;
+        permutation[reload] = return_load;
+        return permutation;
     }
     let Some(mtlr) = instructions
         .iter()
@@ -676,6 +719,53 @@ pub fn schedule(instructions: &mut Vec<Instruction>) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_epilogue_issues_link_reload_before_scalar_return_load() {
+        let mut stream = vec![
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 3,
+            },
+            Instruction::BranchAndLink {
+                target: "initialize".into(),
+            },
+            Instruction::StoreByte {
+                s: 0,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::LoadByteZero {
+                d: 3,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: 20,
+            },
+            Instruction::MoveToLinkRegister { s: 0 },
+            Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: 16,
+            },
+            Instruction::BranchToLinkRegister,
+        ];
+
+        let permutation = hoist_link_register_reload(&mut stream);
+        assert!(matches!(stream[3], Instruction::LoadWord { d: 0, .. }));
+        assert!(matches!(stream[4], Instruction::LoadByteZero { d: 3, .. }));
+        assert_eq!(permutation, [0, 1, 2, 4, 3, 5, 6, 7]);
+
+        let Instruction::BranchConditionalForward { target, .. } = &mut stream[0] else {
+            panic!("expected the shared-epilogue edge");
+        };
+        *target = permutation[*target];
+        assert_eq!(*target, 3);
+    }
 
     #[test]
     fn integer_and_float_self_moves_are_coalesced() {

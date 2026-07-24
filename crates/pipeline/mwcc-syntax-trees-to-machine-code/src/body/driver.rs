@@ -1143,8 +1143,10 @@ impl Generator {
         // local-pointer aliases are not later mistaken for entry parameters.
         self.known_locals
             .extend(function.locals.iter().map(|local| local.name.clone()));
-        let calls_skipped_inline = function_calls_any(function, &self.skipped_inline_names)
-            || self.inline_bodies.calls_required(function);
+        // InlineBodySet is the authoritative distinction between skipped
+        // definitions that still require semantic AST composition and pure
+        // inline-asm helpers that lower directly at their call site.
+        let calls_skipped_inline = self.inline_bodies.calls_required(function);
         let calls_inline_candidate = calls_skipped_inline || self.inline_bodies.calls_any(function);
         // Drop never-referenced, side-effect-free locals (an unused `int s = 0;`) — mwcc
         // emits nothing for them — then recompile the cleaned function.
