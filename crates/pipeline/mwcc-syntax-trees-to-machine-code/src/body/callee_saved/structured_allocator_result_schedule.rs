@@ -38,6 +38,7 @@ impl Generator {
         self.move_instruction_before(region.pool_high, region.result_copy + 2);
         self.reuse_allocator_initialization_zero(region.result_copy + 1, region.result, 5);
         self.schedule_allocator_initialization_prefix(region.result);
+        self.fold_allocator_direct_call_result_stores();
     }
 
     fn reuse_allocator_initialization_zero(&mut self, seed: usize, result: u8, zero: u8) {
@@ -112,6 +113,22 @@ impl Generator {
             result,
         );
         self.move_instruction_before(prefix.compare, prefix.first_shift);
+    }
+
+    fn fold_allocator_direct_call_result_stores(&mut self) {
+        while let Some(copy) = self
+            .output
+            .instructions
+            .windows(3)
+            .position(direct_call_result_store)
+            .map(|call| call + 1)
+        {
+            let Instruction::StoreWord { s, .. } = &mut self.output.instructions[copy + 1] else {
+                unreachable!("the direct result store was matched")
+            };
+            *s = Eabi::FIRST_GENERAL_ARGUMENT;
+            self.remove_allocator_result_instruction(copy);
+        }
     }
 }
 
@@ -458,6 +475,26 @@ fn reusable_zero_store(window: &[Instruction], result: u8, offsets: &[i16]) -> b
     )
 }
 
+fn direct_call_result_store(window: &[Instruction]) -> bool {
+    matches!(
+        window,
+        [
+            Instruction::BranchAndLink { .. },
+            Instruction::Or {
+                a: temporary,
+                s: Eabi::FIRST_GENERAL_ARGUMENT,
+                b: Eabi::FIRST_GENERAL_ARGUMENT,
+            },
+            Instruction::StoreWord {
+                s,
+                a: store_base,
+                ..
+            },
+            ..
+        ] if temporary == s && temporary != store_base
+    )
+}
+
 fn writes_result_schedule_register(instruction: &Instruction, register: u8) -> bool {
     mwcc_vreg::register_operands(instruction)
         .iter()
@@ -666,5 +703,31 @@ mod tests {
             ),
             (0, 1, 4, 5, 6, 8, 33)
         );
+    }
+
+    #[test]
+    fn recognizes_an_immediately_stored_direct_call_result() {
+        assert!(direct_call_result_store(&[
+            Instruction::BranchAndLink {
+                target: "get_data".into(),
+            },
+            Instruction::move_register(47, Eabi::FIRST_GENERAL_ARGUMENT),
+            Instruction::StoreWord {
+                s: 47,
+                a: 38,
+                offset: 4,
+            },
+        ]));
+        assert!(!direct_call_result_store(&[
+            Instruction::BranchAndLink {
+                target: "get_data".into(),
+            },
+            Instruction::move_register(47, Eabi::FIRST_GENERAL_ARGUMENT),
+            Instruction::StoreWord {
+                s: 46,
+                a: 38,
+                offset: 4,
+            },
+        ]));
     }
 }
