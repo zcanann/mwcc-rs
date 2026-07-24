@@ -2533,6 +2533,12 @@ impl Generator {
         if self.try_fixed_port_indexed_bitfield_update(function)? {
             return Ok(());
         }
+        // A full-width local packet accumulator has its own stack-argument and
+        // fixed-port schedule.  Claim it before generic value tracking folds
+        // away the field-by-field provenance.
+        if self.try_fixed_port_packet_accumulator(function)? {
+            return Ok(());
+        }
         // A two-bit enum remap feeds one state-word field and then ORs a dirty bit in another
         // member. Keep the named remap local intact until its register schedule is recognized.
         if self.try_enum_remap_member_update(function)? {

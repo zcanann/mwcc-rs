@@ -64,6 +64,7 @@ mod friction_limited_acceleration_clamp;
 mod fixed_address_object_flush;
 mod fixed_port_bitfield;
 mod fixed_port_indexed_bitfield;
+mod fixed_port_packet_accumulator;
 mod fixed_port_replay_update;
 mod frame_vector_accumulation_schedule;
 mod guards_ifs;
