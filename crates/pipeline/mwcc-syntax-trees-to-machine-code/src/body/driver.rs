@@ -2592,6 +2592,9 @@ impl Generator {
         if self.try_constructor_constant_store_fill(function)? {
             return Ok(());
         }
+        if self.try_parameter_member_setup(function)? {
+            return Ok(());
+        }
         if self.try_value_tracking(function)? {
             return Ok(());
         }

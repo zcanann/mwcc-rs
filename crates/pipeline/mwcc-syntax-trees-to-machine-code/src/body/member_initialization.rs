@@ -70,7 +70,228 @@ fn immediate(expression: &Expression) -> Option<i16> {
     }
 }
 
+fn setup_target<'a>(
+    statement: &'a Statement,
+    base_name: &str,
+) -> Option<(i16, Type, &'a Expression)> {
+    let Statement::Store {
+        target:
+            Expression::Member {
+                base,
+                offset,
+                member_type,
+                index_stride: None,
+            },
+        value,
+    } = statement
+    else {
+        return None;
+    };
+    if !variable(base, base_name) {
+        return None;
+    }
+    Some((i16::try_from(*offset).ok()?, *member_type, value))
+}
+
 impl Generator {
+    /// Lower a leaf setup transaction that copies its register parameters into
+    /// one object, clears two narrow bounds, then stores `first - 1` and
+    /// `second - 1`. Legacy mwcc overlaps the independent work: the first
+    /// parameter becomes dead after its leading store and holds its decrement,
+    /// while r0 holds the second decrement and the first unused argument
+    /// register broadcasts zero.
+    pub(crate) fn try_parameter_member_setup(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if function.return_type != Type::Void
+            || function.return_expression.is_some()
+            || !function.locals.is_empty()
+            || !function.guards.is_empty()
+            || function_makes_call(function)
+            || function.parameters.len() < 5
+            || function.statements.len() < 8
+        {
+            return Ok(false);
+        }
+        let base_name = &function.parameters[0].name;
+        let first_name = &function.parameters[1].name;
+        let second_name = &function.parameters[2].name;
+        let Some(base_register) = self.lookup_general(base_name) else {
+            return Ok(false);
+        };
+        let Some(first_register) = self.lookup_general(first_name) else {
+            return Ok(false);
+        };
+        let Some(second_register) = self.lookup_general(second_name) else {
+            return Ok(false);
+        };
+        if base_register != 3 || first_register != 4 || second_register != 5 {
+            return Ok(false);
+        }
+
+        let stores = function
+            .statements
+            .iter()
+            .map(|statement| setup_target(statement, base_name))
+            .collect::<Option<Vec<_>>>();
+        let Some(stores) = stores else {
+            return Ok(false);
+        };
+        let plain_count = stores
+            .iter()
+            .take_while(|(_, _, value)| matches!(value, Expression::Variable(_)))
+            .count();
+        if plain_count < 4 || stores.len() != plain_count + 4 {
+            return Ok(false);
+        }
+        if !matches!(stores[0].2, Expression::Variable(name) if name == first_name)
+            || !matches!(stores[1].2, Expression::Variable(name) if name == second_name)
+            || !stores[plain_count..plain_count + 2]
+                .iter()
+                .all(|(_, ty, value)| {
+                    matches!(ty, Type::Short | Type::UnsignedShort)
+                        && matches!(value, Expression::IntegerLiteral(0))
+                })
+        {
+            return Ok(false);
+        }
+        for (_, _, value) in &stores[..plain_count] {
+            let Expression::Variable(name) = value else {
+                return Ok(false);
+            };
+            if self.lookup_general(name).is_none() {
+                return Ok(false);
+            }
+        }
+        let subtracts_one = |value: &Expression, parameter: &str| {
+            matches!(
+                value,
+                Expression::Binary {
+                    operator: BinaryOperator::Subtract,
+                    left,
+                    right,
+                } if variable(left, parameter)
+                    && matches!(right.as_ref(), Expression::IntegerLiteral(1))
+            )
+        };
+        if !matches!(
+            stores[plain_count + 2].1,
+            Type::Short | Type::UnsignedShort
+        ) || !matches!(
+            stores[plain_count + 3].1,
+            Type::Short | Type::UnsignedShort
+        ) || !subtracts_one(stores[plain_count + 2].2, first_name)
+            || !subtracts_one(stores[plain_count + 3].2, second_name)
+        {
+            return Ok(false);
+        }
+        let zero_register = function
+            .parameters
+            .iter()
+            .filter_map(|parameter| self.lookup_general(&parameter.name))
+            .max()
+            .and_then(|register| register.checked_add(1))
+            .filter(|register| *register <= 10);
+        let Some(zero_register) = zero_register else {
+            return Ok(false);
+        };
+
+        let emit_store = |instructions: &mut Vec<Instruction>,
+                          source,
+                          offset,
+                          value_type|
+         -> Compilation<()> {
+            let instruction = match value_type {
+                Type::Char | Type::UnsignedChar => Instruction::StoreByte {
+                    s: source,
+                    a: base_register,
+                    offset,
+                },
+                Type::Short | Type::UnsignedShort => Instruction::StoreHalfword {
+                    s: source,
+                    a: base_register,
+                    offset,
+                },
+                Type::Int
+                | Type::UnsignedInt
+                | Type::Pointer(_)
+                | Type::StructPointer { .. } => Instruction::StoreWord {
+                    s: source,
+                    a: base_register,
+                    offset,
+                },
+                _ => {
+                    return Err(Diagnostic::error(
+                        "parameter member setup contains a non-integer store",
+                    ))
+                }
+            };
+            instructions.push(instruction);
+            Ok(())
+        };
+
+        emit_store(
+            &mut self.output.instructions,
+            first_register,
+            stores[0].0,
+            stores[0].1,
+        )?;
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(zero_register, 0));
+        self.output.instructions.extend([
+            Instruction::AddImmediate {
+                d: first_register,
+                a: first_register,
+                immediate: -1,
+            },
+            Instruction::AddImmediate {
+                d: 0,
+                a: second_register,
+                immediate: -1,
+            },
+        ]);
+        for (offset, value_type, value) in &stores[1..plain_count] {
+            let Expression::Variable(name) = value else {
+                unreachable!("plain member setup values were validated")
+            };
+            let source_register = self
+                .lookup_general(name)
+                .expect("plain member setup parameter has a register");
+            emit_store(
+                &mut self.output.instructions,
+                source_register,
+                *offset,
+                *value_type,
+            )?;
+        }
+        for (offset, value_type, _) in &stores[plain_count..plain_count + 2] {
+            emit_store(
+                &mut self.output.instructions,
+                zero_register,
+                *offset,
+                *value_type,
+            )?;
+        }
+        emit_store(
+            &mut self.output.instructions,
+            first_register,
+            stores[plain_count + 2].0,
+            stores[plain_count + 2].1,
+        )?;
+        emit_store(
+            &mut self.output.instructions,
+            0,
+            stores[plain_count + 3].0,
+            stores[plain_count + 3].1,
+        )?;
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
+        Ok(true)
+    }
+
     /// Whole-file optimization hoists a sibling integer literal ahead of a
     /// constructor's first parameter-valued member store. The two stores share
     /// the incoming `this` base and the constructor returns it unchanged.

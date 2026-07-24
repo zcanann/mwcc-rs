@@ -2462,6 +2462,7 @@ mod tests {
 
     #[path = "member_float_select.rs"]
     mod member_float_select;
+    mod member_setup;
 
     #[path = "virtual_destructor.rs"]
     mod virtual_destructor;
