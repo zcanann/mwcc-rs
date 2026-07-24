@@ -35,7 +35,8 @@ use super::structured_home_layout::{
     allocator_result_cursor_preferences, compact_aggregate_scratch_frame_pair,
     dense_eager_deferred_preferences, dense_eager_home_preference,
     paired_eager_deferred_preference, rounded_pointer_dense_home_preference,
-    saved_float_home_preference, uses_rounded_pointer_dense_layout,
+    returned_deferred_pair_preference, saved_float_home_preference,
+    uses_rounded_pointer_dense_layout,
 };
 use super::structured_liveness::{
     read_after_possible_call, read_after_possible_call_in_return,
@@ -484,6 +485,18 @@ impl Generator {
             &saved_parameters,
             &deferred_home_plan,
         );
+        let returned_deferred_home = function
+            .return_expression
+            .as_ref()
+            .and_then(|expression| match expression {
+                Expression::Variable(name) => deferred_saved_locals
+                    .iter()
+                    .find(|local| local.name == *name),
+                _ => None,
+            })
+            .map(|local| {
+                parameter_home_reuse.home_index(deferred_home_plan.group(&local.name))
+            });
         let value_home_count = eager_saved_locals.len()
             + saved_parameters.len()
             + parameter_home_reuse.fresh_group_count;
@@ -493,6 +506,19 @@ impl Generator {
         let count = dense_loop_window
             .filter(|window| value_home_count <= *window)
             .unwrap_or(base_home_count);
+        let returned_deferred_pair = returned_deferred_pair_preference(
+            with_frame_array,
+            eager_saved_locals.len(),
+            saved_parameters.len(),
+            deferred_home_plan.group_count,
+            count,
+            returned_deferred_home,
+            0,
+        )
+        .is_some();
+        if returned_deferred_pair {
+            self.epilogue_lr_before_gprs = true;
+        }
         let unused_array_two_homes = unused_frame_array
             && saved_parameters.is_empty()
             && count == 2
@@ -635,6 +661,16 @@ impl Generator {
                     saved_parameters.len(),
                     deferred_home_plan.group_count,
                     self.legacy_inline_expansion_frame_bytes != 0,
+                    home_index,
+                ) {
+                    self.fresh_virtual_general_preferring(preferred)
+                } else if let Some(preferred) = returned_deferred_pair_preference(
+                    with_frame_array,
+                    eager_saved_locals.len(),
+                    saved_parameters.len(),
+                    deferred_home_plan.group_count,
+                    count,
+                    returned_deferred_home,
                     home_index,
                 ) {
                     self.fresh_virtual_general_preferring(preferred)

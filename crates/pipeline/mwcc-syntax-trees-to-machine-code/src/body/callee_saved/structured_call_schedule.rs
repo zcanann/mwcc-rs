@@ -110,6 +110,11 @@ impl Generator {
     /// callee-saved return home. The load is independent of the result move;
     /// MWCC uses that latency schedule before restoring the saved GPR range.
     pub(crate) fn schedule_saved_return_epilogue(&mut self) {
+        // An owner that explicitly selected LR-before-GPR teardown has already
+        // fixed the issue order: return handoff, LR reload, then GPR restores.
+        if self.epilogue_lr_before_gprs {
+            return;
+        }
         let Some(lr_index) = self.output.instructions.iter().rposition(|instruction| {
             matches!(instruction, Instruction::LoadWord { d: 0, a: 1, offset } if *offset == self.frame_size + 4)
         }) else {

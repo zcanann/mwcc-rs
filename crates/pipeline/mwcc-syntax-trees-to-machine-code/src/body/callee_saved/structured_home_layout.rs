@@ -164,6 +164,28 @@ pub(super) fn paired_eager_deferred_preference(
         .then_some(if home_index == 0 { 30 } else { 31 })
 }
 
+/// A compact body with one incoming value spanning the call graph and one
+/// deferred local returned afterward gives the returned value the highest
+/// saved home. The longer-lived input occupies r30 below it.
+pub(super) fn returned_deferred_pair_preference(
+    with_frame_array: bool,
+    eager_count: usize,
+    parameter_count: usize,
+    deferred_count: usize,
+    total_count: usize,
+    returned_home: Option<usize>,
+    home_index: usize,
+) -> Option<u8> {
+    (!with_frame_array
+        && eager_count == 0
+        && parameter_count == 1
+        && deferred_count == 1
+        && total_count == 2
+        && returned_home == Some(1)
+        && home_index < 2)
+        .then_some(if home_index == 0 { 30 } else { 31 })
+}
+
 pub(super) fn dense_eager_deferred_preferences(
     eager_count: usize,
     parameter_count: usize,
@@ -350,6 +372,26 @@ mod tests {
         assert_eq!(paired_eager_deferred_preference(false, 1, 0, 1, true, 1), Some(31));
         assert_eq!(paired_eager_deferred_preference(true, 1, 0, 1, true, 0), None);
         assert_eq!(paired_eager_deferred_preference(false, 1, 0, 1, false, 0), None);
+    }
+
+    #[test]
+    fn pairs_one_parameter_below_a_returned_deferred_result() {
+        assert_eq!(
+            returned_deferred_pair_preference(false, 0, 1, 1, 2, Some(1), 0),
+            Some(30)
+        );
+        assert_eq!(
+            returned_deferred_pair_preference(false, 0, 1, 1, 2, Some(1), 1),
+            Some(31)
+        );
+        assert_eq!(
+            returned_deferred_pair_preference(true, 0, 1, 1, 2, Some(1), 0),
+            None
+        );
+        assert_eq!(
+            returned_deferred_pair_preference(false, 0, 1, 1, 2, None, 0),
+            None
+        );
     }
 
     #[test]

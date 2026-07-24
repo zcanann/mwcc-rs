@@ -2505,6 +2505,9 @@ mod tests {
     #[path = "function_address_select.rs"]
     mod function_address_select;
 
+    #[path = "returned_callback_guard.rs"]
+    mod returned_callback_guard;
+
     #[path = "call_argument_schedules.rs"]
     mod call_argument_schedules;
 
