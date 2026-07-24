@@ -67,6 +67,11 @@ impl Generator {
         else {
             return Ok(false);
         };
+        let (Expression::Variable(first_name), Expression::Variable(_)) =
+            (first_base.as_ref(), second_base)
+        else {
+            return Ok(false);
+        };
         let word_member = matches!(
             member_type,
             Type::Int
@@ -80,7 +85,7 @@ impl Generator {
                     .iter()
                     .all(|ty| !matches!(ty, Type::Float | Type::Double))
         });
-        let Some(first_base_register) = self.registers_used_by(first_base).into_iter().next() else {
+        let Some(first_base_register) = self.lookup_general(first_name) else {
             return Ok(false);
         };
         if !direct_call
@@ -125,7 +130,7 @@ impl Generator {
         else {
             return Ok(false);
         };
-        let expected_types = self.call_parameter_types.get(name).is_none_or(|types| {
+        let expected_types = self.call_parameter_types.get(name).is_some_and(|types| {
             types.len() >= 2
                 && !matches!(types[0], Type::Float | Type::Double)
                 && matches!(types[1], Type::Float | Type::Double)
