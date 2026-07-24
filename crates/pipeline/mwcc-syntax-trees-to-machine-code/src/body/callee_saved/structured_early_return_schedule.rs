@@ -34,6 +34,31 @@ impl Generator {
                 conditional += 1;
                 continue;
             }
+            let incoming: Vec<_> = self.output.instructions[..conditional]
+                .iter()
+                .enumerate()
+                .filter_map(|(index, instruction)| {
+                    matches!(
+                        instruction,
+                        Instruction::BranchConditionalForward { target, .. }
+                            | Instruction::Branch { target }
+                            if *target == return_branch
+                    )
+                    .then_some(index)
+                })
+                .collect();
+            if !incoming.is_empty() {
+                for branch in incoming {
+                    match &mut self.output.instructions[branch] {
+                        Instruction::BranchConditionalForward { target, .. }
+                        | Instruction::Branch { target } => *target = 0,
+                        _ => unreachable!("incoming branch was classified above"),
+                    }
+                    return_branches.push(branch);
+                }
+                conditional += 2;
+                continue;
+            }
 
             self.output.instructions[conditional] = Instruction::BranchConditionalForward {
                 options: options ^ 8,

@@ -1600,10 +1600,7 @@ impl Generator {
                     }
                     let condition_result = (|| {
                         self.preload_condition_global_cache(condition)?;
-                        let groups = entry_alias
-                            .is_none()
-                            .then(|| logical_or_groups(condition))
-                            .flatten();
+                        let groups = logical_or_groups(condition);
                         if let Some(groups) = groups {
                             let mut skip_body = Vec::new();
                             let mut enter_body = Vec::new();
@@ -1622,6 +1619,14 @@ impl Generator {
                                             diagnostic
                                         })?;
                                     self.reuse_short_circuit_member_base(term_index, term_start);
+                                    if group_index == 0 && term_index == 0 {
+                                        if let Some(alias) = entry_alias.as_ref() {
+                                            fold_entry_alias_zero_test(
+                                                &mut self.output.instructions,
+                                                alias,
+                                            );
+                                        }
+                                    }
                                     if !last_group && term_index == 0 {
                                         // Any failed term advances to the next OR group.
                                         // Only values established by the first term dominate
@@ -1652,6 +1657,14 @@ impl Generator {
                                             skip_body.push(branch);
                                         } else {
                                             advance_group.push(branch);
+                                        }
+                                    }
+                                    if group_index == 0 && term_index == 0 {
+                                        if let Some(alias) = entry_alias.take() {
+                                            self.locations
+                                                .get_mut(&alias.name)
+                                                .expect("planned saved parameter")
+                                                .register = alias.home;
                                         }
                                     }
                                 }
