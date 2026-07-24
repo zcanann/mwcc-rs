@@ -2484,6 +2484,27 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // the same `.bss` object remains reference-ordered, so key this only to the
     // retained semantic relocation rather than changing the general BSS rule.
     if let Some(debug) = debug {
+        // A grouped debug payload visits source data declarations while encoding
+        // their DIEs.  The first direct relocation to each defined object is
+        // therefore a stronger record of that transaction order than
+        // `data_objects`: compiler-created objects (notably weak vtables) can be
+        // materialized into that list before earlier source declarations.  Exact
+        // captures can contain fragmented-DWARF symbols as container metadata
+        // while retaining this legacy declaration transaction, so prefer the
+        // direct relocation order whenever it is present.
+        let mut seen_direct_data = std::collections::HashSet::new();
+        let direct_data_order = debug
+            .debug_relocations
+            .iter()
+            .filter_map(|relocation| match &relocation.target {
+                DebugRelocationTarget::Symbol(name) => input
+                    .data_objects
+                    .iter()
+                    .find(|object| object.name == name)
+                    .filter(|object| seen_direct_data.insert(object.name)),
+                DebugRelocationTarget::Section(_) => None,
+            })
+            .collect::<Vec<_>>();
         let fragmented_data_order = debug
             .symbols
             .iter()
@@ -2494,7 +2515,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             .symbols
             .iter()
             .any(|symbol| symbol.name.starts_with(".dwarf.0006."));
-        let debug_data_order = if has_fragmented_functions {
+        let debug_data_order = if !direct_data_order.is_empty() {
+            direct_data_order
+        } else if has_fragmented_functions {
             Vec::new()
         } else if fragmented_data_order.is_empty() {
             input.data_objects.iter().collect::<Vec<_>>()

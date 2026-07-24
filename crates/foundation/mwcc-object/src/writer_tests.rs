@@ -1,4 +1,7 @@
 use super::*;
+use crate::{
+    DebugLayout, DebugRelocation, DebugRelocationKind, DebugSection, DebugSections, DebugSymbol,
+};
 
 fn be_u16(bytes: &[u8], offset: usize) -> u16 {
     u16::from_be_bytes(bytes[offset..offset + 2].try_into().unwrap())
@@ -162,6 +165,124 @@ fn deferred_weak_vtable_waits_for_its_function_reference() {
         ..vtable
     };
     assert!(initialized_object_is_upfront(&ordinary, true));
+}
+
+#[test]
+fn grouped_debug_data_relocations_restore_source_declaration_order() {
+    let data = [
+        DataObject {
+            name: "__vt__8Inline",
+            size: 12,
+            alignment: 4,
+            comment_alignment: 4,
+            initial_bytes: Some(vec![0; 12]),
+            is_const: false,
+            force_full_data_section: true,
+            is_static: false,
+            is_explicit_zero: false,
+            preassigned_anonymous_ordinal: None,
+            relocations: Vec::new(),
+            non_static_functions_before: 1,
+            functions_before: 1,
+            is_weak: true,
+            static_local_owner: None,
+            anonymous_adjust: 0,
+            section: None,
+        },
+        DataObject {
+            name: "instance",
+            size: 4,
+            alignment: 4,
+            comment_alignment: 4,
+            initial_bytes: None,
+            is_const: false,
+            force_full_data_section: false,
+            is_static: false,
+            is_explicit_zero: false,
+            preassigned_anonymous_ordinal: None,
+            relocations: Vec::new(),
+            non_static_functions_before: 0,
+            functions_before: 0,
+            is_weak: false,
+            static_local_owner: None,
+            anonymous_adjust: 0,
+            section: None,
+        },
+    ];
+    let debug = DebugSections {
+        layout: DebugLayout::BetweenFullAndSmallDataGrouped,
+        post_framed_function_anonymous_bump_override: None,
+        line: Vec::new(),
+        debug: vec![0; 8],
+        line_relocations: Vec::new(),
+        debug_relocations: vec![
+            DebugRelocation {
+                offset: 0,
+                kind: DebugRelocationKind::UnalignedAddress32,
+                target: DebugRelocationTarget::Symbol("instance".into()),
+                addend: 0,
+            },
+            DebugRelocation {
+                offset: 4,
+                kind: DebugRelocationKind::UnalignedAddress32,
+                target: DebugRelocationTarget::Symbol("__vt__8Inline".into()),
+                addend: 0,
+            },
+        ],
+        symbols: vec![DebugSymbol {
+            name: ".dwarf.0006.constructor".into(),
+            section: DebugSection::Debug,
+            offset: 0,
+            size: 0,
+            alignment: 1,
+            comment_flags: 0,
+            binding: DebugSymbolBinding::Local,
+            placement: DebugSymbolPlacement::Early,
+        }],
+    };
+    let object = write_object(&ObjectInput {
+        source_name: "class.cpp",
+        object_format: crate::ObjectFormat {
+            comment: CommentFormat {
+                marker: 8,
+                version: (2, 4, 7),
+                pooling_enabled: true,
+            },
+            emb_sda21_offset: 0,
+            code_alignment: 4,
+            sdata2_writable: false,
+            function_symbol_order: FunctionSymbolOrder::Deferred,
+            weak_vtable_function_symbol_tail: false,
+            initialized_globals_before_deferred_functions: false,
+            local_data_symbols_in_declaration_order: false,
+            small_zero_statics_in_declaration_order: false,
+            rodata_anchor_before_data_symbols: false,
+            rodata_anchor_comment_flags: 0,
+            data_relocations_use_section_anchors: false,
+            data_anchor_comment_flags: 0,
+            initial_anonymous_counter: 1,
+            post_leaf_function_anonymous_bump: 0,
+            post_framed_function_anonymous_bump: 0,
+        },
+        functions: Vec::new(),
+        data_objects: data.into(),
+        small_data: true,
+        emit_mwcats: false,
+        inline_asm_symbols: &[],
+        early_static_function_symbols: &[],
+        early_undefined_externals: &[],
+        section_function_declarations: &[],
+        section_externals: &[],
+        local_symbol_order: &[],
+        debug: Some(debug),
+    });
+    let names = symbol_names(&object);
+    let instance = names.iter().position(|name| name == "instance").unwrap();
+    let vtable = names
+        .iter()
+        .position(|name| name == "__vt__8Inline")
+        .unwrap();
+    assert_eq!(instance + 1, vtable);
 }
 
 #[test]
