@@ -25,6 +25,85 @@ fn direct_member_address(expression: &Expression) -> Option<(&Expression, u32)> 
 }
 
 impl Generator {
+    /// Marshal `(base->byte, base->bits, saved)` while `base` still occupies
+    /// the first argument register.
+    ///
+    /// The second byte load starts first, the saved leaf fills its latency
+    /// slot, and only then may the first load overwrite r3.  The independent
+    /// rotate completes immediately before the call.
+    pub(crate) fn try_emit_shared_base_bitfield_leaf_arguments(
+        &mut self,
+        arguments: &[Expression],
+        direct_call: bool,
+    ) -> Compilation<bool> {
+        let [
+            first @ Expression::Member {
+                base: first_base,
+                member_type: Type::UnsignedChar,
+                index_stride: None,
+                ..
+            },
+            Expression::BitFieldRead {
+                storage,
+                shift,
+                width,
+                ..
+            },
+            third @ Expression::Variable(_),
+        ] = arguments
+        else {
+            return Ok(false);
+        };
+        let Expression::Member {
+            base: second_base,
+            offset: second_offset,
+            member_type: Type::UnsignedChar,
+            index_stride: None,
+        } = storage.as_ref()
+        else {
+            return Ok(false);
+        };
+        let (Expression::Variable(first_name), Expression::Variable(second_name)) =
+            (first_base.as_ref(), second_base.as_ref())
+        else {
+            return Ok(false);
+        };
+        let Ok((third_register, third_width, _)) = self.leaf_info(third) else {
+            return Ok(false);
+        };
+        if !direct_call
+            || first_name != second_name
+            || *width == 0
+            || u16::from(*shift) + u16::from(*width) > 8
+            || self.lookup_general(first_name) != Some(Eabi::FIRST_GENERAL_ARGUMENT)
+            || third_width != 32
+            || third_register == Eabi::FIRST_GENERAL_ARGUMENT + 1
+        {
+            return Ok(false);
+        }
+
+        let first_argument = Eabi::FIRST_GENERAL_ARGUMENT;
+        let second_argument = first_argument + 1;
+        let third_argument = first_argument + 2;
+        self.emit_member_load(
+            second_base,
+            *second_offset,
+            Type::UnsignedChar,
+            None,
+            second_argument,
+        )?;
+        self.evaluate_general(third, third_argument)?;
+        self.evaluate_general(first, first_argument)?;
+        self.output.instructions.push(Instruction::RotateAndMask {
+            a: second_argument,
+            s: second_argument,
+            shift: (32 - *shift) % 32,
+            begin: 32 - *width,
+            end: 31,
+        });
+        Ok(true)
+    }
+
     /// Schedule `(large_string, i16, large_string)` without serializing the two
     /// address dependency chains. MWCC emits both high halves, completes the
     /// third argument through r4 into r5, then reuses r4 for the integer line

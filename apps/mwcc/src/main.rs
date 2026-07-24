@@ -2361,6 +2361,50 @@ mod tests {
     }
 
     #[test]
+    fn marshals_shared_base_byte_bitfield_and_saved_leaf_arguments() {
+        let source = br#"
+            struct Fighter {
+                unsigned char player;
+                unsigned char flag0 : 1;
+                unsigned char flag1 : 1;
+                unsigned char flag2 : 1;
+                unsigned char flag3 : 1;
+                unsigned char report_flag : 1;
+            };
+            extern void report(int player, int flag, int result);
+            void test(struct Fighter* fighter, int unused0, int unused1, int result) {
+                report(fighter->player, fighter->report_flag, result);
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.emit_mwcats = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "shared-base-bitfield-call.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the dependent member arguments should not clobber their shared base");
+        let expected_arguments = [
+            0x88, 0x83, 0x00, 0x01, // lbz r4,1(r3)
+            0x7c, 0xc5, 0x33, 0x78, // mr r5,r6
+            0x88, 0x63, 0x00, 0x00, // lbz r3,0(r3)
+            0x54, 0x84, 0xef, 0xfe, // rlwinm r4,r4,29,31,31
+        ];
+        assert!(object
+            .windows(expected_arguments.len())
+            .any(|bytes| bytes == expected_arguments));
+    }
+
+    #[test]
     fn schedules_in_place_float_updates_with_their_trailing_clamps() {
         let source = br#"
             struct Body { float velocity; };
