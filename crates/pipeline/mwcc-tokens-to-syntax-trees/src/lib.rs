@@ -569,6 +569,42 @@ mod tests {
     }
 
     #[test]
+    fn parses_cpp_fundamental_function_casts_as_ordinary_conversions() {
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(
+                "int convert(float value) { return int(value + double()); }",
+            )
+            .unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Cast {
+                target_type: mwcc_syntax_trees::Type::Int,
+                operand,
+            }) if matches!(
+                operand.as_ref(),
+                mwcc_syntax_trees::Expression::Binary { right, .. }
+                    if matches!(
+                        right.as_ref(),
+                        mwcc_syntax_trees::Expression::Cast {
+                            target_type: mwcc_syntax_trees::Type::Double,
+                            operand,
+                        } if matches!(
+                            operand.as_ref(),
+                            mwcc_syntax_trees::Expression::IntegerLiteral(0)
+                        )
+                    )
+            )
+        ));
+    }
+
+    #[test]
     fn binds_postfix_member_access_to_a_named_pointer_cast() {
         let source = r#"
             struct Item { int value; };

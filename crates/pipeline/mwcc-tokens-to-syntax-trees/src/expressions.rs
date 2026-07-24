@@ -512,19 +512,36 @@ impl Parser {
             return Ok(increment_assignment(operand, operator));
         }
 
-        // A C++ named static cast has the same expression representation as a
-        // C-style cast once its destination type is known. Keep the syntax in
-        // the parser rather than teaching later lowering stages about two
-        // spellings of the same conversion.
-        let mut named_cast_struct_tag = None;
-        let named_cast_expression = if self.cplusplus
+        // C++'s `int(value)` fundamental conversion and named `static_cast<T>(value)`
+        // have the same representation as a C-style cast once the destination type is
+        // known. Normalize all three spellings here instead of leaking source syntax
+        // into semantic lowering and code generation.
+        let mut explicit_cast_struct_tag = None;
+        let explicit_cast_expression = if self.cplusplus
+            && token_starts_cxx_fundamental_conversion(self.peek())
+        {
+            let target_type = self.parse_type()?;
+            self.expect(Token::ParenOpen)?;
+            // `T()` value-initializes a scalar. Represent it as the ordinary conversion
+            // of integer zero so the existing cast lowering chooses the target lane.
+            let operand = if *self.peek() == Token::ParenClose {
+                Expression::IntegerLiteral(0)
+            } else {
+                self.expression()?
+            };
+            self.expect(Token::ParenClose)?;
+            Some(Expression::Cast {
+                target_type,
+                operand: Box::new(operand),
+            })
+        } else if self.cplusplus
             && matches!(self.peek(), Token::Identifier(name) if name == "static_cast")
         {
             self.advance();
             self.expect(Token::Less)?;
             let target_type = self.parse_type()?;
             if matches!(target_type, Type::StructPointer { .. }) {
-                named_cast_struct_tag = self.last_struct_tag.take();
+                explicit_cast_struct_tag = self.last_struct_tag.take();
             }
             self.expect(Token::Greater)?;
             self.expect(Token::ParenOpen)?;
@@ -608,8 +625,8 @@ impl Parser {
 
         // A `(struct S *)x` cast carries the struct tag (stashed by `parse_type` in
         // `last_struct_tag`) so a member access on the cast result resolves its layout.
-        let mut cast_struct_tag: Option<String> = named_cast_struct_tag;
-        let mut expression = if let Some(expression) = named_cast_expression {
+        let mut cast_struct_tag: Option<String> = explicit_cast_struct_tag;
+        let mut expression = if let Some(expression) = explicit_cast_expression {
             expression
         } else {
             match self.advance() {
@@ -1690,6 +1707,27 @@ impl Parser {
                     && member.bit_field == selected.bit_field
             })
             .then(|| tag.clone())
+    }
+}
+
+/// C++ permits fundamental types to be used as explicit conversion functions:
+/// `int(value)`, `unsigned long(value)`, `bool()`, and so on. These spellings are
+/// unambiguous at the start of an expression because every admitted word is reserved
+/// as a fundamental type specifier. Typedef and class names intentionally remain in
+/// the identifier/call resolver, where symbol knowledge can disambiguate them.
+fn token_starts_cxx_fundamental_conversion(token: &Token) -> bool {
+    match token {
+        Token::KeywordInt
+        | Token::KeywordChar
+        | Token::KeywordShort
+        | Token::KeywordUnsigned
+        | Token::KeywordFloat
+        | Token::KeywordVoid => true,
+        Token::Identifier(word) => matches!(
+            word.as_str(),
+            "long" | "signed" | "double" | "bool" | "wchar_t"
+        ),
+        _ => false,
     }
 }
 
