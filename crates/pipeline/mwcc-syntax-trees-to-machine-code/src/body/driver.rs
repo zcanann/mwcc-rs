@@ -2350,6 +2350,13 @@ impl Generator {
         {
             return Ok(());
         }
+        // A nested sign/quadrant tree around one verified guarded float-table
+        // helper is leaf after inlining. It owns the shared `.data` base and
+        // conversion frame, so claim it before the general structured-frame
+        // compiler treats the source calls as surviving calls.
+        if self.try_float_octant_table_dispatch(function)? {
+            return Ok(());
+        }
         if self.try_callee_saved_structured_frame_body(function)? {
             return Ok(());
         }
