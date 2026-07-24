@@ -4775,6 +4775,61 @@ mod tests {
     }
 
     #[test]
+    fn keeps_member_friction_values_live_through_absolute_selects() {
+        let source = br#"
+            struct State {
+                char pad0[116];
+                float output;
+                char pad1[8];
+                float velocity;
+                char pad2[252];
+                float friction;
+            };
+            void compiled(struct State* state) {
+                float result = state->friction;
+                float lhs = result < 0 ? -result : result;
+                float absvel = state->velocity < 0 ? -state->velocity : state->velocity;
+                if ((result < 0 ? -result : result) >= absvel) {
+                    result = -state->velocity;
+                } else if (state->velocity > 0) {
+                    result = -state->friction;
+                }
+                state->output = result;
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.emit_mwcats = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "member-float-friction-select.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("member-backed friction selection should retain its float values");
+        let expected_text = [
+            0xc0, 0x63, 0x00, 0x80, 0xc0, 0x00, 0x00, 0x00, 0xc0, 0x43, 0x01, 0x80, 0xfc,
+            0x03, 0x00, 0x40, 0x40, 0x80, 0x00, 0x0c, 0xfc, 0x20, 0x18, 0x50, 0x48, 0x00,
+            0x00, 0x08, 0xfc, 0x20, 0x18, 0x90, 0xc0, 0x00, 0x00, 0x00, 0xfc, 0x02, 0x00,
+            0x40, 0x40, 0x80, 0x00, 0x0c, 0xfc, 0x00, 0x10, 0x50, 0x48, 0x00, 0x00, 0x08,
+            0xfc, 0x00, 0x10, 0x90, 0xfc, 0x00, 0x08, 0x40, 0x4c, 0x41, 0x13, 0x82, 0x40,
+            0x82, 0x00, 0x0c, 0xfc, 0x40, 0x18, 0x50, 0x48, 0x00, 0x00, 0x14, 0xc0, 0x00,
+            0x00, 0x00, 0xfc, 0x03, 0x00, 0x40, 0x40, 0x81, 0x00, 0x08, 0xfc, 0x40, 0x10,
+            0x50, 0xd0, 0x43, 0x00, 0x74, 0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected_text.len())
+            .any(|bytes| bytes == expected_text));
+    }
+
+    #[test]
     fn command_line_pool_mode_is_last_wins() {
         let off = parse_invocation(&["-pool".into(), "off".into()]);
         assert!(!off.flags.pooling_enabled);
