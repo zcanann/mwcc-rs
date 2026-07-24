@@ -257,6 +257,8 @@ pub fn parse_located_translation_unit_with_behavior(
         instantiated_inline_template_members: std::collections::HashSet::new(),
         inline_template_accessors: std::collections::HashMap::new(),
         inline_template_base_forwarders: std::collections::HashMap::new(),
+        template_iterator_arrow_summaries: std::collections::HashMap::new(),
+        concrete_template_iterator_arrows: std::collections::HashMap::new(),
         template_value_constructors: std::collections::HashMap::new(),
         empty_nested_template_types: std::collections::HashSet::new(),
         inline_cxx_members: std::collections::HashSet::new(),
@@ -7069,20 +7071,26 @@ blr\n\
                         friend class List;
                         typedef T Element;
                         int* node;
+                    public:
+                        T* operator->() const { return GetPointer(node); }
                     };
                     typedef Iterator ConstIterator;
                     Iterator GetBeginIter() {
                         return Iterator(ListBase::GetBeginIter());
                     }
+                    static T* GetPointer(int* pointer) {
+                        return pointer - Offset;
+                    }
                 };
             }
             namespace client {
-                struct Entry { int link; };
+                struct Entry { int link; int payload; };
                 typedef api::List<Entry, ((int)&(((Entry*)0)->link))> EntryList;
                 EntryList values;
                 EntryList::Iterator iterator;
-                void begin(EntryList& list) {
+                int begin(EntryList& list) {
                     EntryList::Iterator local = list.GetBeginIter();
+                    return local->payload;
                 }
             }
         "#;
@@ -7102,6 +7110,10 @@ blr\n\
             unit.globals[1].declared_type,
             mwcc_syntax_trees::Type::Struct { size: 4, align: 4 }
         );
+        assert!(matches!(
+            unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member { offset: 4, .. })
+        ));
     }
 
     #[test]

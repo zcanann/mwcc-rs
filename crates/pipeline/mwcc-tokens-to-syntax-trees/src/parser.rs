@@ -253,6 +253,13 @@ pub(crate) struct Parser {
     /// runtime semantics for word-shaped nested values such as iterators.
     pub(crate) inline_template_base_forwarders:
         HashMap<(String, String, usize), (String, String)>,
+    /// Primary templates whose nested iterator has a source-proven
+    /// `operator->` that subtracts one non-type offset argument from its node
+    /// pointer. Value: `(nested iterator name, element arg, offset arg)`.
+    pub(crate) template_iterator_arrow_summaries:
+        HashMap<String, (String, usize, usize)>,
+    /// Concrete iterator identity -> `(element aggregate, node offset)`.
+    pub(crate) concrete_template_iterator_arrows: HashMap<String, (String, u32)>,
     /// Out-of-class primary-template constructor initializer summaries. Each
     /// entry maps a concrete field to the constructor argument copied into it;
     /// value construction is admitted only when the summary covers the entire
