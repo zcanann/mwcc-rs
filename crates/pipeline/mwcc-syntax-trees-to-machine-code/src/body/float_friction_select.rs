@@ -13,6 +13,7 @@ struct FloatFrictionSelect<'a> {
     value: &'a str,
     input_offset: i16,
     output_offset: i16,
+    inclusive: bool,
 }
 
 fn variable(expression: &Expression) -> Option<&str> {
@@ -98,12 +99,17 @@ fn recognize(function: &Function) -> Option<FloatFrictionSelect<'_>> {
         return None;
     }
     let Expression::Binary {
-        operator: BinaryOperator::Greater,
+        operator,
         left: absolute_value,
         right: absolute_member,
     } = condition
     else {
         return None;
+    };
+    let inclusive = match operator {
+        BinaryOperator::Greater => false,
+        BinaryOperator::GreaterEqual => true,
+        _ => return None,
     };
     let absolute_value = absolute_select(absolute_value)?;
     let absolute_member = absolute_select(absolute_member)?;
@@ -160,6 +166,7 @@ fn recognize(function: &Function) -> Option<FloatFrictionSelect<'_>> {
         value: &value.name,
         input_offset,
         output_offset,
+        inclusive,
     })
 }
 
@@ -168,6 +175,9 @@ impl Generator {
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
+        if function.name == "ftCommon_ApplyFrictionAir" {
+            eprintln!("{function:#?}");
+        }
         let Some(shape) = recognize(function) else {
             return Ok(false);
         };
@@ -242,7 +252,17 @@ impl Generator {
             });
         let adjust_sign = self.fresh_label();
         let done = self.fresh_label();
-        self.emit_branch_conditional_to(4, 1, adjust_sign); // ble
+        if shape.inclusive {
+            // IEEE `>=` must stay false for unordered values. MWCC folds gt|eq
+            // into CR0.eq, then takes the sign-adjustment arm when that bit is
+            // clear. A direct `blt` would incorrectly accept NaN here.
+            self.output
+                .instructions
+                .push(Instruction::ConditionRegisterOr { d: 2, a: 1, b: 2 });
+            self.emit_branch_conditional_to(4, 2, adjust_sign); // bne
+        } else {
+            self.emit_branch_conditional_to(4, 1, adjust_sign); // ble
+        }
         self.output.instructions.push(Instruction::FloatNegate {
             d: value,
             b: loaded,

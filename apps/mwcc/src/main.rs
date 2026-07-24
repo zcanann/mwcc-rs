@@ -4017,6 +4017,57 @@ mod tests {
     }
 
     #[test]
+    fn lowers_an_inclusive_float_friction_select_without_reloading_the_member() {
+        let source = br#"
+            struct Fighter {
+                char pad0[116];
+                float output;
+                char pad1[8];
+                float velocity;
+            };
+            void compiled(struct Fighter* fighter, float friction) {
+                if ((friction < 0 ? -friction : friction) >=
+                    (fighter->velocity < 0 ? -fighter->velocity : fighter->velocity)) {
+                    friction = -fighter->velocity;
+                } else if (fighter->velocity > 0) {
+                    friction = -friction;
+                }
+                fighter->output = friction;
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.emit_mwcats = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "inclusive-float-friction.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the inclusive friction selection should compile as one region");
+        let expected_text = [
+            0xc0, 0x63, 0x00, 0x80, 0xc0, 0x00, 0x00, 0x00, 0xfc, 0x03, 0x00, 0x40, 0x40,
+            0x80, 0x00, 0x0c, 0xfc, 0x40, 0x18, 0x50, 0x48, 0x00, 0x00, 0x08, 0xfc, 0x40,
+            0x18, 0x90, 0xc0, 0x00, 0x00, 0x00, 0xfc, 0x01, 0x00, 0x40, 0x40, 0x80, 0x00,
+            0x0c, 0xfc, 0x00, 0x08, 0x50, 0x48, 0x00, 0x00, 0x08, 0xfc, 0x00, 0x08, 0x90,
+            0xfc, 0x00, 0x10, 0x40, 0x4c, 0x41, 0x13, 0x82, 0x40, 0x82, 0x00, 0x0c, 0xfc,
+            0x20, 0x18, 0x50, 0x48, 0x00, 0x00, 0x14, 0xc0, 0x00, 0x00, 0x00, 0xfc, 0x03,
+            0x00, 0x40, 0x40, 0x81, 0x00, 0x08, 0xfc, 0x20, 0x08, 0x50, 0xd0, 0x23, 0x00,
+            0x74, 0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected_text.len())
+            .any(|bytes| bytes == expected_text));
+    }
+
+    #[test]
     fn retains_a_shared_zero_across_two_vector_product_groups() {
         let source = br#"
             struct Vec3 { float x; float y; float z; };
