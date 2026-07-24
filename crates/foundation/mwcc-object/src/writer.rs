@@ -328,10 +328,15 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         }
         rodata_blob_offset.push(offsets);
     }
-    // Large initialized `.data` is laid out in CREATION order: file-scope
-    // objects (declaration order) first, then per function its pooled `.data`
-    // strings followed by its jump table (measured: ww's table at 0x80 sits
-    // between two_exp's long strings and dummy's later string at 0x1a4).
+    // Large initialized `.data` is laid out in CREATION order. File-scope
+    // objects are therefore interleaved with compiler-created function data at
+    // their source position: declarations before a function, then that
+    // function's static locals/strings/jump tables, then declarations before
+    // the next function. This matters even when symbols are otherwise
+    // addressable by name: an inlined helper can share the translation-unit
+    // `...data.0` anchor and use the target object's section displacement
+    // (Pikmin nlibmath places two earlier function strings at 0 and 0x10, then
+    // AtanTable at 0x1c).
     let string_owner: std::collections::HashMap<&str, usize> = input
         .functions
         .iter()
@@ -344,19 +349,25 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         })
         .collect();
     let mut file_data_size = 0u32;
-    for object in input.data_objects.iter().filter(|object| {
-        section_of(object) == ".data"
-            && !string_owner.contains_key(object.name)
-            && object.static_local_owner.is_none()
-    }) {
-        place(object, ".data", &mut file_data_size);
-    }
     let mut jump_table_offset: Vec<Vec<Option<u32>>> = input
         .functions
         .iter()
         .map(|function| vec![None; function.jump_tables.len()])
         .collect();
-    for (function_index, function) in input.functions.iter().enumerate() {
+    for source_position in 0..=input.functions.len() {
+        for object in input.data_objects.iter().filter(|object| {
+            object.functions_before == source_position
+                && section_of(object) == ".data"
+                && !string_owner.contains_key(object.name)
+                && object.static_local_owner.is_none()
+        }) {
+            place(object, ".data", &mut file_data_size);
+        }
+        if source_position == input.functions.len() {
+            continue;
+        }
+        let function_index = source_position;
+        let function = &input.functions[function_index];
         // The function's own `.data` STATIC LOCALS lead its block (declared at
         // the body top, before any string literal use — bfbb's pow_10$1224 at
         // 0x1a8 ahead of dec2num's pooled string).
