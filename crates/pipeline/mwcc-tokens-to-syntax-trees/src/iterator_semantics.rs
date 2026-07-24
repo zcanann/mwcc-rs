@@ -16,6 +16,14 @@ struct MethodBody<'a> {
     body: &'a [Token],
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct IteratorComparison {
+    pub(crate) storage_offset: u32,
+    pub(crate) supports_inequality: bool,
+    terminal_type: Type,
+    terminal_tag: Option<String>,
+}
+
 impl Parser {
     /// Capture exact iterator/accessor semantics after a class layout is
     /// complete. Nested class bodies are parsed independently and skipped by
@@ -52,66 +60,112 @@ impl Parser {
         }
 
         for method in methods {
-            if !is_prefix_increment_declaration(method.declaration) {
-                continue;
+            if is_prefix_increment_declaration(method.declaration) {
+                match method.body {
+                    [
+                        Token::Identifier(target),
+                        Token::Equals,
+                        Token::Identifier(source),
+                        Token::Arrow,
+                        Token::Identifier(accessor),
+                        Token::ParenOpen,
+                        Token::ParenClose,
+                        Token::Semicolon,
+                        Token::KeywordReturn,
+                        Token::Star,
+                        Token::Identifier(this),
+                        Token::Semicolon,
+                    ] if target == source && this == "this" => {
+                        let Some(storage) = layout.fields.get(target) else {
+                            continue;
+                        };
+                        if !matches!(
+                            storage.member_type,
+                            Type::Pointer(_) | Type::StructPointer { .. }
+                        ) {
+                            continue;
+                        }
+                        let Some(pointee) = storage.struct_tag.as_deref() else {
+                            continue;
+                        };
+                        let Some(next_offset) = self
+                            .source_pointer_accessors
+                            .get(&(pointee.to_owned(), accessor.to_owned()))
+                            .copied()
+                        else {
+                            continue;
+                        };
+                        self.source_iterator_pointer_steps
+                            .insert(class.to_owned(), (storage.offset, next_offset));
+                    }
+                    [
+                        Token::PlusPlus,
+                        Token::Identifier(field),
+                        Token::Semicolon,
+                        Token::KeywordReturn,
+                        Token::Star,
+                        Token::Identifier(this),
+                        Token::Semicolon,
+                    ] if this == "this" => {
+                        let Some(field) = layout.fields.get(field) else {
+                            continue;
+                        };
+                        if matches!(field.member_type, Type::Struct { size: 4, .. })
+                            && field.struct_tag.is_some()
+                        {
+                            self.source_iterator_step_forwarders
+                                .insert(class.to_owned(), field.offset);
+                        }
+                    }
+                    _ => {}
+                }
             }
-            match method.body {
-                [
-                    Token::Identifier(target),
-                    Token::Equals,
-                    Token::Identifier(source),
-                    Token::Arrow,
-                    Token::Identifier(accessor),
-                    Token::ParenOpen,
-                    Token::ParenClose,
-                    Token::Semicolon,
+
+            if is_equality_declaration(method.declaration) {
+                if let [
                     Token::KeywordReturn,
-                    Token::Star,
-                    Token::Identifier(this),
+                    Token::Identifier(left),
+                    Token::Dot,
+                    Token::Identifier(left_field),
+                    Token::EqualEqual,
+                    Token::Identifier(right),
+                    Token::Dot,
+                    Token::Identifier(right_field),
                     Token::Semicolon,
-                ] if target == source && this == "this" => {
-                    let Some(storage) = layout.fields.get(target) else {
-                        continue;
-                    };
-                    if !matches!(
-                        storage.member_type,
-                        Type::Pointer(_) | Type::StructPointer { .. }
-                    ) {
-                        continue;
-                    }
-                    let Some(pointee) = storage.struct_tag.as_deref() else {
-                        continue;
-                    };
-                    let Some(next_offset) = self
-                        .source_pointer_accessors
-                        .get(&(pointee.to_owned(), accessor.to_owned()))
-                        .copied()
-                    else {
-                        continue;
-                    };
-                    self.source_iterator_pointer_steps
-                        .insert(class.to_owned(), (storage.offset, next_offset));
-                }
-                [
-                    Token::PlusPlus,
-                    Token::Identifier(field),
-                    Token::Semicolon,
-                    Token::KeywordReturn,
-                    Token::Star,
-                    Token::Identifier(this),
-                    Token::Semicolon,
-                ] if this == "this" => {
-                    let Some(field) = layout.fields.get(field) else {
-                        continue;
-                    };
-                    if matches!(field.member_type, Type::Struct { size: 4, .. })
-                        && field.struct_tag.is_some()
-                    {
-                        self.source_iterator_step_forwarders
-                            .insert(class.to_owned(), field.offset);
+                ] = method.body
+                {
+                    if left != right && left_field == right_field {
+                        if let Some(field) = layout.fields.get(left_field) {
+                            if matches!(
+                                field.member_type,
+                                Type::Pointer(_)
+                                    | Type::StructPointer { .. }
+                                    | Type::Struct { size: 4, .. }
+                            ) {
+                                self.source_iterator_equality_fields
+                                    .insert(class.to_owned(), field.offset);
+                            }
+                        }
                     }
                 }
-                _ => {}
+            }
+
+            if is_inequality_declaration(method.declaration)
+                && matches!(
+                    method.body,
+                    [
+                        Token::KeywordReturn,
+                        Token::Bang,
+                        Token::ParenOpen,
+                        Token::Identifier(left),
+                        Token::EqualEqual,
+                        Token::Identifier(right),
+                        Token::ParenClose,
+                        Token::Semicolon,
+                    ] if left != right
+                )
+            {
+                self.source_iterator_inequalities.insert(class.to_owned());
             }
         }
     }
@@ -173,15 +227,103 @@ impl Parser {
             .or_else(|| self.resolve_source_iterator_pointer_step(iterator))
     }
 
+    /// Resolve an equality/inequality overload to the pointer storage it
+    /// compares. Equality fields may themselves be one-word iterator wrappers;
+    /// every layer must carry the exact friend comparison body.
+    pub(crate) fn resolve_iterator_pointer_comparison(
+        &self,
+        iterator: &str,
+    ) -> Option<IteratorComparison> {
+        self.concrete_template_iterator_comparisons
+            .get(iterator)
+            .cloned()
+            .or_else(|| {
+                let (generic, concrete) =
+                    self.resolve_nested_template_alias_layout(iterator)?;
+                self.concrete_template_iterator_comparisons
+                    .get(&concrete)
+                    .cloned()
+                    .or_else(|| {
+                        self.resolve_source_iterator_pointer_comparison_inner(
+                            &generic,
+                            &mut std::collections::HashSet::new(),
+                        )
+                    })
+            })
+            .or_else(|| {
+                self.resolve_source_iterator_pointer_comparison_inner(
+                    iterator,
+                    &mut std::collections::HashSet::new(),
+                )
+            })
+    }
+
+    fn resolve_source_iterator_pointer_comparison_inner(
+        &self,
+        iterator: &str,
+        visiting: &mut std::collections::HashSet<String>,
+    ) -> Option<IteratorComparison> {
+        if !visiting.insert(iterator.to_owned()) {
+            return None;
+        }
+        let field_offset = *self.source_iterator_equality_fields.get(iterator)?;
+        let layout = self.structs.get(iterator)?;
+        if layout.size != 4 {
+            return None;
+        }
+        let mut fields = layout.fields.values().filter(|field| {
+            field.array_bytes.is_none()
+                && field.bit_field.is_none()
+                && field.offset == field_offset
+        });
+        let field = fields.next()?;
+        if fields.next().is_some() {
+            return None;
+        }
+        let supports_inequality = self.source_iterator_inequalities.contains(iterator);
+        match field.member_type {
+            Type::Pointer(_) | Type::StructPointer { .. } => {
+                Some(IteratorComparison {
+                    storage_offset: field_offset,
+                    supports_inequality,
+                    terminal_type: field.member_type,
+                    terminal_tag: field.struct_tag.clone(),
+                })
+            }
+            Type::Struct { size: 4, .. } => {
+                let nested = field.struct_tag.as_deref()?;
+                let nested = self.resolve_iterator_semantic_identity(nested)?;
+                let nested = self
+                    .resolve_source_iterator_pointer_comparison_inner(&nested, visiting)?;
+                Some(IteratorComparison {
+                    storage_offset: field_offset.checked_add(nested.storage_offset)?,
+                    supports_inequality,
+                    terminal_type: nested.terminal_type,
+                    terminal_tag: nested.terminal_tag,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn iterator_comparisons_are_compatible(
+        left: &IteratorComparison,
+        right: &IteratorComparison,
+    ) -> bool {
+        left.terminal_type == right.terminal_type && left.terminal_tag == right.terminal_tag
+    }
+
     fn resolve_iterator_semantic_identity(&self, source: &str) -> Option<String> {
         if self.source_iterator_pointer_steps.contains_key(source)
             || self.source_iterator_step_forwarders.contains_key(source)
+            || self.source_iterator_equality_fields.contains_key(source)
         {
             return Some(source.to_owned());
         }
         if let Some(resolved) = self.struct_typedefs.get(source) {
             if self.source_iterator_pointer_steps.contains_key(resolved)
                 || self.source_iterator_step_forwarders.contains_key(resolved)
+                || self.source_iterator_equality_fields.contains_key(resolved)
             {
                 return Some(resolved.clone());
             }
@@ -191,6 +333,7 @@ impl Parser {
             .source_iterator_pointer_steps
             .keys()
             .chain(self.source_iterator_step_forwarders.keys())
+            .chain(self.source_iterator_equality_fields.keys())
             .filter(|candidate| candidate.ends_with(&suffix));
         let candidate = candidates.next()?.clone();
         if candidates.next().is_some() {
@@ -273,6 +416,24 @@ fn is_prefix_increment_declaration(tokens: &[Token]) -> bool {
                 Token::ParenOpen,
                 Token::ParenClose
             ] if operator == "operator"
+        )
+    })
+}
+
+fn is_equality_declaration(tokens: &[Token]) -> bool {
+    operator_declaration(tokens, Token::EqualEqual)
+}
+
+fn is_inequality_declaration(tokens: &[Token]) -> bool {
+    operator_declaration(tokens, Token::BangEqual)
+}
+
+fn operator_declaration(tokens: &[Token], punctuation: Token) -> bool {
+    tokens.windows(3).any(|window| {
+        matches!(
+            window,
+            [Token::Identifier(operator), token, Token::ParenOpen]
+                if operator == "operator" && *token == punctuation
         )
     })
 }

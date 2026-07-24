@@ -247,12 +247,12 @@ pub(crate) struct Parser {
     /// concrete layout has supplied the field offset.
     pub(crate) inline_template_accessors: HashMap<(String, String, usize), String>,
     /// Exact one-line primary-template wrappers of a recovered base method:
-    /// `(template, member, arity) -> (base owner, base member)`.
+    /// `(template, member, arity) -> (base owner, base member, value wrapper)`.
     ///
     /// The body shape proves that erasing the wrapper construction preserves
     /// runtime semantics for word-shaped nested values such as iterators.
     pub(crate) inline_template_base_forwarders:
-        HashMap<(String, String, usize), (String, String)>,
+        HashMap<(String, String, usize), (String, String, String)>,
     /// Primary templates whose nested iterator has a source-proven
     /// `operator->` that subtracts one non-type offset argument from its node
     /// pointer. Value: `(nested iterator name, element arg, offset arg)`.
@@ -276,6 +276,17 @@ pub(crate) struct Parser {
     /// One-word iterator wrapper -> aggregate-field offset for an exact
     /// `++field; return *this;` prefix step.
     pub(crate) source_iterator_step_forwarders: HashMap<String, u32>,
+    /// Iterator aggregate -> field offset for an exact friend equality body
+    /// `return lhs.field == rhs.field;`.
+    pub(crate) source_iterator_equality_fields: HashMap<String, u32>,
+    /// Iterator aggregates whose friend inequality body is exactly
+    /// `return !(lhs == rhs);`.
+    pub(crate) source_iterator_inequalities: std::collections::HashSet<String>,
+    /// Primary template -> nested iterator with source-proven equality.
+    pub(crate) template_iterator_comparison_summaries: HashMap<String, Vec<String>>,
+    /// Concrete iterator identity -> its source-proven pointer comparison.
+    pub(crate) concrete_template_iterator_comparisons:
+        HashMap<String, crate::iterator_semantics::IteratorComparison>,
     /// Out-of-class primary-template constructor initializer summaries. Each
     /// entry maps a concrete field to the constructor argument copied into it;
     /// value construction is admitted only when the summary covers the entire

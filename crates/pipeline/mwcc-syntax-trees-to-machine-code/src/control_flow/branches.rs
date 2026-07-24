@@ -1749,6 +1749,15 @@ impl Generator {
     /// The register holding a condition operand: a leaf variable stays in its home
     /// register; a struct member loads into the scratch (mwcc compares `r0`).
     pub(crate) fn condition_operand_register(&mut self, operand: &Expression) -> Compilation<u8> {
+        // Hidden aggregate-return materialization and inline composition can
+        // prefix a comparison operand with an ordered side effect. Consume the
+        // discarded value here, then place only the surviving right operand.
+        // This is deliberately below comparison selection: both signed and
+        // unsigned comparisons need identical comma sequencing.
+        if let Expression::Comma { left, right } = operand {
+            self.emit_comma_side_effect(left)?;
+            return self.condition_operand_register(right);
+        }
         if let Some((base, offset, member_type)) = as_member(operand) {
             self.emit_member_load(base, offset, member_type, None, GENERAL_SCRATCH)?;
             return Ok(GENERAL_SCRATCH);

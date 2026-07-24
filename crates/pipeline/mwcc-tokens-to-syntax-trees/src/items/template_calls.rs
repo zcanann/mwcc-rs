@@ -262,7 +262,7 @@ impl Parser {
     /// Resolve a recovered member-template/helper-specialization chain to the
     /// ordinary ABI symbol of its concrete zero-argument instance method.
     pub(crate) fn resolve_member_template_forwarder(
-        &self,
+        &mut self,
         class: &str,
         member: &str,
         argument: Type,
@@ -282,18 +282,18 @@ impl Parser {
         let Some(helper) = helper else {
             return Ok(None);
         };
-        let mut resolved = Vec::new();
-        for (candidate_argument, owner, target_member) in self
+        let candidates = self
             .cxx_template_forwarder_specializations
             .get(helper)
-            .into_iter()
-            .flatten()
-        {
-            if *candidate_argument != argument || (owner != &qualified_class && owner != class) {
+            .cloned()
+            .unwrap_or_default();
+        let mut resolved = Vec::new();
+        for (candidate_argument, owner, target_member) in candidates {
+            if candidate_argument != argument || (owner != qualified_class && owner != class) {
                 continue;
             }
             if let Some(crate::cxx::ImplicitMemberCall::Direct { name, .. }) =
-                self.resolve_instance_member_call(class, target_member, &[])?
+                self.resolve_instance_member_call(class, &target_member, &[])?
             {
                 if !resolved.contains(&name) {
                     resolved.push(name);

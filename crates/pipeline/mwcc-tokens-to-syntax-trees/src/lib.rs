@@ -265,6 +265,10 @@ pub fn parse_located_translation_unit_with_behavior(
         source_pointer_accessors: std::collections::HashMap::new(),
         source_iterator_pointer_steps: std::collections::HashMap::new(),
         source_iterator_step_forwarders: std::collections::HashMap::new(),
+        source_iterator_equality_fields: std::collections::HashMap::new(),
+        source_iterator_inequalities: std::collections::HashSet::new(),
+        template_iterator_comparison_summaries: std::collections::HashMap::new(),
+        concrete_template_iterator_comparisons: std::collections::HashMap::new(),
         template_value_constructors: std::collections::HashMap::new(),
         empty_nested_template_types: std::collections::HashSet::new(),
         inline_cxx_members: std::collections::HashSet::new(),
@@ -7182,6 +7186,9 @@ blr\n\
                         pointer = pointer->Next();
                         return *this;
                     }
+                    friend bool operator==(Iterator left, Iterator right) {
+                        return left.pointer == right.pointer;
+                    }
                 private:
                     Node* pointer;
                 };
@@ -7200,6 +7207,12 @@ blr\n\
                         ++*this;
                         return old;
                     }
+                    friend bool operator==(Iterator left, Iterator right) {
+                        return left.wrapped == right.wrapped;
+                    }
+                    friend bool operator!=(Iterator left, Iterator right) {
+                        return !(left == right);
+                    }
                 private:
                     ListBase::Iterator wrapped;
                 };
@@ -7207,6 +7220,9 @@ blr\n\
             struct Entry { int value; };
             typedef List<Entry, 0> Entries;
             void advance(Entries::Iterator iterator) { iterator++; }
+            bool different(Entries::Iterator left, Entries::Iterator right) {
+                return left != right;
+            }
         "#;
         let unit = parse_translation_unit(
             mwcc_source_to_tokens::tokenize(source).unwrap(),
@@ -7237,6 +7253,20 @@ blr\n\
                     member_type: mwcc_syntax_trees::Type::StructPointer { .. },
                     ..
                 }
+            )
+        ));
+        assert!(matches!(
+            unit.functions[1].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Binary {
+                operator: mwcc_syntax_trees::BinaryOperator::NotEqual,
+                left,
+                right,
+            }) if matches!(
+                (left.as_ref(), right.as_ref()),
+                (
+                    mwcc_syntax_trees::Expression::Member { offset: 0, .. },
+                    mwcc_syntax_trees::Expression::Member { offset: 0, .. },
+                )
             )
         ));
     }

@@ -2708,7 +2708,7 @@ impl Parser {
     }
 
     pub(crate) fn resolve_instance_member_call(
-        &self,
+        &mut self,
         class: &str,
         member: &str,
         arguments: &[Expression],
@@ -2791,12 +2791,46 @@ impl Parser {
         // recovered base method (`return Iterator(Base::begin())`). Declaration
         // recovery records only source-proven equivalents, so using the base
         // call here does not guess from container or member names.
-        if let Some((base, forwarded_member)) =
+        if let Some((base, forwarded_member, wrapper)) =
             self.resolve_inline_template_base_forwarder(class, member, argument_count)
         {
             if let Some(call) =
                 self.resolve_member_call_in_class(&base, &forwarded_member, arguments)?
             {
+                let wrapper = format!("{class}::{wrapper}");
+                if let ImplicitMemberCall::Direct {
+                    name, parameters, ..
+                } = &call
+                {
+                    let layout = self
+                        .resolve_nested_template_alias_layout(&wrapper)
+                        .and_then(|(generic, _)| self.structs.get(&generic))
+                        .or_else(|| self.structs.get(&wrapper));
+                    if let Some(layout) = layout {
+                        let return_type = Type::Struct {
+                            size: layout.size,
+                            align: layout.align,
+                        };
+                        let mut prototype_parameters = vec![Type::StructPointer {
+                            element_size: self.structs.get(&base).map_or(0, |layout| layout.size),
+                        }];
+                        prototype_parameters.extend(parameters.iter().copied());
+                        if !self
+                            .skipped_inline_signatures
+                            .iter()
+                            .any(|(existing, _, _)| existing == name)
+                        {
+                            self.skipped_inline_signatures.push((
+                                name.clone(),
+                                return_type,
+                                prototype_parameters,
+                            ));
+                        }
+                        self.function_return_structs
+                            .insert(name.clone(), wrapper.clone());
+                    }
+                }
+                self.expression_struct_tag = Some(wrapper);
                 return Ok(Some(call));
             }
         }

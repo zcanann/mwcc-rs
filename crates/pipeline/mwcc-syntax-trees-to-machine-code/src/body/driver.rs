@@ -1190,7 +1190,9 @@ impl Generator {
         if let Some(scalarized) = scalarize_in_place_aggregate_local(function) {
             return self.evaluate_body(&scalarized);
         }
-        if let Some(materialized) = materialize_aggregate_return_temporaries(function) {
+        if let Some(materialized) =
+            materialize_aggregate_return_temporaries(function, &self.call_return_types)
+        {
             return self.evaluate_body(&materialized);
         }
         // A dead trailing local with a side-effecting (call) initializer becomes a leading statement,

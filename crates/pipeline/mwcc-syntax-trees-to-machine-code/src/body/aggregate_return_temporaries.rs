@@ -8,7 +8,10 @@
 
 use super::*;
 
-pub(super) fn materialize_aggregate_return_temporaries(function: &Function) -> Option<Function> {
+pub(super) fn materialize_aggregate_return_temporaries(
+    function: &Function,
+    call_return_types: &std::collections::HashMap<String, Type>,
+) -> Option<Function> {
     let mut rewritten = function.clone();
     let mut names: std::collections::HashSet<String> = rewritten
         .parameters
@@ -27,6 +30,7 @@ pub(super) fn materialize_aggregate_return_temporaries(function: &Function) -> O
                 &mut names,
                 &mut next_temporary,
                 &mut added,
+                call_return_types,
             );
         }
     }
@@ -35,6 +39,7 @@ pub(super) fn materialize_aggregate_return_temporaries(function: &Function) -> O
         &mut names,
         &mut next_temporary,
         &mut added,
+        call_return_types,
     );
     for guard in &mut rewritten.guards {
         changed |= rewrite_expression(
@@ -42,16 +47,24 @@ pub(super) fn materialize_aggregate_return_temporaries(function: &Function) -> O
             &mut names,
             &mut next_temporary,
             &mut added,
+            call_return_types,
         );
         changed |= rewrite_expression(
             &mut guard.value,
             &mut names,
             &mut next_temporary,
             &mut added,
+            call_return_types,
         );
     }
     if let Some(value) = &mut rewritten.return_expression {
-        changed |= rewrite_expression(value, &mut names, &mut next_temporary, &mut added);
+        changed |= rewrite_expression(
+            value,
+            &mut names,
+            &mut next_temporary,
+            &mut added,
+            call_return_types,
+        );
     }
     if !changed {
         return None;
@@ -65,27 +78,64 @@ fn rewrite_statements(
     names: &mut std::collections::HashSet<String>,
     next_temporary: &mut usize,
     added: &mut Vec<LocalDeclaration>,
+    call_return_types: &std::collections::HashMap<String, Type>,
 ) -> bool {
     let mut changed = false;
     for statement in statements {
         match statement {
             Statement::Store { target, value } => {
-                changed |= rewrite_expression(target, names, next_temporary, added);
-                changed |= rewrite_expression(value, names, next_temporary, added);
+                changed |= rewrite_expression(
+                    target,
+                    names,
+                    next_temporary,
+                    added,
+                    call_return_types,
+                );
+                changed |= rewrite_expression(
+                    value,
+                    names,
+                    next_temporary,
+                    added,
+                    call_return_types,
+                );
             }
             Statement::Assign { value, .. }
             | Statement::Expression(value)
             | Statement::Return(Some(value)) => {
-                changed |= rewrite_expression(value, names, next_temporary, added);
+                changed |= rewrite_expression(
+                    value,
+                    names,
+                    next_temporary,
+                    added,
+                    call_return_types,
+                );
             }
             Statement::If {
                 condition,
                 then_body,
                 else_body,
             } => {
-                changed |= rewrite_expression(condition, names, next_temporary, added);
-                changed |= rewrite_statements(then_body, names, next_temporary, added);
-                changed |= rewrite_statements(else_body, names, next_temporary, added);
+                changed |= rewrite_expression(
+                    condition,
+                    names,
+                    next_temporary,
+                    added,
+                    call_return_types,
+                );
+                changed |= rewrite_statements(
+                    then_body,
+                    names,
+                    next_temporary,
+                    added,
+                    call_return_types,
+                );
+                changed |= rewrite_statements(
+                    else_body,
+                    names,
+                    next_temporary,
+                    added,
+                    call_return_types,
+                );
             }
             Statement::Loop {
                 initializer,
@@ -95,21 +145,51 @@ fn rewrite_statements(
                 ..
             } => {
                 for expression in initializer.iter_mut().chain(condition).chain(step) {
-                    changed |= rewrite_expression(expression, names, next_temporary, added);
+                    changed |= rewrite_expression(
+                        expression,
+                        names,
+                        next_temporary,
+                        added,
+                        call_return_types,
+                    );
                 }
-                changed |= rewrite_statements(body, names, next_temporary, added);
+                changed |= rewrite_statements(
+                    body,
+                    names,
+                    next_temporary,
+                    added,
+                    call_return_types,
+                );
             }
             Statement::Switch {
                 scrutinee,
                 arms,
                 default,
             } => {
-                changed |= rewrite_expression(scrutinee, names, next_temporary, added);
+                changed |= rewrite_expression(
+                    scrutinee,
+                    names,
+                    next_temporary,
+                    added,
+                    call_return_types,
+                );
                 for arm in arms {
-                    changed |= rewrite_arm(&mut arm.body, names, next_temporary, added);
+                    changed |= rewrite_arm(
+                        &mut arm.body,
+                        names,
+                        next_temporary,
+                        added,
+                        call_return_types,
+                    );
                 }
                 if let Some(default) = default {
-                    changed |= rewrite_arm(default, names, next_temporary, added);
+                    changed |= rewrite_arm(
+                        default,
+                        names,
+                        next_temporary,
+                        added,
+                        call_return_types,
+                    );
                 }
             }
             Statement::Return(None)
@@ -127,13 +207,20 @@ fn rewrite_arm(
     names: &mut std::collections::HashSet<String>,
     next_temporary: &mut usize,
     added: &mut Vec<LocalDeclaration>,
+    call_return_types: &std::collections::HashMap<String, Type>,
 ) -> bool {
     match arm {
         mwcc_syntax_trees::ArmBody::Return(value) => {
-            rewrite_expression(value, names, next_temporary, added)
+            rewrite_expression(value, names, next_temporary, added, call_return_types)
         }
         mwcc_syntax_trees::ArmBody::Statements(statements) => {
-            rewrite_statements(statements, names, next_temporary, added)
+            rewrite_statements(
+                statements,
+                names,
+                next_temporary,
+                added,
+                call_return_types,
+            )
         }
     }
 }
@@ -143,12 +230,19 @@ fn rewrite_expression(
     names: &mut std::collections::HashSet<String>,
     next_temporary: &mut usize,
     added: &mut Vec<LocalDeclaration>,
+    call_return_types: &std::collections::HashMap<String, Type>,
 ) -> bool {
     let mut changed = match expression {
         Expression::AggregateLiteral(elements) => elements
             .iter_mut()
             .fold(false, |changed, element| {
-                rewrite_expression(element, names, next_temporary, added) || changed
+                rewrite_expression(
+                    element,
+                    names,
+                    next_temporary,
+                    added,
+                    call_return_types,
+                ) || changed
             }),
         Expression::Binary { left, right, .. }
         | Expression::Assign {
@@ -156,8 +250,10 @@ fn rewrite_expression(
             value: right,
         }
         | Expression::Comma { left, right } => {
-            let left_changed = rewrite_expression(left, names, next_temporary, added);
-            let right_changed = rewrite_expression(right, names, next_temporary, added);
+            let left_changed =
+                rewrite_expression(left, names, next_temporary, added, call_return_types);
+            let right_changed =
+                rewrite_expression(right, names, next_temporary, added, call_return_types);
             left_changed || right_changed
         }
         Expression::Conditional {
@@ -166,9 +262,12 @@ fn rewrite_expression(
             when_false,
             ..
         } => {
-            let condition_changed = rewrite_expression(condition, names, next_temporary, added);
-            let true_changed = rewrite_expression(when_true, names, next_temporary, added);
-            let false_changed = rewrite_expression(when_false, names, next_temporary, added);
+            let condition_changed =
+                rewrite_expression(condition, names, next_temporary, added, call_return_types);
+            let true_changed =
+                rewrite_expression(when_true, names, next_temporary, added, call_return_types);
+            let false_changed =
+                rewrite_expression(when_false, names, next_temporary, added, call_return_types);
             condition_changed || true_changed || false_changed
         }
         Expression::Unary { operand, .. }
@@ -184,45 +283,80 @@ fn rewrite_expression(
         | Expression::AddressOf { operand }
         | Expression::Member { base: operand, .. }
         | Expression::MemberAddress { base: operand, .. } => {
-            rewrite_expression(operand, names, next_temporary, added)
+            rewrite_expression(
+                operand,
+                names,
+                next_temporary,
+                added,
+                call_return_types,
+            )
         }
         Expression::Index { base, index } => {
-            let base_changed = rewrite_expression(base, names, next_temporary, added);
-            let index_changed = rewrite_expression(index, names, next_temporary, added);
+            let base_changed =
+                rewrite_expression(base, names, next_temporary, added, call_return_types);
+            let index_changed =
+                rewrite_expression(index, names, next_temporary, added, call_return_types);
             base_changed || index_changed
         }
         Expression::Call { arguments, .. } => arguments
             .iter_mut()
             .fold(false, |changed, argument| {
-                rewrite_expression(argument, names, next_temporary, added) || changed
+                rewrite_expression(
+                    argument,
+                    names,
+                    next_temporary,
+                    added,
+                    call_return_types,
+                ) || changed
             }),
         Expression::ConstructedNew {
             allocation,
             arguments,
             ..
         } => {
-            let allocation_changed = rewrite_expression(allocation, names, next_temporary, added);
+            let allocation_changed =
+                rewrite_expression(allocation, names, next_temporary, added, call_return_types);
             arguments.iter_mut().fold(allocation_changed, |changed, argument| {
-                rewrite_expression(argument, names, next_temporary, added) || changed
+                rewrite_expression(
+                    argument,
+                    names,
+                    next_temporary,
+                    added,
+                    call_return_types,
+                ) || changed
             })
         }
         Expression::CallThrough { target, arguments } => {
-            let target_changed = rewrite_expression(target, names, next_temporary, added);
+            let target_changed =
+                rewrite_expression(target, names, next_temporary, added, call_return_types);
             let arguments_changed = arguments
                 .iter_mut()
                 .fold(false, |changed, argument| {
-                    rewrite_expression(argument, names, next_temporary, added) || changed
+                    rewrite_expression(
+                        argument,
+                        names,
+                        next_temporary,
+                        added,
+                        call_return_types,
+                    ) || changed
                 });
             target_changed || arguments_changed
         }
         Expression::VirtualCall {
             object, arguments, ..
         } => {
-            let object_changed = rewrite_expression(object, names, next_temporary, added);
+            let object_changed =
+                rewrite_expression(object, names, next_temporary, added, call_return_types);
             let arguments_changed = arguments
                 .iter_mut()
                 .fold(false, |changed, argument| {
-                    rewrite_expression(argument, names, next_temporary, added) || changed
+                    rewrite_expression(
+                        argument,
+                        names,
+                        next_temporary,
+                        added,
+                        call_return_types,
+                    ) || changed
                 });
             object_changed || arguments_changed
         }
@@ -240,11 +374,18 @@ fn rewrite_expression(
             member_type,
             index_stride: None,
         } if !matches!(member_type, Type::Struct { .. }) => {
-            let Expression::VirtualCall {
-                return_type: Type::Struct { size, align },
-                ..
-            } = base.as_ref()
-            else {
+            let aggregate_type = match base.as_ref() {
+                Expression::VirtualCall {
+                    return_type: aggregate @ Type::Struct { .. },
+                    ..
+                } => Some(*aggregate),
+                Expression::Call { name, .. } => call_return_types
+                    .get(name)
+                    .copied()
+                    .filter(|return_type| matches!(return_type, Type::Struct { .. })),
+                _ => None,
+            };
+            let Some(Type::Struct { size, align }) = aggregate_type else {
                 return changed;
             };
             let stem = format!(
@@ -261,8 +402,8 @@ fn rewrite_expression(
             names.insert(temporary.clone());
             added.push(LocalDeclaration {
                 declared_type: Type::Struct {
-                    size: *size,
-                    align: *align,
+                    size,
+                    align,
                 },
                 name: temporary.clone(),
                 initializer: None,
@@ -342,7 +483,7 @@ mod tests {
             peephole_disabled: false,
         };
 
-        let rewritten = materialize_aggregate_return_temporaries(&function)
+        let rewritten = materialize_aggregate_return_temporaries(&function, &Default::default())
             .expect("aggregate member calls need hidden results");
         assert_eq!(rewritten.locals.len(), 2);
         assert_ne!(rewritten.locals[0].name, rewritten.locals[1].name);
@@ -355,6 +496,73 @@ mod tests {
             Some(Expression::Binary { left, right, .. })
                 if matches!(left.as_ref(), Expression::Comma { .. })
                     && matches!(right.as_ref(), Expression::Comma { .. })
+        ));
+    }
+
+    #[test]
+    fn materializes_direct_aggregate_call_member_results() {
+        let function = Function {
+            return_type: Type::StructPointer { element_size: 4 },
+            name: "compiled".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: Vec::new(),
+            statements: Vec::new(),
+            guards: Vec::new(),
+            return_expression: Some(Expression::Member {
+                base: Box::new(Expression::Call {
+                    name: "make_iterator".into(),
+                    arguments: Vec::new(),
+                }),
+                offset: 0,
+                member_type: Type::StructPointer { element_size: 4 },
+                index_stride: None,
+            }),
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+        let call_return_types = std::collections::HashMap::from([(
+            "make_iterator".into(),
+            Type::Struct { size: 4, align: 4 },
+        )]);
+
+        let rewritten = materialize_aggregate_return_temporaries(
+            &function,
+            &call_return_types,
+        )
+        .expect("a direct aggregate call member needs a hidden result");
+
+        assert!(matches!(
+            rewritten.locals.as_slice(),
+            [LocalDeclaration {
+                declared_type: Type::Struct { size: 4, align: 4 },
+                initializer: None,
+                ..
+            }]
+        ));
+        assert!(matches!(
+            rewritten.return_expression,
+            Some(Expression::Comma { left, right })
+                if matches!(
+                    left.as_ref(),
+                    Expression::Assign { target, value }
+                        if matches!(target.as_ref(), Expression::Variable(name)
+                            if name == "__mwcc_aggregate_result_4_4_0")
+                            && matches!(value.as_ref(), Expression::Call { name, .. }
+                                if name == "make_iterator")
+                )
+                    && matches!(
+                        right.as_ref(),
+                        Expression::Member { base, offset: 0, .. }
+                            if matches!(base.as_ref(), Expression::Variable(name)
+                                if name == "__mwcc_aggregate_result_4_4_0")
+                    )
         ));
     }
 }

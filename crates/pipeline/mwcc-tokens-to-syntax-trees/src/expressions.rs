@@ -383,8 +383,47 @@ impl Parser {
             if operator.precedence() < minimum {
                 break;
             }
+            let left_struct_tag = self
+                .cplusplus
+                .then(|| self.cxx_expression_struct_tag(&left).map(str::to_owned))
+                .flatten();
             self.advance();
-            let right = self.binary_expression(operator.precedence() + 1)?;
+            let mut right = self.binary_expression(operator.precedence() + 1)?;
+            let right_struct_tag = self
+                .cplusplus
+                .then(|| {
+                    self.cxx_expression_struct_tag(&right)
+                        .map(str::to_owned)
+                        .or_else(|| self.expression_struct_tag.clone())
+                })
+                .flatten();
+            if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
+                if let (Some(left_tag), Some(right_tag)) =
+                    (left_struct_tag.as_deref(), right_struct_tag.as_deref())
+                {
+                    if let (Some(left_comparison), Some(right_comparison)) = (
+                        self.resolve_iterator_pointer_comparison(left_tag),
+                        self.resolve_iterator_pointer_comparison(right_tag),
+                    ) {
+                        if (operator != BinaryOperator::NotEqual
+                            || left_comparison.supports_inequality)
+                            && Self::iterator_comparisons_are_compatible(
+                                &left_comparison,
+                                &right_comparison,
+                            )
+                        {
+                            left = iterator_pointer_storage(
+                                left,
+                                left_comparison.storage_offset,
+                            );
+                            right = iterator_pointer_storage(
+                                right,
+                                right_comparison.storage_offset,
+                            );
+                        }
+                    }
+                }
+            }
             // Preserve overloaded arithmetic calls while recovering a
             // discarded inline. Ordinary executable expressions retain the
             // existing scalar Binary representation; this semantic Call is
@@ -1108,7 +1147,11 @@ impl Parser {
             Expression::AddressOf { .. } => self.expression_struct_tag.take(),
             // `get()->field`: a call to a function that RETURNS a struct pointer carries the
             // pointee's tag (recorded from the `struct S *get(...)` declaration).
-            Expression::Call { name, .. } => self.function_return_structs.get(name).cloned(),
+            Expression::Call { name, .. } => self
+                .function_return_structs
+                .get(name)
+                .cloned()
+                .or_else(|| self.expression_struct_tag.take()),
             // Virtual aggregate returns carry their declaration's concrete tag
             // through member-call lowering so `object->getValue().field` can
             // resolve the returned temporary's layout.
@@ -1174,12 +1217,14 @@ impl Parser {
                         };
                         struct_tag = field.struct_tag;
                     } else {
+                        self.expression_struct_tag = None;
                         expression = self.lower_cxx_instance_member_call(
                             &tag,
                             "__cl",
                             expression,
                             arguments,
                         )?;
+                        struct_tag = self.expression_struct_tag.take();
                     }
                 }
                 Token::ParenOpen
@@ -1394,14 +1439,15 @@ impl Parser {
                             arguments.insert(0, expression);
                             expression = Expression::Call { name, arguments };
                         } else {
+                            self.expression_struct_tag = None;
                             expression = self.lower_cxx_instance_member_call(
                                 &tag,
                                 &field,
                                 expression,
                                 arguments,
                             )?;
+                            struct_tag = self.expression_struct_tag.take();
                         }
-                        struct_tag = None;
                         continue;
                     }
                     let layout = self.structs.get(&tag).ok_or_else(|| {
@@ -1859,6 +1905,15 @@ fn structural_virtual_vector_member(
 }
 
 /// Build the `target = target ± 1` assignment that an `++`/`--` desugars to.
+fn iterator_pointer_storage(expression: Expression, offset: u32) -> Expression {
+    Expression::Member {
+        base: Box::new(expression),
+        offset,
+        member_type: Type::StructPointer { element_size: 0 },
+        index_stride: None,
+    }
+}
+
 fn increment_assignment(target: Expression, operator: BinaryOperator) -> Expression {
     Expression::Assign {
         target: Box::new(crate::lvalues::canonical_assignment_target(target.clone())),
