@@ -40,6 +40,7 @@ impl Generator {
         self.schedule_allocator_initialization_prefix(region.result);
         self.fold_allocator_direct_call_result_stores();
         self.schedule_structured_guarded_ucode_packets();
+        self.schedule_structured_tlut_packet();
     }
 
     fn reuse_allocator_initialization_zero(&mut self, seed: usize, result: u8, zero: u8) {
