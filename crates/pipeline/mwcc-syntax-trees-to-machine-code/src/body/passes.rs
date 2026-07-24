@@ -344,6 +344,60 @@ pub(crate) fn inline_immutable_pointer_aliases(function: &Function) -> Option<Fu
     if removed.is_empty() {
         return None;
     }
+    fn substitute_indirect_target_aliases(
+        statement: &Statement,
+        values: &std::collections::HashMap<String, Expression>,
+    ) -> Statement {
+        match statement {
+            Statement::Expression(Expression::CallThrough { target, arguments })
+                if matches!(
+                    target.as_ref(),
+                    Expression::Dereference { .. } | Expression::Member { .. }
+                ) =>
+            {
+                Statement::Expression(Expression::CallThrough {
+                    // `value_tracking::substitute` deliberately treats the complete
+                    // CallThrough as a snapshot barrier. Rewriting only this memory
+                    // target preserves that rule for `F saved = global_fp; saved()`
+                    // while allowing `T *typed = (T *)actor; typed->proc(actor)`.
+                    target: Box::new(crate::value_tracking::substitute(target, values)),
+                    arguments: arguments.clone(),
+                })
+            }
+            Statement::If {
+                condition,
+                then_body,
+                else_body,
+            } => Statement::If {
+                condition: condition.clone(),
+                then_body: then_body
+                    .iter()
+                    .map(|inner| substitute_indirect_target_aliases(inner, values))
+                    .collect(),
+                else_body: else_body
+                    .iter()
+                    .map(|inner| substitute_indirect_target_aliases(inner, values))
+                    .collect(),
+            },
+            Statement::Loop {
+                kind,
+                initializer,
+                condition,
+                step,
+                body,
+            } => Statement::Loop {
+                kind: *kind,
+                initializer: initializer.clone(),
+                condition: condition.clone(),
+                step: step.clone(),
+                body: body
+                    .iter()
+                    .map(|inner| substitute_indirect_target_aliases(inner, values))
+                    .collect(),
+            },
+            other => other.clone(),
+        }
+    }
     Some(Function {
         locals: function
             .locals
@@ -360,7 +414,10 @@ pub(crate) fn inline_immutable_pointer_aliases(function: &Function) -> Option<Fu
         statements: function
             .statements
             .iter()
-            .map(|statement| substitute_statement(statement, &values))
+            .map(|statement| {
+                let statement = substitute_statement(statement, &values);
+                substitute_indirect_target_aliases(&statement, &values)
+            })
             .collect(),
         guards: function
             .guards
