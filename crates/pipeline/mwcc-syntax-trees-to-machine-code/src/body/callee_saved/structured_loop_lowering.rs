@@ -144,11 +144,15 @@ impl<'a> LoopLowering<'a> {
         }
         output.push(Statement::Label(condition_label));
         if let Some(condition) = condition {
-            output.push(Statement::If {
-                condition: condition.clone(),
-                then_body: vec![Statement::Goto(body_label)],
-                else_body: Vec::new(),
-            });
+            match constant_value(condition) {
+                Some(0) => {}
+                Some(_) => output.push(Statement::Goto(body_label)),
+                None => output.push(Statement::If {
+                    condition: condition.clone(),
+                    then_body: vec![Statement::Goto(body_label)],
+                    else_body: Vec::new(),
+                }),
+            }
         } else {
             output.push(Statement::Goto(body_label));
         }
@@ -290,5 +294,56 @@ mod tests {
             .expect("empty false do-while should be removed");
 
         assert!(function.statements.is_empty());
+    }
+
+    #[test]
+    fn lowers_a_nonempty_false_do_while_to_one_body_execution() {
+        let mut function = Function {
+            return_type: Type::Void,
+            name: "macro_shell".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: Vec::new(),
+            statements: vec![Statement::Loop {
+                kind: LoopKind::DoWhile,
+                initializer: None,
+                condition: Some(Expression::IntegerLiteral(0)),
+                step: None,
+                body: vec![Statement::Expression(Expression::Call {
+                    name: "sink".into(),
+                    arguments: Vec::new(),
+                })],
+            }],
+            return_expression: None,
+            guards: Vec::new(),
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+
+        function = lower_structured_loops(&function, &Default::default())
+            .expect("nonempty false do-while should lower");
+
+        assert_eq!(
+            function
+                .statements
+                .iter()
+                .filter(|statement| matches!(statement, Statement::Expression(_)))
+                .count(),
+            1
+        );
+        assert!(!function
+            .statements
+            .iter()
+            .any(|statement| matches!(statement, Statement::If { .. })));
+        assert_eq!(
+            super::structured::structured_hidden_label_count(&function.statements),
+            4
+        );
     }
 }

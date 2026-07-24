@@ -2158,6 +2158,7 @@ pub(super) fn structured_hidden_label_count(statements: &[Statement]) -> u32 {
                     + structured_hidden_label_count(then_body)
                     + structured_hidden_label_count(else_body)
             }
+            Statement::Label(label) if label.starts_with("__mwcc_structured_loop_") => 1,
             _ => 0,
         })
         .sum()
