@@ -2481,6 +2481,9 @@ mod tests {
     #[path = "display_list_framebuffer_setup.rs"]
     mod display_list_framebuffer_setup;
 
+    #[path = "display_list_coveredge.rs"]
+    mod display_list_coveredge;
+
     #[path = "elf_object.rs"]
     mod elf_object;
 

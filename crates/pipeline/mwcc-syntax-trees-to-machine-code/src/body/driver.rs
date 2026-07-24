@@ -2107,6 +2107,9 @@ impl Generator {
         if self.try_display_list_framebuffer_setup(function)? {
             return Ok(());
         }
+        if self.try_display_list_coveredge(function)? {
+            return Ok(());
+        }
         // A non-volatile terminal global store/read pair is one value operation.
         // Canonicalize it to the assignment-expression form that owns mwcc's
         // stored-result reuse before the conservative recomputation gate below.

@@ -6,6 +6,7 @@
 //! windows. This owner keeps that transaction together instead of weakening
 //! the general store/return scheduling defer.
 
+use super::display_list_packets::{constant_u32, count_float_literal, parameter_reads};
 #[allow(unused_imports)]
 use super::*;
 use mwcc_machine_code::{Instruction, RelocationTarget};
@@ -313,15 +314,15 @@ fn recognize(function: &Function) -> Option<FramebufferSetup<'_>> {
             _ => unreachable!(),
         })
         .collect();
-    if packet_constant_u32(values[0])? != 0xe700_0000
-        || packet_constant_u32(values[1])? != 0
-        || packet_constant_u32(values[4])? != 0xed00_0000
+    if constant_u32(values[0])? != 0xe700_0000
+        || constant_u32(values[1])? != 0
+        || constant_u32(values[4])? != 0xed00_0000
         || !matches!(values[3],
             Expression::Cast { operand, .. }
                 if matches!(operand.as_ref(), Expression::Variable(name) if name == &pointer.name))
-        || parameter_reads(values[2], base, pointer, width, height) != [0, 0, 1, 0]
-        || parameter_reads(values[4], base, pointer, width, height) != [0, 0, 0, 0]
-        || parameter_reads(values[5], base, pointer, width, height) != [0, 0, 1, 1]
+        || parameter_reads(values[2], &[base, pointer, width, height]) != [0, 0, 1, 0]
+        || parameter_reads(values[4], &[base, pointer, width, height]) != [0, 0, 0, 0]
+        || parameter_reads(values[5], &[base, pointer, width, height]) != [0, 0, 1, 1]
         || count_float_literal(values[4], 4.0) != 2
         || count_float_literal(values[5], 4.0) != 2
     {
@@ -367,116 +368,4 @@ fn peel_casts(mut expression: &Expression) -> &Expression {
         expression = operand;
     }
     expression
-}
-
-fn parameter_reads(
-    expression: &Expression,
-    base: &mwcc_syntax_trees::Parameter,
-    pointer: &mwcc_syntax_trees::Parameter,
-    width: &mwcc_syntax_trees::Parameter,
-    height: &mwcc_syntax_trees::Parameter,
-) -> [usize; 4] {
-    [
-        count_name_occurrences(expression, &base.name),
-        count_name_occurrences(expression, &pointer.name),
-        count_name_occurrences(expression, &width.name),
-        count_name_occurrences(expression, &height.name),
-    ]
-}
-
-#[derive(Clone, Copy)]
-enum PacketConstant {
-    Integer(i64),
-    Float(f64),
-}
-
-fn packet_constant_u32(expression: &Expression) -> Option<u32> {
-    match packet_constant(expression)? {
-        PacketConstant::Integer(value) => Some(value as u32),
-        PacketConstant::Float(_) => None,
-    }
-}
-
-fn packet_constant(expression: &Expression) -> Option<PacketConstant> {
-    match expression {
-        Expression::IntegerLiteral(value) => Some(PacketConstant::Integer(*value)),
-        Expression::FloatLiteral(value) => Some(PacketConstant::Float(*value)),
-        Expression::Cast {
-            target_type,
-            operand,
-        } => {
-            let value = packet_constant(operand)?;
-            match target_type {
-                Type::Float => Some(PacketConstant::Float(match value {
-                    PacketConstant::Integer(value) => (value as f32) as f64,
-                    PacketConstant::Float(value) => (value as f32) as f64,
-                })),
-                Type::Double => Some(PacketConstant::Float(match value {
-                    PacketConstant::Integer(value) => value as f64,
-                    PacketConstant::Float(value) => value,
-                })),
-                Type::Int
-                | Type::UnsignedInt
-                | Type::Char
-                | Type::UnsignedChar
-                | Type::Short
-                | Type::UnsignedShort => Some(PacketConstant::Integer(match value {
-                    PacketConstant::Integer(value) => value,
-                    PacketConstant::Float(value) => value.trunc() as i64,
-                })),
-                _ => None,
-            }
-        }
-        Expression::Binary {
-            operator,
-            left,
-            right,
-        } => {
-            let left = packet_constant(left)?;
-            let right = packet_constant(right)?;
-            match (left, right) {
-                (PacketConstant::Integer(left), PacketConstant::Integer(right)) => {
-                    let value = match operator {
-                        BinaryOperator::Add => left.wrapping_add(right),
-                        BinaryOperator::Subtract => left.wrapping_sub(right),
-                        BinaryOperator::Multiply => left.wrapping_mul(right),
-                        BinaryOperator::BitAnd => left & right,
-                        BinaryOperator::BitOr => left | right,
-                        BinaryOperator::ShiftLeft => left.wrapping_shl(u32::try_from(right).ok()?),
-                        BinaryOperator::ShiftRight => left.wrapping_shr(u32::try_from(right).ok()?),
-                        _ => return None,
-                    };
-                    Some(PacketConstant::Integer(value))
-                }
-                (left, right) => {
-                    let number = |value| match value {
-                        PacketConstant::Integer(value) => value as f64,
-                        PacketConstant::Float(value) => value,
-                    };
-                    let left = number(left);
-                    let right = number(right);
-                    Some(PacketConstant::Float(match operator {
-                        BinaryOperator::Add => left + right,
-                        BinaryOperator::Subtract => left - right,
-                        BinaryOperator::Multiply => left * right,
-                        _ => return None,
-                    }))
-                }
-            }
-        }
-        _ => None,
-    }
-}
-
-fn count_float_literal(expression: &Expression, expected: f64) -> usize {
-    match expression {
-        Expression::FloatLiteral(value) => usize::from(*value == expected),
-        Expression::Cast { operand, .. } | Expression::Unary { operand, .. } => {
-            count_float_literal(operand, expected)
-        }
-        Expression::Binary { left, right, .. } => {
-            count_float_literal(left, expected) + count_float_literal(right, expected)
-        }
-        _ => 0,
-    }
 }
