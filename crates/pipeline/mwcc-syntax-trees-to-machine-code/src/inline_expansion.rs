@@ -31,6 +31,9 @@ use value_body::ValueInlineBody;
 #[derive(Clone, Debug, Default)]
 pub struct InlineBodySet {
     bodies: HashMap<String, Function>,
+    /// Ordinary small definitions that MWCC may expand selectively at hot
+    /// structured call sites even when the TU calls them more than once.
+    repeatable_bodies: HashMap<String, Function>,
     values: HashMap<String, ValueInlineBody>,
     required: HashSet<String>,
 }
@@ -103,6 +106,14 @@ impl InlineBodySet {
                 .entry(function.name.clone())
                 .or_insert_with(|| function.clone());
         }
+        let repeatable_bodies = definitions
+            .iter()
+            .filter(|function| {
+                automatic_composable_function(function)
+                    && call_counts.get(&function.name).copied().unwrap_or(0) > 1
+            })
+            .map(|function| (function.name.clone(), function.clone()))
+            .collect();
         let mut values: HashMap<_, _> = skipped
             .iter()
             .filter_map(|function| {
@@ -152,6 +163,7 @@ impl InlineBodySet {
         }
         Self {
             bodies,
+            repeatable_bodies,
             values,
             required,
         }
@@ -246,6 +258,30 @@ impl InlineBodySet {
     pub(crate) fn expand_calls(&self, function: &Function) -> Option<Function> {
         self.expand_calls_with_facts(function)
             .map(|expanded| expanded.function)
+    }
+
+    /// Expand a repeatable small definition only when its call is directly in
+    /// the sole loop body. This models MWCC's loop-site inlining decision
+    /// without making a multi-use helper expand indiscriminately at every call
+    /// site in the translation unit.
+    pub(crate) fn expand_repeatable_loop_calls(
+        &self,
+        function: &Function,
+    ) -> Option<ExpandedCalls> {
+        let [Statement::Loop { body, .. }] = function.statements.as_slice() else {
+            return None;
+        };
+        let eligible = body.iter().any(|statement| {
+            matches!(statement,
+                Statement::Expression(Expression::Call { name, .. })
+                    if self.repeatable_bodies.contains_key(name))
+        });
+        if !eligible {
+            return None;
+        }
+        let mut expanded = self.clone();
+        expanded.bodies.extend(self.repeatable_bodies.clone());
+        expanded.expand_calls_with_facts(function)
     }
 
     pub(crate) fn expand_calls_with_facts(&self, function: &Function) -> Option<ExpandedCalls> {
@@ -563,6 +599,30 @@ impl InlineBodySet {
                         false,
                     ),
                 }),
+                Statement::Loop {
+                    kind,
+                    initializer,
+                    condition,
+                    step,
+                    body,
+                } => output.push(Statement::Loop {
+                    kind: *kind,
+                    initializer: initializer.clone(),
+                    condition: condition.clone(),
+                    step: step.clone(),
+                    body: self.expand_statements(
+                        body,
+                        stable_variables,
+                        active,
+                        changed,
+                        locals,
+                        occupied_names,
+                        next_local_id,
+                        statement_body_substitutions,
+                        statement_frame_residue_substitutions,
+                        false,
+                    ),
+                }),
                 _ => output.push(statement.clone()),
             }
         }
@@ -779,7 +839,9 @@ fn constant_inline_condition(condition: &Expression) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mwcc_syntax_trees::{BinaryOperator, LocalDeclaration, Parameter, Pointee, Type};
+    use mwcc_syntax_trees::{
+        BinaryOperator, LocalDeclaration, LoopKind, Parameter, Pointee, Type,
+    };
 
     fn function(name: &str, parameters: Vec<Parameter>, statements: Vec<Statement>) -> Function {
         Function {
@@ -1638,6 +1700,63 @@ mod tests {
         let repeated =
             InlineBodySet::analyze_with_definitions(&[helper, caller.clone(), second_caller], &[]);
         assert!(repeated.expand_calls(&caller).is_none());
+    }
+
+    #[test]
+    fn composes_a_repeated_ordinary_definition_only_at_a_loop_site() {
+        let helper = function(
+            "helper",
+            vec![Parameter {
+                parameter_type: Type::Int,
+                name: "value".into(),
+            }],
+            vec![Statement::Expression(Expression::Call {
+                name: "consume".into(),
+                arguments: vec![Expression::Variable("value".into())],
+            })],
+        );
+        let loop_caller = function(
+            "loop_caller",
+            vec![Parameter {
+                parameter_type: Type::Int,
+                name: "value".into(),
+            }],
+            vec![Statement::Loop {
+                kind: LoopKind::While,
+                initializer: None,
+                condition: Some(Expression::Variable("value".into())),
+                step: None,
+                body: vec![Statement::Expression(Expression::Call {
+                    name: "helper".into(),
+                    arguments: vec![Expression::Variable("value".into())],
+                })],
+            }],
+        );
+        let ordinary_caller = function(
+            "ordinary_caller",
+            vec![Parameter {
+                parameter_type: Type::Int,
+                name: "value".into(),
+            }],
+            vec![Statement::Expression(Expression::Call {
+                name: "helper".into(),
+                arguments: vec![Expression::Variable("value".into())],
+            })],
+        );
+
+        let bodies = InlineBodySet::analyze_with_definitions(
+            &[helper, loop_caller.clone(), ordinary_caller.clone()],
+            &[],
+        );
+        assert!(bodies.expand_calls(&ordinary_caller).is_none());
+        let expanded = bodies
+            .expand_repeatable_loop_calls(&loop_caller)
+            .expect("the loop call should be eligible for repeated automatic inlining");
+        assert!(matches!(expanded.function.statements.as_slice(), [
+            Statement::Loop { body, .. }
+        ] if matches!(body.as_slice(), [
+            Statement::Expression(Expression::Call { name, .. })
+        ] if name == "consume")));
     }
 
     #[test]
