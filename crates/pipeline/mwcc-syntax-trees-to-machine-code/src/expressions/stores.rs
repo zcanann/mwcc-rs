@@ -84,7 +84,7 @@ impl Generator {
 
     /// Emit `target = value` as an expression: compute `value` into the
     /// destination, store it to `target`, and leave the value in the destination
-    /// (so the surrounding expression can use it). Global targets only for now.
+    /// so a surrounding chained assignment can store the same value again.
     pub(crate) fn emit_assign(
         &mut self,
         target: &Expression,
@@ -101,8 +101,45 @@ impl Generator {
                 return Ok(());
             }
         }
+        if let Expression::Member {
+            base,
+            offset,
+            member_type,
+            index_stride: None,
+        } = target
+        {
+            let pointee = pointee_of_type(*member_type).ok_or_else(|| {
+                Diagnostic::error("assignment-valued member has a non-scalar target")
+            })?;
+            if matches!(pointee, Pointee::Float | Pointee::Double) {
+                return Err(Diagnostic::error(
+                    "floating member assignment must use the floating value path",
+                ));
+            }
+            let address = self.member_base_register(base)?;
+            if address == destination {
+                return Err(Diagnostic::error(
+                    "assignment-valued member needs a distinct address register (roadmap)",
+                ));
+            }
+            let restore = address != GENERAL_SCRATCH && self.reserved.insert(address);
+            self.evaluate_general(value, destination)?;
+            if restore {
+                self.reserved.remove(&address);
+            }
+            let displacement = i16::try_from(*offset).map_err(|_| {
+                Diagnostic::error("assignment-valued member offset is out of range")
+            })?;
+            self.output.instructions.push(displacement_store(
+                pointee,
+                destination,
+                address,
+                displacement,
+            )?);
+            return Ok(());
+        }
         Err(Diagnostic::error(
-            "assignment as an expression supports a global target (roadmap)",
+            "general assignment expression target is not supported yet (roadmap)",
         ))
     }
 
