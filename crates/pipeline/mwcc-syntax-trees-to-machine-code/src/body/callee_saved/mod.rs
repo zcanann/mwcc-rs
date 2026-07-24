@@ -79,6 +79,7 @@ mod structured_frame_call_schedule;
 mod structured_frame_entry;
 mod structured_frame_value_forwarding;
 mod structured_guard_cache_schedule;
+mod structured_guarded_ucode_schedule;
 mod structured_home_layout;
 mod structured_if_else;
 mod structured_inline_residue;
