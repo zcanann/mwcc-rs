@@ -47,3 +47,46 @@ fn initializes_an_address_taken_scalar_in_its_frame_slot() {
         .windows(expected.len())
         .any(|bytes| bytes == expected));
 }
+
+#[test]
+fn stores_a_later_assignment_to_an_address_taken_scalar() {
+    let source = br#"
+        extern void consume(int*);
+
+        void bridge(int value) {
+            int slot;
+            slot = value;
+            consume(&slot);
+            consume(&slot);
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.emit_mwcats = false;
+    flags.inline_enabled = false;
+    let object = compile(
+        source,
+        "assigned-address-taken-scalar.c",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_2_6,
+            flags,
+        },
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("the assigned scalar frame should compile");
+
+    // The assignment must initialize the frame slot before its address escapes.
+    let expected = [
+        0x90, 0x61, 0x00, 0x08, // stw r3,8(r1)
+        0x38, 0x61, 0x00, 0x08, // addi r3,r1,8
+        0x48, 0x00, 0x00, 0x01, // bl consume
+    ];
+    assert!(
+        object
+            .windows(expected.len())
+            .any(|bytes| bytes == expected),
+        "the assigned value was not stored before the frame address escaped"
+    );
+}

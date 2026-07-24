@@ -1809,6 +1809,16 @@ impl Generator {
                     if self.try_emit_frame_aggregate_call_assignment(name, value)? {
                         continue;
                     }
+                    if self.frame_slots.contains_key(name) {
+                        self.emit_store(&Expression::Variable(name.clone()), value)
+                            .map_err(|mut diagnostic| {
+                                diagnostic.message.push_str(&format!(
+                                    " (in structured frame assignment statement {statement_index})"
+                                ));
+                                diagnostic
+                            })?;
+                        continue;
+                    }
                     let declared_type = function
                         .locals
                         .iter()
