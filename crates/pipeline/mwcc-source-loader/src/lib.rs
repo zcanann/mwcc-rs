@@ -3,8 +3,8 @@
 //! This phase owns physical source discovery and selection: it resolves
 //! `#include` directives against the including file and the driver's ordered
 //! access paths, evaluates conditional directives and object-like macros, and
-//! emits one byte-preserving source buffer. Filesystem policy never leaks into
-//! the lexer or parser.
+//! emits one compiler-encoded source buffer. Filesystem and physical-file
+//! encoding policy never leak into the lexer or parser.
 
 mod condition;
 mod macro_expansion;
@@ -18,6 +18,19 @@ pub struct SourceLoader {
     access_paths: Vec<PathBuf>,
     definitions: HashMap<String, String>,
     macros: HashMap<String, macro_expansion::Macro>,
+    source_encoding: SourceEncoding,
+}
+
+/// Encoding policy applied independently to every physical source and header.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SourceEncoding {
+    /// Preserve file bytes exactly.
+    #[default]
+    Raw,
+    /// Emulate the decompilation toolchain's `sjiswrap`: valid UTF-8 files are
+    /// transcoded to Shift-JIS before MWCC sees them. Already-encoded Shift-JIS
+    /// is retained so preprocessed bridge inputs remain usable.
+    Utf8OrShiftJis,
 }
 
 impl SourceLoader {
@@ -26,7 +39,13 @@ impl SourceLoader {
             access_paths,
             definitions: HashMap::new(),
             macros: HashMap::new(),
+            source_encoding: SourceEncoding::Raw,
         }
+    }
+
+    pub fn with_source_encoding(mut self, source_encoding: SourceEncoding) -> Self {
+        self.source_encoding = source_encoding;
+        self
     }
 
     pub fn define(&mut self, name: impl Into<String>, value: impl Into<String>) {
@@ -66,6 +85,7 @@ impl SourceLoader {
             loaded: HashSet::new(),
             definitions: self.definitions.clone(),
             macros: self.macros.clone(),
+            source_encoding: self.source_encoding,
         };
         context.load_file(&input)
     }
@@ -76,6 +96,7 @@ struct LoadContext<'a> {
     loaded: HashSet<PathBuf>,
     definitions: HashMap<String, String>,
     macros: HashMap<String, macro_expansion::Macro>,
+    source_encoding: SourceEncoding,
 }
 
 impl LoadContext<'_> {
@@ -111,6 +132,7 @@ impl LoadContext<'_> {
         let source = std::fs::read(&canonical).map_err(|error| {
             Diagnostic::error(format!("cannot read {}: {error}", canonical.display()))
         })?;
+        let source = encode_source(source, self.source_encoding, &canonical)?;
         let mut output = Vec::with_capacity(source.len());
         let mut conditional = Vec::new();
         let mut directive_continuation = false;
@@ -351,6 +373,34 @@ impl LoadContext<'_> {
             .map(|root| root.join(requested))
             .find(|candidate| candidate.is_file())
     }
+}
+
+fn encode_source(
+    source: Vec<u8>,
+    encoding: SourceEncoding,
+    path: &Path,
+) -> Compilation<Vec<u8>> {
+    if encoding == SourceEncoding::Raw {
+        return Ok(source);
+    }
+    if let Ok(utf8) = std::str::from_utf8(&source) {
+        let (encoded, _, had_errors) = encoding_rs::SHIFT_JIS.encode(utf8);
+        if had_errors {
+            return Err(Diagnostic::error(format!(
+                "{} contains characters that Shift-JIS cannot encode",
+                path.display()
+            )));
+        }
+        return Ok(encoded.into_owned());
+    }
+    let (_, had_errors) = encoding_rs::SHIFT_JIS.decode_without_bom_handling(&source);
+    if had_errors {
+        return Err(Diagnostic::error(format!(
+            "{} is neither valid UTF-8 nor valid Shift-JIS",
+            path.display()
+        )));
+    }
+    Ok(source)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -625,7 +675,7 @@ fn normalize_relative(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_include, SourceLoader};
+    use super::{parse_include, SourceEncoding, SourceLoader};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -736,6 +786,66 @@ mod tests {
             loaded,
             b"#line 1\n#line 1\nchar *s = \"\x82\xa0\";\n#line 2\n#line 3\n#line 2\nint f(void);\n"
         );
+    }
+
+    #[test]
+    fn sjis_wrapper_policy_transcodes_utf8_sources_and_headers() {
+        let scratch = Scratch::new();
+        std::fs::write(
+            scratch.0.join("message.h"),
+            "char *header = \"エラー\";\n".as_bytes(),
+        )
+        .unwrap();
+        std::fs::write(
+            scratch.0.join("unit.c"),
+            "#include \"message.h\"\nchar *source = \"エラー\";\n".as_bytes(),
+        )
+        .unwrap();
+
+        let loaded = SourceLoader::default()
+            .with_source_encoding(SourceEncoding::Utf8OrShiftJis)
+            .load(&scratch.0.join("unit.c"))
+            .unwrap();
+        let encoded = b"\x83\x47\x83\x89\x81\x5b";
+        assert_eq!(
+            loaded
+                .windows(encoded.len())
+                .filter(|window| *window == encoded)
+                .count(),
+            2
+        );
+        assert!(!loaded.windows(3).any(|window| window == b"\xe3\x82\xa8"));
+    }
+
+    #[test]
+    fn sjis_wrapper_policy_retains_already_encoded_inputs() {
+        let scratch = Scratch::new();
+        let source = b"char *message = \"\x83\x47\x83\x89\x81\x5b\";\n";
+        std::fs::write(scratch.0.join("unit.c"), source).unwrap();
+
+        let loaded = SourceLoader::default()
+            .with_source_encoding(SourceEncoding::Utf8OrShiftJis)
+            .load(&scratch.0.join("unit.c"))
+            .unwrap();
+        assert_eq!(loaded, source);
+    }
+
+    #[test]
+    fn sjis_wrapper_policy_rejects_unencodable_unicode() {
+        let scratch = Scratch::new();
+        std::fs::write(
+            scratch.0.join("unit.c"),
+            "char *message = \"🦀\";\n".as_bytes(),
+        )
+        .unwrap();
+
+        let error = SourceLoader::default()
+            .with_source_encoding(SourceEncoding::Utf8OrShiftJis)
+            .load(&scratch.0.join("unit.c"))
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("contains characters that Shift-JIS cannot encode"));
     }
 
     #[test]

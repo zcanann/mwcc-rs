@@ -555,7 +555,8 @@ fn main() -> ExitCode {
         None => mwcc_versions::DEFAULT,
     };
 
-    let mut source_loader = mwcc_source_loader::SourceLoader::new(invocation.include_paths);
+    let mut source_loader = mwcc_source_loader::SourceLoader::new(invocation.include_paths)
+        .with_source_encoding(mwcc_source_loader::SourceEncoding::Utf8OrShiftJis);
     source_loader.define("__MWERKS__", "1");
     if source_is_cxx(&input, invocation.source_language) {
         source_loader.define("__cplusplus", "1");
