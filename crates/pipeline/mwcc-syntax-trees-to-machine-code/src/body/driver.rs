@@ -1157,6 +1157,9 @@ impl Generator {
         if self.try_fixed_port_matrix_packets(function)? {
             return Ok(());
         }
+        if self.try_fixed_port_scale_switch(function)? {
+            return Ok(());
+        }
         // InlineBodySet is the authoritative distinction between skipped
         // definitions that still require semantic AST composition and pure
         // inline-asm helpers that lower directly at their call site.

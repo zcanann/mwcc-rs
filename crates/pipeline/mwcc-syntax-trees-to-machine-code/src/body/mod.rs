@@ -66,6 +66,7 @@ mod fixed_port_bitfield;
 mod fixed_port_indexed_bitfield;
 mod fixed_port_matrix_packets;
 mod fixed_port_packet_accumulator;
+mod fixed_port_scale_switch;
 mod fixed_port_replay_update;
 mod frame_vector_accumulation_schedule;
 mod guards_ifs;
