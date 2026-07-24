@@ -167,4 +167,5 @@ mod tests {
 
         assert!(is_inlined_sign_store(&instructions));
     }
+
 }
