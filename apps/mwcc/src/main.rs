@@ -2384,6 +2384,9 @@ mod tests {
     #[path = "saved_float_initializer.rs"]
     mod saved_float_initializer;
 
+    #[path = "member_float_select.rs"]
+    mod member_float_select;
+
     #[test]
     fn parity_keep_going_is_an_explicit_diagnostic_flag() {
         let ordinary = parse_invocation(&[]);
