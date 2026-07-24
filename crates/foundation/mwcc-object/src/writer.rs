@@ -39,7 +39,7 @@ fn initialized_object_is_upfront(
     initialized_globals_before_deferred_functions: bool,
 ) -> bool {
     !(object.is_weak && object.name.starts_with("__vt__"))
-        && (object.non_static_functions_before == 0
+        && (object.functions_before == 0
             || initialized_globals_before_deferred_functions)
 }
 
@@ -453,13 +453,58 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             place(object, ".bss", &mut bss_size);
         }
     }
+    // Small initialized data follows the same creation timeline as `.data`.
+    // Function-owned strings/statics therefore precede file declarations that
+    // occur after their owner, even though the invocation layer discovers all
+    // file globals before it resolves function string pools.
     let mut sdata_size = 0u32;
+    let mut placed_sdata: std::collections::HashSet<&'a str> =
+        std::collections::HashSet::new();
+    for source_position in 0..=input.functions.len() {
+        for object in input.data_objects.iter().filter(|object| {
+            object.functions_before.min(input.functions.len()) == source_position
+                && section_of(object) == ".sdata"
+                && !string_owner.contains_key(object.name)
+                && object.static_local_owner.is_none()
+        }) {
+            if placed_sdata.insert(object.name) {
+                place(object, ".sdata", &mut sdata_size);
+            }
+        }
+        if source_position == input.functions.len() {
+            continue;
+        }
+        let function = &input.functions[source_position];
+        for object in input.data_objects.iter().filter(|object| {
+            object.static_local_owner == Some(source_position)
+                && section_of(object) == ".sdata"
+        }) {
+            if placed_sdata.insert(object.name) {
+                place(object, ".sdata", &mut sdata_size);
+            }
+        }
+        for name in &function.string_names {
+            if let Some(object) = input
+                .data_objects
+                .iter()
+                .find(|object| object.name == name.as_str() && section_of(object) == ".sdata")
+            {
+                if placed_sdata.insert(object.name) {
+                    place(object, ".sdata", &mut sdata_size);
+                }
+            }
+        }
+    }
+    // Preserve emission for synthetic objects that intentionally have no
+    // source-position owner.
     for object in input
         .data_objects
         .iter()
         .filter(|object| section_of(object) == ".sdata")
     {
-        place(object, ".sdata", &mut sdata_size);
+        if placed_sdata.insert(object.name) {
+            place(object, ".sdata", &mut sdata_size);
+        }
     }
     // mwcc lays `.sbss` out as: EXPLICITLY zero-initialized globals (`int a = 0;`) in
     // DECLARATION order, then UNINITIALIZED globals (`int a;`) in REVERSE declaration order.
@@ -2472,7 +2517,6 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         }
     }
     let mut functions_seen = 0usize;
-    let mut non_static_functions_seen = 0usize;
     for (index, function) in functions.iter().enumerate() {
         // A function-local static initializer creates its address targets while
         // compiling the owning body. The LOCAL object symbols were emitted in
@@ -2948,12 +2992,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // functions, lands after the preceding function's referenced
         // externals, not up front).
         functions_seen += 1;
-        if !function.is_static {
-            non_static_functions_seen += 1;
-        }
         for object in &input.data_objects {
             if is_initialized_run_object(object)
-                && object.non_static_functions_before == non_static_functions_seen
+                && object.functions_before == functions_seen
                 && !global_symbols.contains_key(object.name)
             {
                 emit_initialized_object!(object);

@@ -6,6 +6,7 @@
 //! instance fields; methods, nested bodies, and static members remain skipped.
 
 use super::{type_alignment, type_size};
+use crate::cxx_analysis_facts::inline_control_flow_labels;
 use crate::parser::{
     Parser, StructField, StructLayout, StructTemplate, TemplateField, TemplateFieldType,
     TemplateInstantiationKey, TemplateTypePattern,
@@ -1705,9 +1706,28 @@ impl Parser {
                                 .insert((class_name.clone(), member_name.clone()));
                         }
                         if self.tokens.get(cursor) == Some(&Token::BraceOpen) {
+                            let body_open = cursor;
+                            let mut body_depth = 1i32;
+                            cursor += 1;
+                            while body_depth > 0 {
+                                match self.tokens.get(cursor) {
+                                    Some(Token::BraceOpen) => body_depth += 1,
+                                    Some(Token::BraceClose) => body_depth -= 1,
+                                    Some(Token::EndOfFile) | None => return,
+                                    _ => {}
+                                }
+                                cursor += 1;
+                            }
+                            let body_close = cursor - 1;
+                            let control_flow_labels =
+                                inline_control_flow_labels(&self.tokens[body_open + 1..body_close]);
+                            self.inline_template_member_control_flow_labels.insert(
+                                (class_name.clone(), member_name.clone()),
+                                control_flow_labels,
+                            );
                             if let Some(
                                 [Token::KeywordReturn, Token::Identifier(field), Token::Semicolon, Token::BraceClose],
-                            ) = self.tokens.get(cursor + 1..cursor + 5)
+                            ) = self.tokens.get(body_open + 1..body_open + 5)
                             {
                                 self.inline_template_accessors.insert(
                                     (class_name.clone(), member_name, arity),
@@ -1728,6 +1748,160 @@ impl Parser {
                 }
                 Token::EndOfFile => return,
                 _ => {}
+            }
+            index += 1;
+        }
+    }
+
+    /// Charge the primary-template member body's analysis labels the first time
+    /// a concrete specialization is used. Definitions remain inert until a
+    /// source call proves that MWCC instantiated that member.
+    pub(crate) fn record_inline_template_member_instantiation(
+        &mut self,
+        concrete: &str,
+        member: &str,
+    ) {
+        let qualified = self.qualify_cxx_class_name(concrete);
+        let primary = self
+            .template_aliases
+            .get(concrete)
+            .or_else(|| self.template_aliases.get(&qualified))
+            .map(String::as_str)
+            .unwrap_or_else(|| concrete.split('<').next().unwrap_or(concrete));
+        let labels = self
+            .inline_template_member_control_flow_labels
+            .get(&(primary.to_owned(), member.to_owned()))
+            .copied()
+            .or_else(|| {
+                let primary = self.qualify_cxx_class_name(primary);
+                self.inline_template_member_control_flow_labels
+                    .get(&(primary, member.to_owned()))
+                    .copied()
+            })
+            .unwrap_or(0);
+        if labels == 0 {
+            return;
+        }
+        let specialization = self
+            .struct_typedefs
+            .get(concrete)
+            .or_else(|| self.struct_typedefs.get(&qualified))
+            .cloned()
+            .unwrap_or(qualified);
+        if self
+            .instantiated_inline_template_members
+            .insert((specialization, member.to_owned()))
+        {
+            self.cxx_inline_ordinal_facts
+                .instantiated_template_control_flow_labels += labels;
+        }
+    }
+
+    /// Find concrete template-member uses in a non-template class body whose
+    /// inline methods may be discarded before ordinary expression lowering.
+    /// This pass intentionally records only calls with a syntactically proven
+    /// template-typed object or a qualified template alias.
+    pub(crate) fn record_dropped_inline_template_instantiations(
+        &mut self,
+        class_body: &[Token],
+    ) {
+        let known_primaries = self
+            .inline_template_member_control_flow_labels
+            .keys()
+            .map(|(class, _)| class.clone())
+            .collect::<std::collections::HashSet<_>>();
+        if known_primaries.is_empty() {
+            return;
+        }
+
+        let mut objects = HashMap::<String, String>::new();
+        let mut index = 0usize;
+        while index < class_body.len() {
+            let Some(Token::Identifier(type_name)) = class_body.get(index) else {
+                index += 1;
+                continue;
+            };
+            let (concrete, mut declarator) = if class_body.get(index + 1)
+                == Some(&Token::Less)
+                && (known_primaries.contains(type_name)
+                    || known_primaries
+                        .contains(&self.qualify_cxx_class_name(type_name)))
+            {
+                let mut angle_depth = 1i32;
+                let mut close = index + 2;
+                while angle_depth > 0 {
+                    match class_body.get(close) {
+                        Some(Token::Less) => angle_depth += 1,
+                        Some(Token::Greater) => angle_depth -= 1,
+                        Some(Token::EndOfFile) | None => break,
+                        _ => {}
+                    }
+                    close += 1;
+                }
+                if angle_depth != 0 {
+                    index += 1;
+                    continue;
+                }
+                (
+                    format!("{type_name}<{:?}>", &class_body[index + 2..close - 1]),
+                    close,
+                )
+            } else if self.template_aliases.contains_key(type_name) {
+                (type_name.clone(), index + 1)
+            } else {
+                index += 1;
+                continue;
+            };
+            while match class_body.get(declarator) {
+                Some(Token::Star | Token::Ampersand) => true,
+                Some(Token::Identifier(qualifier)) => {
+                    qualifier == "const" || qualifier == "volatile" || qualifier == "mutable"
+                }
+                _ => false,
+            } {
+                declarator += 1;
+            }
+            if let Some(Token::Identifier(object)) = class_body.get(declarator) {
+                if !matches!(
+                    class_body.get(declarator + 1),
+                    Some(Token::ParenOpen | Token::Colon)
+                ) {
+                    objects.insert(object.clone(), concrete);
+                }
+            }
+            index = declarator.saturating_add(1);
+        }
+
+        let mut brace_depth = 0i32;
+        let mut index = 0usize;
+        while index < class_body.len() {
+            match class_body.get(index) {
+                Some(Token::BraceOpen) => {
+                    brace_depth += 1;
+                    index += 1;
+                    continue;
+                }
+                Some(Token::BraceClose) => {
+                    brace_depth -= 1;
+                    index += 1;
+                    continue;
+                }
+                _ => {}
+            }
+            if brace_depth > 0 {
+                if let Some(
+                    [Token::Identifier(scope), Token::Colon, Token::Colon, Token::Identifier(member), Token::ParenOpen],
+                ) = class_body.get(index..index + 5)
+                {
+                    self.record_inline_template_member_instantiation(scope, member);
+                } else if let Some(
+                    [Token::Identifier(object), Token::Arrow | Token::Dot, Token::Identifier(member), Token::ParenOpen],
+                ) = class_body.get(index..index + 4)
+                {
+                    if let Some(concrete) = objects.get(object).cloned() {
+                        self.record_inline_template_member_instantiation(&concrete, member);
+                    }
+                }
             }
             index += 1;
         }

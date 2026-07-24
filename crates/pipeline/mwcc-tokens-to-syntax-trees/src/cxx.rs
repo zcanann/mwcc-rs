@@ -1541,6 +1541,8 @@ impl Parser {
                 Token::BraceClose => {
                     brace_depth -= 1;
                     if brace_depth == 0 {
+                        let class_body = self.tokens[body_start..index].to_vec();
+                        self.record_dropped_inline_template_instantiations(&class_body);
                         return prototypes;
                     }
                     if brace_depth == 1 {
@@ -1879,6 +1881,17 @@ impl Parser {
     /// pool back. Without this step a retained outer constructor can call a
     /// synthesized member constructor whose body exists only in the probe.
     pub(crate) fn merge_generated_inline_definitions_from(&mut self, probe: &Parser) {
+        let new_template_control_flow = probe
+            .cxx_inline_ordinal_facts
+            .instantiated_template_control_flow_labels
+            .saturating_sub(
+                self.cxx_inline_ordinal_facts
+                    .instantiated_template_control_flow_labels,
+            );
+        self.cxx_inline_ordinal_facts
+            .instantiated_template_control_flow_labels += new_template_control_flow;
+        self.instantiated_inline_template_members
+            .extend(probe.instantiated_inline_template_members.iter().cloned());
         for function in &probe.skipped_inline_definitions {
             if self
                 .skipped_inline_definitions

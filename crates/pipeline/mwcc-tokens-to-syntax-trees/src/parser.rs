@@ -233,6 +233,14 @@ pub(crate) struct Parser {
     /// out-of-class concrete specialization of one of these remains inline and
     /// emits no code unless used; a merely declared member's specialization does.
     pub(crate) inline_template_members: std::collections::HashSet<(String, String)>,
+    /// Native anonymous-label cost of each inline primary-template member body,
+    /// keyed by `(primary template, ABI member name)`.
+    pub(crate) inline_template_member_control_flow_labels:
+        HashMap<(String, String), usize>,
+    /// Concrete `(specialization, member)` instantiations already charged to
+    /// the frontend analysis stream.
+    pub(crate) instantiated_inline_template_members:
+        std::collections::HashSet<(String, String)>,
     /// Single-return field accessors recovered from primary-template bodies,
     /// keyed by `(template, ABI member name, explicit arity)`. These summaries
     /// let callable objects and ordinary trivial accessors inline after a

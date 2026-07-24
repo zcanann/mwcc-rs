@@ -399,9 +399,9 @@ impl Generator {
 
         self.bind_label(done);
         self.emit_epilogue_and_return();
-        // FPR-save control flow and the two source `if` statements each own an
-        // anonymous label pair in this legacy frontend.
-        self.output.anonymous_label_bump += 6;
+        // The measured GC/1.2.5n analysis walk consumes seven ordinals across
+        // the variadic-save and guarded-print control flow.
+        self.output.anonymous_label_bump += 7;
         Ok(true)
     }
 }

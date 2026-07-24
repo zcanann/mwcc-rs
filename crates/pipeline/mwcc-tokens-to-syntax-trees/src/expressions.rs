@@ -721,10 +721,17 @@ impl Parser {
                                 arguments.len(),
                             )?
                         {
+                            self.record_inline_template_member_instantiation(&scope, &member);
                             arguments.insert(0, Expression::Variable("this".to_owned()));
                             name
                         } else {
-                            self.resolve_static_member_call(&scope, &member, arguments.len())?
+                            let name = self.resolve_static_member_call(
+                                &scope,
+                                &member,
+                                arguments.len(),
+                            )?;
+                            self.record_inline_template_member_instantiation(&scope, &member);
+                            name
                         };
                         Expression::Call { name, arguments }
                     }
@@ -1557,6 +1564,7 @@ impl Parser {
                 "C++ member call '{class}::{member}' is unavailable (roadmap)"
             )));
         };
+        self.record_inline_template_member_instantiation(class, member);
         let retained_inline_call = match &member_call {
             crate::cxx::ImplicitMemberCall::Static { .. } => false,
             crate::cxx::ImplicitMemberCall::Direct { is_inline, .. } => *is_inline,

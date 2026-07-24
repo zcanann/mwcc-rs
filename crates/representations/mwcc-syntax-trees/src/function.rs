@@ -287,6 +287,10 @@ pub struct CxxInlineOrdinalFacts {
     /// Control-flow labels inside dropped in-class definitions, expressed in
     /// the mainline counter's native units (`if` = 2, loop = 4/5, etc.).
     pub control_flow_labels: usize,
+    /// Control-flow labels in primary-template member bodies whose concrete
+    /// specializations are instantiated by a retained source call. Template
+    /// definitions alone do not enter this stream.
+    pub instantiated_template_control_flow_labels: usize,
 }
 
 /// Source-to-AST inline substitutions whose syntax no longer exists in the

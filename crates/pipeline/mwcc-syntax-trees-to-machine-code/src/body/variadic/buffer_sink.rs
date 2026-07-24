@@ -235,8 +235,8 @@ impl Generator {
             target: plan.sink.to_owned(),
         });
         self.emit_epilogue_and_return();
-        // The conditional FPR-save block owns one source-level branch pair.
-        self.output.anonymous_label_bump += 2;
+        // The conditional FPR-save block uses internal code labels, but GC
+        // 1.2.5n does not charge them to the global anonymous-symbol stream.
         Ok(true)
     }
 }
