@@ -403,6 +403,39 @@ mod tests {
     }
 
     #[test]
+    fn preserves_template_reference_qualifiers_in_member_symbols() {
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(
+                r#"
+                namespace rstl {
+                    template <class T> class ncrc_ptr { T* pointer; };
+                }
+                class CAnimTreeNode {};
+                class CTransitionManager {
+                public:
+                    int Get(const rstl::ncrc_ptr<CAnimTreeNode>& value) const;
+                };
+                int CTransitionManager::Get(
+                    const rstl::ncrc_ptr<CAnimTreeNode>& value) const {
+                    return 0;
+                }
+                "#,
+            )
+            .unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.functions[0].name,
+            "Get__18CTransitionManagerCFRCQ24rstl25ncrc_ptr<13CAnimTreeNode>"
+        );
+    }
+
+    #[test]
     fn records_typedef_class_operator_inline_facts() {
         let source = r#"
             typedef struct Value {

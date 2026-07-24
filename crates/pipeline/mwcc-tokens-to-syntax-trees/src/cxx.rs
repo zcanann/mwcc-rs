@@ -646,6 +646,16 @@ impl Parser {
         .with_function_type(self.last_cxx_function_type.take())
     }
 
+    /// Consume a source reference declarator without losing template-instance
+    /// references. The template type parser consumes its trailing `&` while
+    /// retaining this marker; ordinary aggregate and scalar parsers leave the
+    /// token for the declarator parser.
+    pub(crate) fn consume_cxx_reference_declarator(&mut self) -> bool {
+        let parsed_with_type = self.last_type_was_aggregate_reference;
+        let declarator_token = self.eat_keyword(Token::Ampersand);
+        parsed_with_type || declarator_token
+    }
+
     /// Consume a function-pointer declarator after its return type:
     /// `(*name)(parameter-types)`. Both ordinary functions and recovered class
     /// members use this spelling; keeping its semantic signature parsing here
@@ -698,7 +708,7 @@ impl Parser {
                         self.last_cxx_pointer_depth.saturating_add(1).max(1);
                     storage_type = Type::Pointer(Pointee::Pointer);
                 }
-                let is_reference = self.eat_keyword(Token::Ampersand);
+                let is_reference = self.consume_cxx_reference_declarator();
                 if matches!(self.peek(), Token::Identifier(_)) {
                     let name_position = self.position;
                     self.advance();
@@ -1970,7 +1980,7 @@ impl Parser {
                         Err(error) => return Err(error),
                     };
                     self.last_array_typedef.take();
-                    let is_reference = self.eat_keyword(Token::Ampersand);
+                    let is_reference = self.consume_cxx_reference_declarator();
                     let cxx_storage_type = parameter_type;
                     let source_identity =
                         self.take_cxx_type_identity(cxx_storage_type, is_reference);
@@ -4270,7 +4280,7 @@ impl Parser {
                 let mut parameter_type = self.parse_type()?;
                 let source_type = parameter_type;
                 self.last_array_typedef.take();
-                let is_reference = self.eat_keyword(Token::Ampersand);
+                let is_reference = self.consume_cxx_reference_declarator();
                 let source_identity = self.take_cxx_type_identity(source_type, is_reference);
                 if is_reference {
                     parameter_type = Type::StructPointer { element_size: 0 };

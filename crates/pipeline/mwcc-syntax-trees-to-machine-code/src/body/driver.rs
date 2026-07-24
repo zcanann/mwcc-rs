@@ -10,7 +10,11 @@ impl Generator {
             .iter()
             .map(|local| local.name.clone())
             .collect();
-        let mut next_general = Eabi::FIRST_GENERAL_ARGUMENT;
+        // Every aggregate result uses the EABI caller-provided address in r3,
+        // including four-byte C++ wrapper classes. Source parameters begin in
+        // r4; the result address is not represented as a source Parameter.
+        let mut next_general = Eabi::FIRST_GENERAL_ARGUMENT
+            + u8::from(matches!(function.return_type, Type::Struct { .. }));
         let mut next_float = Eabi::FIRST_FLOAT_ARGUMENT;
         for parameter in &function.parameters {
             let class = class_of(parameter.parameter_type)?;
@@ -1542,10 +1546,11 @@ impl Generator {
         if let Some(folded) = inline_first_call_target_alias(function) {
             return self.evaluate_body(&folded);
         }
-        // Returning a struct BY VALUE (`struct S f(...) { return s; }`) uses the struct-return
-        // ABI — a small struct in r3:r4, a larger one via a hidden pointer argument — which is
-        // not modeled. Defer rather than emit a bare `blr` that drops the result (a miscompile:
-        // the caller would read the input pointer / stale registers as the returned struct).
+        if self.try_aggregate_return_forwarder(function)? {
+            return Ok(());
+        }
+        // Other struct BY VALUE returns still need an explicit hidden-result
+        // owner. Defer rather than emit a bare `blr` that drops the result.
         if matches!(function.return_type, Type::Struct { .. }) {
             return Err(Diagnostic::error(format!(
                 "returning a struct by value is not supported yet (roadmap; function '{}')",

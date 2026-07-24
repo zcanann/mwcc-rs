@@ -2993,7 +2993,7 @@ impl Parser {
                                 .unwrap_or_else(|| tag.clone())
                         })
                     });
-                    let is_reference = self.eat_keyword(Token::Ampersand);
+                    let is_reference = self.consume_cxx_reference_declarator();
                     if is_reference {
                         // References use a word-sized address in the EABI, while
                         // their source identity remains in `cxx_parameters` for
