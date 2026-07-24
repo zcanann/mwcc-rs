@@ -12,6 +12,7 @@ struct PackedShiftMask<'a> {
     source: &'a Expression,
     shift: u8,
     mask: u32,
+    possible_sign_fill: u32,
     operations: usize,
 }
 
@@ -28,6 +29,7 @@ impl Generator {
         // selector and by measured packet schedules built around it. This pass
         // owns only deeper macro residue that those selectors cannot collapse.
         if pipeline.operations < self.packed_shift_mask_min_operations
+            || pipeline.possible_sign_fill != 0
             || constant_value(pipeline.source).is_some()
         {
             return Ok(false);
@@ -71,6 +73,7 @@ fn decompose(expression: &Expression) -> Option<PackedShiftMask<'_>> {
                 _ => unreachable!("the unsigned narrow cast was matched"),
             };
             pipeline.mask &= (1u32 << width) - 1;
+            pipeline.possible_sign_fill &= (1u32 << width) - 1;
             pipeline.operations += 1;
             Some(pipeline)
         }
@@ -86,6 +89,7 @@ fn decompose(expression: &Expression) -> Option<PackedShiftMask<'_>> {
             };
             let mut pipeline = decompose(inner)?;
             pipeline.mask &= mask;
+            pipeline.possible_sign_fill &= mask;
             pipeline.operations += 1;
             Some(pipeline)
         }
@@ -102,12 +106,29 @@ fn decompose(expression: &Expression) -> Option<PackedShiftMask<'_>> {
                 return None;
             }
             let mut pipeline = decompose(left)?;
-            let total_shift = u16::from(pipeline.shift) + u16::from(amount);
-            if total_shift >= 32 {
+            pipeline.shift = pipeline.shift.wrapping_add(amount) % 32;
+            pipeline.mask <<= amount;
+            pipeline.possible_sign_fill <<= amount;
+            pipeline.operations += 1;
+            Some(pipeline)
+        }
+        Expression::Binary {
+            operator: BinaryOperator::ShiftRight,
+            left,
+            right,
+        } => {
+            let amount = u8::try_from(constant_value(right)?).ok()?;
+            if amount == 0 {
+                return decompose(left);
+            }
+            if amount >= 32 {
                 return None;
             }
-            pipeline.shift = total_shift as u8;
-            pipeline.mask <<= amount;
+            let mut pipeline = decompose(left)?;
+            pipeline.shift = pipeline.shift.wrapping_add(32 - amount) % 32;
+            pipeline.mask >>= amount;
+            pipeline.possible_sign_fill =
+                (pipeline.possible_sign_fill >> amount) | (u32::MAX << (32 - amount));
             pipeline.operations += 1;
             Some(pipeline)
         }
@@ -115,6 +136,7 @@ fn decompose(expression: &Expression) -> Option<PackedShiftMask<'_>> {
             source,
             shift: 0,
             mask: u32::MAX,
+            possible_sign_fill: 0,
             operations: 0,
         }),
     }
@@ -123,6 +145,7 @@ fn decompose(expression: &Expression) -> Option<PackedShiftMask<'_>> {
 pub(crate) fn is_shallow_packed_shift_mask_expression(expression: &Expression) -> bool {
     decompose(expression).is_some_and(|pipeline| {
         pipeline.operations == 2
+            && pipeline.possible_sign_fill == 0
             && constant_value(pipeline.source).is_none()
             && mask_to_run(pipeline.mask).is_some()
     })
@@ -145,6 +168,14 @@ mod tests {
             operator: BinaryOperator::BitAnd,
             left: Box::new(left),
             right: Box::new(Expression::IntegerLiteral(value)),
+        }
+    }
+
+    fn shift_right(left: Expression, amount: i64) -> Expression {
+        Expression::Binary {
+            operator: BinaryOperator::ShiftRight,
+            left: Box::new(left),
+            right: Box::new(Expression::IntegerLiteral(amount)),
         }
     }
 
@@ -179,5 +210,33 @@ mod tests {
 
         assert_eq!((pipeline.shift, pipeline.mask), (1, 0x0001_fffe));
         assert_eq!(pipeline.operations, 2);
+    }
+
+    #[test]
+    fn combines_a_masked_right_shift_with_a_following_left_shift() {
+        let expression = shift(
+            mask(shift_right(Expression::Variable("value".into()), 3), 0x1ff),
+            9,
+        );
+        let pipeline = decompose(&expression).expect("packed pipeline");
+
+        assert_eq!(
+            (
+                pipeline.shift,
+                pipeline.mask,
+                pipeline.possible_sign_fill,
+                pipeline.operations,
+            ),
+            (6, 0x0003_fe00, 0, 3)
+        );
+        assert_eq!(mask_to_run(pipeline.mask), Some((14, 22)));
+    }
+
+    #[test]
+    fn rejects_an_unmasked_possible_arithmetic_right_shift() {
+        let expression = shift(shift_right(Expression::Variable("value".into()), 3), 1);
+        let pipeline = decompose(&expression).expect("right-shift pipeline");
+
+        assert_ne!(pipeline.possible_sign_fill, 0);
     }
 }
