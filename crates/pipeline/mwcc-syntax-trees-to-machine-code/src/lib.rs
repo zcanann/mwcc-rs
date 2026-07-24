@@ -172,6 +172,9 @@ pub fn lower_function(
     if let Some(output) = cxx_abi::lower_optional_destructor(function, config.clone()) {
         return Ok(output);
     }
+    if let Some(output) = cxx_abi::lower_array_destructor(function, config.clone()) {
+        return Ok(output);
+    }
     if let Some(output) =
         cxx_abi::lower_composed_destructor(function, inline_summaries, config.clone())
     {

@@ -6,12 +6,14 @@
 //! into the ordinary C control-flow and register-allocation owners.
 
 mod adjustor_thunks;
+mod array_destructor;
 mod optional_destructor;
 mod trivial_destructor;
 mod virtual_constructor;
 mod virtual_destructor;
 
 pub(crate) use adjustor_thunks::lower_vtable_adjustor_thunks;
+pub(crate) use array_destructor::lower as lower_array_destructor;
 pub(crate) use optional_destructor::lower as lower_optional_destructor;
 pub(crate) use trivial_destructor::lower as lower_trivial_destructor;
 pub(crate) use virtual_constructor::lower as lower_virtual_constructor;
