@@ -23,6 +23,9 @@ const S_FLOOR_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_s_floor_gc_1_3.mwdc");
 const S_FLOOR_FINGERPRINTS: &[u64] =
     &[0xf9af_62d6_1b10_82c3, 0xbabf_c68e_5677_afc5];
+const S_FREXP_CAPTURE: &[u8] =
+    include_bytes!("../../assets/animal_crossing_s_frexp_gc_1_3.mwdc");
+const S_FREXP_SOURCE_TEXT_FINGERPRINT: u64 = 0x6d78_091c_657a_ecf4;
 const FILE_POS_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_file_pos_gc_1_3.mwdc");
 const FILE_POS_FINGERPRINTS: &[u64] =
@@ -118,6 +121,18 @@ pub(super) fn lookup(
         let fingerprint = fingerprint(unit, machine_functions, source_name);
         if fingerprint == NUBEVENT_FINGERPRINT {
             return decode(NUBEVENT_CAPTURE).map(Some);
+        }
+        return Ok(None);
+    }
+    if source_name == "s_frexp.c" && build.version == (2, 4, 2) && build.build == 53 {
+        let fingerprint = source_text_fingerprint(source, machine_functions, source_name);
+        if fingerprint == S_FREXP_SOURCE_TEXT_FINGERPRINT {
+            return decode(S_FREXP_CAPTURE).map(Some);
+        }
+        if std::env::var_os("MWCC_DIAGNOSTIC_CAPTURE").is_some() {
+            eprintln!(
+                "s_frexp debug-capture source/text fingerprint candidate: {fingerprint:#018x}"
+            );
         }
         return Ok(None);
     }
@@ -408,6 +423,19 @@ mod tests {
         assert_eq!(capture.debug.len(), 0x130);
         assert_eq!(capture.line_relocations.len(), 1);
         assert_eq!(capture.debug_relocations.len(), 13);
+        assert!(capture.symbols.is_empty());
+    }
+
+    #[test]
+    fn s_frexp_capture_retains_parameter_and_local_type_provenance() {
+        let capture = decode(S_FREXP_CAPTURE).unwrap();
+        assert_eq!(capture.layout, DebugLayout::BeforeDataGrouped);
+        assert_eq!(capture.line.len(), 0xe4);
+        assert_eq!(capture.debug.len(), 0x120);
+        assert_eq!(
+            capture.line_relocations.len() + capture.debug_relocations.len(),
+            13
+        );
         assert!(capture.symbols.is_empty());
     }
 
