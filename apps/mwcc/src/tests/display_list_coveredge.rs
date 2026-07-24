@@ -84,3 +84,76 @@ fn schedules_coveredge_display_list_packets_byte_exactly() {
         .windows(expected.len())
         .any(|bytes| bytes == expected));
 }
+
+#[test]
+fn recognizes_a_preexpanded_other_mode_packet() {
+    let source = br#"
+        typedef unsigned short u16;
+        typedef struct Gfx {
+            unsigned word0;
+            unsigned word1;
+        } Gfx;
+
+        void coveredge_expanded(Gfx** gfxp, u16 ulx, u16 uly, u16 lrx, u16 lry) {
+            Gfx* gfx = *gfxp;
+            Gfx* first;
+            Gfx* second;
+            Gfx* third;
+            Gfx* mode;
+            Gfx* rectangle;
+            Gfx* final;
+
+            first = (Gfx*)gfx++;
+            first->word0 = 0xe7000000u;
+            first->word1 = 0;
+            second = (Gfx*)gfx++;
+            second->word0 = 0xf9000000u;
+            second->word1 = 0xffffff08u;
+            third = (Gfx*)gfx++;
+            third->word0 = 0xee000000u;
+            third->word1 = 0xffffffffu;
+
+            mode = (Gfx*)gfx++;
+            mode->word0 = 0xef000cf0u;
+            mode->word1 = 0x0fa54044u;
+
+            rectangle = (Gfx*)gfx++;
+            rectangle->word0 =
+                (((unsigned)246 & 255) << 24)
+                | (((unsigned)lrx & 1023) << 14)
+                | (((unsigned)lry & 1023) << 2);
+            rectangle->word1 =
+                (((unsigned)ulx & 1023) << 14)
+                | (((unsigned)uly & 1023) << 2);
+
+            final = (Gfx*)gfx++;
+            final->word0 = 0xe7000000u;
+            final->word1 = 0;
+            *gfxp = gfx;
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.emit_mwcats = false;
+    flags.inline_enabled = false;
+    let object = compile(
+        source,
+        "display-list-coveredge-expanded.c",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_2_6,
+            flags,
+        },
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("the preexpanded other-mode packet should select the coveredge schedule");
+
+    let expected_prefix = [
+        0x94, 0x21, 0xff, 0xf0, 0x54, 0xa0, 0x15, 0x3a, 0x3d, 0x20, 0xef, 0x00, 0x3d, 0x00, 0x0f,
+        0xa5,
+    ];
+    assert!(object
+        .windows(expected_prefix.len())
+        .any(|bytes| bytes == expected_prefix));
+}

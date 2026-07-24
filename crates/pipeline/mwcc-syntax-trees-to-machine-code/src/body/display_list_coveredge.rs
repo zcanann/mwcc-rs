@@ -222,38 +222,66 @@ fn recognize(function: &Function) -> Option<CoveredgeShape<'_>> {
     {
         return None;
     }
-    let [gfx, alias0, alias1, alias2, alias3, alias4] = function.locals.as_slice() else {
+    let Some((gfx, aliases)) = function.locals.split_first() else {
         return None;
     };
+    if !matches!(aliases.len(), 5 | 6) {
+        return None;
+    }
     let Type::StructPointer { element_size: 8 } = gfx.declared_type else {
         return None;
     };
     if !matches!(gfx.initializer.as_ref(),
         Some(Expression::Dereference { pointer })
             if matches!(pointer.as_ref(), Expression::Variable(name) if name == &gfxp.name))
-        || [alias0, alias1, alias2, alias3, alias4]
-            .iter()
-            .any(|alias| {
-                alias.declared_type != gfx.declared_type
-                    || alias.initializer.is_some()
-                    || alias.is_static
-                    || alias.array_length.is_some()
-            })
+        || aliases.iter().any(|alias| {
+            alias.declared_type != gfx.declared_type
+                || alias.initializer.is_some()
+                || alias.is_static
+                || alias.array_length.is_some()
+        })
     {
         return None;
     }
-    let [assign0, store00, store01, assign1, store10, store11, assign2, store20, store21, other_mode, assign3, store30, store31, assign4, store40, store41, finish] =
-        function.statements.as_slice()
-    else {
+
+    let Some((finish, packet_body)) = function.statements.split_last() else {
         return None;
     };
-    let packet_statements = [
-        (assign0, store00, store01, alias0),
-        (assign1, store10, store11, alias1),
-        (assign2, store20, store21, alias2),
-        (assign3, store30, store31, alias3),
-        (assign4, store40, store41, alias4),
-    ];
+    let expanded_other_mode = aliases.len() == 6;
+    let (other_mode, packet_statements): (Option<&Statement>, Vec<(&Statement, &Statement, &Statement, &LocalDeclaration)>) =
+        if expanded_other_mode {
+            if packet_body.len() != aliases.len() * 3 {
+                return None;
+            }
+            (
+                None,
+                packet_body
+                    .chunks_exact(3)
+                    .zip(aliases)
+                    .map(|(packet, alias)| (&packet[0], &packet[1], &packet[2], alias))
+                    .collect(),
+            )
+        } else {
+            if packet_body.len() != aliases.len() * 3 + 1 {
+                return None;
+            }
+            let Some(other_mode) = packet_body.get(9) else {
+                return None;
+            };
+            let packet_stream = packet_body
+                .iter()
+                .enumerate()
+                .filter_map(|(index, statement)| (index != 9).then_some(statement))
+                .collect::<Vec<_>>();
+            (
+                Some(other_mode),
+                packet_stream
+                    .chunks_exact(3)
+                    .zip(aliases)
+                    .map(|(packet, alias)| (packet[0], packet[1], packet[2], alias))
+                    .collect(),
+            )
+        };
     let mut packets = Vec::with_capacity(packet_statements.len());
     for (assignment, high, low, alias) in packet_statements {
         if !matches!(assignment,
@@ -273,30 +301,46 @@ fn recognize(function: &Function) -> Option<CoveredgeShape<'_>> {
         || constant_u32(packets[1].1)? != 0xffff_ff08
         || constant_u32(packets[2].0)? != 0xee00_0000
         || constant_u32(packets[2].1)? != 0xffff_ffff
-        || constant_u32(packets[4].0)? != 0xe700_0000
-        || constant_u32(packets[4].1)? != 0
     {
+        return None;
+    }
+    let (rectangle, final_packet) = if expanded_other_mode {
+        if constant_u32(packets[3].0)? != 0xef00_0cf0
+            || constant_u32(packets[3].1)? != 0x0fa5_4044
+        {
+            return None;
+        }
+        (packets[4], packets[5])
+    } else {
+        (packets[3], packets[4])
+    };
+    if constant_u32(final_packet.0)? != 0xe700_0000 || constant_u32(final_packet.1)? != 0 {
         return None;
     }
     let parameters = [gfxp, ulx, uly, lrx, lry];
-    if parameter_reads(packets[3].0, &parameters) != [0, 0, 0, 1, 1]
-        || parameter_reads(packets[3].1, &parameters) != [0, 1, 1, 0, 0]
-        || integer_literals(packets[3].0) != [246, 255, 24, 1023, 14, 1023, 2]
-        || integer_literals(packets[3].1) != [1023, 14, 1023, 2]
+    if parameter_reads(rectangle.0, &parameters) != [0, 0, 0, 1, 1]
+        || parameter_reads(rectangle.1, &parameters) != [0, 1, 1, 0, 0]
+        || integer_literals(rectangle.0) != [246, 255, 24, 1023, 14, 1023, 2]
+        || integer_literals(rectangle.1) != [1023, 14, 1023, 2]
     {
         return None;
     }
-    let Statement::Expression(Expression::Call { name, arguments }) = other_mode else {
-        return None;
-    };
-    let [cursor, high, low] = arguments.as_slice() else {
-        return None;
-    };
-    if name != "gDPSetOtherMode"
-        || !is_poststep(cursor, &gfx.name)
-        || constant_u32(high)? != 3312
-        || constant_u32(low)? != 262_488_132
-        || !matches!(finish,
+    if let Some(other_mode) = other_mode {
+        let Statement::Expression(Expression::Call { name, arguments }) = other_mode else {
+            return None;
+        };
+        let [cursor, high, low] = arguments.as_slice() else {
+            return None;
+        };
+        if name != "gDPSetOtherMode"
+            || !is_poststep(cursor, &gfx.name)
+            || constant_u32(high)? != 3312
+            || constant_u32(low)? != 262_488_132
+        {
+            return None;
+        }
+    }
+    if !matches!(finish,
             Statement::Store {
                 target: Expression::Dereference { pointer },
                 value: Expression::Variable(value),
