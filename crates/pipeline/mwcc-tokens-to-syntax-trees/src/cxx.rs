@@ -75,6 +75,22 @@ pub(crate) fn arithmetic_operator_name(operator: BinaryOperator) -> Option<&'sta
     }
 }
 
+fn is_cxx_arithmetic_type(value_type: Type) -> bool {
+    matches!(
+        value_type,
+        Type::Int
+            | Type::UnsignedInt
+            | Type::Char
+            | Type::UnsignedChar
+            | Type::Short
+            | Type::UnsignedShort
+            | Type::Float
+            | Type::Double
+            | Type::LongLong
+            | Type::UnsignedLongLong
+    )
+}
+
 /// The C++-only information that a plain C struct layout cannot retain.
 /// Declaration order controls constructor initialization order, while base
 /// names distinguish a base initializer from an identically shaped member.
@@ -1111,6 +1127,30 @@ impl Parser {
             .collect();
         match exact.as_slice() {
             [method] => Ok(Some(method.mangled.clone())),
+            [] => {
+                // After exact matching, admit only the small conversion class
+                // whose ranking is unambiguous in the modeled type system.
+                // This distinguishes `C(unsigned)` from `C(const Aggregate&)`
+                // for an integer literal without pretending to rank two
+                // competing arithmetic conversions.
+                let viable = candidates
+                    .iter()
+                    .filter(|method| {
+                        self.cxx_arguments_have_unique_scalar_conversions(
+                            &method.parameters,
+                            &method.cxx_parameters,
+                            method.variadic,
+                            arguments,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                match viable.as_slice() {
+                    [method] => Ok(Some(method.mangled.clone())),
+                    _ => Err(Diagnostic::error(format!(
+                        "C++ function call '{key}' is ambiguous (roadmap)"
+                    ))),
+                }
+            }
             _ => Err(Diagnostic::error(format!(
                 "C++ function call '{key}' is ambiguous (roadmap)"
             ))),
@@ -1142,6 +1182,37 @@ impl Parser {
             }
             self.cxx_expression_type(argument)
                 .is_none_or(|actual| parameters.get(index) == Some(&actual))
+        })
+    }
+
+    fn cxx_arguments_have_unique_scalar_conversions(
+        &self,
+        parameters: &[Type],
+        cxx_parameters: &[CxxParameterType],
+        variadic: bool,
+        arguments: &[Expression],
+    ) -> bool {
+        arguments.iter().enumerate().all(|(index, argument)| {
+            let Some(parameter) = cxx_parameters.get(index) else {
+                return variadic;
+            };
+            if let Some(expected) = parameter.qualified_name.as_deref() {
+                return self.cxx_expression_struct_tag(argument).is_some_and(|actual| {
+                    expected == actual
+                        || expected.rsplit("::").next() == actual.rsplit("::").next()
+                });
+            }
+            if self.cxx_expression_struct_tag(argument).is_some() {
+                return false;
+            }
+            let (Some(expected), Some(actual)) = (
+                parameters.get(index).copied(),
+                self.cxx_expression_type(argument),
+            ) else {
+                return false;
+            };
+            expected == actual
+                || (is_cxx_arithmetic_type(expected) && is_cxx_arithmetic_type(actual))
         })
     }
 
@@ -1930,7 +2001,17 @@ impl Parser {
         let saved_volatile = self.last_type_was_volatile;
 
         self.position = declaration_index;
-        match self.parse_class_definition() {
+        let trailing_typedef_alias = declaration_index > 0
+            && matches!(
+                self.tokens.get(declaration_index - 1),
+                Some(Token::Identifier(word)) if word == "typedef"
+            );
+        let parsed = if trailing_typedef_alias {
+            self.parse_typedef_class_definition()
+        } else {
+            self.parse_class_definition()
+        };
+        match parsed {
             Ok((source_name, layout, class)) => {
                 self.struct_typedefs
                     .entry(source_name)
@@ -3127,7 +3208,20 @@ impl Parser {
     pub(crate) fn parse_class_definition(
         &mut self,
     ) -> Compilation<(String, StructLayout, ClassLayout)> {
-        self.parse_class_definition_in_scope(None)
+        self.parse_class_definition_in_scope(None, false)
+    }
+
+    /// Parse the C-compatible spelling of a C++ class typedef:
+    /// `typedef struct Derived : public Base { ... } Derived;`.
+    ///
+    /// The trailing identifier is an alias for the class just defined, not an
+    /// object declarator. Keeping that distinction in the C++ parser lets the
+    /// ordinary aggregate typedef machinery remain focused on data-only C
+    /// structs.
+    pub(crate) fn parse_typedef_class_definition(
+        &mut self,
+    ) -> Compilation<(String, StructLayout, ClassLayout)> {
+        self.parse_class_definition_in_scope(None, true)
     }
 
     /// Parse a class layout while retaining the lexical owner of directly
@@ -3139,6 +3233,7 @@ impl Parser {
     fn parse_class_definition_in_scope(
         &mut self,
         enclosing_class: Option<&str>,
+        trailing_typedef_alias: bool,
     ) -> Compilation<(String, StructLayout, ClassLayout)> {
         let class_keyword = self.eat_word("class");
         if !class_keyword && !self.eat_keyword(Token::KeywordStruct) {
@@ -3153,7 +3248,8 @@ impl Parser {
             .current_cxx_layout_scope
             .replace(qualified_name.clone());
         let previous_layout_constants = self.cxx_layout_constants.clone();
-        let result = self.parse_class_definition_body(name, qualified_name);
+        let result =
+            self.parse_class_definition_body(name, qualified_name, trailing_typedef_alias);
         self.cxx_layout_constants = previous_layout_constants;
         self.current_cxx_layout_scope = previous_layout_scope;
         result
@@ -3259,6 +3355,7 @@ impl Parser {
         &mut self,
         name: String,
         qualified_name: String,
+        trailing_typedef_alias: bool,
     ) -> Compilation<(String, StructLayout, ClassLayout)> {
         let mut class = ClassLayout::default();
         let mut layout = StructLayout::default();
@@ -3282,6 +3379,7 @@ impl Parser {
                 let source_base_name = self.parse_cxx_qualified_identifier()?;
                 let base_name = self
                     .resolve_scoped_cxx_class_name(&source_base_name)
+                    .or_else(|| self.struct_typedefs.get(&source_base_name).cloned())
                     .unwrap_or(source_base_name);
                 let base_class = self.cxx_classes.get(&base_name).cloned();
                 let (base_is_polymorphic, base_vptr_offset, base_virtual_slots) = base_class
@@ -3415,7 +3513,7 @@ impl Parser {
                 && matches!(self.peek_at(2), Token::BraceOpen | Token::Colon);
             if nested_definition {
                 let (nested_name, nested_layout, nested_class) =
-                    self.parse_class_definition_in_scope(Some(&qualified_name))?;
+                    self.parse_class_definition_in_scope(Some(&qualified_name), false)?;
                 let nested_qualified = format!("{qualified_name}::{nested_name}");
                 self.struct_typedefs
                     .insert(nested_name, nested_qualified.clone());
@@ -3897,6 +3995,10 @@ impl Parser {
             max_align = max_align.max(align);
         }
         self.expect(Token::BraceClose)?;
+        if trailing_typedef_alias {
+            let alias = self.parse_identifier()?;
+            self.struct_typedefs.insert(alias, name.clone());
+        }
         self.expect(Token::Semicolon)?;
         if !class.virtual_bases.is_empty() && class.vptr_offset.is_none() {
             // With no polymorphic non-virtual primary base, CodeWarrior gives
@@ -4153,6 +4255,42 @@ impl Parser {
                     ))
                 }),
         }
+    }
+
+    /// Parse `object(args...)` after a local class-object declarator and retain
+    /// the constructor invocation with its implicit placement address.
+    ///
+    /// Block declarations emit the returned call at the declaration position.
+    /// A function-local static stores it as its dynamic initializer so later
+    /// lowering can add the once guard and destructor registration without
+    /// mistaking the source argument for a constant data initializer.
+    pub(crate) fn parse_direct_local_constructor_call(
+        &mut self,
+        class_name: &str,
+        object_name: &str,
+    ) -> Compilation<Expression> {
+        self.expect(Token::ParenOpen)?;
+        let mut arguments = Vec::new();
+        if *self.peek() != Token::ParenClose {
+            loop {
+                arguments.push(self.expression()?);
+                if !self.eat_keyword(Token::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect(Token::ParenClose)?;
+        let constructor = self.resolve_placement_constructor(class_name, &arguments)?;
+        let arguments =
+            self.lower_placement_constructor_arguments(class_name, &constructor, arguments);
+        let mut call_arguments = vec![Expression::AddressOf {
+            operand: Box::new(Expression::Variable(object_name.to_owned())),
+        }];
+        call_arguments.extend(arguments);
+        Ok(Expression::Call {
+            name: constructor,
+            arguments: call_arguments,
+        })
     }
 
     /// Materialize the compiler-generated default constructor needed by a

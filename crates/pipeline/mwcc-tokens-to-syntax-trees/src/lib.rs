@@ -854,6 +854,43 @@ mod tests {
     }
 
     #[test]
+    fn lays_out_a_typedef_struct_derived_from_an_aggregate_alias() {
+        let source = r#"
+            typedef unsigned char u8;
+            typedef struct _GXColor { u8 r, g, b, a; } GXColor;
+            namespace nw4hbm {
+            namespace ut {
+                typedef struct Color : public GXColor {
+                    Color(unsigned color) {}
+                } Color;
+                void consume(Color color);
+            }
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let color = unit
+            .aggregate_definitions
+            .iter()
+            .find(|(name, _)| name.as_str() == "Color" || name.ends_with("::Color"))
+            .map(|(_, definition)| definition)
+            .expect("the derived typedef layout should be retained");
+        assert_eq!(color.byte_size, 4);
+        assert!(unit.prototypes.iter().any(
+            |(_, _, parameters)| matches!(parameters.as_slice(), [Type::Struct {
+                size: 4,
+                align: 1
+            }])
+        ));
+    }
+
+    #[test]
     fn enum_min_uses_value_range_for_typedef_and_struct_members() {
         let source = b"\
             typedef enum Kind { Zero = 0, Five = 5 } Kind;\n\
@@ -4533,6 +4570,53 @@ blr\n\
                     [mwcc_syntax_trees::Statement::Expression(Expression::Call { name, .. })]
                     if name == "__ct__5PixelFi")
         ));
+    }
+
+    #[test]
+    fn retains_a_direct_constructor_for_a_function_local_static() {
+        let source = r#"
+            namespace fx {
+                struct Source {
+                    unsigned value;
+                };
+                struct Pixel {
+                    Pixel(unsigned value);
+                    Pixel(const Source& value);
+                    ~Pixel();
+                    unsigned value;
+                };
+            }
+            void use() {
+                static fx::Pixel pixel(3);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let [local] = unit.functions[0].locals.as_slice() else {
+            panic!("expected one local");
+        };
+        assert!(local.is_static);
+        assert!(matches!(
+            local.initializer.as_ref(),
+            Some(Expression::Call { name, arguments })
+                if name == "__ct__Q22fx5PixelFUi"
+                    && matches!(
+                        arguments.as_slice(),
+                        [
+                            Expression::AddressOf { operand },
+                            Expression::IntegerLiteral(3)
+                        ] if matches!(
+                            operand.as_ref(),
+                            Expression::Variable(variable) if variable == "pixel"
+                        )
+                    )
+        ), "{:?}", local.initializer);
     }
 
     #[test]

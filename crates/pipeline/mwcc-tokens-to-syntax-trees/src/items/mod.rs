@@ -1953,11 +1953,25 @@ impl Parser {
             if *self.peek() == Token::EndOfFile {
                 return Ok(());
             }
-            if self.cplusplus
-                && matches!(self.peek(), Token::Identifier(word) if word == "class")
-                && matches!(self.peek_at(1), Token::Identifier(_))
-            {
-                let (name, layout, class) = self.parse_class_definition()?;
+            let cxx_typedef_class = self.cplusplus
+                && matches!(self.peek(), Token::Identifier(word) if word == "typedef")
+                && (matches!(self.peek_at(1), Token::KeywordStruct)
+                    || matches!(self.peek_at(1), Token::Identifier(word) if word == "class"))
+                && matches!(self.peek_at(2), Token::Identifier(_))
+                && matches!(self.peek_at(3), Token::Colon);
+            let cxx_class = self.cplusplus
+                && ((matches!(self.peek(), Token::Identifier(word) if word == "class")
+                    && matches!(self.peek_at(1), Token::Identifier(_)))
+                    || (matches!(self.peek(), Token::KeywordStruct)
+                        && matches!(self.peek_at(1), Token::Identifier(_))
+                        && matches!(self.peek_at(2), Token::Colon)));
+            if cxx_typedef_class || cxx_class {
+                let (name, layout, class) = if cxx_typedef_class {
+                    self.advance(); // `typedef`
+                    self.parse_typedef_class_definition()?
+                } else {
+                    self.parse_class_definition()?
+                };
                 let class_type = Type::StructPointer {
                     element_size: layout.size,
                 };
@@ -4635,6 +4649,22 @@ impl Parser {
                 if let Some(tag) = &struct_tag {
                     self.variable_structs.insert(name.clone(), tag.clone());
                 }
+                // A class-typed function-local static is dynamically
+                // initialized on first passage, even when its constructor
+                // argument is a constant. Retain the constructor call as the
+                // local's initializer; machine lowering owns the guard and
+                // destructor registration transaction.
+                let direct_static_constructor = if is_static
+                    && struct_tag.is_some()
+                    && *self.peek() == Token::ParenOpen
+                {
+                    Some(self.parse_direct_local_constructor_call(
+                        struct_tag.as_deref().expect("checked above"),
+                        &name,
+                    )?)
+                } else {
+                    None
+                };
                 // A local array `type buf[N];` — a frame slot of `N` elements. A
                 // STATIC local array (`static const f32 c[] = {...};`) captures its
                 // byte image instead (it is static storage, not a frame slot).
@@ -4805,7 +4835,9 @@ impl Parser {
                 } else {
                     None
                 };
-                let initializer = if array_length.is_none() && self.eat_keyword(Token::Equals) {
+                let initializer = if direct_static_constructor.is_some() {
+                    direct_static_constructor
+                } else if array_length.is_none() && self.eat_keyword(Token::Equals) {
                     if *self.peek() == Token::BraceOpen {
                         // A static struct local is a data object, not a frame
                         // initialization. Serialize its complete layout and retain
