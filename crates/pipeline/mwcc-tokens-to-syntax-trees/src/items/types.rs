@@ -269,9 +269,19 @@ impl Parser {
                     self.last_enum_tag = Some(source_qualified);
                     return Ok(storage);
                 }
-                let qualified = self
-                    .resolve_scoped_cxx_class_name(&source_qualified)
+                let nested_template_alias =
+                    self.resolve_nested_template_alias_layout(&source_qualified);
+                let qualified = nested_template_alias
+                    .as_ref()
+                    .map(|(_, concrete)| concrete.clone())
+                    .or_else(|| self.resolve_scoped_cxx_class_name(&source_qualified))
+                    .or_else(|| self.struct_typedefs.get(&source_qualified).cloned())
                     .unwrap_or(source_qualified);
+                if let Some((generic, _)) = nested_template_alias {
+                    if let Some(layout) = self.structs.get(&generic).cloned() {
+                        self.structs.entry(qualified.clone()).or_insert(layout);
+                    }
+                }
                 let layout_key = if self.structs.contains_key(&qualified) {
                     qualified.clone()
                 } else {
