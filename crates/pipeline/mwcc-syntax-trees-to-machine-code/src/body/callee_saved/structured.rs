@@ -1608,6 +1608,7 @@ impl Generator {
                 *branch_target = target;
             }
         }
+        self.fold_structured_conditional_gotos();
         if aggregate_call_copy_plan.is_some() {
             thread_forward_unconditional_branch_chains(&mut self.output.instructions);
         }

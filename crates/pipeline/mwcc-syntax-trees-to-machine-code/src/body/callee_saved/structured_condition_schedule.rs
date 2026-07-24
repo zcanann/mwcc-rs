@@ -4,6 +4,48 @@
 use super::*;
 
 impl Generator {
+    /// Fold `if (condition) goto target;` when the semantic emitter represented
+    /// it as a false-edge skip over an unconditional branch. Inverting the
+    /// conditional leaves one direct edge, which is MWCC's rotated-loop
+    /// backedge form.
+    pub(super) fn fold_structured_conditional_gotos(&mut self) {
+        let mut conditional = 0;
+        while conditional + 1 < self.output.instructions.len() {
+            let Some((options, condition_bit, target)) =
+                conditional_goto_diamond(&self.output.instructions, conditional)
+            else {
+                conditional += 1;
+                continue;
+            };
+            let goto = conditional + 1;
+            let has_incoming = self
+                .output
+                .instructions
+                .iter()
+                .enumerate()
+                .any(|(index, instruction)| {
+                    index != conditional
+                        && matches!(
+                            instruction,
+                            Instruction::BranchConditionalForward { target, .. }
+                                | Instruction::Branch { target }
+                                if *target == goto
+                        )
+                });
+            if has_incoming {
+                conditional += 2;
+                continue;
+            }
+            self.output.instructions[conditional] = Instruction::BranchConditionalForward {
+                options: options ^ 8,
+                condition_bit,
+                target,
+            };
+            self.remove_structured_condition_instruction(goto);
+            conditional += 1;
+        }
+    }
+
     /// Reuse entry-register values already established by a leading member
     /// comparison as the arguments of its guarded call.
     ///
@@ -192,6 +234,29 @@ impl Generator {
     }
 }
 
+fn conditional_goto_diamond(
+    instructions: &[Instruction],
+    conditional: usize,
+) -> Option<(u8, u8, usize)> {
+    let [
+        Instruction::BranchConditionalForward {
+            options,
+            condition_bit,
+            target: skip,
+        },
+        Instruction::Branch { target },
+        ..
+    ] = instructions.get(conditional..)?
+    else {
+        return None;
+    };
+    (*skip == conditional + 2 && *target != conditional + 1).then_some((
+        *options,
+        *condition_bit,
+        *target,
+    ))
+}
+
 /// Redirect an unconditional branch through any forward-only unconditional
 /// branch at its destination. Nested diamonds initially target their own join;
 /// after the parent diamond is complete that join may itself be the parent's
@@ -368,6 +433,24 @@ mod tests {
 
         assert_eq!(instructions[0], Instruction::Branch { target: 4 });
         assert_eq!(instructions[2], Instruction::Branch { target: 4 });
+    }
+
+    #[test]
+    fn recognizes_a_false_edge_skip_over_a_loop_backedge() {
+        let instructions = [
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 2,
+            },
+            Instruction::Branch { target: 0 },
+            Instruction::BranchToLinkRegister,
+        ];
+
+        assert_eq!(
+            conditional_goto_diamond(&instructions, 0),
+            Some((12, 2, 0))
+        );
     }
 
     #[test]

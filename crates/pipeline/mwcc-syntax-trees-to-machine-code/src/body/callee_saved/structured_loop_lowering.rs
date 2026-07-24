@@ -195,7 +195,10 @@ impl<'a> LoopLowering<'a> {
         if let Some(initializer) = initializer {
             push_effect_expressions(initializer, output);
         }
-        if kind != LoopKind::DoWhile {
+        // An always-true pre-test loop enters its body directly. Retaining the
+        // generic jump-to-condition creates an otherwise dead entry trampoline
+        // before polling loops such as `while (1) { if (done) break; }`.
+        if kind != LoopKind::DoWhile && condition.and_then(constant_value).is_none_or(|value| value == 0) {
             output.push(Statement::Goto(condition_label.clone()));
         }
         output.push(Statement::Label(body_label.clone()));
