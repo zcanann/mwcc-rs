@@ -60,7 +60,8 @@ impl Generator {
                     "floating assignment has a non-floating member target",
                 ));
             }
-            let address = self.member_base_register(base)?;
+            let address =
+                self.with_reserved_inputs(value, |generator| generator.member_base_register(base))?;
             let restore = address != GENERAL_SCRATCH && self.reserved.insert(address);
             self.evaluate_float(value, destination)?;
             if restore {
@@ -116,7 +117,8 @@ impl Generator {
                     "floating member assignment must use the floating value path",
                 ));
             }
-            let address = self.member_base_register(base)?;
+            let address =
+                self.with_reserved_inputs(value, |generator| generator.member_base_register(base))?;
             if address == destination {
                 return Err(Diagnostic::error(
                     "assignment-valued member needs a distinct address register (roadmap)",
@@ -848,7 +850,8 @@ impl Generator {
                 )?);
                 return Ok(());
             }
-            let address = self.member_base_register(base)?;
+            let address =
+                self.with_reserved_inputs(value, |generator| generator.member_base_register(base))?;
             // The base register is live for the store, so reserve it while the value is
             // placed — otherwise a value that needs a temporary (a magic-number divide)
             // could pick it and clobber the store address.
