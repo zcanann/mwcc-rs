@@ -1151,6 +1151,12 @@ impl Generator {
         // local-pointer aliases are not later mistaken for entry parameters.
         self.known_locals
             .extend(function.locals.iter().map(|local| local.name.clone()));
+        // Scaled matrix packet runs own their conversion frame and assignment-switch
+        // dispatch. Claim them before generic frame planning tries to materialize
+        // the source array or lower the switch statement independently.
+        if self.try_fixed_port_matrix_packets(function)? {
+            return Ok(());
+        }
         // InlineBodySet is the authoritative distinction between skipped
         // definitions that still require semantic AST composition and pure
         // inline-asm helpers that lower directly at their call site.
