@@ -1429,15 +1429,30 @@ impl Generator {
                         )
                     });
                     self.restore_condition_global_cache(previous_cache);
-                    self.restore_condition_float_cache(previous_float_cache);
-                    let branches = condition_result?;
+                    let branches = match condition_result {
+                        Ok(branches) => branches,
+                        Err(diagnostic) => {
+                            self.restore_condition_float_cache(previous_float_cache);
+                            return Err(diagnostic);
+                        }
+                    };
                     self.commit_structured_float_handoff();
                     let body_start = self.output.instructions.len();
                     for branch in branches.enter_body {
                         self.patch_forward(branch, body_start);
                     }
-                    self.emit_structured_statements(
-                        then_body,
+                    // A nested conditional is the only first-body statement
+                    // allowed to consume true-edge FP values. Restore before
+                    // emitting any subsequent statement that could mutate the
+                    // referenced memory.
+                    let carried_prefix_len =
+                        then_body.first().is_some_and(|statement| {
+                            matches!(statement, Statement::If { .. })
+                        }) as usize;
+                    let (carried_prefix, remainder) =
+                        then_body.split_at(carried_prefix_len);
+                    let prefix_result = self.emit_structured_statements(
+                        carried_prefix,
                         function,
                         ephemeral_locals,
                         false,
@@ -1445,7 +1460,21 @@ impl Generator {
                         label_positions,
                         pending_gotos,
                         entry_alias,
-                    )
+                    );
+                    self.restore_condition_float_cache(previous_float_cache);
+                    let body_result = prefix_result.and_then(|()| {
+                        self.emit_structured_statements(
+                            remainder,
+                            function,
+                            ephemeral_locals,
+                            false,
+                            return_branches,
+                            label_positions,
+                            pending_gotos,
+                            entry_alias,
+                        )
+                    });
+                    body_result
                     .map_err(|mut diagnostic| {
                         diagnostic.message.push_str(&format!(
                             " (inside structured if statement {statement_index})"

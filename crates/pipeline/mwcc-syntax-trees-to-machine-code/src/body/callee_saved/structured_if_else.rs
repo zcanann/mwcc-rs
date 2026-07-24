@@ -26,7 +26,7 @@ impl Generator {
     ) -> Compilation<()> {
         debug_assert!(!else_body.is_empty());
         let previous_cache = self.begin_condition_global_cache(condition);
-        let previous_float_cache = self.begin_condition_float_cache(condition);
+        let previous_float_cache = self.begin_composed_condition_float_cache(condition);
         let branches = (|| {
             self.preload_condition_global_cache(condition)?;
             let terms = logical_and_terms(condition);
