@@ -562,7 +562,7 @@ impl Generator {
         if self.try_emit_same_base_member_forward_arguments(arguments, direct_call)? {
             return Ok(());
         }
-        if self.try_emit_member_constant_arguments(arguments, direct_call)? {
+        if self.try_emit_member_constant_arguments(arguments, name, direct_call)? {
             return Ok(());
         }
         // A CONSTANT argument that follows a GLOBAL-LOAD argument: mwcc materializes

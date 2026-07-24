@@ -350,6 +350,7 @@ impl Generator {
     pub(crate) fn try_emit_member_constant_arguments(
         &mut self,
         arguments: &[Expression],
+        name: &str,
         direct_call: bool,
     ) -> Compilation<bool> {
         let [
@@ -365,6 +366,12 @@ impl Generator {
         };
         if !direct_call
             || !self.behavior.schedule_latency_slots
+            || matches!(
+                self.call_parameter_types
+                    .get(name)
+                    .and_then(|types| types.get(1)),
+                Some(Type::Float | Type::Double)
+            )
             || !matches!(base.as_ref(), Expression::Variable(_))
             || matches!(
                 member_type,

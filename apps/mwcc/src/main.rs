@@ -3980,6 +3980,43 @@ mod tests {
     }
 
     #[test]
+    fn classifies_integer_zero_from_a_member_call_by_the_float_prototype() {
+        let source = br#"
+            struct Node { int value; };
+            struct Object { char pad[8352]; struct Node* node; };
+            extern void consume(struct Node*, float);
+            void compiled(struct Object* object) {
+                consume(object->node, 0);
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.emit_mwcats = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "member-float-zero-call.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the integer zero should use the prototype's floating argument class");
+        let member_load_float_zero_call = [
+            0x80, 0x63, 0x20, 0xa0, // lwz r3,8352(r3)
+            0xc0, 0x20, 0x00, 0x00, // lfs f1,@zero@sda21
+            0x48, 0x00, 0x00, 0x01, // bl consume
+        ];
+        assert!(object
+            .windows(member_load_float_zero_call.len())
+            .any(|bytes| bytes == member_load_float_zero_call));
+    }
+
+    #[test]
     fn command_line_pool_mode_is_last_wins() {
         let off = parse_invocation(&["-pool".into(), "off".into()]);
         assert!(!off.flags.pooling_enabled);
