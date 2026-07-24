@@ -103,3 +103,40 @@ fn file_ipa_erases_the_overwritten_base_vptr_and_reuses_zero() {
     ];
     assert!(object.windows(expected.len()).any(|bytes| bytes == expected));
 }
+
+#[test]
+fn long_string_member_store_completes_its_address_from_a_nonzero_base() {
+    let source = br#"
+        struct Holder {
+            const char* value;
+        };
+        void set(Holder* holder) {
+            holder->value = "a string longer than small data";
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.cpp_exceptions = false;
+    flags.emit_mwcats = false;
+    flags.rtti = false;
+    let object = compile(
+        source,
+        "string-member-store.cpp",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        },
+        Some(SourceLanguage::Cxx),
+        None,
+        false,
+    )
+    .expect("the absolute string address should compile");
+
+    let expected = [
+        0x3c, 0x80, 0x00, 0x00, // lis r4,string@ha
+        0x38, 0x04, 0x00, 0x00, // addi r0,r4,string@l
+        0x90, 0x03, 0x00, 0x00, // stw r0,0(r3)
+        0x4e, 0x80, 0x00, 0x20, // blr
+    ];
+    assert!(object.windows(expected.len()).any(|bytes| bytes == expected));
+}

@@ -2559,7 +2559,7 @@ impl Generator {
                             Type::Struct { size, .. } => u32::from(size),
                             other => u32::from(other.width()).div_ceil(8),
                         });
-                    return self.emit_global_array_base(name, total_size, destination);
+                    return self.emit_global_array_decay(name, total_size, destination);
                 }
                 // Function designators and ABI metadata symbols are addresses
                 // even when no data-global definition exists. Both use a full
@@ -2567,11 +2567,21 @@ impl Generator {
                 if self.call_return_types.contains_key(name.as_str())
                     || name.starts_with("__vt__")
                 {
-                    self.emit_address_high(destination, name);
+                    // r0 is a valid destination for the completed address but
+                    // not a base for `addi`: an r0 base denotes literal zero
+                    // and turns the low half into `li r0,symbol@l`. Form the
+                    // high half in an allocatable GPR, as MWCC does for vptr
+                    // stores whose value flows through the scratch register.
+                    let high = if destination == GENERAL_SCRATCH {
+                        self.fresh_virtual_general()
+                    } else {
+                        destination
+                    };
+                    self.emit_address_high(high, name);
                     self.record_relocation(RelocationKind::Addr16Lo, name);
                     self.output.instructions.push(Instruction::AddImmediate {
                         d: destination,
-                        a: destination,
+                        a: high,
                         immediate: 0,
                     });
                     return Ok(());

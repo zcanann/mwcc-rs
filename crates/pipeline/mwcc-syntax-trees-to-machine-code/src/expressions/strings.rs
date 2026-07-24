@@ -31,8 +31,7 @@ impl Generator {
         let placeholder = self.string_literal_placeholder(bytes);
         if self.behavior.string_literals_packed {
             self.output.packed_string_literals = true;
-            self.emit_address_high(destination, &placeholder);
-            self.emit_address_low(destination, &placeholder);
+            self.emit_string_address(&placeholder, destination);
             return Ok(());
         }
         match self.behavior.global_addressing {
@@ -42,13 +41,7 @@ impl Generator {
                 // (the writer routes by size) and is reached with ADDR16 `lis`/`addi` (`@ha`/`@l`),
                 // exactly like a large global array's base.
                 if bytes.len() + 1 > 8 {
-                    self.emit_address_high(destination, &placeholder);
-                    self.record_relocation(RelocationKind::Addr16Lo, &placeholder);
-                    self.output.instructions.push(Instruction::AddImmediate {
-                        d: destination,
-                        a: destination,
-                        immediate: 0,
-                    });
+                    self.emit_string_address(&placeholder, destination);
                 } else {
                     self.record_relocation(RelocationKind::EmbSda21, &placeholder);
                     self.output.instructions.push(Instruction::AddImmediate {
@@ -65,11 +58,23 @@ impl Generator {
                 Ok(())
             }
             GlobalAddressing::Absolute => {
-                self.emit_address_high(destination, &placeholder);
-                self.emit_address_low(destination, &placeholder);
+                self.emit_string_address(&placeholder, destination);
                 Ok(())
             }
         }
+    }
+
+    /// Form an absolute string address in `destination`. r0 can hold the final
+    /// value but cannot serve as the base of `addi`, so scratch-valued stores
+    /// keep the high half in a short-lived allocatable GPR.
+    fn emit_string_address(&mut self, placeholder: &str, destination: u8) {
+        let high = if destination == GENERAL_SCRATCH {
+            self.fresh_virtual_general()
+        } else {
+            destination
+        };
+        self.emit_address_high(high, placeholder);
+        self.emit_string_address_low(placeholder, high, destination);
     }
 
     /// Return the resolver placeholder for an interned string. Call-argument
