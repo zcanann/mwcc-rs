@@ -1021,7 +1021,16 @@ impl Generator {
         } else {
             function.statements.as_slice()
         };
-        let entry_parameter_alias = (!dense_inline_save)
+        // A declaration initializer call has already clobbered the incoming
+        // ABI registers before the first statement. Only extend an entry alias
+        // into that statement when all declaration initializers are call-free.
+        let initializers_preserve_entry_alias = function.locals.iter().all(|local| {
+            local
+                .initializer
+                .as_ref()
+                .is_none_or(|initializer| !crate::analysis::expression_has_call(initializer))
+        });
+        let entry_parameter_alias = (!dense_inline_save && initializers_preserve_entry_alias)
             .then(|| plan_first_call_alias(alias_statements, &saved_parameter_homes))
             .flatten();
         for (name, home, _) in &saved_parameter_homes {

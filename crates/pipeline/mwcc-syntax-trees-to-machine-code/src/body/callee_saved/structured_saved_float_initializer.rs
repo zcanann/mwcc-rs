@@ -22,6 +22,16 @@ fn root_variable(expression: &Expression) -> Option<&str> {
     }
 }
 
+fn inlined_member_alias_root(expression: &Expression) -> Option<&str> {
+    let Expression::Member { base, .. } = expression else {
+        return None;
+    };
+    let Expression::AddressOf { operand } = base.as_ref() else {
+        return None;
+    };
+    root_variable(operand)
+}
+
 fn entry_general_register(function: &Function, name: &str) -> Option<u8> {
     let mut next = Eabi::FIRST_GENERAL_ARGUMENT;
     for parameter in &function.parameters {
@@ -55,9 +65,18 @@ impl Generator {
                 return None;
             };
             let root = root_variable(first)?;
-            (root_variable(second) == Some(root)).then_some((name.as_str(), root))
+            if root_variable(second) != Some(root) {
+                return None;
+            }
+            // Preserve the source distinction between direct member reads and
+            // reads through a declaration-time pointer alias. MWCC selects the
+            // saved base for argument two only for the latter shape, while its
+            // post-call latency fill applies to both shapes.
+            let through_alias = inlined_member_alias_root(first) == Some(root)
+                && inlined_member_alias_root(second) == Some(root);
+            Some((name.as_str(), root, through_alias))
         });
-        let Some((callee, root)) = shape else {
+        let Some((callee, root, through_alias)) = shape else {
             return;
         };
         let Some(entry) = entry_general_register(function, root) else {
@@ -72,7 +91,7 @@ impl Generator {
         ) else {
             return;
         };
-        if call >= 2 {
+        if through_alias && call >= 2 {
             let (prefix, _) = self.output.instructions.split_at_mut(call);
             let first = prefix.len() - 2;
             let matching_pair = match (&prefix[first], &prefix[first + 1]) {

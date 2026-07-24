@@ -2192,6 +2192,9 @@ mod tests {
     #[path = "float_fused_triplet.rs"]
     mod float_fused_triplet;
 
+    #[path = "saved_float_initializer.rs"]
+    mod saved_float_initializer;
+
     #[test]
     fn parity_keep_going_is_an_explicit_diagnostic_flag() {
         let ordinary = parse_invocation(&[]);
