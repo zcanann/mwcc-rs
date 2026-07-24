@@ -9,7 +9,26 @@
 use super::*;
 
 impl Generator {
-    pub(crate) fn schedule_shared_float_store_literal(&mut self, _function: &Function) {
+    pub(crate) fn schedule_shared_float_store_literal(&mut self, function: &Function) {
+        if starts_with_adjacent_float_zero_stores(function) {
+            if let Some(start) = self
+            .output
+            .instructions
+            .windows(4)
+            .position(is_adjacent_reloaded_float_store_literal)
+            {
+                let reload = start + 2;
+                if schedule_relocations::same_relocated_value(
+                    &self.output.relocations,
+                    &self.output.constants,
+                    start,
+                    reload,
+                ) && !has_branch_target_in(&self.output.instructions, start..start + 4)
+                {
+                    remove_instruction(&mut self.output, reload);
+                }
+            }
+        }
         let Some(start) = self
             .output
             .instructions
@@ -24,10 +43,7 @@ impl Generator {
             &self.output.constants,
             start,
             reload,
-        ) || self.output.instructions.iter().any(|instruction| matches!(instruction,
-            Instruction::BranchConditionalForward { target, .. } | Instruction::Branch { target }
-                if (start..start + 13).contains(target)
-        )) {
+        ) || has_branch_target_in(&self.output.instructions, start..start + 13) {
             return;
         }
 
@@ -43,25 +59,77 @@ impl Generator {
             Instruction::StoreFloatSingle { s, .. } => *s = 2,
             _ => unreachable!(),
         }
-        self.output.instructions.remove(reload);
-        self.output
-            .relocations
-            .retain(|relocation| relocation.instruction_index != reload);
-        for relocation in &mut self.output.relocations {
-            if relocation.instruction_index > reload {
-                relocation.instruction_index -= 1;
-            }
+        remove_instruction(&mut self.output, reload);
+    }
+}
+
+fn starts_with_adjacent_float_zero_stores(function: &Function) -> bool {
+    let [
+        Statement::Store {
+            target:
+                Expression::Member {
+                    base: first_base,
+                    member_type: Type::Float,
+                    ..
+                },
+            value: first_value,
+        },
+        Statement::Store {
+            target:
+                Expression::Member {
+                    base: second_base,
+                    member_type: Type::Float,
+                    ..
+                },
+            value: second_value,
+        },
+        ..
+    ] = function.statements.as_slice()
+    else {
+        return false;
+    };
+    crate::analysis::is_zero_literal(first_value)
+        && crate::analysis::is_zero_literal(second_value)
+        && structurally_equal(first_base, second_base)
+}
+
+fn is_adjacent_reloaded_float_store_literal(window: &[Instruction]) -> bool {
+    matches!(window, [
+        Instruction::LoadFloatSingle { d: 0, a: 0, .. },
+        Instruction::StoreFloatSingle { s: 0, a: first_base, .. },
+        Instruction::LoadFloatSingle { d: 0, a: 0, .. },
+        Instruction::StoreFloatSingle { s: 0, a: second_base, .. },
+    ] if first_base == second_base)
+}
+
+fn has_branch_target_in(
+    instructions: &[Instruction],
+    region: std::ops::Range<usize>,
+) -> bool {
+    instructions.iter().any(|instruction| matches!(instruction,
+        Instruction::BranchConditionalForward { target, .. } | Instruction::Branch { target }
+            if region.contains(target)))
+}
+
+fn remove_instruction(output: &mut mwcc_machine_code::MachineFunction, index: usize) {
+    output.instructions.remove(index);
+    output
+        .relocations
+        .retain(|relocation| relocation.instruction_index != index);
+    for relocation in &mut output.relocations {
+        if relocation.instruction_index > index {
+            relocation.instruction_index -= 1;
         }
-        for instruction in &mut self.output.instructions {
-            match instruction {
-                Instruction::BranchConditionalForward { target, .. }
-                | Instruction::Branch { target }
-                    if *target > reload =>
-                {
-                    *target -= 1;
-                }
-                _ => {}
+    }
+    for instruction in &mut output.instructions {
+        match instruction {
+            Instruction::BranchConditionalForward { target, .. }
+            | Instruction::Branch { target }
+                if *target > index =>
+            {
+                *target -= 1;
             }
+            _ => {}
         }
     }
 }
@@ -112,5 +180,16 @@ mod tests {
             Instruction::StoreFloatSingle { s: 0, a: 4, offset: 136 },
         ];
         assert!(is_reloaded_float_store_literal(&instructions));
+    }
+
+    #[test]
+    fn recognizes_adjacent_member_stores_of_one_literal() {
+        let instructions = [
+            Instruction::LoadFloatSingle { d: 0, a: 0, offset: 0 },
+            Instruction::StoreFloatSingle { s: 0, a: 31, offset: 24 },
+            Instruction::LoadFloatSingle { d: 0, a: 0, offset: 0 },
+            Instruction::StoreFloatSingle { s: 0, a: 31, offset: 28 },
+        ];
+        assert!(is_adjacent_reloaded_float_store_literal(&instructions));
     }
 }
