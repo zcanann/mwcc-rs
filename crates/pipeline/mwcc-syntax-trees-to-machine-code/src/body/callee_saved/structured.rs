@@ -1411,6 +1411,7 @@ impl Generator {
                 &recycled_call_result_homes,
             );
         }
+        self.schedule_structured_signed_conversion_pair();
         self.fold_structured_void_early_return_branches(&mut return_branches);
         self.schedule_loop_assertion_entry_alias();
         self.schedule_loop_assertion_string_highs();

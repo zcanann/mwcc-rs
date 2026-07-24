@@ -88,6 +88,7 @@ mod structured_inline_assertion;
 mod structured_locals;
 mod structured_member_scale_schedule;
 mod structured_noncopy_conversion_schedule;
+mod structured_conversion_pair_schedule;
 mod structured_noncopy_packet_schedule;
 mod structured_noncopy_tail_packets;
 mod structured_liveness;
