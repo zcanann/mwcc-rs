@@ -160,14 +160,42 @@ impl Generator {
         } else {
             Vec::new()
         };
+        let address_taken = crate::frame::collect_address_taken(function);
+        let frame_scalar_locals: Vec<&LocalDeclaration> = if with_frame_array {
+            function
+                .locals
+                .iter()
+                .filter(|local| {
+                    local.array_length.is_none()
+                        && !matches!(local.declared_type, Type::Struct { .. })
+                        && address_taken.contains(local.name.as_str())
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if frame_scalar_locals.iter().any(|local| {
+            local.is_static
+                || class_of(local.declared_type).ok() != Some(ValueClass::General)
+                || local.declared_type.width() > 32
+                || local
+                    .initializer
+                    .as_ref()
+                    .is_some_and(crate::analysis::expression_has_call)
+        }) {
+            decline!("an address-taken scalar cannot use the structured frame");
+        }
         let frame_array_plan = if with_frame_array {
             let Some(plan) =
                 plan_structured_frame_arrays(&function.locals, &function.statements)
             else {
                 decline!("automatic array shape is unsupported");
             };
-            if plan.arrays.is_empty() && aggregate_frame_locals.is_empty() {
-                decline!("frame mode requires an automatic array or aggregate slot");
+            if plan.arrays.is_empty()
+                && aggregate_frame_locals.is_empty()
+                && frame_scalar_locals.is_empty()
+            {
+                decline!("frame mode requires an automatic array, aggregate, or scalar slot");
             }
             if !((function.return_type == Type::Void && function.return_expression.is_none())
                     || (matches!(
@@ -211,25 +239,6 @@ impl Generator {
             )
         {
             decline!("statement or return shape is unsupported");
-        }
-
-        let address_taken = crate::frame::collect_address_taken(function);
-        let frame_scalar_locals: Vec<&LocalDeclaration> = function
-            .locals
-            .iter()
-            .filter(|local| {
-                local.array_length.is_none()
-                    && !matches!(local.declared_type, Type::Struct { .. })
-                    && address_taken.contains(local.name.as_str())
-            })
-            .collect();
-        if frame_scalar_locals.iter().any(|local| {
-            local.is_static
-                || local.initializer.is_some()
-                || class_of(local.declared_type).ok() != Some(ValueClass::General)
-                || local.declared_type.width() > 32
-        }) {
-            decline!("an address-taken scalar cannot use the structured frame");
         }
 
         let candidates: Vec<&str> = function
@@ -356,6 +365,12 @@ impl Generator {
             decline!("deferred saved-home planning rejected the body");
         };
 
+        let scalar_only_frame_bytes = if frame_arrays.is_empty() {
+            i16::try_from(frame_scalar_locals.len() * 4)
+                .map_err(|_| Diagnostic::error("structured scalar frame is too large"))?
+        } else {
+            0
+        };
         let local_region_bytes = if !aggregate_frame_locals.is_empty() {
             let mut end = 8u32;
             for local in aggregate_frame_locals.iter().rev() {
@@ -371,6 +386,7 @@ impl Generator {
             i16::try_from(end.saturating_sub(8))
                 .map_err(|_| Diagnostic::error("structured aggregate frame is too large"))?
                 .checked_add(frame_array_bytes)
+                .and_then(|bytes| bytes.checked_add(scalar_only_frame_bytes))
                 .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?
         } else if !self.frame_slots.is_empty() {
             let end = self
@@ -384,7 +400,7 @@ impl Generator {
         } else if !frame_arrays.is_empty() {
             frame_array_bytes
         } else {
-            0
+            scalar_only_frame_bytes
         };
         let global_member_search_entry = function.statements.first().is_some_and(|statement| {
             super::super::global_struct_member_search::is_global_struct_member_search_loop(
@@ -624,7 +640,7 @@ impl Generator {
                 );
             }
         }
-        if !frame_arrays.is_empty() {
+        if !frame_arrays.is_empty() || !frame_scalar_locals.is_empty() {
             let mut extra_scalar_words = function
                 .locals
                 .iter()
@@ -754,9 +770,17 @@ impl Generator {
                     .checked_add(i16::from(array_size))
                     .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
             }
-            let mut scalar_offset = array_offset;
+            let mut scalar_offset =
+                if frame_arrays.is_empty() {
+                    8
+                } else {
+                    array_offset
+                        .checked_sub(i16::try_from(frame_scalar_locals.len() * 4).map_err(
+                            |_| Diagnostic::error("structured scalar frame is too large"),
+                        )?)
+                        .ok_or_else(|| Diagnostic::error("structured scalar frame is too large"))?
+                };
             for local in &frame_scalar_locals {
-                scalar_offset -= 4;
                 self.frame_slots.insert(
                     local.name.clone(),
                     FrameSlot {
@@ -768,6 +792,9 @@ impl Generator {
                         is_array: false,
                     },
                 );
+                scalar_offset = scalar_offset
+                    .checked_add(4)
+                    .ok_or_else(|| Diagnostic::error("structured scalar frame is too large"))?;
             }
             for array in frame_arrays {
                 // A source-level padding array reserves bytes but has no value
@@ -1142,17 +1169,34 @@ impl Generator {
                 },
             );
         }
+        for local in &frame_scalar_locals {
+            if let Some(initializer) = &local.initializer {
+                self.emit_store(&Expression::Variable(local.name.clone()), initializer)?;
+            }
+        }
         self.plan_structured_float_handoff(function, &ephemeral_locals);
         let dense_statement_start = if dense_frame {
             if global_member_search_entry || saved_parameter_base != 0 {
                 dense_eager_consumed_statements
             } else {
-                self.emit_structured_dense_frame_entry(function, &saved_parameter_homes)?
-                    .ok_or_else(|| {
-                        Diagnostic::error(
-                            "a dense structured frame needs a schedulable entry definition",
-                        )
-                    })?
+                match self.emit_structured_dense_frame_entry(function, &saved_parameter_homes)? {
+                    Some(statement_start) => statement_start,
+                    None => {
+                        // Dense save-helper frames do not inherently require a
+                        // global-array address definition at entry. When the
+                        // body starts with a guard, packet store, or ordinary
+                        // scalar assignment, home the preserved parameters in
+                        // source order and lower from statement zero.
+                        if !batched_saved_home_stores {
+                            for (_, home, incoming) in &saved_parameter_homes {
+                                self.output
+                                    .instructions
+                                    .push(Instruction::move_register(*home, *incoming));
+                            }
+                        }
+                        0
+                    }
+                }
             }
         } else {
             0

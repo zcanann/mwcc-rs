@@ -2402,6 +2402,9 @@ fn compile(
 
 #[cfg(test)]
 mod tests {
+    #[path = "address_taken_scalar.rs"]
+    mod address_taken_scalar;
+
     use super::{compile, global_alignments, parse_invocation, GlobalAlignments, SourceLanguage};
     use mwcc_versions::{EnumStorage, GlobalAddressing};
 
