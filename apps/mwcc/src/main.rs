@@ -4462,6 +4462,77 @@ mod tests {
     }
 
     #[test]
+    fn schedules_a_guarded_symmetric_bound_before_ground_projection() {
+        let source = br#"
+            struct Vec3 { float x, y, z; };
+            struct CommonData {
+                char pad[356];
+                float maximum;
+            };
+            extern struct CommonData* common_data;
+            struct State {
+                char pad0[140];
+                float knockback_x;
+                float knockback_y;
+                char pad1[76];
+                int ground_or_air;
+                char pad2[12];
+                float ground_knockback;
+                char pad3[1872];
+                struct Vec3 floor_normal;
+            };
+            void compiled(struct State* state) {
+                struct Vec3* normal;
+                if (state->ground_or_air == 0 && state->ground_knockback == 0) {
+                    normal = &state->floor_normal;
+                    state->ground_knockback = state->knockback_x;
+                    if (state->ground_knockback > common_data->maximum) {
+                        state->ground_knockback = common_data->maximum;
+                    }
+                    if (state->ground_knockback < -common_data->maximum) {
+                        state->ground_knockback = -common_data->maximum;
+                    }
+                    state->knockback_x = normal->y * state->ground_knockback;
+                    state->knockback_y = -normal->x * state->ground_knockback;
+                }
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.emit_mwcats = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "guarded-ground-knockback-projection.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the receiver and symmetric bound should retain distinct registers");
+        let expected_text = [
+            0x80, 0x03, 0x00, 0xe0, 0x2c, 0x00, 0x00, 0x00, 0x4c, 0x82, 0x00, 0x20, 0xc0,
+            0x20, 0x00, 0x00, 0xc0, 0x03, 0x00, 0xf0, 0xfc, 0x01, 0x00, 0x00, 0x4c, 0x82,
+            0x00, 0x20, 0xc0, 0x03, 0x00, 0x8c, 0x38, 0xa3, 0x08, 0x44, 0xd0, 0x03, 0x00,
+            0xf0, 0x80, 0x80, 0x00, 0x00, 0xc0, 0x03, 0x00, 0xf0, 0xc0, 0x24, 0x01, 0x64,
+            0xfc, 0x00, 0x08, 0x40, 0x40, 0x81, 0x00, 0x08, 0xd0, 0x23, 0x00, 0xf0, 0x80,
+            0x80, 0x00, 0x00, 0xc0, 0x23, 0x00, 0xf0, 0xc0, 0x04, 0x01, 0x64, 0xfc, 0x00,
+            0x00, 0x50, 0xfc, 0x01, 0x00, 0x40, 0x40, 0x80, 0x00, 0x08, 0xd0, 0x03, 0x00,
+            0xf0, 0xc0, 0x25, 0x00, 0x04, 0xc0, 0x03, 0x00, 0xf0, 0xec, 0x01, 0x00, 0x32,
+            0xd0, 0x03, 0x00, 0x8c, 0xc0, 0x25, 0x00, 0x00, 0xc0, 0x03, 0x00, 0xf0, 0xfc,
+            0x20, 0x08, 0x50, 0xec, 0x01, 0x00, 0x32, 0xd0, 0x03, 0x00, 0x90, 0x4e, 0x80,
+            0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected_text.len())
+            .any(|bytes| bytes == expected_text));
+    }
+
+    #[test]
     fn command_line_pool_mode_is_last_wins() {
         let off = parse_invocation(&["-pool".into(), "off".into()]);
         assert!(!off.flags.pooling_enabled);
