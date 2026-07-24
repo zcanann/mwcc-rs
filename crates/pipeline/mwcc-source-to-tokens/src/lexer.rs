@@ -137,54 +137,59 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
             position += 2;
             continue;
         }
-        // string literal: `"…"` with escapes, decoded to its bytes. (Codegen for
-        // strings isn't in the subset; lexing lets the rest of the unit parse.)
+        // A wide string literal has 16-bit elements on the GameCube ABI. Keep
+        // that width in the token instead of dropping the `L` prefix: otherwise
+        // a file-scope `wchar_t[]` initializer is indistinguishable from an
+        // invalid narrow-string initializer.
+        if character == 'L' && peek(bytes, position + 1) == Some(b'"') {
+            let token_start = position;
+            position += 1; // `L`; the scanner consumes the opening quote.
+            let content: Vec<u16> = scan_string_literal(bytes, &mut position)?
+                .into_iter()
+                .map(u16::from)
+                .collect();
+            match tokens.last_mut() {
+                Some(LocatedToken {
+                    token: Token::WideStringLiteral(previous),
+                    ..
+                }) => previous.extend(content),
+                Some(LocatedToken {
+                    token: Token::StringLiteral(previous),
+                    ..
+                }) => {
+                    let mut joined: Vec<u16> =
+                        previous.iter().copied().map(u16::from).collect();
+                    joined.extend(content);
+                    tokens.last_mut().unwrap().token = Token::WideStringLiteral(joined);
+                }
+                _ => push_token!(Token::WideStringLiteral(content), token_start),
+            }
+            continue;
+        }
+        // String literal: `"…"` with escapes, decoded to its bytes.
         if character == '"' {
             let token_start = position;
-            position += 1;
-            let mut content = Vec::new();
-            loop {
-                match peek(bytes, position) {
-                    None => return Err(Diagnostic::error("unterminated string literal")),
-                    Some(b'"') => {
-                        position += 1;
-                        break;
-                    }
-                    Some(b'\\') => {
-                        position += 1;
-                        let escaped = *bytes.get(position).ok_or_else(|| Diagnostic::error("unterminated string literal"))?;
-                        position += 1;
-                        content.push(match escaped {
-                            b'n' => 10, b't' => 9, b'r' => 13, b'0' => 0, b'a' => 7,
-                            b'b' => 8, b'f' => 12, b'v' => 11, other => other,
-                        });
-                    }
-                    Some(byte) => {
-                        content.push(byte);
-                        position += 1;
-                    }
-                }
-            }
+            let content = scan_string_literal(bytes, &mut position)?;
             // Translation phase 6 concatenates adjacent string-literal tokens,
             // including literals made adjacent by macro expansion and separated
             // by whitespace/comments. Preserve the first token's location while
             // appending the exact payload bytes of every following fragment.
-            if let Some(LocatedToken {
-                token: Token::StringLiteral(previous),
-                ..
-            }) = tokens.last_mut()
-            {
-                previous.extend(content);
-            } else {
-                push_token!(Token::StringLiteral(content), token_start);
+            match tokens.last_mut() {
+                Some(LocatedToken {
+                    token: Token::StringLiteral(previous),
+                    ..
+                }) => previous.extend(content),
+                Some(LocatedToken {
+                    token: Token::WideStringLiteral(previous),
+                    ..
+                }) => previous.extend(content.into_iter().map(u16::from)),
+                _ => push_token!(Token::StringLiteral(content), token_start),
             }
             continue;
         }
-        // A wide literal's `L` prefix (`L'\0'`, `L"..."`) is transparent to the
-        // VALUE for a char literal (wchar_t is an integer type); a wide STRING
-        // changes the data layout (u16 elements) and defers at codegen, so the
-        // `L` before `"` simply drops here and the string lexes normally.
-        if character == 'L' && matches!(peek(bytes, position + 1), Some(b'\'') | Some(b'"')) {
+        // A wide character literal's `L` prefix is transparent to its integer
+        // value. Wide strings were consumed above.
+        if character == 'L' && peek(bytes, position + 1) == Some(b'\'') {
             position += 1;
             continue;
         }
@@ -505,6 +510,43 @@ fn peek(bytes: &[u8], index: usize) -> Option<u8> {
     bytes.get(index).copied()
 }
 
+fn scan_string_literal(bytes: &[u8], position: &mut usize) -> Compilation<Vec<u8>> {
+    debug_assert_eq!(peek(bytes, *position), Some(b'"'));
+    *position += 1;
+    let mut content = Vec::new();
+    loop {
+        match peek(bytes, *position) {
+            None => return Err(Diagnostic::error("unterminated string literal")),
+            Some(b'"') => {
+                *position += 1;
+                return Ok(content);
+            }
+            Some(b'\\') => {
+                *position += 1;
+                let escaped = *bytes
+                    .get(*position)
+                    .ok_or_else(|| Diagnostic::error("unterminated string literal"))?;
+                *position += 1;
+                content.push(match escaped {
+                    b'n' => 10,
+                    b't' => 9,
+                    b'r' => 13,
+                    b'0' => 0,
+                    b'a' => 7,
+                    b'b' => 8,
+                    b'f' => 12,
+                    b'v' => 11,
+                    other => other,
+                });
+            }
+            Some(byte) => {
+                content.push(byte);
+                *position += 1;
+            }
+        }
+    }
+}
+
 /// Advance past an integer literal's type-suffix letters (`u`/`U`/`l`/`L` and
 /// combinations like `UL`, `LL`, `ULL`). On this 32-bit target these are hints
 /// only — they don't change the literal's value — so they are consumed and dropped
@@ -543,6 +585,14 @@ mod tests {
             })
             .collect();
         assert_eq!(literals, [b"release build: Sep 21 2006 14:32:13".as_slice()]);
+    }
+
+    #[test]
+    fn wide_string_literals_retain_element_width_and_concatenate() {
+        let tokens = tokenize_bytes(b"wchar_t text[] = L\"In\" \"valid\";").unwrap();
+        assert!(tokens.contains(&Token::WideStringLiteral(
+            "Invalid".bytes().map(u16::from).collect()
+        )));
     }
 
     #[test]

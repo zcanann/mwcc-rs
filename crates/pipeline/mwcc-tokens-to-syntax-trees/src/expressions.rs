@@ -658,6 +658,11 @@ impl Parser {
             Token::FloatLiteral(value) => Expression::FloatLiteral(value),
             // A string literal (the raw bytes) — pooled and loaded by address.
             Token::StringLiteral(bytes) => Expression::StringLiteral(bytes),
+            Token::WideStringLiteral(_) => {
+                return Err(Diagnostic::error(
+                    "a wide string literal in expression position is not supported yet (roadmap)",
+                ))
+            }
             // C++ boolean literals are integral constant expressions with the
             // normalized values one and zero. The lexer deliberately keeps
             // them as identifiers so C mode may still use either spelling as
