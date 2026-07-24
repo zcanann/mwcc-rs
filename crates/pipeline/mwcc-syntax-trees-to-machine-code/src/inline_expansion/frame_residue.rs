@@ -22,6 +22,16 @@ pub(super) fn legacy_frame_residue_bytes(
     initializer_values * 8
 }
 
+pub(super) fn legacy_statement_body_frame_residue_bytes(
+    function: &Function,
+    substitutions: usize,
+) -> usize {
+    if substitutions == 0 || !has_memory_mutation_before_surviving_call(&function.statements) {
+        return 0;
+    }
+    substitutions * 8
+}
+
 fn has_memory_mutation_before_surviving_call(statements: &[Statement]) -> bool {
     let mut saw_memory_mutation = false;
     for statement in statements {
@@ -193,5 +203,17 @@ mod tests {
     fn does_not_retain_initializer_lanes_without_the_intervening_store() {
         let function = function(vec![call("external")]);
         assert_eq!(legacy_frame_residue_bytes(&function, two_initializers()), 0);
+    }
+
+    #[test]
+    fn retains_one_lane_for_a_statement_body_before_a_surviving_call() {
+        let function = function(vec![
+            Statement::Store {
+                target: Expression::Variable("memory".into()),
+                value: Expression::IntegerLiteral(0),
+            },
+            call("external"),
+        ]);
+        assert_eq!(legacy_statement_body_frame_residue_bytes(&function, 1), 8);
     }
 }

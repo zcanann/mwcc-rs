@@ -4,6 +4,43 @@
 use super::*;
 
 impl Generator {
+    /// Fill the linkage slot left by an inlined statement body with its
+    /// independent zero store value. The retained frame lane proves this is an
+    /// inline-composed body rather than an ordinary local initialization.
+    pub(crate) fn schedule_linkage_first_inline_zero(&mut self) {
+        if self.behavior.frame_convention != FrameConvention::LinkageFirst
+            || self.legacy_inline_expansion_frame_bytes == 0
+        {
+            return;
+        }
+        let Some(start) = self.output.instructions.windows(6).position(|window| {
+            matches!(window, [
+                Instruction::MoveFromLinkRegister { d: 0 },
+                Instruction::StoreWord { s: 0, a: 1, offset: 4 },
+                Instruction::StoreWordWithUpdate { s: 1, a: 1, .. },
+                Instruction::StoreWord { s: saved, a: 1, .. },
+                Instruction::LoadWord { d: alias, a: 3, .. },
+                Instruction::AddImmediate { d: 0, a: 0, immediate: 0 },
+            ] if saved == alias)
+        }) else {
+            return;
+        };
+        let from = start + 5;
+        let to = start + 2;
+        let instruction = self.output.instructions.remove(from);
+        self.output.instructions.insert(to, instruction);
+        self.labels.moved_before(from, to);
+        for relocation in &mut self.output.relocations {
+            relocation.instruction_index = if relocation.instruction_index == from {
+                to
+            } else if (to..from).contains(&relocation.instruction_index) {
+                relocation.instruction_index + 1
+            } else {
+                relocation.instruction_index
+            };
+        }
+    }
+
     /// Emit the EABI helper-call frame used when a dense suffix of GPRs is
     /// cheaper to save through `_savegpr_N` than with individual stores. The
     /// matching epilogue is owned by [`Self::emit_restgpr_frame_epilogue`].

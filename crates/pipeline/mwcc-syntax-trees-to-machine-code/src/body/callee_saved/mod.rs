@@ -76,6 +76,7 @@ mod structured_liveness;
 mod structured_parameter_home_reuse;
 mod structured_prologue;
 mod structured_store_schedule;
+mod structured_shared_member_arguments;
 mod structured_value_versions;
 mod structured_virtual_call_schedule;
 mod pointer_state_call_loop;

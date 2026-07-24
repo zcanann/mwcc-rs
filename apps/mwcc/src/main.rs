@@ -2522,6 +2522,74 @@ mod tests {
     }
 
     #[test]
+    fn retains_an_inline_frame_lane_and_reorders_shared_member_arguments() {
+        let source = br#"
+            struct Fighter {
+                unsigned char player_id;
+                char padding[7];
+                void* item;
+                unsigned char rumble_id;
+                unsigned char b0 : 1;
+                unsigned char b1 : 1;
+                unsigned char b2 : 1;
+                unsigned char selected : 1;
+            };
+            struct Object {
+                char padding[44];
+                struct Fighter* fighter;
+            };
+            extern int active(unsigned char, int);
+            extern void remove_rumble(unsigned char, int);
+            extern void notify(unsigned char, int);
+            inline void cleanup(struct Fighter* fighter, int kind) {
+                if (active(fighter->player_id, fighter->selected)) {
+                    remove_rumble(fighter->rumble_id, kind + kind);
+                }
+            }
+            void release(struct Object* object) {
+                struct Fighter* fighter = object->fighter;
+                fighter->item = 0;
+                cleanup(fighter, 2);
+                notify(fighter->player_id, fighter->selected);
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "inline-shared-member-arguments.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the retained inline body should share the caller's saved alias");
+        let entry = [
+            0x7c, 0x08, 0x02, 0xa6, 0x90, 0x01, 0x00, 0x04, 0x38, 0x00, 0x00, 0x00, 0x94, 0x21,
+            0xff, 0xe8, 0x93, 0xe1, 0x00, 0x14, 0x83, 0xe3, 0x00, 0x2c, 0x90, 0x1f, 0x00, 0x08,
+        ];
+        let shared_arguments = [0x88, 0x9f, 0x00, 0x0d, 0x88, 0x7f, 0x00, 0x00];
+        let exit = [
+            0x80, 0x01, 0x00, 0x1c, 0x83, 0xe1, 0x00, 0x14, 0x38, 0x21, 0x00, 0x18, 0x7c, 0x08,
+            0x03, 0xa6, 0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object.windows(entry.len()).any(|bytes| bytes == entry));
+        assert_eq!(
+            object
+                .windows(shared_arguments.len())
+                .filter(|bytes| *bytes == shared_arguments)
+                .count(),
+            2
+        );
+        assert!(object.windows(exit.len()).any(|bytes| bytes == exit));
+    }
+
+    #[test]
     fn keeps_a_one_use_sign_selection_in_the_float_scratch() {
         let source = br#"
             struct Body { float facing; float input; };

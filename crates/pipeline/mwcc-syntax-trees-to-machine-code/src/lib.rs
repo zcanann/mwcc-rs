@@ -591,6 +591,7 @@ pub fn lower_function(
     generator.hoist_normalized_linkage_first_arg_moves();
     generator.normalize_scratch_copy_convention();
     generator.schedule_linkage_first_function_address();
+    generator.schedule_linkage_first_inline_zero();
     generator.schedule_guarded_report_store(function);
 
     ordinal_accounting::apply(
