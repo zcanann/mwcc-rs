@@ -2162,6 +2162,9 @@ mod tests {
     use super::{compile, global_alignments, parse_invocation, GlobalAlignments, SourceLanguage};
     use mwcc_versions::{EnumStorage, GlobalAddressing};
 
+    #[path = "grab_mash.rs"]
+    mod grab_mash;
+
     #[test]
     fn parity_keep_going_is_an_explicit_diagnostic_flag() {
         let ordinary = parse_invocation(&[]);
