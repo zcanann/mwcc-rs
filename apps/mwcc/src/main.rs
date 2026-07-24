@@ -2374,6 +2374,9 @@ mod tests {
     #[path = "terminal_switch.rs"]
     mod terminal_switch;
 
+    #[path = "long_long_wait.rs"]
+    mod long_long_wait;
+
     #[path = "inline_member_zero_fill.rs"]
     mod inline_member_zero_fill;
 

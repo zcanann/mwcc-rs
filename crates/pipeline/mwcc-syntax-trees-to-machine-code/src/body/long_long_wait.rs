@@ -173,13 +173,14 @@ impl Generator {
         self.output.has_conversion = true;
         // The optimizer consumes seven internal labels for the conversion,
         // pair-live range, and do/while graph before numbering this function's
-        // pooled bias double (measured across the 2.4.x mainline builds).
+        // own pooled bias double.
         self.output.anonymous_label_bump += 7;
         // Deferred compilation analyzes this source-first transaction before a
-        // later body that may be emitted ahead of it. Its conversion label,
-        // seven internal labels, and one pool slot then prefix that reversed
-        // head's ordinal block while this function keeps its own pool schedule.
-        self.output.deferred_source_prefix_bump = 9;
+        // later body that may be emitted ahead of it. The source transaction
+        // exposes seven ordinals to that reversed head, two fewer than this
+        // function's own conversion-and-pool schedule. GC 1.3 through 2.7 share
+        // this asymmetric accounting.
+        self.output.deferred_source_prefix_bump = 7;
         self.frame_size = 48;
         self.non_leaf = true;
         self.callee_saved = vec![31, 30];
