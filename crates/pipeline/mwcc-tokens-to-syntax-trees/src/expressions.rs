@@ -373,10 +373,34 @@ impl Parser {
             }
             self.advance();
             let right = self.binary_expression(operator.precedence() + 1)?;
-            left = Expression::Binary {
-                operator,
-                left: Box::new(left),
-                right: Box::new(right),
+            // Preserve overloaded arithmetic calls while recovering a
+            // discarded inline. Ordinary executable expressions retain the
+            // existing scalar Binary representation; this semantic Call is
+            // only needed so analysis can see reference binding at an
+            // operator invocation such as `a * (1.0f / b)`.
+            let overload = if self.recover_skipped_inline_definition {
+                if let Some(source_name) = crate::cxx::arithmetic_operator_name(operator) {
+                    self.resolve_analysis_operator_call(
+                        source_name,
+                        &[left.clone(), right.clone()],
+                    )?
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            left = if let Some(name) = overload {
+                Expression::Call {
+                    name,
+                    arguments: vec![left, right],
+                }
+            } else {
+                Expression::Binary {
+                    operator,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                }
             };
             // Fold ANY constant operation on two integer literals to its value (`li r3,N`) — mwcc
             // folds all constant subexpressions. Arithmetic/bitwise/shift already lowered to the
@@ -725,7 +749,26 @@ impl Parser {
                     }
                 }
                 self.expect(Token::ParenClose)?;
-                if let Some(elements) =
+                // A functional class construction inside an analysis-only
+                // recovered inline (`return Vector3f(x, y, z)`) needs its
+                // resolved constructor identity so later semantic passes can
+                // observe reference-bound temporaries. Executable lowering
+                // still owns temporary storage and the aggregate-return ABI;
+                // this Call shape is deliberately confined to the discarded
+                // inline probe.
+                let analysis_constructor = if self.recover_skipped_inline_definition
+                    && self.resolve_scoped_cxx_class_name(&name).is_some()
+                {
+                    Some(self.resolve_placement_constructor(&name, &arguments)?)
+                } else {
+                    None
+                };
+                if let Some(constructor) = analysis_constructor {
+                    Expression::Call {
+                        name: constructor,
+                        arguments,
+                    }
+                } else if let Some(elements) =
                     self.resolve_template_value_construction(&name, &arguments)
                 {
                     Expression::AggregateLiteral(elements)

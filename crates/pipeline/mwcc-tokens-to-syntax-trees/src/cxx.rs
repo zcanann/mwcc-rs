@@ -6,7 +6,8 @@
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_syntax_trees::{
-    Expression, Function, Parameter, Pointee, SourceFundamentalType, Statement, Type,
+    BinaryOperator, Expression, Function, Parameter, Pointee, SourceFundamentalType, Statement,
+    Type,
 };
 use mwcc_tokens::{LocatedToken, Token};
 
@@ -32,6 +33,45 @@ pub(crate) fn canonical_inline_member_name(
         "__ct".to_string()
     } else {
         source_name.to_string()
+    }
+}
+
+/// Consume the punctuation following a C++ `operator` declarator and return
+/// its CodeWarrior ABI source name. Keep this separate from ordinary
+/// identifiers: the lexer intentionally represents `operator*` as the word
+/// `operator` plus `*`, while overload registration and mangling operate on
+/// the ABI spelling.
+///
+/// This starts with the arithmetic overloads proven against mwcceppc. Other
+/// operator families should be added here as their declarations become
+/// semantically supported rather than being guessed in the general item
+/// parser.
+pub(crate) fn parse_arithmetic_operator_name(parser: &mut Parser) -> Compilation<String> {
+    let name = match parser.advance() {
+        Token::Plus => "__pl",
+        Token::Minus => "__mi",
+        Token::Star => "__ml",
+        Token::Slash => "__dv",
+        token => {
+            return Err(Diagnostic::error(format!(
+                "C++ operator declarator '{token}' is not supported yet (roadmap)"
+            )))
+        }
+    };
+    Ok(name.to_string())
+}
+
+/// CodeWarrior ABI source spelling for the arithmetic operators whose
+/// declarations are accepted above. This shared mapping lets analysis-only
+/// expression recovery resolve an overloaded binary expression through the
+/// same free-function registry as an explicit call.
+pub(crate) fn arithmetic_operator_name(operator: BinaryOperator) -> Option<&'static str> {
+    match operator {
+        BinaryOperator::Add => Some("__pl"),
+        BinaryOperator::Subtract => Some("__mi"),
+        BinaryOperator::Multiply => Some("__ml"),
+        BinaryOperator::Divide => Some("__dv"),
+        _ => None,
     }
 }
 
@@ -918,6 +958,66 @@ impl Parser {
             [] => Ok(None),
             [method] => Ok(Some(method.mangled.clone())),
             _ => self.resolve_exact_cxx_overload(&key, &candidates, arguments),
+        }
+    }
+
+    /// Strict overload lookup used only while recovering overloaded arithmetic
+    /// from a discarded inline. Unlike ordinary call lookup, a missing
+    /// aggregate identity is not allowed to match an aggregate-reference
+    /// parameter: scalar references and aggregate references have the same
+    /// pointer-shaped storage type after ABI lowering.
+    pub(crate) fn resolve_analysis_operator_call(
+        &self,
+        source_name: &str,
+        arguments: &[Expression],
+    ) -> Compilation<Option<String>> {
+        let scopes = self.named_namespace_scopes();
+        let Some(key) = (0..=scopes.len()).rev().find_map(|depth| {
+            let candidate = if depth == 0 {
+                source_name.to_owned()
+            } else {
+                format!("{}::{source_name}", scopes[..depth].join("::"))
+            };
+            self.cxx_free_functions
+                .contains_key(&candidate)
+                .then_some(candidate)
+        }) else {
+            return Ok(None);
+        };
+        let exact = self
+            .cxx_free_functions
+            .get(&key)
+            .into_iter()
+            .flatten()
+            .filter(|method| method.fixed_parameter_count == arguments.len())
+            .filter(|method| {
+                arguments.iter().enumerate().all(|(index, argument)| {
+                    let Some(parameter) = method.cxx_parameters.get(index) else {
+                        return false;
+                    };
+                    match (
+                        parameter.qualified_name.as_deref(),
+                        self.cxx_expression_struct_tag(argument),
+                    ) {
+                        (Some(expected), Some(actual)) => {
+                            expected == actual
+                                || expected.rsplit("::").next()
+                                    == actual.rsplit("::").next()
+                        }
+                        (Some(_), None) | (None, Some(_)) => false,
+                        (None, None) => self.cxx_expression_type(argument).is_none_or(
+                            |actual| method.parameters.get(index) == Some(&actual),
+                        ),
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        match exact.as_slice() {
+            [] => Ok(None),
+            [method] => Ok(Some(method.mangled.clone())),
+            _ => Err(Diagnostic::error(format!(
+                "C++ operator call '{key}' is ambiguous (roadmap)"
+            ))),
         }
     }
 
