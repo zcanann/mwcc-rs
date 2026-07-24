@@ -173,6 +173,26 @@ pub(crate) enum LegacyCalleeSavedFrameLayout {
     PreserveLogicalSize,
 }
 
+/// One frame-resident aggregate value copied into an EABI outgoing-argument
+/// slot before a direct call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StructuredAggregateArgumentCopy {
+    pub(crate) argument_index: usize,
+    pub(crate) local: String,
+    pub(crate) copy_offset: i16,
+}
+
+/// Complete ownership of one structured body's outgoing aggregate-copy area.
+///
+/// Keeping the callee and every copy in one plan prevents an unrelated call
+/// from accidentally consuming frame slots reserved for the terminal call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StructuredAggregateCallCopyPlan {
+    pub(crate) callee: String,
+    pub(crate) copies: Vec<StructuredAggregateArgumentCopy>,
+    pub(crate) total_bytes: i16,
+}
+
 pub(crate) struct Generator {
     /// This function is a VARIADIC definition — only a capture may emit it
     /// (the register-save prologue is unmodeled in general codegen).
@@ -345,6 +365,11 @@ pub(crate) struct Generator {
     /// Address-taken variables and their stack-frame slots. A name here is
     /// frame-resident: `&v` and type-punned accesses read/write its slot.
     pub(crate) frame_slots: HashMap<String, FrameSlot>,
+    /// Outgoing by-value aggregate copies owned by the allocator-backed
+    /// structured body. Source object slots remain in `frame_slots`; this plan
+    /// describes the separate caller-owned copies below them.
+    pub(crate) structured_aggregate_call_copy_plan:
+        Option<StructuredAggregateCallCopyPlan>,
     /// Slot offsets STORED THROUGH during emission (a pun store, a writeback).
     /// A spilled float parameter reloads at its return only when its slot is
     /// here — otherwise the value is still live in the incoming register

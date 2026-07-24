@@ -396,6 +396,9 @@ impl Generator {
         arguments: &[Expression],
         name: &str,
     ) -> Compilation<()> {
+        if self.try_emit_structured_aggregate_copy_arguments(arguments, name)? {
+            return Ok(());
+        }
         // A CALL in a non-first argument clobbers the argument registers already holding earlier
         // arguments (a call returns in r3 and clobbers r3–r12), and its own result lands in r3 rather
         // than the argument's positional register. mwcc evaluates such arguments RIGHT-first, preserving
@@ -1229,5 +1232,100 @@ impl Generator {
             }
         }
         Ok(())
+    }
+
+    /// Marshal the dependency-complete two-word aggregate call planned by the
+    /// structured frame owner. Source words are loaded in reverse argument
+    /// order, their outgoing addresses are formed next, and only then are both
+    /// copies stored. This is the measured legacy EABI schedule for
+    /// `fatal(foreground, background, message)`.
+    fn try_emit_structured_aggregate_copy_arguments(
+        &mut self,
+        arguments: &[Expression],
+        name: &str,
+    ) -> Compilation<bool> {
+        let Some(plan) = self
+            .structured_aggregate_call_copy_plan
+            .as_ref()
+            .filter(|plan| plan.callee == name)
+            .cloned()
+        else {
+            return Ok(false);
+        };
+        if plan.copies.len() != 2
+            || plan.copies.iter().any(|copy| {
+                !matches!(
+                    arguments.get(copy.argument_index),
+                    Some(Expression::Variable(local)) if local == &copy.local
+                )
+            })
+        {
+            return Err(Diagnostic::error(
+                "structured aggregate call no longer matches its copy plan",
+            ));
+        }
+
+        for (index, argument) in arguments.iter().enumerate() {
+            if plan
+                .copies
+                .iter()
+                .any(|copy| copy.argument_index == index)
+            {
+                continue;
+            }
+            let destination = Eabi::FIRST_GENERAL_ARGUMENT
+                .checked_add(u8::try_from(index).map_err(|_| {
+                    Diagnostic::error("structured aggregate argument index is out of range")
+                })?)
+                .ok_or_else(|| {
+                    Diagnostic::error("structured aggregate argument register is out of range")
+                })?;
+            self.evaluate_general(argument, destination)?;
+        }
+
+        let first_temporary = Eabi::FIRST_GENERAL_ARGUMENT
+            .checked_add(u8::try_from(arguments.len()).map_err(|_| {
+                Diagnostic::error("structured aggregate argument count is out of range")
+            })?)
+            .filter(|register| *register <= Eabi::LAST_GENERAL_ARGUMENT)
+            .ok_or_else(|| {
+                Diagnostic::error("structured aggregate copy needs a temporary register")
+            })?;
+        let mut loaded = Vec::with_capacity(2);
+        for (copy_index, copy) in plan.copies.iter().rev().enumerate() {
+            let temporary = if copy_index == 0 {
+                first_temporary
+            } else {
+                GENERAL_SCRATCH
+            };
+            let source_offset = self
+                .frame_slots
+                .get(&copy.local)
+                .ok_or_else(|| {
+                    Diagnostic::error("structured aggregate copy source has no frame slot")
+                })?
+                .offset;
+            self.output.instructions.push(Instruction::LoadWord {
+                d: temporary,
+                a: 1,
+                offset: source_offset,
+            });
+            let argument_register = Eabi::FIRST_GENERAL_ARGUMENT
+                + u8::try_from(copy.argument_index).expect("two leading copies");
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: argument_register,
+                a: 1,
+                immediate: copy.copy_offset,
+            });
+            loaded.push((temporary, copy.copy_offset));
+        }
+        for (temporary, copy_offset) in loaded {
+            self.output.instructions.push(Instruction::StoreWord {
+                s: temporary,
+                a: 1,
+                offset: copy_offset,
+            });
+        }
+        Ok(true)
     }
 }

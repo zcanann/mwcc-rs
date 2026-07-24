@@ -12,10 +12,12 @@ use super::structured_call_accumulator::{
 };
 use super::structured_aggregate_slots::{
     plan_aggregate_frame_slots, plan_aggregate_frame_slots_from,
+    plan_terminal_one_word_aggregate_call_copies,
 };
 use super::structured_call_schedule::{
     terminal_offset_call_argument_register, transient_call_argument_register,
 };
+use super::structured_condition_schedule::thread_forward_unconditional_branch_chains;
 use super::structured_entry_alias::{
     fold_entry_alias_zero_test, plan_first_call_alias, EntryAliasBoundary, EntryParameterAlias,
 };
@@ -237,6 +239,19 @@ impl Generator {
         };
         let frame_arrays = &frame_array_plan.arrays;
         let frame_array_bytes = frame_array_plan.total_bytes;
+        let aggregate_call_copy_plan =
+            (frame_arrays.is_empty() && frame_scalar_locals.is_empty())
+                .then(|| {
+                    plan_terminal_one_word_aggregate_call_copies(
+                        &aggregate_frame_locals,
+                        &function.statements,
+                        &self.call_parameter_types,
+                    )
+                })
+                .flatten();
+        let aggregate_call_copy_bytes = aggregate_call_copy_plan
+            .as_ref()
+            .map_or(0, |plan| plan.total_bytes);
         let unused_frame_array = !frame_arrays.is_empty()
             && frame_arrays
                 .iter()
@@ -399,7 +414,11 @@ impl Generator {
             0
         };
         let mut local_region_bytes = if !aggregate_frame_locals.is_empty() {
-            let mut end = 8u32;
+            let mut end = 8u32
+                .checked_add(u32::try_from(aggregate_call_copy_bytes).map_err(|_| {
+                    Diagnostic::error("structured aggregate copy area is out of range")
+                })?)
+                .ok_or_else(|| Diagnostic::error("structured aggregate frame is too large"))?;
             for local in aggregate_frame_locals.iter().rev() {
                 let Type::Struct { size, align } = local.declared_type else {
                     unreachable!("aggregate frame locals were filtered")
@@ -746,9 +765,26 @@ impl Generator {
             ];
         }
         let mut plan = mwcc_vreg::FramePlan::with_local_region(homes.clone(), local_region_bytes);
+        if aggregate_call_copy_plan.is_some()
+            && self.behavior.frame_convention == FrameConvention::LinkageFirst
+            && homes.is_empty()
+        {
+            plan.frame_size = 8i16
+                .checked_add(local_region_bytes)
+                .ok_or_else(|| Diagnostic::error("structured aggregate frame is too large"))?;
+        }
         if !aggregate_frame_locals.is_empty() {
-            let placements =
-                plan_aggregate_frame_slots(&aggregate_frame_locals, &function.statements)?;
+            let placements = if aggregate_call_copy_bytes == 0 {
+                plan_aggregate_frame_slots(&aggregate_frame_locals, &function.statements)?
+            } else {
+                plan_aggregate_frame_slots_from(
+                    &aggregate_frame_locals,
+                    &function.statements,
+                    8 + u32::try_from(aggregate_call_copy_bytes).map_err(|_| {
+                        Diagnostic::error("structured aggregate copy area is out of range")
+                    })?,
+                )?
+            };
             for local in aggregate_frame_locals.iter().rev() {
                 let Type::Struct { size, .. } = local.declared_type else {
                     unreachable!("aggregate frame locals were filtered")
@@ -769,6 +805,7 @@ impl Generator {
                 );
             }
         }
+        self.structured_aggregate_call_copy_plan = aggregate_call_copy_plan.clone();
         if !frame_arrays.is_empty() || !frame_scalar_locals.is_empty() {
             let mut extra_scalar_words = function
                 .locals
@@ -1020,6 +1057,23 @@ impl Generator {
                     offset: plan.frame_size - 4 * count as i16,
                 },
             ]);
+        } else if aggregate_call_copy_plan.is_some()
+            && self.behavior.frame_convention == FrameConvention::LinkageFirst
+            && homes.is_empty()
+        {
+            self.output.instructions.extend([
+                Instruction::MoveFromLinkRegister { d: 0 },
+                Instruction::StoreWord {
+                    s: 0,
+                    a: 1,
+                    offset: 4,
+                },
+                Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -plan.frame_size,
+                },
+            ]);
         } else {
             self.output.instructions.extend([
                 Instruction::StoreWordWithUpdate {
@@ -1046,6 +1100,44 @@ impl Generator {
             self.output
                 .instructions
                 .push(Instruction::BranchAndLink { target: helper });
+        }
+        if aggregate_call_copy_plan.is_some() {
+            let image_locals: Vec<_> = aggregate_frame_locals
+                .iter()
+                .filter(|local| {
+                    aggregate_call_copy_plan.as_ref().is_some_and(|copy_plan| {
+                        copy_plan
+                            .copies
+                            .iter()
+                            .any(|copy| copy.local == local.name)
+                    })
+                })
+                .collect();
+            let [first, second] = image_locals.as_slice() else {
+                return Err(Diagnostic::error(
+                    "structured aggregate copy initialization lost its source objects",
+                ));
+            };
+            for (local, destination) in [(*first, 3), (*second, 0)] {
+                let image = local
+                    .data_bytes
+                    .as_ref()
+                    .expect("aggregate copy planning required a source image");
+                let bits = u32::from_be_bytes([image[0], image[1], image[2], image[3]]);
+                self.load_word_constant(destination, bits);
+            }
+            for (local, source) in [(*first, 3), (*second, 0)] {
+                let offset = self
+                    .frame_slots
+                    .get(&local.name)
+                    .expect("aggregate copy source has a frame slot")
+                    .offset;
+                self.output.instructions.push(Instruction::StoreWord {
+                    s: source,
+                    a: 1,
+                    offset,
+                });
+            }
         }
 
         let paired_eager_deferred_homes = self.legacy_callee_saved_frame_layout
@@ -1328,6 +1420,22 @@ impl Generator {
                 ValueClass::General if is_frame_address_null_select(function, &local.name) => {
                     self.fresh_virtual_general_preferring(4)
                 }
+                ValueClass::General
+                    if aggregate_call_copy_plan.is_some()
+                        && transient_call_argument_register(
+                            &function.statements,
+                            &local.name,
+                        )
+                        .is_some() =>
+                {
+                    self.fresh_virtual_general_preferring(
+                        transient_call_argument_register(
+                            &function.statements,
+                            &local.name,
+                        )
+                        .expect("aggregate-call companion preference was checked"),
+                    )
+                }
                 ValueClass::General => self.fresh_virtual_general(),
                 ValueClass::Float => self.fresh_virtual_float_preferring(
                     self.ephemeral_float_home_preference(function, &ephemeral_locals),
@@ -1484,6 +1592,9 @@ impl Generator {
             {
                 *branch_target = target;
             }
+        }
+        if aggregate_call_copy_plan.is_some() {
+            thread_forward_unconditional_branch_chains(&mut self.output.instructions);
         }
         let forwardable_frame_scalar_offsets = frame_scalar_locals
             .iter()

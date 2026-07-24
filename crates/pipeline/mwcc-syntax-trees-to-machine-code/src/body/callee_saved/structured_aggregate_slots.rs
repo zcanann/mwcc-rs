@@ -15,6 +15,72 @@ pub(super) fn plan_aggregate_frame_slots(
     plan_aggregate_frame_slots_from(locals, statements, 8)
 }
 
+/// Plan the measured EABI slice where two leading four-byte aggregate
+/// arguments are copied into distinct outgoing stack objects before a terminal
+/// direct call. The source objects live above this reserved prefix.
+///
+/// This deliberately owns only the dependency-complete two-word form. Wider
+/// aggregates and interspersed scalar arguments need a general multiword copy
+/// scheduler rather than an accidental extension of this schedule.
+pub(super) fn plan_terminal_one_word_aggregate_call_copies(
+    locals: &[&LocalDeclaration],
+    statements: &[Statement],
+    call_parameter_types: &std::collections::HashMap<String, Vec<Type>>,
+) -> Option<StructuredAggregateCallCopyPlan> {
+    let Statement::Expression(Expression::Call { name, arguments }) = statements.last()? else {
+        return None;
+    };
+    let parameter_types = call_parameter_types.get(name)?;
+    if locals.len() != 2
+        || arguments.len() < 2
+        || parameter_types.len() != arguments.len()
+        || !matches!(
+            parameter_types.as_slice(),
+            [
+                Type::Struct { size: 4, .. },
+                Type::Struct { size: 4, .. },
+                rest @ ..
+            ] if rest
+                .iter()
+                .all(|parameter| !matches!(parameter, Type::Struct { .. } | Type::Float | Type::Double))
+        )
+    {
+        return None;
+    }
+
+    let mut copies = Vec::with_capacity(2);
+    for (argument_index, copy_offset) in [(0, 12), (1, 8)] {
+        let Expression::Variable(local_name) = &arguments[argument_index] else {
+            return None;
+        };
+        let local = locals.iter().find(|local| local.name == *local_name)?;
+        if local.is_static
+            || local.is_volatile
+            || local.array_length.is_some()
+            || local.initializer.is_some()
+            || !local.data_relocations.is_empty()
+            || !matches!(local.declared_type, Type::Struct { size: 4, .. })
+            || local.data_bytes.as_ref().is_none_or(|image| image.len() != 4)
+        {
+            return None;
+        }
+        copies.push(StructuredAggregateArgumentCopy {
+            argument_index,
+            local: local_name.clone(),
+            copy_offset,
+        });
+    }
+    if copies[0].local == copies[1].local {
+        return None;
+    }
+
+    Some(StructuredAggregateCallCopyPlan {
+        callee: name.clone(),
+        copies,
+        total_bytes: 8,
+    })
+}
+
 /// Place aggregates after an already reserved low-frame prefix, such as a
 /// retained entry lane plus an unused source array. Keeping the base explicit
 /// prevents independently planned frame-local families from overlapping.
@@ -115,5 +181,47 @@ mod tests {
         let slots = plan_aggregate_frame_slots_from(&[&vector], &[], 16).unwrap();
 
         assert_eq!(slots["vector"], 16);
+    }
+
+    #[test]
+    fn reserves_reverse_argument_order_copies_below_source_objects() {
+        let mut foreground = aggregate("foreground", 4);
+        foreground.data_bytes = Some(vec![0xff, 0xff, 0xff, 0]);
+        let mut background = aggregate("background", 4);
+        background.data_bytes = Some(vec![0, 0, 0, 0]);
+        let locals = vec![&background, &foreground];
+        let statements = vec![Statement::Expression(Expression::Call {
+            name: "fatal".into(),
+            arguments: vec![
+                Expression::Variable("foreground".into()),
+                Expression::Variable("background".into()),
+                Expression::Variable("message".into()),
+            ],
+        })];
+        let parameter_types = std::collections::HashMap::from([(
+            "fatal".into(),
+            vec![
+                Type::Struct { size: 4, align: 1 },
+                Type::Struct { size: 4, align: 1 },
+                Type::Pointer(Pointee::Char),
+            ],
+        )]);
+
+        let plan = plan_terminal_one_word_aggregate_call_copies(
+            &locals,
+            &statements,
+            &parameter_types,
+        )
+        .unwrap();
+        assert_eq!(plan.total_bytes, 8);
+        assert_eq!(plan.copies[0].local, "foreground");
+        assert_eq!(plan.copies[0].copy_offset, 12);
+        assert_eq!(plan.copies[1].local, "background");
+        assert_eq!(plan.copies[1].copy_offset, 8);
+
+        let source_slots =
+            plan_aggregate_frame_slots_from(&locals, &statements, 16).unwrap();
+        assert_eq!(source_slots["foreground"], 16);
+        assert_eq!(source_slots["background"], 20);
     }
 }

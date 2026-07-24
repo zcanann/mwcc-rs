@@ -2508,6 +2508,9 @@ mod tests {
     #[path = "returned_callback_guard.rs"]
     mod returned_callback_guard;
 
+    #[path = "aggregate_call_copies.rs"]
+    mod aggregate_call_copies;
+
     #[path = "call_argument_schedules.rs"]
     mod call_argument_schedules;
 

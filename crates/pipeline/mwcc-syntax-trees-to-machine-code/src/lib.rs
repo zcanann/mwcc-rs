@@ -410,6 +410,7 @@ pub fn lower_function(
         structured_float_handoff: None,
         retained_float_compare_value: None,
         frame_slots: HashMap::new(),
+        structured_aggregate_call_copy_plan: None,
         written_slots: HashSet::new(),
         frame_feeding_local_pressure: None,
         callee_saved_conversion_bytes: 0,

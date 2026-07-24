@@ -170,6 +170,35 @@ impl Generator {
     }
 }
 
+/// Redirect an unconditional branch through any forward-only unconditional
+/// branch at its destination. Nested diamonds initially target their own join;
+/// after the parent diamond is complete that join may itself be the parent's
+/// skip-to-continuation branch.
+pub(super) fn thread_forward_unconditional_branch_chains(instructions: &mut [Instruction]) {
+    for index in 0..instructions.len() {
+        let Instruction::Branch { target } = instructions[index] else {
+            continue;
+        };
+        let mut destination = target;
+        let mut remaining = instructions.len();
+        while destination > index && remaining != 0 {
+            let Some(Instruction::Branch { target: next }) = instructions.get(destination) else {
+                break;
+            };
+            if *next <= destination {
+                break;
+            }
+            destination = *next;
+            remaining -= 1;
+        }
+        if destination != target {
+            instructions[index] = Instruction::Branch {
+                target: destination,
+            };
+        }
+    }
+}
+
 fn is_repeated_member_address_call(window: &[Instruction]) -> bool {
     matches!(window, [
         Instruction::AddImmediateCarryingRecord { d: 0, a: first_base, immediate: first_offset },
@@ -286,6 +315,22 @@ fn reuses_preceding_bitfield_storage(instructions: &[Instruction], term_start: u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn threads_a_nested_diamond_skip_through_its_parent_skip() {
+        let mut instructions = vec![
+            Instruction::Branch { target: 2 },
+            Instruction::load_immediate(3, 1),
+            Instruction::Branch { target: 4 },
+            Instruction::load_immediate(3, 2),
+            Instruction::BranchToLinkRegister,
+        ];
+
+        thread_forward_unconditional_branch_chains(&mut instructions);
+
+        assert_eq!(instructions[0], Instruction::Branch { target: 4 });
+        assert_eq!(instructions[2], Instruction::Branch { target: 4 });
+    }
 
     #[test]
     fn recognizes_a_guard_receiver_reloaded_through_its_saved_owner() {
