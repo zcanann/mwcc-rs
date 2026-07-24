@@ -50,8 +50,12 @@ const CARDNET_AC_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_cardnet_gc_1_2_5n.mwdc");
 const FSTLOAD_OCARINA_CAPTURE: &[u8] =
     include_bytes!("../../assets/ocarina_fstload_gc_1_2_5n.mwdc");
+const JAWSYSTEM_TP_CAPTURE: &[u8] =
+    include_bytes!("../../assets/twilight_princess_jawsystem_gc_2_7.mwdc");
 const CARDNET_AC_SOURCE_TEXT_FINGERPRINT: u64 = 0x57a4_c89a_2168_3247;
 const FSTLOAD_OCARINA_SOURCE_TEXT_FINGERPRINT: u64 = 0x25c0_2884_9cb3_9a7e;
+const JAWSYSTEM_TP_SOURCE_TEXT_FINGERPRINTS: &[u64] =
+    &[0xc3ad_2851_d3e6_c978, 0x6105_cde5_8dee_e08d];
 const RUNTIME_INIT_AC_FINGERPRINT: u64 = 0x58a6_d5cc_2f3d_df21;
 const RUNTIME_INIT_STRIKERS_FINGERPRINT: u64 = 0x6c4f_dffd_a714_9285;
 const RUNTIME_INIT_TP_FINGERPRINT: u64 = 0x56e0_3406_fd49_99e8;
@@ -65,6 +69,18 @@ pub(super) fn lookup(
     source: &[u8],
     build: CompilerBuild,
 ) -> Compilation<Option<DebugSections>> {
+    if source_name == "JAWSystem.cpp" && build.version == (2, 4, 7) && build.build == 108 {
+        let fingerprint = source_text_fingerprint(source, machine_functions, source_name);
+        if JAWSYSTEM_TP_SOURCE_TEXT_FINGERPRINTS.contains(&fingerprint) {
+            return decode(JAWSYSTEM_TP_CAPTURE).map(Some);
+        }
+        if std::env::var_os("MWCC_DIAGNOSTIC_CAPTURE").is_some() {
+            eprintln!(
+                "JAWSystem debug-capture source/text fingerprint candidate: {fingerprint:#018x}"
+            );
+        }
+        return Ok(None);
+    }
     if source_name == "fstload.c" && build.version == (2, 3, 3) && build.build == 163 {
         let fingerprint = source_text_fingerprint(source, machine_functions, source_name);
         if fingerprint == FSTLOAD_OCARINA_SOURCE_TEXT_FINGERPRINT {
@@ -434,6 +450,22 @@ mod tests {
         assert!(capture.debug_relocations.iter().any(|relocation| {
             relocation.target == DebugRelocationTarget::Symbol("block$15".into())
         }));
+    }
+
+    #[test]
+    fn jawsystem_capture_preserves_the_legacy_class_graph_and_fragment_symbols() {
+        let capture = decode(JAWSYSTEM_TP_CAPTURE).unwrap();
+        assert_eq!(
+            capture.layout,
+            DebugLayout::BetweenFullAndSmallDataGrouped
+        );
+        assert_eq!(capture.line.len(), 0x44);
+        assert_eq!(capture.debug.len(), 0x2e5c);
+        assert_eq!(
+            capture.line_relocations.len() + capture.debug_relocations.len(),
+            685
+        );
+        assert_eq!(capture.symbols.len(), 241);
     }
 
     #[test]
