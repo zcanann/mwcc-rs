@@ -1349,7 +1349,9 @@ fn compile(
         let const_is_read_only =
             global.is_const && !(is_cxx && !global.is_static && !global.is_weak);
         let force_full_data_section = global.section.is_none()
-            && ((behavior.inferred_array_uses_full_data_section && global.array_length_inferred)
+            && ((behavior.inferred_array_uses_full_data_section
+                && global.array_length_inferred
+                && !global.is_static)
                 || (const_is_read_only && !read_only_small_data));
         // A `static const` SCALAR is folded into its readers (or elided when unused),
         // so keep dropping it. A `static const` ARRAY can't be folded into a register —
@@ -2475,6 +2477,12 @@ mod tests {
 
     #[path = "cxx_const_data.rs"]
     mod cxx_const_data;
+
+    #[path = "elf_object.rs"]
+    mod elf_object;
+
+    #[path = "inferred_array_sections.rs"]
+    mod inferred_array_sections;
 
     #[test]
     fn parity_keep_going_is_an_explicit_diagnostic_flag() {

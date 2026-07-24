@@ -1353,15 +1353,16 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         && data_relocation_targets_section(".rodata");
     let rodata_anchor_needed = rodata_anchor_needed_by_code || rodata_anchor_needed_by_data;
     let mut rodata_anchor_emitted = false;
-    // The writable anchor follows the same creation-time rule as the read-only
-    // anchor: emit it immediately before the first local `.data` object.  Keep
-    // the state alive through every local-symbol phase because the first such
-    // object may be an upfront file static, a function-owned string, or an
-    // interleaved declaration.
+    // A data-initializer relocation creates the writable anchor at the first
+    // source `.data` declaration, even when that declaration has external
+    // linkage and its own symbol belongs to the later GLOBAL run. Code-only
+    // references retain the lazy rule: immediately before the first local
+    // `.data` symbol.
+    let data_marker_needed_by_data = input.object_format.data_relocations_use_section_anchors
+        && data_relocation_targets_section(".data");
     let mut data_marker_pending = functions.iter().any(|function| {
         function.relocations.iter().any(|relocation| matches!(&relocation.target, RelocationTarget::External(name) if name == "...data.0"))
-    }) || (input.object_format.data_relocations_use_section_anchors
-        && data_relocation_targets_section(".data"));
+    }) || data_marker_needed_by_data;
     if rodata_anchor_needed_by_code && input.object_format.rodata_anchor_before_data_symbols {
         local_data_symbols.insert("...rodata.0", (symtab.len() / SYMBOL_SIZE) as u32);
         write_symbol(
@@ -1377,6 +1378,23 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         rodata_anchor_emitted = true;
     }
     for object in &input.data_objects {
+        if data_marker_pending
+            && data_marker_needed_by_data
+            && data_section[object.name] == ".data"
+        {
+            local_data_symbols.insert("...data.0", (symtab.len() / SYMBOL_SIZE) as u32);
+            write_symbol(
+                &mut symtab,
+                strtab.add("...data.0"),
+                0,
+                0,
+                0,
+                0,
+                index_of(".data") as u16,
+            );
+            comment_values.push((1, input.object_format.data_anchor_comment_flags));
+            data_marker_pending = false;
+        }
         if object.is_static
             && (static_forward(object)
                 || input.object_format.local_data_symbols_in_declaration_order)
