@@ -3470,6 +3470,11 @@ impl Generator {
         if self.try_conditional_float_requantize(function)? {
             return Ok(());
         }
+        // A zero-denominator guard followed by a scaled float-to-index table
+        // lookup owns the conversion spill frame and cross-arm address schedule.
+        if self.try_guarded_float_table_index(function)? {
+            return Ok(());
+        }
         // A leading store (or store run) before a trailing `if` needs mwcc's cross-statement
         // scheduler: it hoists the if's condition test as early as possible — into the leading
         // store's value-materialize latency gap (`li r0,1; cmpwi; stw r0,g; beqlr; …`) or to the
