@@ -68,57 +68,75 @@ impl Generator {
         previous_term: &Expression,
         term: &Expression,
     ) -> Compilation<Option<(u8, u8)>> {
-        let (negated, comma) = match term {
-            Expression::Unary {
-                operator: UnaryOperator::LogicalNot,
-                operand,
-            } => (true, operand.as_ref()),
-            _ => (false, term),
-        };
-        let Expression::Comma { left, right } = comma else {
+        let Some(parts) = inline_assertion_parts(term) else {
             return Ok(None);
         };
-        let Expression::Conditional {
-            condition,
-            when_true,
-            when_false,
-            ..
-        } = left.as_ref()
-        else {
-            return Ok(None);
-        };
-        let Expression::Variable(asserted_name) = condition.as_ref() else {
-            return Ok(None);
-        };
-        if proven_nonzero_name(previous_term) != Some(asserted_name.as_str())
-            || !is_void_noop(when_true)
-        {
-            return Ok(None);
-        }
-        let Expression::Call { name, arguments } = when_false.as_ref() else {
-            return Ok(None);
-        };
-        if name != "__assert" {
+        if proven_nonzero_name(previous_term) != Some(parts.asserted_name) {
             return Ok(None);
         }
 
         let assertion_end = self.fresh_label();
         self.emit_branch_conditional_to(4, 2, assertion_end);
-        self.emit_call(name, arguments, None, false)?;
+        self.emit_call("__assert", parts.arguments, None, false)?;
         self.bind_label(assertion_end);
 
-        if negated {
-            if let Some(condition) = self.try_emit_inlined_boolean_result(right)? {
-                return Ok(Some(condition));
-            }
+        if let Some(condition) = self.try_emit_inlined_boolean_result(parts.remainder)? {
+            return Ok(Some(if parts.negated {
+                condition
+            } else {
+                (condition.0 ^ 8, condition.1)
+            }));
         }
-        let remainder = if negated {
+        let remainder = if parts.negated {
             Expression::Unary {
                 operator: UnaryOperator::LogicalNot,
-                operand: right.clone(),
+                operand: Box::new(parts.remainder.clone()),
             }
         } else {
-            right.as_ref().clone()
+            parts.remainder.clone()
+        };
+        self.emit_condition_test(&remainder).map(Some)
+    }
+
+    /// Emit an expression-valued inline assertion when it is itself the first
+    /// condition term. Unlike the proven-nonzero form above, this owns the
+    /// pointer test that skips the cold assertion before lowering the retained
+    /// boolean result.
+    pub(super) fn emit_leading_inline_assertion(
+        &mut self,
+        term: &Expression,
+    ) -> Compilation<Option<(u8, u8)>> {
+        let Some(parts) = inline_assertion_parts(term) else {
+            return Ok(None);
+        };
+        let Some((_, first_mask, second_mask)) =
+            shared_member_mask_conjunction(parts.remainder)
+        else {
+            return Ok(None);
+        };
+        if mask_to_run(first_mask).is_none() || mask_to_run(second_mask).is_none() {
+            return Ok(None);
+        }
+        let (options, condition_bit) = self.emit_condition_test(parts.condition)?;
+        let assertion_end = self.fresh_label();
+        self.emit_branch_conditional_to(options ^ 8, condition_bit, assertion_end);
+        self.emit_call("__assert", parts.arguments, None, false)?;
+        self.bind_label(assertion_end);
+
+        if let Some(condition) = self.try_emit_inlined_boolean_result(parts.remainder)? {
+            return Ok(Some(if parts.negated {
+                condition
+            } else {
+                (condition.0 ^ 8, condition.1)
+            }));
+        }
+        let remainder = if parts.negated {
+            Expression::Unary {
+                operator: UnaryOperator::LogicalNot,
+                operand: Box::new(parts.remainder.clone()),
+            }
+        } else {
+            parts.remainder.clone()
         };
         self.emit_condition_test(&remainder).map(Some)
     }
@@ -167,6 +185,49 @@ impl Generator {
             });
         Ok(Some((4, 2)))
     }
+}
+
+struct InlineAssertionParts<'a> {
+    negated: bool,
+    condition: &'a Expression,
+    asserted_name: &'a str,
+    arguments: &'a [Expression],
+    remainder: &'a Expression,
+}
+
+fn inline_assertion_parts(term: &Expression) -> Option<InlineAssertionParts<'_>> {
+    let (negated, comma) = match term {
+        Expression::Unary {
+            operator: UnaryOperator::LogicalNot,
+            operand,
+        } => (true, operand.as_ref()),
+        _ => (false, term),
+    };
+    let Expression::Comma { left, right } = comma else {
+        return None;
+    };
+    let Expression::Conditional {
+        condition,
+        when_true,
+        when_false,
+        ..
+    } = left.as_ref()
+    else {
+        return None;
+    };
+    let Expression::Variable(asserted_name) = condition.as_ref() else {
+        return None;
+    };
+    let Expression::Call { name, arguments } = when_false.as_ref() else {
+        return None;
+    };
+    (is_void_noop(when_true) && name == "__assert").then_some(InlineAssertionParts {
+        negated,
+        condition,
+        asserted_name,
+        arguments,
+        remainder: right,
+    })
 }
 
 fn is_assertion_float_member_return(window: &[Instruction]) -> bool {

@@ -392,6 +392,13 @@ impl Generator {
             && saved_parameters.is_empty()
             && count == 2
             && deferred_home_plan.group_count != 0;
+        let unused_array_eager_homes = unused_frame_array
+            && saved_parameters.is_empty()
+            && deferred_home_plan.group_count == 0
+            && eager_saved_locals.len() >= 2;
+        let unused_array_aggregate_eager_homes = unused_array_eager_homes
+            && frame_array_bytes == 4
+            && !aggregate_frame_locals.is_empty();
         let first_saved = 32usize.saturating_sub(count);
         let dense_frame = uses_dense_saved_register_range(
             with_frame_array,
@@ -486,10 +493,10 @@ impl Generator {
                         .position(|candidate| *candidate == group)
                         .unwrap_or(group);
                     self.fresh_virtual_general_preferring(31u8.saturating_sub(rank as u8))
-                } else if unused_array_two_homes {
+                } else if unused_array_two_homes || unused_array_aggregate_eager_homes {
                     // A dead scratch array keeps its source frame bytes but no
-                    // value node. The later-assigned alias takes r31 and the
-                    // entry-initialized object therefore begins in r30.
+                    // value node. The retained values keep source creation
+                    // order from the bottom of the saved-register range.
                     self.fresh_virtual_general_preferring((first_saved + home_index) as u8)
                 } else if with_frame_array && eager_saved_locals.is_empty() && count <= 18 {
                     let preferred = if dense_entry_prefix && deferred_home_plan.group_count == 1 {
@@ -616,6 +623,7 @@ impl Generator {
                 // Ordinary structured frames retain their 16-byte rounding.
                 let alignment = if folded_terminal_pointer_alias
                     || saved_float_plan.group_count != 0
+                    || (unused_frame_array && !aggregate_frame_locals.is_empty())
                 {
                     8
                 } else {
@@ -760,10 +768,6 @@ impl Generator {
                 .push(Instruction::BranchAndLink { target: helper });
         }
 
-        let unused_array_eager_homes = unused_frame_array
-            && saved_parameters.is_empty()
-            && deferred_home_plan.group_count == 0
-            && eager_saved_locals.len() >= 2;
         let paired_eager_deferred_homes = self.legacy_callee_saved_frame_layout
             == LegacyCalleeSavedFrameLayout::RetainEagerLocalLane
             && count == 2;
@@ -1404,7 +1408,7 @@ impl Generator {
                         for (term_index, term) in terms.iter().copied().enumerate() {
                             let term_start = self.output.instructions.len();
                             let retained_assertion_condition = if term_index == 0 {
-                                None
+                                self.emit_leading_inline_assertion(term)?
                             } else {
                                 self.emit_proven_inline_assertion(terms[term_index - 1], term)?
                             };
