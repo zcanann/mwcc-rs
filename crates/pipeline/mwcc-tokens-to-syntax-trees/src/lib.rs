@@ -6958,6 +6958,87 @@ blr\n\
     }
 
     #[test]
+    fn parses_an_opaque_qualified_reference_local_after_control_flow() {
+        let source = r#"
+            namespace api {}
+            void run(int condition) {
+                if (condition)
+                    condition = 1;
+                else
+                    condition = 2;
+                api::OpaqueList& list;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let list = unit.functions[0]
+            .locals
+            .iter()
+            .find(|local| local.name == "list")
+            .expect("opaque qualified reference local");
+        assert_eq!(
+            list.declared_type,
+            mwcc_syntax_trees::Type::StructPointer { element_size: 0 }
+        );
+    }
+
+    #[test]
+    fn recovers_friend_bearing_layouts_and_expression_template_arguments() {
+        let source = r#"
+            namespace api {
+                class ListBase {
+                    friend class Inspector;
+                public:
+                    class Iterator;
+                    class Iterator {
+                        friend class ListBase;
+                        int* node;
+                    };
+                    int count;
+                };
+                template <typename T, int Offset>
+                class List : public ListBase {
+                public:
+                    class Iterator {
+                        friend class List;
+                        typedef T Element;
+                        int* node;
+                    };
+                    typedef Iterator ConstIterator;
+                };
+            }
+            namespace client {
+                struct Entry { int link; };
+                typedef api::List<Entry, ((int)&(((Entry*)0)->link))> EntryList;
+                EntryList values;
+                EntryList::Iterator iterator;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(
+            unit.globals[0].declared_type,
+            mwcc_syntax_trees::Type::Struct { size: 4, align: 4 }
+        );
+        assert_eq!(
+            unit.globals[1].declared_type,
+            mwcc_syntax_trees::Type::Struct { size: 4, align: 4 }
+        );
+    }
+
+    #[test]
     fn retains_qualified_nested_enum_identity_without_outer_layout() {
         let source = r#"
             class Particle {

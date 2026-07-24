@@ -281,8 +281,19 @@ impl Parser {
         let mut arguments = Vec::new();
         let mut identities = Vec::new();
         loop {
-            if let Some(Token::IntegerLiteral(value)) = self.tokens.get(cursor) {
-                let constant = u32::try_from(*value).ok()?;
+            let literal = match self.tokens.get(cursor) {
+                Some(Token::IntegerLiteral(value))
+                    if matches!(
+                    self.tokens.get(cursor + 1),
+                    Some(Token::Comma | Token::Greater)
+                ) =>
+                {
+                    Some(*value)
+                }
+                _ => None,
+            };
+            if let Some(value) = literal {
+                let constant = u32::try_from(value).ok()?;
                 arguments.push(ResolvedTemplateType {
                     declared: Type::Void,
                     known: true,
@@ -295,23 +306,69 @@ impl Parser {
                 cursor += 1;
             } else {
                 let argument_start = cursor;
-                let (declared, identity, mut end) = self.template_argument_at(cursor)?;
-                if self.tokens.get(argument_start) == Some(&Token::KeywordUnsigned)
-                    && self.tokens.get(end) == Some(&Token::KeywordInt)
-                {
-                    end += 1;
+                let parsed_type = self.template_argument_at(cursor).and_then(
+                    |(declared, identity, mut end)| {
+                        if self.tokens.get(argument_start) == Some(&Token::KeywordUnsigned)
+                            && self.tokens.get(end) == Some(&Token::KeywordInt)
+                        {
+                            end += 1;
+                        }
+                        matches!(
+                            self.tokens.get(end),
+                            Some(Token::Comma | Token::Greater)
+                        )
+                        .then_some((declared, identity, end))
+                    },
+                );
+                if let Some((declared, identity, end)) = parsed_type {
+                    let known = declared.is_some();
+                    arguments.push(ResolvedTemplateType {
+                        declared: declared.unwrap_or(Type::Void),
+                        known,
+                        identity: identity.clone(),
+                        tag: None,
+                        layout: None,
+                        constant: None,
+                    });
+                    identities.push(identity.unwrap_or_else(|| "...".to_owned()));
+                    cursor = end;
+                } else {
+                    // Non-type arguments are ordinary constant expressions,
+                    // not merely literals. SDK containers commonly use an
+                    // `offsetof` expansion containing casts, address-of, and
+                    // member access. Its numeric value matters only when a
+                    // recovered field explicitly uses this parameter as an
+                    // array extent; otherwise an opaque expression identity is
+                    // sufficient to instantiate argument-independent layout.
+                    let mut end = argument_start;
+                    let mut parens = 0usize;
+                    let mut brackets = 0usize;
+                    while let Some(token) = self.tokens.get(end) {
+                        match token {
+                            Token::ParenOpen => parens += 1,
+                            Token::ParenClose if parens > 0 => parens -= 1,
+                            Token::BracketOpen => brackets += 1,
+                            Token::BracketClose if brackets > 0 => brackets -= 1,
+                            Token::Comma | Token::Greater if parens == 0 && brackets == 0 => break,
+                            Token::EndOfFile => return None,
+                            _ => {}
+                        }
+                        end += 1;
+                    }
+                    if end == argument_start {
+                        return None;
+                    }
+                    arguments.push(ResolvedTemplateType {
+                        declared: Type::Void,
+                        known: false,
+                        identity: Some("...".to_owned()),
+                        tag: None,
+                        layout: None,
+                        constant: None,
+                    });
+                    identities.push("...".to_owned());
+                    cursor = end;
                 }
-                let known = declared.is_some();
-                arguments.push(ResolvedTemplateType {
-                    declared: declared.unwrap_or(Type::Void),
-                    known,
-                    identity: identity.clone(),
-                    tag: None,
-                    layout: None,
-                    constant: None,
-                });
-                identities.push(identity.unwrap_or_else(|| "...".to_owned()));
-                cursor = end;
             }
             match self.tokens.get(cursor) {
                 Some(Token::Comma) => cursor += 1,
@@ -502,15 +559,19 @@ impl Parser {
         match pattern {
             TemplateTypePattern::Parameter(index) => arguments.get(*index).cloned(),
             TemplateTypePattern::Named(name) => {
-                let layout = self.structs.get(name)?.clone();
+                let qualified = self
+                    .resolve_scoped_cxx_class_name(name)
+                    .or_else(|| self.struct_typedefs.get(name).cloned())
+                    .unwrap_or_else(|| name.clone());
+                let layout = self.structs.get(&qualified)?.clone();
                 Some(ResolvedTemplateType {
                     declared: Type::Struct {
                         size: layout.size,
                         align: layout.align,
                     },
                     known: true,
-                    identity: Some(name.clone()),
-                    tag: Some(name.clone()),
+                    identity: Some(qualified.clone()),
+                    tag: Some(qualified),
                     layout: Some(layout),
                     constant: None,
                 })
@@ -1220,6 +1281,14 @@ impl Parser {
             name.push_str(component);
             cursor += 3;
         }
+        // Template patterns are declarations, so relative aggregate names bind
+        // in the template's lexical namespace. Deferring this lookup until a
+        // typedef instantiates the template incorrectly searches the typedef's
+        // namespace instead (`lyt::detail` instead of `ut::detail`).
+        name = self
+            .resolve_scoped_cxx_class_name(&name)
+            .or_else(|| self.struct_typedefs.get(&name).cloned())
+            .unwrap_or(name);
         if self.tokens.get(cursor) != Some(&Token::Less) {
             return Some((TemplateTypePattern::Named(name), cursor));
         }
@@ -1332,7 +1401,9 @@ impl Parser {
                 }
                 Some(Token::EndOfFile) | None => return,
                 _ if depth == 1 => {
-                    if let Some((mut declaration, next)) = self
+                    if let Some(next) = self.skip_template_nonstorage_declaration_at(cursor) {
+                        cursor = next;
+                    } else if let Some((mut declaration, next)) = self
                         .capture_template_anonymous_union(
                             cursor,
                             &parameters,
@@ -1358,7 +1429,7 @@ impl Parser {
             let default_constructor_zero_fields =
                 capture_default_constructor_zero_fields(&self.tokens, body_open, cursor - 1, &name);
             self.struct_templates.insert(
-                name,
+                name.clone(),
                 StructTemplate {
                     parameters,
                     base,
@@ -1367,6 +1438,121 @@ impl Parser {
                 },
             );
         }
+        self.capture_nested_template_class_layouts(body_open + 1, cursor - 1, &name);
+    }
+
+    /// Recover argument-independent nested classes from a primary template.
+    /// Container iterators often contain only a concrete implementation
+    /// iterator even though their methods mention `T`; the dependent methods
+    /// can remain skipped while the one-word object layout is fully known.
+    fn capture_nested_template_class_layouts(
+        &mut self,
+        body_start: usize,
+        body_end: usize,
+        template_name: &str,
+    ) {
+        let owner = self.qualify_cxx_class_name(template_name);
+        let mut cursor = body_start;
+        let mut depth = 1usize;
+        while cursor < body_end {
+            let nested_definition = depth == 1
+                && (matches!(self.tokens.get(cursor), Some(Token::KeywordStruct))
+                    || matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if word == "class"))
+                && matches!(self.tokens.get(cursor + 1), Some(Token::Identifier(_)))
+                && matches!(
+                    self.tokens.get(cursor + 2),
+                    Some(Token::BraceOpen | Token::Colon)
+                );
+            if nested_definition {
+                let saved_position = self.position;
+                self.position = cursor;
+                if let Ok((nested, layout, class)) =
+                    self.parse_class_definition_in_scope(Some(&owner), false)
+                {
+                    let qualified = format!("{owner}::{nested}");
+                    self.struct_typedefs.insert(
+                        format!("{template_name}::{nested}"),
+                        qualified.clone(),
+                    );
+                    self.struct_typedefs
+                        .insert(nested.clone(), qualified.clone());
+                    self.structs.insert(qualified.clone(), layout);
+                    if !self.cxx_classes.contains_key(&qualified) {
+                        self.cxx_class_declaration_order.push(qualified.clone());
+                    }
+                    self.cxx_classes.insert(qualified, class);
+                }
+                self.position = saved_position;
+            }
+            match self.tokens.get(cursor) {
+                Some(Token::BraceOpen) => depth += 1,
+                Some(Token::BraceClose) => depth = depth.saturating_sub(1),
+                Some(Token::EndOfFile) | None => break,
+                _ => {}
+            }
+            cursor += 1;
+        }
+    }
+
+    /// Map `Namespace::Alias::Nested` through a concrete template typedef to
+    /// the argument-independent nested layout recovered from its primary.
+    /// Returns `(generic layout key, concrete source identity)`.
+    pub(crate) fn resolve_nested_template_alias_layout(
+        &self,
+        source_qualified: &str,
+    ) -> Option<(String, String)> {
+        let (parent, nested) = source_qualified.rsplit_once("::")?;
+        let alias = parent.rsplit("::").next()?;
+        let instance = self.struct_typedefs.get(alias)?;
+        let primary = instance.split('<').next()?;
+        let suffix = format!("{primary}::{nested}");
+        let mut candidates = self
+            .structs
+            .keys()
+            .filter(|name| *name == &suffix || name.ends_with(&format!("::{suffix}")));
+        let generic = candidates.next()?.clone();
+        if candidates.next().is_some() {
+            return None;
+        }
+        Some((generic, format!("{instance}::{nested}")))
+    }
+
+    /// Skip type-only declarations inside a primary template body. Feeding
+    /// their trailing aliases back into field recovery invents storage for
+    /// `typedef ReverseIterator<Iterator> RevIterator;` and makes every
+    /// specialization layout fail when that alias is unresolved.
+    fn skip_template_nonstorage_declaration_at(&self, start: usize) -> Option<usize> {
+        let nested_forward = (matches!(self.tokens.get(start), Some(Token::KeywordStruct))
+            || matches!(self.tokens.get(start), Some(Token::Identifier(word)) if word == "class"))
+            && matches!(self.tokens.get(start + 1), Some(Token::Identifier(_)))
+            && self.tokens.get(start + 2) == Some(&Token::Semicolon);
+        if nested_forward {
+            return Some(start + 3);
+        }
+        if !matches!(self.tokens.get(start), Some(Token::Identifier(word)) if matches!(word.as_str(), "typedef" | "using"))
+        {
+            return None;
+        }
+        let mut cursor = start + 1;
+        let mut angles = 0usize;
+        let mut parens = 0usize;
+        while let Some(token) = self.tokens.get(cursor) {
+            match token {
+                Token::Less => angles += 1,
+                Token::Greater if angles > 0 => angles -= 1,
+                Token::ParenOpen => parens += 1,
+                Token::ParenClose if parens > 0 => parens -= 1,
+                Token::Semicolon if angles == 0 && parens == 0 => return Some(cursor + 1),
+                Token::BraceOpen | Token::BraceClose | Token::EndOfFile
+                    if angles == 0 && parens == 0 =>
+                {
+                    return None;
+                }
+                _ => {}
+            }
+            cursor += 1;
+        }
+        None
     }
 
     /// Capture the storage-bearing declarations of an anonymous union in a

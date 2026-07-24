@@ -1357,6 +1357,10 @@ impl Parser {
             // declaration or a parenthesized cast type-id.
             return false;
         }
+        let opaque_indirection = matches!(
+            self.tokens.get(scan),
+            Some(Token::Star | Token::Ampersand)
+        );
         let qualified = components.join("::");
         self.resolve_scoped_cxx_class_name(&qualified).is_some()
             || self.enum_types.contains_key(&qualified)
@@ -1364,6 +1368,13 @@ impl Parser {
                 .struct_typedefs
                 .values()
                 .any(|mapped| mapped == &qualified)
+            || self.resolve_nested_template_alias_layout(&qualified).is_some()
+            // Headers can hide a typedef's definition behind unsupported
+            // template syntax while later code still declares a pointer or
+            // reference to it. The indirection makes this a usable opaque
+            // type-id; parse_type_base retains its qualified source identity
+            // without inventing a value layout.
+            || opaque_indirection
     }
 
     /// Recover declaration semantics from a C++ aggregate independently of
@@ -3251,7 +3262,7 @@ impl Parser {
     /// qualified base (`Outer::Inner`). Keeping this recursion inside layout
     /// parsing means an unsupported nested declaration cannot be mistaken for
     /// the outer class's first data member.
-    fn parse_class_definition_in_scope(
+    pub(crate) fn parse_class_definition_in_scope(
         &mut self,
         enclosing_class: Option<&str>,
         trailing_typedef_alias: bool,
@@ -3528,6 +3539,27 @@ impl Parser {
 
         self.expect(Token::BraceOpen)?;
         while *self.peek() != Token::BraceClose {
+            // Friendship affects access and lookup, never object storage. It
+            // may name an incomplete qualified class or define an inline
+            // non-member operator, neither of which should make the owner's
+            // otherwise complete layout unrecoverable.
+            if self.eat_word("friend") {
+                self.skip_class_member()?;
+                continue;
+            }
+            // A nested forward declaration reserves a type name but no bytes.
+            // Its later definition is handled by the ordinary nested-class
+            // path below.
+            if (matches!(self.peek(), Token::KeywordStruct)
+                || matches!(self.peek(), Token::Identifier(word) if word == "class"))
+                && matches!(self.peek_at(1), Token::Identifier(_))
+                && *self.peek_at(2) == Token::Semicolon
+            {
+                self.advance();
+                self.advance();
+                self.advance();
+                continue;
+            }
             let nested_typedef_definition =
                 matches!(self.peek(), Token::Identifier(word) if word == "typedef")
                     && (matches!(self.peek_at(1), Token::KeywordStruct)
@@ -3549,7 +3581,11 @@ impl Parser {
                     )?;
                 let nested_qualified = format!("{qualified_name}::{nested_name}");
                 self.struct_typedefs
-                    .insert(nested_name, nested_qualified.clone());
+                    .insert(nested_name.clone(), nested_qualified.clone());
+                self.struct_typedefs.insert(
+                    format!("{name}::{nested_name}"),
+                    nested_qualified.clone(),
+                );
                 self.structs
                     .insert(nested_qualified.clone(), nested_layout);
                 if !self.cxx_classes.contains_key(&nested_qualified) {
@@ -3584,7 +3620,20 @@ impl Parser {
             // Retain both facts in the same registries as a top-level typedef
             // before continuing with the class's physical members.
             if self.eat_word("typedef") {
-                let aliased = self.parse_type()?;
+                let typedef_body = self.position;
+                let aliased = match self.parse_type() {
+                    Ok(aliased) => aliased,
+                    Err(_) => {
+                        // A dependent nested alias (`typedef T TElem`) cannot
+                        // be assigned concrete storage until instantiation,
+                        // but the alias declaration itself occupies no bytes.
+                        // Skip it without discarding otherwise concrete fields
+                        // in this nested template class.
+                        self.position = typedef_body;
+                        self.skip_class_member()?;
+                        continue;
+                    }
+                };
                 let aliased_source = self.take_cxx_type_identity(aliased, false);
                 if let Some((alias, _, function_type)) =
                     self.try_cxx_function_pointer_declarator(aliased_source)?
