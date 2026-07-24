@@ -194,6 +194,12 @@ pub(crate) struct Generator {
     /// per-symbol address mode when subscripting it: a small array (≤ 8 bytes,
     /// `.sdata`) materializes via SDA21, a large one (`.data`/`.bss`) via ADDR16.
     pub(crate) global_array_sizes: HashMap<String, u32>,
+    /// Every file-scope array, including `extern T table[]` declarations whose
+    /// extent is unknown in this translation unit. Keep identity separate from
+    /// `global_array_sizes`: optimizations may require a proven finite bound,
+    /// while type classification and address materialization only need to know
+    /// that the symbol is an array.
+    pub(crate) global_arrays: HashSet<String>,
     /// Registers holding live values that must not be clobbered while a sibling
     /// sub-expression is being evaluated. The allocator draws temporaries from
     /// the registers outside this set.
@@ -403,6 +409,18 @@ pub(crate) fn class_of(declared: Type) -> Compilation<ValueClass> {
 }
 
 impl Generator {
+    pub(crate) fn is_global_array(&self, name: &str) -> bool {
+        self.global_arrays.contains(name)
+    }
+
+    /// Extent used only to select the symbol's address form. An unknown extern
+    /// array is conservatively non-small; the sentinel never enters the finite
+    /// extent map and therefore cannot satisfy bounds-based optimizations.
+    pub(crate) fn global_array_address_extent(&self, name: &str) -> Option<u32> {
+        self.is_global_array(name)
+            .then(|| self.global_array_sizes.get(name).copied().unwrap_or(u32::MAX))
+    }
+
     /// Signedness of a resolved syntax-tree type. The parser has already mapped
     /// a build-dependent plain `char` to either `Char` or `UnsignedChar`, while
     /// explicit `signed char` always remains `Char`. Codegen must therefore use
@@ -854,7 +872,7 @@ impl Generator {
         // A global ARRAY's name classifies by its element type (`map[i]` over
         // `unsigned char map[256]` reads a byte) — the subscript emitters carry
         // the addressing; this is only the width/signedness classification.
-        if self.global_array_sizes.contains_key(name) {
+        if self.is_global_array(name) {
             if let Some(pointee) = self
                 .globals
                 .get(name)

@@ -822,7 +822,7 @@ impl Generator {
         // `g[index]` where `g` is a file-scope array global: its address is
         // materialized by size (SDA21 small / ADDR16 large), then the element load.
         if let Expression::Variable(name) = base {
-            if let Some(&total_size) = self.global_array_sizes.get(name.as_str()) {
+            if let Some(total_size) = self.global_array_address_extent(name.as_str()) {
                 return self.emit_global_array_subscript(name, total_size, index, destination);
             }
             // `__EXIRegs[k]` — a fixed-address (hardware register) array. mwcc materializes the base

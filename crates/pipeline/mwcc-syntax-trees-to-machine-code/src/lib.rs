@@ -345,6 +345,19 @@ pub fn lower_function(
                     }),
             )
             .collect(),
+        global_arrays: static_locals
+            .iter()
+            .filter(|local| local.array_length.is_some())
+            .map(|local| local.name.clone())
+            .chain(
+                globals
+                    .iter()
+                    .filter(|global| {
+                        global.array_length.is_some() || global.array_length_inferred
+                    })
+                    .map(|global| global.name.clone()),
+            )
+            .collect(),
         reserved: HashSet::new(),
         frame_size: 0,
         float: generator::FloatContext::default(),

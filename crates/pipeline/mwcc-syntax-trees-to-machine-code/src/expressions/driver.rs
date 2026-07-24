@@ -462,7 +462,9 @@ impl Generator {
                     let (source, width, signed) = (location.register, location.width, location.signed);
                     self.emit_widen(destination, source, width, signed);
                     Ok(())
-                } else if let Some(&total_size) = self.global_array_sizes.get(name.as_str()) {
+                } else if let Some(total_size) =
+                    self.global_array_address_extent(name.as_str())
+                {
                     // A bare array variable in value position decays to its address
                     // (`return g;` / `f(g)` for `int g[N]`), not a load of g[0].
                     self.emit_global_array_decay(name, total_size, destination)
@@ -1022,7 +1024,7 @@ impl Generator {
                 // can't classify it; consult the global's element type directly).
                 matches!(self.pointee_of(base), Ok(Pointee::Float | Pointee::Double))
                     || matches!(base.as_ref(), Expression::Variable(name)
-                        if self.global_array_sizes.contains_key(name.as_str())
+                        if self.is_global_array(name.as_str())
                             && matches!(self.globals.get(name.as_str()), Some(Type::Float | Type::Double)))
             }
             Expression::Member { member_type, .. } => *member_type == Type::Float,
