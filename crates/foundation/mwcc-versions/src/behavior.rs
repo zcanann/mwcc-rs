@@ -134,6 +134,7 @@ pub enum Quirk {
     /// Build 163's int-to-float lowering stores a biased signed value through
     /// r0 before materializing the high word in that same register.
     LegacyFloatCastSchedule,
+    LegacyGuardedNestedMemberBaseOrder,
     LegacyFoldedFloatCompareBeforeLinkage,
     LegacyGuardHighBeforeLeadingFrameStore,
     LegacyFrexpPhysicalFrame,
@@ -216,6 +217,7 @@ impl Quirk {
             Quirk::FloatCastStoresValueFirst => QuirkKind::Intentional,
             Quirk::FloatCompareLoadsValueFirst => QuirkKind::Intentional,
             Quirk::LegacyFloatCastSchedule => QuirkKind::Intentional,
+            Quirk::LegacyGuardedNestedMemberBaseOrder => QuirkKind::Intentional,
             Quirk::LegacyFoldedFloatCompareBeforeLinkage => QuirkKind::Intentional,
             Quirk::LegacyGuardHighBeforeLeadingFrameStore => QuirkKind::Intentional,
             Quirk::LegacyFrexpPhysicalFrame => QuirkKind::Intentional,
@@ -301,6 +303,9 @@ impl Quirk {
             }
             Quirk::LegacyFloatCastSchedule => {
                 "int->float uses build 163's r0 scratch/store schedule"
+            }
+            Quirk::LegacyGuardedNestedMemberBaseOrder => {
+                "guarded nested-member links color build 163's value before the retained base"
             }
             Quirk::LegacyFoldedFloatCompareBeforeLinkage => {
                 "folded float comparisons precede build 163's linkage instructions"
@@ -558,6 +563,9 @@ pub struct Behavior {
     pub float_cast_value_store_first: bool,
     /// Whether int-to-float uses build 163's r0 scratch/store ordering.
     pub legacy_float_cast_schedule: bool,
+    /// Whether a guarded nested-member link gives the compared value r4 and
+    /// its retained pointer base r5 (build 163), rather than the mainline order.
+    pub legacy_guarded_nested_member_base_order: bool,
     /// Scheduling and frame family for integer call results converted to float.
     pub int_call_result_conversion_style: IntCallResultConversionStyle,
     /// In a non-leaf `if`-prologue, whether the saved-LR store precedes a leading
@@ -908,6 +916,10 @@ impl Behavior {
             char_is_signed: config.char_is_signed(),
             float_cast_value_store_first: config.build.profile.float_cast_value_store_first(),
             legacy_float_cast_schedule: config.build.profile.legacy_float_cast_schedule(),
+            legacy_guarded_nested_member_base_order: config
+                .build
+                .profile
+                .legacy_guarded_nested_member_base_order(),
             int_call_result_conversion_style: config
                 .build
                 .profile
@@ -1259,6 +1271,11 @@ impl Behavior {
         }
         if self.legacy_float_cast_schedule {
             quirks.push(ActiveQuirk::of(Quirk::LegacyFloatCastSchedule));
+        }
+        if self.legacy_guarded_nested_member_base_order {
+            quirks.push(ActiveQuirk::of(
+                Quirk::LegacyGuardedNestedMemberBaseOrder,
+            ));
         }
         if self.folded_float_compare_linkage_style == FoldedFloatCompareLinkageStyle::CompareFirst {
             quirks.push(ActiveQuirk::of(

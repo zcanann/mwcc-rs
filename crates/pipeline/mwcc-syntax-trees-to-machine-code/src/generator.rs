@@ -11,7 +11,7 @@ use mwcc_machine_code::{
 };
 use mwcc_syntax_trees::{BinaryOperator, Expression, Pointee, Type, UnaryOperator};
 use mwcc_versions::Behavior;
-use mwcc_vreg::{Reg, RegisterConstraints};
+use mwcc_vreg::{Class, Reg, RegisterConstraints};
 use std::collections::{HashMap, HashSet};
 
 /// The scratch register mwcc spills the secondary operand of a binary node into.
@@ -524,6 +524,15 @@ impl Generator {
         let virtual_register = Reg::general(id);
         self.next_virtual += 1;
         virtual_register.to_field()
+    }
+
+    /// Update the allocator preference of an existing general virtual. Whole-body
+    /// liveness passes use this when extending a temporary's live range changes
+    /// MWCC's coloring order after instruction selection created the value.
+    pub(crate) fn prefer_virtual_general(&mut self, register: u8, preferred: u8) {
+        if let Reg::Virtual(register) = Reg::from_field(register, Class::General) {
+            self.register_prefer.insert(register.id, preferred);
+        }
     }
 
     /// A fresh general virtual register that the allocator must not place in any
