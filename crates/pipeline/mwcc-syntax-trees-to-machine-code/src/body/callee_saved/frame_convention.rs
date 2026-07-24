@@ -326,11 +326,29 @@ impl Generator {
             let promoted_values = promoted_parameter_count.max(retained_parameter_lanes);
             (promoted_values + self.legacy_discarded_call_locals).div_ceil(2)
         };
-        let base_size = old_size
-            .saturating_add(i16::try_from(extra_lane_count * 8).unwrap_or(i16::MAX))
-            .saturating_add(
-                i16::try_from(self.legacy_inline_expansion_frame_bytes).unwrap_or(i16::MAX),
-            );
+        let entry_lane_bytes = i16::try_from(extra_lane_count * 8).unwrap_or(i16::MAX);
+        let inline_lane_bytes =
+            i16::try_from(self.legacy_inline_expansion_frame_bytes).unwrap_or(i16::MAX);
+        // A single inlined aggregate setter reuses the retained two-parameter
+        // entry-table lane as the anonymous slot below its frame-resident
+        // aggregate. The lane therefore moves the aggregate up by one word
+        // pair but grows the frame only once; treating the two provenances as
+        // additive produces an oversized frame and leaves the aggregate at +8.
+        let shares_inline_aggregate_lane = entry_lane_bytes == 8
+            && inline_lane_bytes == 8
+            && physical_saved.len() == 1
+            && self.frame_slots.len() == 1
+            && self.frame_slots.values().all(|slot| {
+                slot.offset == 8
+                    && !slot.is_array
+                    && matches!(slot.value_type, Type::Struct { size: 12, .. })
+            });
+        let retained_frame_bytes = if shares_inline_aggregate_lane {
+            entry_lane_bytes.max(inline_lane_bytes)
+        } else {
+            entry_lane_bytes.saturating_add(inline_lane_bytes)
+        };
+        let base_size = old_size.saturating_add(retained_frame_bytes);
         let conversion_size = if self.callee_saved_conversion_bytes == 0 {
             old_size
         } else {
@@ -340,6 +358,17 @@ impl Generator {
             conversion_end.saturating_add(7) & !7
         };
         let new_size = base_size.max(conversion_size);
+        if shares_inline_aggregate_lane {
+            let slots: Vec<_> = self
+                .frame_slots
+                .values()
+                .map(|slot| (slot.offset, i16::from(slot.size)))
+                .collect();
+            relayout_frame_slot_displacements(&mut self.output.instructions, &slots, 8);
+            for slot in self.frame_slots.values_mut() {
+                slot.offset = slot.offset.saturating_add(8);
+            }
+        }
 
         if let Instruction::StoreWordWithUpdate { offset, .. } = &mut self.output.instructions[0] {
             *offset = -new_size;
@@ -977,6 +1006,47 @@ fn relayout_callee_saved_slot(
     }
 }
 
+/// Move displacement-based references to a frame-local region by `shift`.
+/// The caller supplies a snapshot of the old slots so adjacent slots cannot
+/// cause an already-moved reference to be shifted a second time.
+fn relayout_frame_slot_displacements(
+    instructions: &mut [Instruction],
+    slots: &[(i16, i16)],
+    shift: i16,
+) {
+    let belongs_to_slot = |offset: i16| {
+        slots.iter().any(|(start, size)| {
+            start
+                .checked_add(*size)
+                .is_some_and(|end| (*start..end).contains(&offset))
+        })
+    };
+    for instruction in instructions {
+        let displacement = match instruction {
+            Instruction::StoreWord { a: 1, offset, .. }
+            | Instruction::StoreByte { a: 1, offset, .. }
+            | Instruction::StoreHalfword { a: 1, offset, .. }
+            | Instruction::StoreFloatSingle { a: 1, offset, .. }
+            | Instruction::StoreFloatDouble { a: 1, offset, .. }
+            | Instruction::LoadWord { a: 1, offset, .. }
+            | Instruction::LoadByteZero { a: 1, offset, .. }
+            | Instruction::LoadHalfwordZero { a: 1, offset, .. }
+            | Instruction::LoadHalfwordAlgebraic { a: 1, offset, .. }
+            | Instruction::LoadFloatSingle { a: 1, offset, .. }
+            | Instruction::LoadFloatDouble { a: 1, offset, .. }
+            | Instruction::PairedSingleQuantizedLoad { a: 1, offset, .. }
+            | Instruction::PairedSingleQuantizedStore { a: 1, offset, .. } => Some(offset),
+            Instruction::AddImmediate {
+                a: 1, immediate, ..
+            } => Some(immediate),
+            _ => None,
+        };
+        if let Some(displacement) = displacement.filter(|offset| belongs_to_slot(**offset)) {
+            *displacement = displacement.saturating_add(shift);
+        }
+    }
+}
+
 /// Remap instruction-index relocations after `[0..=end]` rotates left once.
 fn remap_prefix_rotate_left(
     relocations: &mut [mwcc_machine_code::Relocation],
@@ -1049,5 +1119,38 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn frame_slot_relayout_moves_only_local_displacements() {
+        let mut instructions = vec![
+            Instruction::StoreFloatSingle {
+                s: 0,
+                a: 1,
+                offset: 8,
+            },
+            Instruction::LoadWord {
+                d: 3,
+                a: 1,
+                offset: 16,
+            },
+            Instruction::StoreWord {
+                s: 31,
+                a: 1,
+                offset: 28,
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 1,
+                immediate: 8,
+            },
+        ];
+
+        relayout_frame_slot_displacements(&mut instructions, &[(8, 12)], 8);
+
+        assert!(matches!(instructions[0], Instruction::StoreFloatSingle { offset: 16, .. }));
+        assert!(matches!(instructions[1], Instruction::LoadWord { offset: 24, .. }));
+        assert!(matches!(instructions[2], Instruction::StoreWord { offset: 28, .. }));
+        assert!(matches!(instructions[3], Instruction::AddImmediate { immediate: 16, .. }));
     }
 }
