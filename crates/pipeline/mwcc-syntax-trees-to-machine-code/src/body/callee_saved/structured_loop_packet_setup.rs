@@ -16,11 +16,26 @@ impl Generator {
             return;
         };
         let dead_load = dead_prepacket_member_load(&self.output.instructions, first_load);
+        let preserved_load =
+            super::structured_loop_packet_load_reuse::preserve_earlier_member_load(
+                &mut self.output.instructions,
+                first_load,
+            );
         debug_assert!(first_load < duplicate_load && duplicate_load < duplicate_shift);
         self.remove_packet_setup_instruction(duplicate_shift);
         self.remove_packet_setup_instruction(duplicate_load);
+        if preserved_load {
+            self.remove_packet_setup_instruction(first_load);
+        }
         if let Some(dead_load) = dead_load {
             self.remove_packet_setup_instruction(dead_load);
+        }
+        if let Some(high_constant) =
+            super::structured_loop_packet_immediates::fold_masked_high_constant(
+                &mut self.output.instructions,
+            )
+        {
+            self.remove_packet_setup_instruction(high_constant);
         }
     }
 
