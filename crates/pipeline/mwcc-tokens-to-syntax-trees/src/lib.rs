@@ -1786,6 +1786,36 @@ blr\n\
     }
 
     #[test]
+    fn retains_pointer_identity_across_direct_member_call_chains() {
+        let source = r#"
+            class Block {
+            public:
+                int* getValue(int);
+            };
+            class Material {
+            public:
+                Block* block;
+                Block* getBlock() { return block; }
+            };
+            int* compiled(Material* material) {
+                return material->getBlock()->getValue(0);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(Expression::Call { name, .. }) if name.starts_with("getValue__")
+        ));
+    }
+
+    #[test]
     fn passes_an_embedded_aggregate_member_by_address_as_implicit_this() {
         let source = r#"
             class Inner {

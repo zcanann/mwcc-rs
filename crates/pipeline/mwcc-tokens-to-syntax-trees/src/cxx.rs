@@ -260,6 +260,7 @@ pub(crate) enum ImplicitMemberCall {
     Direct {
         name: String,
         is_inline: bool,
+        return_struct_tag: Option<String>,
         this_adjustment: u32,
         parameters: Vec<Type>,
     },
@@ -2757,6 +2758,10 @@ impl Parser {
                 return Ok(Some(ImplicitMemberCall::Direct {
                     name: method.mangled.clone(),
                     is_inline: self.skipped_inline_names.contains(&method.mangled),
+                    return_struct_tag: self
+                        .function_return_structs
+                        .get(&method.mangled)
+                        .cloned(),
                     this_adjustment: 0,
                     parameters: method.parameters.clone(),
                 }));
@@ -2778,6 +2783,10 @@ impl Parser {
                     return Ok(Some(ImplicitMemberCall::Direct {
                         name: method.mangled.clone(),
                         is_inline: self.skipped_inline_names.contains(&method.mangled),
+                        return_struct_tag: self
+                            .function_return_structs
+                            .get(&method.mangled)
+                            .cloned(),
                         this_adjustment: 0,
                         parameters: method.parameters.clone(),
                     }));
@@ -3165,6 +3174,7 @@ impl Parser {
             return Ok(Some(ImplicitMemberCall::Direct {
                 name: mangle_layout_member_method(class_name, function, method)?,
                 is_inline: method.is_inline,
+                return_struct_tag: method.return_struct_tag.clone(),
                 this_adjustment: 0,
                 parameters: method.parameters.clone(),
             }));
@@ -3247,6 +3257,7 @@ impl Parser {
             return Ok(Some(ImplicitMemberCall::Direct {
                 name: mangle_layout_member_method(&owner, function, &method)?,
                 is_inline: method.is_inline,
+                return_struct_tag: method.return_struct_tag.clone(),
                 this_adjustment,
                 parameters: method.parameters.clone(),
             }));
@@ -3272,6 +3283,10 @@ impl Parser {
                 [method] => return Ok(Some(ImplicitMemberCall::Direct {
                     name: method.mangled.clone(),
                     is_inline: self.skipped_inline_names.contains(&method.mangled),
+                    return_struct_tag: self
+                        .function_return_structs
+                        .get(&method.mangled)
+                        .cloned(),
                     this_adjustment: 0,
                     parameters: method.parameters.clone(),
                 })),
@@ -3292,6 +3307,10 @@ impl Parser {
                         return Ok(Some(ImplicitMemberCall::Direct {
                             name: method.mangled.clone(),
                             is_inline: self.skipped_inline_names.contains(&method.mangled),
+                            return_struct_tag: self
+                                .function_return_structs
+                                .get(&method.mangled)
+                                .cloned(),
                             this_adjustment: 0,
                             parameters: method.parameters.clone(),
                         }));

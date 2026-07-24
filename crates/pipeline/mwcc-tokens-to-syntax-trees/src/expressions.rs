@@ -870,9 +870,11 @@ impl Parser {
                         crate::cxx::ImplicitMemberCall::Direct {
                             name: mangled,
                             is_inline,
+                            return_struct_tag,
                             this_adjustment,
                             parameters: _,
                         } => {
+                            self.expression_struct_tag = return_struct_tag;
                             if is_inline {
                                 // The declaration pass records in-class bodies as
                                 // analysis-only skipped definitions. Keep a real
@@ -1772,9 +1774,11 @@ impl Parser {
             crate::cxx::ImplicitMemberCall::Direct {
                 name,
                 is_inline,
+                return_struct_tag,
                 this_adjustment,
                 parameters: _,
             } => {
+                self.expression_struct_tag = return_struct_tag;
                 if is_inline {
                     self.skipped_inline_names.insert(name.clone());
                 }
