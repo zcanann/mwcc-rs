@@ -610,6 +610,7 @@ pub fn lower_function(
     generator.schedule_inlined_symmetric_float_clamp();
     generator.schedule_bounded_acceleration();
     generator.schedule_joystick_count_updates();
+    generator.schedule_grab_mash_transaction();
     generator.schedule_mixed_member_zero_reset();
     generator.schedule_variadic_report_member_arguments();
     generator.schedule_ground_knockback_projection();
