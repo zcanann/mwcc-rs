@@ -8,13 +8,14 @@
 use super::*;
 use mwcc_machine_code::RelocationTarget;
 
-struct GuardedFloatTableIndex<'a> {
-    numerator: &'a str,
-    denominator: &'a str,
-    table: &'a str,
-    zero: f64,
-    scale: f64,
-    bias: f64,
+#[derive(Clone, Debug)]
+pub(crate) struct GuardedFloatTableIndexSummary {
+    pub(crate) numerator: String,
+    pub(crate) denominator: String,
+    pub(crate) table: String,
+    pub(crate) zero: f64,
+    pub(crate) scale: f64,
+    pub(crate) bias: f64,
 }
 
 fn variable(expression: &Expression, expected: &str) -> bool {
@@ -36,7 +37,9 @@ fn zero_table_element<'a>(
         .map(String::as_str)
 }
 
-fn classify(function: &Function) -> Option<GuardedFloatTableIndex<'_>> {
+pub(crate) fn summarize_guarded_float_table_index(
+    function: &Function,
+) -> Option<GuardedFloatTableIndexSummary> {
     if function.return_type != Type::UnsignedShort
         || !function.locals.is_empty()
         || !function.statements.is_empty()
@@ -135,10 +138,10 @@ fn classify(function: &Function) -> Option<GuardedFloatTableIndex<'_>> {
     {
         return None;
     }
-    Some(GuardedFloatTableIndex {
-        numerator: &numerator.name,
-        denominator: &denominator.name,
-        table,
+    Some(GuardedFloatTableIndexSummary {
+        numerator: numerator.name.clone(),
+        denominator: denominator.name.clone(),
+        table: table.to_owned(),
         zero,
         scale: *scale,
         bias: *bias,
@@ -150,12 +153,12 @@ impl Generator {
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
-        let Some(shape) = classify(function) else {
+        let Some(shape) = summarize_guarded_float_table_index(function) else {
             return Ok(false);
         };
         if !self.behavior.legacy_float_cast_schedule
-            || self.float_register_of(shape.numerator)? != 1
-            || self.float_register_of(shape.denominator)? != 2
+            || self.float_register_of(&shape.numerator)? != 1
+            || self.float_register_of(&shape.denominator)? != 2
             || !self.frame_slots.is_empty()
         {
             return Ok(false);
@@ -175,7 +178,7 @@ impl Generator {
 
         self.frame_size = 24;
         self.output.pre_scheduled = true;
-        self.output.symbol_order = vec![shape.table.to_owned()];
+        self.output.symbol_order = vec![shape.table.clone()];
         self.output
             .instructions
             .push(Instruction::StoreWordWithUpdate {
@@ -197,8 +200,8 @@ impl Generator {
         let conversion = self.fresh_label();
         self.emit_branch_conditional_to(4, 2, conversion);
 
-        self.emit_address_high(3, shape.table);
-        self.emit_address_low(3, shape.table);
+        self.emit_address_high(3, &shape.table);
+        self.emit_address_low(3, &shape.table);
         self.output
             .instructions
             .push(Instruction::LoadHalfwordZero {
@@ -221,7 +224,7 @@ impl Generator {
                 a: 0,
                 offset: 0,
             });
-        self.emit_address_high(3, shape.table);
+        self.emit_address_high(3, &shape.table);
         self.record_target(RelocationKind::EmbSda21, RelocationTarget::Constant(bias));
         self.output
             .instructions
@@ -230,7 +233,7 @@ impl Generator {
                 a: 0,
                 offset: 0,
             });
-        self.record_relocation(RelocationKind::Addr16Lo, shape.table);
+        self.record_relocation(RelocationKind::Addr16Lo, &shape.table);
         self.output.instructions.push(Instruction::AddImmediate {
             d: 0,
             a: 3,

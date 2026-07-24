@@ -115,6 +115,9 @@ pub(crate) use callee_saved::{
 pub(crate) use guarded_aggregate_update::{
     summarize_guarded_aggregate_update, GuardedAggregateUpdateSummary,
 };
+pub(crate) use guarded_float_table_index::{
+    summarize_guarded_float_table_index, GuardedFloatTableIndexSummary,
+};
 use aggregate_return_temporaries::materialize_aggregate_return_temporaries;
 pub(crate) use local_select::{
     summarize_unoptimized_local_select, UnoptimizedLocalSelectSummary,

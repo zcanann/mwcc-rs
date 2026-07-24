@@ -11,9 +11,10 @@ use mwcc_syntax_trees::{BinaryOperator, Expression, Function, LoopKind, Statemen
 use std::collections::{HashMap, HashSet};
 
 use crate::body::{
-    function_calls_any, summarize_guarded_aggregate_update, summarize_queue_pop,
-    summarize_queue_service, summarize_unoptimized_local_select, GuardedAggregateUpdateSummary,
-    QueuePopSummary, QueueServiceSummary, UnoptimizedLocalSelectSummary,
+    function_calls_any, summarize_guarded_aggregate_update, summarize_guarded_float_table_index,
+    summarize_queue_pop, summarize_queue_service, summarize_unoptimized_local_select,
+    GuardedAggregateUpdateSummary, GuardedFloatTableIndexSummary, QueuePopSummary,
+    QueueServiceSummary, UnoptimizedLocalSelectSummary,
 };
 
 #[derive(Clone, Debug)]
@@ -99,6 +100,7 @@ pub struct InlineSummaries {
     byte_appends: HashMap<String, ByteAppendSummary>,
     fixed_size_copies: HashMap<String, FixedSizeCopySummary>,
     guarded_aggregate_updates: HashMap<String, GuardedAggregateUpdateSummary>,
+    guarded_float_table_indexes: HashMap<String, GuardedFloatTableIndexSummary>,
     single_base_destructors: HashMap<String, SingleBaseDestructorSummary>,
     trivial_virtual_destructors: HashMap<String, TrivialVirtualDestructorSummary>,
     ipa_elided_functions: HashSet<String>,
@@ -148,6 +150,11 @@ impl InlineSummaries {
             if let Some(summary) = summarize_guarded_aggregate_update(function) {
                 summaries
                     .guarded_aggregate_updates
+                    .insert(function.name.clone(), summary);
+            }
+            if let Some(summary) = summarize_guarded_float_table_index(function) {
+                summaries
+                    .guarded_float_table_indexes
                     .insert(function.name.clone(), summary);
             }
             if let Some(summary) = summarize_single_base_destructor(function) {
@@ -244,6 +251,13 @@ impl InlineSummaries {
         name: &str,
     ) -> Option<&GuardedAggregateUpdateSummary> {
         self.guarded_aggregate_updates.get(name)
+    }
+
+    pub(crate) fn guarded_float_table_index(
+        &self,
+        name: &str,
+    ) -> Option<&GuardedFloatTableIndexSummary> {
+        self.guarded_float_table_indexes.get(name)
     }
 
     pub(crate) fn single_base_destructor(
