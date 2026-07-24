@@ -8417,6 +8417,37 @@ blr\n\
     }
 
     #[test]
+    fn parses_a_discarded_ternary_expression_statement() {
+        let source = r#"
+            void report();
+            void halt();
+            void check(int value) {
+                (value) ? (void)0 : (report(), halt());
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Conditional {
+                    when_false,
+                    ..
+                }
+            )] if matches!(
+                when_false.as_ref(),
+                mwcc_syntax_trees::Expression::Comma { .. }
+            )
+        ));
+    }
+
+    #[test]
     fn registers_a_block_scope_extern_function_prototype() {
         let source = r#"
             static void stripped() {

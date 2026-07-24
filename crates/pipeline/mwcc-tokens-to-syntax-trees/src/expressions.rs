@@ -274,10 +274,22 @@ impl Parser {
     }
 
     pub(crate) fn expression(&mut self) -> Compilation<Expression> {
+        let first = self.factor()?;
+        self.expression_from(first)
+    }
+
+    /// Continue parsing a complete expression after its first factor has
+    /// already been consumed. Statement classification needs this entry point
+    /// so stores retain their specialized lowering while discarded ternaries
+    /// and other value expressions still receive the ordinary precedence
+    /// grammar.
+    pub(crate) fn expression_from(
+        &mut self,
+        first: Expression,
+    ) -> Compilation<Expression> {
         // A compound assignment is valid in expression position too —
         // `(c -= '0') >= base` (strtoul's digit fold). Handled here so every
         // expression() caller (parens, conditions) accepts it.
-        let first = self.factor()?;
         if let Some(operator) = self.peek_compound_assignment() {
             self.advance();
             self.advance();
