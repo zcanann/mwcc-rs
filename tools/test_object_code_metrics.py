@@ -11,11 +11,13 @@ from object_code_metrics import (
     TextRelocation,
     describe_function_delta,
     describe_function_parity,
+    function_mismatch_ranking,
     function_parity,
     parse_section_bytes,
     parse_text_functions,
     parse_text_relocations,
     run_objdump,
+    sequence_edit_distance,
     statuses,
 )
 
@@ -118,6 +120,12 @@ OFFSET   TYPE              VALUE
         self.assertEqual(parity.missing_functions, 1)
         self.assertEqual(parity.candidate_only_functions, 1)
         self.assertIn("2/3 functions exact", describe_function_parity(parity, False))
+        self.assertEqual(
+            describe_function_parity(parity, False).count(
+                "reference function bytes exact"
+            ),
+            1,
+        )
         self.assertIn(
             "1/3 relocation-aware functions exact",
             describe_function_parity(parity, True),
@@ -161,6 +169,37 @@ OFFSET   TYPE              VALUE
                 "gained: none; regressed: regressed",
             ],
         )
+
+    def test_ranks_comparable_mismatches_by_instruction_and_relocation_edits(self):
+        reference_bytes = bytes.fromhex(
+            "01020304 11121314 21222324 31323334 41424344"
+        )
+        candidate_bytes = bytes.fromhex(
+            "01020304 11121315 21222324 31323335 41424345"
+        )
+        functions = [
+            TextFunction(0, 8, "near"),
+            TextFunction(8, 12, "far"),
+        ]
+
+        ranking = function_mismatch_ranking(
+            reference_bytes,
+            candidate_bytes,
+            [TextRelocation(4, "R_PPC_REL24", "callee")],
+            [TextRelocation(4, "R_PPC_REL24", "other")],
+            functions,
+            functions,
+        )
+
+        self.assertEqual([mismatch.name for mismatch in ranking], ["near", "far"])
+        self.assertEqual(ranking[0].instruction_edits, 1)
+        self.assertEqual(ranking[0].relocation_edits, 1)
+        self.assertEqual(ranking[1].instruction_edits, 2)
+        self.assertEqual(ranking[1].relocation_edits, 0)
+
+    def test_sequence_edit_distance_counts_insertions_and_substitutions(self):
+        self.assertEqual(sequence_edit_distance([1, 2, 3], [1, 4, 2, 3]), 1)
+        self.assertEqual(sequence_edit_distance([1, 2, 3], [1, 4, 3]), 1)
 
 
 if __name__ == "__main__":

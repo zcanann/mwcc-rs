@@ -61,6 +61,19 @@ class FunctionMatch:
     code_exact: bool
 
 
+@dataclass(frozen=True)
+class FunctionMismatch:
+    name: str
+    reference_bytes: int
+    candidate_bytes: int
+    instruction_edits: int
+    relocation_edits: int
+
+    @property
+    def total_edits(self) -> int:
+        return self.instruction_edits + self.relocation_edits
+
+
 def run_objdump(objdump: Path, *arguments: str) -> str:
     result = subprocess.run(
         [str(objdump), *arguments],
@@ -270,6 +283,93 @@ def describe_function_delta(
     return lines
 
 
+def sequence_edit_distance(reference: Sequence[object], candidate: Sequence[object]) -> int:
+    """Return insertion/deletion/substitution distance with bounded memory."""
+
+    if len(reference) < len(candidate):
+        reference, candidate = candidate, reference
+    previous = list(range(len(candidate) + 1))
+    for reference_index, reference_value in enumerate(reference, 1):
+        current = [reference_index]
+        for candidate_index, candidate_value in enumerate(candidate, 1):
+            current.append(
+                min(
+                    current[-1] + 1,
+                    previous[candidate_index] + 1,
+                    previous[candidate_index - 1]
+                    + (reference_value != candidate_value),
+                )
+            )
+        previous = current
+    return previous[-1]
+
+
+def function_mismatch_ranking(
+    reference_bytes: bytes,
+    candidate_bytes: bytes,
+    reference_relocations: Sequence[TextRelocation],
+    candidate_relocations: Sequence[TextRelocation],
+    reference_functions: Sequence[TextFunction],
+    candidate_functions: Sequence[TextFunction],
+) -> list[FunctionMismatch]:
+    """Rank comparable non-matches by instruction and relocation edit distance."""
+
+    candidate_by_name = {function.name: function for function in candidate_functions}
+
+    def instructions(section: bytes, function: TextFunction) -> tuple[bytes, ...]:
+        body = section[function.address : function.address + function.size]
+        return tuple(body[index : index + 4] for index in range(0, len(body), 4))
+
+    def relocations(
+        values: Sequence[TextRelocation], function: TextFunction
+    ) -> tuple[tuple[int, str, str], ...]:
+        end = function.address + function.size
+        return tuple(
+            (
+                relocation.offset - function.address,
+                relocation.kind,
+                relocation.normalized_target,
+            )
+            for relocation in values
+            if function.address <= relocation.offset < end
+        )
+
+    mismatches: list[FunctionMismatch] = []
+    for reference in reference_functions:
+        candidate = candidate_by_name.get(reference.name)
+        if candidate is None:
+            continue
+        reference_instructions = instructions(reference_bytes, reference)
+        candidate_instructions = instructions(candidate_bytes, candidate)
+        reference_function_relocations = relocations(reference_relocations, reference)
+        candidate_function_relocations = relocations(candidate_relocations, candidate)
+        instruction_edits = sequence_edit_distance(
+            reference_instructions, candidate_instructions
+        )
+        relocation_edits = sequence_edit_distance(
+            reference_function_relocations, candidate_function_relocations
+        )
+        if instruction_edits or relocation_edits:
+            mismatches.append(
+                FunctionMismatch(
+                    name=reference.name,
+                    reference_bytes=reference.size,
+                    candidate_bytes=candidate.size,
+                    instruction_edits=instruction_edits,
+                    relocation_edits=relocation_edits,
+                )
+            )
+    return sorted(
+        mismatches,
+        key=lambda mismatch: (
+            mismatch.total_edits,
+            mismatch.instruction_edits,
+            abs(mismatch.candidate_bytes - mismatch.reference_bytes),
+            mismatch.name,
+        ),
+    )
+
+
 def describe_function_parity(parity: FunctionParity, relocation_aware: bool) -> str:
     exact_functions = (
         parity.code_exact_functions if relocation_aware else parity.text_exact_functions
@@ -410,6 +510,13 @@ def main() -> int:
         type=Path,
         help="prior candidate object used to report paired function movement",
     )
+    parser.add_argument(
+        "--rank-mismatches",
+        type=int,
+        default=0,
+        metavar="N",
+        help="print the N nearest comparable non-matching functions",
+    )
     args = parser.parse_args()
 
     reference_bytes, reference_relocations = measure(args.objdump, args.reference)
@@ -432,6 +539,25 @@ def main() -> int:
         print(f"{line}{suffix}")
     print(f"FUNCTION_TEXT {describe_function_parity(parity, False)}{suffix}")
     print(f"FUNCTION_CODE {describe_function_parity(parity, True)}{suffix}")
+    if args.rank_mismatches > 0:
+        ranking = function_mismatch_ranking(
+            reference_bytes,
+            candidate_bytes,
+            reference_relocations,
+            candidate_relocations,
+            measure_functions(args.objdump, args.reference),
+            measure_functions(args.objdump, args.candidate),
+        )
+        for rank, mismatch in enumerate(ranking[: args.rank_mismatches], 1):
+            size_delta = mismatch.candidate_bytes - mismatch.reference_bytes
+            print(
+                f"FUNCTION_MISMATCH_RANK {rank} total_edits={mismatch.total_edits} "
+                f"instruction_edits={mismatch.instruction_edits} "
+                f"relocation_edits={mismatch.relocation_edits} "
+                f"reference_bytes={mismatch.reference_bytes} "
+                f"candidate_bytes={mismatch.candidate_bytes} "
+                f"size_delta={size_delta:+d} name={mismatch.name}{suffix}"
+            )
     if args.baseline is not None:
         baseline_bytes, baseline_relocations = measure(args.objdump, args.baseline)
         baseline_matches = function_matches(
