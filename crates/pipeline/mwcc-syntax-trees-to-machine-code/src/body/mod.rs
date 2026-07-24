@@ -17,6 +17,7 @@ mod grab_mash_schedule;
 mod mixed_member_zero_reset_schedule;
 mod symmetric_float_clamp;
 mod symmetric_sum_clamp_schedule;
+mod structured_float_or_schedule;
 mod symmetric_float_decay;
 mod symmetric_float_decay_return;
 mod sign_selected_member_store;
