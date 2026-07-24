@@ -52,15 +52,28 @@ impl Generator {
             a: 1,
             offset: 36,
         });
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: 11,
-            a: 1,
-            immediate: 32,
-        });
-        self.record_relocation(RelocationKind::Rel24, "_savegpr_29");
-        self.output.instructions.push(Instruction::BranchAndLink {
-            target: "_savegpr_29".to_string(),
-        });
+        match self.behavior.optimization_goal {
+            mwcc_versions::OptimizationGoal::Size => {
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: 11,
+                    a: 1,
+                    immediate: 32,
+                });
+                self.record_relocation(RelocationKind::Rel24, "_savegpr_29");
+                self.output.instructions.push(Instruction::BranchAndLink {
+                    target: "_savegpr_29".to_string(),
+                });
+            }
+            mwcc_versions::OptimizationGoal::Performance => {
+                for (register, offset) in [(31, 28), (30, 24), (29, 20)] {
+                    self.output.instructions.push(Instruction::StoreWord {
+                        s: register,
+                        a: 1,
+                        offset,
+                    });
+                }
+            }
+        }
         self.output
             .instructions
             .push(Instruction::move_register(29, 3));
@@ -179,20 +192,38 @@ impl Generator {
         });
 
         self.bind_label(epilogue);
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: 11,
-            a: 1,
-            immediate: 32,
-        });
-        self.record_relocation(RelocationKind::Rel24, "_restgpr_29");
-        self.output.instructions.push(Instruction::BranchAndLink {
-            target: "_restgpr_29".to_string(),
-        });
-        self.output.instructions.push(Instruction::LoadWord {
-            d: 0,
-            a: 1,
-            offset: 36,
-        });
+        match self.behavior.optimization_goal {
+            mwcc_versions::OptimizationGoal::Size => {
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: 11,
+                    a: 1,
+                    immediate: 32,
+                });
+                self.record_relocation(RelocationKind::Rel24, "_restgpr_29");
+                self.output.instructions.push(Instruction::BranchAndLink {
+                    target: "_restgpr_29".to_string(),
+                });
+                self.output.instructions.push(Instruction::LoadWord {
+                    d: 0,
+                    a: 1,
+                    offset: 36,
+                });
+            }
+            mwcc_versions::OptimizationGoal::Performance => {
+                self.output.instructions.push(Instruction::LoadWord {
+                    d: 0,
+                    a: 1,
+                    offset: 36,
+                });
+                for (register, offset) in [(31, 28), (30, 24), (29, 20)] {
+                    self.output.instructions.push(Instruction::LoadWord {
+                        d: register,
+                        a: 1,
+                        offset,
+                    });
+                }
+            }
+        }
         self.output
             .instructions
             .push(Instruction::MoveToLinkRegister { s: 0 });
