@@ -4181,6 +4181,79 @@ mod tests {
     }
 
     #[test]
+    fn lowers_dead_scratch_array_ground_projection_byte_exactly() {
+        let source = br#"
+            struct Vec3 { float x; float y; float z; };
+            struct CollData { char pad[340]; struct Vec3 normal; };
+            struct Fighter {
+                char pad0[116];
+                struct Vec3 anim_velocity;
+                struct Vec3 self_velocity;
+                char pad1[88];
+                float ground_acceleration;
+                char pad2[4];
+                float ground_velocity;
+                char pad3[1536];
+                struct CollData collision;
+            };
+            struct Object { char pad[44]; struct Fighter* user_data; };
+            extern float friction(struct Fighter*);
+            void compiled(struct Object* object) {
+                float factor;
+                struct Vec3* normal;
+                struct Fighter* fighter = object->user_data;
+                unsigned char scratch[8];
+                normal = &fighter->collision.normal;
+                factor = friction(fighter);
+                if (factor < 1) {
+                    fighter->ground_acceleration *= factor;
+                }
+                fighter->anim_velocity.x = normal->y * fighter->ground_acceleration;
+                fighter->anim_velocity.y = -normal->x * fighter->ground_acceleration;
+                fighter->anim_velocity.z = 0;
+                fighter->self_velocity.x = normal->y * fighter->ground_velocity;
+                fighter->self_velocity.y = -normal->x * fighter->ground_velocity;
+                fighter->self_velocity.z = 0;
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.emit_mwcats = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "dead-scratch-ground-projection.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the dead scratch array should retain only its logical frame bytes");
+        let expected_text = [
+            0x7c, 0x08, 0x02, 0xa6, 0x90, 0x01, 0x00, 0x04, 0x94, 0x21, 0xff, 0xe0, 0x93,
+            0xe1, 0x00, 0x1c, 0x93, 0xc1, 0x00, 0x18, 0x83, 0xc3, 0x00, 0x2c, 0x38, 0x7e,
+            0x00, 0x00, 0x3b, 0xfe, 0x08, 0x44, 0x48, 0x00, 0x00, 0x01, 0xc0, 0x00, 0x00,
+            0x00, 0xfc, 0x01, 0x00, 0x40, 0x40, 0x80, 0x00, 0x10, 0xc0, 0x1e, 0x00, 0xe4,
+            0xec, 0x00, 0x00, 0x72, 0xd0, 0x1e, 0x00, 0xe4, 0xc0, 0x3f, 0x00, 0x04, 0xc0,
+            0x1e, 0x00, 0xe4, 0xec, 0x01, 0x00, 0x32, 0xd0, 0x1e, 0x00, 0x74, 0xc0, 0x3f,
+            0x00, 0x00, 0xc0, 0x1e, 0x00, 0xe4, 0xfc, 0x20, 0x08, 0x50, 0xec, 0x01, 0x00,
+            0x32, 0xd0, 0x1e, 0x00, 0x78, 0xc0, 0x40, 0x00, 0x00, 0xd0, 0x5e, 0x00, 0x7c,
+            0xc0, 0x3f, 0x00, 0x04, 0xc0, 0x1e, 0x00, 0xec, 0xec, 0x01, 0x00, 0x32, 0xd0,
+            0x1e, 0x00, 0x80, 0xc0, 0x3f, 0x00, 0x00, 0xc0, 0x1e, 0x00, 0xec, 0xfc, 0x20,
+            0x08, 0x50, 0xec, 0x01, 0x00, 0x32, 0xd0, 0x1e, 0x00, 0x84, 0xd0, 0x5e, 0x00,
+            0x88, 0x80, 0x01, 0x00, 0x24, 0x83, 0xe1, 0x00, 0x1c, 0x83, 0xc1, 0x00, 0x18,
+            0x38, 0x21, 0x00, 0x20, 0x7c, 0x08, 0x03, 0xa6, 0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected_text.len())
+            .any(|bytes| bytes == expected_text));
+    }
+
+    #[test]
     fn overlaps_two_large_string_argument_addresses_around_a_line_number() {
         let source = br#"
             extern void report(char*, int, char*);
