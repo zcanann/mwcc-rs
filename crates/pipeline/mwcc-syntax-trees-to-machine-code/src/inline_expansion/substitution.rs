@@ -76,12 +76,23 @@ pub(super) fn substitute_expression(
             when_true,
             when_false,
             origin,
-        } => Expression::Conditional {
-            condition: Box::new(substitute_expression(condition, replacements)),
-            when_true: Box::new(substitute_expression(when_true, replacements)),
-            when_false: Box::new(substitute_expression(when_false, replacements)),
-            origin: *origin,
-        },
+        } => {
+            let condition = substitute_expression(condition, replacements);
+            // An automatic object's address is non-null. This is especially
+            // visible after inlining assertion guards around by-reference
+            // parameters: `&local ? 0 : __assert(...)` disappears entirely in
+            // MWCC instead of materializing and testing the frame address.
+            if matches!(condition, Expression::AddressOf { .. }) {
+                substitute_expression(when_true, replacements)
+            } else {
+                Expression::Conditional {
+                    condition: Box::new(condition),
+                    when_true: Box::new(substitute_expression(when_true, replacements)),
+                    when_false: Box::new(substitute_expression(when_false, replacements)),
+                    origin: *origin,
+                }
+            }
+        }
         Expression::Cast {
             target_type,
             operand,
@@ -310,6 +321,30 @@ mod tests {
                 member_type: Type::Float,
                 index_stride: None,
             } if matches!(base.as_ref(), Expression::Variable(name) if name == "fighter")
+        ));
+    }
+
+    #[test]
+    fn folds_an_inlined_address_assertion_to_its_true_arm() {
+        let expression = Expression::Conditional {
+            condition: Box::new(Expression::Variable("pointer".into())),
+            when_true: Box::new(Expression::IntegerLiteral(0)),
+            when_false: Box::new(Expression::Call {
+                name: "__assert".into(),
+                arguments: Vec::new(),
+            }),
+            origin: mwcc_syntax_trees::ConditionalOrigin::Ternary,
+        };
+        let replacements = HashMap::from([(
+            "pointer".into(),
+            Expression::AddressOf {
+                operand: Box::new(Expression::Variable("frame_local".into())),
+            },
+        )]);
+
+        assert!(matches!(
+            substitute_expression(&expression, &replacements),
+            Expression::IntegerLiteral(0)
         ));
     }
 }
