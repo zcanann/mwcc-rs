@@ -39,6 +39,50 @@ impl Generator {
         self.remove_noncopy_packet_instruction(start + 9);
     }
 
+    pub(crate) fn finalize_structured_noncopy_packet_registers(&mut self) {
+        let Some(start) = final_noncopy_packet(&self.output.instructions) else {
+            return;
+        };
+        let [load, saved_high, saved_low, command_low, narrow, command_high, command_store, saved_store, _bump] =
+            &mut self.output.instructions[start..start + 9]
+        else {
+            unreachable!("the final non-copy packet was matched")
+        };
+        let Instruction::LoadHalfwordZero { d, .. } = load else {
+            unreachable!()
+        };
+        *d = 3;
+        let Instruction::OrImmediateShifted { a, s, .. } = saved_high else {
+            unreachable!()
+        };
+        *a = 0;
+        *s = 30;
+        let Instruction::OrImmediate { a, s, .. } = saved_low else {
+            unreachable!()
+        };
+        *a = 0;
+        *s = 0;
+        for instruction in [command_low, narrow, command_high] {
+            match instruction {
+                Instruction::OrImmediate { a, s, .. }
+                | Instruction::OrImmediateShifted { a, s, .. }
+                | Instruction::AndContiguousMask { a, s, .. } => {
+                    *a = 3;
+                    *s = 3;
+                }
+                _ => unreachable!(),
+            }
+        }
+        let Instruction::StoreWord { s, .. } = command_store else {
+            unreachable!()
+        };
+        *s = 3;
+        let Instruction::StoreWord { s, .. } = saved_store else {
+            unreachable!()
+        };
+        *s = 0;
+    }
+
     fn remove_noncopy_packet_instruction(&mut self, index: usize) {
         let old_len = self.output.instructions.len();
         self.output.instructions.remove(index);
@@ -58,6 +102,38 @@ impl Generator {
             .collect();
         crate::remap_instruction_indices(self, &permutation);
     }
+}
+
+fn final_noncopy_packet(instructions: &[Instruction]) -> Option<usize> {
+    instructions.windows(9).position(|window| {
+        matches!(
+            window,
+            [
+                Instruction::LoadHalfwordZero { offset: 14, .. },
+                Instruction::OrImmediateShifted { immediate: 160, .. },
+                Instruction::OrImmediate {
+                    immediate: 12296,
+                    ..
+                },
+                Instruction::OrImmediate {
+                    immediate: 3312,
+                    ..
+                },
+                Instruction::AndContiguousMask {
+                    begin: 8,
+                    end: 31,
+                    ..
+                },
+                Instruction::OrImmediateShifted {
+                    immediate: 61184,
+                    ..
+                },
+                Instruction::StoreWord { offset: 0, .. },
+                Instruction::StoreWord { offset: 4, .. },
+                Instruction::AddImmediate { immediate: 8, .. },
+            ]
+        )
+    })
 }
 
 #[derive(Clone, Copy)]

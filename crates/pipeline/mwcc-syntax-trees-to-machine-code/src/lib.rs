@@ -690,6 +690,7 @@ pub fn lower_function(
     generator.schedule_saved_pointer_zero_test();
     generator.schedule_reciprocal_frame_fill();
     generator.reuse_absolute_pooled_float_literals();
+    generator.finalize_structured_noncopy_packet_registers();
 
     ordinal_accounting::apply(
         function,
