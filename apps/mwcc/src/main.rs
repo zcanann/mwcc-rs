@@ -2177,6 +2177,9 @@ mod tests {
     #[path = "inlined_short_circuit_call_loop.rs"]
     mod inlined_short_circuit_call_loop;
 
+    #[path = "extern_unsized_array.rs"]
+    mod extern_unsized_array;
+
     #[test]
     fn parity_keep_going_is_an_explicit_diagnostic_flag() {
         let ordinary = parse_invocation(&[]);
