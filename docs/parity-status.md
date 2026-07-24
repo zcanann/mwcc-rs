@@ -76,13 +76,15 @@ This validates the failure-only edit loop: representative audits are useful
 periodic measurements, but recompiling them continuously would spend most of
 its time on known giant-TU timeouts.
 
-Post-holdout compiler work through commit `f3b26ee1` has not been run over a
+Post-holdout compiler work through commit `5438662f` has not been run over a
 new unbiased sample, so it does not change the 7.8% estimate above. On the
 targeted Melee `src/melee/ft/ftcommon.c` diagnostic, the latest checkpoint moved
 relocation-aware parity from 28/109 to 74/109 functions and from 996/15,340 to
 6,584/15,340 reference code bytes. Paired movement was +46/-0 functions and
-+5,588 exact bytes. All 74 functions that emitted in this diagnostic were
-relocation-aware exact; the other 35 remained compile/defer coverage gaps. The
++5,588 exact bytes. Of the 75 functions that emitted in this diagnostic, 74 were
+relocation-aware exact. `ftCommon_GrabMash` newly emitted at 380 bytes against
+372 reference bytes, with 39 instruction edits and five relocation edits; the
+other 34 remained compile/defer coverage gaps. The
 gains were `ftCommon_ClampAirDrift`, `ftCommon_FallBasic`,
 `ftCommon_CalcHitlag`, `ftCommon_8007DB58`, `ftCommon_SetAccessory`,
 `ftCommon_8007FF74`, `ftCommon_8007DB24`, `ftCommon_8007D28C`,
@@ -118,8 +120,10 @@ a member-backed velocity live through the ladder then made
 transaction made `ftCommon_8008031C` exact. Reusing the null-tested entry from
 indexed global callback tables then made `ftCommon_8007E79C`,
 `ftCommon_8007E7E4`, `ftCommon_8007F578`, `ftCommon_8007F824`, and
-`ftCommon_8007F86C` exact. This is evidence of local forward movement, not a
-corpus-level percentage.
+`ftCommon_8007F86C` exact. Allocating wide masks and loaded float comparisons,
+extending narrow leaf/member comparisons, and scheduling shared-base bit-field
+call arguments then made `ftCommon_GrabMash` compile completely. This is
+evidence of local forward movement, not a corpus-level percentage.
 
 ## Historical baseline: fresh current-population holdout
 
