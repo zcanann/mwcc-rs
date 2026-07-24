@@ -3490,6 +3490,23 @@ impl Parser {
                     .map(|base| base.nonvirtual_size)
                     .filter(|size| *size != 0)
                     .unwrap_or(base.size);
+                // CodeWarrior applies empty-base optimization: a defined,
+                // non-polymorphic C++ base with no data occupies no bytes in a
+                // derived object. The empty class still has standalone size
+                // one, but charging that byte here incorrectly shifts the
+                // first aligned member (notably NonCopyable-derived nodes).
+                let base_nonvirtual_size = if base.size == 1
+                    && base.fields.is_empty()
+                    && base_class.as_ref().is_some_and(|base| {
+                        !base.is_polymorphic
+                            && base.fields.is_empty()
+                            && base.virtual_bases.is_empty()
+                    })
+                {
+                    0
+                } else {
+                    base_nonvirtual_size
+                };
                 offset = offset.div_ceil(base_align) * base_align;
                 let base_offset = offset;
                 for (field_name, field) in base
@@ -3567,6 +3584,7 @@ impl Parser {
         }
 
         self.expect(Token::BraceOpen)?;
+        let class_body_start = self.position;
         while *self.peek() != Token::BraceClose {
             // Friendship affects access and lookup, never object storage. It
             // may name an incomplete qualified class or define an inline
@@ -4113,6 +4131,7 @@ impl Parser {
                 break;
             }
         }
+        let class_body_end = self.position;
         self.expect(Token::BraceClose)?;
         if trailing_typedef_alias {
             let alias = self.parse_identifier()?;
@@ -4227,6 +4246,12 @@ impl Parser {
         layout.source_tag = Some(name.clone());
         layout.size = offset.max(1).div_ceil(max_align) * max_align;
         layout.align = max_align as u8;
+        self.capture_iterator_class_semantics(
+            &qualified_name,
+            &layout,
+            class_body_start,
+            class_body_end,
+        );
         Ok((name, layout, class))
     }
 

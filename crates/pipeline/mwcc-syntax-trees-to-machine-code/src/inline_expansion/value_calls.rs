@@ -460,9 +460,14 @@ pub(super) fn expand_expression(
                 .map(|argument| recurse(argument, active, changed, value_body_substitutions))
                 .collect(),
         },
-        Expression::PostStep { target, operator } => Expression::PostStep {
+        Expression::PostStep {
+            target,
+            operator,
+            pointer_link,
+        } => Expression::PostStep {
             target: Box::new(recurse(target, active, changed, value_body_substitutions)),
             operator: *operator,
+            pointer_link: *pointer_link,
         },
         Expression::Assign { target, value } => Expression::Assign {
             target: Box::new(recurse(target, active, changed, value_body_substitutions)),

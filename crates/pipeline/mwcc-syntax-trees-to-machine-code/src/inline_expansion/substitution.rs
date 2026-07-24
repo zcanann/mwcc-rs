@@ -268,9 +268,14 @@ pub(super) fn substitute_expression(
                 .map(|argument| substitute_expression(argument, replacements))
                 .collect(),
         },
-        Expression::PostStep { target, operator } => Expression::PostStep {
+        Expression::PostStep {
+            target,
+            operator,
+            pointer_link,
+        } => Expression::PostStep {
             target: Box::new(substitute_expression(target, replacements)),
             operator: *operator,
+            pointer_link: *pointer_link,
         },
         Expression::Assign { target, value } => Expression::Assign {
             target: Box::new(substitute_expression(target, replacements)),

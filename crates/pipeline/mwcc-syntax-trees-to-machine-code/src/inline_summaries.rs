@@ -558,6 +558,7 @@ fn summarize_byte_append(function: &Function) -> Option<ByteAppendSummary> {
         || !matches!(index.as_ref(), Expression::PostStep {
             target,
             operator: BinaryOperator::Add,
+            pointer_link: None,
         } if struct_member(target, &buffer.name)
             == Some((position_offset, Type::UnsignedInt)))
     {

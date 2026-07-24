@@ -261,6 +261,21 @@ pub(crate) struct Parser {
     /// Concrete iterator identity -> `(element aggregate, node offset,
     /// pointer-storage offset)`.
     pub(crate) concrete_template_iterator_arrows: HashMap<String, (String, u32, u32)>,
+    /// Primary template -> nested iterator whose prefix increment is a
+    /// source-proven forwarding step.
+    pub(crate) template_iterator_step_summaries: HashMap<String, Vec<String>>,
+    /// Concrete iterator identity -> `(pointer-storage offset, next-link
+    /// offset)`. These facts are attached to postfix syntax without erasing
+    /// its old-value result.
+    pub(crate) concrete_template_iterator_steps: HashMap<String, (u32, u32)>,
+    /// `(aggregate, zero-argument member)` -> returned pointer-field offset.
+    pub(crate) source_pointer_accessors: HashMap<(String, String), u32>,
+    /// Iterator aggregate -> `(pointer-storage offset, next-link offset)` for
+    /// an exact `storage = storage->accessor(); return *this;` prefix step.
+    pub(crate) source_iterator_pointer_steps: HashMap<String, (u32, u32)>,
+    /// One-word iterator wrapper -> aggregate-field offset for an exact
+    /// `++field; return *this;` prefix step.
+    pub(crate) source_iterator_step_forwarders: HashMap<String, u32>,
     /// Out-of-class primary-template constructor initializer summaries. Each
     /// entry maps a concrete field to the constructor argument copied into it;
     /// value construction is admitted only when the summary covers the entire

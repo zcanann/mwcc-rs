@@ -75,6 +75,7 @@ fn is_post_increment(expression: &Expression, name: &str) -> bool {
         Expression::PostStep {
             target,
             operator: BinaryOperator::Add,
+            pointer_link: None,
         } if variable(target) == Some(name))
 }
 
@@ -476,12 +477,14 @@ mod tests {
                         pointer: Box::new(Expression::PostStep {
                             target: Box::new(name("cursor")),
                             operator: BinaryOperator::Add,
+                            pointer_link: None,
                         }),
                     },
                     value: Expression::Dereference {
                         pointer: Box::new(Expression::PostStep {
                             target: Box::new(name("src")),
                             operator: BinaryOperator::Add,
+                            pointer_link: None,
                         }),
                     },
                 }],
