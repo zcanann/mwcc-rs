@@ -2512,6 +2512,58 @@ blr\n\
     }
 
     #[test]
+    fn derived_vtable_materializes_inherited_inline_virtual_callbacks() {
+        let source = r#"
+            struct Root {
+                virtual int root() { return 1; }
+            };
+            struct Middle : Root {
+                virtual void middle() {}
+                virtual void external();
+            };
+            struct Leaf : Middle {
+                Leaf();
+            };
+            Leaf::Leaf() {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        for name in ["root__4RootFv", "middle__6MiddleFv"] {
+            assert!(
+                unit.functions
+                    .iter()
+                    .any(|function| function.name == name && function.is_weak),
+                "the derived table references and owns {name}"
+            );
+        }
+        let vtable = unit
+            .globals
+            .iter()
+            .find(|global| global.name == "__vt__4Leaf")
+            .expect("the out-of-line constructor owns the derived vtable");
+        for target in [
+            "root__4RootFv",
+            "middle__6MiddleFv",
+            "external__6MiddleFv",
+        ] {
+            assert!(
+                vtable
+                    .data_relocations
+                    .iter()
+                    .any(|(_, relocation, _)| relocation == target),
+                "the primary table retains {target}"
+            );
+        }
+    }
+
+    #[test]
     fn inherited_virtual_override_materializes_implicit_destructor_closure() {
         let source = r#"
             class Base {

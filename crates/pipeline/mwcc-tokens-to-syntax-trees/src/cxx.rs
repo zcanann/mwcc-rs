@@ -3635,6 +3635,12 @@ impl Parser {
                 if is_primary_base {
                     class.virtual_slots = base_virtual_slots;
                     if let Some(base_class) = &base_class {
+                        // The primary vtable of a derived class starts as a
+                        // copy of its primary base's callable entries. Keeping
+                        // only the slot count produces correctly sized tables
+                        // filled with null pointers and prevents referenced
+                        // inline base methods from being materialized.
+                        class.virtual_definitions = base_class.virtual_definitions.clone();
                         class.has_virtual_destructor = base_class.has_virtual_destructor;
                         class.virtual_destructor_slot = base_class.virtual_destructor_slot;
                         class.virtual_destructor_is_pure =
@@ -4119,9 +4125,19 @@ impl Parser {
                                 false,
                             )?
                         };
-                        class
+                        if let Some((_, target)) = class
                             .virtual_definitions
-                            .push((dispatch.slot_offset, mangled));
+                            .iter_mut()
+                            .find(|(slot, _)| *slot == dispatch.slot_offset)
+                        {
+                            // An override replaces the inherited primary-table
+                            // target without changing its ABI slot.
+                            *target = mangled;
+                        } else {
+                            class
+                                .virtual_definitions
+                                .push((dispatch.slot_offset, mangled));
+                        }
                         if !is_inline && class.vtable_key_function.is_none() {
                             class.vtable_key_function = class
                                 .virtual_definitions
