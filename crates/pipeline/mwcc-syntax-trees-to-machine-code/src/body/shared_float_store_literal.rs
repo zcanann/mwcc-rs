@@ -25,6 +25,19 @@ impl Generator {
                     reload,
                 ) && !has_branch_target_in(&self.output.instructions, start..start + 4)
                 {
+                    if start >= 4
+                        && is_entry_literal_latency_slot(&self.output.instructions[start - 4..=start])
+                        && !has_branch_target_in(&self.output.instructions, start - 1..start + 1)
+                    {
+                        self.output.instructions.swap(start - 1, start);
+                        for relocation in &mut self.output.relocations {
+                            relocation.instruction_index = match relocation.instruction_index {
+                                index if index == start - 1 => start,
+                                index if index == start => start - 1,
+                                index => index,
+                            };
+                        }
+                    }
                     remove_instruction(&mut self.output, reload);
                 }
             }
@@ -108,6 +121,23 @@ fn is_adjacent_reloaded_float_store_literal(window: &[Instruction]) -> bool {
         Instruction::LoadFloatSingle { d: 0, a: 0, .. },
         Instruction::StoreFloatSingle { s: 0, a: second_base, .. },
     ] if first_base == second_base)
+}
+
+fn is_entry_literal_latency_slot(window: &[Instruction]) -> bool {
+    matches!(window, [
+        Instruction::StoreWord { s: first_saved, a: 1, .. },
+        Instruction::StoreWord { s: second_saved, a: 1, .. },
+        copy,
+        Instruction::LoadWord { d: local, a: receiver, .. },
+        Instruction::LoadFloatSingle { d: 0, a: 0, .. },
+    ] if first_saved != second_saved
+        && (14..=31).contains(first_saved)
+        && (14..=31).contains(second_saved)
+        && (14..=31).contains(local)
+        && local != receiver
+        && (matches!(copy, Instruction::Or { a, s: 3, b: 3 } if a == receiver)
+            || matches!(copy,
+                Instruction::AddImmediate { d, a: 3, immediate: 0 } if d == receiver)))
 }
 
 fn has_branch_target_in(
@@ -199,6 +229,18 @@ mod tests {
             Instruction::StoreFloatSingle { s: 0, a: 31, offset: 28 },
         ];
         assert!(is_adjacent_reloaded_float_store_literal(&instructions));
+    }
+
+    #[test]
+    fn recognizes_an_entry_literal_that_fills_a_saved_load_latency_slot() {
+        let instructions = [
+            Instruction::StoreWord { s: 31, a: 1, offset: 36 },
+            Instruction::StoreWord { s: 30, a: 1, offset: 32 },
+            Instruction::move_register(30, 3),
+            Instruction::LoadWord { d: 31, a: 30, offset: 44 },
+            Instruction::LoadFloatSingle { d: 0, a: 0, offset: 0 },
+        ];
+        assert!(is_entry_literal_latency_slot(&instructions));
     }
 
     #[test]
