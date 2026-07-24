@@ -1353,6 +1353,10 @@ impl Generator {
         } else {
             None
         };
+        let loaded_pair_live_argument =
+            self.try_place_loaded_pair_with_live_float_argument(left, right)?;
+        let loaded_left_negated_loaded =
+            self.try_place_loaded_left_negated_loaded_float_condition(left, right)?;
         let computed_left_loaded =
             self.try_place_computed_left_loaded_float_condition(left, right)?;
         let loaded_left_negated_leaf =
@@ -1364,6 +1368,10 @@ impl Generator {
         } else if let Some(registers) = loaded_literal_live_argument {
             registers
         } else if let Some(registers) = product_literal {
+            registers
+        } else if let Some(registers) = loaded_pair_live_argument {
+            registers
+        } else if let Some(registers) = loaded_left_negated_loaded {
             registers
         } else if let Some(registers) = computed_left_loaded {
             registers

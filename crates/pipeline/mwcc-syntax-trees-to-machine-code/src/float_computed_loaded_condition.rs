@@ -11,6 +11,59 @@ use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::{Expression, UnaryOperator};
 
 impl Generator {
+    /// Place two direct memory values without borrowing a live f1 argument.
+    /// MWCC keeps the source-left value in the next available FPR and uses f0
+    /// for the source-right value consumed immediately by the comparison.
+    pub(crate) fn try_place_loaded_pair_with_live_float_argument(
+        &mut self,
+        left: &Expression,
+        right: &Expression,
+    ) -> Compilation<Option<(u8, u8)>> {
+        if !self.f1_holds_float_argument()
+            || !self.is_float_located(left)
+            || !self.is_float_located(right)
+        {
+            return Ok(None);
+        }
+        let left_home = self.fresh_virtual_float_preferring(2);
+        let a = self.place_condition_float_load(left, left_home)?;
+        let b = self.place_condition_float_load(right, FLOAT_SCRATCH)?;
+        Ok(Some((a, b)))
+    }
+
+    /// Place `loaded < -loaded` while a float argument may keep f1 live.
+    /// The plain comparison path historically hard-pinned the first memory
+    /// value to f1; joining the loaded side to virtual allocation lets the
+    /// argument survive and leaves f0 available for the negated value.
+    pub(crate) fn try_place_loaded_left_negated_loaded_float_condition(
+        &mut self,
+        left: &Expression,
+        right: &Expression,
+    ) -> Compilation<Option<(u8, u8)>> {
+        let Expression::Unary {
+            operator: UnaryOperator::Negate,
+            operand,
+        } = right
+        else {
+            return Ok(None);
+        };
+        if !self.f1_holds_float_argument()
+            || !self.is_float_located(left)
+            || !self.is_float_located(operand)
+        {
+            return Ok(None);
+        }
+
+        let loaded_home = self.fresh_virtual_float_preferring(2);
+        let loaded = self.place_condition_float_load(left, loaded_home)?;
+        self.place_condition_float_load(operand, FLOAT_SCRATCH)?;
+        self.output.instructions.push(Instruction::FloatNegate {
+            d: FLOAT_SCRATCH,
+            b: FLOAT_SCRATCH,
+        });
+        Ok(Some((loaded, FLOAT_SCRATCH)))
+    }
+
     pub(crate) fn try_place_loaded_literal_with_live_float_argument(
         &mut self,
         loaded: &Expression,
