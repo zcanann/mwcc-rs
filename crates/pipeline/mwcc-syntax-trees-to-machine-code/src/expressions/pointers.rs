@@ -151,8 +151,8 @@ impl Generator {
     /// Load from constant `address + offset` (a `*(T *)C` deref or a `(*(struct S *)C).field`
     /// member). Materializes the address with the `lis hi` / displacement-`lo` split, folding
     /// the member offset into the displacement; a zero high half loads off the r0=0 base. Returns
-    /// `false` (caller defers) when the displacement overflows i16 or a second access needs
-    /// mwcc's look-ahead base scheduling.
+    /// `false` (caller defers) when the displacement overflows i16 or another
+    /// retained access uses a different high half.
     pub(crate) fn emit_const_address_load(
         &mut self,
         pointee: Pointee,
@@ -167,14 +167,6 @@ impl Generator {
         else {
             return Ok(false);
         };
-        // Only the FIRST constant-address access in a function is byte-exact. mwcc handles a run
-        // of them by allocating all the bases up front (chosen by look-ahead over every value)
-        // and scheduling them together — keystone-level register allocation. So a second access
-        // of any kind defers rather than emit a fresh, mis-scheduled sequence.
-        if !self.const_address_bases.is_empty() {
-            return Ok(false);
-        }
-        self.const_address_bases.insert(high);
         if high == 0 {
             self.output.instructions.push(displacement_load(
                 pointee,
@@ -183,10 +175,14 @@ impl Generator {
                 displacement,
             )?);
         } else {
-            let base = self.address_base_for_load_destination(destination)?;
-            self.output
-                .instructions
-                .push(Instruction::load_immediate_shifted(base, high));
+            let Some((base, materialize)) = self.claim_const_address_base(high) else {
+                return Ok(false);
+            };
+            if materialize {
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate_shifted(base, high));
+            }
             self.output.instructions.push(displacement_load(
                 pointee,
                 destination,
@@ -195,6 +191,21 @@ impl Generator {
             )?);
         }
         Ok(true)
+    }
+
+    /// Return the retained base for `high`, creating it when this is the first
+    /// nonzero fixed-address family in the function. The boolean tells the
+    /// caller to emit the defining `lis`.
+    fn claim_const_address_base(&mut self, high: i16) -> Option<(u8, bool)> {
+        if let Some(&base) = self.const_address_bases.get(&high) {
+            return Some((base, false));
+        }
+        if !self.const_address_bases.is_empty() {
+            return None;
+        }
+        let base = self.fresh_virtual_general();
+        self.const_address_bases.insert(high, base);
+        Some((base, true))
     }
 
     /// Select the address register for a load which normally coalesces its base
@@ -257,12 +268,6 @@ impl Generator {
         if !is_register_leaf {
             return Ok(false);
         }
-        // Only the FIRST constant-address access in a function is byte-exact; a second of any
-        // kind needs mwcc's look-ahead base allocation and scheduling (keystone-level). Defer.
-        if !self.const_address_bases.is_empty() {
-            return Ok(false);
-        }
-        self.const_address_bases.insert(high);
         if high == 0 {
             let source = self.place_store_value(value, pointee)?;
             self.output
@@ -270,15 +275,19 @@ impl Generator {
                 .push(displacement_store(pointee, source, 0, displacement)?);
             return Ok(true);
         }
+        let Some((base, materialize)) = self.claim_const_address_base(high) else {
+            return Ok(false);
+        };
         // Phase D: the const-address base is a virtual. place_store_value between its
         // definition and use picks PHYSICAL registers; the reserve marker keeps the
         // legacy chooser away from the virtual's field value, and the allocator sees
         // any physical it picks as pinned inside the base's range.
-        let base = self.fresh_virtual_general();
         let restore = self.reserved.insert(base);
-        self.output
-            .instructions
-            .push(Instruction::load_immediate_shifted(base, high));
+        if materialize {
+            self.output
+                .instructions
+                .push(Instruction::load_immediate_shifted(base, high));
+        }
         let source = match address_identity_source {
             Some(source) => source,
             None => self.place_store_value(value, pointee)?,

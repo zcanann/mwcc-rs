@@ -303,15 +303,16 @@ pub(crate) struct Generator {
     /// Float memory loads retained only along a side-effect-free condition's
     /// fallthrough edge into the next guard.
     pub(crate) condition_float_cache: ConditionFloatCache,
-    /// Non-empty once a constant-address access in this function has materialized a
-    /// base register (`lis hi`). mwcc handles multiple such accesses by allocating
-    /// ALL the bases up front, chosen by look-ahead over every value and (for the
-    /// same high half) reusing one `lis` across the run — keystone-level register
-    /// allocation. So only the FIRST high-half base is emitted; a second const-address
-    /// access defers rather than emitting a fresh, mis-scheduled `lis` (a correct
-    /// value, but the wrong bytes). Accesses with a zero high half (r0=0 base, no
-    /// `lis`) never record here and are unaffected.
-    pub(crate) const_address_bases: HashSet<i16>,
+    /// Retained constant-address base, keyed by the materialized high half.
+    ///
+    /// A fresh virtual lets liveness extend the base across later accesses with
+    /// the same high half inside one call-free region. Calls invalidate the map:
+    /// retaining a base across them is a frame-cost decision that belongs in a
+    /// future whole-function planner, while the ordinary MWCC schedule
+    /// rematerializes it. A different high half still needs MWCC's multi-base
+    /// look-ahead schedule and therefore defers. Zero-high accesses use
+    /// r0-as-zero directly and are not recorded.
+    pub(crate) const_address_bases: HashMap<i16, u8>,
     /// Set once a VARIABLE-index subscript store (`a[i] = v`, i not constant) has
     /// scaled its index through the r0 scratch. mwcc pre-scales the indices of
     /// MULTIPLE such stores up front (`slwi r4,r4,2; slwi r0,r6,2; stwx…; stwx…`),
