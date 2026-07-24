@@ -426,10 +426,11 @@ impl Generator {
         // int-width idiom unextended (wrong bytes for a negative char/short).
         if self
             .cast_operand_width(operand)
-            .map_or(false, |width| width < 32)
+            .is_some_and(|width| width < 32)
+            && !self.is_narrow_unsigned_load(operand)?
         {
             return Err(mwcc_core::Diagnostic::error(
-                "cast-to-float of a narrow (char/short) value is not modeled (roadmap)",
+                "cast-to-float of a signed narrow (char/short) value is not modeled (roadmap)",
             ));
         }
         // The magic bias goes in a register distinct from the assembled value's f0
@@ -442,7 +443,110 @@ impl Generator {
         } else {
             FLOAT_FIRST
         };
+        if self.is_narrow_unsigned_load(operand)? {
+            return self.emit_loaded_unsigned_int_to_float(
+                operand,
+                destination,
+                double,
+                bias_register,
+            );
+        }
+        // Signed narrow loads require an additional extsb/extsh whose placement
+        // varies independently from the load and bias schedules.
         self.emit_int_to_float(operand, destination, double, bias_register)
+    }
+
+    /// Convert an unsigned byte/halfword memory value to floating point.
+    ///
+    /// The load itself performs the required zero extension. Its placement
+    /// within the magic-bias frame sequence differs in the build-163,
+    /// GC/2.0p1, and mainline scheduler families, so keep this loaded-value
+    /// schedule separate from the register-leaf and call-result schedules.
+    fn emit_loaded_unsigned_int_to_float(
+        &mut self,
+        operand: &Expression,
+        destination: u8,
+        double: bool,
+        bias_register: u8,
+    ) -> Compilation<()> {
+        let source = self.fresh_virtual_general();
+        if !self.non_leaf && self.frame_size == 0 {
+            self.frame_size = 16;
+            self.output
+                .instructions
+                .push(Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -16,
+                });
+        } else if self.frame_size < 16 {
+            self.frame_size = 16;
+        }
+        self.output.has_conversion = true;
+        self.output
+            .instructions
+            .push(Instruction::load_immediate_shifted(0, 17200));
+
+        if self.behavior.legacy_float_cast_schedule {
+            self.evaluate_general(operand, source)?;
+            self.load_double_constant(bias_register, 0x4330_0000_0000_0000);
+            self.output.instructions.push(Instruction::StoreWord {
+                s: source,
+                a: 1,
+                offset: 12,
+            });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 8,
+            });
+        } else if self.behavior.float_cast_value_store_first {
+            self.evaluate_general(operand, source)?;
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 8,
+            });
+            self.load_double_constant(bias_register, 0x4330_0000_0000_0000);
+            self.output.instructions.push(Instruction::StoreWord {
+                s: source,
+                a: 1,
+                offset: 12,
+            });
+        } else {
+            self.load_double_constant(bias_register, 0x4330_0000_0000_0000);
+            self.evaluate_general(operand, source)?;
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 8,
+            });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: source,
+                a: 1,
+                offset: 12,
+            });
+        }
+
+        self.output.instructions.push(Instruction::LoadFloatDouble {
+            d: FLOAT_SCRATCH,
+            a: 1,
+            offset: 8,
+        });
+        self.output.instructions.push(if double {
+            Instruction::FloatSubtractDouble {
+                d: destination,
+                a: FLOAT_SCRATCH,
+                b: bias_register,
+            }
+        } else {
+            Instruction::FloatSubtractSingle {
+                d: destination,
+                a: FLOAT_SCRATCH,
+                b: bias_register,
+            }
+        });
+        Ok(())
     }
 
     /// The magic-constant int->float idiom into `destination`, with the bias double held in

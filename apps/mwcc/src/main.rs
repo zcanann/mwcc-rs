@@ -2414,6 +2414,9 @@ mod tests {
     #[path = "local_post_step.rs"]
     mod local_post_step;
 
+    #[path = "unsigned_narrow_to_float.rs"]
+    mod unsigned_narrow_to_float;
+
     use super::{compile, global_alignments, parse_invocation, GlobalAlignments, SourceLanguage};
     use mwcc_versions::{EnumStorage, GlobalAddressing};
 
