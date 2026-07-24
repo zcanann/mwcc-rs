@@ -2758,6 +2758,36 @@ blr\n\
     }
 
     #[test]
+    fn mangles_a_global_cpp_overload_distinct_from_an_extern_c_signature() {
+        let source = r#"
+            extern "C" { double atan(double value); }
+            unsigned short atan(float x, float y) { return 0; }
+            unsigned short wrapper(float x, float y) { return atan(x, y); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            ["atan__Fff", "wrapper__Fff"]
+        );
+        assert!(matches!(
+            unit.functions[1].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Call { name, .. })
+                if name == "atan__Fff"
+        ));
+    }
+
+    #[test]
     fn resolves_sibling_namespaces_from_a_nested_namespace() {
         let source = r#"
             namespace Game {

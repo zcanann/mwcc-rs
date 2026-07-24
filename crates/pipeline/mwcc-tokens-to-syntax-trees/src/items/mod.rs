@@ -3147,9 +3147,17 @@ impl Parser {
                 || source_function_name.clone(),
                 |scope| format!("{scope}::{source_function_name}"),
             );
+            let declared_parameter_types = parameters
+                .iter()
+                .map(|parameter| parameter.parameter_type)
+                .collect::<Vec<_>>();
             let inherited_c_linkage = self
                 .c_linkage_functions
-                .contains(linkage_source_name.as_str());
+                .contains(linkage_source_name.as_str())
+                && prototypes.iter().any(|(declared_name, _, parameter_types)| {
+                    declared_name == &source_function_name
+                        && parameter_types == &declared_parameter_types
+                });
             let mut member_definition_is_static = false;
 
             if let Some(scope) = &member_scope {
