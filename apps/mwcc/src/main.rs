@@ -6134,8 +6134,10 @@ fn write_lowered_artifacts(
                     .map(|instruction| format!("{:08x}  {instruction:?}\n", instruction.encode()))
                     .collect();
                 format!(
-                    "{}:\nsymbol_order: {:?}\n{body}\n",
-                    machine_code.name, machine_code.symbol_order
+                    "{}:\nsymbol_order: {:?}\ndebug_variables: {:?}\n{body}\n",
+                    machine_code.name,
+                    machine_code.symbol_order,
+                    machine_code.debug_variables,
                 )
             })
             .collect(),

@@ -708,6 +708,41 @@ pub fn lower_function(
         generator.behavior.function_ordinal_accounting_style,
     );
 
+    // Debug lowering consumes final physical allocation, not the frontend's
+    // provisional variable table. Frame slots are authoritative for
+    // address-taken/aggregate locals; remaining allocated names retain their
+    // general/FPR home when it is a physical target register.
+    generator.output.debug_variables = function
+        .parameters
+        .iter()
+        .map(|parameter| parameter.name.as_str())
+        .chain(function.locals.iter().map(|local| local.name.as_str()))
+        .filter_map(|name| {
+            let location = if let Some(slot) = generator.frame_slots.get(name) {
+                mwcc_machine_code::DebugVariableLocation::FrameOffset(slot.offset)
+            } else {
+                let location = generator.locations.get(name)?;
+                if location.register > 31 {
+                    return None;
+                }
+                match location.class {
+                    generator::ValueClass::General => {
+                        mwcc_machine_code::DebugVariableLocation::GeneralRegister(
+                            location.register,
+                        )
+                    }
+                    generator::ValueClass::Float => {
+                        mwcc_machine_code::DebugVariableLocation::FloatRegister(location.register)
+                    }
+                }
+            };
+            Some(mwcc_machine_code::DebugVariable {
+                name: name.to_owned(),
+                location,
+            })
+        })
+        .collect();
+
     // A function with a stack frame carries unwind tables. The codegen does not
     // yet save callee registers, so the saved counts are zero today; the FPU flag
     // is set for a non-leaf function that touches the FPU.

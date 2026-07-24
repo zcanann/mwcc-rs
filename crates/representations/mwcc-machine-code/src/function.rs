@@ -72,6 +72,23 @@ pub struct DataSectionDisplacement {
     pub symbol: String,
 }
 
+/// Final optimized location of a source parameter or automatic local. This is
+/// backend allocation provenance for debug lowering; it has no effect on code
+/// generation or object symbol numbering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DebugVariableLocation {
+    GeneralRegister(u8),
+    FloatRegister(u8),
+    FrameOffset(i16),
+}
+
+/// One source variable that still has a physical home after optimization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugVariable {
+    pub name: String,
+    pub location: DebugVariableLocation,
+}
+
 /// A function's worth of machine code.
 #[derive(Debug, Clone, Default)]
 pub struct MachineFunction {
@@ -85,6 +102,10 @@ pub struct MachineFunction {
     /// Late-bound D-form immediates that name an object through the unit's
     /// zero-offset `...data.0` anchor.
     pub data_section_displacements: Vec<DataSectionDisplacement>,
+    /// Optimized source-variable homes retained for exact debug information.
+    /// Debug lowering decides which declarations receive DIEs for a measured
+    /// compiler generation; this list only reports physical allocation.
+    pub debug_variables: Vec<DebugVariable>,
     /// Read-only constants this function loads from `.sdata2`. Each becomes an
     /// anonymous `@N` object that the function's `R_PPC_EMB_SDA21` loads reference.
     pub constants: Vec<PoolConstant>,
@@ -262,6 +283,7 @@ impl MachineFunction {
             instructions: Vec::new(),
             relocations: Vec::new(),
             data_section_displacements: Vec::new(),
+            debug_variables: Vec::new(),
             constants: Vec::new(),
             string_literals: Vec::new(),
             string_literal_symbols: std::collections::HashMap::new(),
