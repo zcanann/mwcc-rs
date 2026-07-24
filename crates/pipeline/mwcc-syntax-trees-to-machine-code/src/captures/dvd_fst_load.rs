@@ -30,6 +30,8 @@ const MELEE_CONTEXT: u64 = 0x3a2d2eb82e4d72e8;
 const OCARINA_CONTEXT: u64 = 0xb824835db13d77aa;
 const STRIKERS_CONTEXT: u64 = 0x302419ada04faf02;
 const TWILIGHT_PRINCESS_CONTEXT: u64 = 0x532c74a9b25838e0;
+const TWILIGHT_PRINCESS_DEBUG_AST_HASH: u64 = 0x152650c3878b3c1d;
+const TWILIGHT_PRINCESS_DEBUG_CONTEXT: u64 = 0x46a23d3b6541b0c7;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LoaderVariant {
@@ -38,6 +40,7 @@ enum LoaderVariant {
     StaticSigned,
     StaticSignedWindWaker,
     StaticSignedLegacyEpilogue,
+    StaticSignedDebugRuntime,
 }
 
 impl LoaderVariant {
@@ -48,6 +51,7 @@ impl LoaderVariant {
                 | Self::StaticSigned
                 | Self::StaticSignedWindWaker
                 | Self::StaticSignedLegacyEpilogue
+                | Self::StaticSignedDebugRuntime
         )
     }
 
@@ -58,6 +62,7 @@ impl LoaderVariant {
                 | Self::StaticSigned
                 | Self::StaticSignedWindWaker
                 | Self::StaticSignedLegacyEpilogue
+                | Self::StaticSignedDebugRuntime
         )
     }
 }
@@ -89,11 +94,12 @@ impl Generator {
                 LoaderVariant::StaticSignedLegacyEpilogue
             }
             (MELEE_AND_OCARINA_AST_HASH, OCARINA_CONTEXT) => LoaderVariant::StaticSignedWindWaker,
-            (MELEE_AND_OCARINA_AST_HASH, STRIKERS_CONTEXT) => {
-                LoaderVariant::StaticSignedWindWaker
-            }
+            (MELEE_AND_OCARINA_AST_HASH, STRIKERS_CONTEXT) => LoaderVariant::StaticSignedWindWaker,
             (MELEE_AND_OCARINA_AST_HASH, TWILIGHT_PRINCESS_CONTEXT) => {
                 LoaderVariant::StaticSignedWindWaker
+            }
+            (TWILIGHT_PRINCESS_DEBUG_AST_HASH, TWILIGHT_PRINCESS_DEBUG_CONTEXT) => {
+                LoaderVariant::StaticSignedDebugRuntime
             }
             _ => {
                 if std::env::var_os("MWCC_DIAGNOSTIC_CAPTURE").is_some() {
@@ -105,23 +111,29 @@ impl Generator {
             }
         };
 
-        self.frame_size = 96;
+        let debug_runtime = variant == LoaderVariant::StaticSignedDebugRuntime;
+        self.frame_size = if debug_runtime { 88 } else { 96 };
         self.non_leaf = true;
-        self.callee_saved = vec![31, 30, 29];
+        self.callee_saved = if debug_runtime {
+            vec![31, 30]
+        } else {
+            vec![31, 30, 29]
+        };
         if variant.has_static_command_block() {
             // Header-inline accounting at this declaration point is eight
             // labels lower than the unit-wide skipped-inline pre-bump.
             self.output.static_local_adjust = -8;
         }
-        if matches!(
-            variant,
-            LoaderVariant::StaticSignedWindWaker | LoaderVariant::StaticSignedLegacyEpilogue
-        ) {
+        self.output.anonymous_label_bump += match variant {
+            // The debug SDK exposes OSPhysicalToCached as a call, retaining two
+            // additional optimizer labels before the same eliminated switch.
+            LoaderVariant::StaticSignedDebugRuntime => 11,
             // The source's dead seven-case drive-state switch is optimized out
             // of `.text` but leaves nine optimizer labels ahead of the string
-            // pool in this build.
-            self.output.anonymous_label_bump += 9;
-        }
+            // pool in these builds.
+            LoaderVariant::StaticSignedWindWaker | LoaderVariant::StaticSignedLegacyEpilogue => 9,
+            _ => 0,
+        };
 
         // Preserve source encounter order across the small and full data
         // string pools. The five long formats share one .data blob; r31 retains
@@ -161,12 +173,12 @@ impl Generator {
             .push(Instruction::StoreWordWithUpdate {
                 s: 1,
                 a: 1,
-                offset: -96,
+                offset: if debug_runtime { -88 } else { -96 },
             });
         self.output.instructions.push(Instruction::StoreWord {
             s: 31,
             a: 1,
-            offset: 92,
+            offset: if debug_runtime { 84 } else { 92 },
         });
         self.record_relocation(RelocationKind::Addr16Lo, "...data.0");
         self.output.instructions.push(Instruction::AddImmediate {
@@ -177,51 +189,100 @@ impl Generator {
         self.output.instructions.push(Instruction::StoreWord {
             s: 30,
             a: 1,
-            offset: 88,
+            offset: if debug_runtime { 80 } else { 88 },
         });
-        self.output.instructions.push(Instruction::StoreWord {
-            s: 29,
-            a: 1,
-            offset: 84,
-        });
+        if !debug_runtime {
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 29,
+                a: 1,
+                offset: 84,
+            });
+        }
         self.call_capture("OSGetArenaHi");
-        self.record_relocation(RelocationKind::Addr16Ha, "bb2Buf");
-        self.output
-            .instructions
-            .push(Instruction::load_immediate_shifted(3, 0));
-        self.record_relocation(RelocationKind::Addr16Lo, "bb2Buf");
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: 3,
-            a: 3,
-            immediate: 0,
-        });
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: 4,
-            a: 1,
-            immediate: 43,
-        });
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: 0,
-            a: 3,
-            immediate: 31,
-        });
-        self.output
-            .instructions
-            .push(Instruction::AndContiguousMask {
+        if debug_runtime {
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(3, 0));
+            self.call_capture("OSPhysicalToCached");
+            self.record_relocation(RelocationKind::Addr16Ha, "bb2Buf");
+            self.output
+                .instructions
+                .push(Instruction::load_immediate_shifted(4, 0));
+            self.record_relocation(RelocationKind::Addr16Lo, "bb2Buf");
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 4,
+                a: 4,
+                immediate: 0,
+            });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 0,
+                a: 4,
+                immediate: 31,
+            });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 5,
+                a: 1,
+                immediate: 43,
+            });
+            self.output
+                .instructions
+                .push(Instruction::AndContiguousMask {
+                    a: 4,
+                    s: 5,
+                    begin: 0,
+                    end: 26,
+                });
+            self.output
+                .instructions
+                .push(Instruction::AndContiguousMask {
+                    a: 0,
+                    s: 0,
+                    begin: 0,
+                    end: 26,
+                });
+            self.sda_store_capture("idTmp", 4);
+            self.output
+                .instructions
+                .push(Instruction::move_register(30, 3));
+        } else {
+            self.record_relocation(RelocationKind::Addr16Ha, "bb2Buf");
+            self.output
+                .instructions
+                .push(Instruction::load_immediate_shifted(3, 0));
+            self.record_relocation(RelocationKind::Addr16Lo, "bb2Buf");
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 3,
                 a: 3,
-                s: 4,
-                begin: 0,
-                end: 26,
+                immediate: 0,
             });
-        self.output
-            .instructions
-            .push(Instruction::AndContiguousMask {
-                a: 0,
-                s: 0,
-                begin: 0,
-                end: 26,
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 4,
+                a: 1,
+                immediate: 43,
             });
-        self.sda_store_capture("idTmp", 3);
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 0,
+                a: 3,
+                immediate: 31,
+            });
+            self.output
+                .instructions
+                .push(Instruction::AndContiguousMask {
+                    a: 3,
+                    s: 4,
+                    begin: 0,
+                    end: 26,
+                });
+            self.output
+                .instructions
+                .push(Instruction::AndContiguousMask {
+                    a: 0,
+                    s: 0,
+                    begin: 0,
+                    end: 26,
+                });
+            self.sda_store_capture("idTmp", 3);
+        }
         self.sda_store_capture("bb2", 0);
         self.call_capture("DVDReset");
         let command_block = match variant {
@@ -231,7 +292,8 @@ impl Generator {
             LoaderVariant::StaticUnsigned
             | LoaderVariant::StaticSigned
             | LoaderVariant::StaticSignedWindWaker
-            | LoaderVariant::StaticSignedLegacyEpilogue => "block",
+            | LoaderVariant::StaticSignedLegacyEpilogue
+            | LoaderVariant::StaticSignedDebugRuntime => "block",
         };
         self.record_relocation(RelocationKind::Addr16Ha, command_block);
         self.output
@@ -263,31 +325,51 @@ impl Generator {
             .push(Instruction::CompareWordImmediate { a: 3, immediate: 0 });
         self.emit_branch_conditional_to(4, 2, labels[&24]);
 
-        self.sda_load_capture("bb2", 3);
-        self.output
-            .instructions
-            .push(Instruction::load_immediate_shifted(29, -32768));
-        self.output
-            .instructions
-            .push(Instruction::load_immediate_shifted(30, -32768));
-        self.output.instructions.push(Instruction::LoadWord {
-            d: 0,
-            a: 3,
-            offset: 16,
-        });
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: 3,
-            a: 29,
-            immediate: 0,
-        });
-        self.output
-            .instructions
-            .push(Instruction::load_immediate(5, 32));
-        self.output.instructions.push(Instruction::StoreWord {
-            s: 0,
-            a: 30,
-            offset: 56,
-        });
+        if debug_runtime {
+            self.sda_load_capture("bb2", 4);
+            self.output
+                .instructions
+                .push(Instruction::move_register(3, 30));
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(5, 32));
+            self.output.instructions.push(Instruction::LoadWord {
+                d: 0,
+                a: 4,
+                offset: 16,
+            });
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: 30,
+                offset: 56,
+            });
+        } else {
+            self.sda_load_capture("bb2", 3);
+            self.output
+                .instructions
+                .push(Instruction::load_immediate_shifted(29, -32768));
+            self.output
+                .instructions
+                .push(Instruction::load_immediate_shifted(30, -32768));
+            self.output.instructions.push(Instruction::LoadWord {
+                d: 0,
+                a: 3,
+                offset: 16,
+            });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 3,
+                a: 29,
+                immediate: 0,
+            });
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(5, 32));
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: 30,
+                offset: 56,
+            });
+        }
         self.sda_load_capture("bb2", 4);
         self.output.instructions.push(Instruction::LoadWord {
             d: 0,
@@ -302,6 +384,7 @@ impl Generator {
         self.sda_load_capture("idTmp", 4);
         self.call_capture("memcpy");
 
+        let disk_id_register = if debug_runtime { 30 } else { 29 };
         self.short_string_capture(3, b"\n");
         self.output
             .instructions
@@ -310,7 +393,7 @@ impl Generator {
 
         self.output.instructions.push(Instruction::LoadByteZero {
             d: 4,
-            a: 29,
+            a: disk_id_register,
             offset: 0,
         });
         self.output
@@ -318,7 +401,7 @@ impl Generator {
             .push(Instruction::move_register(3, 31));
         self.output.instructions.push(Instruction::LoadByteZero {
             d: 5,
-            a: 29,
+            a: disk_id_register,
             offset: 1,
         });
         self.output
@@ -326,12 +409,12 @@ impl Generator {
             .push(Instruction::ConditionRegisterClear { d: 6 });
         self.output.instructions.push(Instruction::LoadByteZero {
             d: 6,
-            a: 29,
+            a: disk_id_register,
             offset: 2,
         });
         self.output.instructions.push(Instruction::LoadByteZero {
             d: 7,
-            a: 29,
+            a: disk_id_register,
             offset: 3,
         });
         if variant.has_signed_report_arguments() {
@@ -346,7 +429,7 @@ impl Generator {
 
         self.output.instructions.push(Instruction::LoadByteZero {
             d: 4,
-            a: 29,
+            a: disk_id_register,
             offset: 4,
         });
         self.output.instructions.push(Instruction::AddImmediate {
@@ -356,7 +439,7 @@ impl Generator {
         });
         self.output.instructions.push(Instruction::LoadByteZero {
             d: 5,
-            a: 29,
+            a: disk_id_register,
             offset: 5,
         });
         self.output
@@ -375,7 +458,7 @@ impl Generator {
         for (offset, format_offset) in [(6, 52), (7, 72)] {
             self.output.instructions.push(Instruction::LoadByteZero {
                 d: 4,
-                a: 29,
+                a: disk_id_register,
                 offset,
             });
             self.output.instructions.push(Instruction::AddImmediate {
@@ -427,28 +510,29 @@ impl Generator {
         self.output.instructions.push(Instruction::LoadWord {
             d: 0,
             a: 1,
-            offset: 100,
+            offset: if debug_runtime { 92 } else { 100 },
         });
-        for (register, offset) in [(31, 92), (30, 88)] {
+        let saved_registers = if debug_runtime {
+            &[(31, 84), (30, 80)][..]
+        } else {
+            &[(31, 92), (30, 88)][..]
+        };
+        for &(register, offset) in saved_registers {
             self.output.instructions.push(Instruction::LoadWord {
                 d: register,
                 a: 1,
                 offset,
             });
         }
-        if matches!(
-            variant,
-            LoaderVariant::StaticUnsigned | LoaderVariant::StaticSignedLegacyEpilogue
-        ) {
-            self.output
-                .instructions
-                .push(Instruction::MoveToLinkRegister { s: 0 });
-            self.output.instructions.push(Instruction::LoadWord {
-                d: 29,
-                a: 1,
-                offset: 84,
-            });
-        } else {
+        if !debug_runtime {
+            if matches!(
+                variant,
+                LoaderVariant::StaticUnsigned | LoaderVariant::StaticSignedLegacyEpilogue
+            ) {
+                self.output
+                    .instructions
+                    .push(Instruction::MoveToLinkRegister { s: 0 });
+            }
             self.output.instructions.push(Instruction::LoadWord {
                 d: 29,
                 a: 1,
@@ -458,12 +542,14 @@ impl Generator {
         self.output.instructions.push(Instruction::AddImmediate {
             d: 1,
             a: 1,
-            immediate: 96,
+            immediate: if debug_runtime { 88 } else { 96 },
         });
-        if !matches!(
-            variant,
-            LoaderVariant::StaticUnsigned | LoaderVariant::StaticSignedLegacyEpilogue
-        ) {
+        if debug_runtime
+            || !matches!(
+                variant,
+                LoaderVariant::StaticUnsigned | LoaderVariant::StaticSignedLegacyEpilogue
+            )
+        {
             self.output
                 .instructions
                 .push(Instruction::MoveToLinkRegister { s: 0 });
