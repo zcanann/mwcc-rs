@@ -4067,6 +4067,41 @@ blr\n\
     }
 
     #[test]
+    fn retains_const_in_class_inline_member_expression_bodies() {
+        let source = r#"
+            struct Box {
+                float maximum;
+                float last() const { return maximum - 1.0f; }
+            };
+            float use(Box* box) { return box->last(); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let retained = unit
+            .skipped_inline_definitions
+            .iter()
+            .find(|function| function.name == "last__3BoxCFv")
+            .expect("the const inline member should be retained");
+        assert!(matches!(
+            retained.return_expression,
+            Some(Expression::Binary {
+                operator: mwcc_syntax_trees::BinaryOperator::Subtract,
+                ..
+            })
+        ));
+        assert!(matches!(
+            unit.functions[0].return_expression,
+            Some(Expression::Call { ref name, .. }) if name == "last__3BoxCFv"
+        ));
+    }
+
+    #[test]
     fn inline_member_resolves_a_sibling_namespace_function() {
         let source = r#"
             namespace root {
