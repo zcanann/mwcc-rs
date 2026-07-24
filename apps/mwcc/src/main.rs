@@ -2414,6 +2414,9 @@ mod tests {
     #[path = "local_post_step.rs"]
     mod local_post_step;
 
+    #[path = "narrow_to_wide_store.rs"]
+    mod narrow_to_wide_store;
+
     #[path = "computed_record_condition.rs"]
     mod computed_record_condition;
 

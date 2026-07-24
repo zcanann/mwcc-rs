@@ -1612,7 +1612,14 @@ impl Generator {
                 _ => false,
             };
             if value_is_narrow {
-                return Err(Diagnostic::error("a narrow value stored to a wider integer target needs a widening coercion (roadmap)"));
+                // The ordinary value evaluator performs the integral
+                // promotion: lhz/lbz already zero-extend, lha sign-extends,
+                // and a signed byte load appends extsb.
+                self.evaluate_general(value, GENERAL_SCRATCH)?;
+                if self.is_signed_byte_load(value)? {
+                    self.emit_widen(GENERAL_SCRATCH, GENERAL_SCRATCH, 8, true);
+                }
+                return Ok(GENERAL_SCRATCH);
             }
         }
         if let Some(source) = self.try_place_implicit_narrow_store_value(value, pointee)? {
