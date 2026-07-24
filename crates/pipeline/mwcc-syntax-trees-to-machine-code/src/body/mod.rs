@@ -5,6 +5,7 @@
 mod call_prologue;
 mod leading_bitfield_clear_call;
 mod leading_float_update_clamp;
+mod terminal_float_update;
 mod member_acceleration_clamp;
 mod member_float_friction_select;
 mod leading_member_store_call;

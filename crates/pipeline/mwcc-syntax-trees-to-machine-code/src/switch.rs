@@ -73,6 +73,22 @@ impl Generator {
             None => None,
             Some(ArmBody::Return(_)) => return Ok(false),
         };
+        // MWCC's anonymous stream observes source-level control labels even
+        // when optimized terminal branches become `b...lr`. The guarded switch
+        // contributes two labels for its leading if, two per case plus one for
+        // the dispatcher, and the ordinary two-label cost of each nested if.
+        self.output.anonymous_label_bump += 2
+            + 2 * arms.len() as u32
+            + 1
+            + u32::from(default_statements.is_some())
+            + arms
+                .iter()
+                .map(|arm| match &arm.body {
+                    ArmBody::Statements(statements) => terminal_hidden_if_labels(statements),
+                    ArmBody::Return(_) => 0,
+                })
+                .sum::<u32>()
+            + default_statements.map_or(0, terminal_hidden_if_labels);
 
         let (options, condition_bit) = self.emit_condition_test(condition)?;
         self.output
@@ -635,6 +651,12 @@ impl Generator {
     }
 
     fn emit_terminal_switch_block(&mut self, statements: &[Statement]) -> Compilation<()> {
+        if self.try_terminal_float_direction(statements)? {
+            return Ok(());
+        }
+        if self.try_terminal_float_update(statements)? {
+            return Ok(());
+        }
         if let [Statement::If {
             condition,
             then_body,
@@ -1045,3 +1067,20 @@ const BEQ: (u8, u8) = (12, 2);
 const BGE: (u8, u8) = (4, 0);
 /// `bgt` — branch if cr0[GT] (BO=12 branch-if-true, BI=1 the GT bit).
 const BGT: (u8, u8) = (12, 1);
+
+fn terminal_hidden_if_labels(statements: &[Statement]) -> u32 {
+    statements
+        .iter()
+        .map(|statement| match statement {
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                2 + terminal_hidden_if_labels(then_body)
+                    + terminal_hidden_if_labels(else_body)
+            }
+            _ => 0,
+        })
+        .sum()
+}
