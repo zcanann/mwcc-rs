@@ -396,9 +396,11 @@ impl Generator {
                 destination,
             ),
             Expression::AggregateLiteral(_) => Err(Diagnostic::error("an aggregate initializer is not supported here (captures only)")),
-            Expression::PostStep { .. } => Err(Diagnostic::error(
-                "a postfix step used as a value is not supported yet (roadmap)",
-            )),
+            Expression::PostStep {
+                target,
+                operator,
+                pointer_link,
+            } => self.emit_post_step_value(target, *operator, *pointer_link, destination),
             Expression::IntegerLiteral(value) => {
                 self.load_integer_constant(destination, *value);
                 Ok(())

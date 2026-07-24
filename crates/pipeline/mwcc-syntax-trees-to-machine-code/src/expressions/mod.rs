@@ -26,6 +26,7 @@ mod passes;
 mod pointer_alignment;
 mod pointer_spans;
 mod pointers;
+mod post_step;
 mod punned_displacement;
 mod shifted_member_mask;
 mod stores;

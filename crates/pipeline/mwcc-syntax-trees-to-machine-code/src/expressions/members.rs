@@ -1569,10 +1569,13 @@ impl Generator {
                 )
             })?.size()),
         };
-        // The base materializes into `destination` and is then its own `addi` base, so it cannot
-        // be the scratch r0 (an `addi` based on r0 reads literal zero, not the register).
         if destination == GENERAL_SCRATCH {
-            return Err(Diagnostic::error("a global-array element address into the scratch register is not supported yet (roadmap)"));
+            return self.emit_global_array_element_address_to_scratch(
+                name,
+                total_size,
+                element_size,
+                index,
+            );
         }
         if let Some(constant) = constant_value(index) {
             self.emit_global_array_base(name, total_size, destination)?;
