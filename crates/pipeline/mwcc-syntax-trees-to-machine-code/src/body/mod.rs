@@ -104,6 +104,7 @@ mod punned_ladder_policy;
 mod punned_select;
 mod punned_writeback;
 mod paired_float_product_schedule;
+mod pooled_float_literal_reuse;
 mod queue_callback_fold;
 mod reciprocal_frame_fill_schedule;
 mod range_guarded_array_address;
