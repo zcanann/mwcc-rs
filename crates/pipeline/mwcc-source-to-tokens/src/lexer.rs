@@ -216,25 +216,14 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
                     }
                     Some(b'\\') => {
                         position += 1;
-                        let escaped = *bytes.get(position).ok_or_else(|| {
-                            Diagnostic::error("unterminated character literal")
-                        })?;
-                        position += 1;
-                        match escaped {
-                            b'n' => 10,
-                            b't' => 9,
-                            b'r' => 13,
-                            b'0' => 0,
-                            b'a' => 7,
-                            b'b' => 8,
-                            b'f' => 12,
-                            b'v' => 11,
-                            other => other,
+                        match scan_escape(bytes, &mut position)? {
+                            Some(value) => value,
+                            None => continue,
                         }
                     }
                     Some(byte) => {
                         position += 1;
-                        byte
+                        u32::from(byte)
                     }
                 };
                 count += 1;
@@ -523,27 +512,90 @@ fn scan_string_literal(bytes: &[u8], position: &mut usize) -> Compilation<Vec<u8
             }
             Some(b'\\') => {
                 *position += 1;
-                let escaped = *bytes
-                    .get(*position)
-                    .ok_or_else(|| Diagnostic::error("unterminated string literal"))?;
-                *position += 1;
-                content.push(match escaped {
-                    b'n' => 10,
-                    b't' => 9,
-                    b'r' => 13,
-                    b'0' => 0,
-                    b'a' => 7,
-                    b'b' => 8,
-                    b'f' => 12,
-                    b'v' => 11,
-                    other => other,
-                });
+                if let Some(value) = scan_escape(bytes, position)? {
+                    content.push(value as u8);
+                }
             }
             Some(byte) => {
                 content.push(byte);
                 *position += 1;
             }
         }
+    }
+}
+
+/// Decode one C escape after its leading backslash.
+///
+/// Hex escapes consume every following hexadecimal digit, while octal escapes
+/// consume at most three digits. Narrow literal consumers retain the low byte;
+/// character constants keep the full decoded value. A backslash-newline pair
+/// is translation-phase line splicing and therefore produces no code unit.
+fn scan_escape(bytes: &[u8], position: &mut usize) -> Compilation<Option<u32>> {
+    let escaped = *bytes
+        .get(*position)
+        .ok_or_else(|| Diagnostic::error("unterminated escape sequence"))?;
+    match escaped {
+        b'\n' => {
+            *position += 1;
+            Ok(None)
+        }
+        b'\r' => {
+            *position += 1;
+            if peek(bytes, *position) == Some(b'\n') {
+                *position += 1;
+            }
+            Ok(None)
+        }
+        b'x' | b'X' => {
+            *position += 1;
+            let start = *position;
+            let mut value = 0u32;
+            while let Some(byte) = peek(bytes, *position).filter(u8::is_ascii_hexdigit) {
+                value = value
+                    .wrapping_mul(16)
+                    .wrapping_add(u32::from(hex_digit_value(byte)));
+                *position += 1;
+            }
+            if *position == start {
+                return Err(Diagnostic::error(
+                    "hexadecimal escape has no following digits",
+                ));
+            }
+            Ok(Some(value))
+        }
+        b'0'..=b'7' => {
+            let mut value = 0u32;
+            for _ in 0..3 {
+                let Some(byte @ b'0'..=b'7') = peek(bytes, *position) else {
+                    break;
+                };
+                value = value * 8 + u32::from(byte - b'0');
+                *position += 1;
+            }
+            Ok(Some(value))
+        }
+        _ => {
+            *position += 1;
+            Ok(Some(match escaped {
+                b'a' => 7,
+                b'b' => 8,
+                b'f' => 12,
+                b'n' => 10,
+                b'r' => 13,
+                b't' => 9,
+                b'v' => 11,
+                other => u32::from(other),
+            }))
+        }
+    }
+}
+
+fn hex_digit_value(byte: u8) -> u8 {
+    match byte {
+        b'0'..=b'9' => byte - b'0',
+        b'a'..=b'f' => byte - b'a' + 10,
+        b'A'..=b'F' => byte - b'A' + 10,
+        _ => unreachable!("hex digit scanner validated the byte"),
     }
 }
 
@@ -569,6 +621,16 @@ mod tests {
         assert!(tokens.contains(&Token::StringLiteral(vec![
             0x83, 0x8a, 0x83, 0x93, 0x83, 0x4e,
         ])));
+    }
+
+    #[test]
+    fn hexadecimal_and_octal_escapes_decode_to_literal_bytes() {
+        let tokens =
+            tokenize_bytes(br#"char *s = "\xE9rez\141\0" "\xF3"; int c = '\xA9';"#).unwrap();
+        assert!(tokens.contains(&Token::StringLiteral(vec![
+            0xe9, b'r', b'e', b'z', b'a', 0, 0xf3,
+        ])));
+        assert!(tokens.contains(&Token::IntegerLiteral(0xa9)));
     }
 
     #[test]
