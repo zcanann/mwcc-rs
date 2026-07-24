@@ -1,6 +1,67 @@
 use super::*;
 
 #[test]
+fn function_local_aggregates_extend_the_data_type_chain_before_functions() {
+    let source = br#"
+        typedef struct Color {
+            unsigned char r, g, b, a;
+        } Color;
+        int enabled = 1;
+        void paint(void) {
+            Color foreground = { 1, 2, 3, 4 };
+        }
+    "#;
+    let unit = mwcc_tokens_to_syntax_trees::parse_located_translation_unit(
+        mwcc_source_to_tokens::tokenize_bytes_located(source).expect("tokens"),
+        false,
+        false,
+        3,
+        1,
+    )
+    .expect("translation unit");
+    let globals = unit.globals.iter().collect::<Vec<_>>();
+    let local_key = unit
+        .function_local_aggregate_tags
+        .get(&("paint".to_owned(), "foreground".to_owned()))
+        .expect("local aggregate identity")
+        .clone();
+    let lowered = records_with_local_aggregates_directly_followed_by_functions(
+        &unit,
+        &globals,
+        &[local_key.clone()],
+        DebugEntryId(1),
+    )
+    .expect("mixed data/type records");
+    let aggregate_id = lowered.aggregate_ids[&local_key];
+
+    let global = lowered
+        .records
+        .iter()
+        .find_map(|record| match record {
+            DebugRecord::Entry(entry) if entry.tag == Tag::GlobalVariable => Some(entry),
+            _ => None,
+        })
+        .expect("global DIE");
+    assert!(global.attributes.iter().any(|attribute| {
+        attribute.name == AttributeName::Sibling
+            && attribute.value == AttributeValue::Reference(aggregate_id)
+    }));
+
+    let aggregate = lowered
+        .records
+        .iter()
+        .find_map(|record| match record {
+            DebugRecord::Entry(entry) if entry.id == aggregate_id => Some(entry),
+            _ => None,
+        })
+        .expect("local aggregate DIE");
+    assert!(aggregate.attributes.iter().any(|attribute| {
+        attribute.name == AttributeName::Sibling
+            && attribute.value == AttributeValue::Reference(lowered.next_id)
+    }));
+}
+
+#[test]
 fn aggregate_arrays_share_types_and_preserve_variable_linkage() {
     let source = br#"
         typedef struct scroll_s {
@@ -161,4 +222,70 @@ fn aggregate_member_array_precedes_its_owner_and_is_referenced_by_the_member() {
         attribute.name == AttributeName::UserDefinedType
             && attribute.value == AttributeValue::Reference(array.id)
     }));
+}
+
+#[test]
+fn local_only_aggregate_bridges_data_directly_to_following_functions() {
+    let source = br#"
+        typedef struct Color {
+            unsigned char r;
+            unsigned char g;
+            unsigned char b;
+            unsigned char a;
+        } Color;
+        int mode = 1;
+        void paint(void) {
+            Color foreground = { 1, 2, 3, 4 };
+        }
+    "#;
+    let unit = mwcc_tokens_to_syntax_trees::parse_located_translation_unit(
+        mwcc_source_to_tokens::tokenize_bytes_located(source).expect("tokens"),
+        false,
+        false,
+        3,
+        1,
+    )
+    .expect("translation unit");
+    let globals = unit.globals.iter().collect::<Vec<_>>();
+    let key = unit.function_local_aggregate_tags
+        [&("paint".to_owned(), "foreground".to_owned())]
+        .clone();
+    let lowered = records_with_local_aggregates_directly_followed_by_functions(
+        &unit,
+        &globals,
+        &[key.clone()],
+        DebugEntryId(1),
+    )
+    .expect("mixed data/local-type records");
+    let entries = lowered
+        .records
+        .iter()
+        .filter_map(|record| match record {
+            DebugRecord::Entry(entry) => Some(entry),
+            DebugRecord::Marker(_) | DebugRecord::Raw(_) => None,
+        })
+        .collect::<Vec<_>>();
+
+    let global = entries
+        .iter()
+        .find(|entry| entry.tag == Tag::GlobalVariable)
+        .expect("global DIE");
+    let aggregate_id = lowered.aggregate_ids[&key];
+    assert!(global.attributes.iter().any(|attribute| {
+        attribute.name == AttributeName::Sibling
+            && attribute.value == AttributeValue::Reference(aggregate_id)
+    }));
+
+    let aggregate = entries
+        .iter()
+        .find(|entry| entry.id == aggregate_id)
+        .expect("local-only aggregate DIE");
+    assert!(aggregate.attributes.iter().any(|attribute| {
+        attribute.name == AttributeName::Sibling
+            && attribute.value == AttributeValue::Reference(lowered.next_id)
+    }));
+    assert!(!lowered
+        .records
+        .iter()
+        .any(|record| *record == DebugRecord::Marker(DATA_END)));
 }

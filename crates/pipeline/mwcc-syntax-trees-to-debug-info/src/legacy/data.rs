@@ -449,6 +449,7 @@ pub(super) fn records<'a>(
         } else {
             Continuation::Standalone
         },
+        &[],
     )
 }
 
@@ -465,6 +466,26 @@ pub(super) fn records_directly_followed_by_functions<'a>(
         globals,
         first_id,
         Continuation::FunctionsDirectly,
+        &[],
+    )
+}
+
+/// Emit ordinary file-scope data, then aggregate declarations owned solely by
+/// optimized function locals, and finally functions with no intervening data
+/// terminator. The extra roots preserve source type identity without inventing
+/// synthetic data objects.
+pub(super) fn records_with_local_aggregates_directly_followed_by_functions<'a>(
+    unit: &'a TranslationUnit,
+    globals: &[&'a GlobalDeclaration],
+    aggregate_keys: &[String],
+    first_id: DebugEntryId,
+) -> Compilation<DataRecords> {
+    records_with_continuation(
+        unit,
+        globals,
+        first_id,
+        Continuation::FunctionsDirectly,
+        aggregate_keys,
     )
 }
 
@@ -473,6 +494,7 @@ fn records_with_continuation<'a>(
     globals: &[&'a GlobalDeclaration],
     first_id: DebugEntryId,
     continuation: Continuation,
+    trailing_aggregate_keys: &[String],
 ) -> Compilation<DataRecords> {
     let mut next_id = first_id.0;
     let mut plans = Vec::with_capacity(globals.len());
@@ -564,10 +586,30 @@ fn records_with_continuation<'a>(
         });
     }
 
-    let terminal_sibling = match continuation {
+    let mut trailing_aggregates = Vec::new();
+    for key in trailing_aggregate_keys {
+        let before = trailing_aggregates.len();
+        plan_aggregate(
+            unit,
+            key,
+            &mut next_id,
+            &mut aggregate_ids,
+            &mut trailing_aggregates,
+        )?;
+        if trailing_aggregates.len() == before && !aggregate_ids.contains_key(key) {
+            return Err(Diagnostic::error(format!(
+                "debug-info: local aggregate identity '{key}' was not retained"
+            )));
+        }
+    }
+
+    let after_data_sibling = match continuation {
         Continuation::FunctionsDirectly => DebugEntryId(next_id),
         Continuation::Standalone | Continuation::FunctionsAfterDataEnd => DATA_END,
     };
+    let terminal_sibling = trailing_aggregates
+        .first()
+        .map_or(after_data_sibling, AggregatePlan::start_id);
     let mut records = Vec::new();
     for (index, plan) in plans.iter().enumerate() {
         let next = plans
@@ -636,119 +678,11 @@ fn records_with_continuation<'a>(
                 array_type_id,
                 types,
             } => {
-                for (type_index, aggregate) in types.iter().enumerate() {
-                    let sibling = types.get(type_index + 1).map_or(
-                        array_type_id.unwrap_or(plan.global_id),
-                        AggregatePlan::start_id,
-                    );
-                    let array_ids = aggregate
-                        .member_array_type_ids
-                        .iter()
-                        .flatten()
-                        .copied()
-                        .collect::<Vec<_>>();
-                    for (array_index, (member_index, array_id)) in aggregate
-                        .member_array_type_ids
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(member_index, id)| id.map(|id| (member_index, id)))
-                        .enumerate()
-                    {
-                        let member = &aggregate.definition.members[member_index];
-                        let array_length = u16::try_from(member.array_length.unwrap()).map_err(
-                            |_| {
-                                Diagnostic::error(format!(
-                                    "debug-info: aggregate '{}.{}' has a member array too large for legacy DWARF",
-                                    aggregate.definition.name, member.name
-                                ))
-                            },
-                        )?;
-                        records.push(DebugRecord::Entry(DebugEntry {
-                            id: array_id,
-                            tag: Tag::ArrayType,
-                            attributes: vec![
-                                attribute(
-                                    AttributeName::Sibling,
-                                    AttributeValue::Reference(
-                                        array_ids
-                                            .get(array_index + 1)
-                                            .copied()
-                                            .unwrap_or(aggregate.type_id),
-                                    ),
-                                ),
-                                attribute(
-                                    AttributeName::SubscriptData,
-                                    AttributeValue::Block2(fundamental_subscript_data(
-                                        array_length,
-                                        aggregate_member_fundamental_type(member)?,
-                                    )),
-                                ),
-                            ],
-                        }));
-                    }
-                    let mut attributes = vec![attribute(
-                        AttributeName::Sibling,
-                        AttributeValue::Reference(sibling),
-                    )];
-                    if let Some(source_tag) = &aggregate.definition.source_tag {
-                        attributes.push(attribute(
-                            AttributeName::Name,
-                            AttributeValue::String(source_tag.clone()),
-                        ));
-                    }
-                    attributes.push(attribute(
-                        AttributeName::ByteSize,
-                        AttributeValue::Data4(aggregate.definition.byte_size),
-                    ));
-                    records.push(DebugRecord::Entry(DebugEntry {
-                        id: aggregate.type_id,
-                        tag: if aggregate.definition.is_union {
-                            Tag::UnionType
-                        } else {
-                            Tag::StructureType
-                        },
-                        attributes,
-                    }));
-                    for (member_index, member) in aggregate.definition.members.iter().enumerate() {
-                        let member_sibling = aggregate
-                            .member_ids
-                            .get(member_index + 1)
-                            .copied()
-                            .unwrap_or(aggregate.children_end);
-                        records.push(DebugRecord::Entry(DebugEntry {
-                            id: aggregate.member_ids[member_index],
-                            tag: Tag::Member,
-                            attributes: vec![
-                                attribute(
-                                    AttributeName::Sibling,
-                                    AttributeValue::Reference(member_sibling),
-                                ),
-                                attribute(
-                                    AttributeName::Name,
-                                    AttributeValue::String(member.name.clone()),
-                                ),
-                                aggregate.member_array_type_ids[member_index].map_or_else(
-                                    || {
-                                        member_type_attribute(
-                                            member.declared_type,
-                                            aggregate.member_type_ids[member_index],
-                                            member.source_fundamental,
-                                        )
-                                    },
-                                    |id| {
-                                        Ok(attribute(
-                                            AttributeName::UserDefinedType,
-                                            AttributeValue::Reference(id),
-                                        ))
-                                    },
-                                )?,
-                                member_location(member.offset),
-                            ],
-                        }));
-                    }
-                    records.push(DebugRecord::Marker(aggregate.children_end));
-                    records.push(DebugRecord::Raw(vec![0, 0, 0, 4]));
-                }
+                append_aggregate_types(
+                    &mut records,
+                    types,
+                    array_type_id.unwrap_or(plan.global_id),
+                )?;
                 if let Some(type_id) = array_type_id {
                     records.push(DebugRecord::Entry(DebugEntry {
                         id: *type_id,
@@ -780,6 +714,7 @@ fn records_with_continuation<'a>(
             }
         }
     }
+    append_aggregate_types(&mut records, &trailing_aggregates, after_data_sibling)?;
     match continuation {
         Continuation::Standalone => {
             records.push(DebugRecord::Marker(DATA_END));
@@ -802,6 +737,124 @@ fn records_with_continuation<'a>(
         global_ids,
         aggregate_ids,
     })
+}
+
+fn append_aggregate_types(
+    records: &mut Vec<DebugRecord>,
+    types: &[AggregatePlan<'_>],
+    final_sibling: DebugEntryId,
+) -> Compilation<()> {
+    for (type_index, aggregate) in types.iter().enumerate() {
+        let sibling = types
+            .get(type_index + 1)
+            .map_or(final_sibling, AggregatePlan::start_id);
+        let array_ids = aggregate
+            .member_array_type_ids
+            .iter()
+            .flatten()
+            .copied()
+            .collect::<Vec<_>>();
+        for (array_index, (member_index, array_id)) in aggregate
+            .member_array_type_ids
+            .iter()
+            .enumerate()
+            .filter_map(|(member_index, id)| id.map(|id| (member_index, id)))
+            .enumerate()
+        {
+            let member = &aggregate.definition.members[member_index];
+            let array_length = u16::try_from(member.array_length.unwrap()).map_err(|_| {
+                Diagnostic::error(format!(
+                    "debug-info: aggregate '{}.{}' has a member array too large for legacy DWARF",
+                    aggregate.definition.name, member.name
+                ))
+            })?;
+            records.push(DebugRecord::Entry(DebugEntry {
+                id: array_id,
+                tag: Tag::ArrayType,
+                attributes: vec![
+                    attribute(
+                        AttributeName::Sibling,
+                        AttributeValue::Reference(
+                            array_ids
+                                .get(array_index + 1)
+                                .copied()
+                                .unwrap_or(aggregate.type_id),
+                        ),
+                    ),
+                    attribute(
+                        AttributeName::SubscriptData,
+                        AttributeValue::Block2(fundamental_subscript_data(
+                            array_length,
+                            aggregate_member_fundamental_type(member)?,
+                        )),
+                    ),
+                ],
+            }));
+        }
+        let mut attributes = vec![attribute(
+            AttributeName::Sibling,
+            AttributeValue::Reference(sibling),
+        )];
+        if let Some(source_tag) = &aggregate.definition.source_tag {
+            attributes.push(attribute(
+                AttributeName::Name,
+                AttributeValue::String(source_tag.clone()),
+            ));
+        }
+        attributes.push(attribute(
+            AttributeName::ByteSize,
+            AttributeValue::Data4(aggregate.definition.byte_size),
+        ));
+        records.push(DebugRecord::Entry(DebugEntry {
+            id: aggregate.type_id,
+            tag: if aggregate.definition.is_union {
+                Tag::UnionType
+            } else {
+                Tag::StructureType
+            },
+            attributes,
+        }));
+        for (member_index, member) in aggregate.definition.members.iter().enumerate() {
+            let member_sibling = aggregate
+                .member_ids
+                .get(member_index + 1)
+                .copied()
+                .unwrap_or(aggregate.children_end);
+            records.push(DebugRecord::Entry(DebugEntry {
+                id: aggregate.member_ids[member_index],
+                tag: Tag::Member,
+                attributes: vec![
+                    attribute(
+                        AttributeName::Sibling,
+                        AttributeValue::Reference(member_sibling),
+                    ),
+                    attribute(
+                        AttributeName::Name,
+                        AttributeValue::String(member.name.clone()),
+                    ),
+                    aggregate.member_array_type_ids[member_index].map_or_else(
+                        || {
+                            member_type_attribute(
+                                member.declared_type,
+                                aggregate.member_type_ids[member_index],
+                                member.source_fundamental,
+                            )
+                        },
+                        |id| {
+                            Ok(attribute(
+                                AttributeName::UserDefinedType,
+                                AttributeValue::Reference(id),
+                            ))
+                        },
+                    )?,
+                    member_location(member.offset),
+                ],
+            }));
+        }
+        records.push(DebugRecord::Marker(aggregate.children_end));
+        records.push(DebugRecord::Raw(vec![0, 0, 0, 4]));
+    }
+    Ok(())
 }
 
 fn allocate(next_id: &mut u32) -> DebugEntryId {
