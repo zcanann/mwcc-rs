@@ -26,6 +26,69 @@ pub(super) fn expand_line(
     expand(line, definitions, state, &mut expanding, 0)
 }
 
+/// Whether a function-like macro invocation starts in `input` but does not yet
+/// contain its closing parenthesis. The source loader uses this to join physical
+/// source lines into one expansion unit without treating every line as a C
+/// preprocessor logical-line boundary.
+pub(super) fn has_incomplete_function_invocation(
+    input: &[u8],
+    definitions: &HashMap<String, Macro>,
+    state: LexicalState,
+) -> bool {
+    let mut in_block_comment = state.in_block_comment;
+    let mut index = 0;
+    while index < input.len() {
+        if in_block_comment {
+            if input[index..].starts_with(b"*/") {
+                index += 2;
+                in_block_comment = false;
+            } else {
+                index += 1;
+            }
+            continue;
+        }
+        if input[index..].starts_with(b"//") {
+            index = input[index..]
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(input.len(), |newline| index + newline + 1);
+            continue;
+        }
+        if input[index..].starts_with(b"/*") {
+            index += 2;
+            in_block_comment = true;
+            continue;
+        }
+        if matches!(input[index], b'\'' | b'"') {
+            index = skip_quoted(input, index);
+            continue;
+        }
+        if !is_identifier_start(input[index]) {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        index += 1;
+        while index < input.len() && is_identifier_continue(input[index]) {
+            index += 1;
+        }
+        let Some(name) = std::str::from_utf8(&input[start..index]).ok() else {
+            continue;
+        };
+        if !matches!(definitions.get(name), Some(Macro::Function { .. })) {
+            continue;
+        }
+        let mut open = index;
+        while input.get(open).is_some_and(u8::is_ascii_whitespace) {
+            open += 1;
+        }
+        if input.get(open) == Some(&b'(') && parse_invocation(input, index).is_none() {
+            return true;
+        }
+    }
+    false
+}
+
 fn expand(
     input: &[u8],
     definitions: &HashMap<String, Macro>,
@@ -76,8 +139,8 @@ fn expand(
                 output.extend_from_slice(identifier);
                 continue;
             };
-            let (replacement, invocation_end, parameter_definitions) = match definition {
-                Macro::Object(replacement) => (replacement.clone(), index, None),
+            let (replacement, invocation_end) = match definition {
+                Macro::Object(replacement) => (replacement.clone(), index),
                 Macro::Function {
                     parameters,
                     variadic,
@@ -115,28 +178,31 @@ fn expand(
                     // otherwise the lexer sees the surviving `#` in the middle
                     // of a source line as a directive and can discard the rest
                     // of a multi-statement macro body.
-                    let replacement = stringify_parameter_uses(
-                        replacement,
+                    let replacement = stringify_parameter_uses(replacement, parameters, &arguments);
+                    let expanded_arguments = arguments
+                        .iter()
+                        .map(|argument| {
+                            let mut argument_state = LexicalState::default();
+                            expand(
+                                argument,
+                                definitions,
+                                &mut argument_state,
+                                expanding,
+                                depth + 1,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let replacement = substitute_parameter_uses(
+                        &replacement,
                         parameters,
                         &arguments,
+                        &expanded_arguments,
                     );
-                    let mut parameter_definitions = definitions.clone();
-                    for (parameter, argument) in parameters.iter().zip(&arguments) {
-                        let mut argument_state = LexicalState::default();
-                        let expanded = expand(
-                            argument,
-                            definitions,
-                            &mut argument_state,
-                            expanding,
-                            depth + 1,
-                        );
-                        parameter_definitions.insert(parameter.clone(), Macro::Object(expanded));
-                    }
-                    (
-                        replacement,
-                        invocation_end,
-                        Some(parameter_definitions),
-                    )
+                    // Token-paste operands are substituted without macro
+                    // expansion. Join them before the replacement list is
+                    // rescanned so `size ## _TILE_BYTES` forms the complete
+                    // identifier rather than expanding `size` in isolation.
+                    (paste_tokens(&replacement), invocation_end)
                 }
             };
             if depth >= MAX_EXPANSION_DEPTH || !expanding.insert(name.to_string()) {
@@ -147,24 +213,12 @@ fn expand(
             let mut replacement_state = LexicalState::default();
             let expanded_replacement = expand(
                 &replacement,
-                parameter_definitions.as_ref().unwrap_or(definitions),
+                definitions,
                 &mut replacement_state,
                 expanding,
                 depth + 1,
             );
-            let pasted_replacement = paste_tokens(&expanded_replacement);
-            if pasted_replacement == expanded_replacement {
-                output.extend(expanded_replacement);
-            } else {
-                let mut rescan_state = LexicalState::default();
-                output.extend(expand(
-                    &pasted_replacement,
-                    definitions,
-                    &mut rescan_state,
-                    expanding,
-                    depth + 1,
-                ));
-            }
+            output.extend(expanded_replacement);
             expanding.remove(name);
             index = invocation_end;
             continue;
@@ -260,11 +314,7 @@ fn stringify_argument(argument: &[u8]) -> Vec<u8> {
     let mut output = Vec::with_capacity(argument.len() + 2);
     output.push(b'"');
     let mut pending_space = false;
-    for byte in argument
-        .iter()
-        .copied()
-        .skip_while(u8::is_ascii_whitespace)
-    {
+    for byte in argument.iter().copied().skip_while(u8::is_ascii_whitespace) {
         if byte.is_ascii_whitespace() {
             pending_space = true;
             continue;
@@ -279,6 +329,84 @@ fn stringify_argument(argument: &[u8]) -> Vec<u8> {
         output.push(byte);
     }
     output.push(b'"');
+    output
+}
+
+/// Substitute function parameters according to the C preprocessor's expansion
+/// order. Ordinary uses receive the expanded argument, while operands adjacent
+/// to `##` retain their original spelling until after token pasting.
+fn substitute_parameter_uses(
+    replacement: &[u8],
+    parameters: &[String],
+    arguments: &[Vec<u8>],
+    expanded_arguments: &[Vec<u8>],
+) -> Vec<u8> {
+    let mut output = Vec::with_capacity(replacement.len());
+    let mut index = 0;
+    while index < replacement.len() {
+        if matches!(replacement[index], b'\'' | b'"') {
+            let end = skip_quoted(replacement, index);
+            output.extend_from_slice(&replacement[index..end]);
+            index = end;
+            continue;
+        }
+        if replacement[index..].starts_with(b"//") {
+            output.extend_from_slice(&replacement[index..]);
+            break;
+        }
+        if replacement[index..].starts_with(b"/*") {
+            let end = replacement[index + 2..]
+                .windows(2)
+                .position(|bytes| bytes == b"*/")
+                .map_or(replacement.len(), |close| index + close + 4);
+            output.extend_from_slice(&replacement[index..end]);
+            index = end;
+            continue;
+        }
+        if !is_identifier_start(replacement[index]) {
+            output.push(replacement[index]);
+            index += 1;
+            continue;
+        }
+
+        let start = index;
+        index += 1;
+        while replacement
+            .get(index)
+            .copied()
+            .is_some_and(is_identifier_continue)
+        {
+            index += 1;
+        }
+        let identifier = &replacement[start..index];
+        let Some(position) = parameters
+            .iter()
+            .position(|parameter| parameter.as_bytes() == identifier)
+        else {
+            output.extend_from_slice(identifier);
+            continue;
+        };
+
+        let left = replacement[..start]
+            .iter()
+            .rposition(|byte| !byte.is_ascii_whitespace())
+            .map(|end| &replacement[..=end]);
+        let mut right_start = index;
+        while replacement
+            .get(right_start)
+            .is_some_and(u8::is_ascii_whitespace)
+        {
+            right_start += 1;
+        }
+        let is_pasted = left.is_some_and(|left| left.ends_with(b"##"))
+            || replacement[right_start..].starts_with(b"##");
+        let argument = if is_pasted {
+            arguments[position].trim_ascii()
+        } else {
+            &expanded_arguments[position]
+        };
+        output.extend_from_slice(argument);
+    }
     output
 }
 
@@ -339,7 +467,11 @@ fn parse_invocation(input: &[u8], after_name: usize) -> Option<(Vec<Vec<u8>>, us
             continue;
         }
         if input[index..].starts_with(b"//") {
-            return None;
+            index = input[index..]
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(input.len(), |newline| index + newline + 1);
+            continue;
         }
         if input[index..].starts_with(b"/*") {
             let close = input[index + 2..]
@@ -531,6 +663,30 @@ mod tests {
         assert_eq!(
             expand_line(b"DECLARE(prefix, u8)\n", &definitions, &mut state),
             b"int renamed;\n"
+        );
+    }
+
+    #[test]
+    fn token_paste_operands_are_not_expanded_before_pasting() {
+        let definitions = HashMap::from([
+            (
+                "TILE_BYTES".to_string(),
+                Macro::Function {
+                    parameters: vec!["size".to_string()],
+                    variadic: false,
+                    replacement: b"size ## _TILE_BYTES".to_vec(),
+                },
+            ),
+            ("G_IM_SIZ_8b".to_string(), Macro::Object(b"1".to_vec())),
+            (
+                "G_IM_SIZ_8b_TILE_BYTES".to_string(),
+                Macro::Object(b"8".to_vec()),
+            ),
+        ]);
+        let mut state = LexicalState::default();
+        assert_eq!(
+            expand_line(b"TILE_BYTES(G_IM_SIZ_8b)\n", &definitions, &mut state),
+            b"8\n"
         );
     }
 

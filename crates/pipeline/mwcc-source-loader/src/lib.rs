@@ -115,15 +115,32 @@ impl LoadContext<'_> {
         let mut conditional = Vec::new();
         let mut directive_continuation = false;
         let mut continued_define: Option<String> = None;
+        let mut continued_source: Option<(Vec<u8>, String)> = None;
         let mut lexical_state = macro_expansion::LexicalState::default();
         for (line_index, line) in physical_lines(&source).enumerate() {
             let line_value = (line_index + 1).to_string();
-            self.definitions
-                .insert("__LINE__".to_string(), line_value.clone());
-            self.macros.insert(
-                "__LINE__".to_string(),
-                macro_expansion::Macro::Object(line_value.into_bytes()),
-            );
+            self.set_line_macro(&line_value);
+            if let Some((logical, _)) = continued_source.as_mut() {
+                logical.extend_from_slice(line);
+                if macro_expansion::has_incomplete_function_invocation(
+                    logical,
+                    &self.macros,
+                    lexical_state,
+                ) {
+                    continue;
+                }
+                let (logical, start_line) = continued_source
+                    .take()
+                    .expect("continued source invocation");
+                self.set_line_macro(&start_line);
+                output.extend(macro_expansion::expand_line(
+                    &logical,
+                    &self.macros,
+                    &mut lexical_state,
+                ));
+                self.set_line_macro(&line_value);
+                continue;
+            }
             if let Some(logical) = continued_define.as_mut() {
                 append_continued_directive(logical, line)?;
                 let continues = line_continues(line);
@@ -194,6 +211,14 @@ impl LoadContext<'_> {
                 continue;
             }
             let Some(include) = parse_include(line) else {
+                if macro_expansion::has_incomplete_function_invocation(
+                    line,
+                    &self.macros,
+                    lexical_state,
+                ) {
+                    continued_source = Some((line.to_vec(), line_value));
+                    continue;
+                }
                 output.extend(macro_expansion::expand_line(
                     line,
                     &self.macros,
@@ -214,6 +239,14 @@ impl LoadContext<'_> {
                 output.push(b'\n');
             }
             append_line_directive(&mut output, line_index as u32 + 2);
+        }
+        if let Some((logical, start_line)) = continued_source {
+            self.set_line_macro(&start_line);
+            output.extend(macro_expansion::expand_line(
+                &logical,
+                &self.macros,
+                &mut lexical_state,
+            ));
         }
         match previous_file_definition {
             Some(value) => {
@@ -264,13 +297,26 @@ impl LoadContext<'_> {
         }
     }
 
+    fn set_line_macro(&mut self, value: &str) {
+        self.definitions
+            .insert("__LINE__".to_string(), value.to_string());
+        self.macros.insert(
+            "__LINE__".to_string(),
+            macro_expansion::Macro::Object(value.as_bytes().to_vec()),
+        );
+    }
+
     fn resolve_include(&self, including_file: &Path, include: &Include<'_>) -> Option<PathBuf> {
         let requested = Path::new(include.path);
         // A configured project may put a generated binary `.mch` first on the
         // access path. That file is serialized MWCC state, not C++ source. Our
         // frontend reconstructs the declarations from the companion textual
         // `.pch` kept by decomp projects.
-        if requested.extension().and_then(|extension| extension.to_str()) == Some("mch") {
+        if requested
+            .extension()
+            .and_then(|extension| extension.to_str())
+            == Some("mch")
+        {
             let textual = requested.with_extension("pch");
             if include.quoted {
                 if let Some(parent) = including_file.parent() {
@@ -442,7 +488,9 @@ fn parse_define(directive: &str) -> Option<MacroDefinition<'_>> {
                 .map(str::to_string)
                 .collect::<Vec<_>>()
         };
-        let variadic = parameters.last().is_some_and(|parameter| parameter == "...");
+        let variadic = parameters
+            .last()
+            .is_some_and(|parameter| parameter == "...");
         if variadic {
             *parameters.last_mut().expect("variadic parameter") = "__VA_ARGS__".to_string();
         }
@@ -533,9 +581,8 @@ fn append_continued_directive(logical: &mut String, line: &[u8]) -> Compilation<
     let physical = std::str::from_utf8(line)
         .map_err(|_| Diagnostic::error("a continued preprocessor directive is not UTF-8"))?;
     let segment = if logical.is_empty() {
-        parse_directive(line).ok_or_else(|| {
-            Diagnostic::error("a continued macro definition is not a directive")
-        })?
+        parse_directive(line)
+            .ok_or_else(|| Diagnostic::error("a continued macro definition is not a directive"))?
     } else {
         physical.trim_end_matches(['\r', '\n'])
     };
@@ -639,8 +686,11 @@ mod tests {
     fn binary_precompiled_header_includes_use_the_textual_companion() {
         let scratch = Scratch::new();
         std::fs::write(scratch.0.join("state.mch"), b"\xce\xfa\xef\xbe").unwrap();
-        std::fs::write(scratch.0.join("state.pch"), b"struct State { int value; };\n")
-            .unwrap();
+        std::fs::write(
+            scratch.0.join("state.pch"),
+            b"struct State { int value; };\n",
+        )
+        .unwrap();
         std::fs::write(
             scratch.0.join("unit.cpp"),
             b"#include \"state.mch\"\nint read(State* state) { return state->value; }\n",
@@ -796,6 +846,35 @@ mod tests {
         assert_eq!(
             loaded,
             b"#define BODY(x) do { \\\n\n\nint f(void) { int value = 0; do {   value += 1; } while (0); return value; }\n"
+        );
+    }
+
+    #[test]
+    fn function_macro_invocations_can_span_physical_source_lines() {
+        let scratch = Scratch::new();
+        std::fs::write(
+            scratch.0.join("unit.c"),
+            concat!(
+                "#define SUM(left, right) ((left) + (right) + __LINE__)\n",
+                "int value = SUM(\n",
+                "  1,\n",
+                "  2);\n"
+            ),
+        )
+        .unwrap();
+
+        let loaded = SourceLoader::default()
+            .load(&scratch.0.join("unit.c"))
+            .unwrap();
+        assert_eq!(
+            loaded,
+            concat!(
+                "#define SUM(left, right) ((left) + (right) + __LINE__)\n",
+                "int value = ((\n",
+                "  1) + (\n",
+                "  2) + 2);\n"
+            )
+            .as_bytes()
         );
     }
 
