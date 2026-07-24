@@ -2425,6 +2425,9 @@ mod tests {
     #[path = "virtual_destructor.rs"]
     mod virtual_destructor;
 
+    #[path = "virtual_constructor.rs"]
+    mod virtual_constructor;
+
     #[path = "cxx_const_data.rs"]
     mod cxx_const_data;
 

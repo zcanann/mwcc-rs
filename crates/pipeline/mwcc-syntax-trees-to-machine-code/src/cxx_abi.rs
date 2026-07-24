@@ -8,11 +8,13 @@
 mod adjustor_thunks;
 mod optional_destructor;
 mod trivial_destructor;
+mod virtual_constructor;
 mod virtual_destructor;
 
 pub(crate) use adjustor_thunks::lower_vtable_adjustor_thunks;
 pub(crate) use optional_destructor::lower as lower_optional_destructor;
 pub(crate) use trivial_destructor::lower as lower_trivial_destructor;
+pub(crate) use virtual_constructor::lower as lower_virtual_constructor;
 
 use crate::InlineSummaries;
 use mwcc_machine_code::{
@@ -1105,120 +1107,6 @@ fn parse_base_destructor_call(statement: &Statement) -> Option<(String, u32)> {
         return None;
     };
     Some((name.clone(), this_adjustment(object)?))
-}
-
-/// Lower an empty polymorphic constructor whose only compiler-generated action
-/// is installing the primary vptr. Constructors with member/base initialization
-/// or a written body remain on the general lowering path.
-pub(crate) fn lower_virtual_constructor(
-    function: &Function,
-    globals: &[GlobalDeclaration],
-    config: CompilerConfig,
-) -> Option<MachineFunction> {
-    if !function.name.starts_with("__ct__")
-        || function.parameters.is_empty()
-        || function.parameters[0].name != "this"
-        || !matches!(
-            function.parameters[0].parameter_type,
-            Type::StructPointer { .. }
-        )
-        || !function.locals.is_empty()
-        || !function.guards.is_empty()
-        || function.statements.is_empty()
-        || !matches!(
-            function.return_expression.as_ref(),
-            Some(mwcc_syntax_trees::Expression::Variable(name)) if name == "this"
-        )
-    {
-        return None;
-    }
-    let mwcc_syntax_trees::Statement::Store { target, value } = &function.statements[0] else {
-        return None;
-    };
-    let mwcc_syntax_trees::Expression::Member { offset, .. } = target else {
-        return None;
-    };
-    let vptr_offset = i16::try_from(*offset).ok()?;
-    let mwcc_syntax_trees::Expression::AddressOf { operand } = value else {
-        return None;
-    };
-    let mwcc_syntax_trees::Expression::Variable(vtable) = operand.as_ref() else {
-        return None;
-    };
-    globals.iter().find(|global| global.name == *vtable)?;
-
-    let scalar_stores = function.statements[1..]
-        .iter()
-        .map(|statement| {
-            let Statement::Store {
-                target:
-                    Expression::Member {
-                        base,
-                        offset,
-                        member_type: Type::Int,
-                        ..
-                    },
-                value: Expression::IntegerLiteral(value),
-            } = statement
-            else {
-                return None;
-            };
-            if !matches!(base.as_ref(), Expression::Variable(name) if name == "this") {
-                return None;
-            }
-            Some((i16::try_from(*offset).ok()?, i16::try_from(*value).ok()?))
-        })
-        .collect::<Option<Vec<_>>>()?;
-
-    let mut output = MachineFunction::new(function.name.clone());
-    output
-        .instructions
-        .push(Instruction::load_immediate_shifted(4, 0));
-    output.instructions.push(Instruction::AddImmediate {
-        d: 0,
-        a: 4,
-        immediate: 0,
-    });
-    output.instructions.push(Instruction::StoreWord {
-        s: 0,
-        a: 3,
-        offset: vptr_offset,
-    });
-    for (offset, value) in scalar_stores {
-        output
-            .instructions
-            .push(Instruction::load_immediate(0, value));
-        output
-            .instructions
-            .push(Instruction::StoreWord { s: 0, a: 3, offset });
-    }
-    output.instructions.push(Instruction::BranchToLinkRegister);
-    output.relocations = vec![
-        Relocation {
-            instruction_index: 0,
-            kind: RelocationKind::Addr16Ha,
-            target: RelocationTarget::External(vtable.clone()),
-        },
-        Relocation {
-            instruction_index: 1,
-            kind: RelocationKind::Addr16Lo,
-            target: RelocationTarget::External(vtable.clone()),
-        },
-    ];
-    output.symbol_order = vec![vtable.clone()];
-    output.is_static = function.is_static;
-    output.is_weak = function.is_weak;
-    output.section = function.section.clone();
-    output.force_active = function.force_active;
-    if config.build.version.0 >= 4
-        && config.flags.debug_info
-        && !function.statements[1..].is_empty()
-    {
-        // Fragmented class debug consumes the leaf constructor's ordinary
-        // post-function analysis block before the following unwind pair.
-        output.post_function_anonymous_bump = Some(0);
-    }
-    Some(output)
 }
 
 /// Lower the canonical virtual deleting-destructor shape synthesized by the
