@@ -1124,6 +1124,40 @@ impl Parser {
             functions.insert(index, function);
             self.function_sources.insert(index, source);
         }
+        // A class-scope `static T member;` is an external data declaration.
+        // Keep the declarations available to codegen even when their storage
+        // definitions live in another translation unit. Extern declarations
+        // emit no data or debug DIE by themselves; only an actual relocation
+        // makes the symbol observable in this object.
+        for ((class, member), declared_type) in self.cxx_static_data_members.clone() {
+            let mangled = crate::cxx::mangle_qualified_data_member(
+                &class.split("::").collect::<Vec<_>>(),
+                &member,
+            )?;
+            if globals.iter().any(|global| global.name == mangled) {
+                continue;
+            }
+            globals.push(GlobalDeclaration {
+                declared_type,
+                source_fundamental: None,
+                name: mangled,
+                is_extern: true,
+                is_static: false,
+                is_volatile: false,
+                is_weak: false,
+                non_static_functions_before: 0,
+                functions_before: 0,
+                array_length: None,
+                array_length_inferred: false,
+                initializer: None,
+                is_const: false,
+                address_initializer: None,
+                data_bytes: None,
+                data_relocations: Vec::new(),
+                section: None,
+                attribute_alignment: None,
+            });
+        }
         cxx_vtables::order_inline_base_groups(&mut globals, &inline_base_vtable_edges);
         cxx_vtables::position_after_functions(&mut globals, &functions);
         debug_assert_eq!(

@@ -1396,6 +1396,11 @@ impl Parser {
 
         index += 1;
         let body_start = index;
+        // Inline bodies are recovered while walking the class, but C++ lookup
+        // sees the complete class scope regardless of declaration order.
+        // Discover static data declarations first so `return sCurrentHeap;`
+        // resolves even when the declaration follows the accessor body.
+        self.capture_cxx_static_data_members(body_start, &class);
         let mut prototypes = Vec::new();
         let mut brace_depth = 1i32;
         let mut paren_depth = 0i32;
@@ -2868,7 +2873,11 @@ impl Parser {
         };
         let scopes: Vec<&str> = class.split("::").collect();
         let mangled = mangle_qualified_data_member(&scopes, member)?;
-        Ok(self.global_sizes.contains_key(&mangled).then_some(mangled))
+        Ok((self.global_sizes.contains_key(&mangled)
+            || self
+                .cxx_static_data_members
+                .contains_key(&(class.to_owned(), member.to_owned())))
+        .then_some(mangled))
     }
 
     /// Resolve an unqualified call inside a member body. Arity is enough for the
