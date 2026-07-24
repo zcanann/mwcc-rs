@@ -1727,6 +1727,7 @@ mod tests {
             20
         );
         assert_eq!(behavior.frame_convention, FrameConvention::LinkageFirst);
+        assert_eq!(behavior.cxx_inline_control_flow_label_weight, 1);
         assert!(!behavior.emit_leaf_frame_unwind);
         assert!(behavior.constant_join_return_precedes_lr_reload);
         assert!(behavior.guard_store_precedes_return_value);

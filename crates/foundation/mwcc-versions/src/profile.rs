@@ -1867,10 +1867,6 @@ impl CodegenProfile for Gc233Build163 {
         LongLongTimerStyle::Unmodeled
     }
 
-    fn cxx_inline_control_flow_label_weight(&self) -> u8 {
-        0
-    }
-
     fn frame_convention(&self) -> FrameConvention {
         FrameConvention::LinkageFirst
     }
