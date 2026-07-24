@@ -111,15 +111,37 @@ impl Generator {
         let Some(incoming_second) = self.lookup_general(&function.parameters[1].name) else {
             return Ok(false);
         };
-        let iterator = self.fresh_virtual_general();
-        let object = self.fresh_virtual_general();
+        let indirect_head = matches!(
+            self.globals.get(&head_global),
+            Some(Type::Pointer(_) | Type::StructPointer { .. })
+        );
+        let leading = self.fresh_virtual_general();
+        let trailing = self.fresh_virtual_general();
+        let (object, iterator) = if indirect_head {
+            (leading, trailing)
+        } else {
+            (trailing, leading)
+        };
         let second = self.fresh_virtual_general();
         let first = self.fresh_virtual_general();
-        // MWCC colors the loop-carried iterator first, followed by the selected
-        // object and the entry arguments. All synthesized inline locals are
-        // register-promoted, so they do not reserve a stack-local region.
-        let homes = vec![iterator, object, second, first];
-        let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
+        // Direct struct globals load their head straight into the first home;
+        // a pointer global is first dereferenced through scratch, so MWCC gives
+        // the selected object that home and the iterator the next one.
+        let homes = vec![leading, trailing, second, first];
+        let retained_array_bytes = function.locals.iter().try_fold(0i16, |bytes, local| {
+            let Some(length) = local.array_length else {
+                return Some(bytes);
+            };
+            let element_bytes = i16::from(local.declared_type.width() / 8);
+            bytes.checked_add(element_bytes.checked_mul(i16::try_from(length).ok()?)?)
+        });
+        let Some(retained_array_bytes) = retained_array_bytes else {
+            return Ok(false);
+        };
+        let plan = mwcc_vreg::FramePlan::with_local_region(
+            homes.clone(),
+            retained_array_bytes,
+        );
         self.non_leaf = true;
         // This owner has incorporated the expanded helper's retained local
         // region into `plan`; the generic post-pass must not add it again.
@@ -183,11 +205,24 @@ impl Generator {
         }
 
         self.record_relocation(RelocationKind::EmbSda21, &head_global);
-        self.output.instructions.push(Instruction::LoadWord {
-            d: iterator,
-            a: 0,
-            offset: head_offset,
-        });
+        if indirect_head {
+            self.output.instructions.push(Instruction::LoadWord {
+                d: 5,
+                a: 0,
+                offset: 0,
+            });
+            self.output.instructions.push(Instruction::LoadWord {
+                d: iterator,
+                a: 5,
+                offset: head_offset,
+            });
+        } else {
+            self.output.instructions.push(Instruction::LoadWord {
+                d: iterator,
+                a: 0,
+                offset: head_offset,
+            });
+        }
 
         let test = self.fresh_label();
         let loop_body = self.fresh_label();
