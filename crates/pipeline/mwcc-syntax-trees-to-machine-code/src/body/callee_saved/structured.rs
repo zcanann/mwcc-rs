@@ -246,6 +246,7 @@ impl Generator {
                 .then(|| {
                     plan_terminal_one_word_aggregate_call_copies(
                         &aggregate_frame_locals,
+                        &function.locals,
                         &function.statements,
                         &self.call_parameter_types,
                     )

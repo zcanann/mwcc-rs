@@ -15,8 +15,6 @@ fn copies_initialized_one_word_aggregates_for_a_terminal_call() {
         extern const char *japanese;
         extern const char *english;
         extern const char *europe[];
-        extern void fatal(Color foreground, Color background, const char *message);
-
         void compiled(void) {
             const char *message;
             Color background = { 0, 0, 0, 0 };

@@ -398,29 +398,32 @@ mod tests {
 
     #[test]
     fn records_legacy_anonymous_member_aggregate_ordinal() {
-        let unit = parse_located_translation_unit_with_behavior(
-            located(
-                "typedef struct Outer { int first; struct { int nested; } value; } Outer; \
-                 int f(int x) { return x; }",
-            ),
-            true,
-            true,
-            1,
-            3,
-            3,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            false,
-        )
-        .unwrap();
+        let parse = |cplusplus| {
+            parse_located_translation_unit_with_behavior(
+                located(
+                    "typedef struct Outer { int first; struct { int nested; } value; } Outer; \
+                     int f(int x) { return x; }",
+                ),
+                cplusplus,
+                true,
+                1,
+                3,
+                3,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                false,
+            )
+            .unwrap()
+        };
 
-        assert_eq!(unit.skipped_inline_functions, 1);
+        assert_eq!(parse(true).skipped_inline_functions, 1);
+        assert_eq!(parse(false).skipped_inline_functions, 0);
     }
 
     #[test]

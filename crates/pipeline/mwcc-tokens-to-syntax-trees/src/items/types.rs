@@ -195,6 +195,9 @@ impl Parser {
                 // carries three such enums between its inlines and its statics).
                 // Keyed by token position so a speculative re-parse can't double-count.
                 if !tagged && self.counted_enum_positions.insert(self.position) {
+                    if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() {
+                        eprintln!("anonymous-enum-bump: token {}, +1", self.position);
+                    }
                     self.skipped_inline_functions += 1;
                 }
                 let definition_position = self.position;

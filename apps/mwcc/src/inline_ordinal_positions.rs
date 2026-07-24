@@ -13,8 +13,11 @@ pub(crate) fn distribute(
     cumulative_before_function: &HashMap<String, usize>,
     total: usize,
 ) -> u32 {
-    if functions.is_empty() || total == 0 {
+    if total == 0 {
         return 0;
+    }
+    if functions.is_empty() {
+        return total as u32;
     }
     if cumulative_before_function.is_empty() {
         return total as u32;
@@ -103,5 +106,10 @@ mod tests {
     fn source_prefix_precedes_file_scope_anonymous_objects() {
         assert_eq!(body_counter_base(2, 17, 7), 25);
         assert_eq!(body_counter_base(2, 0, 7), 9);
+    }
+
+    #[test]
+    fn functionless_source_prefix_is_returned_to_file_scope_objects() {
+        assert_eq!(distribute(&mut [], &HashMap::new(), 1), 1);
     }
 }

@@ -24,28 +24,52 @@ pub(super) fn plan_aggregate_frame_slots(
 /// scheduler rather than an accidental extension of this schedule.
 pub(super) fn plan_terminal_one_word_aggregate_call_copies(
     locals: &[&LocalDeclaration],
+    all_locals: &[LocalDeclaration],
     statements: &[Statement],
     call_parameter_types: &std::collections::HashMap<String, Vec<Type>>,
 ) -> Option<StructuredAggregateCallCopyPlan> {
     let Statement::Expression(Expression::Call { name, arguments }) = statements.last()? else {
         return None;
     };
-    let parameter_types = call_parameter_types.get(name)?;
     if locals.len() != 2
         || arguments.len() < 2
-        || parameter_types.len() != arguments.len()
-        || !matches!(
-            parameter_types.as_slice(),
-            [
-                Type::Struct { size: 4, .. },
-                Type::Struct { size: 4, .. },
-                rest @ ..
-            ] if rest
-                .iter()
-                .all(|parameter| !matches!(parameter, Type::Struct { .. } | Type::Float | Type::Double))
-        )
     {
         return None;
+    }
+    if let Some(parameter_types) = call_parameter_types.get(name) {
+        if parameter_types.len() != arguments.len()
+            || !matches!(
+                parameter_types.as_slice(),
+                [
+                    Type::Struct { size: 4, .. },
+                    Type::Struct { size: 4, .. },
+                    rest @ ..
+                ] if rest
+                    .iter()
+                    .all(|parameter| !matches!(parameter, Type::Struct { .. } | Type::Float | Type::Double))
+            )
+        {
+            return None;
+        }
+    } else {
+        // Old C permits a call without a visible prototype. MWCC still knows
+        // the source argument types and applies the aggregate-copy ABI. Keep
+        // this inference deliberately narrow: the measured form has exactly
+        // one trailing scalar local, whose ordinary register marshalling is
+        // dependency-complete.
+        let [_, _, Expression::Variable(trailing)] = arguments.as_slice() else {
+            return None;
+        };
+        let trailing_type = all_locals
+            .iter()
+            .find(|local| local.name == *trailing)?
+            .declared_type;
+        if matches!(
+            trailing_type,
+            Type::Struct { .. } | Type::Float | Type::Double
+        ) {
+            return None;
+        }
     }
 
     let mut copies = Vec::with_capacity(2);
@@ -209,6 +233,7 @@ mod tests {
 
         let plan = plan_terminal_one_word_aggregate_call_copies(
             &locals,
+            &[],
             &statements,
             &parameter_types,
         )

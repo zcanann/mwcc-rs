@@ -4379,25 +4379,28 @@ impl Parser {
                     .counted_anonymous_aggregate_positions
                     .insert(body_position)
                 {
-                    // A direct anonymous member aggregate consumes one
-                    // analysis ordinal in every characterized frontend
-                    // generation. At file scope the distinction is language
-                    // mode, not compiler generation: C++ consumes one while
-                    // the identical C declaration consumes zero. Retain the
-                    // configured weight as a floor for a future frontend
-                    // family that proves a larger C++ cost.
-                    self.skipped_inline_functions += if brace_depth > 0 {
-                        1
-                    } else if self.default_cplusplus {
-                        usize::from(self.anonymous_aggregate_definition_label_weight.max(1))
-                    } else {
+                    // Anonymous aggregate declarations advance the C++ source
+                    // analysis stream but not the C stream. This language
+                    // boundary applies to nested member aggregates too
+                    // (measured identically in build 163, GC 3, and Wii 1.0).
+                    // Retain the configured weights for later C++ generations.
+                    let mut bump = if !self.default_cplusplus {
                         0
+                    } else if brace_depth > 0 {
+                        1
+                    } else {
+                        usize::from(self.anonymous_aggregate_definition_label_weight.max(1))
                     };
-                    if brace_depth > 1 {
-                        self.skipped_inline_functions += usize::from(
-                            self.nested_anonymous_aggregate_definition_label_weight,
+                    if self.default_cplusplus && brace_depth > 1 {
+                        bump +=
+                            usize::from(self.nested_anonymous_aggregate_definition_label_weight);
+                    }
+                    if bump != 0 && std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() {
+                        eprintln!(
+                            "anonymous-aggregate-bump: token {body_position}, depth {brace_depth}, +{bump}"
                         );
                     }
+                    self.skipped_inline_functions += bump;
                 }
             }
             match token {
