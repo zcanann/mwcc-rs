@@ -65,6 +65,7 @@ mod structured_leaf;
 mod structured_call_schedule;
 mod structured_condition_schedule;
 mod structured_constructor_schedule;
+mod structured_copy_packet_schedule;
 mod structured_call_accumulator;
 mod structured_aggregate_slots;
 mod structured_entry_alias;
