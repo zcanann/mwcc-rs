@@ -103,6 +103,7 @@ pub struct InlineSummaries {
     guarded_float_table_indexes: HashMap<String, GuardedFloatTableIndexSummary>,
     single_base_destructors: HashMap<String, SingleBaseDestructorSummary>,
     trivial_virtual_destructors: HashMap<String, TrivialVirtualDestructorSummary>,
+    empty_destructors: HashSet<String>,
     ipa_elided_functions: HashSet<String>,
 }
 
@@ -166,6 +167,9 @@ impl InlineSummaries {
                 summaries
                     .trivial_virtual_destructors
                     .insert(function.name.clone(), summary);
+            }
+            if is_empty_destructor(function) {
+                summaries.empty_destructors.insert(function.name.clone());
             }
             if let Some(summary) = summarize_call_wrapper(function, false) {
                 summaries
@@ -272,6 +276,11 @@ impl InlineSummaries {
         name: &str,
     ) -> Option<&TrivialVirtualDestructorSummary> {
         self.trivial_virtual_destructors.get(name)
+    }
+
+    pub(crate) fn ipa_elidable_destructor(&self, name: &str) -> bool {
+        self.empty_destructors.contains(name)
+            || self.trivial_virtual_destructors.contains_key(name)
     }
 
     pub(crate) fn pointer_walker(&self, name: &str) -> Option<&PointerWalkerSummary> {
@@ -472,6 +481,38 @@ fn is_deleting_guard(statement: &Statement) -> bool {
             if matches!(arguments.as_slice(), [Expression::Variable(name)] if name == "this")
                 || matches!(arguments.as_slice(), [Expression::Variable(name), Expression::IntegerLiteral(_)] if name == "this"))
         && else_body.is_empty()
+}
+
+fn is_empty_destructor(function: &Function) -> bool {
+    if !function.name.starts_with("__dt__")
+        || !matches!(function.return_type, Type::StructPointer { .. })
+        || function.parameters.len() != 2
+        || function.parameters[0].name != "this"
+        || function.parameters[1].name != "__destroy"
+        || !matches!(
+            function.parameters[0].parameter_type,
+            Type::StructPointer { .. }
+        )
+        || function.parameters[1].parameter_type != Type::Short
+        || !function.locals.is_empty()
+        || !function.guards.is_empty()
+        || !function
+            .return_expression
+            .as_ref()
+            .is_some_and(|expression| variable(expression, "this"))
+    {
+        return false;
+    }
+    matches!(
+        function.statements.as_slice(),
+        [Statement::If {
+            condition,
+            then_body,
+            else_body,
+        }] if variable(condition, "this")
+            && matches!(then_body.as_slice(), [delete_guard] if is_deleting_guard(delete_guard))
+            && else_body.is_empty()
+    )
 }
 
 fn struct_member(expression: &Expression, base: &str) -> Option<(i16, Type)> {
@@ -991,7 +1032,7 @@ mod tests {
             false,
             vec![Statement::If {
                 condition: Expression::Variable("this".into()),
-                then_body: vec![base_call, delete_guard],
+                then_body: vec![base_call, delete_guard.clone()],
                 else_body: Vec::new(),
             }],
         );
@@ -1008,12 +1049,43 @@ mod tests {
         ];
         destructor.return_expression = Some(Expression::Variable("this".into()));
 
-        let summaries = InlineSummaries::analyze(&[destructor]);
+        let summaries = InlineSummaries::analyze(&[destructor.clone()]);
         let summary = summaries
             .single_base_destructor("__dt__7DerivedFv")
             .expect("the exact empty wrapper should be summarized");
         assert_eq!(summary.callee, "__dt__4BaseFv");
         assert_eq!(summary.adjustment, 0);
+
+        let mut empty = destructor;
+        empty.name = "__dt__4BaseFv".into();
+        empty.statements = vec![Statement::If {
+            condition: Expression::Variable("this".into()),
+            then_body: vec![delete_guard.clone()],
+            else_body: Vec::new(),
+        }];
+        let summaries = InlineSummaries::analyze(&[empty.clone()]);
+        assert!(summaries.ipa_elidable_destructor("__dt__4BaseFv"));
+
+        empty.statements = vec![Statement::If {
+            condition: Expression::Variable("this".into()),
+            then_body: vec![
+                Statement::Store {
+                    target: Expression::Member {
+                        base: Box::new(Expression::Variable("this".into())),
+                        offset: 0,
+                        member_type: Type::UnsignedInt,
+                        index_stride: None,
+                    },
+                    value: Expression::AddressOf {
+                        operand: Box::new(Expression::Variable("__vt__4Base".into())),
+                    },
+                },
+                delete_guard,
+            ],
+            else_body: Vec::new(),
+        }];
+        let summaries = InlineSummaries::analyze(&[empty]);
+        assert!(summaries.ipa_elidable_destructor("__dt__4BaseFv"));
     }
 
     #[test]

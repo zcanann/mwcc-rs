@@ -800,6 +800,23 @@ pub(crate) fn lower_composed_destructor(
         _ => return None,
     };
 
+    // File IPA erases a base destructor whose complete lifetime body contains
+    // no user-visible work. This includes the transient vptr installation in
+    // a trivial virtual destructor: once every base edge disappears, the
+    // derived vptr installation is dead too and only the deleting shell
+    // remains.
+    if config.flags.ipa_file
+        && base_calls.iter().all(|(callee, adjustment)| {
+            *adjustment == 0 && inline_summaries.ipa_elidable_destructor(callee)
+        })
+    {
+        return trivial_destructor::lower_matched(
+            function,
+            config,
+            delete_callee.clone(),
+        );
+    }
+
     if Behavior::resolve(&config).frame_convention == FrameConvention::Predecrement
         && base_calls.len() == 1
         && base_calls[0].1 == 0

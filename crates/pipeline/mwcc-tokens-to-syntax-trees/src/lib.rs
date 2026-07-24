@@ -4140,6 +4140,57 @@ blr\n\
     }
 
     #[test]
+    fn does_not_requalify_resolved_base_lifetime_calls() {
+        let source = r#"
+            namespace Scene {
+                struct Base {
+                    Base() {}
+                    virtual ~Base() {}
+                };
+                struct Derived : public Base {
+                    Derived();
+                    virtual ~Derived();
+                };
+                Derived::Derived() {}
+                Derived::~Derived() {}
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let constructor = unit
+            .functions
+            .iter()
+            .find(|function| function.name == "__ct__Q25Scene7DerivedFv")
+            .expect("the namespace-scoped constructor should be emitted");
+        assert!(matches!(
+            constructor.statements.first(),
+            Some(Statement::Expression(Expression::Call { name, .. }))
+                if name == "__ct__Q25Scene4BaseFv"
+        ));
+
+        let destructor = unit
+            .functions
+            .iter()
+            .find(|function| function.name == "__dt__Q25Scene7DerivedFv")
+            .expect("the namespace-scoped destructor should be emitted");
+        assert!(matches!(
+            destructor.statements.as_slice(),
+            [Statement::If { then_body, .. }]
+                if then_body.iter().any(|statement| matches!(
+                    statement,
+                    Statement::Expression(Expression::Call { name, .. })
+                        if name == "__dt__Q25Scene4BaseFv"
+                ))
+        ));
+    }
+
+    #[test]
     fn groups_inherited_vptrs_after_base_construction() {
         let source = r#"
             class Primary { int first; public: Primary(); virtual ~Primary(); };

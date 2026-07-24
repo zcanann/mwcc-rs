@@ -2938,8 +2938,8 @@ impl Parser {
         function: &str,
         explicit_parameters: &[Type],
     ) -> Compilation<String> {
-        let mut scopes = self.named_namespace_scopes();
-        scopes.push(class);
+        let scopes = self.member_owner_scopes(class);
+        let scopes = scopes.iter().map(String::as_str).collect::<Vec<_>>();
         mangle_qualified_member_function(&scopes, function, explicit_parameters)
     }
 
@@ -2951,8 +2951,8 @@ impl Parser {
         function: &str,
         explicit_parameters: &[CxxParameterType],
     ) -> Compilation<String> {
-        let mut scopes = self.named_namespace_scopes();
-        scopes.extend(class.split("::"));
+        let scopes = self.member_owner_scopes(class);
+        let scopes = scopes.iter().map(String::as_str).collect::<Vec<_>>();
         mangle_qualified_member_function_typed(&scopes, function, explicit_parameters)
     }
 
@@ -2962,9 +2962,24 @@ impl Parser {
         function: &str,
         explicit_parameters: &[CxxParameterType],
     ) -> Compilation<String> {
-        let mut scopes = self.named_namespace_scopes();
-        scopes.extend(class.split("::"));
+        let scopes = self.member_owner_scopes(class);
+        let scopes = scopes.iter().map(String::as_str).collect::<Vec<_>>();
         mangle_qualified_member_function_cv_typed(&scopes, function, explicit_parameters, true)
+    }
+
+    /// Resolve a class owner once before adding the active namespace. Layout
+    /// analysis commonly supplies an already-qualified base/member tag; blindly
+    /// prepending the current namespace turns `N::Base` into `N::N::Base` and
+    /// disconnects synthesized lifetime calls from their definitions.
+    fn member_owner_scopes(&self, class: &str) -> Vec<String> {
+        if let Some(resolved) = self.resolve_scoped_cxx_class_name(class) {
+            return resolved.split("::").map(str::to_owned).collect();
+        }
+        self.named_namespace_scopes()
+            .into_iter()
+            .chain(class.split("::"))
+            .map(str::to_owned)
+            .collect()
     }
 
     /// Mangle a non-member C++ function. A namespace-qualified free function
