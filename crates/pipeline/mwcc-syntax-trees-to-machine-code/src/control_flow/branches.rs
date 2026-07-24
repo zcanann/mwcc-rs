@@ -1027,8 +1027,14 @@ impl Generator {
             // integer register test. Reuse the ordinary float-comparison path so
             // `if (!f)` emits `fcmpu f,0; bne` (and memory operands retain their
             // measured load placement).
-            if self.is_float_leaf(operand) {
-                let source = self.float_register_of_leaf(operand)?;
+            if self.is_float_value(operand) {
+                let source = if self.is_float_leaf(operand) {
+                    self.float_register_of_leaf(operand)?
+                } else {
+                    let source = mwcc_target::Eabi::float_result().number;
+                    self.evaluate_float(operand, source)?;
+                    source
+                };
                 self.load_float_constant(FLOAT_SCRATCH, 0.0);
                 self.output
                     .instructions
@@ -1621,8 +1627,14 @@ impl Generator {
         // A bare floating condition is `f != 0.0`; the guarded body is skipped
         // when equality holds. Equality uses `fcmpu`, matching C's NaN truthiness
         // (NaN is nonzero/true).
-        if self.is_float_leaf(condition) {
-            let source = self.float_register_of_leaf(condition)?;
+        if self.is_float_value(condition) {
+            let source = if self.is_float_leaf(condition) {
+                self.float_register_of_leaf(condition)?
+            } else {
+                let source = mwcc_target::Eabi::float_result().number;
+                self.evaluate_float(condition, source)?;
+                source
+            };
             self.load_float_constant(FLOAT_SCRATCH, 0.0);
             self.output
                 .instructions

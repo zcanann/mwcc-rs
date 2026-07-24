@@ -2168,6 +2168,9 @@ mod tests {
     #[path = "bitfield_conditions.rs"]
     mod bitfield_conditions;
 
+    #[path = "float_conditions.rs"]
+    mod float_conditions;
+
     #[path = "inline_member_zero_fill.rs"]
     mod inline_member_zero_fill;
 
