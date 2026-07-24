@@ -39,6 +39,12 @@ fn float_member(expression: &Expression) -> Option<(&Expression, u32)> {
     Some((base.as_ref(), *offset))
 }
 
+fn is_exact_self_copy(assignments: &[(&Expression, &Expression); 3]) -> bool {
+    assignments
+        .iter()
+        .all(|(target, source)| structurally_equal(target, source))
+}
+
 impl Generator {
     /// Lower the measured `*destination = source->vec3` shape.
     ///
@@ -131,6 +137,9 @@ impl Generator {
             || sources[2].1 != sources[0].1.checked_add(8).unwrap_or(u32::MAX)
         {
             return Ok(false);
+        }
+        if is_exact_self_copy(&assignments) {
+            return Ok(true);
         }
 
         let Some((source_register, source_offset)) =
@@ -226,5 +235,40 @@ impl Generator {
             }
         }
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_exact_self_copy;
+    use mwcc_syntax_trees::{Expression, Type};
+
+    fn member(offset: u32) -> Expression {
+        Expression::Member {
+            base: Box::new(Expression::Variable("object".into())),
+            offset,
+            member_type: Type::Float,
+            index_stride: None,
+        }
+    }
+
+    #[test]
+    fn recognizes_only_a_lane_for_lane_scalarized_self_copy() {
+        let targets = [member(44), member(48), member(52)];
+        let same_sources = [member(44), member(48), member(52)];
+        let shifted_sources = [member(48), member(52), member(56)];
+        let same = [
+            (&targets[0], &same_sources[0]),
+            (&targets[1], &same_sources[1]),
+            (&targets[2], &same_sources[2]),
+        ];
+        let shifted = [
+            (&targets[0], &shifted_sources[0]),
+            (&targets[1], &shifted_sources[1]),
+            (&targets[2], &shifted_sources[2]),
+        ];
+
+        assert!(is_exact_self_copy(&same));
+        assert!(!is_exact_self_copy(&shifted));
     }
 }

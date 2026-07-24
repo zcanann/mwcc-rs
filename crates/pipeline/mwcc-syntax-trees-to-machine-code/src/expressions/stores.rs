@@ -189,15 +189,6 @@ impl Generator {
             Expression::IndexedUpdateValue { value } => (value.as_ref(), true),
             value => (value, false),
         };
-        if self.try_emit_member_vec3_copy(target, value)? {
-            return Ok(());
-        }
-        if self.try_emit_frame_aggregate_copy(target, value)? {
-            return Ok(());
-        }
-        if self.try_emit_frame_subobject_store(target, value)? {
-            return Ok(());
-        }
         // `aggregate = *&aggregate` is an exact self-copy. Inlined setters can
         // expose this when their source argument aliases the destination (for
         // example `jobj->scale = *&jobj->scale`); mwcc removes it entirely.
@@ -218,6 +209,15 @@ impl Generator {
                     }
                 }
             }
+        }
+        if self.try_emit_member_vec3_copy(target, value)? {
+            return Ok(());
+        }
+        if self.try_emit_frame_aggregate_copy(target, value)? {
+            return Ok(());
+        }
+        if self.try_emit_frame_subobject_store(target, value)? {
+            return Ok(());
         }
         if self.try_emit_bit_field_store(target, value)? {
             return Ok(());
