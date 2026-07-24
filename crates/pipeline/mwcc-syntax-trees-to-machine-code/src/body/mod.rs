@@ -92,6 +92,7 @@ mod variadic_report_member_schedule;
 mod sorted_intrusive_insert;
 mod store_fill;
 mod store_return_schedule;
+mod stored_guarded_global_callback;
 mod shared_float_store_literal;
 mod switch_assignment_call_tail;
 mod switch_call_dispatcher;

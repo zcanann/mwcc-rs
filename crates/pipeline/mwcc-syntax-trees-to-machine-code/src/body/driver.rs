@@ -1978,6 +1978,9 @@ impl Generator {
         if self.try_guarded_global_reuse_call(function)? {
             return Ok(());
         }
+        if self.try_stored_guarded_global_callback(function)? {
+            return Ok(());
+        }
         if self.try_guarded_global_callback(function)? {
             return Ok(());
         }

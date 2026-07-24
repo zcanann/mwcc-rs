@@ -12,16 +12,10 @@ use super::*;
 struct Shape<'a> {
     object: &'a str,
     second_argument: Option<&'a str>,
-    prefix_stores: Vec<PrefixStore<'a>>,
     object_alias_offset: i16,
     selector_offset: i16,
     callback_table: &'a str,
     entry_guard: EntryGuard,
-}
-
-struct PrefixStore<'a> {
-    offset: i16,
-    value: &'a str,
 }
 
 #[derive(Clone, Copy)]
@@ -172,7 +166,7 @@ fn callback_parameter(parameter_type: Type) -> bool {
     )
 }
 
-fn classify_direct(function: &Function) -> Option<Shape<'_>> {
+fn classify(function: &Function) -> Option<Shape<'_>> {
     if function.return_type != Type::Void
         || function.return_expression.is_some()
         || !function.guards.is_empty()
@@ -225,94 +219,11 @@ fn classify_direct(function: &Function) -> Option<Shape<'_>> {
     Some(Shape {
         object: &object.name,
         second_argument: second_argument.map(|parameter| parameter.name.as_str()),
-        prefix_stores: Vec::new(),
         object_alias_offset,
         selector_offset,
         callback_table,
         entry_guard,
     })
-}
-
-fn classify_prefixed(function: &Function) -> Option<Shape<'_>> {
-    if function.return_type != Type::Void
-        || function.return_expression.is_some()
-        || !function.guards.is_empty()
-        || function.parameters.len() < 2
-        || !function
-            .parameters
-            .iter()
-            .skip(1)
-            .all(|parameter| callback_parameter(parameter.parameter_type))
-    {
-        return None;
-    }
-    let object = function.parameters.first()?;
-    if !matches!(
-        object.parameter_type,
-        Type::Pointer(_) | Type::StructPointer { .. }
-    ) {
-        return None;
-    }
-    let [store_alias, callback_alias] = function.locals.as_slice() else {
-        return None;
-    };
-    if !matches!(
-        store_alias.declared_type,
-        Type::Pointer(_) | Type::StructPointer { .. }
-    ) || !matches!(
-        callback_alias.declared_type,
-        Type::Pointer(_) | Type::StructPointer { .. }
-    ) || callback_alias.initializer.is_some()
-    {
-        return None;
-    }
-    let object_alias_offset = member_offset(store_alias.initializer.as_ref()?, &object.name)?;
-    let prefix_count = function.parameters.len() - 1;
-    let (stores, tail) = function.statements.split_at_checked(prefix_count)?;
-    let [assignment, guarded_callback] = tail else {
-        return None;
-    };
-    let Statement::Assign { name, value } = assignment else {
-        return None;
-    };
-    if name != &callback_alias.name
-        || member_offset(value, &object.name) != Some(object_alias_offset)
-    {
-        return None;
-    }
-    let prefix_stores = stores
-        .iter()
-        .zip(function.parameters.iter().skip(1))
-        .map(|(statement, parameter)| {
-            let Statement::Store { target, value } = statement else {
-                return None;
-            };
-            if !variable(value, &parameter.name) {
-                return None;
-            }
-            Some(PrefixStore {
-                offset: member_offset(target, &store_alias.name)?,
-                value: parameter.name.as_str(),
-            })
-        })
-        .collect::<Option<Vec<_>>>()?;
-    let (first, second, callback) =
-        either_null_callback(guarded_callback, &callback_alias.name)?;
-    let (callback_table, selector_offset) =
-        callback_statement(callback, &callback_alias.name, &object.name, None)?;
-    Some(Shape {
-        object: &object.name,
-        second_argument: None,
-        prefix_stores,
-        object_alias_offset,
-        selector_offset,
-        callback_table,
-        entry_guard: EntryGuard::EnterIfEitherNull(first, second),
-    })
-}
-
-fn classify(function: &Function) -> Option<Shape<'_>> {
-    classify_direct(function).or_else(|| classify_prefixed(function))
 }
 
 impl Generator {
@@ -332,10 +243,6 @@ impl Generator {
             // stronger semantic proof here; merely requiring a file-scope symbol keeps
             // local pointer subscripts out of this global-address schedule.
             || !self.globals.contains_key(shape.callback_table)
-            || shape.prefix_stores.iter().enumerate().any(|(index, store)| {
-                self.general_register_of(store.value).ok() != u8::try_from(index + 4).ok()
-            })
-            || shape.prefix_stores.len() >= 8
         {
             return Ok(false);
         }
@@ -415,21 +322,6 @@ impl Generator {
                     a: 1,
                     offset: -8,
                 });
-            if !shape.prefix_stores.is_empty() {
-                let store_base = 4 + u8::try_from(shape.prefix_stores.len()).unwrap();
-                self.output.instructions.push(Instruction::LoadWord {
-                    d: store_base,
-                    a: 3,
-                    offset: shape.object_alias_offset,
-                });
-                for (index, store) in shape.prefix_stores.iter().enumerate() {
-                    self.output.instructions.push(Instruction::StoreWord {
-                        s: 4 + u8::try_from(index).unwrap(),
-                        a: store_base,
-                        offset: store.offset,
-                    });
-                }
-            }
             self.output.instructions.push(Instruction::LoadWord {
                 d: 4,
                 a: 3,
