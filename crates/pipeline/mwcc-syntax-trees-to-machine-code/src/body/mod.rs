@@ -21,6 +21,7 @@ mod aggregate_return_temporaries;
 mod ascii_pointer_compare;
 mod assertion_expression;
 mod bounded_member_cursor;
+mod bounded_acceleration_schedule;
 mod callee_saved;
 mod comma_operator;
 mod condition_linkage;
