@@ -131,7 +131,7 @@ impl<'a> LoopLowering<'a> {
         let body = self.lower_statements(body, Some(&targets))?;
 
         if let Some(initializer) = initializer {
-            output.push(Statement::Expression(initializer.clone()));
+            push_effect_expressions(initializer, output);
         }
         if kind != LoopKind::DoWhile {
             output.push(Statement::Goto(condition_label.clone()));
@@ -168,6 +168,27 @@ impl<'a> LoopLowering<'a> {
                 return label;
             }
         }
+    }
+}
+
+/// A comma in a value-discarded for-clause is an ordered statement sequence.
+/// Keeping each assignment visible lets the structured emitter retain normal
+/// local-definition handling while preserving the source evaluation order.
+fn push_effect_expressions(expression: &Expression, output: &mut Vec<Statement>) {
+    if let Expression::Comma { left, right } = expression {
+        push_effect_expressions(left, output);
+        push_effect_expressions(right, output);
+    } else if let Expression::Assign { target, value } = expression {
+        if let Expression::Variable(name) = target.as_ref() {
+            output.push(Statement::Assign {
+                name: name.clone(),
+                value: value.as_ref().clone(),
+            });
+        } else {
+            output.push(Statement::Expression(expression.clone()));
+        }
+    } else {
+        output.push(Statement::Expression(expression.clone()));
     }
 }
 

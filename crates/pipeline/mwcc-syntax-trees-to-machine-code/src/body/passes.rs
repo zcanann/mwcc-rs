@@ -662,6 +662,28 @@ pub(crate) fn substitute_statement(
                 .map(|inner| substitute_statement(inner, values))
                 .collect(),
         },
+        Statement::Loop {
+            kind,
+            initializer,
+            condition,
+            step,
+            body,
+        } => Statement::Loop {
+            kind: *kind,
+            initializer: initializer
+                .as_ref()
+                .map(|expression| crate::value_tracking::substitute(expression, values)),
+            condition: condition
+                .as_ref()
+                .map(|expression| crate::value_tracking::substitute(expression, values)),
+            step: step
+                .as_ref()
+                .map(|expression| crate::value_tracking::substitute(expression, values)),
+            body: body
+                .iter()
+                .map(|inner| substitute_statement(inner, values))
+                .collect(),
+        },
         other => other.clone(),
     }
 }
