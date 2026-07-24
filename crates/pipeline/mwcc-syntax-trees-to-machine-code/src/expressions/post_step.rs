@@ -94,36 +94,54 @@ impl Generator {
                 .register = stepped;
             return Ok(());
         }
+        if let Some(slot) = self.frame_slots.get(name.as_str()).copied() {
+            if slot.is_array || slot.class != ValueClass::General {
+                return Err(Diagnostic::error(
+                    "a frame-local postfix step value requires a word-sized integer or pointer",
+                ));
+            }
+            let pointee = frame_value_pointee(slot.value_type).ok_or_else(|| {
+                Diagnostic::error("a frame-local postfix step value requires a scalar storage type")
+            })?;
+            let amount = step_amount_for_type(slot.value_type, operator)?;
+            let old_value = self.post_step_old_value_register(destination);
+            self.output
+                .instructions
+                .push(displacement_load(pointee, old_value, 1, slot.offset)?);
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: GENERAL_SCRATCH,
+                a: old_value,
+                immediate: amount,
+            });
+            let copy_after_store = self.behavior.materialization_copy_style
+                == mwcc_versions::MaterializationCopyStyle::AddImmediateZero;
+            if old_value != destination && !copy_after_store {
+                self.output
+                    .instructions
+                    .push(Instruction::move_register(destination, old_value));
+            }
+            self.output.instructions.push(displacement_store(
+                pointee,
+                GENERAL_SCRATCH,
+                1,
+                slot.offset,
+            )?);
+            self.written_slots.insert(slot.offset);
+            if old_value != destination && copy_after_store {
+                self.output
+                    .instructions
+                    .push(Instruction::move_register(destination, old_value));
+            }
+            return Ok(());
+        }
+
         let Some(&value_type) = self.globals.get(name.as_str()) else {
             return Err(Diagnostic::error(
-                "a frame-resident postfix step used as a value is not supported yet (roadmap)",
+                "a postfix step target has no register, frame, or global storage",
             ));
         };
-        if !matches!(
-            value_type,
-            Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. }
-        ) {
-            return Err(Diagnostic::error(
-                "a postfix step value currently requires a word-sized integer or pointer global",
-            ));
-        }
-        let amount = match value_type {
-            Type::Pointer(pointee) => i16::from(pointee.size()),
-            Type::StructPointer { element_size } => i16::try_from(element_size)
-                .map_err(|_| Diagnostic::error("postfix pointer stride is out of range"))?,
-            _ => 1,
-        };
-        let amount = signed_step_amount(operator, amount)?;
-        let old_value = if destination >= 14 || mwcc_vreg::Reg::is_virtual_field(destination) {
-            let mut avoid = Vec::with_capacity(self.reserved.len() + 1);
-            avoid.push(GENERAL_SCRATCH);
-            avoid.extend(self.reserved.iter().copied());
-            avoid.sort_unstable();
-            avoid.dedup();
-            self.fresh_virtual_general_avoiding(avoid)
-        } else {
-            destination
-        };
+        let amount = step_amount_for_type(value_type, operator)?;
+        let old_value = self.post_step_old_value_register(destination);
         self.emit_global_load(name, old_value)?;
         self.output.instructions.push(Instruction::AddImmediate {
             d: GENERAL_SCRATCH,
@@ -149,6 +167,35 @@ impl Generator {
         }
         Ok(())
     }
+
+    fn post_step_old_value_register(&mut self, destination: u8) -> u8 {
+        let old_value = if destination >= 14 || mwcc_vreg::Reg::is_virtual_field(destination) {
+            let mut avoid = Vec::with_capacity(self.reserved.len() + 1);
+            avoid.push(GENERAL_SCRATCH);
+            avoid.extend(self.reserved.iter().copied());
+            avoid.sort_unstable();
+            avoid.dedup();
+            self.fresh_virtual_general_avoiding(avoid)
+        } else {
+            destination
+        };
+        old_value
+    }
+}
+
+fn step_amount_for_type(value_type: Type, operator: BinaryOperator) -> Compilation<i16> {
+    let amount = match value_type {
+        Type::Int | Type::UnsignedInt => 1,
+        Type::Pointer(pointee) => i16::from(pointee.size()),
+        Type::StructPointer { element_size } => i16::try_from(element_size)
+            .map_err(|_| Diagnostic::error("postfix pointer stride is out of range"))?,
+        _ => {
+            return Err(Diagnostic::error(
+                "a postfix step value requires a word-sized integer or pointer",
+            ))
+        }
+    };
+    signed_step_amount(operator, amount)
 }
 
 fn signed_step_amount(operator: BinaryOperator, amount: i16) -> Compilation<i16> {

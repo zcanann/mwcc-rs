@@ -2420,6 +2420,9 @@ mod tests {
     #[path = "computed_record_condition.rs"]
     mod computed_record_condition;
 
+    #[path = "frame_post_step.rs"]
+    mod frame_post_step;
+
     #[path = "unsigned_narrow_to_float.rs"]
     mod unsigned_narrow_to_float;
 
