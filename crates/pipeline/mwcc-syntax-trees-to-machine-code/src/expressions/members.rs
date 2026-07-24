@@ -33,6 +33,17 @@ pub(crate) fn embedded_member_address_base(expression: &Expression) -> Option<(&
     {
         return Some((base, *offset));
     }
+    if let Expression::AddressOf { operand } = expression {
+        if let Expression::Member {
+            base,
+            offset,
+            member_type: Type::Struct { .. },
+            index_stride: None,
+        } = operand.as_ref()
+        {
+            return Some((base, *offset));
+        }
+    }
     let Expression::Cast { operand, .. } = expression else {
         return None;
     };

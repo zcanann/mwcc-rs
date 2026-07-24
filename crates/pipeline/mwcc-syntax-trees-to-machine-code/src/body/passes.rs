@@ -283,6 +283,20 @@ pub(crate) fn inline_immutable_pointer_aliases(function: &Function) -> Option<Fu
             {
                 (**operand).clone()
             }
+            // An embedded aggregate address remains symbolic until its scalar
+            // member use. Substituting it lets the member emitter combine both
+            // displacements into one D-form access instead of rematerializing
+            // the local pointer at every read.
+            Expression::MemberAddress {
+                index_stride: None,
+                ..
+            } => initializer.clone(),
+            Expression::AddressOf { operand }
+                if matches!(operand.as_ref(), Expression::Member {
+                    member_type: Type::Struct { .. },
+                    index_stride: None,
+                    ..
+                }) => initializer.clone(),
             _ => continue,
         };
         let alias = crate::value_tracking::substitute(&alias, &values);
