@@ -2186,6 +2186,9 @@ mod tests {
     #[path = "aggregate_member_copy.rs"]
     mod aggregate_member_copy;
 
+    #[path = "float_fused_triplet.rs"]
+    mod float_fused_triplet;
+
     #[test]
     fn parity_keep_going_is_an_explicit_diagnostic_flag() {
         let ordinary = parse_invocation(&[]);
