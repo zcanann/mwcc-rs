@@ -1284,8 +1284,33 @@ impl Parser {
                     // carries no tag, so this leaves it `None`.
                 }
                 Token::Arrow | Token::Dot => {
+                    let is_arrow = *self.peek() == Token::Arrow;
                     self.advance();
                     let field = self.parse_identifier()?;
+                    if is_arrow {
+                        if let Some(tag) = struct_tag.as_deref() {
+                            if let Some((element, offset)) =
+                                self.resolve_concrete_template_iterator_arrow(tag)
+                            {
+                                let element_size =
+                                    self.structs.get(&element).map_or(0, |layout| layout.size);
+                                if offset != 0 {
+                                    expression = Expression::Binary {
+                                        operator: mwcc_syntax_trees::BinaryOperator::Subtract,
+                                        left: Box::new(expression),
+                                        right: Box::new(Expression::IntegerLiteral(i64::from(
+                                            offset,
+                                        ))),
+                                    };
+                                }
+                                expression = Expression::Cast {
+                                    target_type: Type::StructPointer { element_size },
+                                    operand: Box::new(expression),
+                                };
+                                struct_tag = Some(element);
+                            }
+                        }
+                    }
                     if struct_tag.is_none() {
                         if let Some((offset, member_type)) =
                             structural_virtual_vector_member(&expression, &field)

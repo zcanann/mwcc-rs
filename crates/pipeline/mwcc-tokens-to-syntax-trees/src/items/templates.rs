@@ -153,6 +153,7 @@ impl Parser {
                 .and_then(|name| name.rsplit("::").next())?;
             let layout =
                 self.instantiate_struct_template_layout_with_arguments(template_name, &arguments);
+            self.register_concrete_template_iterator_arrow(&tag, template_name, &arguments);
             return self.finish_template_instance_type(tag, layout, end);
         }
         let (tag, argument, end) = self.parse_template_spelling_at(self.position)?;
@@ -204,6 +205,105 @@ impl Parser {
             size: element_size,
             align: element_align,
         })
+    }
+
+    fn template_argument_struct_tag_at(&self, start: usize, end: usize) -> Option<String> {
+        let mut cursor = start;
+        let mut components = Vec::new();
+        let Token::Identifier(first) = self.tokens.get(cursor)? else {
+            return None;
+        };
+        components.push(first.clone());
+        cursor += 1;
+        while cursor + 2 < end
+            && self.tokens.get(cursor) == Some(&Token::Colon)
+            && self.tokens.get(cursor + 1) == Some(&Token::Colon)
+        {
+            let Token::Identifier(component) = self.tokens.get(cursor + 2)? else {
+                return None;
+            };
+            components.push(component.clone());
+            cursor += 3;
+        }
+        let written = components.join("::");
+        self.resolve_scoped_cxx_class_name(&written)
+            .or_else(|| self.struct_typedefs.get(&written).cloned())
+            .or_else(|| self.struct_typedefs.get(components.last()?).cloned())
+            .or_else(|| {
+                let terminal = components.last()?;
+                let mut matches = self
+                    .structs
+                    .keys()
+                    .filter(|name| name.rsplit("::").next() == Some(terminal));
+                let matched = matches.next()?.clone();
+                matches.next().is_none().then_some(matched)
+            })
+    }
+
+    /// Recognize the canonical preprocessed `offsetof(T, field)` expansion by
+    /// its null-pointer member access and resolve it from the recovered layout.
+    fn template_offsetof_constant_at(&self, start: usize, end: usize) -> Option<u32> {
+        for arrow in start..end {
+            if self.tokens.get(arrow) != Some(&Token::Arrow) {
+                continue;
+            }
+            let Some(Token::Identifier(field)) = self.tokens.get(arrow + 1) else {
+                continue;
+            };
+            let Some(star) = (start..arrow)
+                .rev()
+                .find(|index| self.tokens.get(*index) == Some(&Token::Star))
+            else {
+                continue;
+            };
+            let Some(Token::Identifier(type_name)) = self.tokens.get(star.saturating_sub(1)) else {
+                continue;
+            };
+            let Some(tag) = self
+                .resolve_scoped_cxx_class_name(type_name)
+                .or_else(|| self.struct_typedefs.get(type_name).cloned())
+            else {
+                continue;
+            };
+            if let Some(offset) = self
+                .structs
+                .get(&tag)
+                .and_then(|layout| layout.fields.get(field))
+                .map(|member| member.offset)
+            {
+                return Some(offset);
+            }
+        }
+        None
+    }
+
+    fn register_concrete_template_iterator_arrow(
+        &mut self,
+        instance: &str,
+        template_name: &str,
+        arguments: &[ResolvedTemplateType],
+    ) {
+        let Some((nested, element_index, offset_index)) = self
+            .template_iterator_arrow_summaries
+            .get(template_name)
+            .cloned()
+        else {
+            return;
+        };
+        let Some(element) = arguments
+            .get(element_index)
+            .and_then(|argument| argument.tag.clone())
+        else {
+            return;
+        };
+        let Some(offset) = arguments
+            .get(offset_index)
+            .and_then(|argument| argument.constant)
+        else {
+            return;
+        };
+        self.concrete_template_iterator_arrows
+            .insert(format!("{instance}::{nested}"), (element, offset));
     }
 
     /// Whether the current token begins a concrete template instance whose
@@ -322,11 +422,12 @@ impl Parser {
                 );
                 if let Some((declared, identity, end)) = parsed_type {
                     let known = declared.is_some();
+                    let tag = self.template_argument_struct_tag_at(argument_start, end);
                     arguments.push(ResolvedTemplateType {
                         declared: declared.unwrap_or(Type::Void),
                         known,
                         identity: identity.clone(),
-                        tag: None,
+                        tag,
                         layout: None,
                         constant: None,
                     });
@@ -358,13 +459,14 @@ impl Parser {
                     if end == argument_start {
                         return None;
                     }
+                    let constant = self.template_offsetof_constant_at(argument_start, end);
                     arguments.push(ResolvedTemplateType {
                         declared: Type::Void,
                         known: false,
                         identity: Some("...".to_owned()),
                         tag: None,
                         layout: None,
-                        constant: None,
+                        constant,
                     });
                     identities.push("...".to_owned());
                     cursor = end;
@@ -1425,6 +1527,12 @@ impl Parser {
                 _ => cursor += 1,
             }
         }
+        self.capture_template_iterator_arrow_summary(
+            body_open + 1,
+            cursor - 1,
+            &name,
+            &parameters,
+        );
         if !fields.is_empty() || base.is_some() {
             let default_constructor_zero_fields =
                 capture_default_constructor_zero_fields(&self.tokens, body_open, cursor - 1, &name);
@@ -1439,6 +1547,79 @@ impl Parser {
             );
         }
         self.capture_nested_template_class_layouts(body_open + 1, cursor - 1, &name);
+    }
+
+    fn capture_template_iterator_arrow_summary(
+        &mut self,
+        body_start: usize,
+        body_end: usize,
+        template_name: &str,
+        parameters: &[String],
+    ) {
+        if parameters.len() < 2 {
+            return;
+        }
+        let element = &parameters[0];
+        let offset = &parameters[1];
+        let subtracts_offset = self.tokens[body_start..body_end]
+            .windows(2)
+            .any(|tokens| {
+                tokens[0] == Token::Minus
+                    && matches!(&tokens[1], Token::Identifier(name) if name == offset)
+            });
+        if !subtracts_offset {
+            return;
+        }
+        let mut cursor = body_start;
+        while cursor + 3 < body_end {
+            let nested = match self.tokens.get(cursor..cursor + 3) {
+                Some([
+                    Token::Identifier(class),
+                    Token::Identifier(nested),
+                    Token::BraceOpen,
+                ]) if class == "class" => nested.clone(),
+                Some([Token::KeywordStruct, Token::Identifier(nested), Token::BraceOpen]) => {
+                    nested.clone()
+                }
+                _ => {
+                    cursor += 1;
+                    continue;
+                }
+            };
+            let mut close = cursor + 3;
+            let mut depth = 1usize;
+            while close < body_end && depth > 0 {
+                match self.tokens.get(close) {
+                    Some(Token::BraceOpen) => depth += 1,
+                    Some(Token::BraceClose) => depth -= 1,
+                    _ => {}
+                }
+                close += 1;
+            }
+            let has_arrow = self.tokens[cursor + 3..close.saturating_sub(1)]
+                .windows(6)
+                .any(|tokens| {
+                    matches!(&tokens[0], Token::Identifier(name) if name == element)
+                        && tokens[1] == Token::Star
+                        && matches!(&tokens[2], Token::Identifier(word) if word == "operator")
+                        && tokens[3] == Token::Arrow
+                        && tokens[4] == Token::ParenOpen
+                        && tokens[5] == Token::ParenClose
+                });
+            if has_arrow {
+                self.template_iterator_arrow_summaries
+                    .insert(template_name.to_owned(), (nested, 0, 1));
+                return;
+            }
+            cursor = close;
+        }
+    }
+
+    pub(crate) fn resolve_concrete_template_iterator_arrow(
+        &self,
+        iterator: &str,
+    ) -> Option<(String, u32)> {
+        self.concrete_template_iterator_arrows.get(iterator).cloned()
     }
 
     /// Recover argument-independent nested classes from a primary template.
