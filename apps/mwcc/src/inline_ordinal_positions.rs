@@ -53,16 +53,14 @@ pub(crate) fn distribute(
 }
 
 /// First anonymous ordinal available to compiled bodies after a source prefix
-/// and any file-scope anonymous objects. A nonzero prefix already occupies
-/// ordinals `1..=prefix`, so it replaces (rather than adds to) the build's
-/// small initial counter floor.
+/// and any file-scope anonymous objects. Source analysis advances the build's
+/// existing ordinal stream; it does not replace the build-specific base.
 pub(crate) fn body_counter_base(
     initial_counter: u8,
     leading_source_bump: u32,
     file_scope_anonymous_count: u32,
 ) -> u32 {
-    let source_floor = leading_source_bump.saturating_add(u32::from(leading_source_bump != 0));
-    u32::from(initial_counter).max(source_floor) + file_scope_anonymous_count
+    u32::from(initial_counter) + leading_source_bump + file_scope_anonymous_count
 }
 
 #[cfg(test)]
@@ -104,7 +102,7 @@ mod tests {
 
     #[test]
     fn source_prefix_precedes_file_scope_anonymous_objects() {
-        assert_eq!(body_counter_base(2, 17, 7), 25);
+        assert_eq!(body_counter_base(2, 17, 7), 26);
         assert_eq!(body_counter_base(2, 0, 7), 9);
     }
 

@@ -63,6 +63,10 @@ pub struct ObjectFormat {
     /// `.comment` attribute flags for `...data.0`.
     pub data_anchor_comment_flags: u32,
     pub initial_anonymous_counter: u8,
+    /// Source-analysis ordinals consumed before emitted objects and functions.
+    /// This is translation-unit state, not a bump owned by the first function:
+    /// file-scope anonymous objects must observe it too.
+    pub leading_source_anonymous_bump: u32,
     pub post_leaf_function_anonymous_bump: u8,
     pub post_framed_function_anonymous_bump: u8,
 }

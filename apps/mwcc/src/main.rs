@@ -2370,6 +2370,7 @@ fn compile(
             == mwcc_versions::DataSectionRelocationStyle::SectionAnchor,
         data_anchor_comment_flags: behavior.data_section_anchor_comment_flags,
         initial_anonymous_counter: config.build.initial_anonymous_counter,
+        leading_source_anonymous_bump: leading_source_ordinal_bump,
         post_leaf_function_anonymous_bump: config.build.post_leaf_function_anonymous_bump,
         post_framed_function_anonymous_bump: config.build.post_framed_function_anonymous_bump,
     };

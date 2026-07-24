@@ -87,6 +87,12 @@ fn pool_numbers_can_precede_the_ordinary_function_position() {
 }
 
 #[test]
+fn source_analysis_advances_the_writers_dense_ordinal_stream() {
+    assert_eq!(dense_anonymous_counter(2, 43, 0, 0, 0), 45);
+    assert_eq!(dense_anonymous_counter(2, 43, 7, 2, 1), 49);
+}
+
+#[test]
 fn data_section_displacements_patch_only_the_d_form_immediate() {
     let mut text = vec![0xa0, 0x63, 0, 0];
     let sections = HashMap::from([("table", ".data")]);
@@ -298,6 +304,7 @@ fn grouped_debug_data_relocations_restore_source_declaration_order() {
             data_relocations_use_section_anchors: false,
             data_anchor_comment_flags: 0,
             initial_anonymous_counter: 1,
+            leading_source_anonymous_bump: 0,
             post_leaf_function_anonymous_bump: 0,
             post_framed_function_anonymous_bump: 0,
         },
@@ -411,6 +418,7 @@ fn data_anchor_precedes_the_first_upfront_local_data_object() {
             data_relocations_use_section_anchors: true,
             data_anchor_comment_flags: 0,
             initial_anonymous_counter: 1,
+            leading_source_anonymous_bump: 0,
             post_leaf_function_anonymous_bump: 0,
             post_framed_function_anonymous_bump: 0,
         },
@@ -514,6 +522,7 @@ fn const_pointer_arrays_emit_reverse_rodata_relocations() {
             data_relocations_use_section_anchors: true,
             data_anchor_comment_flags: 0,
             initial_anonymous_counter: 1,
+            leading_source_anonymous_bump: 0,
             post_leaf_function_anonymous_bump: 0,
             post_framed_function_anonymous_bump: 0,
         },

@@ -723,10 +723,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         .iter()
         .filter(|object| is_in_stream_file_string(object))
         .count() as u32;
-    let dense_counter = u32::from(input.object_format.initial_anonymous_counter)
-        + pooled_string_count
-        - function_string_total
-        - in_stream_file_strings;
+    let dense_counter = dense_anonymous_counter(
+        input.object_format.initial_anonymous_counter,
+        input.object_format.leading_source_anonymous_bump,
+        pooled_string_count,
+        function_string_total,
+        in_stream_file_strings,
+    );
     let sparse_counter_floor = input
         .data_objects
         .iter()
@@ -4029,6 +4032,18 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         );
     }
     output
+}
+
+fn dense_anonymous_counter(
+    initial: u8,
+    leading_source_bump: u32,
+    pooled_strings: u32,
+    function_strings: u32,
+    in_stream_file_strings: u32,
+) -> u32 {
+    u32::from(initial) + leading_source_bump + pooled_strings
+        - function_strings
+        - in_stream_file_strings
 }
 
 /// A null-terminated string table that hands back each string's offset.
