@@ -1174,8 +1174,10 @@ mod tests {
             #pragma push
             #pragma force_active on
             #pragma peephole off
+            int retained;
             void scoped(void) {}
             #pragma pop
+            int released;
             void ordinary(void) {}
         "#;
         let unit = parse_translation_unit(
@@ -1190,6 +1192,8 @@ mod tests {
         assert!(unit.functions[0].peephole_disabled);
         assert!(!unit.functions[1].force_active);
         assert!(!unit.functions[1].peephole_disabled);
+        assert!(unit.globals[0].force_active);
+        assert!(!unit.globals[1].force_active);
     }
 
     #[test]

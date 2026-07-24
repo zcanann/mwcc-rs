@@ -50,6 +50,7 @@ mod display_list_packet_runs;
 mod display_list_framebuffer_setup;
 mod driver;
 mod enum_remap_member_update;
+mod endian_probe;
 mod endian_stack_pack;
 mod endian_stack_unpack;
 mod cached_member_guard;

@@ -56,6 +56,7 @@ pub struct DefinedGlobal {
     pub force_full_data_section: bool,
     /// A `static` global binds as a LOCAL symbol (file-scope, not exported).
     pub is_static: bool,
+    pub force_active: bool,
     /// An EXPLICITLY zero-initialized global (`int a = 0;`) rather than an
     /// uninitialized one (`int a;`). Both land in `.sbss`/`.bss`, but the writer lays
     /// the explicit-zero ones in declaration order ahead of the reversed uninitialized run.
@@ -245,6 +246,7 @@ pub fn assemble_object(
             is_const: global.is_const,
             force_full_data_section: global.force_full_data_section,
             is_static: global.is_static,
+            force_active: global.force_active,
             is_explicit_zero: global.is_explicit_zero,
             preassigned_anonymous_ordinal: global.preassigned_anonymous_ordinal,
             relocations: global.relocations.clone(),

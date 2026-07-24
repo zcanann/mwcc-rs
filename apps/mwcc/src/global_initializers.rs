@@ -80,6 +80,7 @@ mod tests {
             is_static: true,
             is_volatile: false,
             is_weak: false,
+            force_active: false,
             non_static_functions_before: 0,
             functions_before: 0,
             array_length: Some(elements.len() as u16),

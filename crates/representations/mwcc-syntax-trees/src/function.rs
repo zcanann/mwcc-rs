@@ -176,6 +176,9 @@ pub struct GlobalDeclaration {
     pub is_volatile: bool,
     /// A weak object symbol (an inline function's emitted static local).
     pub is_weak: bool,
+    /// Defined while `#pragma force_active on` was in effect. CodeWarrior marks
+    /// the object's `.comment` symbol record so the linker retains it.
+    pub force_active: bool,
     /// How many NON-STATIC functions were defined before this declaration —
     /// mwcc's symbol table interleaves defined data with function symbols by
     /// source position (static functions' LOCAL symbols precede the data run,

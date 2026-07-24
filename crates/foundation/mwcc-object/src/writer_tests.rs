@@ -109,6 +109,7 @@ fn leading_pure_vtable_slot_defers_defined_function_symbols() {
         is_const: false,
         force_full_data_section: true,
         is_static: false,
+        force_active: false,
         is_explicit_zero: false,
         preassigned_anonymous_ordinal: None,
         relocations: vec![crate::DataRelocation {
@@ -134,6 +135,13 @@ fn leading_pure_vtable_slot_defers_defined_function_symbols() {
         ..vtable
     };
     assert!(!defers_defined_vtable_function_targets(&concrete));
+    assert_eq!(data_comment_flags(&concrete), 0);
+
+    let retained = DataObject {
+        force_active: true,
+        ..concrete
+    };
+    assert_eq!(data_comment_flags(&retained), FORCE_ACTIVE_FLAG);
 }
 
 #[test]
@@ -147,6 +155,7 @@ fn deferred_weak_vtable_waits_for_its_function_reference() {
         is_const: false,
         force_full_data_section: true,
         is_static: false,
+        force_active: false,
         is_explicit_zero: false,
         preassigned_anonymous_ordinal: None,
         relocations: Vec::new(),
@@ -179,6 +188,7 @@ fn grouped_debug_data_relocations_restore_source_declaration_order() {
             is_const: false,
             force_full_data_section: true,
             is_static: false,
+            force_active: false,
             is_explicit_zero: false,
             preassigned_anonymous_ordinal: None,
             relocations: Vec::new(),
@@ -198,6 +208,7 @@ fn grouped_debug_data_relocations_restore_source_declaration_order() {
             is_const: false,
             force_full_data_section: false,
             is_static: false,
+            force_active: false,
             is_explicit_zero: false,
             preassigned_anonymous_ordinal: None,
             relocations: Vec::new(),
@@ -297,6 +308,7 @@ fn data_anchor_precedes_the_first_upfront_local_data_object() {
             is_const: false,
             force_full_data_section: false,
             is_static: true,
+            force_active: false,
             is_explicit_zero: false,
             preassigned_anonymous_ordinal: None,
             relocations: Vec::new(),
@@ -316,6 +328,7 @@ fn data_anchor_precedes_the_first_upfront_local_data_object() {
             is_const: false,
             force_full_data_section: false,
             is_static: true,
+            force_active: false,
             is_explicit_zero: false,
             preassigned_anonymous_ordinal: None,
             relocations: Vec::new(),
@@ -335,6 +348,7 @@ fn data_anchor_precedes_the_first_upfront_local_data_object() {
             is_const: false,
             force_full_data_section: false,
             is_static: false,
+            force_active: false,
             is_explicit_zero: false,
             preassigned_anonymous_ordinal: None,
             relocations: vec![crate::DataRelocation {

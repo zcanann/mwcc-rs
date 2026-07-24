@@ -284,6 +284,7 @@ fn data_global(
         is_static,
         is_volatile: false,
         is_weak,
+        force_active: false,
         non_static_functions_before: 0,
         functions_before: 0,
         array_length: None,

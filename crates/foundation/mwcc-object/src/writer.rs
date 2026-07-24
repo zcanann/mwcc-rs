@@ -67,13 +67,21 @@ const STB_GLOBAL_FUNC: u8 = (1 << 4) | 2; // STB_GLOBAL | STT_FUNC
 const STB_WEAK_FUNC: u8 = (2 << 4) | 2; // STB_WEAK | STT_FUNC (__declspec(weak))
 const STB_WEAK_OBJECT: u8 = (2 << 4) | 1; // STB_WEAK | STT_OBJECT (an inline's static local)
 const STB_LOCAL_FUNC: u8 = 2; // STB_LOCAL | STT_FUNC (a `static` function)
-/// A `.comment` per-symbol attribute set by `#pragma force_active on` — stamped on
-/// the function symbol, its compiler-created constants, and inline-`asm` `entry`
-/// symbols (animal_crossing runtime.c).
+/// A `.comment` per-symbol attribute set by `#pragma force_active on`.
 const FORCE_ACTIVE_FLAG: u32 = 0x0008_0000;
 const STB_GLOBAL_OBJECT: u8 = (1 << 4) | 1; // STB_GLOBAL | STT_OBJECT (a defined global)
 const STB_GLOBAL_NOTYPE: u8 = 1 << 4; // STB_GLOBAL | STT_NOTYPE (undefined external)
 const STV_HIDDEN: u8 = 2; // st_other visibility for the @N unwind entries
+
+fn data_comment_flags(object: &DataObject<'_>) -> u32 {
+    let weak = if object.is_weak { 0x0d00_0000 } else { 0 };
+    let force_active = if object.force_active {
+        FORCE_ACTIVE_FLAG
+    } else {
+        0
+    };
+    weak | force_active
+}
 
 /// The Metrowerks `.comment` record for a plain function. Bytes 12..15 spell the
 /// compiler version (`02 04 0X` = 2.4.X) and byte 11 is a format marker that
@@ -1434,7 +1442,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 0,
                 section,
             );
-            comment_values.push((data_aligns[object.name], 0));
+            comment_values.push((data_aligns[object.name], data_comment_flags(object)));
             if rodata_anchor_needed
                 && !rodata_anchor_emitted
                 && data_section[object.name] == ".rodata"
@@ -1471,7 +1479,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     0,
                     section,
                 );
-                comment_values.push((data_aligns[object.name], 0));
+                comment_values.push((data_aligns[object.name], data_comment_flags(object)));
             }
             continue;
         }
@@ -1543,7 +1551,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         0,
                         section,
                     );
-                    comment_values.push((data_aligns[object.name], 0));
+                    comment_values.push((data_aligns[object.name], data_comment_flags(object)));
                 }
             }
         }
@@ -1564,7 +1572,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 0,
                 section,
             );
-            comment_values.push((data_aligns[object.name], 0));
+            comment_values.push((data_aligns[object.name], data_comment_flags(object)));
         }
     }
     // Some aggregate-base schedules address a full-BSS object through the
@@ -1685,7 +1693,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     0,
                     section,
                 );
-                comment_values.push((data_aligns[object.name], 0));
+                comment_values.push((data_aligns[object.name], data_comment_flags(object)));
                 // The `...rodata.0` anchor also follows the FIRST .rodata
                 // static in the INTERLEAVED source-position run (pikmin
                 // e_pow's `bp`, declared after scalbn).
@@ -1724,7 +1732,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     0,
                     section,
                 );
-                comment_values.push((data_aligns[object.name], 0));
+                comment_values.push((data_aligns[object.name], data_comment_flags(object)));
                 // The `...rodata.0` anchor also follows the FIRST .rodata
                 // static LOCAL (pikmin inverse_trig's atan_coeff$N).
                 if rodata_anchor_needed
@@ -1823,7 +1831,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         0,
                         section,
                     );
-                    comment_values.push((data_aligns[object.name], 0));
+                    comment_values.push((data_aligns[object.name], data_comment_flags(object)));
                 }
             }
         }
@@ -2088,7 +2096,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         0,
                         section,
                     );
-                    comment_values.push((data_aligns[object.name], 0));
+                    comment_values.push((data_aligns[object.name], data_comment_flags(object)));
                     // The `...rodata.0` anchor also follows the FIRST .rodata
                     // static LOCAL (pikmin inverse_trig's atan_coeff$N).
                     if rodata_anchor_needed
@@ -2186,7 +2194,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 } else {
                     STB_GLOBAL_OBJECT
                 };
-                let flags = if object.is_weak { 0x0d00_0000 } else { 0 };
+                let flags = data_comment_flags(object);
                 global_symbols.insert(name, (symtab.len() / SYMBOL_SIZE) as u32);
                 write_symbol(
                     &mut symtab,
@@ -2250,11 +2258,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                         0,
                         index_of(data_section[target]) as u16,
                     );
-                    let flags = if target_object.is_weak {
-                        0x0d00_0000
-                    } else {
-                        0
-                    };
+                    let flags = data_comment_flags(target_object);
                     comment_values.push((data_aligns[target], flags));
                 } else if let Some(function_index) = functions
                     .iter()
@@ -2331,7 +2335,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 let section = index_of(data_section[object.name]) as u16;
                 let binding = if object.is_weak { STB_WEAK_OBJECT } else { STB_GLOBAL_OBJECT };
                 // A weak OBJECT's .comment flags are 0x0d (a weak FUNCTION carries 0x0e — measured).
-                let flags = if object.is_weak { 0x0d00_0000 } else { 0 };
+                let flags = data_comment_flags(object);
                 write_symbol(&mut symtab, strtab.add(object.name), data_offsets[object.name], data_sizes[object.name], binding, 0, section);
                 comment_values.push((data_aligns[object.name], flags));
             }
@@ -3059,7 +3063,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 STB_GLOBAL_OBJECT
             };
             // A weak OBJECT's .comment flags are 0x0d (a weak FUNCTION carries 0x0e — measured).
-            let flags = if object.is_weak { 0x0d00_0000 } else { 0 };
+            let flags = data_comment_flags(object);
             write_symbol(
                 &mut symtab,
                 strtab.add(object.name),

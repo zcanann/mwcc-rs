@@ -173,6 +173,7 @@ fn object(
         non_static_functions_before: 0,
         functions_before: 0,
         is_weak: false,
+        force_active: false,
         static_local_owner: None,
         anonymous_adjust: 0,
         section: None,

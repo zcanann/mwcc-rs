@@ -161,6 +161,8 @@ pub struct DataObject<'a> {
     /// A `static` global is file-local: same section routing, but its symbol binds
     /// LOCAL (and is emitted among the local symbols, not the global run).
     pub is_static: bool,
+    /// Source object defined under `#pragma force_active on`.
+    pub force_active: bool,
     /// True when the object is an EXPLICITLY zero-initialized global (`int a = 0;`,
     /// `int *p = 0;`) as opposed to an uninitialized one (`int a;`). Both live in
     /// `.sbss`/`.bss` with no file bytes, but mwcc lays the explicit-zero ones out in

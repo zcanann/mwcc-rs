@@ -1173,6 +1173,7 @@ fn compile(
                 anonymous_adjust,
                 static_local_owner: Some(function_index),
                 is_weak: false,
+                force_active: false,
                 functions_before: 0,
                 non_static_functions_before: 0,
                 name: local.name.clone(),
@@ -1491,6 +1492,7 @@ fn compile(
                                     anonymous_adjust: 0,
                                     static_local_owner: None,
                                     is_weak: false,
+                                    force_active: false,
                                     non_static_functions_before: 0,
                                     functions_before: global.functions_before,
                                     name: name.clone(),
@@ -1527,6 +1529,7 @@ fn compile(
                 anonymous_adjust: 0,
                 static_local_owner: None,
                 is_weak: global.is_weak,
+                force_active: global.force_active,
                 non_static_functions_before: global.non_static_functions_before,
                 functions_before: global.functions_before,
                 name: global.name.clone(),
@@ -1615,6 +1618,7 @@ fn compile(
                     anonymous_adjust: 0,
                     static_local_owner: None,
                     is_weak: global.is_weak,
+                    force_active: global.force_active,
                     non_static_functions_before: global.non_static_functions_before,
                     functions_before: global.functions_before,
                     name: global.name.clone(),
@@ -1650,6 +1654,7 @@ fn compile(
                 anonymous_adjust: 0,
                 static_local_owner: None,
                 is_weak: global.is_weak,
+                force_active: global.force_active,
                 non_static_functions_before: global.non_static_functions_before,
                 functions_before: global.functions_before,
                 name: global.name.clone(),
@@ -1720,6 +1725,7 @@ fn compile(
             anonymous_adjust: 0,
             static_local_owner: None,
             is_weak: global.is_weak,
+            force_active: global.force_active,
             non_static_functions_before: global.non_static_functions_before,
             functions_before: global.functions_before,
             name: global.name.clone(),
@@ -1758,6 +1764,7 @@ fn compile(
                                             anonymous_adjust: 0,
                                             static_local_owner: None,
                                             is_weak: false,
+                                            force_active: false,
                                             non_static_functions_before: 0,
                                             functions_before: 0,
                                             name: name.clone(),
@@ -1861,6 +1868,7 @@ fn compile(
                 anonymous_adjust: 0,
                 static_local_owner: None,
                 is_weak: false,
+                force_active: false,
                 non_static_functions_before: 0,
                 functions_before: 0,
                 name,
@@ -1894,6 +1902,7 @@ fn compile(
                                     anonymous_adjust: 0,
                                     static_local_owner: None,
                                     is_weak: true,
+                                    force_active: false,
                                     non_static_functions_before: 0,
                                     functions_before: 0,
                                     name: name.clone(),
@@ -1931,6 +1940,7 @@ fn compile(
                         anonymous_adjust: 0,
                         static_local_owner: None,
                         is_weak: false,
+                        force_active: false,
                         non_static_functions_before: 0,
                         functions_before: 0,
                         name: name.clone(),
@@ -2422,6 +2432,9 @@ mod tests {
 
     #[path = "large_integer_condition.rs"]
     mod large_integer_condition;
+
+    #[path = "endian_probe.rs"]
+    mod endian_probe;
 
     #[path = "computed_subtract_schedule.rs"]
     mod computed_subtract_schedule;

@@ -885,6 +885,7 @@ impl Parser {
                                 data_bytes: local.bytes,
                                 data_relocations: Vec::new(),
                                 is_weak: true,
+                                force_active: false,
                                 section: None,
                                 attribute_alignment: None,
                             });
@@ -1049,6 +1050,7 @@ impl Parser {
                 is_static: false,
                 is_volatile: false,
                 is_weak: false,
+                force_active: false,
                 non_static_functions_before: functions.iter().filter(|f| !f.is_static).count(),
                 functions_before: functions.len(),
                 array_length: None,
@@ -1167,6 +1169,7 @@ impl Parser {
                 is_static: false,
                 is_volatile: false,
                 is_weak: false,
+                force_active: false,
                 non_static_functions_before: 0,
                 functions_before: 0,
                 array_length: None,
@@ -2420,6 +2423,7 @@ impl Parser {
                     self.variable_structs.insert(name.clone(), tag.clone());
                     globals.push(GlobalDeclaration {
                         is_weak: false,
+                        force_active: self.force_active,
                         non_static_functions_before: functions
                             .iter()
                             .filter(|function| !function.is_static)
@@ -2582,6 +2586,7 @@ impl Parser {
                 }
                 globals.push(GlobalDeclaration {
                     is_weak: false,
+                    force_active: self.force_active,
                     non_static_functions_before: functions
                         .iter()
                         .filter(|function| !function.is_static)
@@ -3035,6 +3040,7 @@ impl Parser {
                     }
                     globals.push(GlobalDeclaration {
                         is_weak: false,
+                        force_active: self.force_active,
                         non_static_functions_before: functions
                             .iter()
                             .filter(|function| !function.is_static)

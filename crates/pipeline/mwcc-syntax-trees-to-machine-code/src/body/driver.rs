@@ -2081,6 +2081,9 @@ impl Generator {
         if self.try_inlined_guarded_aggregate_update(function)? {
             return Ok(());
         }
+        if self.try_endian_probe(function)? {
+            return Ok(());
+        }
         // Endian scalar wrappers intentionally take the address of a 16/32/64-bit
         // parameter, select its frame image or a reversed stack array, then tail
         // into a byte-buffer call. Claim all widths before the long-long router.
