@@ -1312,6 +1312,24 @@ impl Generator {
             &mut pending_gotos,
             &mut condition_alias,
         )?;
+        // Resolve symbolic gotos while their recorded instruction and label
+        // indices still refer to the freshly emitted stream. The scheduling
+        // passes below own branch-target remapping when they move or remove
+        // instructions; postponing resolution until after those passes leaves
+        // the original placeholder behind when its branch itself moved.
+        for (branch, label) in pending_gotos {
+            let target = label_positions.get(&label).copied().ok_or_else(|| {
+                Diagnostic::error(format!(
+                    "structured forward branch targets an unknown label '{label}'"
+                ))
+            })?;
+            if let Instruction::Branch {
+                target: branch_target,
+            } = &mut self.output.instructions[branch]
+            {
+                *branch_target = target;
+            }
+        }
         self.schedule_structured_entry_zero_store(function);
         self.schedule_structured_shared_member_arguments(function);
         self.schedule_repeated_member_address_call_guards();
@@ -1356,19 +1374,6 @@ impl Generator {
                 &logical_call_result_homes,
                 &recycled_call_result_homes,
             );
-        }
-        for (branch, label) in pending_gotos {
-            let target = label_positions.get(&label).copied().ok_or_else(|| {
-                Diagnostic::error(format!(
-                    "structured forward branch targets an unknown label '{label}'"
-                ))
-            })?;
-            if let Instruction::Branch {
-                target: branch_target,
-            } = &mut self.output.instructions[branch]
-            {
-                *branch_target = target;
-            }
         }
         self.fold_structured_void_early_return_branches(&mut return_branches);
         self.schedule_loop_assertion_entry_alias();
@@ -1496,6 +1501,7 @@ impl Generator {
         if rounded_pointer_dense_layout {
             self.schedule_power_pc_7400_rounded_pointer_body();
         }
+        validate_resolved_structured_branches(&self.output.instructions)?;
         Ok(true)
     }
 
@@ -2406,6 +2412,17 @@ fn logical_or_groups(expression: &Expression) -> Option<Vec<Vec<&Expression>>> {
     Some(groups)
 }
 
+fn validate_resolved_structured_branches(instructions: &[Instruction]) -> Compilation<()> {
+    if instructions.iter().enumerate().any(|(index, instruction)| {
+        index != 0 && matches!(instruction, Instruction::Branch { target: 0 })
+    }) {
+        return Err(Diagnostic::error(
+            "structured branch retained an unresolved entry target",
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2437,5 +2454,24 @@ mod tests {
             Expression::Variable(c),
             Expression::Variable(d),
         ] if c == "c" && d == "d"));
+    }
+
+    #[test]
+    fn rejects_a_structured_branch_with_an_unresolved_placeholder() {
+        let unresolved = [
+            Instruction::AddImmediate {
+                d: 3,
+                a: 3,
+                immediate: 1,
+            },
+            Instruction::Branch { target: 0 },
+        ];
+        assert!(validate_resolved_structured_branches(&unresolved).is_err());
+
+        let resolved = [
+            unresolved[0].clone(),
+            Instruction::Branch { target: 1 },
+        ];
+        assert!(validate_resolved_structured_branches(&resolved).is_ok());
     }
 }
