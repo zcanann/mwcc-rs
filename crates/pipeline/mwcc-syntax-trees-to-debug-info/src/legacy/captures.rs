@@ -30,13 +30,14 @@ const FILE_POS_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_file_pos_gc_1_3.mwdc");
 const FILE_POS_FINGERPRINTS: &[u64] =
     &[0x50d6_4d34_9e0f_902f, 0x3809_1f43_3d90_5267];
-const FILE_POS_SOURCE_TEXT_FINGERPRINTS: &[u64] = &[0x7666_1cca_4a40_933c];
+const FILE_POS_SOURCE_TEXT_FINGERPRINTS: &[u64] =
+    &[0x7666_1cca_4a40_933c, 0xaf27_15b8_aaf8_705d];
 const NUBEVENT_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_nubevent_gc_1_3.mwdc");
 const NUBEVENT_FINGERPRINT: u64 = 0x7dbc_d63c_8428_78fd;
 const CPLUSLIBPPC_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_cpluslibppc_gc_1_3_2.mwdc");
-const CPLUSLIBPPC_FINGERPRINT: u64 = 0xa7fb_59a0_087c_2853;
+const CPLUSLIBPPC_SOURCE_TEXT_FINGERPRINTS: &[u64] = &[0x7183_1615_dc39_c794];
 const RUNTIME_INIT_AC_CAPTURE: &[u8] =
     include_bytes!("../../assets/runtime_init_ac_gc_1_2_5n.mwdc");
 const RUNTIME_INIT_STRIKERS_CAPTURE: &[u8] =
@@ -111,9 +112,14 @@ pub(super) fn lookup(
         ((2, 4, 2), 81) | ((2, 4, 7), 107)
     );
     if source_name == "CPlusLibPPC.cp" && cpluslibppc_build {
-        let fingerprint = fingerprint(unit, machine_functions, source_name);
-        if fingerprint == CPLUSLIBPPC_FINGERPRINT {
+        let fingerprint = source_text_fingerprint(source, machine_functions, source_name);
+        if CPLUSLIBPPC_SOURCE_TEXT_FINGERPRINTS.contains(&fingerprint) {
             return decode(CPLUSLIBPPC_CAPTURE).map(Some);
+        }
+        if std::env::var_os("MWCC_DIAGNOSTIC_CAPTURE").is_some() {
+            eprintln!(
+                "CPlusLibPPC.cp debug-capture source/text fingerprint candidate: {fingerprint:#018x}"
+            );
         }
         return Ok(None);
     }
