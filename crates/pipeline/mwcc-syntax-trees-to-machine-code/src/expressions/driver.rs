@@ -522,6 +522,16 @@ impl Generator {
                 Err(Diagnostic::error("a comma operator in this position is not supported yet (roadmap)"))
             }
             Expression::Binary { operator, left, right } => {
+                // Identity shifts survive macro expansion surprisingly often
+                // (`masked_word << 0`). Fold them before operand placement so
+                // the literal zero is never mistaken for a register operand.
+                if matches!(
+                    operator,
+                    BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight
+                ) && constant_value(right) == Some(0)
+                {
+                    return self.evaluate_general(left, destination);
+                }
                 // mwcc folds a unary minus into a subtract: `-a + b` -> `b - a` (subf), `a + -b` ->
                 // `a - b`. Rewrite to the equivalent Subtract so the byte-exact subtract path emits it
                 // (the operand order matches: `subf d, a, b` computes b - a).

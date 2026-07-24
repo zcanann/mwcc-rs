@@ -2408,6 +2408,9 @@ mod tests {
     #[path = "float_to_integer_store.rs"]
     mod float_to_integer_store;
 
+    #[path = "identity_shift.rs"]
+    mod identity_shift;
+
     #[path = "local_post_step.rs"]
     mod local_post_step;
 
