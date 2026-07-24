@@ -1294,6 +1294,7 @@ impl Generator {
         self.fold_structured_void_early_return_branches(&mut return_branches);
         self.schedule_loop_assertion_entry_alias();
         self.schedule_loop_assertion_string_highs();
+        self.schedule_loop_assertion_body();
         if let Some(return_expression) = function.return_expression.as_ref() {
             let result = match function.return_type {
                 Type::Float | Type::Double => Eabi::float_result().number,

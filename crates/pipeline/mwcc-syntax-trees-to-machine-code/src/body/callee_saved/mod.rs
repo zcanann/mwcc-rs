@@ -89,6 +89,7 @@ mod structured_loop_invariants;
 mod structured_loop_assertion_strings;
 mod structured_loop_assertion_entry_schedule;
 mod structured_loop_assertion_string_schedule;
+mod structured_loop_assertion_body_schedule;
 mod structured_nested_member_base;
 mod structured_preloop_alias;
 mod structured_parameter_home_reuse;
