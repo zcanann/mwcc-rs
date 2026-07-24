@@ -2088,7 +2088,7 @@ blr\n\
             };
             Count::Count() { value = 0; }
         "#;
-        let unit = parse_translation_unit(
+        let mut unit = parse_translation_unit(
             mwcc_source_to_tokens::tokenize(source).unwrap(),
             true,
             true,
@@ -2122,6 +2122,19 @@ blr\n\
             .data_relocations
             .iter()
             .any(|(_, target, _)| target == "sub__5CountFv"));
+        materialize_cxx_rtti(&mut unit);
+        let name_index = unit
+            .globals
+            .iter()
+            .position(|global| global.name == "@@cxx_rtti:5Count:name")
+            .expect("RTTI name materialized");
+        let vtable_index = unit
+            .globals
+            .iter()
+            .position(|global| global.name == "__vt__5Count")
+            .expect("weak vtable retained");
+        assert!(name_index < vtable_index);
+        assert_eq!(unit.globals[name_index].functions_before, 1);
     }
 
     #[test]

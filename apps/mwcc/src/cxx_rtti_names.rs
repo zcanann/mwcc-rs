@@ -66,9 +66,19 @@ pub fn fragmented_debug_counter(
 }
 
 pub fn resolve(globals: &mut [DefinedGlobal], mut counter: u32) {
+    let analysis_base = counter;
     let mut renames = HashMap::new();
     for global in globals.iter() {
         if global.name.starts_with(PREFIX) {
+            // Weak all-inline vtables are first owned only after their source
+            // constructor frontier. Keep ordinary key-function RTTI on the
+            // early class-analysis timeline, but let a late generated object
+            // establish the corresponding source-function floor.
+            counter = counter.max(
+                analysis_base.saturating_add(
+                    u32::try_from(global.functions_before).unwrap_or(u32::MAX),
+                ),
+            );
             renames.insert(global.name.clone(), format!("@{counter}"));
             counter += 1;
         }

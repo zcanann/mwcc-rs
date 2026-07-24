@@ -89,26 +89,45 @@ pub fn materialize(unit: &mut TranslationUnit) {
         }
         let rtti = rtti_symbol(class);
         let mut owner_position = None;
+        let mut late_weak_vtable = None;
         if let Some(mut vtable) = vtables.remove(&vtable_symbol(class)) {
             owner_position = Some((
                 vtable.non_static_functions_before,
                 vtable.functions_before,
             ));
             materialize_vtable_headers(&mut vtable, class, &rtti);
-            generated.push(vtable);
+            if vtable.is_weak {
+                late_weak_vtable = Some(vtable);
+            } else {
+                generated.push(vtable);
+            }
         }
 
         let name = anonymous_name(class, "name");
         let mut name_bytes = class.source_name.as_bytes().to_vec();
         name_bytes.push(0);
-        generated.push(data_global(
+        let mut name_global = data_global(
             name.clone(),
             name_bytes,
             Vec::new(),
             true,
             false,
             1,
-        ));
+        );
+        if late_weak_vtable.is_some() {
+            if let Some((non_static_functions_before, functions_before)) = owner_position {
+                name_global.non_static_functions_before =
+                    non_static_functions_before.saturating_sub(late_non_static_count);
+                name_global.functions_before = functions_before.saturating_sub(late_function_count);
+            }
+        }
+        generated.push(name_global);
+        // An all-inline class has no early key-function owner. Its RTTI name is
+        // therefore allocated at the constructor's source-function frontier,
+        // immediately before the late weak vtable group.
+        if let Some(vtable) = late_weak_vtable {
+            generated.push(vtable);
+        }
 
         let hierarchy = inheritance_entries(class, &classes);
         let hierarchy_name = (!hierarchy.is_empty()).then(|| anonymous_name(class, "bases"));
