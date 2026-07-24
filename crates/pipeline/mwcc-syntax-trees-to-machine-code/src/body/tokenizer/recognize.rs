@@ -195,6 +195,7 @@ fn control_map_loop(statement: &Statement, map: &str, control: &str) -> bool {
     matches!(pointer.as_ref(), Expression::PostStep {
         target,
         operator: BinaryOperator::Add,
+        pointer_link: None,
     } if variable(target) == Some(control))
         && literal(zero, 0)
         && map_update(update, map, control)

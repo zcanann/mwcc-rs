@@ -124,6 +124,7 @@ fn tokenizer() -> Function {
                 pointer: Box::new(Expression::PostStep {
                     target: Box::new(name(control_cursor)),
                     operator: BinaryOperator::Add,
+                    pointer_link: None,
                 }),
             },
             integer(0),

@@ -5521,7 +5521,33 @@ fn parameter_segment_is_variadic(tokens: &[Token]) -> bool {
 /// is unused. Comma lists lower each element.
 fn lower_discarded_post_step(expression: Expression) -> Expression {
     match expression {
-        Expression::PostStep { target, operator } => {
+        Expression::PostStep {
+            target,
+            operator: _,
+            pointer_link: Some((storage_offset, next_offset)),
+        } => {
+            let storage = Expression::Member {
+                base: target,
+                offset: storage_offset,
+                member_type: Type::StructPointer { element_size: 0 },
+                index_stride: None,
+            };
+            let value = Expression::Member {
+                base: Box::new(storage.clone()),
+                offset: next_offset,
+                member_type: Type::StructPointer { element_size: 0 },
+                index_stride: None,
+            };
+            Expression::Assign {
+                target: Box::new(storage),
+                value: Box::new(value),
+            }
+        }
+        Expression::PostStep {
+            target,
+            operator,
+            pointer_link: None,
+        } => {
             let value = Expression::Binary {
                 operator,
                 left: target.clone(),

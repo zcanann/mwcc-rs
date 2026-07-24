@@ -44,6 +44,7 @@ impl Generator {
         let Expression::PostStep {
             target,
             operator: BinaryOperator::Subtract,
+            pointer_link: None,
         } = condition
         else {
             return Ok(false);
@@ -455,6 +456,7 @@ impl Generator {
         let Expression::PostStep {
             target,
             operator: BinaryOperator::Subtract,
+            pointer_link: None,
         } = condition
         else {
             return Ok(false);

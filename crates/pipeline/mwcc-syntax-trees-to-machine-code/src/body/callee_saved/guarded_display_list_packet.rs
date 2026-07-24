@@ -488,6 +488,7 @@ fn poststep_assignment(statement: &Statement) -> Option<(&str, &str)> {
     let Expression::PostStep {
         target: source,
         operator: BinaryOperator::Add,
+        pointer_link: None,
     } = operand.as_ref()
     else {
         return None;

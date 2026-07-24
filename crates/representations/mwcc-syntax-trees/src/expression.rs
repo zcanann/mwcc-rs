@@ -157,6 +157,11 @@ pub enum Expression {
     PostStep {
         target: Box<Expression>,
         operator: BinaryOperator,
+        /// Source-proven overloaded iterator step:
+        /// `(pointer storage offset, next-link offset)`. This remains metadata
+        /// until a value-discarding context can expand the mutation without
+        /// losing the postfix expression's old-value semantics.
+        pointer_link: Option<(u32, u32)>,
     },
     /// `target = value` used as an expression — stores `value` into `target` and
     /// yields the stored value (e.g. `(g = g + 1)`).

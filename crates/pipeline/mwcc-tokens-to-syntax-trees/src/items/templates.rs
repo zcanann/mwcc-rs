@@ -154,6 +154,7 @@ impl Parser {
             let layout =
                 self.instantiate_struct_template_layout_with_arguments(template_name, &arguments);
             self.register_concrete_template_iterator_arrow(&tag, template_name, &arguments);
+            self.register_concrete_template_iterator_step(&tag, template_name);
             return self.finish_template_instance_type(tag, layout, end);
         }
         let (tag, argument, end) = self.parse_template_spelling_at(self.position)?;
@@ -312,6 +313,34 @@ impl Parser {
                 format!("{instance}::{nested}"),
                 (element, offset, storage_offset),
             );
+    }
+
+    fn register_concrete_template_iterator_step(&mut self, instance: &str, template_name: &str) {
+        let Some(nested_iterators) = self
+            .template_iterator_step_summaries
+            .get(template_name)
+            .cloned()
+        else {
+            return;
+        };
+        for nested in nested_iterators {
+            let suffix = format!("{template_name}::{nested}");
+            let mut matches = self
+                .structs
+                .keys()
+                .filter(|tag| *tag == &suffix || tag.ends_with(&format!("::{suffix}")));
+            let Some(generic) = matches.next().cloned() else {
+                continue;
+            };
+            if matches.next().is_some() {
+                continue;
+            }
+            let Some(step) = self.resolve_source_iterator_pointer_step(&generic) else {
+                continue;
+            };
+            self.concrete_template_iterator_steps
+                .insert(format!("{instance}::{nested}"), step);
+        }
     }
 
     /// Prove that a recovered template iterator is a one-word wrapper around
@@ -1720,7 +1749,19 @@ impl Parser {
                     if !self.cxx_classes.contains_key(&qualified) {
                         self.cxx_class_declaration_order.push(qualified.clone());
                     }
-                    self.cxx_classes.insert(qualified, class);
+                    self.cxx_classes.insert(qualified.clone(), class);
+                    if self
+                        .source_iterator_step_forwarders
+                        .contains_key(&qualified)
+                    {
+                        let summaries = self
+                            .template_iterator_step_summaries
+                            .entry(template_name.to_owned())
+                            .or_default();
+                        if !summaries.contains(&nested) {
+                            summaries.push(nested);
+                        }
+                    }
                 }
                 self.position = saved_position;
             }

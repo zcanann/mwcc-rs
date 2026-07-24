@@ -72,6 +72,7 @@ impl Generator {
             let Expression::PostStep {
                 target,
                 operator: BinaryOperator::Add,
+                pointer_link: None,
             } = pointer.as_ref()
             else {
                 return None;

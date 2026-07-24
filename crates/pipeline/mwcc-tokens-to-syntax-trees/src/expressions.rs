@@ -1556,9 +1556,17 @@ impl Parser {
         };
         if let Some(operator) = postfix_step {
             self.advance();
+            let pointer_link = (operator == BinaryOperator::Add)
+                .then(|| {
+                    struct_tag
+                        .as_deref()
+                        .and_then(|tag| self.resolve_concrete_template_iterator_step(tag))
+                })
+                .flatten();
             return Ok(Expression::PostStep {
                 target: Box::new(expression),
                 operator,
+                pointer_link,
             });
         }
         Ok(expression)
