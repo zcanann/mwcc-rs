@@ -2183,6 +2183,9 @@ mod tests {
     #[path = "call_indexed_member.rs"]
     mod call_indexed_member;
 
+    #[path = "call_argument_schedules.rs"]
+    mod call_argument_schedules;
+
     #[path = "aggregate_member_copy.rs"]
     mod aggregate_member_copy;
 

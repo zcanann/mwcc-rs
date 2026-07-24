@@ -24,7 +24,147 @@ fn direct_member_address(expression: &Expression) -> Option<(&Expression, u32)> 
     }
 }
 
+fn constant_indexed_address_base(expression: &Expression) -> Option<&Expression> {
+    let Expression::AddressOf { operand } = expression else {
+        return None;
+    };
+    let Expression::Index { base, index } = operand.as_ref() else {
+        return None;
+    };
+    constant_value(index)?;
+    Some(base.as_ref())
+}
+
 impl Generator {
+    /// Marshal a word member followed by two constant-indexed addresses from
+    /// the same pointer base.
+    ///
+    /// MWCC forms the address arguments right-to-left.  When their base is not
+    /// endangered by the first member load, the member retains source order;
+    /// otherwise both addresses must be formed before r3 is overwritten.  The
+    /// distinction is observable both in small forwarding wrappers and after
+    /// callee-saved pointer setup.
+    pub(crate) fn try_emit_reverse_indexed_address_tail_arguments(
+        &mut self,
+        arguments: &[Expression],
+        name: &str,
+        direct_call: bool,
+    ) -> Compilation<bool> {
+        let [
+            first @ Expression::Member {
+                base: first_base,
+                member_type,
+                ..
+            },
+            second,
+            third,
+        ] = arguments
+        else {
+            return Ok(false);
+        };
+        let (Some(second_base), Some(third_base)) =
+            (constant_indexed_address_base(second), constant_indexed_address_base(third))
+        else {
+            return Ok(false);
+        };
+        let word_member = matches!(
+            member_type,
+            Type::Int
+                | Type::UnsignedInt
+                | Type::Pointer(_)
+                | Type::StructPointer { .. }
+        );
+        let all_general = self.call_parameter_types.get(name).is_some_and(|types| {
+            types.len() >= 3
+                && types[..3]
+                    .iter()
+                    .all(|ty| !matches!(ty, Type::Float | Type::Double))
+        });
+        let Some(first_base_register) = self.registers_used_by(first_base).into_iter().next() else {
+            return Ok(false);
+        };
+        if !direct_call
+            || !self.behavior.schedule_latency_slots
+            || !word_member
+            || !all_general
+            || !structurally_equal(second_base, third_base)
+        {
+            return Ok(false);
+        }
+
+        if matches!(first_base_register, 0 | 3..=12) {
+            self.evaluate_general(third, Eabi::FIRST_GENERAL_ARGUMENT + 2)?;
+            self.evaluate_general(second, Eabi::FIRST_GENERAL_ARGUMENT + 1)?;
+            self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT)?;
+        } else {
+            self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT)?;
+            self.evaluate_general(third, Eabi::FIRST_GENERAL_ARGUMENT + 2)?;
+            self.evaluate_general(second, Eabi::FIRST_GENERAL_ARGUMENT + 1)?;
+        }
+        Ok(true)
+    }
+
+    /// Fill a floating multiply's load latency with an independent word-member
+    /// argument.  Both floating operands are placed first, the GPR load issues
+    /// while their data becomes available, and the multiply completes directly
+    /// before the call.
+    pub(crate) fn try_emit_member_and_located_float_product_arguments(
+        &mut self,
+        arguments: &[Expression],
+        name: &str,
+        direct_call: bool,
+    ) -> Compilation<bool> {
+        let [
+            general @ Expression::Member { member_type, .. },
+            Expression::Binary {
+                operator: BinaryOperator::Multiply,
+                left,
+                right,
+            },
+        ] = arguments
+        else {
+            return Ok(false);
+        };
+        let expected_types = self.call_parameter_types.get(name).is_none_or(|types| {
+            types.len() >= 2
+                && !matches!(types[0], Type::Float | Type::Double)
+                && matches!(types[1], Type::Float | Type::Double)
+        });
+        let word_member = matches!(
+            member_type,
+            Type::Int
+                | Type::UnsignedInt
+                | Type::Pointer(_)
+                | Type::StructPointer { .. }
+        );
+        if !direct_call
+            || !self.behavior.schedule_latency_slots
+            || !expected_types
+            || !word_member
+            || !self.is_float_located(left)
+            || !self.is_float_located(right)
+        {
+            return Ok(false);
+        }
+
+        let double = self.is_double_value(left) || self.is_double_value(right);
+        let operands = self.place_float_operands(
+            BinaryOperator::Multiply,
+            left,
+            right,
+            Eabi::FIRST_FLOAT_ARGUMENT,
+            double,
+        )?;
+        self.evaluate_general(general, Eabi::FIRST_GENERAL_ARGUMENT)?;
+        self.output.instructions.push(float_combine(
+            BinaryOperator::Multiply,
+            Eabi::FIRST_FLOAT_ARGUMENT,
+            operands,
+            double,
+        )?);
+        Ok(true)
+    }
+
     /// Marshal `(base->byte, base->bits[, saved])` while `base` still occupies
     /// the first argument register.
     ///

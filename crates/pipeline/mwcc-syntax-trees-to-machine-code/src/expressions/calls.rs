@@ -525,6 +525,12 @@ impl Generator {
             }
         }
         let direct_call = !self.globals.contains_key(name) && !self.locations.contains_key(name);
+        if self.try_emit_reverse_indexed_address_tail_arguments(arguments, name, direct_call)? {
+            return Ok(());
+        }
+        if self.try_emit_member_and_located_float_product_arguments(arguments, name, direct_call)? {
+            return Ok(());
+        }
         if self.try_emit_large_string_line_arguments(arguments, direct_call)? {
             return Ok(());
         }
