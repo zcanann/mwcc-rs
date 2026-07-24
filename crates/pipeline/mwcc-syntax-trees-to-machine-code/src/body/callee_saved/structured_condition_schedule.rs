@@ -126,6 +126,30 @@ impl Generator {
         term_index: usize,
         term_start: usize,
     ) {
+        if term_index != 0
+            && reuses_preceding_bitfield_storage(&self.output.instructions, term_start)
+            && !self.output.relocations.iter().any(|relocation| {
+                relocation.instruction_index == term_start
+                    || relocation.instruction_index + 3 == term_start
+            })
+        {
+            let previous_load = term_start - 3;
+            let retained = self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT);
+            match &mut self.output.instructions[previous_load] {
+                Instruction::LoadByteZero { d, .. } => *d = retained,
+                _ => unreachable!(),
+            }
+            match &mut self.output.instructions[previous_load + 1] {
+                Instruction::RotateAndMaskRecord { s, .. } => *s = retained,
+                _ => unreachable!(),
+            }
+            match &mut self.output.instructions[term_start + 1] {
+                Instruction::RotateAndMaskRecord { s, .. } => *s = retained,
+                _ => unreachable!(),
+            }
+            self.remove_structured_condition_instruction(term_start);
+            return;
+        }
         if term_index == 0
             || !reuses_preceding_member_load(&self.output.instructions, term_start)
             || self
@@ -237,6 +261,28 @@ fn reuses_preceding_member_load(instructions: &[Instruction], term_start: usize)
         && tested_base == previous_result
 }
 
+fn reuses_preceding_bitfield_storage(instructions: &[Instruction], term_start: usize) -> bool {
+    let Some(previous) = term_start.checked_sub(3) else {
+        return false;
+    };
+    matches!(instructions.get(previous..), Some([
+        Instruction::LoadByteZero {
+            d: 0,
+            a: previous_base,
+            offset: previous_offset,
+        },
+        Instruction::RotateAndMaskRecord { a: 0, s: 0, .. },
+        Instruction::BranchConditionalForward { .. },
+        Instruction::LoadByteZero {
+            d: 0,
+            a: current_base,
+            offset: current_offset,
+        },
+        Instruction::RotateAndMaskRecord { a: 0, s: 0, .. },
+        ..
+    ]) if previous_base == current_base && previous_offset == current_offset)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,6 +353,18 @@ mod tests {
             },
         ];
         assert!(reuses_preceding_member_load(&instructions, 4));
+    }
+
+    #[test]
+    fn recognizes_bitfield_storage_live_across_the_first_false_edge() {
+        let instructions = [
+            Instruction::LoadByteZero { d: 0, a: 31, offset: 8729 },
+            Instruction::RotateAndMaskRecord { a: 0, s: 0, shift: 26, begin: 31, end: 31 },
+            Instruction::BranchConditionalForward { options: 4, condition_bit: 2, target: 8 },
+            Instruction::LoadByteZero { d: 0, a: 31, offset: 8729 },
+            Instruction::RotateAndMaskRecord { a: 0, s: 0, shift: 30, begin: 31, end: 31 },
+        ];
+        assert!(reuses_preceding_bitfield_storage(&instructions, 3));
     }
 
     #[test]
