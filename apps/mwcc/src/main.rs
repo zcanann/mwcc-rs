@@ -2454,6 +2454,9 @@ mod tests {
     #[path = "aggregate_member_copy.rs"]
     mod aggregate_member_copy;
 
+    #[path = "aggregate_parameter_forwarder.rs"]
+    mod aggregate_parameter_forwarder;
+
     #[path = "float_fused_triplet.rs"]
     mod float_fused_triplet;
 

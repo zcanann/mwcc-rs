@@ -2347,6 +2347,9 @@ impl Generator {
                 Some((inlined.local_count, inlined.repeated_guard_local_count));
             return self.evaluate_body(&inlined.function);
         }
+        if self.try_aggregate_parameter_forwarder(function)? {
+            return Ok(());
+        }
         // A struct-image local passed by address to one call (`GXColor c = {…}; g(&c);`).
         if self.try_struct_image_init_call(function)? {
             return Ok(());
