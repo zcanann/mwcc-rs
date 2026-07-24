@@ -289,3 +289,56 @@ fn local_only_aggregate_bridges_data_directly_to_following_functions() {
         .iter()
         .any(|record| *record == DebugRecord::Marker(DATA_END)));
 }
+
+#[test]
+fn pointer_qualifiers_preserve_pointee_and_object_const_order() {
+    let source = br#"
+        const char* current = "current";
+        const char* const messages[2] = { "one", "two" };
+    "#;
+    let unit = mwcc_tokens_to_syntax_trees::parse_located_translation_unit(
+        mwcc_source_to_tokens::tokenize_bytes_located(source).expect("tokens"),
+        false,
+        false,
+        3,
+        1,
+    )
+    .expect("translation unit");
+    let globals = unit.globals.iter().collect::<Vec<_>>();
+    let lowered = records(&unit, &globals, DebugEntryId(1), false).expect("data records");
+    let entries = lowered
+        .records
+        .iter()
+        .filter_map(|record| match record {
+            DebugRecord::Entry(entry) => Some(entry),
+            DebugRecord::Marker(_) | DebugRecord::Raw(_) => None,
+        })
+        .collect::<Vec<_>>();
+
+    let current = entries
+        .iter()
+        .find(|entry| {
+            entry.attributes.iter().any(|attribute| {
+                attribute.name == AttributeName::Name
+                    && attribute.value == AttributeValue::String("current".to_owned())
+            })
+        })
+        .expect("scalar pointer DIE");
+    assert!(current.attributes.iter().any(|attribute| {
+        attribute.name == AttributeName::ModifiedFundamentalType
+            && attribute.value == AttributeValue::Block2(vec![1, 3, 0, 1])
+    }), "{:#?}", current.attributes);
+
+    let messages = entries
+        .iter()
+        .find(|entry| entry.tag == Tag::ArrayType)
+        .expect("pointer array DIE");
+    assert!(messages.attributes.iter().any(|attribute| {
+        attribute.name == AttributeName::SubscriptData
+            && matches!(
+                &attribute.value,
+                AttributeValue::Block2(bytes)
+                    if bytes.ends_with(&[8, 0, 0x63, 0, 4, 3, 1, 0, 1])
+            )
+    }));
+}

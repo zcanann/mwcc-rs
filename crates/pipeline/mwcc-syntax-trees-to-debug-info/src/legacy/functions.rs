@@ -335,7 +335,16 @@ impl SelectedFunctionPlan<'_> {
                             AttributeName::Name,
                             AttributeValue::String(local.name.clone()),
                         ),
-                        data::member_type_attribute(local.declared_type, aggregate_id, None)?,
+                        match local.declared_type {
+                            Type::Pointer(pointee) if local.is_const => {
+                                data::const_pointer_type_attribute(pointee)?
+                            }
+                            _ => data::member_type_attribute(
+                                local.declared_type,
+                                aggregate_id,
+                                None,
+                            )?,
+                        },
                         location_attribute(location),
                     ],
                 }));

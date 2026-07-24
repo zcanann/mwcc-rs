@@ -12,6 +12,19 @@ pub(super) fn fundamental_subscript_data(
     bytes
 }
 
+pub(super) fn modified_fundamental_subscript_data(
+    length: u16,
+    modifiers: &[u8],
+    fundamental: FundamentalType,
+) -> Vec<u8> {
+    let mut bytes = bounds(length);
+    bytes.extend_from_slice(&[8, 0, 0x63]);
+    bytes.extend_from_slice(&u16::try_from(modifiers.len() + 2).unwrap().to_be_bytes());
+    bytes.extend_from_slice(modifiers);
+    bytes.extend_from_slice(&(fundamental as u16).to_be_bytes());
+    bytes
+}
+
 pub(super) fn aggregate_subscript_data(length: u16, aggregate: DebugEntryId) -> Block {
     let mut bytes = bounds(length);
     bytes.extend_from_slice(&[8, 0, 0x72]);

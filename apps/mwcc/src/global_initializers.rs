@@ -87,6 +87,7 @@ mod tests {
             array_length_inferred: false,
             initializer: None,
             is_const: false,
+            pointer_pointee_const: false,
             address_initializer: Some(elements),
             data_bytes: None,
             data_relocations: Vec::new(),

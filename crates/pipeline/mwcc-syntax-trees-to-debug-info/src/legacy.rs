@@ -4,6 +4,7 @@ mod captures;
 mod classes;
 pub(super) mod data;
 mod enumerations;
+mod fatal_messaging;
 mod functions;
 mod guarded_global_callbacks;
 mod simple_void_functions;
@@ -61,6 +62,9 @@ enum MeasuredShape {
     /// The vector-installer plan preceded by weak read-only objects retained
     /// from otherwise-dropped inline definitions.
     VectorInstallerWithInlineStatics,
+    /// A localized fatal-message selector, its callback toggle, and the
+    /// guarded callback entry point.
+    FatalMessaging,
 }
 
 pub(super) fn lower(
@@ -161,6 +165,12 @@ pub(super) fn lower(
         MeasuredShape::VectorInstaller | MeasuredShape::VectorInstallerWithInlineStatics
     ) {
         line_records.extend(vector_installers::line_records(
+            &source_functions,
+            machine_functions,
+            &layout,
+        )?);
+    } else if shape == MeasuredShape::FatalMessaging {
+        line_records.extend(fatal_messaging::line_records(
             &source_functions,
             machine_functions,
             &layout,
@@ -440,6 +450,36 @@ pub(super) fn lower(
         return finish(line, records, DebugLayout::BeforeDataGrouped);
     }
 
+    if shape == MeasuredShape::FatalMessaging {
+        let mut records: Vec<_> = entries.into_iter().map(DebugRecord::Entry).collect();
+        let source_function_refs = source_functions
+            .iter()
+            .map(|(function, _)| *function)
+            .collect::<Vec<_>>();
+        let local_aggregate_keys =
+            fatal_messaging::local_aggregate_keys(unit, &source_function_refs)?;
+        let data = data::records_with_local_aggregates_directly_followed_by_functions(
+            unit,
+            &globals,
+            &local_aggregate_keys,
+            first_global_id,
+        )?;
+        let variables = fatal_messaging::function_variables(
+            &source_function_refs,
+            machine_functions,
+            &data.global_ids,
+        )?;
+        let functions =
+            functions::selected_plan_with_variables(&source_function_refs, data.next_id, &variables)?;
+        records.extend(data.records);
+        records.extend(functions.records(unit, &layout, &data.aggregate_ids, None)?);
+        return finish(
+            line,
+            records,
+            DebugLayout::BetweenFullAndSmallDataGrouped,
+        );
+    }
+
     for (index, global) in globals.iter().enumerate() {
         let next = if index + 1 < globals.len() {
             DebugEntryId(first_global_id.0 + index as u32 + 1)
@@ -575,6 +615,9 @@ pub(super) fn lower(
         }
         MeasuredShape::VectorInstallerWithInlineStatics => {
             unreachable!("combined vector/data units return before legacy function records")
+        }
+        MeasuredShape::FatalMessaging => {
+            unreachable!("fatal-messaging units return before legacy function records")
         }
     }
     finish(line, records, DebugLayout::BeforeDataGrouped)
@@ -729,6 +772,10 @@ fn classify_shape(
         return Ok(MeasuredShape::GuardedGlobalCallback);
     }
 
+    if fatal_messaging::matches(unit, machine_functions, globals, build) {
+        return Ok(MeasuredShape::FatalMessaging);
+    }
+
     let verbatim_asm_with_data = build.version == (2, 4, 2)
         && build.build == 81
         && !globals.is_empty()
@@ -844,6 +891,7 @@ mod tests {
             array_length_inferred: false,
             initializer: None,
             is_const: true,
+            pointer_pointee_const: false,
             address_initializer: None,
             data_bytes: Some(vec![0; 8]),
             data_relocations: Vec::new(),

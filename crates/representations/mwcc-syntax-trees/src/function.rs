@@ -206,6 +206,10 @@ pub struct GlobalDeclaration {
     /// lands in a *read-only* section: `.sdata2` (small, ≤ 8 bytes) or `.rodata`
     /// (larger), rather than the writable `.sdata`/`.sbss`.
     pub is_const: bool,
+    /// A leading `const` on a pointer declaration qualifies the pointee rather
+    /// than the pointer object. Storage placement uses `is_const`; debug type
+    /// identity needs this independent source qualifier.
+    pub pointer_pointee_const: bool,
     /// For a pointer global initialized with addresses (`int *p = &g;`, a string
     /// `char *s = "…"`, or a `{…}` table of them), each element's target. `None`
     /// overall = not a pointer/address initializer.

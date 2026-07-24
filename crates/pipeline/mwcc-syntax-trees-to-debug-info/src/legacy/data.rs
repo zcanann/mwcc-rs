@@ -6,7 +6,9 @@ mod arrays;
 mod tests;
 
 use super::{attribute, UNIT_END};
-use arrays::{aggregate_subscript_data, fundamental_subscript_data};
+use arrays::{
+    aggregate_subscript_data, fundamental_subscript_data, modified_fundamental_subscript_data,
+};
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_dwarf1::{
     Address, Attribute, AttributeName, AttributeValue, Block, BlockRelocation, DebugEntry,
@@ -646,6 +648,17 @@ fn records_with_continuation<'a>(
                 )));
             }
             PlanKind::Array { type_id } => {
+                let subscript_data = match plan.global.declared_type {
+                    Type::Pointer(pointee) => modified_fundamental_subscript_data(
+                        plan.global.array_length.unwrap(),
+                        &pointer_modifiers(plan.global),
+                        global_pointee_type(plan.global, pointee)?,
+                    ),
+                    _ => fundamental_subscript_data(
+                        plan.global.array_length.unwrap(),
+                        global_fundamental_type(plan.global)?,
+                    ),
+                };
                 records.push(DebugRecord::Entry(DebugEntry {
                     id: *type_id,
                     tag: Tag::ArrayType,
@@ -656,10 +669,7 @@ fn records_with_continuation<'a>(
                         ),
                         attribute(
                             AttributeName::SubscriptData,
-                            AttributeValue::Block2(fundamental_subscript_data(
-                                plan.global.array_length.unwrap(),
-                                global_fundamental_type(plan.global)?,
-                            )),
+                            AttributeValue::Block2(subscript_data),
                         ),
                     ],
                 }));
@@ -1052,7 +1062,10 @@ fn global_type_attribute(
                 )
             })
             .ok_or_else(|| Diagnostic::error("debug-info: a struct type needs an aggregate DIE")),
-        Type::Pointer(pointee) => Ok(modified_fundamental_type(pointee_type(pointee)?)),
+        Type::Pointer(pointee) => Ok(modified_fundamental_type_with_modifiers(
+            &pointer_modifiers(global),
+            global_pointee_type(global, pointee)?,
+        )),
         Type::StructPointer { .. } => Err(Diagnostic::error(
             "debug-info: a struct pointer needs retained aggregate identity (roadmap)",
         )),
@@ -1062,7 +1075,8 @@ fn global_type_attribute(
 
 fn global_fundamental_type(global: &GlobalDeclaration) -> Compilation<FundamentalType> {
     match (global.declared_type, global.source_fundamental) {
-        (Type::Pointer(_) | Type::StructPointer { .. } | Type::Struct { .. }, _) => {
+        (Type::Pointer(_), _) => Ok(FundamentalType::Pointer),
+        (Type::StructPointer { .. } | Type::Struct { .. }, _) => {
             fundamental_type(global.declared_type)
         }
         (_, Some(source)) => source_fundamental_type(source),
@@ -1101,6 +1115,13 @@ pub(super) fn member_type_attribute(
             None => fundamental_type(other)?,
         })),
     }
+}
+
+pub(super) fn const_pointer_type_attribute(pointee: Pointee) -> Compilation<Attribute> {
+    Ok(modified_fundamental_type_with_modifiers(
+        &[1, 3],
+        pointee_type(pointee)?,
+    ))
 }
 
 fn source_fundamental_type(source: SourceFundamentalType) -> Compilation<FundamentalType> {
@@ -1152,11 +1173,31 @@ fn fundamental_attribute(fundamental: FundamentalType) -> Attribute {
 }
 
 fn modified_fundamental_type(fundamental: FundamentalType) -> Attribute {
+    modified_fundamental_type_with_modifiers(&[1], fundamental)
+}
+
+fn modified_fundamental_type_with_modifiers(
+    modifiers: &[u8],
+    fundamental: FundamentalType,
+) -> Attribute {
     let [high, low] = (fundamental as u16).to_be_bytes();
+    let mut bytes = Vec::with_capacity(modifiers.len() + 2);
+    bytes.extend_from_slice(modifiers);
+    bytes.extend_from_slice(&[high, low]);
     attribute(
         AttributeName::ModifiedFundamentalType,
-        AttributeValue::Block2(vec![1, high, low]),
+        AttributeValue::Block2(bytes),
     )
+}
+
+fn pointer_modifiers(global: &GlobalDeclaration) -> Vec<u8> {
+    if global.is_const {
+        vec![3, 1]
+    } else if global.pointer_pointee_const {
+        vec![1, 3]
+    } else {
+        vec![1]
+    }
 }
 
 fn member_location(offset: u32) -> Attribute {
@@ -1167,7 +1208,22 @@ fn member_location(offset: u32) -> Attribute {
 }
 
 fn pointee_type(pointee: Pointee) -> Compilation<FundamentalType> {
-    fundamental_type(pointee.element())
+    match pointee {
+        // `Pointee::Char` retains the source spelling even when executable
+        // lowering gives plain char the build's signed storage behavior.
+        Pointee::Char => Ok(FundamentalType::Char),
+        other => fundamental_type(other.element()),
+    }
+}
+
+fn global_pointee_type(
+    global: &GlobalDeclaration,
+    pointee: Pointee,
+) -> Compilation<FundamentalType> {
+    match global.source_fundamental {
+        Some(source) => source_fundamental_type(source),
+        None => pointee_type(pointee),
+    }
 }
 
 fn fundamental_type(declared_type: Type) -> Compilation<FundamentalType> {

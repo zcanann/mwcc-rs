@@ -291,6 +291,7 @@ fn data_global(
         array_length_inferred: false,
         initializer: None,
         is_const: false,
+        pointer_pointee_const: false,
         address_initializer: None,
         data_bytes: Some(bytes),
         data_relocations: relocations,

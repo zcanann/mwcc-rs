@@ -2096,6 +2096,7 @@ mod tests {
             array_length_inferred: false,
             initializer: Some(vec![i64::from(pi_bits)]),
             is_const: true,
+            pointer_pointee_const: false,
             address_initializer: None,
             data_bytes: None,
             data_relocations: Vec::new(),

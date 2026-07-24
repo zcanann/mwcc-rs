@@ -67,6 +67,7 @@ pub(super) fn global(
         array_length_inferred: false,
         initializer: None,
         is_const: false,
+        pointer_pointee_const: false,
         address_initializer: None,
         data_bytes: Some(vec![0; table_size]),
         data_relocations: relocations,

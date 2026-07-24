@@ -2416,6 +2416,7 @@ fn compile(
         write_lowered_artifacts(
             directory,
             &unit.functions,
+            &unit.function_sources,
             &machine_functions,
             &object,
         );
@@ -6116,12 +6117,17 @@ fn write_token_artifacts(
 fn write_lowered_artifacts(
     directory: &str,
     functions: &[mwcc_syntax_trees::Function],
+    function_sources: &[Option<mwcc_syntax_trees::FunctionSource>],
     machine_functions: &[mwcc_machine_code::MachineFunction],
     object: &[u8],
 ) {
     let directory = PathBuf::from(directory);
     let _ = std::fs::create_dir_all(&directory);
-    artifact_dump(&directory, "02_syntax_tree.txt", format!("{functions:#?}\n"));
+    artifact_dump(
+        &directory,
+        "02_syntax_tree.txt",
+        format!("functions: {functions:#?}\nfunction_sources: {function_sources:#?}\n"),
+    );
     artifact_dump(
         &directory,
         "03_machine_code.txt",

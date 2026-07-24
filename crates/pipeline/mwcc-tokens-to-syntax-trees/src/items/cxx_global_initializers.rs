@@ -103,6 +103,7 @@ pub(super) fn materialize(
             array_length_inferred: false,
             initializer: None,
             is_const: false,
+            pointer_pointee_const: false,
             address_initializer: None,
             data_bytes: None,
             data_relocations: Vec::new(),

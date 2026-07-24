@@ -7937,6 +7937,7 @@ blr\n\
                 { "one" },
                 { "two" },
             };
+            const char* current = "one";
         "#;
         let unit = parse_translation_unit(
             mwcc_source_to_tokens::tokenize(source).unwrap(),
@@ -7954,6 +7955,10 @@ blr\n\
                 mwcc_syntax_trees::PointerElement::Str(two),
             ]) if one == b"one" && two == b"two"
         ));
+        assert!(unit.globals[0].is_const);
+        assert!(unit.globals[0].pointer_pointee_const);
+        assert!(!unit.globals[1].is_const);
+        assert!(unit.globals[1].pointer_pointee_const);
     }
 
     #[test]
