@@ -1419,15 +1419,15 @@ fn compile(
             );
             let static_unit_data_table =
                 global_initializers::private_unit_data_table(global, elements, &unit.globals);
-            let static_string_table =
-                global_initializers::private_string_table(global, elements);
+            let owned_string_table =
+                global_initializers::owned_string_table(global, elements);
             if (global.is_static || global.is_const)
                 && global.section.is_none()
                 && !single_target
                 && !all_null
                 && !static_function_table
                 && !static_unit_data_table
-                && !static_string_table
+                && !owned_string_table
             {
                 if parity_keep_going {
                     eprintln!(
@@ -1551,7 +1551,7 @@ fn compile(
                         || all_null
                         || static_function_table
                         || static_unit_data_table
-                        || static_string_table),
+                        || owned_string_table),
                 is_explicit_zero,
                 preassigned_anonymous_ordinal: None,
                 relocations,

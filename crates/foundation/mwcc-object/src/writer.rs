@@ -1038,6 +1038,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     }
     // The ordinary `.rela.*` sections follow their target sections' order, so
     // `.rela.sdata` precedes `.rela.mwcats.text` (last).
+    let has_rodata_relocs = input
+        .data_objects
+        .iter()
+        .any(|object| section_of(object) == ".rodata" && !object.relocations.is_empty());
+    if has_rodata_relocs {
+        order.push(".rela.rodata");
+    }
     let has_data_relocs = input
         .data_objects
         .iter()
@@ -3218,11 +3225,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         );
         mwcats_position += 1;
     }
-    // `.rela.sdata`/`.rela.data` — a pointer global's `ADDR32` to the symbol it
-    // points at, at the object's offset plus the relocation's own offset (plus
-    // addend). Within one object (a pointer array) both the target symbols AND the
-    // relocation entries run in REVERSE element order. `.sdata` for small pointers,
-    // `.data` for large arrays.
+    // `.rela.rodata`/`.rela.sdata`/`.rela.data` — a pointer global's `ADDR32` to
+    // the symbol it points at, at the object's offset plus the relocation's own
+    // offset (plus addend). Within one object (a pointer array) both the target
+    // symbols AND the relocation entries run in REVERSE element order.
+    // `.rodata` for const arrays, `.sdata` for small pointers, `.data` for large
+    // writable arrays.
+    let mut rela_rodata = Vec::new();
     let mut rela_sdata = Vec::new();
     let resolve_data_target = |name: &str| -> (u32, u32) {
         if input.object_format.data_relocations_use_section_anchors {
@@ -3243,6 +3252,21 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             0,
         )
     };
+    for object in &input.data_objects {
+        if data_section[object.name] != ".rodata" {
+            continue;
+        }
+        for relocation in object.relocations.iter().rev() {
+            let (symbol, section_addend) = resolve_data_target(&relocation.target);
+            write_rela(
+                &mut rela_rodata,
+                data_offsets[object.name] + relocation.offset,
+                symbol,
+                R_PPC_ADDR32,
+                section_addend.wrapping_add(relocation.addend as u32),
+            );
+        }
+    }
     for object in &input.data_objects {
         if data_section[object.name] != ".sdata" {
             continue;
@@ -3747,6 +3771,19 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             4,
             12,
             rela_ctors.clone(),
+            0,
+        );
+    }
+    if has_rodata_relocs {
+        push(
+            ".rela.rodata",
+            SHT_RELA,
+            0,
+            symtab_section,
+            index_of(".rodata"),
+            4,
+            12,
+            rela_rodata,
             0,
         );
     }

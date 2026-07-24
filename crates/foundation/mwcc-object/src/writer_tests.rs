@@ -11,6 +11,32 @@ fn be_u32(bytes: &[u8], offset: usize) -> u32 {
     u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap())
 }
 
+fn section_index(object: &[u8], name: &str) -> usize {
+    let section_headers = be_u32(object, 32) as usize;
+    let section_size = be_u16(object, 46) as usize;
+    let section_count = be_u16(object, 48) as usize;
+    let shstrtab_index = be_u16(object, 50) as usize;
+    let shstrtab_header = section_headers + shstrtab_index * section_size;
+    let shstrtab_offset = be_u32(object, shstrtab_header + 16) as usize;
+    (0..section_count)
+        .find(|index| {
+            let header = section_headers + index * section_size;
+            let name_offset = be_u32(object, header) as usize;
+            let start = shstrtab_offset + name_offset;
+            let end = object[start..]
+                .iter()
+                .position(|byte| *byte == 0)
+                .map(|length| start + length)
+                .unwrap();
+            &object[start..end] == name.as_bytes()
+        })
+        .unwrap_or_else(|| panic!("missing ELF section '{name}'"))
+}
+
+fn section_header(object: &[u8], index: usize) -> usize {
+    be_u32(object, 32) as usize + index * be_u16(object, 46) as usize
+}
+
 fn symbol_names(object: &[u8]) -> Vec<String> {
     let section_headers = be_u32(object, 32) as usize;
     let section_size = be_u16(object, 46) as usize;
@@ -405,4 +431,138 @@ fn data_anchor_precedes_the_first_upfront_local_data_object() {
     let anchor = names.iter().position(|name| name == "...data.0").unwrap();
     let full = names.iter().position(|name| name == "full").unwrap();
     assert_eq!((small + 1, anchor + 1), (anchor, full));
+}
+
+#[test]
+fn const_pointer_arrays_emit_reverse_rodata_relocations() {
+    let data = [
+        DataObject {
+            name: "strings",
+            size: 12,
+            alignment: 4,
+            comment_alignment: 1,
+            initial_bytes: Some(vec![1; 12]),
+            is_const: false,
+            force_full_data_section: true,
+            is_static: true,
+            force_active: false,
+            is_explicit_zero: false,
+            preassigned_anonymous_ordinal: None,
+            relocations: Vec::new(),
+            non_static_functions_before: 0,
+            functions_before: 0,
+            is_weak: false,
+            static_local_owner: None,
+            anonymous_adjust: 0,
+            section: None,
+        },
+        DataObject {
+            name: "table",
+            size: 12,
+            alignment: 4,
+            comment_alignment: 4,
+            initial_bytes: Some(vec![0; 12]),
+            is_const: true,
+            force_full_data_section: true,
+            is_static: false,
+            force_active: false,
+            is_explicit_zero: false,
+            preassigned_anonymous_ordinal: None,
+            relocations: vec![
+                crate::DataRelocation {
+                    offset: 0,
+                    target: "strings".into(),
+                    addend: 0,
+                },
+                crate::DataRelocation {
+                    offset: 4,
+                    target: "strings".into(),
+                    addend: 4,
+                },
+                crate::DataRelocation {
+                    offset: 8,
+                    target: "strings".into(),
+                    addend: 8,
+                },
+            ],
+            non_static_functions_before: 0,
+            functions_before: 0,
+            is_weak: false,
+            static_local_owner: None,
+            anonymous_adjust: 0,
+            section: None,
+        },
+    ];
+    let object = write_object(&ObjectInput {
+        source_name: "table.c",
+        object_format: crate::ObjectFormat {
+            comment: CommentFormat {
+                marker: 8,
+                version: (2, 3, 0),
+                pooling_enabled: true,
+            },
+            emb_sda21_offset: 0,
+            code_alignment: 4,
+            sdata2_writable: false,
+            function_symbol_order: FunctionSymbolOrder::ReferencesFirst,
+            weak_vtable_function_symbol_tail: false,
+            initialized_globals_before_deferred_functions: false,
+            local_data_symbols_in_declaration_order: false,
+            small_zero_statics_in_declaration_order: false,
+            rodata_anchor_before_data_symbols: false,
+            rodata_anchor_comment_flags: 0,
+            data_relocations_use_section_anchors: true,
+            data_anchor_comment_flags: 0,
+            initial_anonymous_counter: 1,
+            post_leaf_function_anonymous_bump: 0,
+            post_framed_function_anonymous_bump: 0,
+        },
+        functions: Vec::new(),
+        data_objects: data.into(),
+        small_data: true,
+        emit_mwcats: false,
+        inline_asm_symbols: &[],
+        early_static_function_symbols: &[],
+        early_undefined_externals: &[],
+        section_function_declarations: &[],
+        section_externals: &[],
+        local_symbol_order: &[],
+        debug: None,
+    });
+
+    let rodata = section_index(&object, ".rodata");
+    let rela_rodata = section_index(&object, ".rela.rodata");
+    let symtab = section_index(&object, ".symtab");
+    let rela_header = section_header(&object, rela_rodata);
+    assert_eq!(be_u32(&object, rela_header + 24) as usize, symtab);
+    assert_eq!(be_u32(&object, rela_header + 28) as usize, rodata);
+    assert_eq!(be_u32(&object, rela_header + 36), 12);
+
+    let anchor = symbol_names(&object)
+        .iter()
+        .position(|name| name == "...data.0")
+        .unwrap() as u32;
+    let offset = be_u32(&object, rela_header + 16) as usize;
+    let size = be_u32(&object, rela_header + 20) as usize;
+    assert_eq!(size, 36);
+    let records: Vec<_> = (0..size / 12)
+        .map(|index| {
+            let entry = offset + index * 12;
+            let info = be_u32(&object, entry + 4);
+            (
+                be_u32(&object, entry),
+                info >> 8,
+                info & 0xff,
+                be_u32(&object, entry + 8),
+            )
+        })
+        .collect();
+    assert_eq!(
+        records,
+        [
+            (8, anchor, R_PPC_ADDR32, 8),
+            (4, anchor, R_PPC_ADDR32, 4),
+            (0, anchor, R_PPC_ADDR32, 0),
+        ]
+    );
 }

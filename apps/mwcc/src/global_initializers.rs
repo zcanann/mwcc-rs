@@ -51,16 +51,16 @@ pub(crate) fn private_unit_data_table(
         })
 }
 
-/// A private writable table whose relocations all target string literals owned
-/// by this translation unit is self-contained. The driver interns each string
-/// and the object writer can therefore order every local target without any
-/// unresolved external-symbol policy.
-pub(crate) fn private_string_table(
+/// An internal or read-only table whose relocations all target string literals
+/// owned by this translation unit is self-contained. Writable internal tables
+/// route to `.data`; const tables may retain external linkage and route to
+/// `.rodata`. The driver interns each string and the object writer can therefore
+/// order every target without any unresolved external-symbol policy.
+pub(crate) fn owned_string_table(
     global: &GlobalDeclaration,
     elements: &[PointerElement],
 ) -> bool {
-    global.is_static
-        && !global.is_const
+    (global.is_static || global.is_const)
         && global.array_length.is_some()
         && elements
             .iter()
@@ -118,5 +118,30 @@ mod tests {
             &[],
             &HashSet::new(),
         ));
+    }
+
+    #[test]
+    fn accepts_private_const_tables_of_owned_strings() {
+        let elements = vec![
+            PointerElement::Str(b"one".to_vec()),
+            PointerElement::Str(b"two".to_vec()),
+        ];
+        let mut global = private_table(elements.clone());
+        global.is_const = true;
+
+        assert!(owned_string_table(&global, &elements));
+    }
+
+    #[test]
+    fn accepts_externally_visible_const_tables_of_owned_strings() {
+        let elements = vec![
+            PointerElement::Str(b"one".to_vec()),
+            PointerElement::Str(b"two".to_vec()),
+        ];
+        let mut global = private_table(elements.clone());
+        global.is_static = false;
+        global.is_const = true;
+
+        assert!(owned_string_table(&global, &elements));
     }
 }
