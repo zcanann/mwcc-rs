@@ -104,7 +104,9 @@ impl Generator {
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
-        if function.return_type != Type::Void
+        if self.behavior.optimization != mwcc_versions::Optimization::O4
+            || self.behavior.frame_convention != FrameConvention::Predecrement
+            || function.return_type != Type::Void
             || function.return_expression.is_some()
             || !function.locals.is_empty()
             || !function.guards.is_empty()
@@ -147,6 +149,14 @@ impl Generator {
         }
         if !matches!(stores[0].2, Expression::Variable(name) if name == first_name)
             || !matches!(stores[1].2, Expression::Variable(name) if name == second_name)
+            || !matches!(
+                stores[0].1,
+                Type::Short | Type::UnsignedShort
+            )
+            || !matches!(
+                stores[1].1,
+                Type::Short | Type::UnsignedShort
+            )
             || !stores[plain_count..plain_count + 2]
                 .iter()
                 .all(|(_, ty, value)| {
@@ -163,6 +173,21 @@ impl Generator {
             if self.lookup_general(name).is_none() {
                 return Ok(false);
             }
+        }
+        if stores.iter().any(|(_, value_type, _)| {
+            !matches!(
+                value_type,
+                Type::Char
+                    | Type::UnsignedChar
+                    | Type::Short
+                    | Type::UnsignedShort
+                    | Type::Int
+                    | Type::UnsignedInt
+                    | Type::Pointer(_)
+                    | Type::StructPointer { .. }
+            )
+        }) {
+            return Ok(false);
         }
         let subtracts_one = |value: &Expression, parameter: &str| {
             matches!(
