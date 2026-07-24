@@ -599,6 +599,27 @@ impl Generator {
         bias_register: u8,
         schedule: IntToFloatSchedule,
     ) {
+        self.emit_int_to_float_body_at(
+            source,
+            destination,
+            double,
+            signed,
+            bias_register,
+            schedule,
+            8,
+        );
+    }
+
+    pub(crate) fn emit_int_to_float_body_at(
+        &mut self,
+        source: u8,
+        destination: u8,
+        double: bool,
+        signed: bool,
+        bias_register: u8,
+        schedule: IntToFloatSchedule,
+        scratch: i16,
+    ) {
         let bias: u64 = if signed {
             0x4330_0000_8000_0000
         } else {
@@ -625,7 +646,7 @@ impl Generator {
             self.output.instructions.push(Instruction::StoreWord {
                 s: if signed { 0 } else { source },
                 a: 1,
-                offset: 12,
+                offset: scratch + 4,
             });
             self.output
                 .instructions
@@ -642,7 +663,7 @@ impl Generator {
                 self.output.instructions.push(Instruction::StoreWord {
                     s: 0,
                     a: 1,
-                    offset: 12,
+                    offset: scratch + 4,
                 });
                 self.output
                     .instructions
@@ -654,7 +675,7 @@ impl Generator {
                 self.output.instructions.push(Instruction::StoreWord {
                     s: source,
                     a: 1,
-                    offset: 12,
+                    offset: scratch + 4,
                 });
             }
             self.load_double_constant(bias_register, bias);
@@ -679,7 +700,7 @@ impl Generator {
                 self.output.instructions.push(Instruction::StoreWord {
                     s: source,
                     a: 1,
-                    offset: 12,
+                    offset: scratch + 4,
                 });
                 self.load_double_constant(bias_register, bias);
             } else {
@@ -687,19 +708,19 @@ impl Generator {
                 self.output.instructions.push(Instruction::StoreWord {
                     s: source,
                     a: 1,
-                    offset: 12,
+                    offset: scratch + 4,
                 });
             }
         }
         self.output.instructions.push(Instruction::StoreWord {
             s: 0,
             a: 1,
-            offset: 8,
+            offset: scratch,
         });
         self.output.instructions.push(Instruction::LoadFloatDouble {
             d: FLOAT_SCRATCH,
             a: 1,
-            offset: 8,
+            offset: scratch,
         });
         // The bias subtract yields the result at the requested precision: `fsub`
         // for an int->double conversion, `fsubs` for int->float.

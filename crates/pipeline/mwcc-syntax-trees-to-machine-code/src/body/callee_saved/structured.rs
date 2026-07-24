@@ -418,6 +418,25 @@ impl Generator {
                 .checked_sub(8)
                 .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
         }
+        let int_to_float_conversion_count =
+            self.count_integer_call_arguments_to_float(function);
+        if int_to_float_conversion_count != 0 {
+            let occupied_end = 8i16
+                .checked_add(local_region_bytes)
+                .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
+            let conversion_base = occupied_end
+                .checked_add(7)
+                .map(|end| end & !7)
+                .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
+            self.plan_int_to_float_scratch(
+                conversion_base,
+                int_to_float_conversion_count,
+            )?;
+            local_region_bytes = self
+                .int_to_float_scratch_end
+                .checked_sub(8)
+                .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
+        }
         let global_member_search_entry = function.statements.first().is_some_and(|statement| {
             super::super::global_struct_member_search::is_global_struct_member_search_loop(
                 statement,

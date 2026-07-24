@@ -2423,6 +2423,9 @@ mod tests {
     #[path = "frame_post_step.rs"]
     mod frame_post_step;
 
+    #[path = "implicit_int_to_float_argument.rs"]
+    mod implicit_int_to_float_argument;
+
     #[path = "unsigned_narrow_to_float.rs"]
     mod unsigned_narrow_to_float;
 

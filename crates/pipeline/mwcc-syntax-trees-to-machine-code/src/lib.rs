@@ -18,6 +18,7 @@ mod body;
 mod captures;
 mod casts;
 mod comparisons;
+mod conversion_frame;
 mod condition_float_cache;
 mod condition_global_cache;
 mod control_flow;
@@ -413,6 +414,8 @@ pub fn lower_function(
         callee_saved_conversion_bytes: 0,
         float_to_int_scratch_next: 0,
         float_to_int_scratch_end: 0,
+        int_to_float_scratch_next: 0,
+        int_to_float_scratch_end: 0,
         reuse_scratch_constant: false,
         scratch_constant: None,
         prematerialized_constants: Vec::new(),
@@ -600,6 +603,7 @@ pub fn lower_function(
     // scheduling first means physical-register reuse cannot create false
     // dependencies that block a hoist, and allocation then colors the scheduled
     // order — reproducing mwcc's interleaving of the two phases.
+    generator.schedule_leading_int_to_float_argument();
     schedule_instructions(&mut generator);
     let allocated_float_saves = allocate_registers(&mut generator).map_err(|mut diagnostic| {
         let context = format!("function '{}'", function.name);

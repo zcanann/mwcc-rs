@@ -14,6 +14,7 @@ pub(super) enum CallArgumentPlacement {
     Floating {
         parameter_type: Type,
         folded_integer: Option<f64>,
+        convert_integer: bool,
     },
 }
 
@@ -28,16 +29,20 @@ pub(super) fn classify_call_argument(
                 Ok(CallArgumentPlacement::Floating {
                     parameter_type,
                     folded_integer: None,
+                    convert_integer: false,
                 })
             } else if let Some(value) = integer_constant {
                 Ok(CallArgumentPlacement::Floating {
                     parameter_type,
                     folded_integer: Some(value as f64),
+                    convert_integer: false,
                 })
             } else {
-                Err(Diagnostic::error(
-                    "a nonconstant integer call argument needs int->float conversion (roadmap)",
-                ))
+                Ok(CallArgumentPlacement::Floating {
+                    parameter_type,
+                    folded_integer: None,
+                    convert_integer: true,
+                })
             }
         }
         Some(_) if argument_is_float => Err(Diagnostic::error(
@@ -49,6 +54,7 @@ pub(super) fn classify_call_argument(
             // default. Float literals and float values use single precision.
             parameter_type: Type::Float,
             folded_integer: None,
+            convert_integer: false,
         }),
         None => Ok(CallArgumentPlacement::General),
     }
@@ -65,12 +71,20 @@ mod tests {
             CallArgumentPlacement::Floating {
                 parameter_type: Type::Float,
                 folded_integer: Some(1.0),
+                convert_integer: false,
             }
         );
     }
 
     #[test]
-    fn keeps_a_nonconstant_integer_conversion_deferred() {
-        assert!(classify_call_argument(Some(Type::Float), false, None).is_err());
+    fn classifies_a_nonconstant_integer_for_runtime_conversion() {
+        assert_eq!(
+            classify_call_argument(Some(Type::Float), false, None).unwrap(),
+            CallArgumentPlacement::Floating {
+                parameter_type: Type::Float,
+                folded_integer: None,
+                convert_integer: true,
+            }
+        );
     }
 }

@@ -361,6 +361,10 @@ pub(crate) struct Generator {
     /// Exclusive end of a pre-planned float-to-integer scratch range. Zero
     /// denotes a leaf function whose conversion frame may grow on demand.
     pub(crate) float_to_int_scratch_end: i16,
+    /// Next eight-byte image assigned to an integer-to-floating conversion.
+    pub(crate) int_to_float_scratch_next: i16,
+    /// Exclusive end of a structured body's pre-planned int-to-float range.
+    pub(crate) int_to_float_scratch_end: i16,
     /// When set, a constant store value reuses the scratch register if it already
     /// holds that constant (`scratch_constant`). Enabled only by the
     /// constant-store-fill path, which guarantees nothing clobbers the scratch

@@ -1006,8 +1006,29 @@ impl Generator {
             if let CallArgumentPlacement::Floating {
                 parameter_type,
                 folded_integer,
+                convert_integer,
             } = placement
             {
+                if convert_integer {
+                    let source = self.general_register_of_leaf(argument).map_err(|_| {
+                        Diagnostic::error(format!(
+                            "integer argument {index} to '{name}' needs a register before float conversion"
+                        ))
+                    })?;
+                    let signed = self.signedness_of(argument)?;
+                    let scratch = self.claim_int_to_float_scratch()?;
+                    self.emit_int_to_float_body_at(
+                        source,
+                        next_float,
+                        parameter_type == Type::Double,
+                        signed,
+                        next_float,
+                        crate::casts::IntToFloatSchedule::LeafValue,
+                        scratch,
+                    );
+                    next_float += 1;
+                    continue;
+                }
                 let constant = folded_integer.or_else(|| match argument {
                     Expression::FloatLiteral(value) => Some(*value),
                     _ => None,
