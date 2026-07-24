@@ -3955,6 +3955,14 @@ impl Parser {
                         * usize::from(
                             self.dropped_inline_const_local_declaration_label_weight,
                         );
+                    // A local aggregate type definition has one invariant
+                    // frontend-analysis cost in every characterized build,
+                    // separate from the generation-specific ordinary-local
+                    // weight.
+                    bump += crate::inline_body_analysis::local_aggregate_definitions(
+                        &self.tokens,
+                        index,
+                    );
                     if let Some(class) = crate::inline_body_analysis::same_class_automatic(
                         &self.tokens,
                         self.position,
@@ -4248,9 +4256,6 @@ impl Parser {
     /// semantic parser or recovery skips it. The body token is a stable key
     /// across speculative parsing, matching anonymous-enum accounting.
     fn capture_anonymous_aggregate_ordinal(&mut self) {
-        if self.anonymous_aggregate_definition_label_weight == 0 {
-            return;
-        }
         let starts_aggregate_declaration = self.tokens.get(self.position) == Some(&Token::KeywordStruct)
             || matches!(self.tokens.get(self.position), Some(Token::Identifier(word)) if matches!(word.as_str(), "typedef" | "union" | "class"));
         if !starts_aggregate_declaration {
@@ -4267,8 +4272,20 @@ impl Parser {
                     .counted_anonymous_aggregate_positions
                     .insert(body_position)
                 {
-                    self.skipped_inline_functions +=
-                        usize::from(self.anonymous_aggregate_definition_label_weight);
+                    // A direct anonymous member aggregate consumes one
+                    // analysis ordinal in every characterized frontend
+                    // generation. At file scope the distinction is language
+                    // mode, not compiler generation: C++ consumes one while
+                    // the identical C declaration consumes zero. Retain the
+                    // configured weight as a floor for a future frontend
+                    // family that proves a larger C++ cost.
+                    self.skipped_inline_functions += if brace_depth > 0 {
+                        1
+                    } else if self.default_cplusplus {
+                        usize::from(self.anonymous_aggregate_definition_label_weight.max(1))
+                    } else {
+                        0
+                    };
                     if brace_depth > 1 {
                         self.skipped_inline_functions += usize::from(
                             self.nested_anonymous_aggregate_definition_label_weight,

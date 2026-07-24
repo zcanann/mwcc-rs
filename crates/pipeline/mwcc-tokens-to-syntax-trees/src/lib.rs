@@ -375,6 +375,85 @@ mod tests {
     }
 
     #[test]
+    fn records_legacy_anonymous_member_aggregate_ordinal() {
+        let unit = parse_located_translation_unit_with_behavior(
+            located(
+                "typedef struct Outer { int first; struct { int nested; } value; } Outer; \
+                 int f(int x) { return x; }",
+            ),
+            true,
+            true,
+            1,
+            3,
+            3,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(unit.skipped_inline_functions, 1);
+    }
+
+    #[test]
+    fn file_scope_anonymous_aggregate_ordinal_is_cxx_only() {
+        let source =
+            "typedef struct { int quotient; int remainder; } Result; int f(int x) { return x; }";
+        let parse = |cplusplus| {
+            parse_located_translation_unit_with_behavior(
+                located(source),
+                cplusplus,
+                true,
+                1,
+                3,
+                3,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                false,
+            )
+            .unwrap()
+        };
+
+        assert_eq!(parse(true).skipped_inline_functions, 1);
+        assert_eq!(parse(false).skipped_inline_functions, 0);
+
+        let c_linkage = parse_located_translation_unit_with_behavior(
+            located(
+                "extern \"C\" { typedef struct { int quotient; int remainder; } Result; } \
+                 int f(int x) { return x; }",
+            ),
+            true,
+            true,
+            1,
+            3,
+            3,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            false,
+        )
+        .unwrap();
+        assert_eq!(c_linkage.skipped_inline_functions, 1);
+    }
+
+    #[test]
     fn records_wii_function_template_body_separately_from_parameter_name() {
         let unit = parse_located_translation_unit_with_behavior(
             located(

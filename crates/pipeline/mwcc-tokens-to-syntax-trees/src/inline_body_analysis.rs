@@ -15,6 +15,50 @@ pub(crate) fn const_local_declarators(tokens: &[Token], body_open: usize) -> usi
     local_declarator_counts(tokens, body_open).1
 }
 
+/// Count local aggregate type definitions inside a dropped inline body.
+/// Every measured frontend generation consumes one additional analysis
+/// ordinal for this shape, independently of its ordinary mutable-local
+/// weight. Both anonymous (`union { ... } value`) and named
+/// (`union Bits { ... } value`) definitions exhibit the same cost.
+pub(crate) fn local_aggregate_definitions(tokens: &[Token], body_open: usize) -> usize {
+    if tokens.get(body_open) != Some(&Token::BraceOpen) {
+        return 0;
+    }
+    let mut count = 0usize;
+    let mut depth = 1usize;
+    let mut index = body_open + 1;
+    while let Some(token) = tokens.get(index) {
+        match token {
+            Token::BraceOpen => depth += 1,
+            Token::BraceClose => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    break;
+                }
+            }
+            Token::KeywordStruct
+            | Token::Identifier(_)
+                if is_aggregate_definition_at(tokens, index) =>
+            {
+                count += 1;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    count
+}
+
+fn is_aggregate_definition_at(tokens: &[Token], index: usize) -> bool {
+    let aggregate_key = matches!(tokens.get(index), Some(Token::KeywordStruct))
+        || matches!(tokens.get(index), Some(Token::Identifier(word))
+            if matches!(word.as_str(), "union" | "class"));
+    aggregate_key
+        && (tokens.get(index + 1) == Some(&Token::BraceOpen)
+            || matches!(tokens.get(index + 1), Some(Token::Identifier(_)))
+                && tokens.get(index + 2) == Some(&Token::BraceOpen))
+}
+
 fn local_declarator_counts(tokens: &[Token], body_open: usize) -> (usize, usize) {
     if tokens.get(body_open) != Some(&Token::BraceOpen) {
         return (0, 0);
@@ -329,7 +373,10 @@ fn is_specifier(word: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{const_local_declarators, local_declarators, same_class_automatic};
+    use super::{
+        const_local_declarators, local_aggregate_definitions, local_declarators,
+        same_class_automatic,
+    };
     use mwcc_tokens::Token;
 
     fn count(source: &str) -> usize {
@@ -398,5 +445,20 @@ mod tests {
             same_class_automatic(&tokens, 0, open).as_deref(),
             Some("Value")
         );
+    }
+
+    #[test]
+    fn counts_named_and_anonymous_local_aggregate_definitions() {
+        let tokens = mwcc_source_to_tokens::tokenize(
+            "void f() { union { int word; float scalar; } first; \
+             union Bits { int word; float scalar; } second; \
+             struct Existing* reference; }",
+        )
+        .unwrap();
+        let open = tokens
+            .iter()
+            .position(|token| *token == Token::BraceOpen)
+            .unwrap();
+        assert_eq!(local_aggregate_definitions(&tokens, open), 2);
     }
 }
