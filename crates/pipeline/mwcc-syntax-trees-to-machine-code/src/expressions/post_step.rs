@@ -26,9 +26,116 @@ impl Generator {
                 "a postfix step on this lvalue is not supported yet (roadmap)",
             ));
         };
+        if let Some((class, source, pointee, stride)) =
+            self.locations.get(name.as_str()).map(|location| {
+                (
+                    location.class,
+                    location.register,
+                    location.pointee,
+                    location.stride,
+                )
+            })
+        {
+            if class != ValueClass::General {
+                return Err(Diagnostic::error(
+                    "a local floating postfix step used as a value is not supported yet",
+                ));
+            }
+            let amount = stride
+                .or_else(|| pointee.map(|pointee| u32::from(pointee.size())))
+                .unwrap_or(1);
+            let amount = i16::try_from(amount)
+                .map_err(|_| Diagnostic::error("postfix pointer stride is out of range"))?;
+            let amount = match operator {
+                BinaryOperator::Add => amount,
+                BinaryOperator::Subtract => amount
+                    .checked_neg()
+                    .ok_or_else(|| Diagnostic::error("postfix pointer stride is out of range"))?,
+                _ => {
+                    return Err(Diagnostic::error(
+                        "a postfix step requires increment or decrement",
+                    ))
+                }
+            };
+
+            if source == destination {
+                // The expression result and updated lvalue need distinct
+                // identities. Keep the old value in `destination` and rebind
+                // the local to a fresh home containing the stepped value.
+                let stepped = self.fresh_virtual_general();
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: stepped,
+                    a: source,
+                    immediate: amount,
+                });
+                self.locations
+                    .get_mut(name.as_str())
+                    .expect("the local postfix target was just resolved")
+                    .register = stepped;
+            } else {
+                self.output
+                    .instructions
+                    .push(Instruction::move_register(destination, source));
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: source,
+                    a: source,
+                    immediate: amount,
+                });
+            }
+            return Ok(());
+        }
+        if let Some((source, class, width, pointee, stride)) = self
+            .locations
+            .get(name.as_str())
+            .map(|location| {
+                (
+                    location.register,
+                    location.class,
+                    location.width,
+                    location.pointee,
+                    location.stride,
+                )
+            })
+        {
+            if class != ValueClass::General || width != 32 {
+                return Err(Diagnostic::error(
+                    "a register-local postfix step value requires a word-sized integer or pointer",
+                ));
+            }
+            let amount = stride
+                .map(i16::try_from)
+                .transpose()
+                .map_err(|_| Diagnostic::error("postfix pointer stride is out of range"))?
+                .or_else(|| pointee.map(|pointee| i16::from(pointee.size())))
+                .unwrap_or(1);
+            let amount = signed_step_amount(operator, amount)?;
+
+            // The old value belongs to the surrounding expression. A physical
+            // entry register cannot also retain the stepped local across a
+            // call, so split its new value into an allocatable lane. Once the
+            // local already owns a virtual lane, update it in place.
+            if source != destination {
+                self.emit_integer_materialization_copy(destination, source);
+            }
+            let stepped = if source < mwcc_vreg::VIRTUAL_BASE {
+                self.fresh_virtual_general()
+            } else {
+                source
+            };
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: stepped,
+                a: source,
+                immediate: amount,
+            });
+            self.locations
+                .get_mut(name.as_str())
+                .expect("postfix local location disappeared")
+                .register = stepped;
+            return Ok(());
+        }
         let Some(&value_type) = self.globals.get(name.as_str()) else {
             return Err(Diagnostic::error(
-                "a local postfix step used as a value is not supported yet (roadmap)",
+                "a frame-resident postfix step used as a value is not supported yet (roadmap)",
             ));
         };
         if !matches!(
@@ -45,17 +152,7 @@ impl Generator {
                 .map_err(|_| Diagnostic::error("postfix pointer stride is out of range"))?,
             _ => 1,
         };
-        let amount = match operator {
-            BinaryOperator::Add => amount,
-            BinaryOperator::Subtract => amount
-                .checked_neg()
-                .ok_or_else(|| Diagnostic::error("postfix pointer stride is out of range"))?,
-            _ => {
-                return Err(Diagnostic::error(
-                    "a postfix step requires increment or decrement",
-                ))
-            }
-        };
+        let amount = signed_step_amount(operator, amount)?;
         let old_value = if destination >= 14 || mwcc_vreg::Reg::is_virtual_field(destination) {
             let mut avoid = Vec::with_capacity(self.reserved.len() + 1);
             avoid.push(GENERAL_SCRATCH);
@@ -90,5 +187,17 @@ impl Generator {
                 .push(Instruction::move_register(destination, old_value));
         }
         Ok(())
+    }
+}
+
+fn signed_step_amount(operator: BinaryOperator, amount: i16) -> Compilation<i16> {
+    match operator {
+        BinaryOperator::Add => Ok(amount),
+        BinaryOperator::Subtract => amount
+            .checked_neg()
+            .ok_or_else(|| Diagnostic::error("postfix pointer stride is out of range")),
+        _ => Err(Diagnostic::error(
+            "a postfix step requires increment or decrement",
+        )),
     }
 }
