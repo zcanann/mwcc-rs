@@ -385,7 +385,11 @@ impl Parser {
             }
             let left_struct_tag = self
                 .cplusplus
-                .then(|| self.cxx_expression_struct_tag(&left).map(str::to_owned))
+                .then(|| {
+                    self.cxx_expression_struct_tag(&left)
+                        .map(str::to_owned)
+                        .or_else(|| self.expression_struct_tag.clone())
+                })
                 .flatten();
             self.advance();
             let mut right = self.binary_expression(operator.precedence() + 1)?;
@@ -1352,12 +1356,8 @@ impl Parser {
                             {
                                 let element_size =
                                     self.structs.get(&arrow.element).map_or(0, |layout| layout.size);
-                                expression = Expression::Member {
-                                    base: Box::new(expression),
-                                    offset: arrow.storage_offset,
-                                    member_type: Type::StructPointer { element_size: 0 },
-                                    index_stride: None,
-                                };
+                                expression =
+                                    iterator_pointer_storage(expression, arrow.storage_offset);
                                 if let Some(assertion) = arrow.assertion {
                                     let arguments = vec![
                                         Expression::StringLiteral(assertion.file),
@@ -1704,6 +1704,23 @@ impl Parser {
             } => true,
             _ => false,
         };
+        if arguments.is_empty() {
+            if let Some((endpoint, return_tag, return_type)) =
+                self.resolve_inline_iterator_endpoint(class, member)
+            {
+                self.record_inline_template_member_instantiation(class, member);
+                let object = concrete_object
+                    .then(|| Expression::AddressOf {
+                        operand: Box::new(object.clone()),
+                    })
+                    .unwrap_or(object);
+                self.expression_struct_tag = Some(return_tag);
+                return Ok(Expression::Cast {
+                    target_type: return_type,
+                    operand: Box::new(endpoint.lower(object)),
+                });
+            }
+        }
         let Some(member_call) = self.resolve_instance_member_call(class, member, &arguments)? else {
             if let Some(copy) = self.lower_three_component_copy_setter(
                 class,
@@ -1957,6 +1974,13 @@ fn structural_virtual_vector_member(
 
 /// Build the `target = target ± 1` assignment that an `++`/`--` desugars to.
 fn iterator_pointer_storage(expression: Expression, offset: u32) -> Expression {
+    let expression = match expression {
+        Expression::Cast {
+            target_type: Type::Struct { size: 4, .. },
+            operand,
+        } if offset == 0 => return *operand,
+        expression => expression,
+    };
     Expression::Member {
         base: Box::new(expression),
         offset,

@@ -1430,7 +1430,7 @@ impl Generator {
                 for register in newly_reserved {
                     self.reserved.remove(&register);
                 }
-                let left_register = left_result?;
+                let mut left_register = left_result?;
                 // An operand whose register isn't already the right width must be
                 // extended before the compare: a `short`/`char` leaf in its home register
                 // (mwcc emits extsh/extsb/clrlwi, record form against zero), or a *signed*
@@ -1621,6 +1621,20 @@ impl Generator {
                                     )
                                 {
                                     return Err(Diagnostic::error("a mixed narrow comparison needs both operands extended (roadmap)"));
+                                }
+                                if left_register == GENERAL_SCRATCH
+                                    && matches!(
+                                        right.as_ref(),
+                                        Expression::AddressOf { .. }
+                                            | Expression::MemberAddress { .. }
+                                    )
+                                {
+                                    let preserved = self.fresh_virtual_general();
+                                    self.output.instructions.push(Instruction::move_register(
+                                        preserved,
+                                        left_register,
+                                    ));
+                                    left_register = preserved;
                                 }
                                 let right_register = self.condition_operand_register(right)?;
                                 if signed {
@@ -1823,7 +1837,9 @@ impl Generator {
         }
         if matches!(
             operand,
-            Expression::Conditional { .. }
+            Expression::AddressOf { .. }
+                | Expression::MemberAddress { .. }
+                | Expression::Conditional { .. }
                 | Expression::Cast { .. }
                 | Expression::BitFieldRead { .. }
                 | Expression::Binary {

@@ -437,7 +437,7 @@ impl Generator {
                     if slot.is_array {
                         self.output.instructions.push(Instruction::AddImmediate { d: destination, a: 1, immediate: slot.offset });
                     } else {
-                        let pointee = pointee_of_type(slot.value_type).ok_or_else(|| {
+                        let pointee = frame_value_pointee(slot.value_type).ok_or_else(|| {
                             Diagnostic::error(format!(
                                 "frame value of type {:?} has no scalar load",
                                 slot.value_type

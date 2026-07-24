@@ -5,7 +5,7 @@
 //! shapes and composes nested one-word wrappers with a pointer-backed
 //! implementation iterator.
 
-use mwcc_syntax_trees::Type;
+use mwcc_syntax_trees::{Expression, Type};
 use mwcc_tokens::Token;
 
 use crate::parser::{Parser, StructLayout};
@@ -22,6 +22,56 @@ pub(crate) struct IteratorComparison {
     pub(crate) supports_inequality: bool,
     terminal_type: Type,
     terminal_tag: Option<String>,
+}
+
+/// The runtime word constructed by an exact zero-argument iterator endpoint.
+///
+/// The source method still returns an iterator aggregate, but a proven
+/// one-word wrapper can be represented by the pointer value that its inlined
+/// constructor stores.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct IteratorEndpoint {
+    return_wrapper: String,
+    value: IteratorEndpointValue,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum IteratorEndpointValue {
+    LoadMember {
+        offset: u32,
+        member_type: Type,
+    },
+    AddressMember {
+        offset: u32,
+        member_type: Type,
+    },
+}
+
+impl IteratorEndpoint {
+    pub(crate) fn lower(&self, object: Expression) -> Expression {
+        match self.value {
+            IteratorEndpointValue::LoadMember {
+                offset,
+                member_type,
+            } => Expression::Member {
+                base: Box::new(object),
+                offset,
+                member_type,
+                index_stride: None,
+            },
+            IteratorEndpointValue::AddressMember {
+                offset,
+                member_type,
+            } => Expression::AddressOf {
+                operand: Box::new(Expression::Member {
+                    base: Box::new(object),
+                    offset,
+                    member_type,
+                    index_stride: None,
+                }),
+            },
+        }
+    }
 }
 
 impl Parser {
@@ -60,6 +110,44 @@ impl Parser {
         }
 
         for method in methods {
+            if let (Some(name), Some(return_wrapper)) = (
+                ordinary_zero_argument_method_name(method.declaration),
+                zero_argument_method_return_wrapper(method.declaration),
+            ) {
+                let endpoint = match method.body {
+                    [
+                        Token::KeywordReturn,
+                        Token::Identifier(wrapper),
+                        Token::ParenOpen,
+                        Token::Identifier(field),
+                        Token::Dot,
+                        Token::Identifier(accessor),
+                        Token::ParenOpen,
+                        Token::ParenClose,
+                        Token::ParenClose,
+                        Token::Semicolon,
+                    ] if wrapper == return_wrapper => {
+                        self.capture_begin_endpoint(layout, field, accessor, wrapper)
+                    }
+                    [
+                        Token::KeywordReturn,
+                        Token::Identifier(wrapper),
+                        Token::ParenOpen,
+                        Token::Ampersand,
+                        Token::Identifier(field),
+                        Token::ParenClose,
+                        Token::Semicolon,
+                    ] if wrapper == return_wrapper => {
+                        self.capture_end_endpoint(layout, field, wrapper)
+                    }
+                    _ => None,
+                };
+                if let Some(endpoint) = endpoint {
+                    self.source_iterator_endpoints
+                        .insert((class.to_owned(), name.to_owned()), endpoint);
+                }
+            }
+
             if is_prefix_increment_declaration(method.declaration) {
                 match method.body {
                     [
@@ -225,6 +313,128 @@ impl Parser {
             .get(iterator)
             .copied()
             .or_else(|| self.resolve_source_iterator_pointer_step(iterator))
+    }
+
+    /// Compose an exact primary-template wrapper with the exact base endpoint
+    /// it forwards. The concrete wrapper must resolve to one pointer word at
+    /// offset zero; wider or rearranged aggregates remain ordinary calls.
+    pub(crate) fn resolve_inline_iterator_endpoint(
+        &self,
+        class: &str,
+        member: &str,
+    ) -> Option<(IteratorEndpoint, String, Type)> {
+        let (base, base_member, wrapper) =
+            self.resolve_inline_template_base_forwarder(class, member, 0)?;
+        let endpoint = self.resolve_source_iterator_endpoint(&base, &base_member)?;
+        if endpoint.return_wrapper != wrapper {
+            return None;
+        }
+        let concrete = format!("{class}::{wrapper}");
+        let comparison = self.resolve_iterator_pointer_comparison(&concrete)?;
+        if comparison.storage_offset != 0 {
+            return None;
+        }
+        let layout = self
+            .structs
+            .get(&concrete)
+            .or_else(|| {
+                self.resolve_nested_template_alias_layout(&concrete)
+                    .and_then(|(generic, _)| self.structs.get(&generic))
+            })?;
+        if layout.size != 4 {
+            return None;
+        }
+        Some((
+            endpoint,
+            concrete,
+            Type::Struct {
+                size: layout.size,
+                align: layout.align,
+            },
+        ))
+    }
+
+    fn resolve_source_iterator_endpoint(
+        &self,
+        class: &str,
+        member: &str,
+    ) -> Option<IteratorEndpoint> {
+        if let Some(endpoint) = self
+            .source_iterator_endpoints
+            .get(&(class.to_owned(), member.to_owned()))
+        {
+            return Some(endpoint.clone());
+        }
+        let terminal = class.rsplit("::").next().unwrap_or(class);
+        let mut matches = self
+            .source_iterator_endpoints
+            .iter()
+            .filter(|((owner, candidate), _)| {
+                candidate == member && owner.rsplit("::").next() == Some(terminal)
+            });
+        let (_, endpoint) = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        Some(endpoint.clone())
+    }
+
+    fn capture_begin_endpoint(
+        &self,
+        layout: &StructLayout,
+        field: &str,
+        accessor: &str,
+        return_wrapper: &str,
+    ) -> Option<IteratorEndpoint> {
+        let field = layout.fields.get(field)?;
+        if !matches!(field.member_type, Type::Struct { .. }) {
+            return None;
+        }
+        let pointee = field.struct_tag.as_deref()?;
+        let accessor_offset = self
+            .source_pointer_accessors
+            .get(&(pointee.to_owned(), accessor.to_owned()))
+            .copied()?;
+        let pointee_layout = self.structs.get(pointee)?;
+        let mut candidates = pointee_layout.fields.values().filter(|candidate| {
+            candidate.offset == accessor_offset
+                && candidate.array_bytes.is_none()
+                && candidate.bit_field.is_none()
+                && matches!(
+                    candidate.member_type,
+                    Type::Pointer(_) | Type::StructPointer { .. }
+                )
+        });
+        let storage = candidates.next()?;
+        if candidates.next().is_some() {
+            return None;
+        }
+        Some(IteratorEndpoint {
+            return_wrapper: return_wrapper.to_owned(),
+            value: IteratorEndpointValue::LoadMember {
+                offset: field.offset.checked_add(accessor_offset)?,
+                member_type: storage.member_type,
+            },
+        })
+    }
+
+    fn capture_end_endpoint(
+        &self,
+        layout: &StructLayout,
+        field: &str,
+        return_wrapper: &str,
+    ) -> Option<IteratorEndpoint> {
+        let field = layout.fields.get(field)?;
+        if !matches!(field.member_type, Type::Struct { .. }) || field.array_bytes.is_some() {
+            return None;
+        }
+        Some(IteratorEndpoint {
+            return_wrapper: return_wrapper.to_owned(),
+            value: IteratorEndpointValue::AddressMember {
+                offset: field.offset,
+                member_type: field.member_type,
+            },
+        })
     }
 
     /// Resolve an equality/inequality overload to the pointer storage it
@@ -402,6 +612,18 @@ fn ordinary_zero_argument_method_name(tokens: &[Token]) -> Option<&str> {
         {
             Some(name.as_str())
         }
+        _ => None,
+    })
+}
+
+fn zero_argument_method_return_wrapper(tokens: &[Token]) -> Option<&str> {
+    tokens.windows(4).rev().find_map(|window| match window {
+        [
+            Token::Identifier(wrapper),
+            Token::Identifier(name),
+            Token::ParenOpen,
+            Token::ParenClose,
+        ] if name != "operator" => Some(wrapper.as_str()),
         _ => None,
     })
 }
