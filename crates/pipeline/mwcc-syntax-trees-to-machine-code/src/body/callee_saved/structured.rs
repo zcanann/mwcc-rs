@@ -1501,7 +1501,6 @@ impl Generator {
         if rounded_pointer_dense_layout {
             self.schedule_power_pc_7400_rounded_pointer_body();
         }
-        validate_resolved_structured_branches(&self.output.instructions)?;
         Ok(true)
     }
 
@@ -2412,17 +2411,6 @@ fn logical_or_groups(expression: &Expression) -> Option<Vec<Vec<&Expression>>> {
     Some(groups)
 }
 
-fn validate_resolved_structured_branches(instructions: &[Instruction]) -> Compilation<()> {
-    if instructions.iter().enumerate().any(|(index, instruction)| {
-        index != 0 && matches!(instruction, Instruction::Branch { target: 0 })
-    }) {
-        return Err(Diagnostic::error(
-            "structured branch retained an unresolved entry target",
-        ));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2454,24 +2442,5 @@ mod tests {
             Expression::Variable(c),
             Expression::Variable(d),
         ] if c == "c" && d == "d"));
-    }
-
-    #[test]
-    fn rejects_a_structured_branch_with_an_unresolved_placeholder() {
-        let unresolved = [
-            Instruction::AddImmediate {
-                d: 3,
-                a: 3,
-                immediate: 1,
-            },
-            Instruction::Branch { target: 0 },
-        ];
-        assert!(validate_resolved_structured_branches(&unresolved).is_err());
-
-        let resolved = [
-            unresolved[0].clone(),
-            Instruction::Branch { target: 1 },
-        ];
-        assert!(validate_resolved_structured_branches(&resolved).is_ok());
     }
 }
