@@ -1159,6 +1159,11 @@ impl Generator {
         if let Some(cleaned) = remove_dead_locals(function) {
             return self.evaluate_body(&cleaned);
         }
+        if let Some(normalized) =
+            super::loop_normalization::flatten_constant_false_do_while(function)
+        {
+            return self.evaluate_body(&normalized);
+        }
         if self.behavior.whole_file_optimization {
             if let Some(forwarded) = super::member_store_forwarding::forward(function) {
                 return self.evaluate_body(&forwarded);
