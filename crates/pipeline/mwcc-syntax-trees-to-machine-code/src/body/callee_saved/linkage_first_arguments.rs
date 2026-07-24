@@ -25,15 +25,21 @@ impl Generator {
     /// branch-free entry scheduler declines it; the retained-lane shape gives
     /// us a narrower proof and lets the label owner track the move safely.
     pub(crate) fn schedule_retained_eager_entry_argument(&mut self) {
-        if self.behavior.frame_convention != FrameConvention::LinkageFirst
-            || self.legacy_callee_saved_frame_layout
-                != LegacyCalleeSavedFrameLayout::RetainEagerLocalLane
-        {
+        if self.behavior.frame_convention != FrameConvention::LinkageFirst {
             return;
         }
         let Some((from, to)) = retained_eager_entry_argument_move(&self.output) else {
             return;
         };
+        if let Instruction::Or { a: 3, s, b } = self.output.instructions[from - 1] {
+            if s == b {
+                self.output.instructions[from - 1] = Instruction::AddImmediate {
+                    d: 3,
+                    a: s,
+                    immediate: 0,
+                };
+            }
+        }
         let instruction = self.output.instructions.remove(from);
         self.output.instructions.insert(to, instruction);
         self.labels.moved_before(from, to);
@@ -62,14 +68,24 @@ fn retained_eager_entry_argument_move(
     let from = output.instructions[stack_update + 1..=first_call]
         .windows(6)
         .position(|window| {
-            matches!(window, [
+            let [
                 Instruction::StoreWord { s: first_saved, a: 1, .. },
                 Instruction::StoreWord { s: second_saved, a: 1, .. },
                 Instruction::LoadWord { d: eager, a: 3, .. },
-                Instruction::AddImmediate { d: 3, a: copied, immediate: 0 },
+                copy,
                 Instruction::AddImmediate { d: 4, a: 0, .. },
                 Instruction::BranchAndLink { .. },
-            ] if first_saved != second_saved && eager == copied && eager == second_saved)
+            ] = window else {
+                return false;
+            };
+            let copied = match copy {
+                Instruction::AddImmediate { d: 3, a, immediate: 0 } => Some(*a),
+                Instruction::Or { a: 3, s, b } if s == b => Some(*s),
+                _ => None,
+            };
+            first_saved != second_saved
+                && copied == Some(*eager)
+                && eager == second_saved
         })?
         + stack_update
         + 1

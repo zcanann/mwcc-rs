@@ -106,17 +106,9 @@ impl Generator {
         &mut self,
         term: &Expression,
     ) -> Compilation<Option<(u8, u8)>> {
-        let Some(parts) = inline_assertion_parts(term) else {
+        let Some(parts) = leading_inline_assertion_parts(term) else {
             return Ok(None);
         };
-        let Some((_, first_mask, second_mask)) =
-            shared_member_mask_conjunction(parts.remainder)
-        else {
-            return Ok(None);
-        };
-        if mask_to_run(first_mask).is_none() || mask_to_run(second_mask).is_none() {
-            return Ok(None);
-        }
         let (options, condition_bit) = self.emit_condition_test(parts.condition)?;
         let assertion_end = self.fresh_label();
         self.emit_branch_conditional_to(options ^ 8, condition_bit, assertion_end);
@@ -228,6 +220,12 @@ fn inline_assertion_parts(term: &Expression) -> Option<InlineAssertionParts<'_>>
         arguments,
         remainder: right,
     })
+}
+
+fn leading_inline_assertion_parts(term: &Expression) -> Option<InlineAssertionParts<'_>> {
+    let parts = inline_assertion_parts(term)?;
+    let (_, first_mask, second_mask) = shared_member_mask_conjunction(parts.remainder)?;
+    (mask_to_run(first_mask).is_some() && mask_to_run(second_mask).is_some()).then_some(parts)
 }
 
 fn is_assertion_float_member_return(window: &[Instruction]) -> bool {
@@ -358,6 +356,59 @@ fn is_void_noop(expression: &Expression) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn masked_member(mask: i64) -> Expression {
+        Expression::Binary {
+            operator: BinaryOperator::BitAnd,
+            left: Box::new(Expression::Member {
+                base: Box::new(Expression::Variable("object".into())),
+                offset: 20,
+                member_type: Type::UnsignedInt,
+                index_stride: None,
+            }),
+            right: Box::new(Expression::IntegerLiteral(mask)),
+        }
+    }
+
+    fn leading_assertion_with_remainder(remainder: Expression) -> Expression {
+        Expression::Comma {
+            left: Box::new(Expression::Conditional {
+                condition: Box::new(Expression::Variable("object".into())),
+                when_true: Box::new(Expression::Cast {
+                    target_type: Type::Void,
+                    operand: Box::new(Expression::IntegerLiteral(0)),
+                }),
+                when_false: Box::new(Expression::Call {
+                    name: "__assert".into(),
+                    arguments: Vec::new(),
+                }),
+                origin: mwcc_syntax_trees::ConditionalOrigin::Ternary,
+            }),
+            right: Box::new(remainder),
+        }
+    }
+
+    #[test]
+    fn recognizes_a_leading_assertion_with_shared_member_masks() {
+        let remainder = Expression::Binary {
+            operator: BinaryOperator::LogicalAnd,
+            left: Box::new(Expression::Unary {
+                operator: UnaryOperator::LogicalNot,
+                operand: Box::new(masked_member(0x0080_0000)),
+            }),
+            right: Box::new(masked_member(0x40)),
+        };
+        let expression = leading_assertion_with_remainder(remainder);
+        let parts = leading_inline_assertion_parts(&expression)
+            .expect("the inline assertion and shared masks should be recognized");
+        assert_eq!(parts.asserted_name, "object");
+    }
+
+    #[test]
+    fn rejects_a_leading_assertion_without_the_shared_mask_provenance() {
+        let expression = leading_assertion_with_remainder(Expression::Variable("flag".into()));
+        assert!(leading_inline_assertion_parts(&expression).is_none());
+    }
 
     #[test]
     fn recognizes_explicit_nonzero_comparison() {
