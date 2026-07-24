@@ -12,6 +12,7 @@ mod leading_shared_zero_bitfield_guard;
 mod inlined_sign_store_schedule;
 mod inlined_acceleration_select_schedule;
 mod inlined_symmetric_float_clamp_schedule;
+mod joystick_count_schedule;
 mod mixed_member_zero_reset_schedule;
 mod symmetric_float_clamp;
 mod symmetric_float_decay;

@@ -94,6 +94,28 @@ impl Labels {
         }
     }
 
+    /// Account for instructions removed after label resolution, when a label
+    /// bound inside the erased range denotes the surviving instruction that
+    /// immediately follows it. Branch uses originating in the erased range
+    /// disappear with their instructions.
+    pub fn removed_retargeting_to_next(&mut self, at: usize, count: usize) {
+        let end = at + count;
+        for binding in self.bound.iter_mut().flatten() {
+            if *binding >= at && *binding < end {
+                *binding = at;
+            } else if *binding >= end {
+                *binding -= count;
+            }
+        }
+        self.pending
+            .retain(|(instruction_index, _)| !(*instruction_index >= at && *instruction_index < end));
+        for (instruction_index, _) in &mut self.pending {
+            if *instruction_index >= end {
+                *instruction_index -= count;
+            }
+        }
+    }
+
     /// Account for moving one instruction from `from` to an earlier `to` slot.
     pub fn moved_before(&mut self, from: usize, to: usize) {
         debug_assert!(to < from);
@@ -184,6 +206,23 @@ mod tests {
         labels.moved_before(6, 2);
         assert_eq!(labels.pending[0].0, 2);
         assert_eq!(labels.bound[target.0], Some(11));
+    }
+
+    #[test]
+    fn resolved_label_in_removed_range_retargets_to_next_instruction() {
+        let mut labels = Labels::default();
+        let removed_target = labels.fresh();
+        let retained_target = labels.fresh();
+        labels.use_at(2, removed_target);
+        labels.use_at(7, retained_target);
+        labels.bind(removed_target, 5);
+        labels.bind(retained_target, 9);
+
+        labels.removed_retargeting_to_next(5, 1);
+        assert_eq!(labels.bound[removed_target.0], Some(5));
+        assert_eq!(labels.bound[retained_target.0], Some(8));
+        assert_eq!(labels.pending[0].0, 2);
+        assert_eq!(labels.pending[1].0, 6);
     }
 
     #[test]
