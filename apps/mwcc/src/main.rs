@@ -4171,6 +4171,54 @@ mod tests {
     }
 
     #[test]
+    fn schedules_a_cold_assertion_before_an_indirect_float_return() {
+        let source = br#"
+            extern void __assert(char*, int, char*);
+            struct Object {
+                int pad;
+                int kind;
+                char member_padding[716];
+                void* attributes;
+            };
+            float compiled(struct Object* object) {
+                (object->kind == 32
+                    ? (void) 0
+                    : __assert("long_file.c", 299, "a long assertion expression"));
+                return ((float*) object->attributes)[0];
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.emit_mwcats = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "large-string-line-arguments.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the cold assertion and indirect return should share one schedule");
+        let expected_text = [
+            0x7c, 0x08, 0x02, 0xa6, 0x90, 0x01, 0x00, 0x04, 0x94, 0x21, 0xff, 0xe8, 0x93,
+            0xe1, 0x00, 0x14, 0x7c, 0x7f, 0x1b, 0x78, 0x80, 0x03, 0x00, 0x04, 0x2c, 0x00,
+            0x00, 0x20, 0x41, 0x82, 0x00, 0x1c, 0x3c, 0x60, 0x00, 0x00, 0x3c, 0x80, 0x00,
+            0x00, 0x38, 0xa4, 0x00, 0x00, 0x38, 0x63, 0x00, 0x00, 0x38, 0x80, 0x01, 0x2b,
+            0x48, 0x00, 0x00, 0x01, 0x80, 0x7f, 0x02, 0xd4, 0x80, 0x01, 0x00, 0x1c, 0xc0,
+            0x23, 0x00, 0x00, 0x83, 0xe1, 0x00, 0x14, 0x38, 0x21, 0x00, 0x18, 0x7c, 0x08,
+            0x03, 0xa6, 0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected_text.len())
+            .any(|bytes| bytes == expected_text));
+    }
+
+    #[test]
     fn command_line_pool_mode_is_last_wins() {
         let off = parse_invocation(&["-pool".into(), "off".into()]);
         assert!(!off.flags.pooling_enabled);

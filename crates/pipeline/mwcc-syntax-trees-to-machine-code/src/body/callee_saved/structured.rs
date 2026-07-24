@@ -1625,10 +1625,18 @@ impl Generator {
                         ));
                     }
                 }
+                Statement::Expression(expression @ Expression::Conditional { .. }) => {
+                    if !self.try_emit_conditional_call_statement(expression)? {
+                        self.emit_comma_side_effect(expression).map_err(|mut diagnostic| {
+                            diagnostic.message.push_str(&format!(
+                                " (in structured side-effect statement {statement_index})"
+                            ));
+                            diagnostic
+                        })?;
+                    }
+                }
                 Statement::Expression(
-                    expression @ (Expression::Comma { .. }
-                    | Expression::Assign { .. }
-                    | Expression::Conditional { .. }),
+                    expression @ (Expression::Comma { .. } | Expression::Assign { .. }),
                 ) => self.emit_comma_side_effect(expression).map_err(|mut diagnostic| {
                     diagnostic.message.push_str(&format!(
                         " (in structured side-effect statement {statement_index})"
