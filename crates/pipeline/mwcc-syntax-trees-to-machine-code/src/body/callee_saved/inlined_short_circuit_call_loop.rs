@@ -111,8 +111,8 @@ impl Generator {
         let Some(incoming_second) = self.lookup_general(&function.parameters[1].name) else {
             return Ok(false);
         };
-        let object = self.fresh_virtual_general();
         let iterator = self.fresh_virtual_general();
+        let object = self.fresh_virtual_general();
         let second = self.fresh_virtual_general();
         let first = self.fresh_virtual_general();
         // MWCC colors the loop-carried iterator first, followed by the selected
@@ -202,7 +202,9 @@ impl Generator {
         let mut condition_terms = Vec::new();
         collect_logical_and_terms(condition, &mut condition_terms);
         for term in condition_terms {
+            let term_start = self.output.instructions.len();
             let (options, condition_bit) = self.emit_condition_test(term)?;
+            schedule_three_argument_loop_call(&mut self.output.instructions[term_start..]);
             self.emit_branch_conditional_to(options, condition_bit, skip_call);
         }
         self.emit_statement(&then_body[0])?;
@@ -223,6 +225,45 @@ impl Generator {
         self.emit_epilogue_and_return();
         Ok(true)
     }
+}
+
+/// MWCC forwards the two independent entry arguments before placing the loop's
+/// selected object into r3. The generic call emitter starts with r3; normalize
+/// this three-survivor group while all source identities are still explicit.
+fn schedule_three_argument_loop_call(instructions: &mut [Instruction]) -> bool {
+    if instructions.len() < 4 {
+        return false;
+    }
+    for index in 0..=instructions.len() - 4 {
+        let (object, first, second) = match &instructions[index..index + 4] {
+            [
+                Instruction::Or { a: 3, s: object, b: object_b },
+                Instruction::Or { a: 4, s: first, b: first_b },
+                Instruction::Or { a: 5, s: second, b: second_b },
+                Instruction::BranchAndLink { .. },
+            ] if object == object_b && first == first_b && second == second_b => {
+                (*object, *first, *second)
+            }
+            _ => continue,
+        };
+        instructions[index] = Instruction::AddImmediate {
+            d: 4,
+            a: first,
+            immediate: 0,
+        };
+        instructions[index + 1] = Instruction::AddImmediate {
+            d: 5,
+            a: second,
+            immediate: 0,
+        };
+        instructions[index + 2] = Instruction::AddImmediate {
+            d: 3,
+            a: object,
+            immediate: 0,
+        };
+        return true;
+    }
+    false
 }
 
 fn nonnull_loop_variable(condition: &Expression) -> Option<String> {
@@ -255,6 +296,31 @@ fn global_member_initializer(local: &LocalDeclaration) -> Option<(String, i16)> 
         return None;
     };
     Some((global.clone(), i16::try_from(*offset).ok()?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schedules_independent_loop_call_arguments_before_the_receiver() {
+        let mut instructions = vec![
+            Instruction::move_register(3, 40),
+            Instruction::move_register(4, 41),
+            Instruction::move_register(5, 42),
+            Instruction::BranchAndLink {
+                target: "predicate".into(),
+            },
+        ];
+
+        assert!(schedule_three_argument_loop_call(&mut instructions));
+        assert!(matches!(instructions.as_slice(), [
+            Instruction::AddImmediate { d: 4, a: 41, immediate: 0 },
+            Instruction::AddImmediate { d: 5, a: 42, immediate: 0 },
+            Instruction::AddImmediate { d: 3, a: 40, immediate: 0 },
+            Instruction::BranchAndLink { target },
+        ] if target == "predicate"));
+    }
 }
 
 fn collect_logical_and_terms<'a>(expression: &'a Expression, terms: &mut Vec<&'a Expression>) {

@@ -2174,6 +2174,9 @@ mod tests {
     #[path = "inline_member_zero_fill.rs"]
     mod inline_member_zero_fill;
 
+    #[path = "inlined_short_circuit_call_loop.rs"]
+    mod inlined_short_circuit_call_loop;
+
     #[test]
     fn parity_keep_going_is_an_explicit_diagnostic_flag() {
         let ordinary = parse_invocation(&[]);
