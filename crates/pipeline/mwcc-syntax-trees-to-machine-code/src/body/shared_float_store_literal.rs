@@ -10,7 +10,7 @@ use super::*;
 
 impl Generator {
     pub(crate) fn schedule_shared_float_store_literal(&mut self, function: &Function) {
-        if starts_with_adjacent_float_zero_stores(function) {
+        if entry_has_adjacent_float_zero_stores(&function.statements) {
             if let Some(start) = self
             .output
             .instructions
@@ -63,7 +63,15 @@ impl Generator {
     }
 }
 
-fn starts_with_adjacent_float_zero_stores(function: &Function) -> bool {
+fn entry_has_adjacent_float_zero_stores(statements: &[Statement]) -> bool {
+    // The parser uses either form for an entry pointer copy depending on how
+    // much local-value tracking survived normalization. It cannot observe or
+    // alter the literal, so prove the store pair immediately after it.
+    let statements = match statements {
+        [Statement::Assign { .. }, tail @ ..]
+        | [Statement::Expression(Expression::Assign { .. }), tail @ ..] => tail,
+        statements => statements,
+    };
     let [
         Statement::Store {
             target:
@@ -84,7 +92,7 @@ fn starts_with_adjacent_float_zero_stores(function: &Function) -> bool {
             value: second_value,
         },
         ..
-    ] = function.statements.as_slice()
+    ] = statements
     else {
         return false;
     };
@@ -191,5 +199,41 @@ mod tests {
             Instruction::StoreFloatSingle { s: 0, a: 31, offset: 28 },
         ];
         assert!(is_adjacent_reloaded_float_store_literal(&instructions));
+    }
+
+    #[test]
+    fn finds_adjacent_zero_stores_after_an_entry_assignment() {
+        let member = |offset| Expression::Member {
+            base: Box::new(Expression::Variable("object".into())),
+            offset,
+            member_type: Type::Float,
+            index_stride: None,
+        };
+        let statements = vec![
+            Statement::Expression(Expression::Assign {
+                target: Box::new(Expression::Variable("object".into())),
+                value: Box::new(Expression::Variable("entry".into())),
+            }),
+            Statement::Store {
+                target: member(252),
+                value: Expression::IntegerLiteral(0),
+            },
+            Statement::Store {
+                target: member(248),
+                value: Expression::IntegerLiteral(0),
+            },
+        ];
+
+        assert!(entry_has_adjacent_float_zero_stores(&statements));
+
+        let mut tracked_statements = statements[1..].to_vec();
+        tracked_statements.insert(
+            0,
+            Statement::Assign {
+                name: "object".into(),
+                value: Expression::Variable("entry".into()),
+            },
+        );
+        assert!(entry_has_adjacent_float_zero_stores(&tracked_statements));
     }
 }
