@@ -4614,6 +4614,54 @@ mod tests {
     }
 
     #[test]
+    fn returns_a_symmetric_float_decay_clamped_at_zero() {
+        let source = br#"
+            float compiled(float value, float decrement) {
+                float result = value;
+                if (value > 0) {
+                    result -= decrement;
+                    if (result < 0) {
+                        return 0;
+                    }
+                } else if (value < 0) {
+                    result += decrement;
+                    if (result > 0) {
+                        return 0;
+                    }
+                }
+                return result;
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.emit_mwcats = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "symmetric-float-decay-return.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the result should remain in the incoming floating result register");
+        let expected_text = [
+            0xc0, 0x00, 0x00, 0x00, 0xfc, 0x01, 0x00, 0x40, 0x40, 0x81, 0x00, 0x18, 0xec,
+            0x21, 0x10, 0x28, 0xfc, 0x01, 0x00, 0x40, 0x4c, 0x80, 0x00, 0x20, 0xfc, 0x20,
+            0x00, 0x90, 0x4e, 0x80, 0x00, 0x20, 0x4c, 0x80, 0x00, 0x20, 0xec, 0x21, 0x10,
+            0x2a, 0xfc, 0x01, 0x00, 0x40, 0x4c, 0x81, 0x00, 0x20, 0xfc, 0x20, 0x00, 0x90,
+            0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected_text.len())
+            .any(|bytes| bytes == expected_text));
+    }
+
+    #[test]
     fn command_line_pool_mode_is_last_wins() {
         let off = parse_invocation(&["-pool".into(), "off".into()]);
         assert!(!off.flags.pooling_enabled);

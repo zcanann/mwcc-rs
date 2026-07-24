@@ -10,6 +10,7 @@ mod leading_shared_zero_bitfield_guard;
 mod inlined_sign_store_schedule;
 mod symmetric_float_clamp;
 mod symmetric_float_decay;
+mod symmetric_float_decay_return;
 mod sign_selected_member_store;
 mod aggregate_return_temporaries;
 mod ascii_pointer_compare;
