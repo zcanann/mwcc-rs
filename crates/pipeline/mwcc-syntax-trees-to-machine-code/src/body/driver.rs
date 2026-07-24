@@ -1162,6 +1162,11 @@ impl Generator {
         if self.try_conditional_float_call_arguments(function)? {
             return Ok(());
         }
+        // Preserve the member-alias split that determines MWCC's base register
+        // and offset spelling before generic pointer copy propagation erases it.
+        if self.try_conditional_friction_select(function)? {
+            return Ok(());
+        }
         if let Some(inlined) = inline_immutable_pointer_aliases(function) {
             return self.evaluate_body(&inlined);
         }

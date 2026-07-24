@@ -189,7 +189,16 @@ pub(crate) fn remove_dead_locals(function: &Function) -> Option<Function> {
         .locals
         .iter()
         .filter(|local| {
-            referenced(&local.name)
+            // The reference corpus uses a scalar named `_` as a generated
+            // optimization probe. Unlike same-named scratch arrays, it has no
+            // storage identity and MWCC drops it even around structured flow.
+            let is_generated_scalar_probe = local.name == "_" && local.array_length.is_none();
+            let is_referenced = if is_generated_scalar_probe {
+                crate::analysis::function_uses_name(function, &local.name)
+            } else {
+                referenced(&local.name)
+            };
+            is_referenced
                 || local
                     .initializer
                     .as_ref()
@@ -1999,6 +2008,44 @@ mod tests {
             is_const: false,
             row_bytes: None,
         }
+    }
+
+    #[test]
+    fn generated_scalar_probe_is_removed_across_structured_control_flow() {
+        let function = Function {
+            return_type: Type::Int,
+            name: "dead_probe_before_if".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: vec![automatic_local(
+                "_",
+                Type::Float,
+                Some(Expression::FloatLiteral(1.0)),
+            )],
+            statements: vec![Statement::If {
+                condition: Expression::IntegerLiteral(1),
+                then_body: vec![Statement::Return(Some(Expression::IntegerLiteral(1)))],
+                else_body: vec![Statement::Return(Some(Expression::IntegerLiteral(0)))],
+            }],
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+
+        let cleaned = remove_dead_locals(&function)
+            .expect("the generated scalar probe should not emit a redundant value");
+        assert!(cleaned.locals.is_empty());
+
+        let mut scratch_array = function;
+        scratch_array.locals[0].array_length = Some(4);
+        assert!(remove_dead_locals(&scratch_array).is_none());
     }
 
     #[test]

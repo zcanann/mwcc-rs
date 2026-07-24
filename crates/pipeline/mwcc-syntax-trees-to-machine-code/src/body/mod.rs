@@ -26,6 +26,7 @@ mod comma_operator;
 mod condition_linkage;
 mod conditional_float_call_arguments;
 mod conditional_float_requantize;
+mod conditional_friction_select;
 mod conditional;
 mod conditional_member_copy;
 mod conditional_member_select_tail;
