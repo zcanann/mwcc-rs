@@ -15,9 +15,13 @@ impl Generator {
         else {
             return;
         };
+        let dead_load = dead_prepacket_member_load(&self.output.instructions, first_load);
         debug_assert!(first_load < duplicate_load && duplicate_load < duplicate_shift);
         self.remove_packet_setup_instruction(duplicate_shift);
         self.remove_packet_setup_instruction(duplicate_load);
+        if let Some(dead_load) = dead_load {
+            self.remove_packet_setup_instruction(dead_load);
+        }
     }
 
     fn remove_packet_setup_instruction(&mut self, index: usize) {
@@ -39,6 +43,97 @@ impl Generator {
             .collect();
         crate::remap_instruction_indices(self, &permutation);
     }
+}
+
+fn dead_prepacket_member_load(instructions: &[Instruction], setup: usize) -> Option<usize> {
+    let start = setup.checked_sub(18)?;
+    let [Instruction::LoadHalfwordZero {
+        d: dead,
+        a: base,
+        offset: width_offset,
+    }, Instruction::CompareWordImmediate { a: first_guard, .. }, Instruction::BranchConditionalForward {
+        target: first_else, ..
+    }, Instruction::Negate {
+        d: first_negative,
+        a: first_negative_source,
+    }, Instruction::AddImmediate {
+        d: first_zero,
+        a: 0,
+        immediate: 0,
+    }, Instruction::Branch { target: first_join }, Instruction::AddImmediate {
+        d: first_else_zero,
+        a: 0,
+        immediate: 0,
+    }, Instruction::Or {
+        a: first_copy,
+        s: first_copy_source,
+        b: first_copy_other,
+    }, Instruction::CompareWordImmediate {
+        a: second_guard, ..
+    }, Instruction::BranchConditionalForward {
+        target: second_else,
+        ..
+    }, Instruction::Negate {
+        d: second_negative,
+        a: second_negative_source,
+    }, Instruction::AddImmediate {
+        d: second_zero,
+        a: 0,
+        immediate: 0,
+    }, Instruction::LoadHalfwordZero {
+        d: height,
+        a: height_base,
+        offset: height_offset,
+    }, Instruction::Add {
+        d: negative_value,
+        a: negative_a,
+        b: negative_b,
+    }, Instruction::Branch { target: join }, Instruction::LoadHalfwordZero {
+        d: positive_value,
+        a: positive_base,
+        offset: positive_offset,
+    }, Instruction::Or {
+        a: second_copy,
+        s: second_copy_source,
+        b: second_copy_other,
+    }, Instruction::AddImmediate {
+        d: second_else_zero,
+        a: 0,
+        immediate: 0,
+    }] = &instructions[start..setup]
+    else {
+        return None;
+    };
+
+    (*first_else == start + 6
+        && *first_join == start + 8
+        && *second_else == start + 15
+        && *join == setup
+        && dead == negative_value
+        && dead == positive_value
+        && base == height_base
+        && base == positive_base
+        && height_offset == positive_offset
+        && width_offset != height_offset
+        && (*negative_a == *height || *negative_b == *height)
+        && *first_guard != *dead
+        && *first_negative != *dead
+        && *first_negative_source != *dead
+        && *first_zero != *dead
+        && *first_else_zero != *dead
+        && *first_copy != *dead
+        && *first_copy_source != *dead
+        && *first_copy_other != *dead
+        && *second_guard != *dead
+        && *second_negative != *dead
+        && *second_negative_source != *dead
+        && *second_zero != *dead
+        && *height != *dead
+        && *second_copy != *dead
+        && *second_copy_source != *dead
+        && *second_copy_other != *dead
+        && *second_else_zero != *dead)
+        .then_some(start)
 }
 
 fn coalesce_packet_setup_registers(
@@ -217,6 +312,71 @@ mod tests {
         ]
     }
 
+    fn clamp_prefix() -> Vec<Instruction> {
+        vec![
+            Instruction::LoadHalfwordZero {
+                d: 5,
+                a: 14,
+                offset: 4,
+            },
+            Instruction::CompareWordImmediate {
+                a: 16,
+                immediate: 0,
+            },
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 0,
+                target: 6,
+            },
+            Instruction::Negate { d: 3, a: 16 },
+            Instruction::AddImmediate {
+                d: 6,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::Branch { target: 8 },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::Or { a: 6, s: 16, b: 16 },
+            Instruction::CompareWordImmediate {
+                a: 17,
+                immediate: 0,
+            },
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 0,
+                target: 15,
+            },
+            Instruction::Negate { d: 7, a: 17 },
+            Instruction::AddImmediate {
+                d: 8,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::LoadHalfwordZero {
+                d: 0,
+                a: 14,
+                offset: 6,
+            },
+            Instruction::Add { d: 5, a: 0, b: 17 },
+            Instruction::Branch { target: 18 },
+            Instruction::LoadHalfwordZero {
+                d: 5,
+                a: 14,
+                offset: 6,
+            },
+            Instruction::Or { a: 8, s: 17, b: 17 },
+            Instruction::AddImmediate {
+                d: 7,
+                a: 0,
+                immediate: 0,
+            },
+        ]
+    }
+
     #[test]
     fn reuses_the_retained_load_lane_for_the_first_add_and_scale() {
         let mut instructions = setup();
@@ -249,5 +409,13 @@ mod tests {
         *offset = 6;
 
         assert_eq!(coalesce_packet_setup_registers(&mut instructions), None);
+    }
+
+    #[test]
+    fn recognizes_a_member_load_overwritten_on_both_clamp_paths() {
+        let mut instructions = clamp_prefix();
+        instructions.extend(setup());
+
+        assert_eq!(dead_prepacket_member_load(&instructions, 18), Some(0));
     }
 }
