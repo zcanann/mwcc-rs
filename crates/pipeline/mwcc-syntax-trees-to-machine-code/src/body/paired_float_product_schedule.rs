@@ -16,6 +16,14 @@ impl Generator {
         else {
             return;
         };
+        if self.output.relocations.iter().any(|relocation| {
+            relocation.instruction_index == start || relocation.instruction_index == start + 1
+        }) || self.output.instructions.iter().any(|instruction| matches!(instruction,
+            Instruction::BranchConditionalForward { target, .. } | Instruction::Branch { target }
+                if *target == start || *target == start + 1
+        )) {
+            return;
+        }
 
         // Both loads are independent and neither carries a relocation. Their
         // destination registers stay attached to the values, so the multiply
