@@ -780,6 +780,54 @@ impl Generator {
             if self.locations.get(name.as_str()).is_some_and(|l| l.class == ValueClass::General && l.width < 32))
     }
 
+    /// Width of an integer-like expression before the integral promotions.
+    ///
+    /// This is intentionally only the storage/value width needed to decide
+    /// whether an unsigned operand promotes to `int`; the full expression type
+    /// system remains in the syntax-tree layer.
+    fn unpromoted_integer_width(&self, expression: &Expression) -> Option<u8> {
+        match expression {
+            Expression::Variable(name) => self
+                .locations
+                .get(name)
+                .map(|location| location.width)
+                .or_else(|| self.frame_slots.get(name).map(|slot| slot.value_type.width()))
+                .or_else(|| self.globals.get(name).map(|value_type| value_type.width())),
+            Expression::Member { member_type, .. } => Some(member_type.width()),
+            Expression::Dereference { pointer } => {
+                self.pointee_of(pointer).ok().map(|pointee| pointee.element().width())
+            }
+            Expression::Index { base, .. } => {
+                self.pointee_of(base).ok().map(|pointee| pointee.element().width())
+            }
+            Expression::Cast { target_type, .. } => Some(target_type.width()),
+            Expression::BitFieldRead { promoted_type, .. } => Some(promoted_type.width()),
+            Expression::PostStep { target, .. } => self.unpromoted_integer_width(target),
+            Expression::IndexedUpdateValue { value } => self.unpromoted_integer_width(value),
+            Expression::Assign { value, .. } => self.unpromoted_integer_width(value),
+            Expression::Comma { right, .. } => self.unpromoted_integer_width(right),
+            Expression::VirtualCall { return_type, .. } => Some(return_type.width()),
+            Expression::Call { name, .. } => self
+                .call_return_types
+                .get(name)
+                .map(|return_type| return_type.width())
+                .or(Some(32)),
+            Expression::IntegerLiteral(_) | Expression::Unary { .. } | Expression::Binary { .. } => {
+                Some(32)
+            }
+            _ => None,
+        }
+    }
+
+    /// Signedness after C's integral promotions. Every 8- and 16-bit integer
+    /// type fits in this target's 32-bit `int`, including their unsigned forms.
+    fn promoted_integer_signedness_of(&self, expression: &Expression) -> Compilation<bool> {
+        Ok(self.signedness_of(expression)?
+            || self
+                .unpromoted_integer_width(expression)
+                .is_some_and(|width| width < 32))
+    }
+
     /// Whether the value of `expression` is signed (for selecting `>>`). The
     /// usual arithmetic conversions make a binary expression unsigned if either
     /// operand is unsigned.
@@ -822,8 +870,21 @@ impl Generator {
             } => {
                 if is_comparison(*operator) {
                     Ok(true) // a comparison yields an int (signed)
+                } else if matches!(
+                    operator,
+                    BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr
+                ) {
+                    Ok(true) // logical operators yield int
+                } else if matches!(
+                    operator,
+                    BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight
+                ) {
+                    // Shift result type is the promoted type of the left operand;
+                    // the right operand does not participate in its conversion.
+                    self.promoted_integer_signedness_of(left)
                 } else {
-                    Ok(self.signedness_of(left)? && self.signedness_of(right)?)
+                    Ok(self.promoted_integer_signedness_of(left)?
+                        && self.promoted_integer_signedness_of(right)?)
                 }
             }
             Expression::Unary { operator, operand } => match operator {

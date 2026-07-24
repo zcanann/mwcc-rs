@@ -7,6 +7,47 @@
 use super::*;
 
 impl Generator {
+    /// Emit a signed comparison against zero by recording the arithmetic result.
+    ///
+    /// PowerPC arithmetic record forms set CR0 from the result itself, so an
+    /// expression such as `(member + width) <= 0` needs no following `cmpwi`.
+    /// Keep this conversion next to the other record-form selection rather than
+    /// teaching condition operand placement to pretend a computed value is a
+    /// leaf.
+    pub(super) fn try_emit_recorded_arithmetic_result(
+        &mut self,
+        expression: &Expression,
+    ) -> Compilation<bool> {
+        if !matches!(
+            expression,
+            Expression::Binary {
+                operator: BinaryOperator::Add,
+                ..
+            }
+        ) {
+            return Ok(false);
+        }
+
+        self.evaluate_general(expression, GENERAL_SCRATCH)?;
+        let Some(last) = self.output.instructions.last_mut() else {
+            return Err(Diagnostic::error(
+                "computed arithmetic condition emitted no result instruction",
+            ));
+        };
+        let replacement = match *last {
+            Instruction::Add { d, a, b } => Some(Instruction::AddRecord { d, a, b }),
+            _ => None,
+        };
+        if let Some(record) = replacement {
+            *last = record;
+            Ok(true)
+        } else {
+            Err(Diagnostic::error(
+                "a computed add comparison did not end in a recordable add",
+            ))
+        }
+    }
+
     pub(super) fn try_emit_computed_record_condition(
         &mut self,
         condition: &Expression,

@@ -2414,6 +2414,9 @@ mod tests {
     #[path = "local_post_step.rs"]
     mod local_post_step;
 
+    #[path = "computed_record_condition.rs"]
+    mod computed_record_condition;
+
     #[path = "unsigned_narrow_to_float.rs"]
     mod unsigned_narrow_to_float;
 

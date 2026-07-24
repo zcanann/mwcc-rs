@@ -1285,6 +1285,18 @@ impl Generator {
                     };
                     return self.emit_condition_test(&normalized);
                 }
+                // For a signed arithmetic result compared with zero, mwcc uses
+                // the record form of the final arithmetic instruction and
+                // branches directly from CR0 (`add.` followed by `ble`, etc.).
+                // This also gives computed operands their natural placement
+                // without weakening the leaf-register boundary below.
+                if constant_value(right) == Some(0)
+                    && self.signedness_of(left)?
+                    && self.try_emit_recorded_arithmetic_result(left)?
+                {
+                    return Ok(false_branch_bo_bi(*operator)
+                        .expect("is_comparison restricts the operator"));
+                }
                 // Equality against a 32-bit constant with a zero low half does
                 // not need a materialized constant register. MWCC subtracts the
                 // high half with `addis` and compares the result with zero:
