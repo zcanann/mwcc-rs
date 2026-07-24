@@ -3628,11 +3628,7 @@ impl Parser {
                             .collect();
                         if destructor_scope.is_some() && class.has_virtual_destructor {
                             let vptr_store = vptr_stores[0].clone();
-                            let before_source = destructor_subobject_calls
-                                .is_empty()
-                                .then_some(vptr_store)
-                                .into_iter()
-                                .collect();
+                            let before_source = vec![vptr_store];
                             let object_size =
                                 self.structs.get(scope).map_or(0, |layout| layout.size);
                             let delete =

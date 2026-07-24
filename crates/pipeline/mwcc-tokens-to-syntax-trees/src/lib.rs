@@ -3240,6 +3240,58 @@ blr\n\
     }
 
     #[test]
+    fn destructor_routes_class_array_members_through_destroy_arr() {
+        let source = r#"
+            class Token {
+            public:
+                ~Token();
+                int value;
+            };
+            class Owner {
+                Token entries[3];
+            public:
+                ~Owner();
+            };
+            Owner::~Owner() {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        let destructor = &unit.functions[0];
+        let [mwcc_syntax_trees::Statement::If { then_body, .. }] =
+            destructor.statements.as_slice()
+        else {
+            panic!("expected the complete-object guard");
+        };
+        assert!(matches!(
+            then_body.first(),
+            Some(mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Call { name, arguments }
+            )) if name == "__destroy_arr"
+                && matches!(
+                    arguments.as_slice(),
+                    [
+                        mwcc_syntax_trees::Expression::Variable(object),
+                        mwcc_syntax_trees::Expression::AddressOf { operand },
+                        mwcc_syntax_trees::Expression::IntegerLiteral(4),
+                        mwcc_syntax_trees::Expression::IntegerLiteral(3),
+                    ] if object == "this"
+                        && matches!(
+                            operand.as_ref(),
+                            mwcc_syntax_trees::Expression::Variable(target)
+                                if target == "__dt__5TokenFv"
+                        )
+                )
+        ));
+    }
+
+    #[test]
     fn destructor_materializes_inline_optional_template_lifetime() {
         let source = r#"
             class Leaf {
@@ -4064,6 +4116,10 @@ blr\n\
         assert!(matches!(unit.functions[1].statements.as_slice(), [
             mwcc_syntax_trees::Statement::If { then_body, .. }
         ] if matches!(then_body.as_slice(), [
+            mwcc_syntax_trees::Statement::Store {
+                target: mwcc_syntax_trees::Expression::Member { offset: 4, .. },
+                value: mwcc_syntax_trees::Expression::AddressOf { operand },
+            },
             mwcc_syntax_trees::Statement::Expression(
                 mwcc_syntax_trees::Expression::Call { name: secondary, arguments: secondary_args }
             ),
@@ -4071,7 +4127,9 @@ blr\n\
                 mwcc_syntax_trees::Expression::Call { name: primary, arguments: primary_args }
             ),
             mwcc_syntax_trees::Statement::If { .. },
-        ] if secondary == "__dt__9SecondaryFv"
+        ] if matches!(operand.as_ref(), mwcc_syntax_trees::Expression::Variable(vtable)
+                if vtable == "__vt__7Derived")
+            && secondary == "__dt__9SecondaryFv"
             && matches!(secondary_args.as_slice(), [
                 mwcc_syntax_trees::Expression::MemberAddress { offset: 8, .. },
                 mwcc_syntax_trees::Expression::IntegerLiteral(0),

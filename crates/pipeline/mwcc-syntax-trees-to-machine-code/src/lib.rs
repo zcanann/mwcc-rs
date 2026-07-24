@@ -176,6 +176,14 @@ pub fn lower_function(
         return Ok(output);
     }
     if let Some(output) =
+        cxx_abi::lower_array_member_destructor(function, inline_summaries, config.clone())
+    {
+        return Ok(classify_specialized_call_declarations(
+            output,
+            prototyped_names,
+        ));
+    }
+    if let Some(output) =
         cxx_abi::lower_composed_destructor(function, inline_summaries, config.clone())
     {
         return Ok(classify_specialized_call_declarations(
@@ -447,6 +455,7 @@ pub fn lower_function(
                 "__nwa__FUl".to_owned(),
                 "__nwa__FUli".to_owned(),
                 "__nwa__FUlP7JKRHeapi".to_owned(),
+                "__destroy_arr".to_owned(),
                 "memcpy".to_owned(),
             ])
             .collect(),

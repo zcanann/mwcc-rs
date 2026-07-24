@@ -5095,11 +5095,6 @@ impl Parser {
             if !matches!(field.member_type, Type::Struct { .. }) {
                 continue;
             }
-            // Array destruction needs a reverse element loop and is not
-            // equivalent to one complete-object call at the field address.
-            if field.array_bytes.is_some() {
-                continue;
-            }
             if let Some(mut lifetime) =
                 crate::items::cxx_template_destructors::optional_member_lifetime(
                     self,
@@ -5118,12 +5113,35 @@ impl Parser {
             if !has_destructor {
                 continue;
             }
+            let destructor = self.mangle_typed_member_in_current_namespace(
+                field_class,
+                "__dt",
+                &[],
+            )?;
+            if let Some(array_bytes) = field.array_bytes {
+                let Type::Struct { size, .. } = field.member_type else {
+                    unreachable!("class-valued array membership was checked above")
+                };
+                if size == 0 || array_bytes % size != 0 {
+                    return Err(Diagnostic::error(format!(
+                        "class array member '{field_name}' has inconsistent lifetime extent"
+                    )));
+                }
+                statements.push(Statement::Expression(Expression::Call {
+                    name: "__destroy_arr".to_string(),
+                    arguments: vec![
+                        adjusted_this(field.offset),
+                        Expression::AddressOf {
+                            operand: Box::new(Expression::Variable(destructor)),
+                        },
+                        Expression::IntegerLiteral(i64::from(size)),
+                        Expression::IntegerLiteral(i64::from(array_bytes / size)),
+                    ],
+                }));
+                continue;
+            }
             statements.push(Statement::Expression(Expression::Call {
-                name: self.mangle_typed_member_in_current_namespace(
-                    field_class,
-                    "__dt",
-                    &[],
-                )?,
+                name: destructor,
                 arguments: vec![
                     adjusted_this(field.offset),
                     Expression::IntegerLiteral(0),
