@@ -480,8 +480,14 @@ def statuses(
 
     if no_code and no_relocations:
         aggregate = "CODE EMPTY — neither object has emitted code"
-    elif bytes_equal and shape_equal and targets_equal:
-        aggregate = "CODE BYTE — .text bytes and text relocations match"
+    elif bytes_equal and normalized_equal:
+        if targets_equal:
+            aggregate = "CODE BYTE — .text bytes and text relocations match"
+        else:
+            aggregate = (
+                "CODE BYTE — .text bytes and normalized text relocations match; "
+                "anonymous symbol ordinals differ"
+            )
     else:
         aggregate = "CODE DIFF — see TEXT_* component results"
     return [aggregate, *lines]

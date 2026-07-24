@@ -60,7 +60,11 @@ Contents of section .text:
             "ANON_ORDINALS DIFF — anonymous symbol numbers are the only relocation-target difference",
             result,
         )
-        self.assertTrue(result[0].startswith("CODE DIFF"))
+        self.assertEqual(
+            result[0],
+            "CODE BYTE — .text bytes and normalized text relocations match; "
+            "anonymous symbol ordinals differ",
+        )
 
     def test_parses_relocation_shape_and_target(self):
         output = """
