@@ -1916,9 +1916,42 @@ impl Parser {
                             ) = self.tokens.get(body_open + 1..body_open + 5)
                             {
                                 self.inline_template_accessors.insert(
-                                    (class_name.clone(), member_name, arity),
+                                    (class_name.clone(), member_name.clone(), arity),
                                     field.clone(),
                                 );
+                            }
+                            let return_wrapper = index.checked_sub(1).and_then(
+                                |return_type| match self.tokens.get(return_type) {
+                                    Some(Token::Identifier(name)) => Some(name.clone()),
+                                    _ => None,
+                                },
+                            );
+                            if let Some(
+                                [
+                                    Token::KeywordReturn,
+                                    Token::Identifier(wrapper),
+                                    Token::ParenOpen,
+                                    Token::Identifier(base),
+                                    Token::Colon,
+                                    Token::Colon,
+                                    Token::Identifier(base_member),
+                                    Token::ParenOpen,
+                                    Token::ParenClose,
+                                    Token::ParenClose,
+                                    Token::Semicolon,
+                                ],
+                            ) = self.tokens.get(body_open + 1..body_close)
+                            {
+                                if return_wrapper.as_ref() == Some(wrapper) {
+                                    let base = self
+                                        .resolve_scoped_cxx_class_name(base)
+                                        .or_else(|| self.struct_typedefs.get(base).cloned())
+                                        .unwrap_or_else(|| base.clone());
+                                    self.inline_template_base_forwarders.insert(
+                                        (class_name.clone(), member_name.clone(), arity),
+                                        (base, base_member.clone()),
+                                    );
+                                }
                             }
                         }
                     }
@@ -2113,6 +2146,38 @@ impl Parser {
             .inline_template_accessors
             .get(&(primary.to_owned(), member.to_owned(), arity))?;
         self.structs.get(instance)?.fields.get(field).cloned()
+    }
+
+    /// Resolve an exact wrapper summary captured from a primary-template body.
+    pub(crate) fn resolve_inline_template_base_forwarder(
+        &self,
+        instance: &str,
+        member: &str,
+        arity: usize,
+    ) -> Option<(String, String)> {
+        let qualified = self.qualify_cxx_class_name(instance);
+        let primary = self
+            .template_aliases
+            .get(instance)
+            .or_else(|| self.template_aliases.get(&qualified))
+            .map(String::as_str)
+            .unwrap_or_else(|| instance.split('<').next().unwrap_or(instance));
+        let direct = self
+            .inline_template_base_forwarders
+            .get(&(primary.to_owned(), member.to_owned(), arity))
+            .cloned();
+        if direct.is_some() {
+            return direct;
+        }
+        let terminal = primary.rsplit("::").next().unwrap_or(primary);
+        self.inline_template_base_forwarders
+            .get(&(terminal.to_owned(), member.to_owned(), arity))
+            .or_else(|| {
+                let primary = self.qualify_cxx_class_name(primary);
+                self.inline_template_base_forwarders
+                    .get(&(primary, member.to_owned(), arity))
+            })
+            .cloned()
     }
 
     /// Materialize a concrete template value from a recovered constructor

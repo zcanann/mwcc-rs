@@ -256,6 +256,7 @@ pub fn parse_located_translation_unit_with_behavior(
         inline_template_member_control_flow_labels: std::collections::HashMap::new(),
         instantiated_inline_template_members: std::collections::HashSet::new(),
         inline_template_accessors: std::collections::HashMap::new(),
+        inline_template_base_forwarders: std::collections::HashMap::new(),
         template_value_constructors: std::collections::HashMap::new(),
         empty_nested_template_types: std::collections::HashSet::new(),
         inline_cxx_members: std::collections::HashSet::new(),
@@ -7058,6 +7059,7 @@ blr\n\
                         friend class ListBase;
                         int* node;
                     };
+                    Iterator GetBeginIter() { return Iterator(); }
                     int count;
                 };
                 template <typename T, int Offset>
@@ -7069,6 +7071,9 @@ blr\n\
                         int* node;
                     };
                     typedef Iterator ConstIterator;
+                    Iterator GetBeginIter() {
+                        return Iterator(ListBase::GetBeginIter());
+                    }
                 };
             }
             namespace client {
@@ -7076,6 +7081,9 @@ blr\n\
                 typedef api::List<Entry, ((int)&(((Entry*)0)->link))> EntryList;
                 EntryList values;
                 EntryList::Iterator iterator;
+                void begin(EntryList& list) {
+                    EntryList::Iterator local = list.GetBeginIter();
+                }
             }
         "#;
         let unit = parse_translation_unit(

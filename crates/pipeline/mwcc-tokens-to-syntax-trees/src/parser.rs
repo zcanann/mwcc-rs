@@ -246,6 +246,13 @@ pub(crate) struct Parser {
     /// let callable objects and ordinary trivial accessors inline after a
     /// concrete layout has supplied the field offset.
     pub(crate) inline_template_accessors: HashMap<(String, String, usize), String>,
+    /// Exact one-line primary-template wrappers of a recovered base method:
+    /// `(template, member, arity) -> (base owner, base member)`.
+    ///
+    /// The body shape proves that erasing the wrapper construction preserves
+    /// runtime semantics for word-shaped nested values such as iterators.
+    pub(crate) inline_template_base_forwarders:
+        HashMap<(String, String, usize), (String, String)>,
     /// Out-of-class primary-template constructor initializer summaries. Each
     /// entry maps a concrete field to the constructor argument copied into it;
     /// value construction is admitted only when the summary covers the entire
