@@ -4787,6 +4787,91 @@ mod tests {
     }
 
     #[test]
+    fn inlines_and_schedules_a_terminal_mutable_acceleration_selector() {
+        let source = br#"
+            struct State {
+                char pad0[228];
+                float output;
+                char pad1[4];
+                float velocity;
+                char pad2[1328];
+                float stick;
+            };
+            void select_acceleration(
+                struct State* state,
+                float acceleration,
+                float target,
+                float unused
+            ) {
+                if (!target) {
+                    acceleration = -state->velocity;
+                } else if (!(state->velocity * acceleration < 0)) {
+                    if (acceleration > 0) {
+                        if (state->velocity + acceleration > target) {
+                            acceleration = target - state->velocity;
+                        }
+                    } else if (state->velocity + acceleration < target) {
+                        acceleration = target - state->velocity;
+                    }
+                }
+                state->output = acceleration;
+            }
+            void compiled(
+                struct State* state,
+                float threshold,
+                float acceleration_max,
+                float target_max
+            ) {
+                float stick = state->stick;
+                float acceleration;
+                float target;
+                if ((stick < 0 ? -stick : stick) >= threshold) {
+                    acceleration = stick * acceleration_max;
+                    target = stick * target_max;
+                } else {
+                    target = 0;
+                    acceleration = 0;
+                }
+                select_acceleration(state, acceleration, target, stick);
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.emit_mwcats = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "inlined-acceleration-select.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the sole-use selector should inline and retain its float lanes");
+        let expected_text = [
+            0xc0, 0x83, 0x06, 0x20, 0xc0, 0x00, 0x00, 0x00, 0xfc, 0x04, 0x00, 0x40, 0x40,
+            0x80, 0x00, 0x0c, 0xfc, 0x00, 0x20, 0x50, 0x48, 0x00, 0x00, 0x08, 0xfc, 0x00,
+            0x20, 0x90, 0xfc, 0x00, 0x08, 0x40, 0x4c, 0x41, 0x13, 0x82, 0x40, 0x82, 0x00,
+            0x10, 0xec, 0x44, 0x00, 0xb2, 0xec, 0x84, 0x00, 0xf2, 0x48, 0x00, 0x00, 0x0c,
+            0xc0, 0x80, 0x00, 0x00, 0xfc, 0x40, 0x20, 0x90, 0xc0, 0x20, 0x00, 0x00, 0xfc,
+            0x04, 0x08, 0x00, 0x40, 0x82, 0x00, 0x10, 0xc0, 0x03, 0x00, 0xec, 0xfc, 0x40,
+            0x00, 0x50, 0x48, 0x00, 0x00, 0x40, 0xc0, 0x63, 0x00, 0xec, 0xec, 0x03, 0x00,
+            0xb2, 0xfc, 0x00, 0x08, 0x40, 0x41, 0x80, 0x00, 0x30, 0xfc, 0x02, 0x08, 0x40,
+            0x40, 0x81, 0x00, 0x18, 0xec, 0x03, 0x10, 0x2a, 0xfc, 0x00, 0x20, 0x40, 0x40,
+            0x81, 0x00, 0x1c, 0xec, 0x44, 0x18, 0x28, 0x48, 0x00, 0x00, 0x14, 0xec, 0x03,
+            0x10, 0x2a, 0xfc, 0x00, 0x20, 0x40, 0x40, 0x80, 0x00, 0x08, 0xec, 0x44, 0x18,
+            0x28, 0xd0, 0x43, 0x00, 0xe4, 0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected_text.len())
+            .any(|bytes| bytes == expected_text));
+    }
+
+    #[test]
     fn schedules_member_acceleration_toward_a_target_velocity() {
         let source = br#"
             struct State {
