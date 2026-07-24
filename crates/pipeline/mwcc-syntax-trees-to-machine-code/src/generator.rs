@@ -400,6 +400,9 @@ pub(crate) struct Generator {
     /// never got a register must defer (the fallback would emit a direct `bl <local>`,
     /// a relocation against the local's name).
     pub(crate) known_locals: std::collections::HashSet<String>,
+    /// C++ aggregate locals whose source-proven endpoint construction exposes
+    /// their complete runtime representation as one word.
+    pub(crate) one_word_aggregate_locals: std::collections::HashSet<String>,
 }
 
 pub(crate) fn class_of(declared: Type) -> Compilation<ValueClass> {
