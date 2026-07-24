@@ -108,6 +108,31 @@ impl Generator {
         // negated arm becomes an `fneg` tail; a plain leaf becomes the branch-returned value or `fmr`.
         let (true_register, true_negate) = self.float_select_arm(when_true)?;
         let (false_register, false_negate) = self.float_select_arm(when_false)?;
+        let floating_condition = self.is_float_value(left) || self.is_float_value(right);
+        if !floating_condition
+            && !tail
+            && !true_negate
+            && !false_negate
+            && !self.is_double_value(when_true)
+            && !self.is_double_value(when_false)
+        {
+            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            let false_arm = self.fresh_label();
+            let join = self.fresh_label();
+            self.emit_branch_conditional_to(options, condition_bit, false_arm);
+            self.output.instructions.push(Instruction::RoundToSingle {
+                d: destination,
+                b: true_register,
+            });
+            self.emit_branch_to(join);
+            self.bind_label(false_arm);
+            self.output.instructions.push(Instruction::RoundToSingle {
+                d: destination,
+                b: false_register,
+            });
+            self.bind_label(join);
+            return Ok(());
+        }
         // The condition operands may be memory loads: a located left operand loads
         // into a free register (avoiding the select values), the right into the
         // scratch; leaf operands stay in place.

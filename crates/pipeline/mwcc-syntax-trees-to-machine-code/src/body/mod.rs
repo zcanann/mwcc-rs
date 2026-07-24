@@ -81,6 +81,7 @@ mod member_float_normalize;
 mod member_initialization;
 mod member_linefeed;
 mod member_rect_control;
+mod member_store_forwarding;
 mod member_tab;
 mod member_store_fill;
 mod materialized_store_locals;
