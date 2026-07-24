@@ -424,6 +424,31 @@ impl Generator {
                 );
             }
         }
+        // A constant index through a pointer/local-array home needs no index
+        // register: fold `index * stride + member` into the D-form load. This
+        // also keeps r0 free for the surrounding floating expression.
+        if let Some(constant) = constant_value(index) {
+            let array_register = self.general_register_of_leaf(array)?;
+            let displacement = constant
+                .checked_mul(i64::from(stride))
+                .and_then(|scaled| scaled.checked_add(i64::from(offset)))
+                .and_then(|total| i16::try_from(total).ok())
+                .ok_or_else(|| {
+                    Diagnostic::error("indexed member displacement out of range (roadmap)")
+                })?;
+            let pointee = pointee_of_type(member_type).ok_or_else(|| {
+                Diagnostic::error(format!(
+                    "unsupported indexed member load type {member_type:?} at +{offset}"
+                ))
+            })?;
+            self.output.instructions.push(displacement_load(
+                pointee,
+                destination,
+                array_register,
+                displacement,
+            )?);
+            return Ok(());
+        }
         let (array_register, index_register) =
             if let Some(registers) = self.try_prepare_call_indexed_member(array, index)? {
                 registers

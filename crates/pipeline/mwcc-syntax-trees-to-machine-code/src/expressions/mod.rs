@@ -3,6 +3,7 @@
 //! Split by family (fire 528); behavior-identical to the former single expressions.rs.
 
 mod arithmetic;
+mod aggregate_member_copy;
 mod biased_scaled_member_sum;
 mod bit_field_stores;
 mod bit_fields;

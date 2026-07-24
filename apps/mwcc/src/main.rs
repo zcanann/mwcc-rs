@@ -2183,6 +2183,9 @@ mod tests {
     #[path = "call_indexed_member.rs"]
     mod call_indexed_member;
 
+    #[path = "aggregate_member_copy.rs"]
+    mod aggregate_member_copy;
+
     #[test]
     fn parity_keep_going_is_an_explicit_diagnostic_flag() {
         let ordinary = parse_invocation(&[]);

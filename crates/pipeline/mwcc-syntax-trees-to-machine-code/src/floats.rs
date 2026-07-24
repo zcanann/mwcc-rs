@@ -524,8 +524,14 @@ impl Generator {
     /// an operand loads into a float register (its general base register, if any,
     /// is untouched).
     pub(crate) fn is_float_located(&self, operand: &Expression) -> bool {
-        if let Some((_, _, member_type)) = as_member(operand) {
-            return member_type == Type::Float;
+        if matches!(
+            operand,
+            Expression::Member {
+                member_type: Type::Float | Type::Double,
+                ..
+            }
+        ) {
+            return true;
         }
         if let Some(pointer) = as_dereference(operand) {
             return matches!(

@@ -54,6 +54,9 @@ impl Generator {
             Expression::IndexedUpdateValue { value } => (value.as_ref(), true),
             value => (value, false),
         };
+        if self.try_emit_member_vec3_copy(target, value)? {
+            return Ok(());
+        }
         if self.try_emit_frame_aggregate_copy(target, value)? {
             return Ok(());
         }

@@ -445,8 +445,20 @@ impl Generator {
         operand: &Expression,
         destination: u8,
     ) -> Compilation<()> {
-        if let Some((base, offset, member_type)) = as_member(operand) {
-            self.emit_member_load(base, offset, member_type, None, destination)
+        if let Expression::Member {
+            base,
+            offset,
+            member_type,
+            index_stride,
+        } = operand
+        {
+            self.emit_member_load(
+                base,
+                *offset,
+                *member_type,
+                *index_stride,
+                destination,
+            )
         } else if let Some(pointer) = as_dereference(operand) {
             self.emit_load_from_pointer(pointer, destination)
         } else if let Expression::Variable(name) = operand {
