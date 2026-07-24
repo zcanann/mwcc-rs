@@ -61,6 +61,7 @@ mod member_rect_control;
 mod member_tab;
 mod member_store_fill;
 mod materialized_store_locals;
+mod mixed_scalar_initialization_schedule;
 mod nested_global_indirect_call;
 mod passes;
 mod punned_ladder_policy;

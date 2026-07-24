@@ -4219,6 +4219,67 @@ mod tests {
     }
 
     #[test]
+    fn shares_constants_across_a_mixed_scalar_member_initialization() {
+        let source = br#"
+            struct State {
+                char pad0[120];
+                float animation_y;
+                char pad1[36];
+                float position_z;
+                char pad2[20];
+                float shield_z;
+                char pad3[36];
+                int ground_or_air;
+                char pad4[8];
+                float ground_velocity;
+                char pad5[1840];
+                unsigned collision_flags;
+                char pad6[104];
+                int lock;
+                char pad7[4312];
+                unsigned char jumps;
+            };
+            void compiled(struct State* state) {
+                state->ground_or_air = 1;
+                state->ground_velocity = 0;
+                state->position_z = 0;
+                state->shield_z = 0;
+                state->animation_y = 0;
+                state->jumps = 1;
+                state->lock = 10;
+                state->collision_flags |= 16;
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.emit_mwcats = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "mixed-scalar-member-initialization.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("mixed scalar initialization should retain its shared constants");
+        let expected_text = [
+            0x38, 0x80, 0x00, 0x01, 0x90, 0x83, 0x00, 0xe0, 0x38, 0x00, 0x00, 0x0a, 0xc0,
+            0x00, 0x00, 0x00, 0xd0, 0x03, 0x00, 0xec, 0xd0, 0x03, 0x00, 0xa0, 0xd0, 0x03,
+            0x00, 0xb8, 0xd0, 0x03, 0x00, 0x78, 0x98, 0x83, 0x19, 0x68, 0x90, 0x03, 0x08,
+            0x8c, 0x80, 0x03, 0x08, 0x20, 0x60, 0x00, 0x00, 0x10, 0x90, 0x03, 0x08, 0x20,
+            0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected_text.len())
+            .any(|bytes| bytes == expected_text));
+    }
+
+    #[test]
     fn command_line_pool_mode_is_last_wins() {
         let off = parse_invocation(&["-pool".into(), "off".into()]);
         assert!(!off.flags.pooling_enabled);
