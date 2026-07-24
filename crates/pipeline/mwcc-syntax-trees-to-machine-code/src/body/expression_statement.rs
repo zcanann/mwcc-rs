@@ -3,6 +3,27 @@
 use super::*;
 
 impl Generator {
+    /// Recognize a discarded scalar read that optimization removes completely.
+    ///
+    /// `(void)name` still evaluates `name` in the C abstract machine, so a volatile
+    /// global must retain its load. Register locals and non-volatile globals have no
+    /// observable read side effect and mwcc emits no instruction for them.
+    pub(crate) fn is_discarded_pure_value(&self, expression: &Expression) -> bool {
+        let Expression::Cast {
+            target_type: Type::Void,
+            operand,
+        } = expression
+        else {
+            return false;
+        };
+        let Expression::Variable(name) = operand.as_ref() else {
+            return false;
+        };
+        self.locations.contains_key(name.as_str())
+            || (self.globals.contains_key(name.as_str())
+                && !self.volatile_globals.contains(name.as_str()))
+    }
+
     /// Lower `condition ? (void)0 : call()` (and its mirrored form) as a
     /// guarded call. Macro assertions use this expression-statement shape after
     /// preprocessing; mwcc branches over the cold call without materializing a

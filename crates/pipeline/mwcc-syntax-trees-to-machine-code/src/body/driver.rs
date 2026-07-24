@@ -4259,7 +4259,9 @@ impl Generator {
                 Ok(())
             }
             Statement::Expression(expression) => {
-                if self.try_emit_conditional_call_statement(expression)? {
+                if self.is_discarded_pure_value(expression)
+                    || self.try_emit_conditional_call_statement(expression)?
+                {
                     Ok(())
                 } else {
                     Err(Diagnostic::error(format!(
