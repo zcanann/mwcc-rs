@@ -130,6 +130,31 @@ impl Generator {
                 self.emit_call(name, arguments, Some(destination), true)
             }
             Expression::Binary { operator, left, right } => {
+                // The usual arithmetic conversions fold an integer constant
+                // beside a floating operand into a floating constant before
+                // instruction selection (`x * 4` pools `4.0f`). Keeping that
+                // normalization here lets every floating binary owner share
+                // the ordinary literal-placement and scheduling paths.
+                if matches!(left.as_ref(), Expression::IntegerLiteral(_))
+                    || matches!(right.as_ref(), Expression::IntegerLiteral(_))
+                {
+                    let promoted = Expression::Binary {
+                        operator: *operator,
+                        left: Box::new(match left.as_ref() {
+                            Expression::IntegerLiteral(value) => {
+                                Expression::FloatLiteral(*value as f64)
+                            }
+                            expression => expression.clone(),
+                        }),
+                        right: Box::new(match right.as_ref() {
+                            Expression::IntegerLiteral(value) => {
+                                Expression::FloatLiteral(*value as f64)
+                            }
+                            expression => expression.clone(),
+                        }),
+                    };
+                    return self.evaluate_float(&promoted, destination);
+                }
                 let double = self.is_double_value(left) || self.is_double_value(right);
                 // Mixed `int OP float` arithmetic: promote the integer operand to float first.
                 if self.try_emit_mixed_promotion(*operator, left, right, destination, double)? {

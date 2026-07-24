@@ -3,7 +3,7 @@
 use crate::generator::*;
 use mwcc_core::Compilation;
 use mwcc_machine_code::Instruction;
-use mwcc_syntax_trees::{Expression, Type};
+use mwcc_syntax_trees::{ArmBody, Expression, Pointee, Statement, Type};
 
 #[derive(Clone, Copy)]
 pub(crate) enum IntToFloatSchedule {
@@ -12,6 +12,336 @@ pub(crate) enum IntToFloatSchedule {
 }
 
 impl Generator {
+    /// Count float-to-integer conversions in a structured body. MWCC assigns
+    /// one eight-byte conversion image per syntactic conversion, so frame
+    /// owners need this number before they emit their prologue.
+    pub(crate) fn count_float_to_integer_conversions(&self, statements: &[Statement]) -> usize {
+        fn expression_count(generator: &Generator, expression: &Expression) -> usize {
+            match expression {
+                Expression::Assign { target, value } => {
+                    usize::from(
+                        generator.integer_store_target(target)
+                            && generator.is_float_value(value),
+                    ) + expression_count(generator, target)
+                        + expression_count(generator, value)
+                }
+                Expression::Binary { left, right, .. }
+                | Expression::Comma { left, right } => {
+                    expression_count(generator, left) + expression_count(generator, right)
+                }
+                Expression::Cast {
+                    target_type,
+                    operand,
+                } => {
+                    usize::from(
+                        matches!(
+                            target_type,
+                            Type::Int
+                                | Type::UnsignedInt
+                                | Type::Char
+                                | Type::UnsignedChar
+                                | Type::Short
+                                | Type::UnsignedShort
+                                | Type::LongLong
+                                | Type::UnsignedLongLong
+                        ) && (generator.is_float_value(operand)
+                            || generator.is_float_operand(operand)
+                            || matches!(operand.as_ref(), Expression::Call { name, .. }
+                                if matches!(generator.call_return_types.get(name), Some(Type::Float | Type::Double))))
+                    ) + expression_count(generator, operand)
+                }
+                Expression::Unary { operand, .. }
+                | Expression::IndexedUpdateValue { value: operand }
+                | Expression::Dereference { pointer: operand }
+                | Expression::AddressOf { operand }
+                | Expression::PostStep {
+                    target: operand, ..
+                } => expression_count(generator, operand),
+                Expression::Conditional {
+                    condition,
+                    when_true,
+                    when_false,
+                    ..
+                } => {
+                    expression_count(generator, condition)
+                        + expression_count(generator, when_true)
+                        + expression_count(generator, when_false)
+                }
+                Expression::BitFieldRead {
+                    extracted, storage, ..
+                }
+                | Expression::Index {
+                    base: extracted,
+                    index: storage,
+                } => {
+                    expression_count(generator, extracted)
+                        + expression_count(generator, storage)
+                }
+                Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
+                    expression_count(generator, base)
+                }
+                Expression::Call { arguments, .. } => arguments
+                    .iter()
+                    .map(|argument| expression_count(generator, argument))
+                    .sum(),
+                Expression::CallThrough { target, arguments } => {
+                    expression_count(generator, target)
+                        + arguments
+                            .iter()
+                            .map(|argument| expression_count(generator, argument))
+                            .sum::<usize>()
+                }
+                Expression::VirtualCall {
+                    object, arguments, ..
+                } => {
+                    expression_count(generator, object)
+                        + arguments
+                            .iter()
+                            .map(|argument| expression_count(generator, argument))
+                            .sum::<usize>()
+                }
+                Expression::ConstructedNew {
+                    allocation,
+                    arguments,
+                    ..
+                } => {
+                    expression_count(generator, allocation)
+                        + arguments
+                            .iter()
+                            .map(|argument| expression_count(generator, argument))
+                            .sum::<usize>()
+                }
+                Expression::AggregateLiteral(elements) => elements
+                    .iter()
+                    .map(|element| expression_count(generator, element))
+                    .sum(),
+                Expression::IntegerLiteral(_)
+                | Expression::FloatLiteral(_)
+                | Expression::StringLiteral(_)
+                | Expression::Variable(_)
+                | Expression::CompoundLiteral { .. } => 0,
+            }
+        }
+
+        fn arm_count(generator: &Generator, arm: &ArmBody) -> usize {
+            match arm {
+                ArmBody::Return(expression) => expression_count(generator, expression),
+                ArmBody::Statements(statements) => statement_count(generator, statements),
+            }
+        }
+
+        fn statement_count(generator: &Generator, statements: &[Statement]) -> usize {
+            statements
+                .iter()
+                .map(|statement| match statement {
+                    Statement::Store { target, value } => {
+                        usize::from(
+                            generator.integer_store_target(target)
+                                && generator.is_float_value(value),
+                        ) + expression_count(generator, target)
+                            + expression_count(generator, value)
+                    }
+                    Statement::Assign { value, .. } | Statement::Expression(value) => {
+                        expression_count(generator, value)
+                    }
+                    Statement::If {
+                        condition,
+                        then_body,
+                        else_body,
+                    } => {
+                        expression_count(generator, condition)
+                            + statement_count(generator, then_body)
+                            + statement_count(generator, else_body)
+                    }
+                    Statement::Return(value) => value
+                        .as_ref()
+                        .map_or(0, |value| expression_count(generator, value)),
+                    Statement::Switch {
+                        scrutinee,
+                        arms,
+                        default,
+                    } => {
+                        expression_count(generator, scrutinee)
+                            + arms
+                                .iter()
+                                .map(|arm| arm_count(generator, &arm.body))
+                                .sum::<usize>()
+                            + default
+                                .as_ref()
+                                .map_or(0, |arm| arm_count(generator, arm))
+                    }
+                    Statement::Loop {
+                        initializer,
+                        condition,
+                        step,
+                        body,
+                        ..
+                    } => {
+                        initializer
+                            .as_ref()
+                            .map_or(0, |value| expression_count(generator, value))
+                            + condition
+                                .as_ref()
+                                .map_or(0, |value| expression_count(generator, value))
+                            + step
+                                .as_ref()
+                                .map_or(0, |value| expression_count(generator, value))
+                            + statement_count(generator, body)
+                    }
+                    Statement::Break
+                    | Statement::Continue
+                    | Statement::Goto(_)
+                    | Statement::Label(_) => 0,
+                })
+                .sum()
+        }
+
+        statement_count(self, statements)
+    }
+
+    fn integer_store_target(&self, target: &Expression) -> bool {
+        let pointee = match target {
+            Expression::Member { member_type, .. } => {
+                crate::expressions::pointee_of_type(*member_type)
+            }
+            Expression::Dereference { pointer } => self.pointee_of(pointer).ok(),
+            Expression::Index { base, .. } => self.pointee_of(base).ok(),
+            Expression::Variable(name) => self
+                .frame_slots
+                .get(name)
+                .and_then(|slot| crate::expressions::frame_value_pointee(slot.value_type))
+                .or_else(|| {
+                    self.globals
+                        .get(name)
+                        .and_then(|value_type| crate::expressions::pointee_of_type(*value_type))
+                }),
+            _ => None,
+        };
+        pointee.is_some_and(|pointee| !matches!(pointee, Pointee::Float | Pointee::Double))
+    }
+
+    /// Configure the disjoint eight-byte images used by float-to-integer
+    /// conversions inside an already-planned stack frame.
+    pub(crate) fn plan_float_to_int_scratch(&mut self, base: i16, count: usize) -> Compilation<()> {
+        let bytes = i16::try_from(count.saturating_mul(8))
+            .map_err(|_| mwcc_core::Diagnostic::error("float-to-int scratch range is too large"))?;
+        self.float_to_int_scratch_next = base;
+        self.float_to_int_scratch_end = base
+            .checked_add(bytes)
+            .ok_or_else(|| mwcc_core::Diagnostic::error("float-to-int scratch range is too large"))?;
+        Ok(())
+    }
+
+    /// Claim one conversion image. Leaf functions discover these lazily, so
+    /// grow the single frame push as additional conversions are encountered.
+    /// Callee-saved bodies must pre-plan their range before emitting a prologue.
+    fn claim_float_to_int_scratch(&mut self) -> Compilation<i16> {
+        if self.float_to_int_scratch_next == 0 {
+            if self.non_leaf || self.frame_size != 0 {
+                return Err(mwcc_core::Diagnostic::error(
+                    "a framed float-to-int conversion needs a pre-planned scratch image",
+                ));
+            }
+            self.float_to_int_scratch_next = 8;
+        }
+        let offset = self.float_to_int_scratch_next;
+        let next = offset
+            .checked_add(8)
+            .ok_or_else(|| mwcc_core::Diagnostic::error("float-to-int scratch range is too large"))?;
+        if self.float_to_int_scratch_end != 0 && next > self.float_to_int_scratch_end {
+            return Err(mwcc_core::Diagnostic::error(
+                "float-to-int conversion exceeded its planned scratch range",
+            ));
+        }
+        self.float_to_int_scratch_next = next;
+
+        if self.float_to_int_scratch_end == 0 {
+            let required = next.saturating_add(15) & !15;
+            if self.frame_size == 0 {
+                self.frame_size = required;
+                self.output
+                    .instructions
+                    .push(Instruction::StoreWordWithUpdate {
+                        s: 1,
+                        a: 1,
+                        offset: -required,
+                    });
+            } else if required > self.frame_size {
+                let old_size = self.frame_size;
+                let Some(Instruction::StoreWordWithUpdate { offset, .. }) = self
+                    .output
+                    .instructions
+                    .iter_mut()
+                    .find(|instruction| {
+                        matches!(instruction, Instruction::StoreWordWithUpdate {
+                            s: 1,
+                            a: 1,
+                            offset,
+                        } if *offset == -old_size)
+                    })
+                else {
+                    return Err(mwcc_core::Diagnostic::error(
+                        "a growing float-to-int frame is missing its stack push",
+                    ));
+                };
+                *offset = -required;
+                self.frame_size = required;
+            }
+        }
+        Ok(offset)
+    }
+
+    /// Convert a floating value to a signed integer through MWCC's `fctiwz`
+    /// stack image. Unlike the old leaf-only path, the source may be a memory
+    /// load or an arbitrary floating expression.
+    fn emit_float_to_signed_integer(
+        &mut self,
+        operand: &Expression,
+        destination: u8,
+    ) -> Compilation<()> {
+        let leaf_source = if self.is_float_leaf(operand) {
+            Some(self.float_register_of_leaf(operand)?)
+        } else {
+            None
+        };
+        // A resident leaf can begin its conversion before the independent
+        // stack update. A computed value needs the frame established before
+        // its loads/arithmetic, exactly as MWCC schedules the two cases.
+        let scratch = if let Some(source) = leaf_source {
+            self.output
+                .instructions
+                .push(Instruction::ConvertToIntegerWordZero {
+                    d: FLOAT_SCRATCH,
+                    b: source,
+                });
+            self.claim_float_to_int_scratch()?
+        } else {
+            let scratch = self.claim_float_to_int_scratch()?;
+            self.evaluate_float(operand, FLOAT_SCRATCH)?;
+            self.output
+                .instructions
+                .push(Instruction::ConvertToIntegerWordZero {
+                    d: FLOAT_SCRATCH,
+                    b: FLOAT_SCRATCH,
+                });
+            scratch
+        };
+        self.output.has_conversion = true;
+        self.output
+            .instructions
+            .push(Instruction::StoreFloatDouble {
+                s: FLOAT_SCRATCH,
+                a: 1,
+                offset: scratch,
+            });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: destination,
+            a: 1,
+            offset: scratch + 4,
+        });
+        Ok(())
+    }
+
     /// The integer width (bits) of a cast's leaf operand, when determinable. Used to
     /// defer a cast-to-float of a narrow (char/short) value: mwcc first widens it to
     /// int (extsb/extsh) and reschedules the magic-constant idiom around that extra
@@ -310,7 +640,7 @@ impl Generator {
                 "an int<-float<-int round-trip cast is not modeled (roadmap)",
             ));
         }
-        if self.is_float_leaf(operand) {
+        if self.is_float_value(operand) || self.is_float_operand(operand) {
             // float -> unsigned uses a runtime helper call (the value may exceed
             // INT_MAX, which `fctiwz` cannot represent), not the signed frame bounce.
             if !self.signed_of(target_type) {
@@ -319,34 +649,7 @@ impl Generator {
                 ));
             }
             // float -> int: convert, bounce through the frame, then narrow if needed.
-            let source = self.float_register_of_leaf(operand)?;
-            self.output.has_conversion = true;
-            self.frame_size = 16;
-            self.output
-                .instructions
-                .push(Instruction::ConvertToIntegerWordZero {
-                    d: FLOAT_SCRATCH,
-                    b: source,
-                });
-            self.output
-                .instructions
-                .push(Instruction::StoreWordWithUpdate {
-                    s: 1,
-                    a: 1,
-                    offset: -16,
-                });
-            self.output
-                .instructions
-                .push(Instruction::StoreFloatDouble {
-                    s: FLOAT_SCRATCH,
-                    a: 1,
-                    offset: 8,
-                });
-            self.output.instructions.push(Instruction::LoadWord {
-                d: destination,
-                a: 1,
-                offset: 12,
-            });
+            self.emit_float_to_signed_integer(operand, destination)?;
             if target_type.width() < 32 {
                 // mwcc does NOT narrow a float -> (char/short) cast with an extend
                 // instruction: `return (char)a` leaves the fctiwz int in r3 as-is, and a
@@ -359,18 +662,18 @@ impl Generator {
             }
             return Ok(());
         }
-        // A float operand that is NOT a leaf — a global (`(int)gf`), a load, a member,
-        // or a float-returning CALL (`(int)hf()`) — needs the same fctiwz + frame-bounce
-        // but with the value loaded/called first (mwcc's `bl hf; fctiwz f0,f1; ...`).
-        // Until that is modeled, defer: falling through to the integer path below would
-        // evaluate the float operand into a general register and store garbage. (A call
-        // would call with `float_result=false` and store the untouched r3.)
+        // A declared float-returning call is not classified by the ordinary
+        // expression type helper, but uses the same load/call + conversion path.
         let is_float_call = matches!(operand, Expression::Call { name, .. }
             if matches!(self.call_return_types.get(name), Some(Type::Float | Type::Double)));
-        if self.is_float_value(operand) || self.is_float_operand(operand) || is_float_call {
-            return Err(mwcc_core::Diagnostic::error(
-                "float-to-int of a non-leaf operand needs the load/call + convert path (roadmap)",
-            ));
+        if is_float_call {
+            if !self.signed_of(target_type) {
+                return Err(mwcc_core::Diagnostic::error(
+                    "float-to-unsigned conversion needs a runtime helper (roadmap)",
+                ));
+            }
+            self.emit_float_to_signed_integer(operand, destination)?;
+            return Ok(());
         }
         // `(unsigned char)<char load>`: the byte load (`lbz`/`lbzx`) already zero-extends to
         // 0..255, which IS the unsigned-char value, so mwcc drops BOTH the signed-promotion

@@ -2405,6 +2405,9 @@ mod tests {
     #[path = "address_taken_scalar.rs"]
     mod address_taken_scalar;
 
+    #[path = "float_to_integer_store.rs"]
+    mod float_to_integer_store;
+
     use super::{compile, global_alignments, parse_invocation, GlobalAlignments, SourceLanguage};
     use mwcc_versions::{EnumStorage, GlobalAddressing};
 
@@ -2489,6 +2492,9 @@ mod tests {
 
     #[path = "elf_object.rs"]
     mod elf_object;
+
+    #[path = "float_to_integer_memory.rs"]
+    mod float_to_integer_memory;
 
     #[path = "inferred_array_sections.rs"]
     mod inferred_array_sections;

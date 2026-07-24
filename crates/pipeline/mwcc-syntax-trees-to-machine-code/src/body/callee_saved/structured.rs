@@ -371,7 +371,7 @@ impl Generator {
         } else {
             0
         };
-        let local_region_bytes = if !aggregate_frame_locals.is_empty() {
+        let mut local_region_bytes = if !aggregate_frame_locals.is_empty() {
             let mut end = 8u32;
             for local in aggregate_frame_locals.iter().rev() {
                 let Type::Struct { size, align } = local.declared_type else {
@@ -402,6 +402,22 @@ impl Generator {
         } else {
             scalar_only_frame_bytes
         };
+        let float_to_int_conversion_count =
+            self.count_float_to_integer_conversions(&function.statements);
+        if float_to_int_conversion_count != 0 {
+            let occupied_end = 8i16
+                .checked_add(local_region_bytes)
+                .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
+            let conversion_base = occupied_end
+                .checked_add(7)
+                .map(|end| end & !7)
+                .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
+            self.plan_float_to_int_scratch(conversion_base, float_to_int_conversion_count)?;
+            local_region_bytes = self
+                .float_to_int_scratch_end
+                .checked_sub(8)
+                .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
+        }
         let global_member_search_entry = function.statements.first().is_some_and(|statement| {
             super::super::global_struct_member_search::is_global_struct_member_search_loop(
                 statement,

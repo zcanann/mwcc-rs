@@ -353,6 +353,14 @@ pub(crate) struct Generator {
     /// old frame end; the ABI normalizer grows the frame enough to keep them
     /// disjoint from the relocated callee-saved homes.
     pub(crate) callee_saved_conversion_bytes: i16,
+    /// Next eight-byte stack image assigned to a float-to-integer conversion.
+    /// MWCC gives every conversion expression its own image even when the
+    /// lifetimes do not overlap. Structured frame owners pre-plan the complete
+    /// range; leaf conversion functions grow their frame as images are claimed.
+    pub(crate) float_to_int_scratch_next: i16,
+    /// Exclusive end of a pre-planned float-to-integer scratch range. Zero
+    /// denotes a leaf function whose conversion frame may grow on demand.
+    pub(crate) float_to_int_scratch_end: i16,
     /// When set, a constant store value reuses the scratch register if it already
     /// holds that constant (`scratch_constant`). Enabled only by the
     /// constant-store-fill path, which guarantees nothing clobbers the scratch

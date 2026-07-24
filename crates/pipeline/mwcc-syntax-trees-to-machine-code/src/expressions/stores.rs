@@ -1560,13 +1560,18 @@ impl Generator {
             self.evaluate_float(value, destination)?;
             return Ok(destination);
         }
-        // A float VALUE stored to a NON-float (integer) target — `int g; g = *p;` with a
-        // float `*p`, or `g = s->fx` — needs a float->int conversion (fctiwz + frame bounce)
-        // of the loaded value before the integer store. A float leaf converts in place via
-        // the cast path below; a non-leaf float load is not wired, so defer rather than load
-        // it as a float and store an integer register that never received the conversion.
+        // A float VALUE stored to a NON-float target converts through its own
+        // `fctiwz` stack image. Narrow destinations truncate the signed word in
+        // the store; a full-width unsigned destination retains C's distinct
+        // runtime-helper semantics.
         if self.is_float_value(value) && !self.is_float_leaf(value) {
-            return Err(Diagnostic::error("a non-leaf float value stored to an integer target needs a float->int conversion (roadmap)"));
+            let conversion_type = if pointee == Pointee::UnsignedInt {
+                Type::UnsignedInt
+            } else {
+                Type::Int
+            };
+            self.emit_cast_to_integer(conversion_type, value, GENERAL_SCRATCH)?;
+            return Ok(GENERAL_SCRATCH);
         }
         // A NARROW value (char/short parameter, or a narrow memory load) stored to a wider
         // INTEGER target must be widened first — `int gi; char a; gi = a;` is `extsb r0,r3;

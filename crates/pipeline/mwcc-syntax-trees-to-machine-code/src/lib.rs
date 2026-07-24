@@ -411,6 +411,8 @@ pub fn lower_function(
         written_slots: HashSet::new(),
         frame_feeding_local_pressure: None,
         callee_saved_conversion_bytes: 0,
+        float_to_int_scratch_next: 0,
+        float_to_int_scratch_end: 0,
         reuse_scratch_constant: false,
         scratch_constant: None,
         prematerialized_constants: Vec::new(),
