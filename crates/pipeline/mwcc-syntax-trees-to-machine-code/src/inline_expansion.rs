@@ -21,7 +21,8 @@ use mwcc_syntax_trees::{Expression, Function, Statement};
 use returns::rewrite_inline_returns;
 use safety::{
     automatic_composable_function, composable_function, materializable_arguments,
-    stable_argument, stable_arguments, stable_local_values,
+    parameter_requires_materialization, stable_argument, stable_arguments, stable_local_values,
+    terminal_scalar_arguments,
 };
 use std::collections::{HashMap, HashSet};
 use substitution::substitute_statement;
@@ -119,6 +120,20 @@ impl InlineBodySet {
         }
         if let Some(needle) = std::env::var_os("MWCC_CAPTURE_INLINE") {
             let needle = needle.to_string_lossy();
+            for function in definitions
+                .iter()
+                .filter(|function| function.name.contains(needle.as_ref()))
+            {
+                eprintln!(
+                    "automatic inline summary {}: eligible={} calls={:?} parameters={} locals={} statements={}",
+                    function.name,
+                    automatic_composable_function(function),
+                    call_counts.get(&function.name),
+                    function.parameters.len(),
+                    function.locals.len(),
+                    function.statements.len(),
+                );
+            }
             for function in skipped
                 .iter()
                 .filter(|function| function.name.contains(needle.as_ref()))
@@ -258,6 +273,7 @@ impl InlineBodySet {
             &mut next_local_id,
             &mut statement_body_substitutions,
             &mut statement_frame_residue_substitutions,
+            function.return_expression.is_none(),
         );
         let initializers: Vec<_> = locals
             .iter()
@@ -366,9 +382,10 @@ impl InlineBodySet {
         next_local_id: &mut usize,
         statement_body_substitutions: &mut usize,
         statement_frame_residue_substitutions: &mut usize,
+        allow_terminal_local_reuse: bool,
     ) -> Vec<Statement> {
         let mut output = Vec::new();
-        for statement in statements {
+        for (statement_index, statement) in statements.iter().enumerate() {
             match statement {
                 Statement::Expression(Expression::Call { name, arguments })
                     if self.bodies.contains_key(name)
@@ -381,7 +398,13 @@ impl InlineBodySet {
                             &self.bodies[name],
                             arguments,
                             stable_variables,
-                        )) =>
+                        ) || (allow_terminal_local_reuse
+                            && statement_index + 1 == statements.len()
+                            && terminal_scalar_arguments(
+                                &self.bodies[name],
+                                arguments,
+                                stable_variables,
+                            ))) =>
                 {
                     let callee = &self.bodies[name];
                     if callee.parameters.len() != arguments.len() {
@@ -390,12 +413,19 @@ impl InlineBodySet {
                     }
                     let callee_stable = stable_local_values(callee);
                     let mut nested_stable_variables = stable_variables.clone();
-                    let materialize =
-                        !stable_arguments(callee, arguments, stable_variables);
+                    let terminal_direct = allow_terminal_local_reuse
+                        && statement_index + 1 == statements.len()
+                        && terminal_scalar_arguments(callee, arguments, stable_variables);
+                    let materialize = !terminal_direct
+                        && !stable_arguments(callee, arguments, stable_variables);
                     let mut replacements = HashMap::new();
                     let mut substituted = Vec::new();
                     for (parameter, argument) in callee.parameters.iter().zip(arguments) {
-                        if !materialize || stable_argument(argument, stable_variables) {
+                        let parameter_is_mutable =
+                            parameter_requires_materialization(callee, &parameter.name);
+                        if (!parameter_is_mutable || terminal_direct)
+                            && (!materialize || stable_argument(argument, stable_variables))
+                        {
                             replacements.insert(parameter.name.clone(), argument.clone());
                             continue;
                         }
@@ -498,6 +528,7 @@ impl InlineBodySet {
                         next_local_id,
                         statement_body_substitutions,
                         statement_frame_residue_substitutions,
+                        false,
                     ));
                     active.remove(name);
                 }
@@ -517,6 +548,7 @@ impl InlineBodySet {
                         next_local_id,
                         statement_body_substitutions,
                         statement_frame_residue_substitutions,
+                        false,
                     ),
                     else_body: self.expand_statements(
                         else_body,
@@ -528,6 +560,7 @@ impl InlineBodySet {
                         next_local_id,
                         statement_body_substitutions,
                         statement_frame_residue_substitutions,
+                        false,
                     ),
                 }),
                 _ => output.push(statement.clone()),
@@ -1605,6 +1638,88 @@ mod tests {
         let repeated =
             InlineBodySet::analyze_with_definitions(&[helper, caller.clone(), second_caller], &[]);
         assert!(repeated.expand_calls(&caller).is_none());
+    }
+
+    #[test]
+    fn reuses_a_terminal_caller_lane_for_mutable_parameter_selection() {
+        let helper = function(
+            "select_and_store",
+            vec![
+                Parameter {
+                    parameter_type: Type::StructPointer { element_size: 8 },
+                    name: "object".into(),
+                },
+                Parameter {
+                    parameter_type: Type::Float,
+                    name: "value".into(),
+                },
+            ],
+            vec![
+                Statement::If {
+                    condition: Expression::Binary {
+                        operator: BinaryOperator::Greater,
+                        left: Box::new(Expression::Variable("value".into())),
+                        right: Box::new(Expression::IntegerLiteral(0)),
+                    },
+                    then_body: vec![Statement::Assign {
+                        name: "value".into(),
+                        value: Expression::IntegerLiteral(0),
+                    }],
+                    else_body: Vec::new(),
+                },
+                Statement::Store {
+                    target: Expression::Member {
+                        base: Box::new(Expression::Variable("object".into())),
+                        offset: 4,
+                        member_type: Type::Float,
+                        index_stride: None,
+                    },
+                    value: Expression::Variable("value".into()),
+                },
+            ],
+        );
+        let caller = function(
+            "caller",
+            vec![
+                Parameter {
+                    parameter_type: Type::StructPointer { element_size: 8 },
+                    name: "object".into(),
+                },
+                Parameter {
+                    parameter_type: Type::Float,
+                    name: "selected".into(),
+                },
+            ],
+            vec![
+                Statement::Assign {
+                    name: "selected".into(),
+                    value: Expression::FloatLiteral(1.0),
+                },
+                Statement::Expression(Expression::Call {
+                    name: "select_and_store".into(),
+                    arguments: vec![
+                        Expression::Variable("object".into()),
+                        Expression::Variable("selected".into()),
+                    ],
+                }),
+            ],
+        );
+
+        let expanded = InlineBodySet::analyze_with_definitions(
+            &[helper, caller.clone()],
+            &[],
+        )
+        .expand_calls(&caller)
+        .expect("the terminal call should reuse the caller's dead value lane");
+        assert!(!expanded
+            .locals
+            .iter()
+            .any(|local| local.name.starts_with("__mwcc_inline_select_and_store_")));
+        assert!(!expanded.statements.iter().any(|statement| {
+            matches!(statement,
+                Statement::Expression(Expression::Call { name, .. })
+                    if name == "select_and_store")
+        }));
     }
 
     #[test]

@@ -4,11 +4,30 @@ use mwcc_syntax_trees::{Expression, Function, Statement, Type};
 use std::collections::HashSet;
 
 pub(super) fn composable_function(function: &Function) -> bool {
-    let local_names: HashSet<&str> = function
+    composable_function_with_assignable_parameters(function, false)
+        && function
+            .parameters
+            .iter()
+            .all(|parameter| !variable_is_modified_or_escaped(function, &parameter.name))
+}
+
+fn composable_function_with_assignable_parameters(
+    function: &Function,
+    parameters_are_assignable: bool,
+) -> bool {
+    let mut assignable_names: HashSet<&str> = function
         .locals
         .iter()
         .map(|local| local.name.as_str())
         .collect();
+    if parameters_are_assignable {
+        assignable_names.extend(
+            function
+                .parameters
+                .iter()
+                .map(|parameter| parameter.name.as_str()),
+        );
+    }
     let discarded_result_is_safe = function.return_type == Type::Void
         || matches!(
             (
@@ -36,11 +55,7 @@ pub(super) fn composable_function(function: &Function) -> bool {
         && (function.return_expression.is_none()
             || matches!(function.return_expression, Some(Expression::Variable(ref name)) if name == "this"))
         && function.asm_body.is_none()
-        && composable_statements(&function.statements, &local_names)
-        && function
-            .parameters
-            .iter()
-            .all(|parameter| !variable_is_modified_or_escaped(function, &parameter.name))
+        && composable_statements(&function.statements, &assignable_names)
 }
 
 /// Apply MWCC's small-body gate to ordinary one-call definitions newly made
@@ -48,12 +63,54 @@ pub(super) fn composable_function(function: &Function) -> bool {
 /// retain the broader semantic safety check above. Previously composable
 /// initialized-local bodies also retain their established behavior.
 pub(super) fn automatic_composable_function(function: &Function) -> bool {
-    composable_function(function)
+    let ordinary = composable_function(function)
         && (function
             .locals
             .iter()
             .all(|local| local.initializer.is_some())
-            || statement_weight(&function.statements) <= 4)
+            || statement_weight(&function.statements) <= 4);
+    let parameter_select = function.locals.is_empty()
+        && function.return_type == Type::Void
+        && function.return_expression.is_none()
+        && function.parameters.iter().all(|parameter| {
+            !matches!(parameter.parameter_type, Type::Void | Type::Struct { .. })
+        })
+        && automatic_parameter_select_store_body(function)
+        && composable_function_with_assignable_parameters(function, true);
+    ordinary || parameter_select
+}
+
+/// A one-use helper may treat scalar parameters as mutable local value lanes,
+/// select among them through nested branches, and commit one final store. MWCC
+/// expands this shape even when its branch weight exceeds the ordinary tiny-
+/// body gate. The call-site composer materializes each modified parameter so
+/// substitution cannot assign through the caller's argument expression.
+fn automatic_parameter_select_store_body(function: &Function) -> bool {
+    let Some((last, prefix)) = function.statements.split_last() else {
+        return false;
+    };
+    matches!(last, Statement::Store { .. })
+        && !prefix.is_empty()
+        && statement_weight(&function.statements) <= 10
+        && parameter_select_statements(prefix, function)
+}
+
+fn parameter_select_statements(statements: &[Statement], function: &Function) -> bool {
+    statements.iter().all(|statement| match statement {
+        Statement::Assign { name, .. } => function
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == *name),
+        Statement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            parameter_select_statements(then_body, function)
+                && parameter_select_statements(else_body, function)
+        }
+        _ => false,
+    })
 }
 
 fn statement_weight(statements: &[Statement]) -> usize {
@@ -299,19 +356,51 @@ pub(super) fn materializable_arguments(
     stable_variables: &HashSet<String>,
 ) -> bool {
     function.parameters.len() == arguments.len()
-        && arguments.iter().all(|argument| {
-            stable_argument(argument, stable_variables)
-                || matches!(
-                    argument,
-                    Expression::Member {
-                        base,
-                        member_type,
-                        index_stride: None,
-                        ..
-                    } if !matches!(member_type, Type::Void | Type::Struct { .. })
-                        && stable_argument(base, stable_variables)
-                )
-        })
+        && function
+            .parameters
+            .iter()
+            .zip(arguments)
+            .all(|(_, argument)| {
+                stable_argument(argument, stable_variables)
+                    // A scalar local read is side-effect-free at the call site.
+                    // Copying it into a hygienic inline parameter preserves the
+                    // ordinary once-only argument evaluation even when that
+                    // caller local is reassigned elsewhere in the function.
+                    || (automatic_parameter_select_store_body(function)
+                        && matches!(argument, Expression::Variable(_)))
+                    || matches!(
+                        argument,
+                        Expression::Member {
+                            base,
+                            member_type,
+                            index_stride: None,
+                            ..
+                        } if !matches!(member_type, Type::Void | Type::Struct { .. })
+                            && stable_argument(base, stable_variables)
+                    )
+            })
+}
+
+/// A terminal void call may reuse caller scalar variables as the callee's
+/// parameter lanes, including parameters reassigned by the callee. No caller
+/// statement or return expression can observe the overwritten local identity.
+pub(super) fn terminal_scalar_arguments(
+    function: &Function,
+    arguments: &[Expression],
+    stable_variables: &HashSet<String>,
+) -> bool {
+    function.return_type == Type::Void
+        && function.return_expression.is_none()
+        && function.parameters.len() == arguments.len()
+        && function
+            .parameters
+            .iter()
+            .zip(arguments)
+            .all(|(parameter, argument)| {
+                stable_argument(argument, stable_variables)
+                    || (matches!(argument, Expression::Variable(_))
+                        && !matches!(parameter.parameter_type, Type::Void | Type::Struct { .. }))
+            })
 }
 
 pub(super) fn expression_use_count(expression: &Expression, name: &str) -> usize {
@@ -430,6 +519,10 @@ fn variable_is_modified_or_escaped(function: &Function, name: &str) -> bool {
             .statements
             .iter()
             .any(|statement| statement_modifies_or_escapes(statement, name))
+}
+
+pub(super) fn parameter_requires_materialization(function: &Function, name: &str) -> bool {
+    variable_is_modified_or_escaped(function, name)
 }
 
 fn statement_modifies_or_escapes(statement: &Statement, name: &str) -> bool {
