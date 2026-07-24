@@ -2180,6 +2180,9 @@ mod tests {
     #[path = "extern_unsized_array.rs"]
     mod extern_unsized_array;
 
+    #[path = "call_indexed_member.rs"]
+    mod call_indexed_member;
+
     #[test]
     fn parity_keep_going_is_an_explicit_diagnostic_flag() {
         let ordinary = parse_invocation(&[]);

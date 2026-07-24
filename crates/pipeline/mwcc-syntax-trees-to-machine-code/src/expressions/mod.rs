@@ -8,6 +8,7 @@ mod bit_field_stores;
 mod bit_fields;
 mod call_argument_schedules;
 mod call_argument_types;
+mod call_indexed_member;
 mod calls;
 mod constructed_new;
 mod constructor_initializers;

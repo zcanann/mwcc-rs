@@ -424,8 +424,15 @@ impl Generator {
                 );
             }
         }
-        let array_register = self.general_register_of_leaf(array)?;
-        let index_register = self.general_register_of_leaf(index)?;
+        let (array_register, index_register) =
+            if let Some(registers) = self.try_prepare_call_indexed_member(array, index)? {
+                registers
+            } else {
+                (
+                    self.general_register_of_leaf(array)?,
+                    self.general_register_of_leaf(index)?,
+                )
+            };
         if stride.is_power_of_two() {
             self.output
                 .instructions
