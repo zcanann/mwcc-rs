@@ -16,6 +16,7 @@ mod inlined_symmetric_float_clamp_schedule;
 mod joystick_count_schedule;
 mod grab_mash_schedule;
 mod mixed_member_zero_reset_schedule;
+mod one_word_aggregate;
 mod symmetric_float_clamp;
 mod symmetric_sum_clamp_schedule;
 mod structured_float_or_schedule;
@@ -131,6 +132,7 @@ use aggregate_return_temporaries::materialize_aggregate_return_temporaries;
 pub(crate) use local_select::{
     summarize_unoptimized_local_select, UnoptimizedLocalSelectSummary,
 };
+pub(crate) use one_word_aggregate::source_proven_one_word_aggregate_locals;
 #[allow(unused_imports)]
 pub(crate) use passes::*;
 

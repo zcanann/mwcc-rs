@@ -164,6 +164,25 @@ impl Generator {
         target: &Expression,
         value: &Expression,
     ) -> Compilation<()> {
+        if let Expression::Member {
+            base,
+            offset: 0,
+            member_type:
+                Type::Int
+                | Type::UnsignedInt
+                | Type::Pointer(_)
+                | Type::StructPointer { .. },
+            index_stride: None,
+        } = target
+        {
+            if matches!(
+                base.as_ref(),
+                Expression::Variable(name)
+                    if self.one_word_aggregate_locals.contains(name)
+            ) {
+                return self.emit_store(base, value);
+            }
+        }
         let (value, indexed_update_syntax) = match value {
             Expression::IndexedUpdateValue { value } => (value.as_ref(), true),
             value => (value, false),

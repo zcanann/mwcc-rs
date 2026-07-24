@@ -2916,6 +2916,8 @@ pub(crate) fn collect_address_taken(function: &Function) -> HashSet<String> {
         .chain(function.locals.iter().map(|local| local.name.as_str()))
         .collect();
     names.retain(|name| local_names.contains(name.as_str()));
+    let one_word_aggregates =
+        crate::body::source_proven_one_word_aggregate_locals(function);
     names.extend(
         function
             .locals
@@ -2934,6 +2936,7 @@ pub(crate) fn collect_address_taken(function: &Function) -> HashSet<String> {
             .filter(|local| {
                 !local.is_static
                     && matches!(local.declared_type, Type::Struct { .. })
+                    && !one_word_aggregates.contains(&local.name)
                     && function_uses_name(function, &local.name)
             })
             .map(|local| local.name.clone()),

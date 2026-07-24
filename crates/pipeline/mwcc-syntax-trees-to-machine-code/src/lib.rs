@@ -427,6 +427,7 @@ pub fn lower_function(
         epilogue_lr_before_gprs: false,
         narrow_truncation_context: false,
         known_locals: std::collections::HashSet::new(),
+        one_word_aggregate_locals: std::collections::HashSet::new(),
         call_return_types: call_return_types.clone(),
         fixed_address_arrays: fixed_address_arrays
             .iter()

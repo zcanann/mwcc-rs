@@ -139,6 +139,7 @@ impl Generator {
                 .iter()
                 .filter(|local| {
                     matches!(local.declared_type, Type::Struct { .. })
+                        && !self.one_word_aggregate_locals.contains(&local.name)
                         && body_uses_local(&function.statements, &local.name)
                 })
                 .collect()

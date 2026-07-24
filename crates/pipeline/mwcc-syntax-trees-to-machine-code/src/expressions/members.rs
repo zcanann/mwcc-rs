@@ -237,6 +237,23 @@ impl Generator {
         index_stride: Option<u32>,
         destination: u8,
     ) -> Compilation<()> {
+        if offset == 0
+            && index_stride.is_none()
+            && matches!(
+                member_type,
+                Type::Int
+                    | Type::UnsignedInt
+                    | Type::Pointer(_)
+                    | Type::StructPointer { .. }
+            )
+            && matches!(
+                base,
+                Expression::Variable(name)
+                    if self.one_word_aggregate_locals.contains(name)
+            )
+        {
+            return self.evaluate_general(base, destination);
+        }
         if let Some((inner, inner_offset)) = embedded_member_address_base(base) {
             return self.emit_member_load(
                 inner,
@@ -887,6 +904,26 @@ impl Generator {
     pub(crate) fn member_base_register(&mut self, base: &Expression) -> Compilation<u8> {
         match base {
             Expression::Variable(name) => self.general_register_of(name),
+            // A source-proven one-word wrapper member denotes the wrapper's
+            // complete pointer value. When that member becomes the base of a
+            // later access (for example `iterator.operator->()->field`), keep
+            // the register identity instead of chasing offset zero as though
+            // the wrapper were an independently addressable aggregate.
+            Expression::Member {
+                base: aggregate,
+                offset: 0,
+                member_type: Type::Pointer(_) | Type::StructPointer { .. },
+                index_stride: None,
+            } if matches!(
+                aggregate.as_ref(),
+                Expression::Variable(name)
+                    if self.one_word_aggregate_locals.contains(name)
+            ) => {
+                let Expression::Variable(name) = aggregate.as_ref() else {
+                    unreachable!()
+                };
+                self.general_register_of(name)
+            }
             // A pointer field inside a frame-resident aggregate is itself the
             // base of the next member access. Load that field from the frame
             // before chasing the pointer; the aggregate has no scalar register
