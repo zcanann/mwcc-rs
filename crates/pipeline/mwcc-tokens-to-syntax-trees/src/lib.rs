@@ -611,6 +611,46 @@ mod tests {
     }
 
     #[test]
+    fn resolves_unique_qualified_methods_after_owner_layout_recovery_fails() {
+        let source = r#"
+            namespace api {
+                class Item {
+                public:
+                    void set(float value) { frame = value; }
+                    MissingLayout missing;
+                    float frame;
+                };
+            }
+            namespace home {
+                class Owner {
+                public:
+                    void update();
+                    api::Item* item;
+                };
+                void Owner::update() { item->set(1.0f); }
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let update = unit
+            .functions
+            .iter()
+            .find(|function| function.name == "update__Q24home5OwnerFv")
+            .expect("the caller should survive the incomplete callee layout");
+        assert!(matches!(
+            update.statements.as_slice(),
+            [Statement::Expression(Expression::Call { name, .. })]
+                if name == "set__Q23api4ItemFf"
+        ));
+    }
+
+    #[test]
     fn reuses_class_parameter_analysis_after_first_materialization() {
         let source = r#"
             template <typename T> class C { public: void set(T* pointer, int count); };

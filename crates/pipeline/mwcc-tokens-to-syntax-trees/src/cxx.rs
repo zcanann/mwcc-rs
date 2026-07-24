@@ -2690,13 +2690,34 @@ impl Parser {
         let resolved = self
             .resolve_scoped_cxx_class_name(class)
             .unwrap_or_else(|| class.to_owned());
-        let candidates: Vec<&RecoveredCxxMethod> = self
+        let direct_methods = self
             .cxx_instance_methods
             .get(&(resolved.clone(), member.to_string()))
             .or_else(|| {
                 self.cxx_instance_methods
                     .get(&(class.to_string(), member.to_string()))
+            });
+        // A pointer field can retain only the terminal name of an incomplete
+        // class while declaration capture has already qualified its methods.
+        // Reuse that evidence only when the terminal owner/member pair is
+        // globally unique; sibling namespaces with the same class spelling
+        // must continue to defer.
+        let terminal = class.rsplit("::").next().unwrap_or(class);
+        let qualified_method_owners = self
+            .cxx_instance_methods
+            .keys()
+            .filter(|(owner, candidate_member)| {
+                candidate_member == member
+                    && owner.rsplit("::").next() == Some(terminal)
             })
+            .collect::<Vec<_>>();
+        let methods = direct_methods.or_else(|| {
+            let [owner] = qualified_method_owners.as_slice() else {
+                return None;
+            };
+            self.cxx_instance_methods.get(*owner)
+        });
+        let candidates: Vec<&RecoveredCxxMethod> = methods
             .into_iter()
             .flatten()
             .filter(|method| {
