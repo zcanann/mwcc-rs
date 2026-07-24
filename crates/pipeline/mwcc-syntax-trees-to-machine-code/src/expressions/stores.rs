@@ -1368,6 +1368,14 @@ impl Generator {
         value: &Expression,
         pointee: Pointee,
     ) -> Compilation<u8> {
+        // `&p->first` at offset zero and `&*p` are the already-resident pointer
+        // value. Preserve its home register instead of manufacturing a scratch
+        // move; absolute stores rely on this being an instruction-free source.
+        if let Some(source) =
+            address_identity_leaf(value).and_then(|name| self.lookup_general(name))
+        {
+            return Ok(source);
+        }
         // A comma-operator value: emit the left's side effects, then store the right,
         // which keeps its own register — `gi = (a, b)` is `stw b,gi`, no scratch move.
         if let Expression::Comma { left, right } = value {
