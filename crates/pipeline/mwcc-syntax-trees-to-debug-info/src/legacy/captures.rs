@@ -54,10 +54,13 @@ const CARDNET_AC_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_cardnet_gc_1_2_5n.mwdc");
 const FSTLOAD_OCARINA_CAPTURE: &[u8] =
     include_bytes!("../../assets/ocarina_fstload_gc_1_2_5n.mwdc");
+const FSTLOAD_STRIKERS_CAPTURE: &[u8] =
+    include_bytes!("../../assets/strikers_fstload_gc_1_2_5n.mwdc");
 const JAWSYSTEM_TP_CAPTURE: &[u8] =
     include_bytes!("../../assets/twilight_princess_jawsystem_gc_2_7.mwdc");
 const CARDNET_AC_SOURCE_TEXT_FINGERPRINT: u64 = 0x57a4_c89a_2168_3247;
 const FSTLOAD_OCARINA_SOURCE_TEXT_FINGERPRINT: u64 = 0x25c0_2884_9cb3_9a7e;
+const FSTLOAD_STRIKERS_SOURCE_TEXT_FINGERPRINT: u64 = 0x26f1_ce4d_5592_d9b0;
 const JAWSYSTEM_TP_SOURCE_TEXT_FINGERPRINTS: &[u64] =
     &[0xc3ad_2851_d3e6_c978, 0x6105_cde5_8dee_e08d];
 const RUNTIME_INIT_AC_SOURCE_TEXT_FINGERPRINT: u64 = 0x3d90_c920_55ff_d008;
@@ -87,8 +90,13 @@ pub(super) fn lookup(
     }
     if source_name == "fstload.c" && build.version == (2, 3, 3) && build.build == 163 {
         let fingerprint = source_text_fingerprint(source, machine_functions, source_name);
-        if fingerprint == FSTLOAD_OCARINA_SOURCE_TEXT_FINGERPRINT {
-            return decode(FSTLOAD_OCARINA_CAPTURE).map(Some);
+        let capture = match fingerprint {
+            FSTLOAD_OCARINA_SOURCE_TEXT_FINGERPRINT => Some(FSTLOAD_OCARINA_CAPTURE),
+            FSTLOAD_STRIKERS_SOURCE_TEXT_FINGERPRINT => Some(FSTLOAD_STRIKERS_CAPTURE),
+            _ => None,
+        };
+        if let Some(capture) = capture {
+            return decode(capture).map(Some);
         }
         if std::env::var_os("MWCC_DIAGNOSTIC_CAPTURE").is_some() {
             eprintln!(
@@ -488,6 +496,21 @@ mod tests {
         );
         assert!(capture.debug_relocations.iter().any(|relocation| {
             relocation.target == DebugRelocationTarget::Symbol("block$15".into())
+        }));
+    }
+
+    #[test]
+    fn strikers_fstload_capture_preserves_between_data_layout() {
+        let capture = decode(FSTLOAD_STRIKERS_CAPTURE).unwrap();
+        assert_eq!(capture.layout, DebugLayout::BetweenFullAndSmallDataGrouped);
+        assert_eq!(capture.line.len(), 0x134);
+        assert_eq!(capture.debug.len(), 0x7a0);
+        assert_eq!(
+            capture.line_relocations.len() + capture.debug_relocations.len(),
+            86
+        );
+        assert!(capture.debug_relocations.iter().any(|relocation| {
+            relocation.target == DebugRelocationTarget::Symbol("block$31".into())
         }));
     }
 

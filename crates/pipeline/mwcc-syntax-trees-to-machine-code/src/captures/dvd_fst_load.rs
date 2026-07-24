@@ -88,7 +88,9 @@ impl Generator {
                 LoaderVariant::StaticSignedLegacyEpilogue
             }
             (MELEE_AND_OCARINA_AST_HASH, OCARINA_CONTEXT) => LoaderVariant::StaticSignedWindWaker,
-            (MELEE_AND_OCARINA_AST_HASH, STRIKERS_CONTEXT) => LoaderVariant::StaticSigned,
+            (MELEE_AND_OCARINA_AST_HASH, STRIKERS_CONTEXT) => {
+                LoaderVariant::StaticSignedWindWaker
+            }
             _ => {
                 if std::env::var_os("MWCC_DIAGNOSTIC_CAPTURE").is_some() {
                     eprintln!(
