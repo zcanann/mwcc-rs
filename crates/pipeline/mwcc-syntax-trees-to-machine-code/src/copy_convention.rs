@@ -14,6 +14,9 @@ impl Generator {
         {
             return;
         }
+        if self.callee_saved.len() == 2 && self.callee_saved_float == 2 {
+            normalize_saved_frame_call_arguments(&mut self.output.instructions);
+        }
         let Some(start) = self.output.instructions.windows(3).position(|window| {
             matches!(window, [
                 Instruction::AddImmediate { d: alias, a: base, immediate },
@@ -88,5 +91,61 @@ impl Generator {
             Instruction::move_register(destination, source)
         };
         self.output.instructions.push(instruction);
+    }
+}
+
+/// A retained object forwarded beside an address-taken frame aggregate is a
+/// value materialization, not an address-preservation copy. Build 163 spells
+/// each such first argument as `addi r3,saved,0`.
+fn normalize_saved_frame_call_arguments(instructions: &mut [Instruction]) {
+    for index in 0..instructions.len().saturating_sub(2) {
+        let source = match (
+            &instructions[index],
+            &instructions[index + 1],
+            &instructions[index + 2],
+        ) {
+            (
+                Instruction::Or { a: 3, s, b },
+                Instruction::AddImmediate { d: 4, a: 1, .. },
+                Instruction::BranchAndLink { .. },
+            ) if s == b && (14..=31).contains(s) => *s,
+            _ => continue,
+        };
+        instructions[index] = Instruction::AddImmediate {
+            d: 3,
+            a: source,
+            immediate: 0,
+        };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn materializes_a_saved_object_beside_a_frame_argument() {
+        let mut instructions = [
+            Instruction::move_register(3, 31),
+            Instruction::AddImmediate {
+                d: 4,
+                a: 1,
+                immediate: 16,
+            },
+            Instruction::BranchAndLink {
+                target: "consume".into(),
+            },
+        ];
+
+        normalize_saved_frame_call_arguments(&mut instructions);
+
+        assert!(matches!(
+            instructions[0],
+            Instruction::AddImmediate {
+                d: 3,
+                a: 31,
+                immediate: 0
+            }
+        ));
     }
 }
