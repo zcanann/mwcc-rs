@@ -45,9 +45,9 @@ fn capture_template_pointer_conversion(
             Token::Identifier(storage),
             Token::Identifier(returned),
             Token::Star,
-            Token::Identifier(_helper),
+            Token::Identifier(helper),
             Token::ParenOpen,
-            Token::Identifier(_node),
+            Token::Identifier(node),
             Token::Star,
             Token::Identifier(parameter),
             Token::ParenClose,
@@ -82,12 +82,17 @@ fn capture_template_pointer_conversion(
             cursor = close;
             continue;
         }
-        return Some(capture_pointer_assertion(body, parameter));
+        return Some(capture_pointer_assertion(body, parameter, helper, node));
     }
     None
 }
 
-fn capture_pointer_assertion(tokens: &[Token], parameter: &str) -> Option<IteratorArrowAssertion> {
+fn capture_pointer_assertion(
+    tokens: &[Token],
+    parameter: &str,
+    owner_member: &str,
+    owner_parameter: &str,
+) -> Option<IteratorArrowAssertion> {
     for start in 0..tokens.len().saturating_sub(13) {
         if !matches!(
             tokens.get(start..start + 13),
@@ -163,6 +168,9 @@ fn capture_pointer_assertion(tokens: &[Token], parameter: &str) -> Option<Iterat
         return Some(IteratorArrowAssertion {
             scope: scopes.join("::"),
             function: function.clone(),
+            owner_member: owner_member.to_owned(),
+            owner_parameter: owner_parameter.to_owned(),
+            owner_symbol: None,
             file: file.clone(),
             line: *line,
             message: message.clone(),
@@ -447,13 +455,55 @@ impl Parser {
         else {
             return;
         };
+        let owner_namespace = self
+            .resolve_scoped_cxx_namespace_name(&summary.owner_scopes.join("::"))
+            .unwrap_or_else(|| summary.owner_scopes.join("::"));
+        let owner_scopes: Vec<String> = owner_namespace
+            .split("::")
+            .map(str::to_owned)
+            .collect();
+        let assertion = summary.assertion.and_then(|mut assertion| {
+            let arguments = arguments
+                .iter()
+                .map(|argument| {
+                    if let Some(constant) = argument.constant {
+                        return Some(constant.to_string());
+                    }
+                    argument
+                        .tag
+                        .as_deref()
+                        .and_then(|tag| {
+                            let qualified = self
+                                .resolve_scoped_cxx_class_name(tag)
+                                .unwrap_or_else(|| tag.to_owned());
+                            crate::cxx::encode_qualified_type_name(&qualified).ok()
+                        })
+                        .or_else(|| argument.identity.clone().filter(|identity| identity != "..."))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            let owner_class = format!("{template_name}<{}>", arguments.join(","));
+            let mut owner_scopes: Vec<&str> =
+                owner_scopes.iter().map(String::as_str).collect();
+            owner_scopes.push(&owner_class);
+            let mut parameter_scopes: Vec<&str> =
+                owner_scopes[..owner_scopes.len() - 1].to_vec();
+            parameter_scopes.push(&assertion.owner_parameter);
+            assertion.owner_symbol =
+                crate::cxx::mangle_qualified_member_with_qualified_pointer(
+                    &owner_scopes,
+                    &assertion.owner_member,
+                    &parameter_scopes,
+                )
+                .ok();
+            Some(assertion)
+        });
         self.concrete_template_iterator_arrows.insert(
             format!("{instance}::{}", summary.nested),
             ConcreteIteratorArrow {
                 element,
                 offset,
                 storage_offset,
-                assertion: summary.assertion,
+                assertion,
             },
         );
     }
@@ -1870,6 +1920,11 @@ impl Parser {
                     template_name.to_owned(),
                     TemplateIteratorArrowSummary {
                         nested,
+                        owner_scopes: self
+                            .named_namespace_scopes()
+                            .into_iter()
+                            .map(str::to_owned)
+                            .collect(),
                         element_index: 0,
                         offset_index: 1,
                         assertion,

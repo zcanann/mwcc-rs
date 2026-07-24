@@ -179,6 +179,9 @@ pub(crate) struct TemplateInstantiationKey {
 pub(crate) struct IteratorArrowAssertion {
     pub(crate) scope: String,
     pub(crate) function: String,
+    pub(crate) owner_member: String,
+    pub(crate) owner_parameter: String,
+    pub(crate) owner_symbol: Option<String>,
     pub(crate) file: Vec<u8>,
     pub(crate) line: i64,
     pub(crate) message: Vec<u8>,
@@ -187,6 +190,7 @@ pub(crate) struct IteratorArrowAssertion {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TemplateIteratorArrowSummary {
     pub(crate) nested: String,
+    pub(crate) owner_scopes: Vec<String>,
     pub(crate) element_index: usize,
     pub(crate) offset_index: usize,
     pub(crate) assertion: Option<IteratorArrowAssertion>,
@@ -701,6 +705,12 @@ pub(crate) struct Parser {
     /// Per-function provenance retained after those calls disappear from ASTs.
     pub(crate) inline_expansion_facts:
         std::collections::HashMap<String, mwcc_syntax_trees::InlineExpansionFacts>,
+    /// Literal identities introduced into the function body currently being
+    /// parsed by source-proven inline semantics.
+    pub(crate) current_inline_string_symbols: HashMap<Vec<u8>, String>,
+    /// Completed per-function inline literal identities.
+    pub(crate) function_inline_string_symbols:
+        HashMap<String, HashMap<Vec<u8>, String>>,
     /// Direct callee of a translation-unit inline scalar `operator delete`
     /// wrapper. Compiler-generated deleting destructors inline this body.
     pub(crate) cxx_delete_forwarder: Option<String>,

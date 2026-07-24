@@ -103,6 +103,12 @@ impl Generator {
             return index;
         }
         self.output.string_literals.push(bytes.to_vec());
-        self.output.string_literals.len() - 1
+        let index = self.output.string_literals.len() - 1;
+        if let Some(symbol) = self.inline_string_symbols.get(bytes) {
+            self.output
+                .string_literal_symbols
+                .insert(index, symbol.clone());
+        }
+        index
     }
 }

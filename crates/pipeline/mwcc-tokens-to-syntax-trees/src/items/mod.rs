@@ -1305,6 +1305,9 @@ impl Parser {
             cxx_inline_ordinal_facts: self.cxx_inline_ordinal_facts,
             cxx_const_reference_parameter_positions,
             inline_expansion_facts: std::mem::take(&mut self.inline_expansion_facts),
+            function_inline_string_symbols: std::mem::take(
+                &mut self.function_inline_string_symbols,
+            ),
             static_local_prebumps: std::mem::take(&mut self.static_local_prebumps),
             implicitly_materialized: std::mem::take(&mut self.implicitly_materialized),
             materialized_inline_candidates: std::mem::take(
@@ -4422,6 +4425,7 @@ impl Parser {
         cxx_reference_parameters: std::collections::HashSet<String>,
     ) -> Compilation<Function> {
         self.inline_substitution_count = 0;
+        self.current_inline_string_symbols.clear();
         // Block-shadow mappings are function-scoped. A switch arm can leave a
         // renamed declaration at the end of one parsed body; carrying that map
         // into the next definition rewrites unrelated locals (`writer` becomes
@@ -5244,6 +5248,12 @@ impl Parser {
                 leading_initializer_substitutions,
             },
         );
+        if !self.current_inline_string_symbols.is_empty() {
+            self.function_inline_string_symbols.insert(
+                name.clone(),
+                std::mem::take(&mut self.current_inline_string_symbols),
+            );
+        }
         Ok(Function {
             return_type,
             name,

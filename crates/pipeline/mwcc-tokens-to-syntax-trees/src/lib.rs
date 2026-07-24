@@ -232,6 +232,8 @@ pub fn parse_located_translation_unit_with_behavior(
         inline_bodies: std::collections::HashMap::new(),
         inline_substitution_count: 0,
         inline_expansion_facts: std::collections::HashMap::new(),
+        current_inline_string_symbols: std::collections::HashMap::new(),
+        function_inline_string_symbols: std::collections::HashMap::new(),
         cxx_delete_forwarder: None,
         default_cplusplus: cplusplus,
         cplusplus,
@@ -7238,6 +7240,20 @@ blr\n\
                     )
             )
         ));
+        let inline_strings = unit
+            .function_inline_string_symbols
+            .get(&unit.functions[0].name)
+            .expect("iterator assertion strings retain their inline owner");
+        let owner =
+            "@STRING@GetPointer__Q23api23List<Q26client5Entry,0>FPQ23api4Node";
+        assert_eq!(inline_strings.get(b"List.h".as_slice()).map(String::as_str), Some(owner));
+        let second = format!("{owner}@0");
+        assert_eq!(
+            inline_strings
+                .get(b"null pointer".as_slice())
+                .map(String::as_str),
+            Some(second.as_str())
+        );
     }
 
     #[test]

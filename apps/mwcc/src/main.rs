@@ -891,6 +891,11 @@ fn compile(
         if diagnose_syntax_tree {
             eprintln!("{function:#?}");
         }
+        let source_inline_string_symbols = unit
+            .function_inline_string_symbols
+            .get(&function.name)
+            .cloned()
+            .unwrap_or_default();
         let mut function_config = config;
         if let Some(enabled) = unit
             .function_cpp_exception_overrides
@@ -917,6 +922,7 @@ fn compile(
                 .get(&function.name)
                 .copied()
                 .unwrap_or_default(),
+            &source_inline_string_symbols,
             &unit.function_return_fundamentals,
             function_config,
         ) {
@@ -1808,6 +1814,7 @@ fn compile(
     let mut numbered_constant: std::collections::HashSet<(u64, u8)> =
         std::collections::HashSet::new();
     let mut function_string_objects: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
+    let mut emitted_named_string_objects = std::collections::HashSet::new();
     let mut packed_string_base_counter = 0u32;
     let mut file_string_renames: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
@@ -1873,7 +1880,41 @@ fn compile(
             machine_function
                 .string_literals
                 .iter()
-                .map(|bytes| {
+                .enumerate()
+                .map(|(index, bytes)| {
+                    if let Some(name) = machine_function.string_literal_symbols.get(&index) {
+                        if emitted_named_string_objects.insert(name.clone()) {
+                            let mut object_bytes = bytes.clone();
+                            object_bytes.push(0);
+                            function_string_objects.push(
+                                mwcc_machine_code_to_object::DefinedGlobal {
+                                    section: None,
+                                    anonymous_adjust: 0,
+                                    static_local_owner: None,
+                                    is_weak: true,
+                                    non_static_functions_before: 0,
+                                    functions_before: 0,
+                                    name: name.clone(),
+                                    size: object_bytes.len() as u32,
+                                    alignment: 4,
+                                    comment_alignment: 4,
+                                    initial_bytes: Some(object_bytes),
+                                    is_const: config.flags.string_literals_read_only
+                                        || machine_function.strings_are_const,
+                                    force_full_data_section: (config
+                                        .flags
+                                        .string_literals_read_only
+                                        || machine_function.strings_are_const)
+                                        && !read_only_small_data,
+                                    is_static: false,
+                                    is_explicit_zero: false,
+                                    preassigned_anonymous_ordinal: None,
+                                    relocations: Vec::new(),
+                                },
+                            );
+                        }
+                        return name.clone();
+                    }
                     if let Some(name) = string_pool.get(bytes) {
                         return name.clone();
                     }

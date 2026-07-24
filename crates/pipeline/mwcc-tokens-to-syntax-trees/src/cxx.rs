@@ -854,7 +854,7 @@ impl Parser {
         Ok(())
     }
 
-    fn named_namespace_scopes(&self) -> Vec<&str> {
+    pub(crate) fn named_namespace_scopes(&self) -> Vec<&str> {
         self.namespace_stack
             .iter()
             .map(String::as_str)
@@ -5382,6 +5382,24 @@ pub(crate) fn mangle_qualified_member_function(
         .map(CxxParameterType::plain)
         .collect();
     mangle_qualified_member_function_variadic_typed(scopes, function, &parameters, false)
+}
+
+/// Mangle a member whose sole source parameter is a pointer to another
+/// namespace-qualified class. Template semantic recovery uses this after it
+/// has retained the exact owner and pointee spellings but not a full declarator.
+pub(crate) fn mangle_qualified_member_with_qualified_pointer(
+    scopes: &[&str],
+    function: &str,
+    pointee_scopes: &[&str],
+) -> Compilation<String> {
+    if function.is_empty() {
+        return Err(Diagnostic::error("an empty C++ member name is invalid"));
+    }
+    Ok(format!(
+        "{function}__{}FP{}",
+        encode_qualified_scope(scopes)?,
+        encode_qualified_scope(pointee_scopes)?
+    ))
 }
 
 /// Mangle a static data member. For example, `Game::Creature::enabled`

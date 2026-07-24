@@ -389,6 +389,12 @@ pub struct TranslationUnit {
         std::collections::HashMap<String, Vec<bool>>,
     /// Inline-substitution provenance keyed by emitted function name.
     pub inline_expansion_facts: std::collections::HashMap<String, InlineExpansionFacts>,
+    /// String identities recovered while source-level inline semantics are
+    /// composed directly into an emitted function. The outer key is that
+    /// function's ABI name; the inner map is literal bytes to MWCC's weak
+    /// `@STRING@<inline owner>` object name.
+    pub function_inline_string_symbols:
+        std::collections::HashMap<String, std::collections::HashMap<Vec<u8>, String>>,
     /// Names of VARIADIC function declarations/definitions in this unit. Kept
     /// OUTSIDE `Function` so capture AST hashes stay stable. Definitions still
     /// defer in general lowering; call sites use this to emit the EABI CR marker.

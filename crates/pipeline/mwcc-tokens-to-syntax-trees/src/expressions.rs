@@ -1359,6 +1359,15 @@ impl Parser {
                                 expression =
                                     iterator_pointer_storage(expression, arrow.storage_offset);
                                 if let Some(assertion) = arrow.assertion {
+                                    if let Some(owner) = &assertion.owner_symbol {
+                                        let owner = format!("@STRING@{owner}");
+                                        self.current_inline_string_symbols
+                                            .insert(assertion.file.clone(), owner.clone());
+                                        self.current_inline_string_symbols.insert(
+                                            assertion.message.clone(),
+                                            format!("{owner}@0"),
+                                        );
+                                    }
                                     let arguments = vec![
                                         Expression::StringLiteral(assertion.file),
                                         Expression::IntegerLiteral(assertion.line),

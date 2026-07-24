@@ -286,6 +286,9 @@ pub(crate) struct Generator {
     /// Retained skipped-inline bodies eligible for conservative statement-level
     /// composition after whole-function captures have declined.
     pub(crate) inline_bodies: InlineBodySet,
+    /// String bytes introduced by a reachable retained-inline body, mapped to
+    /// MWCC's weak `@STRING@<inline owner>` object identity.
+    pub(crate) inline_string_symbols: HashMap<Vec<u8>, String>,
     /// Semantically verified summaries of other definitions in this translation
     /// unit. Exact inline compositions consult these instead of callee names.
     pub(crate) inline_summaries: InlineSummaries,

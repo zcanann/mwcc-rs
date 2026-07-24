@@ -102,6 +102,7 @@ pub fn lower_function(
     inline_bodies: &InlineBodySet,
     inline_summaries: &InlineSummaries,
     inline_expansion_facts: mwcc_syntax_trees::InlineExpansionFacts,
+    source_inline_string_symbols: &HashMap<Vec<u8>, String>,
     call_return_fundamentals: &HashMap<String, mwcc_syntax_trees::SourceFundamentalType>,
     config: CompilerConfig,
 ) -> Compilation<MachineFunction> {
@@ -467,6 +468,7 @@ pub fn lower_function(
         weak_materialized_names: weak_materialized_names.clone(),
         call_parameter_types: call_parameter_types.clone(),
         inline_bodies: inline_bodies.clone(),
+        inline_string_symbols: source_inline_string_symbols.clone(),
         inline_summaries: inline_summaries.clone(),
     };
     generator.assign_parameters(function)?;
