@@ -6132,7 +6132,10 @@ fn write_lowered_artifacts(
                     .iter()
                     .map(|instruction| format!("{:08x}  {instruction:?}\n", instruction.encode()))
                     .collect();
-                format!("{}:\n{body}\n", machine_code.name)
+                format!(
+                    "{}:\nsymbol_order: {:?}\n{body}\n",
+                    machine_code.name, machine_code.symbol_order
+                )
             })
             .collect(),
     );

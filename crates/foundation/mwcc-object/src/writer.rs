@@ -2648,6 +2648,17 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             } else {
                 (Vec::new(), ordered)
             };
+        // Immediate compilation is an event stream, not two independent
+        // prototype classes. Function-first builds create the function before
+        // the source-discovery stream. References-first builds create it at the
+        // first implicit call: earlier explicit references precede that event
+        // and all later references follow it. A static function already has its
+        // LOCAL symbol, so its body stream stays in discovery order throughout.
+        let creation_ordered = matches!(
+            input.object_format.function_symbol_order,
+            FunctionSymbolOrder::ReferencesFirst | FunctionSymbolOrder::FunctionFirst
+        )
+        .then(|| ordered.clone());
         // An IMPLICITLY-declared callee's symbol is created by mwcc at its call site inside
         // the body, so it is emitted AFTER the function symbol; an explicitly-declared
         // (prototyped) external precedes it. Partition preserving order within each group.
@@ -2954,49 +2965,95 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 }
             }
         }
-        emit_referenced!(defined_data_ordered);
-        if matches!(
-            input.object_format.function_symbol_order,
-            FunctionSymbolOrder::FunctionFirst
-                | FunctionSymbolOrder::FunctionFirstAtDefinition
-                | FunctionSymbolOrder::LegacyDeferred
-        ) || function.is_asm
-        {
-            emit_referenced!(absolute_ordered);
-            emit_function_symbol!(index);
-            // Consecutive hand-written asm definitions are registered as one
-            // source declaration run before body references are discovered.
-            if function.is_asm
-                && input
-                    .section_function_declarations
-                    .iter()
-                    .any(|name| name == function.name)
-            {
-                for follower in index + 1..functions.len() {
-                    if !functions[follower].is_asm
-                        || !input
-                            .section_function_declarations
-                            .iter()
-                            .any(|name| name == functions[follower].name)
-                    {
-                        break;
+        let creation_order_emitted = if let Some(source_ordered) = creation_ordered {
+            emit_referenced!(defined_data_ordered);
+            let helpers = helper_ordered.iter().copied().collect::<std::collections::HashSet<_>>();
+            if input.object_format.function_symbol_order == FunctionSymbolOrder::FunctionFirst {
+                emit_referenced!(absolute_ordered);
+                emit_referenced!(helper_ordered.iter().copied());
+                emit_function_symbol!(index);
+                // Consecutive hand-written asm definitions are registered as one
+                // source declaration run before body references are discovered.
+                if function.is_asm
+                    && input
+                        .section_function_declarations
+                        .iter()
+                        .any(|name| name == function.name)
+                {
+                    for follower in index + 1..functions.len() {
+                        if !functions[follower].is_asm
+                            || !input
+                                .section_function_declarations
+                                .iter()
+                                .any(|name| name == functions[follower].name)
+                        {
+                            break;
+                        }
+                        emit_function_symbol!(follower);
                     }
-                    emit_function_symbol!(follower);
                 }
+                emit_referenced!(source_ordered);
+            } else if function.is_static {
+                // Prologue helpers are created before the body. With no GLOBAL
+                // function-symbol event to divide the body stream, explicit and
+                // implicit references otherwise retain source discovery order.
+                emit_referenced!(helper_ordered.iter().copied());
+                emit_referenced!(source_ordered);
+                emit_function_symbol!(index);
+            } else {
+                let first_implicit = source_ordered
+                    .iter()
+                    .position(|name| implicit.contains(name) && !helpers.contains(name))
+                    .unwrap_or(source_ordered.len());
+                emit_referenced!(source_ordered[..first_implicit].iter().copied());
+                emit_referenced!(helper_ordered.iter().copied());
+                emit_function_symbol!(index);
+                emit_referenced!(source_ordered[first_implicit..].iter().copied());
             }
-            emit_referenced!(early_implicit_ordered.iter().copied());
-        }
-        emit_referenced!(defined_function_ordered);
-        // Prototyped externals first, then the save/restore helpers, then the
-        // function's own symbol, then the remaining implicit callees.
-        emit_referenced!(explicit_ordered);
-        emit_referenced!(helper_ordered);
-        // A `static` function already has its LOCAL symbol (emitted above); only its
-        // newly-referenced externals appear in this run, not the function symbol.
-        emit_function_symbol!(index);
-        if input.object_format.function_symbol_order == FunctionSymbolOrder::ReferencesFirst {
-            emit_referenced!(early_implicit_ordered.iter().copied());
-        }
+            true
+        } else {
+            emit_referenced!(defined_data_ordered);
+            if matches!(
+                input.object_format.function_symbol_order,
+                FunctionSymbolOrder::FunctionFirst
+                    | FunctionSymbolOrder::FunctionFirstAtDefinition
+                    | FunctionSymbolOrder::LegacyDeferred
+            ) || function.is_asm
+            {
+                emit_referenced!(absolute_ordered);
+                emit_function_symbol!(index);
+                // Consecutive hand-written asm definitions are registered as one
+                // source declaration run before body references are discovered.
+                if function.is_asm
+                    && input
+                        .section_function_declarations
+                        .iter()
+                        .any(|name| name == function.name)
+                {
+                    for follower in index + 1..functions.len() {
+                        if !functions[follower].is_asm
+                            || !input
+                                .section_function_declarations
+                                .iter()
+                                .any(|name| name == functions[follower].name)
+                        {
+                            break;
+                        }
+                        emit_function_symbol!(follower);
+                    }
+                }
+                emit_referenced!(early_implicit_ordered.iter().copied());
+            }
+            emit_referenced!(defined_function_ordered);
+            // Prototyped externals first, then the save/restore helpers, then the
+            // function's own symbol, then the remaining implicit callees.
+            emit_referenced!(explicit_ordered);
+            emit_referenced!(helper_ordered);
+            // A `static` function already has its LOCAL symbol (emitted above); only its
+            // newly-referenced externals appear in this run, not the function symbol.
+            emit_function_symbol!(index);
+            false
+        };
         // A STATIC asm function's own symbol is LOCAL (emitted in the local run
         // above); its GLOBAL `entry` points still emit HERE, at the function's source
         // position in the global run (wind_waker's `ASM static` runtime.c — the local
@@ -3033,7 +3090,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             emit_referenced!(post_line_explicit_ordered);
             emit_referenced!(implicit_ordered);
         } else {
-            emit_referenced!(implicit_ordered);
+            if !creation_order_emitted {
+                emit_referenced!(implicit_ordered);
+            }
             if let Some(line_symbol) = debug_function_lines.get(function.name) {
                 emit_debug_symbol!(*line_symbol);
             }

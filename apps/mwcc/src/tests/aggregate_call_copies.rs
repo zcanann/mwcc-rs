@@ -10,7 +10,6 @@ fn copies_initialized_one_word_aggregates_for_a_terminal_call() {
             unsigned char alpha;
         } Color;
 
-        extern int television_format(void);
         extern unsigned short font_encoding(void);
         extern unsigned char language(void);
         extern const char *japanese;
@@ -102,4 +101,55 @@ fn copies_initialized_one_word_aggregates_for_a_terminal_call() {
             &object[start..start + expected.len()]
         );
     }
+
+    let expected_externals = [
+        "television_format",
+        "font_encoding",
+        "language",
+        "fatal",
+    ];
+    let external_order = super::elf_object::symbols(&object)
+        .into_iter()
+        .map(|(name, _, _, _)| name)
+        .filter(|name| expected_externals.contains(&name.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(external_order, expected_externals);
+}
+
+#[test]
+fn function_first_symbols_keep_body_creation_order_after_the_function() {
+    let source = br#"
+        extern int explicit_a(void);
+        extern int explicit_b(void);
+
+        void compiled(void) {
+            implicit_first();
+            explicit_a();
+            explicit_b();
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.emit_mwcats = false;
+    let config = mwcc_versions::CompilerConfig {
+        build: mwcc_versions::GC_1_2_5N,
+        flags,
+    };
+    let object = compile(
+        source,
+        "function-first-symbols.c",
+        config,
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("the mixed implicit/explicit call sequence should compile");
+
+    let expected = ["compiled", "implicit_first", "explicit_a", "explicit_b"];
+    let order = super::elf_object::symbols(&object)
+        .into_iter()
+        .map(|(name, _, _, _)| name)
+        .filter(|name| expected.contains(&name.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(order, expected);
 }

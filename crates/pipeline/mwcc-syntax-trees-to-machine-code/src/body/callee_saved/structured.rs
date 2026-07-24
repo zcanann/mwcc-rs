@@ -1802,6 +1802,19 @@ impl Generator {
         if rounded_pointer_dense_layout {
             self.schedule_power_pc_7400_rounded_pointer_body();
         }
+        if aggregate_call_copy_plan.is_some() {
+            // This specialized path emits the outer condition call directly,
+            // while nested expressions pass through the ordinary evaluator.
+            // The evaluator's partial discovery stream therefore omits the
+            // first callee and prevents the pipeline's empty-order fallback.
+            // Rebuild the complete source traversal here; symbol creation is
+            // independent of the call scheduler used to obtain exact text.
+            self.output.symbol_order = crate::symbol_order::referenced_names(
+                function,
+                &self.call_return_types,
+                self.behavior.symbol_traversal_style,
+            );
+        }
         Ok(true)
     }
 
