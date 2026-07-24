@@ -2630,6 +2630,30 @@ blr\n\
     }
 
     #[test]
+    fn serializes_a_wide_string_global_as_sixteen_bit_elements() {
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(
+                r#"
+                    typedef unsigned short wchar_t;
+                    static const wchar_t invalid[] = L"Invalid";
+                "#,
+            )
+            .unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.globals[0].initializer.as_deref(),
+            Some(&[73, 110, 118, 97, 108, 105, 100, 0][..])
+        );
+        assert_eq!(unit.globals[0].array_length, Some(8));
+    }
+
+    #[test]
     fn qualifies_skipped_inline_static_locals_with_their_namespace() {
         let source = r#"
             inline float helper(float value) {
@@ -8418,6 +8442,37 @@ blr\n\
             [mwcc_syntax_trees::Statement::Expression(
                 mwcc_syntax_trees::Expression::Comma { .. }
             )]
+        ));
+    }
+
+    #[test]
+    fn parses_a_discarded_ternary_expression_statement() {
+        let source = r#"
+            void report();
+            void halt();
+            void check(int value) {
+                (value) ? (void)0 : (report(), halt());
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Conditional {
+                    when_false,
+                    ..
+                }
+            )] if matches!(
+                when_false.as_ref(),
+                mwcc_syntax_trees::Expression::Comma { .. }
+            )
         ));
     }
 

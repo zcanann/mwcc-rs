@@ -43,6 +43,10 @@ pub enum Token {
     /// for strings is not in the subset yet — the token lets the lexer get past
     /// `"…"` so the rest of a translation unit still parses.
     StringLiteral(Vec<u8>),
+    /// An `L"…"` literal's decoded 16-bit code units. GameCube CodeWarrior uses
+    /// a 16-bit `wchar_t`; retaining the width here lets global array
+    /// initializers serialize the correct big-endian object image.
+    WideStringLiteral(Vec<u16>),
     // punctuation
     ParenOpen,
     ParenClose,

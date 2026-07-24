@@ -944,10 +944,16 @@ impl Generator {
             if source == target
                 || !(0..later).any(|earlier| {
                     Eabi::FIRST_GENERAL_ARGUMENT + earlier as u8 == source
+                        && !expression_has_call(&arguments[earlier])
                         && self
                             .leaf_info(&arguments[earlier])
                             .map(|(register, width, _)| register != source && width == 32)
-                            .unwrap_or(false)
+                            // A literal, load, or address computation has
+                            // no stable input register, but evaluating it still
+                            // overwrites its ABI destination. Treat that as the
+                            // same dependency as a leaf remap so the endangered
+                            // later value is copied before the write.
+                            .unwrap_or(true)
                 })
                 || !arguments[..=later]
                     .iter()
@@ -1130,19 +1136,28 @@ impl Generator {
                     .leaf_info(argument)
                     .map(|(register, _, _)| register == next_general)
                     .unwrap_or(false);
-                if !passthrough_in_place
-                    && arguments[index + 1..]
-                        .iter()
-                        .enumerate()
-                        .any(|(offset, later)| {
-                            let later_index = index + 1 + offset;
-                            !prematerialized_general.is_some_and(|(prematerialized, _, _)| {
-                                prematerialized == later_index
-                            }) && self.registers_used_by(later).contains(&next_general)
-                        })
-                {
+                let endangered_later = (!passthrough_in_place)
+                    .then(|| {
+                        arguments[index + 1..]
+                            .iter()
+                            .enumerate()
+                            .find(|(offset, later)| {
+                                let later_index = index + 1 + offset;
+                                !prematerialized_general.is_some_and(
+                                    |(prematerialized, _, _)| {
+                                        prematerialized == later_index
+                                    },
+                                ) && self.registers_used_by(later).contains(&next_general)
+                            })
+                    })
+                    .flatten();
+                if let Some((offset, _)) = endangered_later {
+                    let later_index = index + 1 + offset;
                     return Err(Diagnostic::error(
-                        "argument would clobber a register a later argument needs (roadmap)",
+                        format!(
+                            "argument {index} to '{name}' would clobber r{next_general}, \
+                             which later argument {later_index} still needs (roadmap)"
+                        ),
                     ));
                 }
                 // In a MULTI-argument remap, a dying incoming parameter shifted

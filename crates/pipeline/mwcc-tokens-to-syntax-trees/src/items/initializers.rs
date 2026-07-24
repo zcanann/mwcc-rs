@@ -218,6 +218,20 @@ impl Parser {
         &mut self,
         element_type: Type,
     ) -> Compilation<Vec<i64>> {
+        // CodeWarrior's target `wchar_t` is 16 bits. Preserve each wide code
+        // unit as one array element; the global serializer writes those values
+        // in target byte order using the declared element type.
+        if let Token::WideStringLiteral(units) = self.peek() {
+            if !matches!(element_type, Type::Short | Type::UnsignedShort) {
+                return Err(Diagnostic::error(
+                    "a wide string initializer needs a 16-bit character array",
+                ));
+            }
+            let mut values: Vec<i64> = units.iter().map(|&unit| i64::from(unit)).collect();
+            self.advance();
+            values.push(0);
+            return Ok(values);
+        }
         // A string literal initializes a `char` array with its bytes plus a NUL
         // terminator (the store truncates if the array is shorter). A string for a
         // non-char type is a char-pointer initializer that needs a data relocation —
