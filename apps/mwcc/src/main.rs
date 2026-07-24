@@ -1251,9 +1251,6 @@ fn compile(
         machine_functions.extend(deferred);
     }
     if let Some(first) = machine_functions.first_mut() {
-        first.anonymous_label_bump += leading_source_ordinal_bump;
-    }
-    if let Some(first) = machine_functions.first_mut() {
         // File-scope declarations advance the unit-wide ordinal stream before
         // the first EMITTED compiled body. Attach after emission scheduling so
         // deferred reverse order does not strand the provenance on the tail.
@@ -1483,7 +1480,10 @@ fn compile(
                                     placeholder
                                 } else {
                                     string_counter += 1;
-                                    format!("@{string_counter}")
+                                    format!(
+                                        "@{}",
+                                        leading_source_ordinal_bump + string_counter
+                                    )
                                 };
                                 string_pool.insert(string_bytes.clone(), name.clone());
                                 let mut object_bytes = string_bytes.clone();
@@ -1506,7 +1506,10 @@ fn compile(
                                         && !read_only_small_data,
                                     is_static: true,
                                     is_explicit_zero: false,
-                                    preassigned_anonymous_ordinal: None,
+                                    preassigned_anonymous_ordinal:
+                                        (leading_source_ordinal_bump != 0).then_some(
+                                            leading_source_ordinal_bump + string_counter,
+                                        ),
                                     relocations: Vec::new(),
                                 });
                                 name
@@ -1755,7 +1758,9 @@ fn compile(
                                 .cloned()
                                 .unwrap_or_else(|| {
                                     string_counter += 1;
-                                    let name = format!("@{string_counter}");
+                                    let ordinal =
+                                        leading_source_ordinal_bump + string_counter;
+                                    let name = format!("@{ordinal}");
                                     string_pool.insert(string_bytes.clone(), name.clone());
                                     let mut object_bytes = string_bytes.clone();
                                     object_bytes.push(0);
@@ -1780,7 +1785,9 @@ fn compile(
                                                 && !read_only_small_data,
                                             is_static: true,
                                             is_explicit_zero: false,
-                                            preassigned_anonymous_ordinal: None,
+                                            preassigned_anonymous_ordinal:
+                                                (leading_source_ordinal_bump != 0)
+                                                    .then_some(ordinal),
                                             relocations: Vec::new(),
                                         },
                                     );
@@ -1800,6 +1807,7 @@ fn compile(
         defined_globals.extend(pooled_string_globals.drain(..));
     }
     let first_destructor_record = (1
+        + leading_source_ordinal_bump
         + string_counter
         + unit.global_destructor_inline_bump as u32
         + unit_declaration_bump as u32)
@@ -1817,8 +1825,11 @@ fn compile(
     // `5 + global_strings` and advances per function by [its new strings + its new deduped constants
     // + its unwind entries] plus a fixed +4 gap. A jump table interleaves its own `@N` here in a way
     // not yet modeled, so a unit that mixes a string with a jump table defers wholesale.
-    let mut counter = (u32::from(config.build.initial_anonymous_counter)
-        + string_counter
+    let mut counter = (inline_ordinal_positions::body_counter_base(
+        config.build.initial_anonymous_counter,
+        leading_source_ordinal_bump,
+        string_counter,
+    )
         + unit.global_destructor_records.len() as u32)
         .max(analysis_counter_floor);
     let mut numbered_constant: std::collections::HashSet<(u64, u8)> =

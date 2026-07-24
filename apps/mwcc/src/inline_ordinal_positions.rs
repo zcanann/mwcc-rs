@@ -49,6 +49,19 @@ pub(crate) fn distribute(
     leading as u32
 }
 
+/// First anonymous ordinal available to compiled bodies after a source prefix
+/// and any file-scope anonymous objects. A nonzero prefix already occupies
+/// ordinals `1..=prefix`, so it replaces (rather than adds to) the build's
+/// small initial counter floor.
+pub(crate) fn body_counter_base(
+    initial_counter: u8,
+    leading_source_bump: u32,
+    file_scope_anonymous_count: u32,
+) -> u32 {
+    let source_floor = leading_source_bump.saturating_add(u32::from(leading_source_bump != 0));
+    u32::from(initial_counter).max(source_floor) + file_scope_anonymous_count
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,5 +97,11 @@ mod tests {
         assert_eq!(leading, 3);
         assert_eq!(functions[0].anonymous_label_bump, 0);
         assert_eq!(functions[0].post_constant_label_bump, 5);
+    }
+
+    #[test]
+    fn source_prefix_precedes_file_scope_anonymous_objects() {
+        assert_eq!(body_counter_base(2, 17, 7), 25);
+        assert_eq!(body_counter_base(2, 0, 7), 9);
     }
 }

@@ -1701,8 +1701,16 @@ impl Generator {
         // Each source-level `if` creates a pair of optimizer labels even when
         // both collapse to direct instruction offsets. Build 163 exposes those
         // otherwise-hidden labels through the later unwind-symbol ordinal.
-        self.output.anonymous_label_bump +=
+        let structured_labels =
             structured_hidden_label_count(&structured_function.statements);
+        if aggregate_call_copy_plan.is_some() {
+            // Declaration-time aggregate images are pooled before the body
+            // creates its branch labels. Those labels still precede unwind and
+            // later-function ordinals, but must not renumber these constants.
+            self.output.post_constant_label_bump += structured_labels;
+        } else {
+            self.output.anonymous_label_bump += structured_labels;
+        }
         if !call_accumulators.is_empty() {
             // Each normalized call result leaves one optimizer-only label. The
             // modern branchless terminal select consumes two more labels even
