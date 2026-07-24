@@ -1373,6 +1373,7 @@ impl Generator {
                             for (group_index, group) in groups.iter().enumerate() {
                                 let last_group = group_index + 1 == groups.len();
                                 let mut advance_group = Vec::new();
+                                let mut next_group_float_cache = None;
                                 for (term_index, term) in group.iter().copied().enumerate() {
                                     let term_start = self.output.instructions.len();
                                     let (options, condition_bit) = self
@@ -1384,6 +1385,14 @@ impl Generator {
                                             diagnostic
                                         })?;
                                     self.reuse_short_circuit_member_base(term_index, term_start);
+                                    if !last_group && term_index == 0 {
+                                        // Any failed term advances to the next OR group.
+                                        // Only values established by the first term dominate
+                                        // every one of those incoming edges; values first loaded
+                                        // by later terms must not leak into the next group.
+                                        next_group_float_cache =
+                                            Some(self.condition_float_cache.clone());
+                                    }
                                     let branch = self.output.instructions.len();
                                     if !last_group && term_index + 1 == group.len() {
                                         self.output.instructions.push(
@@ -1412,6 +1421,9 @@ impl Generator {
                                 let next_group = self.output.instructions.len();
                                 for branch in advance_group {
                                     self.patch_forward(branch, next_group);
+                                }
+                                if let Some(cache) = next_group_float_cache {
+                                    self.condition_float_cache = cache;
                                 }
                             }
                             return Ok(ConditionBranches {

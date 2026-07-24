@@ -8,9 +8,48 @@
 use crate::generator::{Generator, FLOAT_SCRATCH};
 use mwcc_core::Compilation;
 use mwcc_machine_code::Instruction;
-use mwcc_syntax_trees::{Expression, UnaryOperator};
+use mwcc_syntax_trees::{BinaryOperator, Expression, UnaryOperator};
 
 impl Generator {
+    /// Combine two direct float values already loaded by earlier terms in the
+    /// same short-circuit path. Extending those proven lifetimes lets allocation
+    /// retain the shared zero and coalesce the dead left operand with the sum.
+    pub(crate) fn try_place_cached_condition_arithmetic(
+        &mut self,
+        expression: &Expression,
+    ) -> Option<u8> {
+        let (operator, left, right) = cached_condition_arithmetic_parts(expression)?;
+        let left_register = self.condition_float_register(left)?;
+        let right_register = self.condition_float_register(right)?;
+        let destination = self.fresh_virtual_float_preferring(FLOAT_SCRATCH);
+        let double = self.is_double_value(left) || self.is_double_value(right);
+        let instruction = match (operator, double) {
+            (BinaryOperator::Add, false) => Instruction::FloatAddSingle {
+                d: destination,
+                a: left_register,
+                b: right_register,
+            },
+            (BinaryOperator::Add, true) => Instruction::FloatAddDouble {
+                d: destination,
+                a: left_register,
+                b: right_register,
+            },
+            (BinaryOperator::Subtract, false) => Instruction::FloatSubtractSingle {
+                d: destination,
+                a: left_register,
+                b: right_register,
+            },
+            (BinaryOperator::Subtract, true) => Instruction::FloatSubtractDouble {
+                d: destination,
+                a: left_register,
+                b: right_register,
+            },
+            _ => return None,
+        };
+        self.output.instructions.push(instruction);
+        Some(destination)
+    }
+
     /// Place two direct memory values without borrowing a live f1 argument.
     /// MWCC keeps the source-left value in the next available FPR and uses f0
     /// for the source-right value consumed immediately by the comparison.
@@ -152,5 +191,45 @@ impl Generator {
         let loaded_home = self.fresh_virtual_float_preferring(1);
         let loaded = self.place_condition_float_load(right, loaded_home)?;
         Ok(Some((FLOAT_SCRATCH, loaded)))
+    }
+}
+
+fn cached_condition_arithmetic_parts(
+    expression: &Expression,
+) -> Option<(BinaryOperator, &Expression, &Expression)> {
+    let Expression::Binary {
+        operator,
+        left,
+        right,
+    } = expression
+    else {
+        return None;
+    };
+    (matches!(operator, BinaryOperator::Add | BinaryOperator::Subtract)
+        && crate::condition_float_cache::is_direct_float_memory_load(left)
+        && crate::condition_float_cache::is_direct_float_memory_load(right))
+    .then_some((*operator, left.as_ref(), right.as_ref()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mwcc_syntax_trees::Type;
+
+    #[test]
+    fn recognizes_arithmetic_over_two_direct_condition_values() {
+        let member = |offset| Expression::Member {
+            base: Box::new(Expression::Variable("state".into())),
+            offset,
+            member_type: Type::Float,
+            index_stride: None,
+        };
+        let expression = Expression::Binary {
+            operator: BinaryOperator::Add,
+            left: Box::new(member(24)),
+            right: Box::new(member(28)),
+        };
+
+        assert!(cached_condition_arithmetic_parts(&expression).is_some());
     }
 }

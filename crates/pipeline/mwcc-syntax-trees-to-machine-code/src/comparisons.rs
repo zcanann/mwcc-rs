@@ -1681,6 +1681,9 @@ impl Generator {
                 | Expression::Cast { .. }
                 | Expression::Conditional { .. }
         ) {
+            if let Some(register) = self.try_place_cached_condition_arithmetic(operand) {
+                return Ok(register);
+            }
             let destination = self.fresh_virtual_float_preferring(FLOAT_FIRST);
             self.evaluate_float(operand, destination)?;
             return Ok(destination);
