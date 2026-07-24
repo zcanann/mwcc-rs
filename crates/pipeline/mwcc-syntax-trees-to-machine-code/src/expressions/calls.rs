@@ -617,6 +617,9 @@ impl Generator {
         if self.try_emit_member_constant_arguments(arguments, name, direct_call)? {
             return Ok(());
         }
+        if self.try_emit_saved_global_constant_arguments(arguments, name, direct_call)? {
+            return Ok(());
+        }
         // A CONSTANT argument that follows a GLOBAL-LOAD argument: mwcc materializes
         // the constants GREEDY-EARLY — their `li`s emit ahead of the load, and the
         // save scheduler then hoists them into the prologue's mflr latency slot

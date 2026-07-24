@@ -970,6 +970,52 @@ impl Generator {
         Ok(true)
     }
 
+    /// Schedule `(saved, word_global, i16)` with the literal ahead of the load.
+    ///
+    /// The early Dolphin `memcpy(id, idTmp, 32)` family keeps `id` in a
+    /// callee-saved register. MWCC forwards that value first, materializes the
+    /// independent size next, and leaves the global pointer load immediately
+    /// before the call. The structured statement scheduler may subsequently
+    /// lift the first two independent instructions across preceding stores.
+    pub(crate) fn try_emit_saved_global_constant_arguments(
+        &mut self,
+        arguments: &[Expression],
+        name: &str,
+        direct_call: bool,
+    ) -> Compilation<bool> {
+        let [
+            first @ Expression::Variable(saved),
+            second @ Expression::Variable(global),
+            third @ Expression::IntegerLiteral(value),
+        ] = arguments
+        else {
+            return Ok(false);
+        };
+        let Some(saved_register) = self.lookup_general(saved) else {
+            return Ok(false);
+        };
+        let all_general = self.call_parameter_types.get(name).is_none_or(|types| {
+            types.len() >= 3
+                && types[..3]
+                    .iter()
+                    .all(|ty| !matches!(ty, Type::Float | Type::Double))
+        });
+        if !direct_call
+            || !self.behavior.schedule_latency_slots
+            || !all_general
+            || saved_register < 14
+            || !self.globals.contains_key(global.as_str())
+            || !(i16::MIN as i64..=i16::MAX as i64).contains(value)
+        {
+            return Ok(false);
+        }
+
+        self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT)?;
+        self.evaluate_general(third, Eabi::FIRST_GENERAL_ARGUMENT + 2)?;
+        self.evaluate_general(second, Eabi::FIRST_GENERAL_ARGUMENT + 1)?;
+        Ok(true)
+    }
+
     /// Schedule `(short_global, i16[, wide_i32])` under absolute addressing.
     ///
     /// Both address/constant high halves run first. Their dependent low halves
