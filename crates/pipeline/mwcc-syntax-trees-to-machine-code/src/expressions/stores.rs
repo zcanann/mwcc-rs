@@ -1142,11 +1142,20 @@ impl Generator {
                 let else_label = self.fresh_label();
                 let mut terms = Vec::new();
                 collect_logical_and_terms(condition, &mut terms);
-                for term in terms {
-                    let (options, condition_bit) = self.emit_condition_test(term)?;
-                    self.emit_branch_conditional_to(options, condition_bit, else_label);
-                }
-                self.emit_comma_side_effect(when_true)?;
+                let previous_float_cache =
+                    self.begin_composed_condition_float_cache(condition);
+                let condition_result = (|| {
+                    for term in terms {
+                        let (options, condition_bit) = self.emit_condition_test(term)?;
+                        self.emit_branch_conditional_to(options, condition_bit, else_label);
+                    }
+                    Ok(())
+                })();
+                let true_result = condition_result.and_then(|()| {
+                    self.emit_comma_side_effect(when_true)
+                });
+                self.restore_condition_float_cache(previous_float_cache);
+                true_result?;
                 if expression_has_side_effect(when_false) {
                     let end = self.fresh_label();
                     self.emit_branch_to(end);

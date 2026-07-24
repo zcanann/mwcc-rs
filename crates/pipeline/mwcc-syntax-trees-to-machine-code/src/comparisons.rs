@@ -1591,16 +1591,19 @@ impl Generator {
         let single_zero = !double
             && (matches!(operand, Expression::FloatLiteral(value) if *value as f32 == 0.0)
                 || matches!(operand, Expression::IntegerLiteral(value) if *value == 0));
-        if single_zero && self.condition_float_zero_register() == Some(dest) {
-            return Ok(());
-        }
-        if self
+        let consumes_preload = self
             .preloaded_float_compare_literal
             .is_some_and(|preload| {
                 preload.register == dest
                     && float_compare_literal_key(operand, double) == Some(preload.key)
-            })
-        {
+            });
+        if single_zero && self.condition_float_zero_register() == Some(dest) {
+            if consumes_preload {
+                self.preloaded_float_compare_literal = None;
+            }
+            return Ok(());
+        }
+        if consumes_preload {
             self.preloaded_float_compare_literal = None;
             return Ok(());
         }
@@ -1681,6 +1684,12 @@ impl Generator {
             let destination = self.fresh_virtual_float_preferring(FLOAT_FIRST);
             self.evaluate_float(operand, destination)?;
             return Ok(destination);
+        }
+        if crate::condition_float_cache::is_direct_float_memory_load(operand) {
+            if let Some(register) = self.condition_float_register(operand) {
+                self.record_condition_float_value(operand, register);
+                return Ok(register);
+            }
         }
         if let Some(register) = self.retained_float_compare_register(operand) {
             return Ok(register);
