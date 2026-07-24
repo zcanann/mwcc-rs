@@ -9,6 +9,26 @@ impl Generator {
     /// before reloading the member through r3; retaining the original value in
     /// f2 both removes that unsafe reload and reproduces MWCC's leaf schedule.
     pub(crate) fn schedule_inlined_sign_store(&mut self) {
+        if let Some(start) = self
+            .output
+            .instructions
+            .windows(13)
+            .position(is_guarded_inlined_sign_store)
+        {
+            for index in [start + 9, start + 11] {
+                match &mut self.output.instructions[index] {
+                    Instruction::FloatMove { d, .. } | Instruction::FloatNegate { d, .. } => {
+                        *d = 0;
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            match &mut self.output.instructions[start + 12] {
+                Instruction::StoreFloatSingle { s, .. } => *s = 0,
+                _ => unreachable!(),
+            }
+        }
+
         let Some(start) = self
             .output
             .instructions
@@ -97,6 +117,28 @@ impl Generator {
     }
 }
 
+fn is_guarded_inlined_sign_store(window: &[Instruction]) -> bool {
+    matches!(window, [
+        Instruction::LoadFloatSingle { d: 1, a: member_base, .. },
+        Instruction::LoadFloatSingle { d: 0, a: 0, .. },
+        Instruction::FloatCompareUnordered { a: 1, b: 0 },
+        Instruction::BranchConditionalForward { .. },
+        Instruction::LoadFloatSingle { d: 1, a: stack_base, .. },
+        Instruction::FloatCompareUnordered { a: 1, b: 0 },
+        Instruction::BranchConditionalForward { target: exit, .. },
+        Instruction::FloatCompareOrdered { a: 1, b: 0 },
+        Instruction::BranchConditionalForward { target: negative, .. },
+        Instruction::FloatMove { d: 1, b: positive_source },
+        Instruction::Branch { target: store },
+        Instruction::FloatNegate { d: 1, b: negative_source },
+        Instruction::StoreFloatSingle { s: 1, a: store_base, .. },
+    ] if *stack_base == 1
+        && positive_source == negative_source
+        && member_base == store_base
+        && negative < store
+        && store < exit)
+}
+
 fn is_inlined_sign_store(window: &[Instruction]) -> bool {
     matches!(window, [
         Instruction::LoadFloatSingle { d: 0, a: 0, .. },
@@ -168,4 +210,23 @@ mod tests {
         assert!(is_inlined_sign_store(&instructions));
     }
 
+    #[test]
+    fn recognizes_a_guarded_nonleaf_sign_store() {
+        let instructions = [
+            Instruction::LoadFloatSingle { d: 1, a: 31, offset: 252 },
+            Instruction::LoadFloatSingle { d: 0, a: 0, offset: 0 },
+            Instruction::FloatCompareUnordered { a: 1, b: 0 },
+            Instruction::BranchConditionalForward { options: 4, condition_bit: 2, target: 13 },
+            Instruction::LoadFloatSingle { d: 1, a: 1, offset: 24 },
+            Instruction::FloatCompareUnordered { a: 1, b: 0 },
+            Instruction::BranchConditionalForward { options: 4, condition_bit: 2, target: 13 },
+            Instruction::FloatCompareOrdered { a: 1, b: 0 },
+            Instruction::BranchConditionalForward { options: 4, condition_bit: 0, target: 11 },
+            Instruction::FloatMove { d: 1, b: 30 },
+            Instruction::Branch { target: 12 },
+            Instruction::FloatNegate { d: 1, b: 30 },
+            Instruction::StoreFloatSingle { s: 1, a: 31, offset: 252 },
+        ];
+        assert!(is_guarded_inlined_sign_store(&instructions));
+    }
 }
