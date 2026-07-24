@@ -44,6 +44,14 @@ fn simplify_root(expression: Expression) -> Expression {
         return expression;
     };
 
+    if operator == BinaryOperator::BitOr {
+        let mut dynamic = Vec::new();
+        let mut constant = 0u32;
+        collect_or_terms(*left, &mut dynamic, &mut constant);
+        collect_or_terms(*right, &mut dynamic, &mut constant);
+        return rebuild_or(dynamic, constant);
+    }
+
     if operator == BinaryOperator::Multiply {
         if crate::analysis::constant_value(&right) == Some(1) {
             return *left;
@@ -87,6 +95,37 @@ fn simplify_root(expression: Expression) -> Expression {
         left,
         right,
     }
+}
+
+fn collect_or_terms(expression: Expression, dynamic: &mut Vec<Expression>, constant: &mut u32) {
+    if let Some(value) = crate::analysis::constant_value(&expression) {
+        *constant |= value as u32;
+        return;
+    }
+    if let Expression::Binary {
+        operator: BinaryOperator::BitOr,
+        left,
+        right,
+    } = expression
+    {
+        collect_or_terms(*left, dynamic, constant);
+        collect_or_terms(*right, dynamic, constant);
+    } else {
+        dynamic.push(expression);
+    }
+}
+
+fn rebuild_or(mut dynamic: Vec<Expression>, constant: u32) -> Expression {
+    if constant != 0 || dynamic.is_empty() {
+        dynamic.push(Expression::IntegerLiteral(i64::from(constant)));
+    }
+    let mut terms = dynamic.into_iter();
+    let first = terms.next().expect("an OR has at least one term");
+    terms.fold(first, |left, right| Expression::Binary {
+        operator: BinaryOperator::BitOr,
+        left: Box::new(left),
+        right: Box::new(right),
+    })
 }
 
 #[cfg(test)]
@@ -143,6 +182,29 @@ mod tests {
         assert!(crate::analysis::structurally_equal(
             &simplify(&expression),
             &expression
+        ));
+    }
+
+    #[test]
+    fn collects_packet_constants_after_the_dynamic_field() {
+        let expression = binary(
+            BinaryOperator::BitOr,
+            binary(
+                BinaryOperator::BitOr,
+                Expression::IntegerLiteral(0xf500_0000),
+                Expression::Variable("field".into()),
+            ),
+            Expression::IntegerLiteral(0x0088_0000),
+        );
+        let expected = binary(
+            BinaryOperator::BitOr,
+            Expression::Variable("field".into()),
+            Expression::IntegerLiteral(0xf588_0000),
+        );
+
+        assert!(crate::analysis::structurally_equal(
+            &simplify(&expression),
+            &expected
         ));
     }
 }
