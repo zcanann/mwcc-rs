@@ -11,13 +11,20 @@ use super::*;
 
 struct Shape<'a> {
     base: &'a str,
-    velocity: &'a str,
+    velocity: VelocitySource<'a>,
     acceleration: &'a str,
     target: &'a str,
     friction: &'a str,
     current_velocity_offset: i16,
     horizontal_limit_offset: i16,
     output_offset: i16,
+    inclusive_friction_limit: bool,
+}
+
+#[derive(Clone, Copy)]
+enum VelocitySource<'a> {
+    Parameter(&'a str),
+    Member(i16),
 }
 
 fn variable(expression: &Expression, name: &str) -> bool {
@@ -96,27 +103,44 @@ fn assignment(statement: &Statement, name: &str, value: &Expression) -> bool {
         if assigned == name && same_operand(assigned_value, value))
 }
 
-fn sum_of_variables(expression: &Expression, left_name: &str, right_name: &str) -> bool {
-    matches!(binary(expression, BinaryOperator::Add), Some((left, right))
-        if variable(left, left_name) && variable(right, right_name))
+fn velocity_expression(expression: &Expression, base: &str, velocity: VelocitySource<'_>) -> bool {
+    match velocity {
+        VelocitySource::Parameter(name) => variable(expression, name),
+        VelocitySource::Member(offset) => float_member(expression, base) == Some(offset),
+    }
 }
 
-fn target_minus_velocity(expression: &Expression, target: &str, velocity: &str) -> bool {
+fn sum_of_velocity_and_acceleration(
+    expression: &Expression,
+    base: &str,
+    velocity: VelocitySource<'_>,
+    acceleration: &str,
+) -> bool {
+    matches!(binary(expression, BinaryOperator::Add), Some((left, right))
+        if velocity_expression(left, base, velocity) && variable(right, acceleration))
+}
+
+fn target_minus_velocity(
+    expression: &Expression,
+    target: &str,
+    base: &str,
+    velocity: VelocitySource<'_>,
+) -> bool {
     matches!(binary(expression, BinaryOperator::Subtract), Some((left, right))
-        if variable(left, target) && variable(right, velocity))
+        if variable(left, target) && velocity_expression(right, base, velocity))
 }
 
 fn member_minus_velocity(
     expression: &Expression,
     base: &str,
     member_offset: i16,
-    velocity: &str,
+    velocity: VelocitySource<'_>,
     negate_member: bool,
 ) -> bool {
     let Some((left, right)) = binary(expression, BinaryOperator::Subtract) else {
         return false;
     };
-    variable(right, velocity)
+    velocity_expression(right, base, velocity)
         && if negate_member {
             negated_member(left, base, member_offset)
         } else {
@@ -127,7 +151,8 @@ fn member_minus_velocity(
 fn assignment_if(
     statement: &Statement,
     comparison: BinaryOperator,
-    velocity: &str,
+    base: &str,
+    velocity: VelocitySource<'_>,
     acceleration: &str,
     compared: impl FnOnce(&Expression) -> bool,
     assigned: impl FnOnce(&Expression) -> bool,
@@ -147,7 +172,7 @@ fn assignment_if(
         return false;
     };
     else_body.is_empty()
-        && sum_of_variables(sum, velocity, acceleration)
+        && sum_of_velocity_and_acceleration(sum, base, velocity, acceleration)
         && compared(right)
         && name == acceleration
         && assigned(value)
@@ -159,7 +184,7 @@ fn friction_fallback(
     target: &str,
     friction: &str,
     temporary: &str,
-) -> Option<(i16, i16)> {
+) -> Option<(i16, i16, bool)> {
     let Statement::If {
         condition,
         then_body,
@@ -186,9 +211,14 @@ fn friction_fallback(
     else {
         return None;
     };
-    let Some((left, right)) = binary(condition, BinaryOperator::GreaterEqual) else {
-        return None;
-    };
+    let (left, right, inclusive_friction_limit) =
+        if let Some((left, right)) = binary(condition, BinaryOperator::GreaterEqual) {
+            (left, right, true)
+        } else if let Some((left, right)) = binary(condition, BinaryOperator::Greater) {
+            (left, right, false)
+        } else {
+            return None;
+        };
     let current_velocity_offset = match right {
         Expression::Conditional {
             when_false,
@@ -216,6 +246,7 @@ fn friction_fallback(
     variable(value, temporary).then_some((
         current_velocity_offset,
         float_member(target, base)?,
+        inclusive_friction_limit,
     ))
 }
 
@@ -234,7 +265,7 @@ fn acceleration_ladder(
     let product_test = logical_not(condition)?;
     let (product, zero) = binary(product_test, BinaryOperator::Less)?;
     let (velocity, acceleration) = binary(product, BinaryOperator::Multiply)?;
-    if !variable(velocity, shape.velocity)
+    if !velocity_expression(velocity, shape.base, shape.velocity)
         || !variable(acceleration, shape.acceleration)
         || !is_zero_literal(zero)
         || !else_body.is_empty()
@@ -267,21 +298,30 @@ fn acceleration_ladder(
         return None;
     };
     if !positive_else.is_empty()
-        || !sum_of_variables(positive_sum, shape.velocity, shape.acceleration)
+        || !sum_of_velocity_and_acceleration(
+            positive_sum,
+            shape.base,
+            shape.velocity,
+            shape.acceleration,
+        )
         || !variable(positive_target, shape.target)
         || !matches!(set_negative_friction, Statement::Assign { name, value }
             if name == shape.acceleration && negated_variable(value, shape.friction))
         || !assignment_if(
             clamp_target,
             BinaryOperator::Less,
+            shape.base,
             shape.velocity,
             shape.acceleration,
             |right| variable(right, shape.target),
-            |value| target_minus_velocity(value, shape.target, shape.velocity),
+            |value| {
+                target_minus_velocity(value, shape.target, shape.base, shape.velocity)
+            },
         )
         || !assignment_if(
             clamp_high,
             BinaryOperator::Greater,
+            shape.base,
             shape.velocity,
             shape.acceleration,
             |right| float_member(right, shape.base) == Some(shape.horizontal_limit_offset),
@@ -310,21 +350,30 @@ fn acceleration_ladder(
         return None;
     };
     if !negative_else.is_empty()
-        || !sum_of_variables(negative_sum, shape.velocity, shape.acceleration)
+        || !sum_of_velocity_and_acceleration(
+            negative_sum,
+            shape.base,
+            shape.velocity,
+            shape.acceleration,
+        )
         || !variable(negative_target, shape.target)
         || !matches!(set_friction, Statement::Assign { name, value }
             if name == shape.acceleration && variable(value, shape.friction))
         || !assignment_if(
             clamp_target,
             BinaryOperator::Greater,
+            shape.base,
             shape.velocity,
             shape.acceleration,
             |right| variable(right, shape.target),
-            |value| target_minus_velocity(value, shape.target, shape.velocity),
+            |value| {
+                target_minus_velocity(value, shape.target, shape.base, shape.velocity)
+            },
         )
         || !assignment_if(
             clamp_low,
             BinaryOperator::Less,
+            shape.base,
             shape.velocity,
             shape.acceleration,
             |right| negated_member(
@@ -354,12 +403,20 @@ fn classify(function: &Function) -> Option<Shape<'_>> {
     {
         return None;
     }
-    let [base, velocity, acceleration, target, friction] = function.parameters.as_slice() else {
-        return None;
-    };
+    let (base, parameter_velocity, acceleration, target, friction) =
+        match function.parameters.as_slice() {
+            [base, velocity, acceleration, target, friction] => {
+                (base, Some(velocity), acceleration, target, friction)
+            }
+            [base, acceleration, target, friction] => {
+                (base, None, acceleration, target, friction)
+            }
+            _ => return None,
+        };
     if !matches!(base.parameter_type, Type::Pointer(_) | Type::StructPointer { .. })
-        || [velocity, acceleration, target, friction]
-            .iter()
+        || parameter_velocity
+            .into_iter()
+            .chain([acceleration, target, friction])
             .any(|parameter| parameter.parameter_type != Type::Float)
     {
         return None;
@@ -379,7 +436,7 @@ fn classify(function: &Function) -> Option<Shape<'_>> {
         return None;
     }
     let output_offset = float_member(output, &base.name)?;
-    let (current_velocity_offset, fallback_output) = friction_fallback(
+    let (current_velocity_offset, fallback_output, inclusive_friction_limit) = friction_fallback(
         fallback,
         &base.name,
         &target.name,
@@ -387,6 +444,12 @@ fn classify(function: &Function) -> Option<Shape<'_>> {
         &temporary.name,
     )?;
     if fallback_output != output_offset {
+        return None;
+    }
+    // Parameter-velocity variants already reach byte parity through the
+    // reusable bounded-acceleration physical scheduler. This semantic owner
+    // handles the member-backed variant, whose velocity load spans the ladder.
+    if parameter_velocity.is_some() || inclusive_friction_limit {
         return None;
     }
 
@@ -412,13 +475,17 @@ fn classify(function: &Function) -> Option<Shape<'_>> {
     };
     let shape = Shape {
         base: &base.name,
-        velocity: &velocity.name,
+        velocity: parameter_velocity.map_or(
+            VelocitySource::Member(current_velocity_offset),
+            |velocity| VelocitySource::Parameter(&velocity.name),
+        ),
         acceleration: &acceleration.name,
         target: &target.name,
         friction: &friction.name,
         current_velocity_offset,
         horizontal_limit_offset,
         output_offset,
+        inclusive_friction_limit,
     };
     acceleration_ladder(ladder, &shape)?;
     Some(shape)
@@ -433,11 +500,19 @@ impl Generator {
             return Ok(false);
         };
         let base = self.general_register_of(shape.base)?;
-        let velocity = self.float_register_of(shape.velocity)?;
         let acceleration = self.float_register_of(shape.acceleration)?;
         let target = self.float_register_of(shape.target)?;
         let friction = self.float_register_of(shape.friction)?;
-        if (base, velocity, acceleration, target, friction) != (3, 1, 2, 3, 4) {
+        let (velocity, zero, load_velocity) = match shape.velocity {
+            VelocitySource::Parameter(name) => (self.float_register_of(name)?, 5, false),
+            VelocitySource::Member(_) => (5, 4, true),
+        };
+        if (base, velocity, acceleration, target, friction, zero)
+            != match shape.velocity {
+                VelocitySource::Parameter(_) => (3, 1, 2, 3, 4, 5),
+                VelocitySource::Member(_) => (3, 5, 1, 2, 3, 4),
+            }
+        {
             return Ok(false);
         }
 
@@ -452,10 +527,10 @@ impl Generator {
         let fallback_adjust_sign = self.fresh_label();
         let fallback_done = self.fresh_label();
 
-        self.load_float_constant(5, 0.0);
+        self.load_float_constant(zero, 0.0);
         self.output
             .instructions
-            .push(Instruction::FloatCompareUnordered { a: target, b: 5 });
+            .push(Instruction::FloatCompareUnordered { a: target, b: zero });
         self.emit_branch_conditional_to(4, 2, nonzero_target); // bne
         self.output.instructions.push(Instruction::LoadFloatSingle {
             d: 2,
@@ -464,7 +539,7 @@ impl Generator {
         });
         self.output
             .instructions
-            .push(Instruction::FloatCompareOrdered { a: 2, b: 5 });
+            .push(Instruction::FloatCompareOrdered { a: 2, b: zero });
         self.emit_branch_conditional_to(4, 0, fallback_velocity_nonnegative); // bge
         self.output
             .instructions
@@ -494,10 +569,14 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::FloatCompareOrdered { a: 0, b: 1 });
-        self.output
-            .instructions
-            .push(Instruction::ConditionRegisterOr { d: 2, a: 1, b: 2 });
-        self.emit_branch_conditional_to(4, 2, fallback_adjust_sign); // bne
+        if shape.inclusive_friction_limit {
+            self.output
+                .instructions
+                .push(Instruction::ConditionRegisterOr { d: 2, a: 1, b: 2 });
+            self.emit_branch_conditional_to(4, 2, fallback_adjust_sign); // bne
+        } else {
+            self.emit_branch_conditional_to(4, 1, fallback_adjust_sign); // ble
+        }
         self.output.instructions.push(Instruction::FloatNegate {
             d: friction,
             b: 2,
@@ -524,6 +603,13 @@ impl Generator {
             .push(Instruction::BranchToLinkRegister);
 
         self.bind_label(nonzero_target);
+        if load_velocity {
+            self.output.instructions.push(Instruction::LoadFloatSingle {
+                d: velocity,
+                a: base,
+                offset: shape.current_velocity_offset,
+            });
+        }
         let negative = self.fresh_label();
         let positive_second_clamp = self.fresh_label();
         let negative_bound = self.fresh_label();
@@ -538,13 +624,13 @@ impl Generator {
             });
         self.output
             .instructions
-            .push(Instruction::FloatCompareOrdered { a: 0, b: 5 });
+            .push(Instruction::FloatCompareOrdered { a: 0, b: zero });
         self.emit_branch_conditional_to(12, 0, store); // blt
         self.output
             .instructions
             .push(Instruction::FloatCompareOrdered {
                 a: acceleration,
-                b: 5,
+                b: zero,
             });
         self.emit_branch_conditional_to(4, 1, negative); // ble
 
