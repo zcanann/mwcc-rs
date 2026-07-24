@@ -176,11 +176,15 @@ impl Generator {
                     StoreSource::General(destination)
                 }
             };
-            planned.push(PlannedStore {
+            let store = PlannedStore {
                 source,
                 offset: local_offset + offset,
                 width,
-            });
+            };
+            if planned_store_instruction(store).is_none() {
+                return Ok(false);
+            }
+            planned.push(store);
         }
         if planned.first().is_none_or(|store| {
             !matches!(store.source, StoreSource::General(4)) || store.width != 32
@@ -206,7 +210,7 @@ impl Generator {
         for load in stack_loads {
             self.output.instructions.push(load);
         }
-        emit_planned_store(&mut self.output.instructions, planned[0])?;
+        emit_planned_store(&mut self.output.instructions, planned[0]);
         self.output.instructions.extend([
             Instruction::Or { a: 4, s: 3, b: 3 },
             Instruction::AddImmediate {
@@ -216,7 +220,7 @@ impl Generator {
             },
         ]);
         for store in &planned[1..] {
-            emit_planned_store(&mut self.output.instructions, *store)?;
+            emit_planned_store(&mut self.output.instructions, *store);
         }
         self.record_relocation(RelocationKind::Rel24, callee);
         self.output.instructions.push(Instruction::BranchAndLink {
@@ -227,11 +231,14 @@ impl Generator {
     }
 }
 
-fn emit_planned_store(
-    instructions: &mut Vec<Instruction>,
-    store: PlannedStore,
-) -> Compilation<()> {
-    let instruction = match (store.source, store.width) {
+fn emit_planned_store(instructions: &mut Vec<Instruction>, store: PlannedStore) {
+    instructions.push(
+        planned_store_instruction(store).expect("aggregate stores were validated before emission"),
+    );
+}
+
+fn planned_store_instruction(store: PlannedStore) -> Option<Instruction> {
+    Some(match (store.source, store.width) {
         (StoreSource::General(source), 8) => Instruction::StoreByte {
             s: source,
             a: 1,
@@ -257,12 +264,6 @@ fn emit_planned_store(
             a: 1,
             offset: store.offset,
         },
-        _ => {
-            return Err(Diagnostic::error(
-                "aggregate parameter forwarding has an unsupported store width",
-            ))
-        }
-    };
-    instructions.push(instruction);
-    Ok(())
+        _ => return None,
+    })
 }
