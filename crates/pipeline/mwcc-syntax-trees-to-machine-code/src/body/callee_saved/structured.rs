@@ -892,11 +892,6 @@ impl Generator {
                     .ok_or_else(|| Diagnostic::error("structured scalar frame is too large"))?;
             }
             if let Some(publication) = &frame_publication {
-                let incoming = self
-                    .locations
-                    .get(&publication.parameter)
-                    .expect("publication parameter was eligibility checked")
-                    .register;
                 self.frame_slots.insert(
                     publication.parameter.clone(),
                     FrameSlot {
@@ -904,7 +899,7 @@ impl Generator {
                         class: ValueClass::General,
                         size: 4,
                         value_type: Type::Pointer(Pointee::Pointer),
-                        parameter_register: Some(incoming),
+                        parameter_register: None,
                         is_array: false,
                     },
                 );
@@ -1045,10 +1040,10 @@ impl Generator {
         let deferred_home_base = saved_parameter_base + saved_parameter_homes.len();
         let publication_entry_emitted = if let Some(publication) = &frame_publication {
             let incoming = self
-                .frame_slots
+                .locations
                 .get(&publication.parameter)
-                .and_then(|slot| slot.parameter_register)
-                .expect("publication parameter has an incoming register");
+                .expect("publication parameter was eligibility checked")
+                .register;
             let cursor_slot = self
                 .frame_slots
                 .get(&publication.cursor)

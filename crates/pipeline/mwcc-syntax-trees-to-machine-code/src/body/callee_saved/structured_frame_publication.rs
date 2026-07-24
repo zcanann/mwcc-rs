@@ -14,6 +14,7 @@ use super::structured_loop_register_pressure::DENSE_SAVED_GPR_COUNT;
 pub(super) const OWNER_OFFSET: i16 = 16;
 pub(super) const CURSOR_OFFSET: i16 = 20;
 pub(super) const LOCAL_REGION_BYTES: i16 = 16;
+const OWNER_INCOMING: u8 = Eabi::FIRST_GENERAL_ARGUMENT + 1;
 
 #[derive(Clone)]
 pub(super) struct StructuredFramePublication {
@@ -92,6 +93,139 @@ impl StructuredFramePublication {
     pub(super) fn saved_parameter_preference(&self, home_index: usize) -> Option<u8> {
         [14, 15, 26].get(home_index).copied()
     }
+}
+
+impl Generator {
+    /// Keep the just-loaded cursor-owner alias through the first packet. The
+    /// post-increment still publishes the advanced cursor to its frame slot,
+    /// while the initial reload and packet-base scratch become unnecessary.
+    pub(crate) fn schedule_structured_frame_publication_entry(&mut self) {
+        let has_owner_slot = self.frame_slots.values().any(|slot| {
+            slot.offset == OWNER_OFFSET
+                && slot.parameter_register.is_none()
+                && slot.value_type == Type::Pointer(Pointee::Pointer)
+        });
+        if !has_owner_slot {
+            return;
+        }
+        let Some(start) = publication_entry_packet(&self.output.instructions) else {
+            return;
+        };
+        let (cursor, advanced, command, zero, reload) = match &self.output.instructions
+            [start..start + 8]
+        {
+            [Instruction::LoadWord { d: cursor, .. }, Instruction::AddImmediate { d: advanced, .. }, Instruction::StoreWord { .. }, Instruction::AddImmediateShifted {
+                immediate: command, ..
+            }, Instruction::StoreWord { .. }, Instruction::AddImmediate {
+                d: zero,
+                a: 0,
+                immediate: 0,
+            }, Instruction::StoreWord { .. }, reload] => {
+                (*cursor, *advanced, *command, *zero, reload.clone())
+            }
+            _ => unreachable!("publication entry packet was matched"),
+        };
+        let replacement = [
+            Instruction::AddImmediate {
+                d: advanced,
+                a: OWNER_INCOMING,
+                immediate: 8,
+            },
+            Instruction::load_immediate_shifted(cursor, command),
+            Instruction::StoreWord {
+                s: advanced,
+                a: 1,
+                offset: CURSOR_OFFSET,
+            },
+            Instruction::load_immediate(zero, 0),
+            Instruction::StoreWord {
+                s: cursor,
+                a: OWNER_INCOMING,
+                offset: 0,
+            },
+            Instruction::StoreWord {
+                s: zero,
+                a: OWNER_INCOMING,
+                offset: 4,
+            },
+            reload,
+        ];
+        self.output
+            .instructions
+            .splice(start..start + 8, replacement);
+        let old_len = self.output.instructions.len() + 1;
+        self.output
+            .relocations
+            .retain(|relocation| relocation.instruction_index != start);
+        let permutation: Vec<usize> = (0..old_len)
+            .map(|old| {
+                if old < start {
+                    old
+                } else if old == start {
+                    start
+                } else {
+                    old - 1
+                }
+            })
+            .collect();
+        crate::remap_instruction_indices(self, &permutation);
+    }
+}
+
+fn publication_entry_packet(instructions: &[Instruction]) -> Option<usize> {
+    instructions.windows(8).position(|window| {
+        matches!(
+            window,
+            [
+                Instruction::LoadWord {
+                    d: cursor,
+                    a: 1,
+                    offset: CURSOR_OFFSET,
+                },
+                Instruction::AddImmediate {
+                    d: advanced,
+                    a: add_base,
+                    immediate: 8,
+                },
+                Instruction::StoreWord {
+                    s: stored_advance,
+                    a: 1,
+                    offset: CURSOR_OFFSET,
+                },
+                Instruction::AddImmediateShifted {
+                    d: command,
+                    a: 0,
+                    ..
+                },
+                Instruction::StoreWord {
+                    s: stored_command,
+                    a: packet,
+                    offset: 0,
+                },
+                Instruction::AddImmediate {
+                    d: zero,
+                    a: 0,
+                    immediate: 0,
+                },
+                Instruction::StoreWord {
+                    s: stored_zero,
+                    a: zero_packet,
+                    offset: 4,
+                },
+                Instruction::LoadWord {
+                    d: reload,
+                    a: 1,
+                    offset: CURSOR_OFFSET,
+                },
+            ] if cursor == add_base
+                && cursor == packet
+                && cursor == zero_packet
+                && cursor == reload
+                && advanced == stored_advance
+                && command == stored_command
+                && zero == stored_zero
+        )
+    })
 }
 
 #[cfg(test)]
@@ -178,5 +312,44 @@ mod tests {
             Some(DENSE_SAVED_GPR_COUNT),
         )
         .is_none());
+    }
+
+    #[test]
+    fn recognizes_the_initial_cursor_packet() {
+        let instructions = vec![
+            Instruction::LoadWord {
+                d: 3,
+                a: 1,
+                offset: CURSOR_OFFSET,
+            },
+            Instruction::AddImmediate {
+                d: 0,
+                a: 3,
+                immediate: 8,
+            },
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: CURSOR_OFFSET,
+            },
+            Instruction::load_immediate_shifted(0, -6400),
+            Instruction::StoreWord {
+                s: 0,
+                a: 3,
+                offset: 0,
+            },
+            Instruction::load_immediate(0, 0),
+            Instruction::StoreWord {
+                s: 0,
+                a: 3,
+                offset: 4,
+            },
+            Instruction::LoadWord {
+                d: 3,
+                a: 1,
+                offset: CURSOR_OFFSET,
+            },
+        ];
+        assert_eq!(publication_entry_packet(&instructions), Some(0));
     }
 }

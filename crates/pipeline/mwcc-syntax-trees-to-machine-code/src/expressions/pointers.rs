@@ -574,6 +574,18 @@ impl Generator {
     /// nothing; a pointer-typed struct member (`*p->q`) loads the pointer value
     /// into the base's register first, reusing it as mwcc does.
     pub(crate) fn resolve_pointer(&mut self, base: &Expression) -> Compilation<(Pointee, u8)> {
+        // A spilled pointer variable is an address value stored in the frame,
+        // not a ready pointer in its stale incoming register. Reload it before
+        // resolving the dereference target.
+        if let Expression::Variable(name) = base {
+            if let Some(slot) = self.frame_slots.get(name).copied() {
+                if let Type::Pointer(pointee) = slot.value_type {
+                    let register = self.fresh_virtual_general_preferring(3);
+                    self.evaluate_general(base, register)?;
+                    return Ok((pointee, register));
+                }
+            }
+        }
         // `**pp` — a double dereference through a word-pointer-to-pointer (`int **`,
         // `unsigned **`). The inner `*pp` loads the inner pointer VALUE (a word) into
         // the leaf's OWN register, as mwcc does (`lwz rN,0(rN)`); the returned address

@@ -628,6 +628,7 @@ pub fn lower_function(
         .filter_map(|local| generator.frame_slots.get(&local.name).map(|slot| slot.offset))
         .collect();
     generator.forward_adjacent_frame_scalar_values(&forwardable_frame_scalar_offsets);
+    generator.schedule_structured_frame_publication_entry();
     // Revisit the narrow saved-result epilogue on the physical stream. A
     // source-level return branch can hide the move from the structured
     // pre-allocation pass until generic scheduling removes that branch.
