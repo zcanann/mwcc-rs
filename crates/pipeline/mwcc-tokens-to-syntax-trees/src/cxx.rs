@@ -2429,13 +2429,29 @@ impl Parser {
                     .entry((class.to_string(), member))
                     .or_default()
                     .push(method);
-                if is_inline {
-                    return Some(None);
-                }
                 let mut prototype_parameters = vec![Type::StructPointer {
                     element_size: self.structs.get(class).map_or(0, |layout| layout.size),
                 }];
                 prototype_parameters.extend(parameters);
+                if is_inline {
+                    // The body is not an emitted external prototype, but calls
+                    // that survive semantic inlining still need its complete
+                    // value ABI (notably the hidden result of small C++
+                    // aggregates). Keep that type fact separate from symbol
+                    // declaration ownership.
+                    if !self
+                        .skipped_inline_signatures
+                        .iter()
+                        .any(|(existing, _, _)| existing == &mangled)
+                    {
+                        self.skipped_inline_signatures.push((
+                            mangled,
+                            return_type,
+                            prototype_parameters,
+                        ));
+                    }
+                    return Some(None);
+                }
                 prototype_parameters
             };
             if variadic {

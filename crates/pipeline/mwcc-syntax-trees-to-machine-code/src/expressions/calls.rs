@@ -97,43 +97,100 @@ impl Generator {
         )
     }
 
-    /// Lower an assignment from an aggregate-returning virtual call into the
-    /// destination's frame slot. Both the ordinary and structured body owners
-    /// must use the hidden-result EABI instead of treating the aggregate as a
-    /// scalar register value.
-    pub(crate) fn try_emit_frame_aggregate_virtual_assignment(
+    /// Emit a direct call returning an aggregate through the EABI hidden-result
+    /// pointer. The caller-provided address precedes every source argument.
+    pub(crate) fn emit_call_with_aggregate_result(
+        &mut self,
+        name: &str,
+        arguments: &[Expression],
+        result_address: &Expression,
+    ) -> Compilation<()> {
+        let mut abi_arguments = Vec::with_capacity(arguments.len() + 1);
+        abi_arguments.push(result_address.clone());
+        abi_arguments.extend_from_slice(arguments);
+        self.emit_call(name, &abi_arguments, None, false)
+    }
+
+    /// Lower an assignment from an aggregate-returning direct or virtual call
+    /// into the destination's frame slot. Both ordinary and structured body
+    /// owners share this hidden-result ABI path.
+    pub(crate) fn try_emit_frame_aggregate_call_assignment(
         &mut self,
         name: &str,
         value: &Expression,
     ) -> Compilation<bool> {
-        let Expression::VirtualCall {
-            object,
-            vptr_offset,
-            slot_offset,
-            return_type: Type::Struct { size, .. },
-            variadic,
-            arguments,
-        } = value
+        let Some(slot) = self.frame_slots.get(name).copied() else {
+            return Ok(false);
+        };
+        let Type::Struct {
+            size: slot_size, ..
+        } = slot.value_type
         else {
             return Ok(false);
         };
-        if !self.frame_slots.get(name).is_some_and(|slot| {
-            matches!(slot.value_type, Type::Struct { size: slot_size, .. } if slot_size == *size)
-                && !slot.is_array
-        }) {
+        if slot.is_array {
+            return Ok(false);
+        }
+        let result_size = match value {
+            Expression::Call { name, .. } => {
+                match self.call_return_types.get(name) {
+                    Some(Type::Struct { size, .. }) => *size,
+                    // Some recovered inline instance methods are intentionally
+                    // absent from external prototypes. The typed aggregate
+                    // assignment and skipped-inline identity still prove their
+                    // hidden-result ABI even when only a template forwarder
+                    // survives as a call.
+                    None if self.skipped_inline_names.contains(name) => slot_size,
+                    _ => return Ok(false),
+                }
+            }
+            Expression::VirtualCall {
+                return_type: Type::Struct { size, .. },
+                ..
+            } => *size,
+            _ => return Ok(false),
+        };
+        if slot_size != result_size {
             return Ok(false);
         }
         let result_address = Expression::AddressOf {
             operand: Box::new(Expression::Variable(name.to_string())),
         };
-        self.emit_virtual_call_with_aggregate_result(
-            object,
-            *vptr_offset,
-            *slot_offset,
-            *variadic,
-            arguments,
-            &result_address,
-        )?;
+        match value {
+            Expression::Call {
+                name: callee,
+                arguments,
+            } => {
+                self.emit_call_with_aggregate_result(callee, arguments, &result_address)?;
+            }
+            Expression::VirtualCall {
+                object,
+                vptr_offset,
+                slot_offset,
+                variadic,
+                arguments,
+                ..
+            } => {
+                self.emit_virtual_call_with_aggregate_result(
+                    object,
+                    *vptr_offset,
+                    *slot_offset,
+                    *variadic,
+                    arguments,
+                    &result_address,
+                )?;
+            }
+            _ => unreachable!("aggregate call shape was checked"),
+        }
+        for offset in (0..result_size).step_by(4) {
+            let offset = i16::try_from(offset)
+                .map_err(|_| Diagnostic::error("frame aggregate result is too large"))?;
+            self.written_slots.insert(
+                slot.offset
+                    .checked_add(offset)
+                    .ok_or_else(|| Diagnostic::error("frame aggregate result is out of range"))?,
+            );
+        }
         Ok(true)
     }
 

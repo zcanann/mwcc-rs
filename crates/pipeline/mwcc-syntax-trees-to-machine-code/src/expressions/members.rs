@@ -887,6 +887,29 @@ impl Generator {
     pub(crate) fn member_base_register(&mut self, base: &Expression) -> Compilation<u8> {
         match base {
             Expression::Variable(name) => self.general_register_of(name),
+            // A pointer field inside a frame-resident aggregate is itself the
+            // base of the next member access. Load that field from the frame
+            // before chasing the pointer; the aggregate has no scalar register
+            // home of its own.
+            Expression::Member {
+                base: aggregate,
+                offset,
+                member_type: member_type @ (Type::Pointer(_) | Type::StructPointer { .. }),
+                index_stride: None,
+            } if matches!(
+                aggregate.as_ref(),
+                Expression::Variable(name) if self.frame_slots.contains_key(name)
+            ) => {
+                let register = self.fresh_virtual_general();
+                self.emit_member_load(
+                    aggregate,
+                    *offset,
+                    *member_type,
+                    None,
+                    register,
+                )?;
+                Ok(register)
+            }
             Expression::Member {
                 base: inner,
                 offset,
