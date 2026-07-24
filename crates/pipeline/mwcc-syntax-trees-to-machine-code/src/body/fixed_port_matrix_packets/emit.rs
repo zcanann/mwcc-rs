@@ -92,6 +92,11 @@ impl Generator {
             patch_branch(self, branch, join);
         }
 
+        // The source-level switch, three packet-building do/while regions, and
+        // their bitfield subexpressions consume 142 anonymous labels in build
+        // 163 before the pooled scale literal is named. This owner emits their
+        // final schedule directly, so retain that observable symbol ordinal.
+        self.output.anonymous_label_bump += 142;
         self.evaluate(&Expression::FloatLiteral(1024.0), Type::Float, 2)?;
         self.output.instructions.extend([
             Instruction::MultiplyImmediate { d: 3, a: 0, immediate: 3 },
