@@ -1245,11 +1245,16 @@ pub(crate) fn lower_virtual_destructor(
     // lowering. Do not infer this from the vtable's callable relocations: a
     // pure virtual destructor has an out-of-line body but deliberately leaves
     // its callable slot zero.
-    let (vptr_offset, deleting_callee, vtable_name, delete_size) = function
+    let (vptr_offset, deleting_callee, vtable_name, delete_size, empty_virtual_shell) = function
         .statements
         .first()
         .and_then(|statement| {
-            let mwcc_syntax_trees::Statement::If { then_body, .. } = statement else {
+            let mwcc_syntax_trees::Statement::If {
+                condition,
+                then_body,
+                else_body,
+            } = statement
+            else {
                 return None;
             };
             let mwcc_syntax_trees::Statement::Store { target, value } = then_body.first()? else {
@@ -1289,11 +1294,29 @@ pub(crate) fn lower_virtual_destructor(
                 name.clone(),
                 vtable_name.clone(),
                 delete_size,
+                function.statements.len() == 1
+                    && else_body.is_empty()
+                    && then_body.len() == 2
+                    && matches!(
+                        condition,
+                        mwcc_syntax_trees::Expression::Variable(name) if name == "this"
+                    ),
             ))
         })?;
     let vtable = globals.iter().find(|global| global.name == vtable_name)?;
 
     let behavior = Behavior::resolve(&config);
+    if empty_virtual_shell
+        && behavior.optimization >= mwcc_versions::Optimization::O2
+        && behavior.cxx_trivial_destructor_style
+            == mwcc_versions::CxxTrivialDestructorStyle::ExplicitTests
+    {
+        let mut output =
+            trivial_destructor::lower_matched(function, config.clone(), deleting_callee.clone())?;
+        output.anonymous_label_bump =
+            u32::from(behavior.cxx_virtual_destructor_label_bump);
+        return Some(output);
+    }
     if let Some(output) = virtual_destructor::lower_unoptimized(
         function,
         &behavior,
