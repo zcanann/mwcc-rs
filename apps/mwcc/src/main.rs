@@ -2420,6 +2420,9 @@ mod tests {
     #[path = "computed_record_condition.rs"]
     mod computed_record_condition;
 
+    #[path = "large_integer_condition.rs"]
+    mod large_integer_condition;
+
     #[path = "computed_subtract_schedule.rs"]
     mod computed_subtract_schedule;
 

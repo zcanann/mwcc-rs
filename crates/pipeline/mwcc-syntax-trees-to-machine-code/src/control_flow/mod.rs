@@ -7,6 +7,7 @@ mod branch_preserving_select;
 mod branches;
 mod common_offset_select;
 mod float;
+mod large_equality_compare;
 mod nested_phi_select;
 mod narrow_member_compare;
 mod negated_short_circuit;

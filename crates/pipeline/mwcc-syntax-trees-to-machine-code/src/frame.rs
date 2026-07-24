@@ -2474,6 +2474,15 @@ impl Generator {
 
     pub(crate) fn resolve_frame_pointer(&self, pointer: &Expression) -> Option<(Pointee, i16)> {
         match pointer {
+            // A frame-resident array in value position has already decayed to
+            // its first element's address. Casted type-puns retain that plain
+            // Variable node (`*(u32 *)bytes`), so recover the slot directly
+            // instead of trying to find a nonexistent register home.
+            Expression::Variable(name) => {
+                let slot = self.frame_slots.get(name).filter(|slot| slot.is_array)?;
+                let pointee = crate::expressions::pointee_of_type(slot.value_type)?;
+                Some((pointee, slot.offset))
+            }
             Expression::AddressOf { operand } => {
                 let name = match operand.as_ref() {
                     Expression::Variable(name) => name,
