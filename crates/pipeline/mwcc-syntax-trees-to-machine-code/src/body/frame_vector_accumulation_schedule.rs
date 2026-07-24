@@ -38,20 +38,19 @@ impl Generator {
             return;
         };
 
-        self.move_frame_vector_instruction_before(entry + 5, entry);
-        self.move_frame_vector_instruction_before(entry + 5, entry + 3);
-        self.move_frame_vector_instruction_before(select + 9, select + 1);
-        self.move_frame_vector_instruction_before(select + 3, select + 2);
-
-        let source = match self.output.instructions[tail] {
-            Instruction::Or { s, .. } => s,
-            _ => unreachable!(),
+        let Instruction::Or { s: source, .. } = self.output.instructions[tail] else {
+            return;
         };
         self.output.instructions[tail] = Instruction::AddImmediate {
             d: 3,
             a: source,
             immediate: 0,
         };
+
+        self.move_frame_vector_instruction_before(entry + 5, entry);
+        self.move_frame_vector_instruction_before(entry + 5, entry + 3);
+        self.move_frame_vector_instruction_before(select + 9, select + 1);
+        self.move_frame_vector_instruction_before(select + 3, select + 2);
     }
 
     fn move_frame_vector_instruction_before(&mut self, from: usize, to: usize) {
