@@ -4,7 +4,7 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-07-24 00:31 UTC at compiler commit `77594ba3`
+Latest targeted checkpoint: 2026-07-24 00:40 UTC at compiler commit `4e3b6ea0`
 
 Latest measured compiler + harness fingerprint: `4ca51cd13c66eca020e6f691933c6075f99debec63ec5d6ba3a09853753c4bbe:121d3ae4f26965d7109e24043dcb96e73b0ab99435ff0da8079c505e14ff84a1`
 
@@ -76,16 +76,16 @@ This validates the failure-only edit loop: representative audits are useful
 periodic measurements, but recompiling them continuously would spend most of
 its time on known giant-TU timeouts.
 
-Post-holdout compiler work through commit `77594ba3` has not been run over a
+Post-holdout compiler work through commit `4e3b6ea0` has not been run over a
 new unbiased sample, so it does not change the 7.8% estimate above. On the
 targeted Melee `src/melee/ft/ftcommon.c` diagnostic, the latest checkpoint moved
-relocation-aware parity from 28/109 to 38/109 functions and from 996/15,340 to
-1,844/15,340 reference code bytes. The paired gain was +10/-0 functions and +848
+relocation-aware parity from 28/109 to 39/109 functions and from 996/15,340 to
+1,968/15,340 reference code bytes. The paired gain was +11/-0 functions and +972
 exact bytes: `ftCommon_ClampAirDrift`, `ftCommon_FallBasic`, and
 `ftCommon_CalcHitlag`, `ftCommon_8007DB58`, `ftCommon_SetAccessory`, and
 `ftCommon_8007FF74`, `ftCommon_8007DB24`, `ftCommon_8007D28C`,
-`ftCo_GetLStickAngle`, and `ftCo_GetCStickAngle`. This is evidence of local
-forward movement, not a corpus-level percentage.
+`ftCo_GetLStickAngle`, `ftCo_GetCStickAngle`, and `ftCommon_8007D780`. This is
+evidence of local forward movement, not a corpus-level percentage.
 
 ## Historical baseline: fresh current-population holdout
 
