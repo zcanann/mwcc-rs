@@ -85,6 +85,7 @@ mod structured_member_scale_schedule;
 mod structured_liveness;
 mod structured_loop_lowering;
 mod structured_loop_invariants;
+mod structured_bitset_hint_schedule;
 mod structured_nested_member_base;
 mod structured_preloop_alias;
 mod structured_parameter_home_reuse;
