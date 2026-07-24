@@ -4,7 +4,7 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-07-24 04:58 UTC at compiler commit `1b0f81ce`
+Latest targeted checkpoint: 2026-07-24 05:30 UTC at compiler commit `d2609aad`
 
 Latest measured compiler + harness fingerprint: `4ca51cd13c66eca020e6f691933c6075f99debec63ec5d6ba3a09853753c4bbe:121d3ae4f26965d7109e24043dcb96e73b0ab99435ff0da8079c505e14ff84a1`
 
@@ -76,13 +76,13 @@ This validates the failure-only edit loop: representative audits are useful
 periodic measurements, but recompiling them continuously would spend most of
 its time on known giant-TU timeouts.
 
-Post-holdout compiler work through commit `1b0f81ce` has not been run over a
+Post-holdout compiler work through commit `d2609aad` has not been run over a
 new unbiased sample, so it does not change the 7.8% estimate above. On the
 targeted Melee `src/melee/ft/ftcommon.c` diagnostic, the latest checkpoint moved
-relocation-aware parity from 28/109 to 79/109 functions and from 996/15,340 to
-7,284/15,340 reference code bytes. Paired movement was +51/-0 functions and
-+6,288 exact bytes. Of 80 comparable functions, 79 were relocation-aware exact;
-one emitted mismatch and the other 29 remained compile/defer coverage gaps. The
+relocation-aware parity from 28/109 to 82/109 functions and from 996/15,340 to
+7,600/15,340 reference code bytes. Paired movement was +54/-0 functions and
++6,604 exact bytes. Of 83 comparable functions, 82 were relocation-aware exact;
+one emitted mismatch and the other 26 remained compile/defer coverage gaps. The
 gains were `ftCommon_ClampAirDrift`, `ftCommon_FallBasic`,
 `ftCommon_CalcHitlag`, `ftCommon_8007DB58`, `ftCommon_SetAccessory`,
 `ftCommon_8007FF74`, `ftCommon_8007DB24`, `ftCommon_8007D28C`,
@@ -129,10 +129,14 @@ conjunction a value-origin frame lane and MWCC's saved-argument issue order then
 made `ftCommon_8007EBAC` byte- and relocation-exact. Reusing a dying parameter
 register for an inline local loaded from one of its members, then pooling a
 repeated floating zero across the store run, made `ftCommon_8007E2FC` and
-`ftCommon_8007E82C` byte- and relocation-exact. The remaining emitted mismatch
-is `ftCommon_8007E0E4`; it became comparable when linkage-first saved FPR frames
-were materialized, but is not counted as an exact gain. This is evidence of
-local forward movement, not a corpus-level percentage.
+`ftCommon_8007E82C` byte- and relocation-exact. Expanded short-circuit list-walk
+lowering then made `ftCommon_8007EC30` exact; paired negated and absolute-value
+product lowering made `ftCommon_8007F7B4` and `ftCommon_8007F76C` exact. The
+remaining emitted mismatch is `ftCommon_8007E0E4`; linkage-first saved-FPR
+frames made it comparable, and true-edge float caching subsequently removed
+three redundant instructions from its opening conjunction, but it is not
+counted as an exact gain. This is evidence of local forward movement, not a
+corpus-level percentage.
 
 ## Historical baseline: fresh current-population holdout
 
