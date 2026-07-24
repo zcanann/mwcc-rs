@@ -1,6 +1,8 @@
 //! Call emission and argument marshaling.
 
-use super::call_argument_types::{classify_call_argument, CallArgumentPlacement};
+use super::call_argument_types::{
+    classify_call_argument, outgoing_general_stack_offset, CallArgumentPlacement,
+};
 #[allow(unused_imports)]
 use super::*;
 use mwcc_versions::FrameConvention;
@@ -1199,7 +1201,26 @@ impl Generator {
                             && *source > next_general
                             && *source <= Eabi::LAST_GENERAL_ARGUMENT
                     });
-                if let Some((source, _, _)) = downward_word_copy {
+                if let Some(stack_offset) = outgoing_general_stack_offset(next_general) {
+                    let stack_start = i32::from(stack_offset);
+                    let stack_end = stack_start + 4;
+                    let overlaps_local = self.frame_slots.values().any(|slot| {
+                        let slot_start = i32::from(slot.offset);
+                        let slot_end = slot_start + i32::from(slot.size);
+                        slot_start < stack_end && stack_start < slot_end
+                    });
+                    if self.frame_size == 0 || overlaps_local {
+                        return Err(Diagnostic::error(format!(
+                            "general argument {index} to '{name}' needs an unreserved outgoing stack slot"
+                        )));
+                    }
+                    self.evaluate_general(argument, next_general)?;
+                    self.output.instructions.push(Instruction::StoreWord {
+                        s: next_general,
+                        a: 1,
+                        offset: stack_offset,
+                    });
+                } else if let Some((source, _, _)) = downward_word_copy {
                     self.emit_integer_materialization_copy(next_general, source);
                 } else {
                     self.evaluate_general(argument, next_general)?;

@@ -18,6 +18,15 @@ pub(super) enum CallArgumentPlacement {
     },
 }
 
+/// Stack slot for an integer-class argument after r3..r10 are exhausted.
+///
+/// The first overflow word occupies the caller parameter area at `8(r1)`;
+/// each subsequent word advances by four bytes.
+pub(super) fn outgoing_general_stack_offset(next_register: u8) -> Option<i16> {
+    (next_register > Eabi::LAST_GENERAL_ARGUMENT)
+        .then(|| 8 + i16::from(next_register - Eabi::LAST_GENERAL_ARGUMENT - 1) * 4)
+}
+
 pub(super) fn classify_call_argument(
     parameter_type: Option<Type>,
     argument_is_float: bool,
@@ -85,6 +94,22 @@ mod tests {
                 folded_integer: None,
                 convert_integer: true,
             }
+        );
+    }
+
+    #[test]
+    fn assigns_general_overflow_words_above_the_linkage_area() {
+        assert_eq!(
+            outgoing_general_stack_offset(Eabi::LAST_GENERAL_ARGUMENT),
+            None
+        );
+        assert_eq!(
+            outgoing_general_stack_offset(Eabi::LAST_GENERAL_ARGUMENT + 1),
+            Some(8)
+        );
+        assert_eq!(
+            outgoing_general_stack_offset(Eabi::LAST_GENERAL_ARGUMENT + 2),
+            Some(12)
         );
     }
 }
