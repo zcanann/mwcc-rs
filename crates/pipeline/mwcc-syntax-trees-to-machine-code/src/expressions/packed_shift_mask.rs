@@ -105,12 +105,26 @@ fn decompose(expression: &Expression) -> Option<PackedShiftMask<'_>> {
             if amount >= 32 {
                 return None;
             }
-            let mut pipeline = decompose(left)?;
-            pipeline.shift = pipeline.shift.wrapping_add(amount) % 32;
-            pipeline.mask <<= amount;
-            pipeline.possible_sign_fill <<= amount;
-            pipeline.operations += 1;
-            Some(pipeline)
+            apply_left_shift(decompose(left)?, amount)
+        }
+        Expression::Binary {
+            operator: BinaryOperator::Multiply,
+            left,
+            right,
+        } => {
+            let (inner, factor) = if let Some(factor) = constant_value(right) {
+                (left.as_ref(), u32::try_from(factor).ok()?)
+            } else {
+                (right.as_ref(), u32::try_from(constant_value(left)?).ok()?)
+            };
+            if !factor.is_power_of_two() {
+                return None;
+            }
+            let amount = factor.trailing_zeros() as u8;
+            if amount == 0 {
+                return decompose(inner);
+            }
+            apply_left_shift(decompose(inner)?, amount)
         }
         Expression::Binary {
             operator: BinaryOperator::ShiftRight,
@@ -140,6 +154,14 @@ fn decompose(expression: &Expression) -> Option<PackedShiftMask<'_>> {
             operations: 0,
         }),
     }
+}
+
+fn apply_left_shift(mut pipeline: PackedShiftMask<'_>, amount: u8) -> Option<PackedShiftMask<'_>> {
+    pipeline.shift = pipeline.shift.wrapping_add(amount) % 32;
+    pipeline.mask <<= amount;
+    pipeline.possible_sign_fill <<= amount;
+    pipeline.operations += 1;
+    Some(pipeline)
 }
 
 pub(crate) fn is_shallow_packed_shift_mask_expression(expression: &Expression) -> bool {
@@ -176,6 +198,14 @@ mod tests {
             operator: BinaryOperator::ShiftRight,
             left: Box::new(left),
             right: Box::new(Expression::IntegerLiteral(amount)),
+        }
+    }
+
+    fn multiply(left: Expression, factor: i64) -> Expression {
+        Expression::Binary {
+            operator: BinaryOperator::Multiply,
+            left: Box::new(left),
+            right: Box::new(Expression::IntegerLiteral(factor)),
         }
     }
 
@@ -238,5 +268,19 @@ mod tests {
         let pipeline = decompose(&expression).expect("right-shift pipeline");
 
         assert_ne!(pipeline.possible_sign_fill, 0);
+    }
+
+    #[test]
+    fn folds_a_power_of_two_multiply_into_the_final_shift() {
+        let expression = shift(
+            mask(multiply(Expression::Variable("value".into()), 4), 0xfff),
+            12,
+        );
+        let pipeline = decompose(&expression).expect("power-of-two pipeline");
+
+        assert_eq!(
+            (pipeline.shift, pipeline.mask, pipeline.operations),
+            (14, 0x00ff_c000, 3)
+        );
     }
 }
