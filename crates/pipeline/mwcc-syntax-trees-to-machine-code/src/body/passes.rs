@@ -2088,7 +2088,6 @@ mod tests {
             is_extern: false,
             is_static: false,
             is_volatile: false,
-            force_active: false,
             is_weak: false,
             force_active: false,
             non_static_functions_before: 0,
