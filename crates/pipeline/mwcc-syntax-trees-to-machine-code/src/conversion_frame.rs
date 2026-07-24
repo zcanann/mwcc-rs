@@ -18,6 +18,7 @@ impl Generator {
         fn needs_conversion(generator: &Generator, expression: &Expression) -> bool {
             !(generator.is_float_value(expression) || generator.is_float_operand(expression))
                 && constant_value(expression).is_none()
+                && generator.general_register_of_leaf(expression).is_ok()
         }
 
         fn expression_count(generator: &Generator, expression: &Expression) -> usize {
