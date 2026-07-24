@@ -62,7 +62,113 @@ pub(crate) fn embedded_member_address_base(expression: &Expression) -> Option<(&
     Some((base, *offset))
 }
 
+fn embedded_aggregate_address_tail(
+    base: u8,
+    scaled_index: u8,
+    destination: u8,
+    offset: i16,
+) -> Vec<Instruction> {
+    if offset == 0 {
+        return vec![Instruction::Add {
+            d: destination,
+            a: base,
+            b: scaled_index,
+        }];
+    }
+    let mut instructions = Vec::with_capacity(if base == destination { 3 } else { 2 });
+    let retained_base = if base == destination {
+        instructions.push(Instruction::AddImmediate {
+            d: GENERAL_SCRATCH,
+            a: base,
+            immediate: 0,
+        });
+        GENERAL_SCRATCH
+    } else {
+        base
+    };
+    instructions.push(Instruction::AddImmediate {
+        d: destination,
+        a: scaled_index,
+        immediate: offset,
+    });
+    instructions.push(Instruction::Add {
+        d: destination,
+        a: retained_base,
+        b: destination,
+    });
+    instructions
+}
+
 impl Generator {
+    /// Materialize `&object.embedded[index]` when `embedded` is an inline
+    /// aggregate array element. The member expression denotes storage at
+    /// `object + member_offset`; it must not be evaluated as a scalar struct
+    /// load before indexing.
+    ///
+    /// MWCC scales the index first, then preserves an overlapping result/base
+    /// register in r0 before adding the member displacement. Keeping the scaled
+    /// value virtual lets the allocator reuse the index register when its value
+    /// dies here without clobbering an index that remains live afterward.
+    pub(crate) fn try_emit_embedded_aggregate_element_address(
+        &mut self,
+        array: &Expression,
+        index: &Expression,
+        destination: u8,
+    ) -> Compilation<bool> {
+        let Expression::Member {
+            base,
+            offset,
+            member_type: Type::Struct { size, .. },
+            index_stride: None,
+        } = array
+        else {
+            return Ok(false);
+        };
+        if *size == 0 {
+            return Ok(false);
+        }
+        let offset = i16::try_from(*offset).map_err(|_| {
+            Diagnostic::error("embedded aggregate array offset out of range (roadmap)")
+        })?;
+        let index_register = self.general_register_of_leaf(index)?;
+        let scaled = if *size == 1 {
+            index_register
+        } else {
+            let scaled = self.fresh_virtual_general_preferring(index_register);
+            if size.is_power_of_two() {
+                self.output
+                    .instructions
+                    .push(Instruction::ShiftLeftImmediate {
+                        a: scaled,
+                        s: index_register,
+                        shift: size.trailing_zeros() as u8,
+                    });
+            } else {
+                let immediate = i16::try_from(*size).map_err(|_| {
+                    Diagnostic::error(
+                        "embedded aggregate array element is too large to scale (roadmap)",
+                    )
+                })?;
+                self.output
+                    .instructions
+                    .push(Instruction::MultiplyImmediate {
+                        d: scaled,
+                        a: index_register,
+                        immediate,
+                    });
+            }
+            scaled
+        };
+        let base_register = self.member_base_register(base)?;
+        self.output.instructions.extend(embedded_aggregate_address_tail(
+            base_register,
+            scaled,
+            destination,
+            offset,
+        ));
+        Ok(true)
+    }
+
     /// Materialize the address of a member lvalue. A nested pointer member is
     /// loaded into the destination first, preserving the original aggregate base;
     /// a plain pointer base can remain in its home register.
@@ -2406,6 +2512,26 @@ pub(crate) fn split_scaled_index(index: &Expression) -> Option<(&Expression, i64
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preserves_an_overlapping_aggregate_base_before_adding_the_member_offset() {
+        assert_eq!(
+            embedded_aggregate_address_tail(3, 4, 3, 4),
+            vec![
+                Instruction::AddImmediate {
+                    d: 0,
+                    a: 3,
+                    immediate: 0,
+                },
+                Instruction::AddImmediate {
+                    d: 3,
+                    a: 4,
+                    immediate: 4,
+                },
+                Instruction::Add { d: 3, a: 0, b: 3 },
+            ]
+        );
+    }
 
     #[test]
     fn folds_nonindexed_member_array_storage_into_a_nested_member_base() {
