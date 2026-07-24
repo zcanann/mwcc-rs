@@ -199,6 +199,7 @@ pub(crate) fn remove_dead_locals(function: &Function) -> Option<Function> {
                 referenced(&local.name)
             };
             is_referenced
+                || local.array_length.is_some()
                 || local
                     .initializer
                     .as_ref()
