@@ -1157,6 +1157,11 @@ impl Generator {
         if let Some(cleaned) = remove_dead_locals(function) {
             return self.evaluate_body(&cleaned);
         }
+        if self.behavior.whole_file_optimization {
+            if let Some(forwarded) = super::member_store_forwarding::forward(function) {
+                return self.evaluate_body(&forwarded);
+            }
+        }
         // A pointer alias used for one bit-field clear followed by a call on
         // the owning object has two distinct live values. Claim it before
         // immutable-alias inlining can collapse both onto the call register.
