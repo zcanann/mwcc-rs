@@ -1157,6 +1157,9 @@ impl Generator {
         if self.try_fixed_port_matrix_packets(function)? {
             return Ok(());
         }
+        if self.try_fixed_port_order_switch(function)? {
+            return Ok(());
+        }
         if self.try_fixed_port_scale_switch(function)? {
             return Ok(());
         }
