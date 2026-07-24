@@ -4,7 +4,7 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-07-24 02:36 UTC at compiler commit `99b0c347`
+Latest targeted checkpoint: 2026-07-24 02:47 UTC at compiler commit `74f9ee38`
 
 Latest measured compiler + harness fingerprint: `4ca51cd13c66eca020e6f691933c6075f99debec63ec5d6ba3a09853753c4bbe:121d3ae4f26965d7109e24043dcb96e73b0ab99435ff0da8079c505e14ff84a1`
 
@@ -76,12 +76,12 @@ This validates the failure-only edit loop: representative audits are useful
 periodic measurements, but recompiling them continuously would spend most of
 its time on known giant-TU timeouts.
 
-Post-holdout compiler work through commit `99b0c347` has not been run over a
+Post-holdout compiler work through commit `74f9ee38` has not been run over a
 new unbiased sample, so it does not change the 7.8% estimate above. On the
 targeted Melee `src/melee/ft/ftcommon.c` diagnostic, the latest checkpoint moved
-relocation-aware parity from 28/109 to 60/109 functions and from 996/15,340 to
-4,184/15,340 reference code bytes. Paired movement was +32/-0 functions and
-+3,188 exact bytes. The gains were `ftCommon_ClampAirDrift`, `ftCommon_FallBasic`,
+relocation-aware parity from 28/109 to 61/109 functions and from 996/15,340 to
+4,352/15,340 reference code bytes. Paired movement was +33/-0 functions and
++3,356 exact bytes. The gains were `ftCommon_ClampAirDrift`, `ftCommon_FallBasic`,
 `ftCommon_CalcHitlag`, `ftCommon_8007DB58`, `ftCommon_SetAccessory`,
 `ftCommon_8007FF74`, `ftCommon_8007DB24`, `ftCommon_8007D28C`,
 `ftCo_GetLStickAngle`, `ftCo_GetCStickAngle`, `ftCommon_8007D780`,
@@ -98,8 +98,11 @@ functions `ftCommon_8007CA80` and `ftCommon_8007D2E8` exact. Member-backed
 friction selection made `ftCommon_8007CEF4` exact; retaining the inlined clamp,
 shared reset zero, and split-address report schedule made `ftCommon_8007D7FC`
 exact. Limiting legacy inline frame residue to call-bearing helper bodies then
-made the standalone transition `ftCommon_8007D6A4` exact. This is evidence of
-local forward movement, not a corpus-level percentage.
+made the standalone transition `ftCommon_8007D6A4` exact. Modeling unused
+scratch arrays as frame bytes without value-table lanes, canonicalizing
+saved-GPR slots, and retaining the cross-alias zero made
+`ftCommon_ApplyGroundMovement` exact. This is evidence of local forward
+movement, not a corpus-level percentage.
 
 ## Historical baseline: fresh current-population holdout
 
