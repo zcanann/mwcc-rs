@@ -272,12 +272,26 @@ fn hoist_loop_words(
         }
     }
     let mut fragment_replacements = Vec::with_capacity(fragments.len());
-    for value in fragments {
+    let common = repeated_invariant_subexpression(&fragments);
+    let mut common_replacements = Vec::new();
+    if let Some(value) = common {
         let name = fresh_name(used_names, next_name);
         declarations.push(unsigned_local(&name));
         prefix.push(Statement::Assign {
             name: name.clone(),
             value: value.clone(),
+        });
+        common_replacements.push((value, name));
+    }
+    for value in fragments {
+        let name = fresh_name(used_names, next_name);
+        declarations.push(unsigned_local(&name));
+        prefix.push(Statement::Assign {
+            name: name.clone(),
+            value: super::structured_loop_packet_invariant_rewrite::replace(
+                value,
+                &common_replacements,
+            ),
         });
         fragment_replacements.push((value, name));
     }
@@ -297,6 +311,30 @@ fn hoist_loop_words(
     let body = name_dynamic_shallow_fragments(&body, &written, used_names, declarations, next_name);
     let changed = !prefix.is_empty();
     (prefix, body.0, changed || body.1)
+}
+
+fn repeated_invariant_subexpression<'a>(fragments: &[&'a Expression]) -> Option<&'a Expression> {
+    fragments
+        .iter()
+        .enumerate()
+        .flat_map(|(index, fragment)| {
+            crate::analysis::computed_subexpressions(fragment)
+                .into_iter()
+                .filter_map(move |candidate| {
+                    let (_, operations) = pure_integer_arithmetic(candidate)?;
+                    (operations >= 2
+                        && fragments[index + 1..].iter().any(|other| {
+                            crate::analysis::computed_subexpressions(other)
+                                .iter()
+                                .any(|nested| {
+                                    crate::analysis::structurally_equal(candidate, nested)
+                                })
+                        }))
+                    .then_some((candidate, operations))
+                })
+        })
+        .max_by_key(|(_, operations)| *operations)
+        .map(|(candidate, _)| candidate)
 }
 
 fn name_dynamic_shallow_fragments(

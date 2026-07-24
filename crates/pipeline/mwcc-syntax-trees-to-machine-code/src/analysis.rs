@@ -1775,6 +1775,12 @@ fn collect_computed_subexpressions<'a>(expression: &'a Expression, into: &mut Ve
     }
 }
 
+pub(crate) fn computed_subexpressions(expression: &Expression) -> Vec<&Expression> {
+    let mut computed = Vec::new();
+    collect_computed_subexpressions(expression, &mut computed);
+    computed
+}
+
 /// The variable name if `expression` is a plain variable reference.
 pub(crate) fn leaf_name(expression: &Expression) -> Option<&str> {
     match expression {

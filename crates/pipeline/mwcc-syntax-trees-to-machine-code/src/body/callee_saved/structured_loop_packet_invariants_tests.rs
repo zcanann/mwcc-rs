@@ -51,6 +51,14 @@ fn shallow_dynamic_value() -> Expression {
     }
 }
 
+fn invariant_field(command: i64) -> Expression {
+    Expression::Binary {
+        operator: BinaryOperator::BitOr,
+        left: Box::new(shallow_dynamic_value()),
+        right: Box::new(Expression::IntegerLiteral(command)),
+    }
+}
+
 fn function(statements: Vec<Statement>) -> Function {
     Function {
         return_type: Type::Void,
@@ -221,5 +229,40 @@ fn names_a_shallow_dynamic_packet_field_inside_the_loop() {
             value: Expression::Variable(name),
             ..
         } if name == "__mwcc_packet_word_0"
+    ));
+}
+
+#[test]
+fn shares_a_common_subexpression_between_invariant_fields() {
+    let function = function(vec![
+        Statement::Assign {
+            name: "a".into(),
+            value: Expression::IntegerLiteral(4),
+        },
+        loop_with(vec![
+            packet_word("cursor", 0, invariant_field(0xf400_0000)),
+            packet_word("cursor", 8, invariant_field(0xf200_0000)),
+        ]),
+    ]);
+    let rewritten = hoist_repeated_packet_words(&function).expect("shared invariant field");
+    assert!(matches!(
+        &rewritten.statements[1..5],
+        [
+            Statement::Assign { name: source, .. },
+            Statement::Assign {
+                value: Expression::Binary { left, .. },
+                ..
+            },
+            Statement::Assign {
+                value: Expression::Binary {
+                    left: second_left,
+                    ..
+                },
+                ..
+            },
+            Statement::Loop { .. },
+        ] if source == "__mwcc_packet_word_0"
+            && matches!(left.as_ref(), Expression::Variable(name) if name == source)
+            && matches!(second_left.as_ref(), Expression::Variable(name) if name == source)
     ));
 }
