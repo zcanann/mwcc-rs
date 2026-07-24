@@ -7999,6 +7999,33 @@ blr\n\
     }
 
     #[test]
+    fn decays_a_two_dimensional_array_parameter_with_its_row_stride() {
+        let source = r#"
+            float read(float values[2][3]) { return values[1][2]; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(
+            unit.functions[0].parameters[0].parameter_type,
+            mwcc_syntax_trees::Type::Pointer(mwcc_syntax_trees::Pointee::Float)
+        );
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member {
+                offset: 20,
+                member_type: mwcc_syntax_trees::Type::Float,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn defers_access_to_an_unmodeled_row_pointer_typedef_member() {
         let source = r#"
             typedef float (*MatrixPointer)[4];

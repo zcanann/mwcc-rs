@@ -14,6 +14,7 @@ pub(crate) mod cxx_template_destructors;
 pub(crate) mod cxx_template_constructors;
 mod initializers;
 mod kr_functions;
+mod parameters;
 mod statements;
 mod template_calls;
 mod templates;
@@ -3212,28 +3213,13 @@ impl Parser {
                         } else {
                             String::new()
                         };
-                        // `T a[]` / `T a[N]` is exactly `T* a` — C array-to-pointer parameter
-                        // decay. Consume the `[...]` (the size is irrelevant for a parameter)
-                        // and make the parameter a pointer to the element type.
-                        let parameter_type = if *self.peek() == Token::BracketOpen {
-                            if array_typedef_marker.is_some() {
-                                // `Mtx m[N]` decays to a pointer to the WHOLE array — not modeled.
-                                return Err(Diagnostic::error("an array of an array-typedef parameter is not supported yet (roadmap)"));
-                            }
-                            self.advance(); // `[`
-                            while !matches!(self.peek(), Token::BracketClose | Token::EndOfFile) {
-                                self.advance(); // skip the optional size expression
-                            }
-                            self.expect(Token::BracketClose)?;
-                            match parameter_type {
-                                Type::Struct { size, .. } => {
-                                    Type::StructPointer { element_size: size }
-                                }
-                                scalar => Type::Pointer(pointee_of(scalar)?),
-                            }
-                        } else {
-                            parameter_type
-                        };
+                        // C adjusts an array parameter to a pointer. A trailing
+                        // dimension remains observable as its row stride.
+                        let parameter_type = self.parse_array_parameter_suffix(
+                            &name,
+                            parameter_type,
+                            array_typedef_marker,
+                        )?;
                         if !name.is_empty() {
                             if let Some(tag) = &struct_tag {
                                 self.variable_structs.insert(name.clone(), tag.clone());

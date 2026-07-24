@@ -98,24 +98,8 @@ impl Parser {
                     )));
                 }
 
-                if *self.peek() == Token::BracketOpen {
-                    if array_typedef.is_some() {
-                        return Err(Diagnostic::error(
-                            "an array of an array-typedef old-style parameter is not supported yet (roadmap)",
-                        ));
-                    }
-                    self.advance();
-                    while !matches!(self.peek(), Token::BracketClose | Token::EndOfFile) {
-                        self.advance();
-                    }
-                    self.expect(Token::BracketClose)?;
-                    parameter_type = match parameter_type {
-                        Type::Struct { size, .. } => Type::StructPointer {
-                            element_size: size,
-                        },
-                        scalar => Type::Pointer(pointee_of(scalar)?),
-                    };
-                }
+                parameter_type =
+                    self.parse_array_parameter_suffix(&name, parameter_type, array_typedef)?;
 
                 if let Some(tag) = &declaration_struct_tag {
                     self.variable_structs.insert(name.clone(), tag.clone());
