@@ -118,6 +118,16 @@ impl Parser {
     /// a null pointer. `&a[i]`, `&s.f`, casts, and arithmetic defer (they need an
     /// addend not yet modeled).
     pub(crate) fn parse_pointer_init_element(&mut self) -> Compilation<PointerElement> {
+        // C permits redundant braces around a scalar aggregate element:
+        // `const char *messages[] = { { "one" }, { "two" } };`. Keep that
+        // structural spelling at the scalar boundary so the enclosing list
+        // parser still owns commas between array elements.
+        if self.eat_keyword(Token::BraceOpen) {
+            let element = self.parse_pointer_init_element()?;
+            self.eat_keyword(Token::Comma);
+            self.expect(Token::BraceClose)?;
+            return Ok(element);
+        }
         // A cast is transparent for an address: `(SomeType *)&x` is just `&x`. Skip
         // the parenthesised type and parse the operand after it.
         if *self.peek() == Token::ParenOpen && self.token_starts_type(self.peek_at(1)) {

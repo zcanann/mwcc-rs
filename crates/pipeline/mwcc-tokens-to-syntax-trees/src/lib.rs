@@ -7891,6 +7891,32 @@ blr\n\
     }
 
     #[test]
+    fn accepts_redundant_braces_around_pointer_array_elements() {
+        let source = r#"
+            const char* const messages[2] = {
+                { "one" },
+                { "two" },
+            };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            unit.globals[0].address_initializer.as_deref(),
+            Some([
+                mwcc_syntax_trees::PointerElement::Str(one),
+                mwcc_syntax_trees::PointerElement::Str(two),
+            ]) if one == b"one" && two == b"two"
+        ));
+    }
+
+    #[test]
     fn records_scoped_exception_pragma_overrides_per_function() {
         let source = r#"
             #pragma exceptions on
