@@ -784,6 +784,88 @@ impl Generator {
         right: &Expression,
         destination: u8,
     ) -> Compilation<bool> {
+        // A wide quadrant constant combined with an unsigned-short call result
+        // is the post-inline arctangent-octant form. Preserve the narrow result
+        // in r0, then materialize the adjusted high/low constant around its
+        // zero-extension exactly as MWCC schedules it.
+        let unsigned_short_call = |expression: &Expression| {
+            matches!(
+                expression,
+                Expression::Call { name, .. }
+                    if self.call_return_types.get(name) == Some(&Type::UnsignedShort)
+            )
+        };
+        let wide_call = match operator {
+            BinaryOperator::Add => {
+                if let Some(constant) = constant_value(right) {
+                    unsigned_short_call(left).then_some((left, constant, false))
+                } else if let Some(constant) = constant_value(left) {
+                    unsigned_short_call(right).then_some((right, constant, false))
+                } else {
+                    None
+                }
+            }
+            BinaryOperator::Subtract => constant_value(left)
+                .filter(|_| unsigned_short_call(right))
+                .map(|constant| (right, constant, true)),
+            _ => None,
+        };
+        if let Some((call, constant, subtract)) = wide_call {
+            if let Ok(value) = i32::try_from(constant) {
+                if !fits_signed_16(constant) {
+                    let low = value as i16;
+                    let high_adjusted = ((value - i32::from(low)) >> 16) as i16;
+                    self.evaluate_general(call, GENERAL_SCRATCH)?;
+                    if subtract {
+                        self.output.instructions.push(Instruction::load_immediate_shifted(
+                            destination,
+                            high_adjusted,
+                        ));
+                        let narrowed = self.fresh_virtual_general();
+                        self.output
+                            .instructions
+                            .push(Instruction::ClearLeftImmediate {
+                                a: narrowed,
+                                s: GENERAL_SCRATCH,
+                                clear: 16,
+                            });
+                        self.output.instructions.push(Instruction::AddImmediate {
+                            d: GENERAL_SCRATCH,
+                            a: destination,
+                            immediate: low,
+                        });
+                        self.output.instructions.push(Instruction::SubtractFrom {
+                            d: destination,
+                            a: narrowed,
+                            b: GENERAL_SCRATCH,
+                        });
+                    } else {
+                        self.output
+                            .instructions
+                            .push(Instruction::ClearLeftImmediate {
+                                a: destination,
+                                s: GENERAL_SCRATCH,
+                                clear: 16,
+                            });
+                        self.output
+                            .instructions
+                            .push(Instruction::AddImmediateShifted {
+                                d: destination,
+                                a: destination,
+                                immediate: high_adjusted,
+                            });
+                        if low != 0 {
+                            self.output.instructions.push(Instruction::AddImmediate {
+                                d: destination,
+                                a: destination,
+                                immediate: low,
+                            });
+                        }
+                    }
+                    return Ok(true);
+                }
+            }
+        }
         // `-a +/- C` (negate of a leaf, plus/minus a constant) is `C - a` /
         // `-C - a`, a single `subfic a, ±C` (e.g. `-a - 1` -> `subfic r3,r3,-1`,
         // `-a + 1` -> `subfic r3,r3,1`), rather than a `neg` followed by `addi`.
@@ -829,6 +911,29 @@ impl Generator {
         if is_commutative(operator) {
             if let Some(constant) = constant_value(left) {
                 if self.emit_constant_form(operator, right, constant, destination)? {
+                    return Ok(true);
+                }
+            }
+        }
+        // `C - computed` where C fits `subfic`: materialize the computed value
+        // once in the destination, then subtract it from the immediate. This is
+        // notably the post-inline form of `QUADRANT - lookup(...)`.
+        if operator == BinaryOperator::Subtract {
+            if let Some(constant) = constant_value(left) {
+                if fits_signed_16(constant)
+                    && !matches!(
+                        right,
+                        Expression::Variable(_) | Expression::IntegerLiteral(_)
+                    )
+                {
+                    self.evaluate_general(right, destination)?;
+                    self.output
+                        .instructions
+                        .push(Instruction::SubtractFromImmediate {
+                            d: destination,
+                            a: destination,
+                            immediate: constant as i16,
+                        });
                     return Ok(true);
                 }
             }

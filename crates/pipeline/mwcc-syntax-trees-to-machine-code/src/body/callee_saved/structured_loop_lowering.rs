@@ -109,6 +109,16 @@ impl<'a> LoopLowering<'a> {
         if kind != LoopKind::For && (initializer.is_some() || step.is_some()) {
             return None;
         }
+        // Macro padding commonly leaves `do { } while (0)` in the semantic
+        // tree. It has no runtime effect, but its paired source local still
+        // contributes to frame layout, so remove only the control-flow shell.
+        if kind == LoopKind::DoWhile
+            && body.is_empty()
+            && condition.and_then(constant_value) == Some(0)
+        {
+            self.changed = true;
+            return Some(());
+        }
         self.changed = true;
         let body_label = self.fresh_label("body");
         let continue_label = self.fresh_label("continue");
@@ -247,5 +257,38 @@ mod tests {
             .statements
             .iter()
             .any(|statement| matches!(statement, Statement::Loop { .. })));
+    }
+
+    #[test]
+    fn removes_an_empty_false_do_while_shell() {
+        let mut function = Function {
+            return_type: Type::Void,
+            name: "padding".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: Vec::new(),
+            statements: vec![Statement::Loop {
+                kind: LoopKind::DoWhile,
+                initializer: None,
+                condition: Some(Expression::IntegerLiteral(0)),
+                step: None,
+                body: Vec::new(),
+            }],
+            return_expression: None,
+            guards: Vec::new(),
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+
+        function = lower_structured_loops(&function, &Default::default())
+            .expect("empty false do-while should be removed");
+
+        assert!(function.statements.is_empty());
     }
 }

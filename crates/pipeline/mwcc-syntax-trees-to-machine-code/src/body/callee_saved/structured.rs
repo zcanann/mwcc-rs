@@ -146,14 +146,24 @@ impl Generator {
             Vec::new()
         };
         let frame_array_plan = if with_frame_array {
-            let Some(plan) = plan_structured_frame_arrays(&function.locals) else {
+            let Some(plan) =
+                plan_structured_frame_arrays(&function.locals, &function.statements)
+            else {
                 decline!("automatic array shape is unsupported");
             };
             if plan.arrays.is_empty() && aggregate_frame_locals.is_empty() {
                 decline!("frame mode requires an automatic array or aggregate slot");
             }
             if !((function.return_type == Type::Void && function.return_expression.is_none())
-                    || (matches!(function.return_type, Type::Int | Type::UnsignedInt)
+                    || (matches!(
+                        function.return_type,
+                        Type::Int
+                            | Type::UnsignedInt
+                            | Type::Short
+                            | Type::UnsignedShort
+                            | Type::Char
+                            | Type::UnsignedChar
+                    )
                         && function.return_expression.is_some()))
             {
                 decline!("automatic-array return shape is unsupported");
@@ -717,6 +727,11 @@ impl Generator {
                 );
             }
             for array in frame_arrays {
+                // A source-level padding array reserves bytes but has no value
+                // lane or pointer location when the body never references it.
+                if !body_uses_local(&function.statements, &array.name) {
+                    continue;
+                }
                 let pointee = match array.declared_type {
                     Type::Char => Pointee::Char,
                     Type::UnsignedChar => Pointee::UnsignedChar,

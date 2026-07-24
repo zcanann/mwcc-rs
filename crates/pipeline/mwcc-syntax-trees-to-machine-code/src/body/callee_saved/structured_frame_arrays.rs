@@ -6,15 +6,17 @@
 
 #[allow(unused_imports)]
 use super::*;
+use super::structured_locals::body_uses_local;
 
 pub(super) struct StructuredFrameArrays<'a> {
     pub(super) arrays: Vec<&'a LocalDeclaration>,
     pub(super) total_bytes: i16,
 }
 
-pub(super) fn plan_structured_frame_arrays(
-    locals: &[LocalDeclaration],
-) -> Option<StructuredFrameArrays<'_>> {
+pub(super) fn plan_structured_frame_arrays<'a>(
+    locals: &'a [LocalDeclaration],
+    statements: &[Statement],
+) -> Option<StructuredFrameArrays<'a>> {
     let arrays: Vec<_> = locals
         .iter()
         .filter(|local| local.array_length.is_some())
@@ -24,7 +26,8 @@ pub(super) fn plan_structured_frame_arrays(
         if array.is_static
             || array.initializer.is_some()
             || array.data_bytes.is_some()
-            || !matches!(array.declared_type, Type::Char | Type::UnsignedChar)
+            || (!matches!(array.declared_type, Type::Char | Type::UnsignedChar)
+                && body_uses_local(statements, &array.name))
         {
             return None;
         }
@@ -65,16 +68,28 @@ mod tests {
             byte_array("suffix", Type::Char, 20),
         ];
 
-        let plan = plan_structured_frame_arrays(&locals).expect("valid byte arrays");
+        let plan = plan_structured_frame_arrays(&locals, &[]).expect("valid byte arrays");
 
         assert_eq!(plan.arrays.len(), 2);
         assert_eq!(plan.total_bytes, 24);
     }
 
     #[test]
-    fn rejects_non_byte_automatic_arrays() {
+    fn retains_an_unused_non_byte_padding_array() {
         let locals = vec![byte_array("words", Type::UnsignedInt, 4)];
 
-        assert!(plan_structured_frame_arrays(&locals).is_none());
+        let plan = plan_structured_frame_arrays(&locals, &[]).expect("unused padding");
+
+        assert_eq!(plan.total_bytes, 16);
+    }
+
+    #[test]
+    fn rejects_a_used_non_byte_array_until_element_lowering_owns_it() {
+        let locals = vec![byte_array("words", Type::UnsignedInt, 4)];
+        let statements = vec![Statement::Expression(Expression::Variable(
+            "words".into(),
+        ))];
+
+        assert!(plan_structured_frame_arrays(&locals, &statements).is_none());
     }
 }
