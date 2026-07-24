@@ -25,6 +25,54 @@ fn direct_member_address(expression: &Expression) -> Option<(&Expression, u32)> 
 }
 
 impl Generator {
+    /// Schedule `(large_string, i16, large_string)` without serializing the two
+    /// address dependency chains. MWCC emits both high halves, completes the
+    /// third argument through r4 into r5, then reuses r4 for the integer line
+    /// number after completing r3.
+    pub(crate) fn try_emit_large_string_line_arguments(
+        &mut self,
+        arguments: &[Expression],
+        direct_call: bool,
+    ) -> Compilation<bool> {
+        let [
+            Expression::StringLiteral(first),
+            Expression::IntegerLiteral(line),
+            Expression::StringLiteral(third),
+        ] = arguments
+        else {
+            return Ok(false);
+        };
+        if !direct_call
+            || !self.behavior.schedule_latency_slots
+            || self.behavior.frame_convention != mwcc_versions::FrameConvention::LinkageFirst
+            || first.len() + 1 <= 8
+            || third.len() + 1 <= 8
+            || !(i16::MIN as i64..=i16::MAX as i64).contains(line)
+        {
+            return Ok(false);
+        }
+
+        let first = self.string_literal_placeholder(first);
+        let third = self.string_literal_placeholder(third);
+        self.emit_address_high(Eabi::FIRST_GENERAL_ARGUMENT, &first);
+        self.emit_address_high(Eabi::FIRST_GENERAL_ARGUMENT + 1, &third);
+        self.emit_string_address_low(
+            &third,
+            Eabi::FIRST_GENERAL_ARGUMENT + 1,
+            Eabi::FIRST_GENERAL_ARGUMENT + 2,
+        );
+        self.emit_string_address_low(
+            &first,
+            Eabi::FIRST_GENERAL_ARGUMENT,
+            Eabi::FIRST_GENERAL_ARGUMENT,
+        );
+        self.output.instructions.push(Instruction::load_immediate(
+            Eabi::FIRST_GENERAL_ARGUMENT + 1,
+            *line as i16,
+        ));
+        Ok(true)
+    }
+
     /// Marshal `(member_y, ABS(member_x))` with the conditional argument first.
     ///
     /// Both values share the incoming object pointer. MWCC forms the more

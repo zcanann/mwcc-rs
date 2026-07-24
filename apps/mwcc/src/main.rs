@@ -4129,6 +4129,48 @@ mod tests {
     }
 
     #[test]
+    fn overlaps_two_large_string_argument_addresses_around_a_line_number() {
+        let source = br#"
+            extern void report(char*, int, char*);
+            struct Object { int pad; int kind; float result; };
+            float compiled(struct Object* object) {
+                if (object->kind != 32) {
+                    report("long_file.c", 299, "a long assertion expression");
+                }
+                return object->result;
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.emit_mwcats = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "large-string-line-arguments.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("both address dependency chains should overlap");
+        let expected_arguments_and_call = [
+            0x3c, 0x60, 0x00, 0x00, // lis r3,first@ha
+            0x3c, 0x80, 0x00, 0x00, // lis r4,third@ha
+            0x38, 0xa4, 0x00, 0x00, // addi r5,r4,third@l
+            0x38, 0x63, 0x00, 0x00, // addi r3,r3,first@l
+            0x38, 0x80, 0x01, 0x2b, // li r4,299
+            0x48, 0x00, 0x00, 0x01, // bl report
+        ];
+        assert!(object
+            .windows(expected_arguments_and_call.len())
+            .any(|bytes| bytes == expected_arguments_and_call));
+    }
+
+    #[test]
     fn command_line_pool_mode_is_last_wins() {
         let off = parse_invocation(&["-pool".into(), "off".into()]);
         assert!(!off.flags.pooling_enabled);
