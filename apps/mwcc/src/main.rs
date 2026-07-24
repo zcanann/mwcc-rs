@@ -3879,6 +3879,55 @@ mod tests {
     }
 
     #[test]
+    fn schedules_a_zero_store_before_two_saved_receiver_calls() {
+        let source = br#"
+            struct Fighter {
+                char pad0[56];
+                float scale_y;
+                char pad1[6464];
+                void* target;
+            };
+            struct Object { char pad[44]; struct Fighter* user_data; };
+            extern void first(struct Object*);
+            extern void second(struct Object*, float);
+            void compiled(struct Object* object) {
+                struct Fighter* fighter = object->user_data;
+                fighter->target = 0;
+                first(object);
+                second(object, fighter->scale_y);
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.emit_mwcats = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "entry-zero-store.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the entry zero-store schedule should compile");
+        let expected_text = [
+            0x7c, 0x08, 0x02, 0xa6, 0x90, 0x01, 0x00, 0x04, 0x38, 0x00, 0x00, 0x00, 0x94,
+            0x21, 0xff, 0xe8, 0x93, 0xe1, 0x00, 0x14, 0x93, 0xc1, 0x00, 0x10, 0x7c, 0x7e,
+            0x1b, 0x78, 0x83, 0xe3, 0x00, 0x2c, 0x90, 0x1f, 0x19, 0x7c, 0x48, 0x00, 0x00,
+            0x01, 0x7f, 0xc3, 0xf3, 0x78, 0xc0, 0x3f, 0x00, 0x38, 0x48, 0x00, 0x00, 0x01,
+            0x80, 0x01, 0x00, 0x1c, 0x83, 0xe1, 0x00, 0x14, 0x83, 0xc1, 0x00, 0x10, 0x38,
+            0x21, 0x00, 0x18, 0x7c, 0x08, 0x03, 0xa6, 0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected_text.len())
+            .any(|bytes| bytes == expected_text));
+    }
+
+    #[test]
     fn command_line_pool_mode_is_last_wins() {
         let off = parse_invocation(&["-pool".into(), "off".into()]);
         assert!(!off.flags.pooling_enabled);

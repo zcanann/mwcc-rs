@@ -9,6 +9,7 @@ impl Generator {
     /// call-prologue scheduler, so their final machine stream is normalized here.
     pub(crate) fn schedule_linkage_first_entry_arguments(&mut self) {
         schedule_entry_arguments(&mut self.output);
+        schedule_entry_zero_store(&mut self.output);
     }
 
     /// Schedule a relocatable function-address pair in any linkage-first body.
@@ -17,6 +18,40 @@ impl Generator {
     pub(crate) fn schedule_linkage_first_function_address(&mut self) {
         schedule_function_address_low(&mut self.output);
     }
+}
+
+/// A scratch zero feeding the first body store cannot fill the dependency slot
+/// immediately after `mflr`, but it is independent of the stack update. MWCC
+/// places it between the LR store and `stwu` in this retained-receiver shape.
+fn schedule_entry_zero_store(output: &mut mwcc_machine_code::MachineFunction) {
+    if output.instructions.iter().any(|instruction| {
+        matches!(instruction, Instruction::Branch { .. } | Instruction::BranchConditionalForward { .. })
+    }) {
+        return;
+    }
+    let Some(stack_update) = output.instructions.iter().position(|instruction| {
+        matches!(instruction, Instruction::StoreWordWithUpdate { s: 1, a: 1, .. })
+    }) else {
+        return;
+    };
+    let Some(first_call) = output
+        .instructions
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::BranchAndLink { .. }))
+    else {
+        return;
+    };
+    let Some(zero) = (stack_update + 1..first_call).find(|&index| {
+        matches!(output.instructions[index],
+            Instruction::AddImmediate { d: 0, a: 0, immediate: 0 })
+            && matches!(output.instructions.get(index + 1),
+                Some(Instruction::StoreWord { s: 0, a, .. }) if *a != 1)
+    }) else {
+        return;
+    };
+    let instruction = output.instructions.remove(zero);
+    output.instructions.insert(stack_update, instruction);
+    remap_relocations_for_move(&mut output.relocations, zero, stack_update);
 }
 
 fn schedule_entry_arguments(output: &mut mwcc_machine_code::MachineFunction) {

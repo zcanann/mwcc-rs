@@ -1007,6 +1007,7 @@ impl Generator {
             &mut pending_gotos,
             &mut condition_alias,
         )?;
+        self.schedule_structured_entry_zero_store(function);
         self.schedule_structured_shared_member_arguments(function);
         self.schedule_repeated_member_address_call_guards();
         self.schedule_structured_float_store_call_arguments();
