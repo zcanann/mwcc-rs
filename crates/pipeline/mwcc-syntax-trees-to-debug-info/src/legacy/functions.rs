@@ -86,6 +86,42 @@ pub(super) fn selected_records<'a>(
     )
 }
 
+/// Encode one selected function and append MWCC's vendor reference to the
+/// file-scope callback object associated with that function.
+pub(super) fn selected_records_with_global_reference<'a>(
+    unit: &'a TranslationUnit,
+    functions: &[&'a Function],
+    layout: &FunctionLayout,
+    first_id: DebugEntryId,
+    aggregate_ids: &HashMap<String, DebugEntryId>,
+    parameter_registers: &[Vec<(usize, u8)>],
+    global_id: DebugEntryId,
+) -> Compilation<Vec<DebugRecord>> {
+    if functions.len() != 1 {
+        return Err(Diagnostic::error(
+            "debug-info: a global-referenced function plan must contain one function",
+        ));
+    }
+    let mut records = selected_records(
+        unit,
+        functions,
+        layout,
+        first_id,
+        aggregate_ids,
+        parameter_registers,
+    )?;
+    let Some(DebugRecord::Entry(function)) = records.first_mut() else {
+        return Err(Diagnostic::error(
+            "debug-info: a global-referenced function plan has no function DIE",
+        ));
+    };
+    function.attributes.push(attribute(
+        AttributeName::MwVtableElement,
+        AttributeValue::Reference(global_id),
+    ));
+    Ok(records)
+}
+
 pub(super) fn selected_plan<'a>(
     functions: &[&'a Function],
     first_id: DebugEntryId,

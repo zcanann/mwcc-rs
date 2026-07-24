@@ -1302,6 +1302,7 @@ impl Parser {
             aggregate_definitions,
             enumeration_definitions: std::mem::take(&mut self.enumeration_definitions),
             global_aggregate_tags: std::mem::take(&mut self.global_structs),
+            global_function_types: std::mem::take(&mut self.global_function_types),
             function_parameter_aggregate_tags: std::mem::take(&mut self.function_parameter_structs),
             function_return_aggregate_tags: std::mem::take(&mut self.function_return_structs),
             function_return_enumeration_tags: std::mem::take(
@@ -2479,6 +2480,7 @@ impl Parser {
             let declared_source_fundamental = self.last_source_fundamental;
             let declared_is_volatile = self.last_type_was_volatile;
             let parsed_aggregate_reference = self.last_type_was_aggregate_reference;
+            let declared_function_type = self.last_cxx_function_type.clone();
             // Keep the declared aggregate identity before parsing attributes, placement
             // expressions, or initializers: each may contain a cast whose own parse_type call
             // overwrites `last_struct_tag` (notably `T hw : (u32)(void*)ADDRESS`).
@@ -2523,9 +2525,10 @@ impl Parser {
                 std::sync::Arc::make_mut(&mut self.locations).remove(self.position + 1);
             }
             // Function-pointer declarator: `RET (*name)(params)` — a pointer-typed
-            // global (a 4-byte address). The return/parameter types don't affect
-            // codegen, so the signature is skipped.
+            // global (a 4-byte address). Keep its source signature alongside
+            // the compact storage type for legacy debug lowering.
             if *self.peek() == Token::ParenOpen {
+                let return_identity = self.take_cxx_type_identity(return_type, false);
                 self.advance();
                 self.expect(Token::Star)?;
                 let pointer_name = self.parse_identifier()?;
@@ -2544,20 +2547,7 @@ impl Parser {
                     self.expect(Token::BracketClose)?;
                 }
                 self.expect(Token::ParenClose)?;
-                self.expect(Token::ParenOpen)?;
-                let mut depth = 1;
-                while depth > 0 {
-                    match self.advance() {
-                        Token::ParenOpen => depth += 1,
-                        Token::ParenClose => depth -= 1,
-                        Token::EndOfFile => {
-                            return Err(Diagnostic::error(
-                                "unterminated function-pointer declarator",
-                            ))
-                        }
-                        _ => {}
-                    }
-                }
+                let function_type = self.parse_cxx_function_type(return_identity)?;
                 // Optional initializer: `= 0` (a NULL pointer — an all-null address initializer,
                 // which the object writer lands in `.sbss` as an EXPLICIT zero) or `= func` / `= &func`
                 // (an ADDR32 relocation to that symbol in `.sdata`). Both flow through the same
@@ -2585,6 +2575,8 @@ impl Parser {
                         }
                     }
                 }
+                self.global_function_types
+                    .insert(pointer_name.clone(), function_type.source_identity());
                 globals.push(GlobalDeclaration {
                     is_weak: false,
                     force_active: self.force_active,
@@ -3038,6 +3030,12 @@ impl Parser {
                                 },
                             );
                         }
+                    }
+                    if let Some(function_type) = &declared_function_type {
+                        self.global_function_types.insert(
+                            emitted_declarator_name.clone(),
+                            function_type.source_identity(),
+                        );
                     }
                     globals.push(GlobalDeclaration {
                         is_weak: false,
@@ -4469,6 +4467,7 @@ impl Parser {
     ) -> Compilation<Function> {
         self.inline_substitution_count = 0;
         self.current_inline_string_symbols.clear();
+        self.current_leaf_statement_lines.clear();
         // Block-shadow mappings are function-scoped. A switch arm can leave a
         // renamed declaration at the end of one parsed body; carrying that map
         // into the next definition rewrites unrelated locals (`writer` becomes
@@ -5282,6 +5281,7 @@ impl Parser {
                 body_start_line,
                 local_lines,
                 statement_lines,
+                leaf_statement_lines: std::mem::take(&mut self.current_leaf_statement_lines),
                 terminal_return_line,
                 body_end_line,
             }));

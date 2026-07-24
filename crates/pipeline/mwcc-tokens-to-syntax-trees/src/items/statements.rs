@@ -78,6 +78,17 @@ impl Parser {
         if matches!(self.peek(), Token::Identifier(word) if word == "switch") {
             return self.parse_switch(local_names, block_locals);
         }
+        let source_line = self.current_location().line;
+        let statement = self.parse_leaf_statement(local_names, block_locals)?;
+        self.current_leaf_statement_lines.push(source_line);
+        Ok(statement)
+    }
+
+    fn parse_leaf_statement(
+        &mut self,
+        local_names: &mut std::collections::HashSet<String>,
+        _block_locals: &mut Vec<LocalDeclaration>,
+    ) -> Compilation<Statement> {
         if matches!(self.peek(), Token::Identifier(word) if word == "delete") {
             return self.parse_delete_statement();
         }

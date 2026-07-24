@@ -306,6 +306,7 @@ pub fn parse_located_translation_unit_with_behavior(
         variable_array_bytes: HashMap::new(),
         global_sizes: HashMap::new(),
         global_types: HashMap::new(),
+        global_function_types: HashMap::new(),
         function_parameter_structs: HashMap::new(),
         last_struct_tag: None,
         last_enum_tag: None,
@@ -317,6 +318,7 @@ pub fn parse_located_translation_unit_with_behavior(
         typedefs: HashMap::new(),
         typedef_source_fundamentals: HashMap::new(),
         function_pointer_typedefs: HashMap::new(),
+        current_leaf_statement_lines: Vec::new(),
         last_type_was_const: false,
         last_pointer_const: false,
         last_cxx_pointer_depth: 0,
@@ -1537,6 +1539,41 @@ mod tests {
     }
 
     #[test]
+    fn retains_global_callback_signature_and_nested_call_line() {
+        let source = b"static void (*FatalFunc)();\n\
+\n\
+void invoke(void) {\n\
+    if (FatalFunc != 0) {\n\
+        (*FatalFunc)();\n\
+    }\n\
+    return;\n\
+}\n";
+        let unit = parse_located_translation_unit(
+            mwcc_source_to_tokens::tokenize_bytes_located(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        let signature = &unit.global_function_types["FatalFunc"];
+        assert_eq!(
+            signature.return_type.source_fundamental,
+            Some(mwcc_syntax_trees::SourceFundamentalType::Void)
+        );
+        assert!(signature.parameters.is_empty());
+        assert!(!signature.variadic);
+        assert_eq!(
+            unit.function_sources[0]
+                .as_ref()
+                .unwrap()
+                .leaf_statement_lines,
+            [5]
+        );
+    }
+
+    #[test]
     fn retains_function_source_boundaries() {
         let raw = [
             (Token::KeywordInt, 1),
@@ -1571,6 +1608,7 @@ mod tests {
                 body_start_line: 2,
                 local_lines: Vec::new(),
                 statement_lines: Vec::new(),
+                leaf_statement_lines: Vec::new(),
                 terminal_return_line: Some(3),
                 body_end_line: 4,
             })]

@@ -22,6 +22,7 @@ const DATA_END: DebugEntryId = DebugEntryId(u32::MAX - 3);
 pub(super) struct DataRecords {
     pub records: Vec<DebugRecord>,
     pub next_id: DebugEntryId,
+    pub global_ids: HashMap<String, DebugEntryId>,
     /// First emitted DIE for each retained aggregate identity. Function
     /// parameters can reference the same declaration graph that data globals
     /// caused to be materialized.
@@ -364,15 +365,27 @@ pub(super) fn fragmented_records(
         DebugRecord::Raw(vec![0, 0, 0, 4]),
         DebugRecord::Raw(vec![0, 0, 0, 4]),
     ]);
+    let global_ids = planned
+        .iter()
+        .filter_map(|item| match &item.kind {
+            PlannedKind::Global { global, id, .. } => Some((global.name.clone(), *id)),
+            PlannedKind::Callable(_) | PlannedKind::Aggregate(_) => None,
+        })
+        .collect();
     Ok(DataRecords {
         records,
         next_id: DebugEntryId(next_id),
+        global_ids,
         aggregate_ids,
     })
 }
 
 enum PlanKind<'a> {
     Scalar,
+    FunctionPointer {
+        type_id: DebugEntryId,
+        function_type: &'a mwcc_syntax_trees::SourceFunctionType,
+    },
     Array {
         type_id: DebugEntryId,
     },
@@ -465,7 +478,26 @@ fn records_with_continuation<'a>(
     let mut plans = Vec::with_capacity(globals.len());
     let mut aggregate_ids = HashMap::new();
     for global in globals {
-        let (start_id, global_id, kind) = if matches!(global.declared_type, Type::Struct { .. }) {
+        let (start_id, global_id, kind) = if let Some(function_type) =
+            unit.global_function_types.get(&global.name)
+        {
+            if global.array_length.is_some() {
+                return Err(Diagnostic::error(
+                    "debug-info: function-pointer arrays need a measured legacy type graph",
+                ));
+            }
+            validate_void_callable(function_type)?;
+            let type_id = allocate(&mut next_id);
+            let global_id = allocate(&mut next_id);
+            (
+                type_id,
+                global_id,
+                PlanKind::FunctionPointer {
+                    type_id,
+                    function_type,
+                },
+            )
+        } else if matches!(global.declared_type, Type::Struct { .. }) {
             let tag = unit
                 .global_aggregate_tags
                 .get(&global.name)
@@ -548,6 +580,29 @@ fn records_with_continuation<'a>(
                 next,
                 global_type_attribute(plan.global, None)?,
             ))),
+            PlanKind::FunctionPointer {
+                type_id,
+                function_type,
+            } => {
+                validate_void_callable(function_type)?;
+                records.push(DebugRecord::Entry(DebugEntry {
+                    id: *type_id,
+                    tag: Tag::ModifiedType,
+                    attributes: vec![
+                        attribute(
+                            AttributeName::Sibling,
+                            AttributeValue::Reference(plan.global_id),
+                        ),
+                        fundamental_attribute(FundamentalType::Void),
+                    ],
+                }));
+                records.push(DebugRecord::Entry(global_entry(
+                    plan.global,
+                    plan.global_id,
+                    next,
+                    modified_user_defined_type(*type_id),
+                )));
+            }
             PlanKind::Array { type_id } => {
                 records.push(DebugRecord::Entry(DebugEntry {
                     id: *type_id,
@@ -737,9 +792,14 @@ fn records_with_continuation<'a>(
         Continuation::FunctionsDirectly => {}
     }
     debug_assert_ne!(DATA_END, UNIT_END);
+    let global_ids = plans
+        .iter()
+        .map(|plan| (plan.global.name.clone(), plan.global_id))
+        .collect();
     Ok(DataRecords {
         records,
         next_id: DebugEntryId(next_id),
+        global_ids,
         aggregate_ids,
     })
 }

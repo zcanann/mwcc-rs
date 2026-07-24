@@ -5,6 +5,7 @@ mod classes;
 pub(super) mod data;
 mod enumerations;
 mod functions;
+mod guarded_global_callbacks;
 mod simple_void_functions;
 mod vector_installers;
 
@@ -51,6 +52,9 @@ enum MeasuredShape {
     /// Void functions that are empty or contain one measured direct-call
     /// action, with optimized parameter locations and statement line rows.
     SimpleVoidFunctions,
+    /// One static function-pointer object and one exported void function that
+    /// null-tests and invokes it.
+    GuardedGlobalCallback,
     /// A local no-frame exception vector followed by the exported cache-aware
     /// vector installer that copies it to a fixed address.
     VectorInstaller,
@@ -142,6 +146,12 @@ pub(super) fn lower(
             | MeasuredShape::FragmentedSimpleVoidFunctionsWithAggregateData
     ) {
         line_records.extend(simple_void_functions::line_records(
+            &source_functions,
+            machine_functions,
+            &layout,
+        )?);
+    } else if shape == MeasuredShape::GuardedGlobalCallback {
+        line_records.extend(guarded_global_callbacks::line_records(
             &source_functions,
             machine_functions,
             &layout,
@@ -375,6 +385,32 @@ pub(super) fn lower(
         return finish(line, records, DebugLayout::BeforeDataGrouped);
     }
 
+    if shape == MeasuredShape::GuardedGlobalCallback {
+        let mut records: Vec<_> = entries.into_iter().map(DebugRecord::Entry).collect();
+        let data = data::records(unit, &globals, first_global_id, true)?;
+        records.extend(data.records);
+        let global_id = data
+            .global_ids
+            .get(globals[0].name.as_str())
+            .copied()
+            .ok_or_else(|| {
+                Diagnostic::error("debug-info: guarded callback object has no data DIE")
+            })?;
+        records.extend(functions::selected_records_with_global_reference(
+            unit,
+            &source_functions
+                .iter()
+                .map(|(function, _)| *function)
+                .collect::<Vec<_>>(),
+            &layout,
+            data.next_id,
+            &data.aggregate_ids,
+            &[Vec::new()],
+            global_id,
+        )?);
+        return finish(line, records, DebugLayout::BeforeDataGrouped);
+    }
+
     if shape == MeasuredShape::VectorInstaller {
         let mut records: Vec<_> = entries.into_iter().map(DebugRecord::Entry).collect();
         records.extend(vector_installers::records(
@@ -531,6 +567,9 @@ pub(super) fn lower(
         MeasuredShape::SimpleVoidFunctions => {
             unreachable!("simple void-function units return before legacy function records")
         }
+        MeasuredShape::GuardedGlobalCallback => {
+            unreachable!("guarded callback units return before legacy function records")
+        }
         MeasuredShape::VectorInstaller => {
             unreachable!("vector-installer units return before legacy function records")
         }
@@ -686,6 +725,10 @@ fn classify_shape(
         return Ok(MeasuredShape::DataOnly);
     }
 
+    if guarded_global_callbacks::matches(unit, machine_functions, globals) {
+        return Ok(MeasuredShape::GuardedGlobalCallback);
+    }
+
     let verbatim_asm_with_data = build.version == (2, 4, 2)
         && build.build == 81
         && !globals.is_empty()
@@ -794,6 +837,7 @@ mod tests {
             is_static: false,
             is_volatile: false,
             is_weak: true,
+            force_active: false,
             non_static_functions_before: 0,
             functions_before: 0,
             array_length: None,

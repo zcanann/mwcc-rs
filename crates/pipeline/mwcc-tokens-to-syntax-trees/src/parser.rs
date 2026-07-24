@@ -457,6 +457,9 @@ pub(crate) struct Parser {
     /// Struct-typed GLOBALS by name -> struct tag (`extern FILE_TABLE __files;`),
     /// so `&__files._stdout` in an initializer resolves its member offset.
     pub(crate) global_structs: HashMap<String, String>,
+    /// Declaration-only signatures for file-scope function-pointer objects.
+    pub(crate) global_function_types:
+        HashMap<String, mwcc_syntax_trees::SourceFunctionType>,
     /// Function/parameter source aggregate identities retained for debug-info
     /// lowering after the executable type has collapsed to a sized pointer.
     pub(crate) function_parameter_structs: HashMap<(String, String), String>,
@@ -486,6 +489,8 @@ pub(crate) struct Parser {
     /// C++ ABI signatures. Their executable storage type is still a plain word
     /// pointer; the signature also supplies callable-member identity in C.
     pub(crate) function_pointer_typedefs: HashMap<String, crate::cxx::CxxFunctionType>,
+    /// Leaf-statement coordinates accumulated for the function being parsed.
+    pub(crate) current_leaf_statement_lines: Vec<u32>,
     /// Names of variadic function declarations/definitions (side-set — never in the hashed AST).
     pub(crate) variadic_definitions: std::collections::HashSet<String>,
     /// A float-array element whose initializer did NOT fold to a constant —
