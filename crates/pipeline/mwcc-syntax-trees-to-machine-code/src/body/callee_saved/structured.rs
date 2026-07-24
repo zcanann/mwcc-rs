@@ -40,6 +40,7 @@ use super::structured_liveness::{
 use super::structured_loop_invariants::hoist_iterator_end_sentinels;
 use super::structured_loop_assertion_strings::plan_loop_assertion_strings;
 use super::structured_loop_lowering::lower_structured_loops;
+use super::structured_loop_register_pressure::plan_dense_loop_register_window;
 use super::structured_preloop_alias::fold_preloop_comma_pointer_alias;
 use super::structured_locals::{
     body_uses_local, dead_ephemeral_float_locals, is_definitely_assigned_before_reads,
@@ -469,7 +470,10 @@ impl Generator {
             + parameter_home_reuse.fresh_group_count;
         let loop_assertion_strings =
             (value_home_count == 4).then_some(planned_loop_assertion_strings).flatten();
-        let count = value_home_count + 2 * usize::from(loop_assertion_strings.is_some());
+        let base_home_count = value_home_count + 2 * usize::from(loop_assertion_strings.is_some());
+        let count = plan_dense_loop_register_window(&function.statements, &ephemeral_locals)
+            .filter(|window| value_home_count <= *window)
+            .unwrap_or(base_home_count);
         let unused_array_two_homes = unused_frame_array
             && saved_parameters.is_empty()
             && count == 2

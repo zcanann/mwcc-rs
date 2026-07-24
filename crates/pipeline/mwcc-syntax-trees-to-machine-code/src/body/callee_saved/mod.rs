@@ -94,6 +94,7 @@ mod structured_liveness;
 mod structured_bitset_hint_schedule;
 mod structured_loop_lowering;
 mod structured_loop_invariants;
+mod structured_loop_register_pressure;
 mod structured_loop_assertion_strings;
 mod structured_loop_assertion_entry_schedule;
 mod structured_loop_assertion_string_schedule;
