@@ -695,6 +695,7 @@ pub fn lower_function(
     generator.finalize_structured_guarded_ucode_packet_registers();
     generator.finalize_structured_noncopy_packet_registers();
     generator.finalize_structured_noncopy_tail_packet_registers();
+    generator.reuse_structured_loop_packet_setup();
 
     ordinal_accounting::apply(
         function,

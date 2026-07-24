@@ -99,6 +99,7 @@ mod structured_loop_invariants;
 mod structured_loop_packet_algebra;
 mod structured_loop_packet_invariant_rewrite;
 mod structured_loop_packet_invariants;
+mod structured_loop_packet_setup;
 mod structured_loop_packet_zero;
 mod structured_loop_register_pressure;
 mod structured_loop_assertion_strings;
