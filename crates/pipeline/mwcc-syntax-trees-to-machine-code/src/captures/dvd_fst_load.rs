@@ -125,13 +125,12 @@ impl Generator {
             self.output.static_local_adjust = -8;
         }
         self.output.anonymous_label_bump += match variant {
-            // The debug SDK exposes OSPhysicalToCached as a call, retaining two
-            // additional optimizer labels before the same eliminated switch.
-            LoaderVariant::StaticSignedDebugRuntime => 11,
             // The source's dead seven-case drive-state switch is optimized out
             // of `.text` but leaves nine optimizer labels ahead of the string
             // pool in these builds.
-            LoaderVariant::StaticSignedWindWaker | LoaderVariant::StaticSignedLegacyEpilogue => 9,
+            LoaderVariant::StaticSignedWindWaker
+            | LoaderVariant::StaticSignedLegacyEpilogue
+            | LoaderVariant::StaticSignedDebugRuntime => 9,
             _ => 0,
         };
 
