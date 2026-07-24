@@ -33,6 +33,14 @@ pub(super) fn secondary_dense_loop_carried_local<'a>(
     dense_loop_carried_local(statements, ephemeral_locals, 1)
 }
 
+/// The third carried value in the same dense-loop allocation order.
+pub(super) fn tertiary_dense_loop_carried_local<'a>(
+    statements: &[Statement],
+    ephemeral_locals: &[&'a LocalDeclaration],
+) -> Option<&'a str> {
+    dense_loop_carried_local(statements, ephemeral_locals, 2)
+}
+
 fn dense_loop_carried_local<'a>(
     statements: &[Statement],
     ephemeral_locals: &[&'a LocalDeclaration],
@@ -272,8 +280,17 @@ mod tests {
                     right: Box::new(Expression::IntegerLiteral(1)),
                 },
             ),
+            read("v3"),
+            assign(
+                "v3",
+                Expression::Binary {
+                    operator: BinaryOperator::Add,
+                    left: Box::new(Expression::Variable("v3".into())),
+                    right: Box::new(Expression::IntegerLiteral(1)),
+                },
+            ),
         ];
-        body.extend(locals[3..].iter().map(|local| read(&local.name)));
+        body.extend(locals[4..].iter().map(|local| read(&local.name)));
         let statements = vec![Statement::Loop {
             kind: LoopKind::While,
             initializer: None,
@@ -289,6 +306,10 @@ mod tests {
         assert_eq!(
             secondary_dense_loop_carried_local(&statements, &references),
             Some("v2")
+        );
+        assert_eq!(
+            tertiary_dense_loop_carried_local(&statements, &references),
+            Some("v3")
         );
     }
 }
