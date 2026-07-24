@@ -110,6 +110,12 @@ impl Generator {
         function: &Function,
         with_frame_array: bool,
     ) -> Compilation<bool> {
+        // Macro-expanded display-list packets are an input normalization for
+        // this general structured path. More exact semantic owners run before
+        // reaching here and retain their original packet statements.
+        let coalesced_packets =
+            super::super::display_list_packet_runs::coalesce_display_list_packet_runs(function);
+        let function = coalesced_packets.as_ref().unwrap_or(function);
         let hoisted_iterator_end =
             hoist_iterator_end_sentinels(function, &self.one_word_aggregate_locals);
         let function = hoisted_iterator_end.as_ref().unwrap_or(function);

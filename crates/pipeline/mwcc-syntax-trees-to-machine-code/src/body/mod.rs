@@ -46,6 +46,7 @@ mod cxx_global_startup;
 mod dispatchers;
 mod display_list_coveredge;
 mod display_list_packets;
+mod display_list_packet_runs;
 mod display_list_framebuffer_setup;
 mod driver;
 mod enum_remap_member_update;
