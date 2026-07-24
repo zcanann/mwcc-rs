@@ -469,6 +469,8 @@ impl Parser {
         local_names: &mut std::collections::HashSet<String>,
         block_locals: &mut Vec<LocalDeclaration>,
     ) -> Compilation<Statement> {
+        self.current_control_flow_lines
+            .push(self.current_location().line);
         self.eat_word("switch");
         self.expect(Token::ParenOpen)?;
         let scrutinee = self.expression()?;
@@ -4473,6 +4475,7 @@ impl Parser {
         self.inline_substitution_count = 0;
         self.current_inline_string_symbols.clear();
         self.current_leaf_statement_lines.clear();
+        self.current_control_flow_lines.clear();
         // Block-shadow mappings are function-scoped. A switch arm can leave a
         // renamed declaration at the end of one parsed body; carrying that map
         // into the next definition rewrites unrelated locals (`writer` becomes
@@ -5291,6 +5294,7 @@ impl Parser {
                 local_lines,
                 statement_lines,
                 leaf_statement_lines: std::mem::take(&mut self.current_leaf_statement_lines),
+                control_flow_lines: std::mem::take(&mut self.current_control_flow_lines),
                 terminal_return_line,
                 body_end_line,
             }));

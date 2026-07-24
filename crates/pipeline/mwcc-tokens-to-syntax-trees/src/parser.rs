@@ -494,6 +494,8 @@ pub(crate) struct Parser {
     pub(crate) function_pointer_typedefs: HashMap<String, crate::cxx::CxxFunctionType>,
     /// Leaf-statement coordinates accumulated for the function being parsed.
     pub(crate) current_leaf_statement_lines: Vec<u32>,
+    /// Control-node coordinates accumulated for the function being parsed.
+    pub(crate) current_control_flow_lines: Vec<u32>,
     /// Names of variadic function declarations/definitions (side-set — never in the hashed AST).
     pub(crate) variadic_definitions: std::collections::HashSet<String>,
     /// A float-array element whose initializer did NOT fold to a constant —

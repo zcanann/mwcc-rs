@@ -294,6 +294,8 @@ impl Parser {
         local_names: &mut std::collections::HashSet<String>,
         block_locals: &mut Vec<LocalDeclaration>,
     ) -> Compilation<Statement> {
+        self.current_control_flow_lines
+            .push(self.current_location().line);
         self.expect(Token::KeywordIf)?;
         self.expect(Token::ParenOpen)?;
         let condition = self.parse_comma_expression()?;
@@ -323,6 +325,8 @@ impl Parser {
         local_names: &mut std::collections::HashSet<String>,
         block_locals: &mut Vec<LocalDeclaration>,
     ) -> Compilation<Statement> {
+        self.current_control_flow_lines
+            .push(self.current_location().line);
         match self.peek() {
             Token::KeywordWhile => {
                 self.advance();

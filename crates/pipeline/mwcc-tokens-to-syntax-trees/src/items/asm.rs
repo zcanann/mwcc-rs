@@ -174,6 +174,7 @@ impl Parser {
                 local_lines: Vec::new(),
                 statement_lines: Vec::new(),
                 leaf_statement_lines: Vec::new(),
+                control_flow_lines: Vec::new(),
                 terminal_return_line: None,
                 body_end_line,
             }));

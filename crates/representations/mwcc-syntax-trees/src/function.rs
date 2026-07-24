@@ -521,6 +521,9 @@ pub struct FunctionSource {
     /// Physical lines for executable leaf statements at any control-flow
     /// depth, in parse order.
     pub leaf_statement_lines: Vec<u32>,
+    /// Physical source lines for `if`, loop, and `switch` control nodes, in
+    /// parse order. A condition can own several optimized line-table rows.
+    pub control_flow_lines: Vec<u32>,
     pub terminal_return_line: Option<u32>,
     pub body_end_line: u32,
 }

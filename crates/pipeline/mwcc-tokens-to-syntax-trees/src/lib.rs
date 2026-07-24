@@ -320,6 +320,7 @@ pub fn parse_located_translation_unit_with_behavior(
         typedef_source_fundamentals: HashMap::new(),
         function_pointer_typedefs: HashMap::new(),
         current_leaf_statement_lines: Vec::new(),
+        current_control_flow_lines: Vec::new(),
         last_type_was_const: false,
         last_pointer_const: false,
         last_cxx_pointer_depth: 0,
@@ -1575,6 +1576,13 @@ void invoke(void) {\n\
                 .leaf_statement_lines,
             [5]
         );
+        assert_eq!(
+            unit.function_sources[0]
+                .as_ref()
+                .unwrap()
+                .control_flow_lines,
+            [4]
+        );
     }
 
     #[test]
@@ -1613,6 +1621,7 @@ void invoke(void) {\n\
                 local_lines: Vec::new(),
                 statement_lines: Vec::new(),
                 leaf_statement_lines: Vec::new(),
+                control_flow_lines: Vec::new(),
                 terminal_return_line: Some(3),
                 body_end_line: 4,
             })]
