@@ -8,6 +8,7 @@
 mod adjustor_thunks;
 mod array_destructor;
 mod array_member_destructor;
+mod inlined_constructor_chain;
 mod optional_destructor;
 mod trivial_destructor;
 mod virtual_constructor;
@@ -16,6 +17,7 @@ mod virtual_destructor;
 pub(crate) use adjustor_thunks::lower_vtable_adjustor_thunks;
 pub(crate) use array_destructor::lower as lower_array_destructor;
 pub(crate) use array_member_destructor::lower as lower_array_member_destructor;
+pub(crate) use inlined_constructor_chain::lower as lower_inlined_constructor_chain;
 pub(crate) use optional_destructor::lower as lower_optional_destructor;
 pub(crate) use trivial_destructor::lower as lower_trivial_destructor;
 pub(crate) use virtual_constructor::lower as lower_virtual_constructor;

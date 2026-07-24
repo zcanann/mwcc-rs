@@ -162,6 +162,13 @@ pub fn lower_function(
         .starts_with("__ct__")
         .then(|| inline_bodies.expand_calls(function))
         .flatten();
+    if let Some(output) = cxx_abi::lower_inlined_constructor_chain(
+        expanded_constructor.as_ref().unwrap_or(function),
+        source_inline_string_symbols,
+        config.clone(),
+    ) {
+        return Ok(output);
+    }
     if let Some(output) = cxx_abi::lower_composed_constructor(
         expanded_constructor.as_ref().unwrap_or(function),
         globals,
