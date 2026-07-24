@@ -6,6 +6,7 @@
 //! report for inspecting how a translation unit becomes bytes.
 
 mod cxx_analysis_residues;
+mod cxx_inline_reference_temporaries;
 mod cxx_rtti_names;
 mod function_order;
 mod global_initializers;
@@ -1051,6 +1052,14 @@ fn compile(
         config.flags.read_only_global_addressing == mwcc_versions::GlobalAddressing::SmallData;
     let mut static_local_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
     let cxx_inline_facts = unit.cxx_inline_ordinal_facts;
+    let cxx_reference_bound_scalar_temporaries =
+        cxx_inline_reference_temporaries::count(&unit);
+    if diagnose_syntax_tree {
+        eprintln!(
+            "cxx-reference-bound-scalar-temporaries \
+             {cxx_reference_bound_scalar_temporaries}"
+        );
+    }
     let mutable_inline_local_declarators = cxx_inline_facts
         .inline_definition_local_declarators
         .saturating_sub(cxx_inline_facts.inline_definition_const_local_declarators);
@@ -1076,6 +1085,8 @@ fn compile(
             * usize::from(behavior.cxx_trivial_class_temporary_label_bump)
         + cxx_inline_facts.nontrivial_class_temporary_constructions
             * usize::from(behavior.cxx_nontrivial_class_temporary_label_bump)
+        + cxx_reference_bound_scalar_temporaries
+            * usize::from(behavior.cxx_reference_bound_scalar_temporary_label_bump)
         + cxx_inline_facts.virtual_destructors
             * usize::from(behavior.cxx_virtual_destructor_label_bump)
         + cxx_inline_facts.direct_calls * usize::from(behavior.cxx_inline_ipa_call_label_bump);
@@ -1124,6 +1135,8 @@ fn compile(
                 * usize::from(behavior.cxx_trivial_class_temporary_label_bump)
             + cxx_inline_facts.nontrivial_class_temporary_constructions
                 * usize::from(behavior.cxx_nontrivial_class_temporary_label_bump)
+            + cxx_reference_bound_scalar_temporaries
+                * usize::from(behavior.cxx_reference_bound_scalar_temporary_label_bump)
             + cxx_inline_facts.virtual_destructors
                 * usize::from(behavior.cxx_virtual_destructor_label_bump)
             + cxx_inline_facts.direct_calls

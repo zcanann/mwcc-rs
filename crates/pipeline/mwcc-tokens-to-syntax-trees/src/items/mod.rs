@@ -1181,6 +1181,53 @@ impl Parser {
                     .trivial_class_temporary_constructions += 1;
             }
         }
+        let mut cxx_const_reference_parameter_positions =
+            std::collections::HashMap::<String, Vec<bool>>::new();
+        let methods = self
+            .cxx_free_functions
+            .values()
+            .flatten()
+            .map(|method| (method, false))
+            .chain(
+                self.cxx_static_methods
+                    .values()
+                    .flatten()
+                    .map(|method| (method, false)),
+            )
+            .chain(
+                self.cxx_constructors
+                    .values()
+                    .flatten()
+                    .map(|method| (method, true)),
+            )
+            .chain(
+                self.cxx_instance_methods
+                    .values()
+                    .flatten()
+                    .map(|method| (method, true)),
+            )
+            .chain(
+                self.cxx_explicit_instance_methods
+                    .values()
+                    .flatten()
+                    .map(|method| (method, true)),
+            );
+        for (method, implicit_this) in methods {
+            let mut positions =
+                Vec::with_capacity(method.cxx_parameters.len() + usize::from(implicit_this));
+            if implicit_this {
+                positions.push(false);
+            }
+            positions.extend(
+                method
+                    .cxx_parameters
+                    .iter()
+                    .map(crate::cxx::CxxParameterType::binds_scalar_rvalue_temporary),
+            );
+            if positions.iter().any(|position| *position) {
+                cxx_const_reference_parameter_positions.insert(method.mangled.clone(), positions);
+            }
+        }
         Ok(TranslationUnit {
             globals,
             functions,
@@ -1214,6 +1261,7 @@ impl Parser {
             global_destructor_inline_bump: self.global_destructor_inline_bump,
             function_inline_prebumps: std::mem::take(&mut self.function_inline_prebumps),
             cxx_inline_ordinal_facts: self.cxx_inline_ordinal_facts,
+            cxx_const_reference_parameter_positions,
             inline_expansion_facts: std::mem::take(&mut self.inline_expansion_facts),
             static_local_prebumps: std::mem::take(&mut self.static_local_prebumps),
             implicitly_materialized: std::mem::take(&mut self.implicitly_materialized),

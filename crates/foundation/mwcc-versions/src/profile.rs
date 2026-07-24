@@ -1292,6 +1292,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         0
     }
 
+    fn cxx_reference_bound_scalar_temporary_label_bump(&self) -> u8 {
+        0
+    }
+
     fn cxx_inline_ipa_call_label_bump(&self) -> u8 {
         0
     }
@@ -1841,6 +1845,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn guarded_member_initialization_style(&self) -> GuardedMemberInitializationStyle {
         GuardedMemberInitializationStyle::LazyPooledFloat
+    }
+
+    fn cxx_reference_bound_scalar_temporary_label_bump(&self) -> u8 {
+        2
     }
 
     fn cxx_rtti_virtual_method_label_weight(&self, _whole_file: bool) -> u8 {

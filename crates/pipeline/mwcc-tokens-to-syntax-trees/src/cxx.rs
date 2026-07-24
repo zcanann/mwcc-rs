@@ -274,6 +274,24 @@ impl CxxFunctionType {
 }
 
 impl CxxParameterType {
+    pub(crate) fn binds_scalar_rvalue_temporary(&self) -> bool {
+        self.is_reference
+            && self.pointee_const
+            && matches!(
+                self.source_type,
+                Type::Char
+                    | Type::UnsignedChar
+                    | Type::Short
+                    | Type::UnsignedShort
+                    | Type::Int
+                    | Type::UnsignedInt
+                    | Type::LongLong
+                    | Type::UnsignedLongLong
+                    | Type::Float
+                    | Type::Double
+            )
+    }
+
     fn source_identity(&self) -> mwcc_syntax_trees::SourceTypeIdentity {
         mwcc_syntax_trees::SourceTypeIdentity {
             declared_type: self.source_type,

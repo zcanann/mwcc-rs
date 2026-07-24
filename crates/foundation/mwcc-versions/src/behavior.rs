@@ -763,6 +763,7 @@ pub struct Behavior {
     pub cxx_nonvirtual_destructor_label_bump: u8,
     pub cxx_trivial_class_temporary_label_bump: u8,
     pub cxx_nontrivial_class_temporary_label_bump: u8,
+    pub cxx_reference_bound_scalar_temporary_label_bump: u8,
     pub cxx_virtual_destructor_label_bump: u8,
     pub cxx_inline_ipa_call_label_bump: u8,
     pub cxx_rtti_virtual_method_label_weight: u8,
@@ -1164,6 +1165,10 @@ impl Behavior {
                 .build
                 .profile
                 .cxx_nontrivial_class_temporary_label_bump(),
+            cxx_reference_bound_scalar_temporary_label_bump: config
+                .build
+                .profile
+                .cxx_reference_bound_scalar_temporary_label_bump(),
             cxx_virtual_destructor_label_bump: config
                 .build
                 .profile
@@ -1728,6 +1733,10 @@ mod tests {
         );
         assert_eq!(behavior.frame_convention, FrameConvention::LinkageFirst);
         assert_eq!(behavior.cxx_inline_control_flow_label_weight, 1);
+        assert_eq!(
+            behavior.cxx_reference_bound_scalar_temporary_label_bump,
+            2
+        );
         assert!(!behavior.emit_leaf_frame_unwind);
         assert!(behavior.constant_join_return_precedes_lr_reload);
         assert!(behavior.guard_store_precedes_return_value);

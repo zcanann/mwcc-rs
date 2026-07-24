@@ -375,6 +375,12 @@ pub struct TranslationUnit {
     pub function_inline_prebumps: std::collections::HashMap<String, usize>,
     /// Structural facts for version-specific C++ inline ordinal accounting.
     pub cxx_inline_ordinal_facts: CxxInlineOrdinalFacts,
+    /// Direct-call parameter positions which bind scalar rvalues to const
+    /// references, keyed by the resolved ABI function name. Instance methods
+    /// include a leading `false` entry for their implicit `this` argument so
+    /// the mask aligns with [`Expression::Call`] arguments.
+    pub cxx_const_reference_parameter_positions:
+        std::collections::HashMap<String, Vec<bool>>,
     /// Inline-substitution provenance keyed by emitted function name.
     pub inline_expansion_facts: std::collections::HashMap<String, InlineExpansionFacts>,
     /// Names of VARIADIC function declarations/definitions in this unit. Kept
