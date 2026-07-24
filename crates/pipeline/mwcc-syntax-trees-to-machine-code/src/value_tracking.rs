@@ -342,6 +342,108 @@ impl Generator {
                     }
                 }
             }
+            // A pointer local loaded from one member of an entry parameter can
+            // reuse that parameter's dying register for a straight run of
+            // stores (`T *q = owner->value; q->a = 0; q->b = 0; ...`). Unlike
+            // the pure alias above this must emit the member load once, but it
+            // still has no independent local lifetime or spill slot.
+            if !function_makes_call(function) && function.guards.is_empty() {
+                if let [local] = function.locals.as_slice() {
+                    let (initializer, stores) = if let Some(initializer) =
+                        local.initializer.as_ref()
+                    {
+                        (Some(initializer), function.statements.as_slice())
+                    } else {
+                        match function.statements.split_first() {
+                            Some((Statement::Assign { name, value }, stores))
+                                if name == &local.name =>
+                            {
+                                (Some(value), stores)
+                            }
+                            _ => (None, &[][..]),
+                        }
+                    };
+                    let stores_are_straight_line = !stores.is_empty()
+                        && stores
+                            .iter()
+                            .all(|statement| matches!(statement, Statement::Store { .. }));
+                    let member_source = match initializer {
+                        Some(Expression::Member {
+                            base,
+                            member_type,
+                            index_stride: None,
+                            ..
+                        }) if matches!(
+                            member_type,
+                            Type::Pointer(_) | Type::StructPointer { .. }
+                        ) => match base.as_ref() {
+                                Expression::Variable(source) => Some(source.as_str()),
+                                _ => None,
+                            },
+                        _ => None,
+                    };
+                    let pointer_shaped = matches!(
+                        local.declared_type,
+                        Type::Pointer(_) | Type::StructPointer { .. }
+                    );
+                    if pointer_shaped && stores_are_straight_line {
+                        if let Some(source) = member_source {
+                            let source_is_parameter = function
+                                .parameters
+                                .iter()
+                                .any(|parameter| parameter.name == source);
+                            let source_dies_at_initializer = !stores.iter().any(
+                                |statement| match statement {
+                                    Statement::Store { target, value } => {
+                                        expression_reads_name(target, source)
+                                            || expression_reads_name(value, source)
+                                    }
+                                    _ => false,
+                                },
+                            );
+                            if source_is_parameter && source_dies_at_initializer {
+                                let Some(home) = self.lookup_general(source) else {
+                                    return Ok(false);
+                                };
+                                self.evaluate_general(initializer.unwrap(), home)?;
+                                self.locations.insert(
+                                    local.name.clone(),
+                                    Location {
+                                        class: ValueClass::General,
+                                        register: home,
+                                        signed: false,
+                                        width: 32,
+                                        pointee: match local.declared_type {
+                                            Type::Pointer(pointee) => Some(pointee),
+                                            _ => None,
+                                        },
+                                        stride: crate::expressions::pointer_stride(
+                                            local.declared_type,
+                                        ),
+                                    },
+                                );
+                                if let Some((literal, is_double)) =
+                                    repeated_float_member_store_literal(stores)
+                                {
+                                    self.load_float_literal(
+                                        FLOAT_SCRATCH,
+                                        literal,
+                                        is_double,
+                                    );
+                                    self.prematerialized_float_constants =
+                                        vec![(literal.to_bits(), FLOAT_SCRATCH)];
+                                }
+                                for statement in stores {
+                                    self.emit_statement(statement)?;
+                                }
+                                self.prematerialized_float_constants.clear();
+                                self.emit_epilogue_and_return();
+                                return Ok(true);
+                            }
+                        }
+                    }
+                }
+            }
             // A void leaf function that computes ONE `int` local once and stores it to two-plus
             // scratch-safe targets (`int t = a + b; g = t; h = t;`). mwcc materializes the local in
             // the scratch (r0) and stores from it — it does NOT duplicate the computation the way
@@ -920,6 +1022,40 @@ impl Generator {
         self.emit_epilogue_and_return();
         Ok(true)
     }
+}
+
+fn repeated_float_member_store_literal(statements: &[Statement]) -> Option<(f64, bool)> {
+    let mut expected = None;
+    for statement in statements {
+        let Statement::Store {
+            target:
+                Expression::Member {
+                    member_type,
+                    index_stride: None,
+                    ..
+                },
+            value,
+        } = statement
+        else {
+            return None;
+        };
+        let is_double = match member_type {
+            Type::Float => false,
+            Type::Double => true,
+            _ => return None,
+        };
+        let literal = match value {
+            Expression::FloatLiteral(value) => *value,
+            Expression::IntegerLiteral(value) => *value as f64,
+            _ => return None,
+        };
+        let current = (literal.to_bits(), is_double);
+        if expected.is_some_and(|expected| expected != current) {
+            return None;
+        }
+        expected = Some(current);
+    }
+    expected.map(|(bits, is_double)| (f64::from_bits(bits), is_double))
 }
 
 /// A source assignment that consumes the local exactly once and can therefore

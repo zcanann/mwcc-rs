@@ -1256,8 +1256,16 @@ impl Generator {
         // A float/double constant pre-loaded into a fixed FPR (a distinct-float-constant store
         // run) reuses that FPR instead of re-pooling and re-loading it. Keyed on the literal's
         // f64 bits (the run is homogeneous float/double, so no float/double key collision).
-        if let Expression::FloatLiteral(value) = value {
-            let bits = value.to_bits();
+        let prematerialized_float_bits = match (pointee, value) {
+            (Pointee::Float | Pointee::Double, Expression::FloatLiteral(value)) => {
+                Some(value.to_bits())
+            }
+            (Pointee::Float | Pointee::Double, Expression::IntegerLiteral(value)) => {
+                Some((*value as f64).to_bits())
+            }
+            _ => None,
+        };
+        if let Some(bits) = prematerialized_float_bits {
             if let Some(&(_, register)) = self
                 .prematerialized_float_constants
                 .iter()

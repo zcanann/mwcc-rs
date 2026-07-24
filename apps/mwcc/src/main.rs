@@ -2168,6 +2168,9 @@ mod tests {
     #[path = "bitfield_conditions.rs"]
     mod bitfield_conditions;
 
+    #[path = "inline_member_zero_fill.rs"]
+    mod inline_member_zero_fill;
+
     #[test]
     fn parity_keep_going_is_an_explicit_diagnostic_flag() {
         let ordinary = parse_invocation(&[]);
