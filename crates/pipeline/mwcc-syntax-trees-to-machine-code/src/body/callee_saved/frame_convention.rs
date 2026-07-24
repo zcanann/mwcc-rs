@@ -201,11 +201,14 @@ impl Generator {
     /// linkage-first layout after scheduling and physical allocation. Keeping
     /// this as a shape-preserving normalization lets the many semantic owners
     /// share one ABI policy without duplicating their body schedules.
-    pub(crate) fn normalize_linkage_first_callee_saved_frame(&mut self) {
+    pub(crate) fn normalize_linkage_first_callee_saved_frame(
+        &mut self,
+        pending_allocated_float_saves: bool,
+    ) {
         if self.behavior.frame_convention != FrameConvention::LinkageFirst
             || !self.non_leaf
             || self.callee_saved.is_empty()
-            || self.callee_saved_float != 0
+            || (self.callee_saved_float != 0 && !pending_allocated_float_saves)
             || self.frame_size == 0
         {
             return;

@@ -2,6 +2,7 @@
 
 #[allow(unused_imports)]
 use super::*;
+use super::allocated_float_frame_linkage_first::materialize_linkage_first_frame;
 
 impl Generator {
     /// Expand an already scheduled predecrement non-leaf frame around the FPRs
@@ -16,24 +17,29 @@ impl Generator {
         if registers.is_empty() {
             return Ok(());
         }
-        if self.behavior.frame_convention != FrameConvention::Predecrement {
-            return Err(Diagnostic::error(
-                "allocator-selected FPR saves need a linkage-first frame builder",
-            ));
-        }
-        let permutation = materialize_predecrement_frame(
-            &mut self.output.instructions,
-            registers,
-            indexed_restore,
-        )
-        .map_err(Diagnostic::error)?;
+        let (permutation, lane_bytes) = match self.behavior.frame_convention {
+            FrameConvention::Predecrement => (
+                materialize_predecrement_frame(
+                    &mut self.output.instructions,
+                    registers,
+                    indexed_restore,
+                )
+                .map_err(Diagnostic::error)?,
+                16,
+            ),
+            FrameConvention::LinkageFirst => (
+                materialize_linkage_first_frame(&mut self.output.instructions, registers)
+                    .map_err(Diagnostic::error)?,
+                8,
+            ),
+        };
         crate::remap_instruction_indices(self, &permutation);
         let count = u8::try_from(registers.len())
             .map_err(|_| Diagnostic::error("too many allocator-selected FPR saves"))?;
         self.callee_saved_float = count;
         self.frame_size = self
             .frame_size
-            .checked_add(i16::from(count) * 16)
+            .checked_add(i16::from(count) * lane_bytes)
             .ok_or_else(|| Diagnostic::error("allocated FPR frame is too large"))?;
         Ok(())
     }
@@ -280,4 +286,5 @@ mod tests {
             Some(Instruction::BranchToLinkRegister)
         ));
     }
+
 }

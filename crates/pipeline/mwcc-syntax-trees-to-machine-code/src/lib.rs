@@ -577,6 +577,10 @@ pub fn lower_function(
     // Symmetrically, delay the prologue's saved-LR store past the first call's ready
     // argument materializations (mwcc fills the mflr->store latency gap).
     schedule_link_register_save(&mut generator);
+    // Build 163 lays out GPR homes and retained entry lanes before reserving
+    // its compact 8-byte FPR save lanes. Newer builds add their 16-byte Gekko
+    // lanes directly to the predecrement frame.
+    generator.normalize_linkage_first_callee_saved_frame(!allocated_float_saves.is_empty());
     generator.materialize_allocated_float_frame(
         &allocated_float_saves,
         config.build.version >= (4, 3, 0),
@@ -584,7 +588,6 @@ pub fn lower_function(
     // Build 163 shares the selected body schedule, but wraps GPR survivors in a
     // larger linkage-first frame. Normalize only the verified allocator shape;
     // convention-aware owners already emitted their final frame and are skipped.
-    generator.normalize_linkage_first_callee_saved_frame();
     generator.normalize_linkage_first_saved_register_order();
     generator.normalize_linkage_first_plain_nonleaf_frame();
     generator.normalize_linkage_first_indirect_call_schedule();
