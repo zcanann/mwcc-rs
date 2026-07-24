@@ -4280,6 +4280,78 @@ mod tests {
     }
 
     #[test]
+    fn retains_bitfield_storage_across_a_short_circuit_guard() {
+        let source = br#"
+            struct CommonData {
+                char pad[136];
+                float stick_threshold;
+                int timer_threshold;
+            };
+            extern struct CommonData* p_ftCommonData;
+            struct Fighter {
+                char pad0[132];
+                float vertical_velocity;
+                char pad1[1436];
+                float stick_y;
+                char pad2[73];
+                unsigned char timer;
+                char pad3[7080];
+                unsigned char b0 : 1;
+                unsigned char b1 : 1;
+                unsigned char b2 : 1;
+                unsigned char b3 : 1;
+                unsigned char fall_fast : 1;
+            };
+            extern void play(struct Fighter*, int, int, int);
+            int compiled(struct Fighter* fighter) {
+                if (!fighter->fall_fast && fighter->vertical_velocity < 0 &&
+                    fighter->stick_y <= -p_ftCommonData->stick_threshold &&
+                    fighter->timer < p_ftCommonData->timer_threshold) {
+                    fighter->fall_fast = 1;
+                    fighter->timer = 254;
+                    play(fighter, 150, 127, 64);
+                    return 1;
+                }
+                return 0;
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.emit_mwcats = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "guarded-bitfield-storage-cache.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the bitfield storage byte should survive the complete guard");
+        let expected_text = [
+            0x7c, 0x08, 0x02, 0xa6, 0x90, 0x01, 0x00, 0x04, 0x94, 0x21, 0xff, 0xf8, 0x88,
+            0xa3, 0x22, 0x1a, 0x54, 0xa0, 0xef, 0xff, 0x40, 0x82, 0x00, 0x6c, 0xc0, 0x23,
+            0x00, 0x84, 0xc0, 0x00, 0x00, 0x00, 0xfc, 0x01, 0x00, 0x40, 0x40, 0x80, 0x00,
+            0x5c, 0x80, 0xc0, 0x00, 0x00, 0xc0, 0x23, 0x06, 0x24, 0xc0, 0x06, 0x00, 0x88,
+            0xfc, 0x00, 0x00, 0x50, 0xfc, 0x01, 0x00, 0x40, 0x4c, 0x40, 0x13, 0x82, 0x40,
+            0x82, 0x00, 0x40, 0x88, 0x83, 0x06, 0x71, 0x80, 0x06, 0x00, 0x8c, 0x7c, 0x04,
+            0x00, 0x00, 0x40, 0x80, 0x00, 0x30, 0x38, 0x00, 0x00, 0x01, 0x50, 0x05, 0x1f,
+            0x38, 0x98, 0xa3, 0x22, 0x1a, 0x38, 0x00, 0x00, 0xfe, 0x38, 0x80, 0x00, 0x96,
+            0x98, 0x03, 0x06, 0x71, 0x38, 0xa0, 0x00, 0x7f, 0x38, 0xc0, 0x00, 0x40, 0x48,
+            0x00, 0x00, 0x01, 0x38, 0x60, 0x00, 0x01, 0x48, 0x00, 0x00, 0x08, 0x38, 0x60,
+            0x00, 0x00, 0x80, 0x01, 0x00, 0x0c, 0x38, 0x21, 0x00, 0x08, 0x7c, 0x08, 0x03,
+            0xa6, 0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected_text.len())
+            .any(|bytes| bytes == expected_text));
+    }
+
+    #[test]
     fn command_line_pool_mode_is_last_wins() {
         let off = parse_invocation(&["-pool".into(), "off".into()]);
         assert!(!off.flags.pooling_enabled);
