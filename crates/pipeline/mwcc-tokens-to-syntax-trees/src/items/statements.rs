@@ -145,19 +145,24 @@ impl Parser {
         }
     }
 
-    /// Normalize scalar `delete pointer;` into the CodeWarrior EABI operation:
-    /// null-check the object, then call its virtual deleting destructor with
-    /// the compiler-supplied `1` destruction flag. Array delete and a direct
-    /// non-virtual destructor remain explicit unsupported cases.
+    /// Normalize a C++ delete expression into its CodeWarrior EABI operation.
+    /// Array delete calls the runtime `__dla` entry directly; scalar class
+    /// delete null-checks the object and dispatches its virtual deleting
+    /// destructor with the compiler-supplied `1` destruction flag.
     fn parse_delete_statement(&mut self) -> Compilation<Statement> {
         self.advance(); // `delete`
-        if *self.peek() == Token::BracketOpen {
-            return Err(Diagnostic::error(
-                "C++ array delete is not supported yet (roadmap)",
-            ));
+        let is_array = self.eat_keyword(Token::BracketOpen);
+        if is_array {
+            self.expect(Token::BracketClose)?;
         }
         let object = self.expression()?;
         self.expect(Token::Semicolon)?;
+        if is_array {
+            return Ok(Statement::Expression(Expression::Call {
+                name: "__dla__FPv".to_string(),
+                arguments: vec![object],
+            }));
+        }
         let class_name = match &object {
             Expression::Variable(name) => self.variable_structs.get(name).cloned(),
             _ => self.expression_struct_tag.take(),
@@ -835,6 +840,14 @@ impl Parser {
                             0,
                             &mut data_relocations,
                         )?);
+                    } else if matches!(
+                        declared_type,
+                        Type::Pointer(_) | Type::StructPointer { .. }
+                    ) {
+                        let (bytes, relocations) =
+                            self.parse_static_local_pointer_initializer()?;
+                        data_bytes = Some(bytes);
+                        data_relocations = relocations;
                     } else if matches!(
                         declared_type,
                         Type::Int

@@ -12,6 +12,28 @@ use mwcc_syntax_trees::{
 use mwcc_tokens::Token;
 
 impl Parser {
+    /// Serialize a function-scope static pointer initializer into its four-byte
+    /// data image plus the relocation carried by a non-null address.
+    pub(crate) fn parse_static_local_pointer_initializer(
+        &mut self,
+    ) -> Compilation<(Vec<u8>, Vec<(u32, String, i32)>)> {
+        let mut bytes = vec![0; 4];
+        let relocations = match self.parse_pointer_init_element()? {
+            PointerElement::Symbol(target) => vec![(0, target, 0)],
+            PointerElement::Null => Vec::new(),
+            PointerElement::Scalar(value) => {
+                bytes.copy_from_slice(&(value as u32).to_be_bytes());
+                Vec::new()
+            }
+            PointerElement::Str(_) => {
+                return Err(Diagnostic::error(
+                    "a static-local pointer to a string needs local string pooling (roadmap)",
+                ));
+            }
+        };
+        Ok((bytes, relocations))
+    }
+
     /// Parse a global's constant initializer: a scalar `<const>` (one element) or
     /// an aggregate `{ <const>, ... }` (several, with an optional trailing comma).
     /// A pointer global's initializer: a single address (`int *p = &g;`) or a brace
