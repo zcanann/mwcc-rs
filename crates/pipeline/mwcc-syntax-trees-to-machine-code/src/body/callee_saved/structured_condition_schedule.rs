@@ -4,6 +4,28 @@
 use super::*;
 
 impl Generator {
+    /// Reuse entry-register values already established by a leading member
+    /// comparison as the arguments of its guarded call.
+    ///
+    /// The receiver has been copied to a saved home for later calls, but r3 is
+    /// still the untouched entry receiver and the comparison's left member is
+    /// already in r4. MWCC calls directly from those values, then uses the saved
+    /// receiver after the join. The complete entry-copy/load/compare/call window
+    /// proves no intervening operation can have invalidated either argument.
+    pub(super) fn schedule_entry_member_call_argument_reuse(&mut self) {
+        let Some(start) = self
+            .output
+            .instructions
+            .windows(8)
+            .position(is_entry_member_call_argument_reload)
+        else {
+            return;
+        };
+        // Remove from the end so the first index remains stable.
+        self.remove_structured_condition_instruction(start + 6);
+        self.remove_structured_condition_instruction(start + 5);
+    }
+
     /// Keep the guarded member receiver live through its classifier checks and
     /// the first call. The call itself clobbers r3, so only the final receiver
     /// reload before the second call remains.
@@ -214,6 +236,22 @@ fn is_repeated_member_address_call(window: &[Instruction]) -> bool {
         && first_offset == call_offset)
 }
 
+fn is_entry_member_call_argument_reload(window: &[Instruction]) -> bool {
+    matches!(window, [
+        Instruction::Or { a: saved, s: 3, b: 3 },
+        Instruction::LoadWord { d: 4, a: 3, offset: compared_offset },
+        Instruction::LoadWord { d: 0, a: 3, .. },
+        Instruction::CompareWord { a: 4, b: 0 },
+        Instruction::BranchConditionalForward { .. },
+        Instruction::Or { a: 3, s: call_receiver, b: call_receiver_again },
+        Instruction::LoadWord { d: 4, a: call_base, offset: call_offset },
+        Instruction::BranchAndLink { .. },
+    ] if saved == call_receiver
+        && saved == call_receiver_again
+        && saved == call_base
+        && compared_offset == call_offset)
+}
+
 fn is_guarded_member_receiver_reload(window: &[Instruction]) -> bool {
     matches!(window, [
         Instruction::Or { a: saved, s: entry, b: entry_again },
@@ -345,6 +383,48 @@ mod tests {
             Instruction::BranchAndLink { target: "callee".into() },
         ];
         assert!(is_guarded_member_receiver_reload(&instructions));
+    }
+
+    #[test]
+    fn recognizes_entry_member_arguments_reloaded_for_a_guarded_call() {
+        let instructions = [
+            Instruction::Or {
+                a: 31,
+                s: 3,
+                b: 3,
+            },
+            Instruction::LoadWord {
+                d: 4,
+                a: 3,
+                offset: 448,
+            },
+            Instruction::LoadWord {
+                d: 0,
+                a: 3,
+                offset: 464,
+            },
+            Instruction::CompareWord { a: 4, b: 0 },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 8,
+            },
+            Instruction::Or {
+                a: 3,
+                s: 31,
+                b: 31,
+            },
+            Instruction::LoadWord {
+                d: 4,
+                a: 31,
+                offset: 448,
+            },
+            Instruction::BranchAndLink {
+                target: "setup".into(),
+            },
+        ];
+
+        assert!(is_entry_member_call_argument_reload(&instructions));
     }
 
     #[test]
