@@ -1061,6 +1061,7 @@ impl Generator {
                 *branch_target = target;
             }
         }
+        self.fold_structured_void_early_return_branches(&mut return_branches);
         if let Some(return_expression) = function.return_expression.as_ref() {
             let result = match function.return_type {
                 Type::Float | Type::Double => Eabi::float_result().number,
@@ -1098,8 +1099,10 @@ impl Generator {
             !call_accumulators.is_empty() && self.lower_structured_call_accumulator_return();
         let epilogue = self.output.instructions.len();
         for branch in return_branches {
-            if let Instruction::Branch { target } = &mut self.output.instructions[branch] {
-                *target = epilogue;
+            match &mut self.output.instructions[branch] {
+                Instruction::Branch { target }
+                | Instruction::BranchConditionalForward { target, .. } => *target = epilogue,
+                _ => debug_assert!(false, "structured return branch changed form"),
             }
         }
         // Each source-level `if` creates a pair of optimizer labels even when

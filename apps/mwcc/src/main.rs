@@ -3802,6 +3802,83 @@ mod tests {
     }
 
     #[test]
+    fn folds_a_saved_receiver_early_return_and_schedules_bit_field_arguments() {
+        let source = br#"
+            typedef unsigned char u8;
+            struct Fighter {
+                char pad0[8];
+                int spawn;
+                u8 player;
+                char pad1[163];
+                float position_x;
+                char pad2[44];
+                int ground_or_air;
+                char pad3[6080];
+                float knockback;
+                char pad4[192];
+                u8 jumps_used;
+                char pad5[2230];
+                u8 flag_a0 : 1;
+                u8 flag_a1 : 1;
+                u8 flag_a2 : 1;
+                u8 flag_a3 : 1;
+                u8 flag_a4 : 1;
+                u8 flag_a5 : 1;
+                u8 flag_a6 : 1;
+                u8 flag_a7 : 1;
+                char pad6[7];
+                u8 guard : 1;
+            };
+            extern int test_knockback(int, float, float);
+            extern void record_jump(u8, int);
+            void compiled(struct Fighter* fighter) {
+                if (fighter->ground_or_air != 1) {
+                    return;
+                }
+                if (test_knockback(fighter->spawn, fighter->position_x,
+                                   fighter->knockback)) {
+                    fighter->knockback = 0;
+                }
+                if (fighter->guard && fighter->jumps_used <= 1) {
+                    record_jump(fighter->player, fighter->flag_a4);
+                }
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.emit_mwcats = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "structured-early-return.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the saved-receiver branch and calls should compile");
+        let expected_text = [
+            0x7c, 0x08, 0x02, 0xa6, 0x90, 0x01, 0x00, 0x04, 0x94, 0x21, 0xff, 0xe8, 0x93,
+            0xe1, 0x00, 0x14, 0x7c, 0x7f, 0x1b, 0x78, 0x80, 0x03, 0x00, 0xe0, 0x2c, 0x00,
+            0x00, 0x01, 0x40, 0x82, 0x00, 0x4c, 0x80, 0x7f, 0x00, 0x08, 0xc0, 0x3f, 0x00,
+            0xb0, 0xc0, 0x5f, 0x18, 0xa4, 0x48, 0x00, 0x00, 0x01, 0x2c, 0x03, 0x00, 0x00,
+            0x41, 0x82, 0x00, 0x0c, 0xc0, 0x00, 0x00, 0x00, 0xd0, 0x1f, 0x18, 0xa4, 0x88,
+            0x1f, 0x22, 0x27, 0x54, 0x00, 0xcf, 0xff, 0x41, 0x82, 0x00, 0x20, 0x88, 0x1f,
+            0x19, 0x68, 0x28, 0x00, 0x00, 0x01, 0x41, 0x81, 0x00, 0x14, 0x88, 0x9f, 0x22,
+            0x1f, 0x88, 0x7f, 0x00, 0x0c, 0x54, 0x84, 0xef, 0xfe, 0x48, 0x00, 0x00, 0x01,
+            0x80, 0x01, 0x00, 0x1c, 0x83, 0xe1, 0x00, 0x14, 0x38, 0x21, 0x00, 0x18, 0x7c,
+            0x08, 0x03, 0xa6, 0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected_text.len())
+            .any(|bytes| bytes == expected_text));
+    }
+
+    #[test]
     fn command_line_pool_mode_is_last_wins() {
         let off = parse_invocation(&["-pool".into(), "off".into()]);
         assert!(!off.flags.pooling_enabled);
