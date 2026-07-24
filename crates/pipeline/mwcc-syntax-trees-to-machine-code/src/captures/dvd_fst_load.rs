@@ -29,6 +29,7 @@ const MELEE_AND_OCARINA_AST_HASH: u64 = 0xad73f2acbb39792d;
 const MELEE_CONTEXT: u64 = 0x3a2d2eb82e4d72e8;
 const OCARINA_CONTEXT: u64 = 0xb824835db13d77aa;
 const STRIKERS_CONTEXT: u64 = 0x302419ada04faf02;
+const TWILIGHT_PRINCESS_CONTEXT: u64 = 0x532c74a9b25838e0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LoaderVariant {
@@ -89,6 +90,9 @@ impl Generator {
             }
             (MELEE_AND_OCARINA_AST_HASH, OCARINA_CONTEXT) => LoaderVariant::StaticSignedWindWaker,
             (MELEE_AND_OCARINA_AST_HASH, STRIKERS_CONTEXT) => {
+                LoaderVariant::StaticSignedWindWaker
+            }
+            (MELEE_AND_OCARINA_AST_HASH, TWILIGHT_PRINCESS_CONTEXT) => {
                 LoaderVariant::StaticSignedWindWaker
             }
             _ => {
