@@ -5,12 +5,71 @@
 //! multiply into `f0`. Keeping the negated lifetime virtual preserves a live
 //! `f1` when one exists and still colors to `f1` in the measured leaf.
 
+use crate::float_abs_select::abs_select_value;
 use crate::generator::{Generator, FLOAT_SCRATCH};
 use mwcc_core::Compilation;
 use mwcc_machine_code::{Instruction, MachineFunction, RelocationTarget};
 use mwcc_syntax_trees::{Expression, UnaryOperator};
 
 impl Generator {
+    /// Lower `[ - ]member * ABS(other_member)` as a paired select/product.
+    /// This ends in an ordinary multiply; it is not the fused-negative
+    /// multiply/add family.
+    pub(crate) fn try_emit_located_abs_product(
+        &mut self,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+        double: bool,
+    ) -> Compilation<bool> {
+        let (source, negate) = match left {
+            Expression::Unary {
+                operator: UnaryOperator::Negate,
+                operand,
+            } if self.is_float_located(operand) => (operand.as_ref(), true),
+            expression if self.is_float_located(expression) => (expression, false),
+            _ => return Ok(false),
+        };
+        if destination != FLOAT_SCRATCH || abs_select_value(right).is_none() {
+            return Ok(false);
+        }
+
+        let later_product = self
+            .output
+            .instructions
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::StoreFloatSingle { .. }));
+        let select_start = self.output.instructions.len();
+        let multiplier = self.fresh_virtual_float_preferring(1);
+        self.evaluate_float(right, multiplier)?;
+        if later_product
+            && schedule_later_absolute_value_load(&mut self.output, select_start, multiplier)
+        {
+            self.output.pre_scheduled = true;
+        }
+        self.emit_located_operand(source, FLOAT_SCRATCH)?;
+        if negate {
+            self.output.instructions.push(Instruction::FloatNegate {
+                d: FLOAT_SCRATCH,
+                b: FLOAT_SCRATCH,
+            });
+        }
+        self.output.instructions.push(if double {
+            Instruction::FloatMultiplyDouble {
+                d: destination,
+                a: FLOAT_SCRATCH,
+                c: multiplier,
+            }
+        } else {
+            Instruction::FloatMultiplySingle {
+                d: destination,
+                a: FLOAT_SCRATCH,
+                c: multiplier,
+            }
+        });
+        Ok(true)
+    }
+
     pub(crate) fn try_emit_negated_located_product(
         &mut self,
         left: &Expression,
@@ -29,48 +88,6 @@ impl Generator {
             return Ok(false);
         }
 
-        // `-member * ABS(other_member)` evaluates the conditional absolute
-        // value first, keeping it in f1 across the later facing-direction load.
-        // The source negate then reuses f0 and the multiply consumes both. This
-        // is distinct from a fused negative multiply-add expression.
-        if matches!(right, Expression::Conditional { .. }) {
-            let later_product = self
-                .output
-                .instructions
-                .iter()
-                .any(|instruction| matches!(instruction, Instruction::StoreFloatSingle { .. }));
-            let select_start = self.output.instructions.len();
-            let multiplier = self.fresh_virtual_float_preferring(1);
-            self.evaluate_float(right, multiplier)?;
-            if later_product {
-                if schedule_later_absolute_value_load(
-                    &mut self.output,
-                    select_start,
-                    multiplier,
-                ) {
-                    self.output.pre_scheduled = true;
-                }
-            }
-            self.emit_located_operand(negated, FLOAT_SCRATCH)?;
-            self.output.instructions.push(Instruction::FloatNegate {
-                d: FLOAT_SCRATCH,
-                b: FLOAT_SCRATCH,
-            });
-            self.output.instructions.push(if double {
-                Instruction::FloatMultiplyDouble {
-                    d: destination,
-                    a: FLOAT_SCRATCH,
-                    c: multiplier,
-                }
-            } else {
-                Instruction::FloatMultiplySingle {
-                    d: destination,
-                    a: FLOAT_SCRATCH,
-                    c: multiplier,
-                }
-            });
-            return Ok(true);
-        }
         if !self.is_float_located(right) {
             return Ok(false);
         }

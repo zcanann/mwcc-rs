@@ -134,6 +134,11 @@ impl Generator {
                     return Ok(());
                 }
                 if *operator == BinaryOperator::Multiply
+                    && self.try_emit_located_abs_product(left, right, destination, double)?
+                {
+                    return Ok(());
+                }
+                if *operator == BinaryOperator::Multiply
                     && self.try_emit_negated_located_product(
                         left,
                         right,
