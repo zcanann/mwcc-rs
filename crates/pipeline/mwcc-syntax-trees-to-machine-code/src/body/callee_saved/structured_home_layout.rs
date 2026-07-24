@@ -17,12 +17,14 @@ pub(super) fn paired_eager_deferred_preference(
     eager_count: usize,
     parameter_count: usize,
     deferred_count: usize,
+    retained_inline_lane: bool,
     home_index: usize,
 ) -> Option<u8> {
     (!with_frame_array
         && eager_count == 1
         && parameter_count == 0
         && deferred_count == 1
+        && retained_inline_lane
         && home_index < 2)
         .then_some(if home_index == 0 { 30 } else { 31 })
 }
@@ -165,9 +167,10 @@ mod tests {
 
     #[test]
     fn pairs_one_eager_local_below_one_deferred_result() {
-        assert_eq!(paired_eager_deferred_preference(false, 1, 0, 1, 0), Some(30));
-        assert_eq!(paired_eager_deferred_preference(false, 1, 0, 1, 1), Some(31));
-        assert_eq!(paired_eager_deferred_preference(true, 1, 0, 1, 0), None);
+        assert_eq!(paired_eager_deferred_preference(false, 1, 0, 1, true, 0), Some(30));
+        assert_eq!(paired_eager_deferred_preference(false, 1, 0, 1, true, 1), Some(31));
+        assert_eq!(paired_eager_deferred_preference(true, 1, 0, 1, true, 0), None);
+        assert_eq!(paired_eager_deferred_preference(false, 1, 0, 1, false, 0), None);
     }
 
     #[test]

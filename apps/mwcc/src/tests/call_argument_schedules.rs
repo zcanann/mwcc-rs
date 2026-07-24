@@ -62,3 +62,43 @@ fn schedules_indexed_addresses_and_a_float_product_like_mwcc() {
         .windows(address_schedule.len())
         .any(|bytes| bytes == address_schedule));
 }
+
+#[test]
+fn reuses_the_first_argument_register_for_a_large_third_string() {
+    let source = br#"
+        extern void report(char*, int, char*);
+        void compiled(int condition) {
+            if (condition) {
+                report("file.c", 299, "translation");
+            }
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.cpp_exceptions = false;
+    flags.emit_mwcats = false;
+    let config = mwcc_versions::CompilerConfig {
+        build: mwcc_versions::GC_1_2_5N,
+        flags,
+    };
+    let object = compile(
+        source,
+        "mixed-string-line-arguments.c",
+        config,
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("the large third string should reuse r3 while forming r5");
+
+    let arguments_and_call = [
+        0x3c, 0x60, 0x00, 0x00, // lis r3,third@ha
+        0x38, 0xa3, 0x00, 0x00, // addi r5,r3,third@l
+        0x38, 0x60, 0x00, 0x00, // li r3,first@sda21
+        0x38, 0x80, 0x01, 0x2b, // li r4,299
+        0x48, 0x00, 0x00, 0x01, // bl report
+    ];
+    assert!(object
+        .windows(arguments_and_call.len())
+        .any(|bytes| bytes == arguments_and_call));
+}

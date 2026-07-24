@@ -19,6 +19,69 @@ impl Generator {
     pub(crate) fn schedule_linkage_first_function_address(&mut self) {
         schedule_function_address_low(&mut self.output);
     }
+
+    /// Fill the first linkage slot for the compact eager/deferred inline
+    /// frame. This stream has forward assertion branches, so the ordinary
+    /// branch-free entry scheduler declines it; the retained-lane shape gives
+    /// us a narrower proof and lets the label owner track the move safely.
+    pub(crate) fn schedule_retained_eager_entry_argument(&mut self) {
+        if self.behavior.frame_convention != FrameConvention::LinkageFirst
+            || self.legacy_callee_saved_frame_layout
+                != LegacyCalleeSavedFrameLayout::RetainEagerLocalLane
+        {
+            return;
+        }
+        let Some((from, to)) = retained_eager_entry_argument_move(&self.output) else {
+            return;
+        };
+        let instruction = self.output.instructions.remove(from);
+        self.output.instructions.insert(to, instruction);
+        self.labels.moved_before(from, to);
+        remap_relocations_for_move(&mut self.output.relocations, from, to);
+    }
+}
+
+fn retained_eager_entry_argument_move(
+    output: &mwcc_machine_code::MachineFunction,
+) -> Option<(usize, usize)> {
+    let link_read = output.instructions.iter().position(|instruction| {
+        matches!(instruction, Instruction::MoveFromLinkRegister { d: 0 })
+    })?;
+    let link_store = output.instructions.iter().position(|instruction| {
+        matches!(instruction, Instruction::StoreWord { s: 0, a: 1, offset: 4 })
+    })?;
+    let stack_update = output.instructions.iter().position(|instruction| {
+        matches!(instruction, Instruction::StoreWordWithUpdate { s: 1, a: 1, .. })
+    })?;
+    if !(link_read < link_store && link_store < stack_update) {
+        return None;
+    }
+    let first_call = output.instructions.iter().position(|instruction| {
+        matches!(instruction, Instruction::BranchAndLink { .. })
+    })?;
+    let from = output.instructions[stack_update + 1..=first_call]
+        .windows(6)
+        .position(|window| {
+            matches!(window, [
+                Instruction::StoreWord { s: first_saved, a: 1, .. },
+                Instruction::StoreWord { s: second_saved, a: 1, .. },
+                Instruction::LoadWord { d: eager, a: 3, .. },
+                Instruction::AddImmediate { d: 3, a: copied, immediate: 0 },
+                Instruction::AddImmediate { d: 4, a: 0, .. },
+                Instruction::BranchAndLink { .. },
+            ] if first_saved != second_saved && eager == copied && eager == second_saved)
+        })?
+        + stack_update
+        + 1
+        + 4;
+    if output
+        .relocations
+        .iter()
+        .any(|relocation| relocation.instruction_index == from)
+    {
+        return None;
+    }
+    Some((from, link_read + 1))
 }
 
 /// A two-instruction discontiguous mask is ready at entry, but its low half
@@ -541,5 +604,29 @@ mod tests {
                 Instruction::BranchConditionalForward { .. },
             ]
         ));
+    }
+
+    #[test]
+    fn finds_retained_eager_argument_across_later_assertion_branches() {
+        let mut output = mwcc_machine_code::MachineFunction::new("test");
+        output.instructions = vec![
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord { s: 0, a: 1, offset: 4 },
+            Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -24 },
+            Instruction::StoreWord { s: 31, a: 1, offset: 20 },
+            Instruction::StoreWord { s: 30, a: 1, offset: 16 },
+            Instruction::LoadWord { d: 30, a: 3, offset: 44 },
+            Instruction::AddImmediate { d: 3, a: 30, immediate: 0 },
+            Instruction::load_immediate(4, 4),
+            Instruction::BranchAndLink { target: "lookup".into() },
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 11,
+            },
+            Instruction::BranchAndLink { target: "__assert".into() },
+        ];
+
+        assert_eq!(retained_eager_entry_argument_move(&output), Some((7, 1)));
     }
 }

@@ -314,6 +314,48 @@ impl Generator {
         Ok(true)
     }
 
+    /// Schedule `(small_string, i16, large_string)` through the first argument
+    /// register. Build 163 forms the large third argument in r3/r5 before its
+    /// packed small-data first argument overwrites r3, exposing both address
+    /// halves ahead of the cheap integer line materialization.
+    pub(crate) fn try_emit_mixed_string_line_arguments(
+        &mut self,
+        arguments: &[Expression],
+        direct_call: bool,
+    ) -> Compilation<bool> {
+        let [
+            Expression::StringLiteral(first),
+            Expression::IntegerLiteral(line),
+            Expression::StringLiteral(third),
+        ] = arguments
+        else {
+            return Ok(false);
+        };
+        if !direct_call
+            || !self.behavior.schedule_latency_slots
+            || self.behavior.frame_convention != mwcc_versions::FrameConvention::LinkageFirst
+            || first.len() + 1 > 8
+            || third.len() + 1 <= 8
+            || !(i16::MIN as i64..=i16::MAX as i64).contains(line)
+        {
+            return Ok(false);
+        }
+
+        let third = self.string_literal_placeholder(third);
+        self.emit_address_high(Eabi::FIRST_GENERAL_ARGUMENT, &third);
+        self.emit_string_address_low(
+            &third,
+            Eabi::FIRST_GENERAL_ARGUMENT,
+            Eabi::FIRST_GENERAL_ARGUMENT + 2,
+        );
+        self.evaluate_general(&arguments[0], Eabi::FIRST_GENERAL_ARGUMENT)?;
+        self.output.instructions.push(Instruction::load_immediate(
+            Eabi::FIRST_GENERAL_ARGUMENT + 1,
+            *line as i16,
+        ));
+        Ok(true)
+    }
+
     /// Schedule `(large_string, i16, large_string)` without serializing the two
     /// address dependency chains. MWCC emits both high halves, completes the
     /// third argument through r4 into r5, then reuses r4 for the integer line

@@ -458,6 +458,7 @@ impl Generator {
                     eager_saved_locals.len(),
                     saved_parameters.len(),
                     deferred_home_plan.group_count,
+                    self.legacy_inline_expansion_frame_bytes != 0,
                     home_index,
                 ) {
                     self.fresh_virtual_general_preferring(preferred)
@@ -687,6 +688,7 @@ impl Generator {
             && eager_saved_locals.len() == 1
             && saved_parameters.is_empty()
             && deferred_home_plan.group_count == 1
+            && self.legacy_inline_expansion_frame_bytes != 0
         {
             LegacyCalleeSavedFrameLayout::RetainEagerLocalLane
         } else if is_plain_short_circuit_call_if(function) {
