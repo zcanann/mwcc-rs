@@ -8,6 +8,7 @@
 
 #[allow(unused_imports)]
 use super::*;
+use mwcc_syntax_trees::ArmBody;
 
 pub(super) fn lower_structured_loops(
     function: &Function,
@@ -19,6 +20,67 @@ pub(super) fn lower_structured_loops(
         let mut lowered = function.clone();
         lowered.statements = statements;
         lowered
+    })
+}
+
+/// Remove switches that only evaluate an inert scrutinee and immediately break
+/// from every arm. Keep this separate from loop lowering because liveness and
+/// frame planning must see the same semantic body as the emission view.
+pub(super) fn strip_side_effect_free_empty_switches(function: &Function) -> Option<Function> {
+    fn strip_statements(statements: &[Statement], changed: &mut bool) -> Vec<Statement> {
+        let mut stripped = Vec::with_capacity(statements.len());
+        for statement in statements {
+            match statement {
+                Statement::Switch {
+                    scrutinee,
+                    arms,
+                    default,
+                } if !crate::analysis::expression_has_side_effect(scrutinee)
+                    && arms
+                        .iter()
+                        .all(|arm| matches!(&arm.body, ArmBody::Statements(body) if body.is_empty()))
+                    && default
+                        .as_ref()
+                        .is_none_or(|body| matches!(body, ArmBody::Statements(body) if body.is_empty())) =>
+                {
+                    // The scrutinee is still evaluated in C, hence the explicit
+                    // side-effect proof before removing the whole statement.
+                    *changed = true;
+                }
+                Statement::If {
+                    condition,
+                    then_body,
+                    else_body,
+                } => stripped.push(Statement::If {
+                    condition: condition.clone(),
+                    then_body: strip_statements(then_body, changed),
+                    else_body: strip_statements(else_body, changed),
+                }),
+                Statement::Loop {
+                    kind,
+                    initializer,
+                    condition,
+                    step,
+                    body,
+                } => stripped.push(Statement::Loop {
+                    kind: *kind,
+                    initializer: initializer.clone(),
+                    condition: condition.clone(),
+                    step: step.clone(),
+                    body: strip_statements(body, changed),
+                }),
+                _ => stripped.push(statement.clone()),
+            }
+        }
+        stripped
+    }
+
+    let mut changed = false;
+    let statements = strip_statements(&function.statements, &mut changed);
+    changed.then(|| {
+        let mut stripped = function.clone();
+        stripped.statements = statements;
+        stripped
     })
 }
 
@@ -215,6 +277,7 @@ fn collect_labels(statements: &[Statement], labels: &mut std::collections::HashS
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mwcc_syntax_trees::SwitchArm;
 
     fn for_loop(body: Vec<Statement>) -> Statement {
         Statement::Loop {
@@ -282,6 +345,83 @@ mod tests {
             .statements
             .iter()
             .any(|statement| matches!(statement, Statement::Loop { .. })));
+    }
+
+    #[test]
+    fn removes_a_side_effect_free_switch_with_only_empty_break_arms() {
+        let function = Function {
+            return_type: Type::Void,
+            name: "wait".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: Vec::new(),
+            statements: vec![Statement::Switch {
+                scrutinee: Expression::Variable("state".into()),
+                arms: vec![
+                    SwitchArm {
+                        value: -1,
+                        body: ArmBody::Statements(Vec::new()),
+                        falls_through: false,
+                    },
+                    SwitchArm {
+                        value: 1,
+                        body: ArmBody::Statements(Vec::new()),
+                        falls_through: false,
+                    },
+                ],
+                default: None,
+            }],
+            return_expression: None,
+            guards: Vec::new(),
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+
+        let lowered = strip_side_effect_free_empty_switches(&function)
+            .expect("empty break-only switch should be removed");
+
+        assert!(lowered.statements.is_empty());
+    }
+
+    #[test]
+    fn retains_an_empty_switch_with_a_side_effecting_scrutinee() {
+        let function = Function {
+            return_type: Type::Void,
+            name: "wait".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: Vec::new(),
+            statements: vec![Statement::Switch {
+                scrutinee: Expression::Call {
+                    name: "status".into(),
+                    arguments: Vec::new(),
+                },
+                arms: vec![SwitchArm {
+                    value: 0,
+                    body: ArmBody::Statements(Vec::new()),
+                    falls_through: false,
+                }],
+                default: None,
+            }],
+            return_expression: None,
+            guards: Vec::new(),
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+
+        assert!(strip_side_effect_free_empty_switches(&function).is_none());
     }
 
     #[test]

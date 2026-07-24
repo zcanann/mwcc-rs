@@ -47,7 +47,9 @@ use super::structured_loop_invariants::hoist_iterator_end_sentinels;
 use super::structured_loop_packet_invariants::hoist_repeated_packet_words;
 use super::structured_loop_member_cache::cache_repeated_loop_members;
 use super::structured_loop_assertion_strings::plan_loop_assertion_strings;
-use super::structured_loop_lowering::lower_structured_loops;
+use super::structured_loop_lowering::{
+    lower_structured_loops, strip_side_effect_free_empty_switches,
+};
 use super::structured_loop_register_pressure::{
     plan_dense_loop_carried_locals, plan_dense_loop_register_window,
 };
@@ -136,6 +138,8 @@ impl Generator {
         let function = hoisted_iterator_end.as_ref().unwrap_or(function);
         let folded_preloop_alias = fold_preloop_comma_pointer_alias(function);
         let function = folded_preloop_alias.as_ref().unwrap_or(function);
+        let stripped_empty_switches = strip_side_effect_free_empty_switches(function);
+        let function = stripped_empty_switches.as_ref().unwrap_or(function);
         let raw_loop_assertion_strings = plan_loop_assertion_strings(function);
         let planned_loop_assertion_strings = raw_loop_assertion_strings.filter(|plan| {
             self.behavior.frame_convention == FrameConvention::Predecrement

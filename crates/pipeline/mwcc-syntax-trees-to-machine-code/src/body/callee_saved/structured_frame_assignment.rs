@@ -267,14 +267,15 @@ pub(super) fn is_transient_direct_call_argument_local(
     return_expression: Option<&Expression>,
     candidate: &str,
 ) -> bool {
-    fn counts(statements: &[Statement], candidate: &str) -> (usize, usize, bool) {
-        let mut total = 0;
-        let mut direct = 0;
+    fn counts(statements: &[Statement], candidate: &str) -> Option<(usize, usize, bool)> {
+        let mut total: usize = 0;
+        let mut direct: usize = 0;
         let mut assigned = false;
         macro_rules! add_expression {
             ($expression:expr) => {{
-                total += count_name_occurrences($expression, candidate);
-                direct += count_direct_call_argument_occurrences($expression, candidate);
+                total = total.saturating_add(count_name_occurrences($expression, candidate));
+                direct = direct
+                    .saturating_add(count_direct_call_argument_occurrences($expression, candidate));
             }};
         }
         for statement in statements {
@@ -296,10 +297,14 @@ pub(super) fn is_transient_direct_call_argument_local(
                     else_body,
                 } => {
                     add_expression!(condition);
-                    let then_counts = counts(then_body, candidate);
-                    let else_counts = counts(else_body, candidate);
-                    total += then_counts.0 + else_counts.0;
-                    direct += then_counts.1 + else_counts.1;
+                    let then_counts = counts(then_body, candidate)?;
+                    let else_counts = counts(else_body, candidate)?;
+                    total = total
+                        .saturating_add(then_counts.0)
+                        .saturating_add(else_counts.0);
+                    direct = direct
+                        .saturating_add(then_counts.1)
+                        .saturating_add(else_counts.1);
                     assigned |= then_counts.2 || else_counts.2;
                 }
                 Statement::Loop {
@@ -312,12 +317,15 @@ pub(super) fn is_transient_direct_call_argument_local(
                     for expression in initializer.iter().chain(condition).chain(step) {
                         add_expression!(expression);
                     }
-                    let body_counts = counts(body, candidate);
-                    total += body_counts.0;
-                    direct += body_counts.1;
+                    let body_counts = counts(body, candidate)?;
+                    total = total.saturating_add(body_counts.0);
+                    direct = direct.saturating_add(body_counts.1);
                     assigned |= body_counts.2;
                 }
-                Statement::Switch { .. } => return (usize::MAX, 0, assigned),
+                // Switch-arm liveness is not represented by this narrow
+                // forwarding analysis. Decline instead of encoding rejection
+                // as a numeric sentinel that can overflow in an enclosing loop.
+                Statement::Switch { .. } => return None,
                 Statement::Return(None)
                 | Statement::Break
                 | Statement::Continue
@@ -325,10 +333,12 @@ pub(super) fn is_transient_direct_call_argument_local(
                 | Statement::Label(_) => {}
             }
         }
-        (total, direct, assigned)
+        Some((total, direct, assigned))
     }
 
-    let (mut total, mut direct, assigned) = counts(statements, candidate);
+    let Some((mut total, mut direct, assigned)) = counts(statements, candidate) else {
+        return false;
+    };
     if let Some(expression) = return_expression {
         total = total.saturating_add(count_name_occurrences(expression, candidate));
         direct = direct.saturating_add(count_direct_call_argument_occurrences(
@@ -995,6 +1005,36 @@ mod tests {
             &statements,
             None,
             "saved"
+        ));
+    }
+
+    #[test]
+    fn switch_nested_in_a_loop_declines_without_overflowing() {
+        let statements = vec![Statement::Loop {
+            kind: LoopKind::While,
+            initializer: None,
+            condition: Some(Expression::IntegerLiteral(1)),
+            step: None,
+            body: vec![
+                Statement::Assign {
+                    name: "state".into(),
+                    value: Expression::Call {
+                        name: "status".into(),
+                        arguments: Vec::new(),
+                    },
+                },
+                Statement::Switch {
+                    scrutinee: Expression::Variable("state".into()),
+                    arms: Vec::new(),
+                    default: None,
+                },
+            ],
+        }];
+
+        assert!(!is_transient_direct_call_argument_local(
+            &statements,
+            None,
+            "state"
         ));
     }
 }
