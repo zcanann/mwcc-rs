@@ -2408,6 +2408,9 @@ mod tests {
     #[path = "float_to_integer_store.rs"]
     mod float_to_integer_store;
 
+    #[path = "local_post_step.rs"]
+    mod local_post_step;
+
     use super::{compile, global_alignments, parse_invocation, GlobalAlignments, SourceLanguage};
     use mwcc_versions::{EnumStorage, GlobalAddressing};
 

@@ -1,0 +1,52 @@
+use crate::{compile, SourceLanguage};
+
+#[test]
+fn preserves_the_old_value_of_register_local_postfix_steps() {
+    let source = br#"
+        extern void consume_int(int value);
+        extern void consume_pointer(int* value);
+
+        int scalar_post_step(int value) {
+            consume_int(value++);
+            return value;
+        }
+
+        int* pointer_post_step(int* value) {
+            consume_pointer(value++);
+            return value;
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.emit_mwcats = false;
+    flags.inline_enabled = false;
+    let object = compile(
+        source,
+        "local-post-step.c",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_2_6,
+            flags,
+        },
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("register-local postfix values should compile");
+
+    // Exact GC/2.6 output measured from mwcceppc. The scalar and pointer
+    // functions differ only in their source-language step width.
+    let scalar = [
+        0x94, 0x21, 0xff, 0xf0, 0x7c, 0x08, 0x02, 0xa6, 0x90, 0x01, 0x00, 0x14, 0x93, 0xe1, 0x00,
+        0x0c, 0x3b, 0xe3, 0x00, 0x01, 0x48, 0x00, 0x00, 0x01, 0x80, 0x01, 0x00, 0x14, 0x7f, 0xe3,
+        0xfb, 0x78, 0x83, 0xe1, 0x00, 0x0c, 0x7c, 0x08, 0x03, 0xa6, 0x38, 0x21, 0x00, 0x10, 0x4e,
+        0x80, 0x00, 0x20,
+    ];
+    let pointer = [
+        0x94, 0x21, 0xff, 0xf0, 0x7c, 0x08, 0x02, 0xa6, 0x90, 0x01, 0x00, 0x14, 0x93, 0xe1, 0x00,
+        0x0c, 0x3b, 0xe3, 0x00, 0x04, 0x48, 0x00, 0x00, 0x01, 0x80, 0x01, 0x00, 0x14, 0x7f, 0xe3,
+        0xfb, 0x78, 0x83, 0xe1, 0x00, 0x0c, 0x7c, 0x08, 0x03, 0xa6, 0x38, 0x21, 0x00, 0x10, 0x4e,
+        0x80, 0x00, 0x20,
+    ];
+    assert!(object.windows(scalar.len()).any(|bytes| bytes == scalar));
+    assert!(object.windows(pointer.len()).any(|bytes| bytes == pointer));
+}

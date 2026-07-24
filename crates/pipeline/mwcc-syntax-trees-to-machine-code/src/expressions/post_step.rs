@@ -26,68 +26,8 @@ impl Generator {
                 "a postfix step on this lvalue is not supported yet (roadmap)",
             ));
         };
-        if let Some((class, source, pointee, stride)) =
+        if let Some((source, class, width, pointee, stride)) =
             self.locations.get(name.as_str()).map(|location| {
-                (
-                    location.class,
-                    location.register,
-                    location.pointee,
-                    location.stride,
-                )
-            })
-        {
-            if class != ValueClass::General {
-                return Err(Diagnostic::error(
-                    "a local floating postfix step used as a value is not supported yet",
-                ));
-            }
-            let amount = stride
-                .or_else(|| pointee.map(|pointee| u32::from(pointee.size())))
-                .unwrap_or(1);
-            let amount = i16::try_from(amount)
-                .map_err(|_| Diagnostic::error("postfix pointer stride is out of range"))?;
-            let amount = match operator {
-                BinaryOperator::Add => amount,
-                BinaryOperator::Subtract => amount
-                    .checked_neg()
-                    .ok_or_else(|| Diagnostic::error("postfix pointer stride is out of range"))?,
-                _ => {
-                    return Err(Diagnostic::error(
-                        "a postfix step requires increment or decrement",
-                    ))
-                }
-            };
-
-            if source == destination {
-                // The expression result and updated lvalue need distinct
-                // identities. Keep the old value in `destination` and rebind
-                // the local to a fresh home containing the stepped value.
-                let stepped = self.fresh_virtual_general();
-                self.output.instructions.push(Instruction::AddImmediate {
-                    d: stepped,
-                    a: source,
-                    immediate: amount,
-                });
-                self.locations
-                    .get_mut(name.as_str())
-                    .expect("the local postfix target was just resolved")
-                    .register = stepped;
-            } else {
-                self.output
-                    .instructions
-                    .push(Instruction::move_register(destination, source));
-                self.output.instructions.push(Instruction::AddImmediate {
-                    d: source,
-                    a: source,
-                    immediate: amount,
-                });
-            }
-            return Ok(());
-        }
-        if let Some((source, class, width, pointee, stride)) = self
-            .locations
-            .get(name.as_str())
-            .map(|location| {
                 (
                     location.register,
                     location.class,
@@ -114,6 +54,27 @@ impl Generator {
             // entry register cannot also retain the stepped local across a
             // call, so split its new value into an allocatable lane. Once the
             // local already owns a virtual lane, update it in place.
+            let fused_entry_copy = source != destination
+                && self.output.instructions.last().is_some_and(|instruction| {
+                    matches!(
+                        instruction,
+                        Instruction::Or { a, s, b }
+                            if *a == source && *s == destination && *b == destination
+                    ) || matches!(
+                        instruction,
+                        Instruction::AddImmediate { d, a, immediate: 0 }
+                            if *d == source && *a == destination
+                    )
+                });
+            if fused_entry_copy {
+                self.output.instructions.pop();
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: source,
+                    a: destination,
+                    immediate: amount,
+                });
+                return Ok(());
+            }
             if source != destination {
                 self.emit_integer_materialization_copy(destination, source);
             }
