@@ -9,7 +9,7 @@
 
 use crate::generator::Generator;
 use mwcc_core::{Compilation, Diagnostic};
-use mwcc_machine_code::Instruction;
+use mwcc_machine_code::{Instruction, RelocationTarget};
 use mwcc_vreg::{Allocation, Class, Reg};
 
 impl Generator {
@@ -57,6 +57,9 @@ impl Generator {
                 required.len(),
                 declared.len()
             )));
+        }
+        if self.grow_dense_general_save_range(&declared, &required)? {
+            return Ok(());
         }
 
         let mut save_indices = Vec::with_capacity(declared.len());
@@ -161,6 +164,127 @@ impl Generator {
         Ok(())
     }
 
+    /// Grow a dense rN..r31 save/restore pair after allocation discovers one
+    /// more call-crossing value than selection predicted. Both MWCC dense forms
+    /// are supported: inline `stmw`/`lmw` and `_savegpr_N`/`_restgpr_N`.
+    fn grow_dense_general_save_range(
+        &mut self,
+        declared: &[u8],
+        required: &[u8],
+    ) -> Compilation<bool> {
+        let Some(new_first) = dense_suffix_first(required) else {
+            return Ok(false);
+        };
+        let old_first = 32u8
+            .checked_sub(u8::try_from(declared.len()).map_err(|_| {
+                Diagnostic::error("dense callee-saved range is too large")
+            })?)
+            .ok_or_else(|| Diagnostic::error("dense callee-saved range is too large"))?;
+        if new_first >= old_first {
+            return Ok(false);
+        }
+
+        let stores: Vec<_> = self
+            .output
+            .instructions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, instruction)| {
+                matches!(
+                    instruction,
+                    Instruction::StoreMultipleWord { s, a: 1, .. } if *s == old_first
+                )
+                .then_some(index)
+            })
+            .collect();
+        let loads: Vec<_> = self
+            .output
+            .instructions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, instruction)| {
+                matches!(
+                    instruction,
+                    Instruction::LoadMultipleWord { d, a: 1, .. } if *d == old_first
+                )
+                .then_some(index)
+            })
+            .collect();
+        if let ([store], [load]) = (stores.as_slice(), loads.as_slice()) {
+            let offset = self.frame_size
+                - 4 * i16::try_from(required.len())
+                    .map_err(|_| Diagnostic::error("dense callee-saved range is too large"))?;
+            let Instruction::StoreMultipleWord { s, offset: at, .. } =
+                &mut self.output.instructions[*store]
+            else {
+                unreachable!("dense save was classified above")
+            };
+            *s = new_first;
+            *at = offset;
+            let Instruction::LoadMultipleWord { d, offset: at, .. } =
+                &mut self.output.instructions[*load]
+            else {
+                unreachable!("dense restore was classified above")
+            };
+            *d = new_first;
+            *at = offset;
+            self.callee_saved = required.to_vec();
+            return Ok(true);
+        }
+
+        let old_save = format!("_savegpr_{old_first}");
+        let old_restore = format!("_restgpr_{old_first}");
+        let new_save = format!("_savegpr_{new_first}");
+        let new_restore = format!("_restgpr_{new_first}");
+        let save_calls: Vec<_> = self
+            .output
+            .instructions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, instruction)| {
+                matches!(
+                    instruction,
+                    Instruction::BranchAndLink { target } if target == &old_save
+                )
+                .then_some(index)
+            })
+            .collect();
+        let restore_calls: Vec<_> = self
+            .output
+            .instructions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, instruction)| {
+                matches!(
+                    instruction,
+                    Instruction::BranchAndLink { target } if target == &old_restore
+                )
+                .then_some(index)
+            })
+            .collect();
+        let ([save], [restore]) = (save_calls.as_slice(), restore_calls.as_slice()) else {
+            return Ok(false);
+        };
+        for (index, old, new) in [
+            (*save, old_save.as_str(), new_save.as_str()),
+            (*restore, old_restore.as_str(), new_restore.as_str()),
+        ] {
+            let Instruction::BranchAndLink { target } = &mut self.output.instructions[index] else {
+                unreachable!("dense helper call was classified above")
+            };
+            *target = new.to_string();
+            for relocation in &mut self.output.relocations {
+                if relocation.instruction_index == index
+                    && matches!(&relocation.target, RelocationTarget::External(name) if name == old)
+                {
+                    relocation.target = RelocationTarget::External(new.to_string());
+                }
+            }
+        }
+        self.callee_saved = required.to_vec();
+        Ok(true)
+    }
+
     fn insert_frame_instruction(&mut self, position: usize, instruction: Instruction) {
         self.output.instructions.insert(position, instruction);
         self.labels.inserted(position, 1);
@@ -204,5 +328,23 @@ impl Generator {
                 _ => {}
             }
         }
+    }
+}
+
+fn dense_suffix_first(registers: &[u8]) -> Option<u8> {
+    let &first = registers.last()?;
+    let expected: Vec<_> = (first..=31).rev().collect();
+    (registers == expected).then_some(first)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dense_suffix_first;
+
+    #[test]
+    fn dense_suffix_requires_every_register_through_r31() {
+        assert_eq!(dense_suffix_first(&[31, 30, 29, 28, 27, 26, 25]), Some(25));
+        assert_eq!(dense_suffix_first(&[31, 30, 28]), None);
+        assert_eq!(dense_suffix_first(&[]), None);
     }
 }
