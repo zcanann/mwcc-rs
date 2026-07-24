@@ -3,6 +3,29 @@
 use super::*;
 
 impl Generator {
+    /// Lower a one-term SDK assertion such as
+    /// `(void)(pointer != 0 || (report(...), 0))`.
+    pub(crate) fn try_emit_simple_discarded_assertion(
+        &mut self,
+        expression: &Expression,
+    ) -> Compilation<bool> {
+        let Some(shape) = SimpleDiscardedAssertion::recognize(expression) else {
+            return Ok(false);
+        };
+        let (false_options, condition_bit) = self.emit_condition_test(shape.condition)?;
+        let done = self.fresh_label();
+        self.emit_branch_conditional_to(false_options ^ 8, condition_bit, done);
+        let emitted_report =
+            self.try_emit_dense_frame_assertion_report(shape.name, shape.arguments)?
+                || self.try_emit_assertion_report_call(shape.name, shape.arguments)?;
+        if !emitted_report {
+            self.emit_call(shape.name, shape.arguments, None, false)?;
+        }
+        self.bind_label(done);
+        self.output.anonymous_label_bump += 3;
+        Ok(true)
+    }
+
     /// Dense saved frames expose the assertion's boolean temporary and branch
     /// schedule directly. The entry owner has already copied the tested
     /// parameter with record enabled, so this emits the remaining range test
@@ -438,6 +461,59 @@ struct DiscardedAssertion<'a> {
     right: &'a Expression,
     name: &'a str,
     arguments: &'a [Expression],
+}
+
+struct SimpleDiscardedAssertion<'a> {
+    condition: &'a Expression,
+    name: &'a str,
+    arguments: &'a [Expression],
+}
+
+impl<'a> SimpleDiscardedAssertion<'a> {
+    fn recognize(expression: &'a Expression) -> Option<Self> {
+        let Expression::Cast {
+            target_type: Type::Void,
+            operand,
+        } = expression
+        else {
+            return None;
+        };
+        let Expression::Binary {
+            operator: BinaryOperator::LogicalOr,
+            left: condition,
+            right: failure,
+        } = operand.as_ref()
+        else {
+            return None;
+        };
+        if matches!(
+            condition.as_ref(),
+            Expression::Binary {
+                operator: BinaryOperator::LogicalAnd,
+                ..
+            }
+        ) {
+            return None;
+        }
+        let Expression::Comma {
+            left: call,
+            right: discarded,
+        } = failure.as_ref()
+        else {
+            return None;
+        };
+        if constant_value(discarded) != Some(0) {
+            return None;
+        }
+        let Expression::Call { name, arguments } = call.as_ref() else {
+            return None;
+        };
+        Some(Self {
+            condition,
+            name,
+            arguments,
+        })
+    }
 }
 
 impl<'a> DiscardedAssertion<'a> {

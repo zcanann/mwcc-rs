@@ -8,8 +8,9 @@
 use super::{type_alignment, type_size};
 use crate::cxx_analysis_facts::inline_control_flow_labels;
 use crate::parser::{
-    Parser, StructField, StructLayout, StructTemplate, TemplateField, TemplateFieldType,
-    TemplateInstantiationKey, TemplateTypePattern,
+    ConcreteIteratorArrow, IteratorArrowAssertion, Parser, StructField, StructLayout,
+    StructTemplate, TemplateField, TemplateFieldType, TemplateInstantiationKey,
+    TemplateIteratorArrowSummary, TemplateTypePattern,
 };
 use mwcc_syntax_trees::{Expression, Pointee, Type};
 use mwcc_tokens::Token;
@@ -31,6 +32,143 @@ fn template_pointer_type(declared: Option<Type>) -> Type {
         Some(Type::Pointer(_) | Type::StructPointer { .. }) => Type::Pointer(Pointee::Pointer),
         Some(Type::Void) | None => Type::StructPointer { element_size: 0 },
     }
+}
+
+fn capture_template_pointer_conversion(
+    tokens: &[Token],
+    element: &str,
+    offset: &str,
+) -> Option<Option<IteratorArrowAssertion>> {
+    let mut cursor = 0usize;
+    while cursor + 10 <= tokens.len() {
+        let Some([
+            Token::Identifier(storage),
+            Token::Identifier(returned),
+            Token::Star,
+            Token::Identifier(_helper),
+            Token::ParenOpen,
+            Token::Identifier(_node),
+            Token::Star,
+            Token::Identifier(parameter),
+            Token::ParenClose,
+            Token::BraceOpen,
+        ]) = tokens.get(cursor..cursor + 10)
+        else {
+            cursor += 1;
+            continue;
+        };
+        if storage != "static" || returned != element {
+            cursor += 1;
+            continue;
+        }
+        let mut close = cursor + 10;
+        let mut depth = 1usize;
+        while close < tokens.len() && depth != 0 {
+            match tokens[close] {
+                Token::BraceOpen => depth += 1,
+                Token::BraceClose => depth -= 1,
+                _ => {}
+            }
+            close += 1;
+        }
+        if depth != 0 {
+            return None;
+        }
+        let body = &tokens[cursor + 10..close - 1];
+        if !body.windows(2).any(|window| {
+            window[0] == Token::Minus
+                && matches!(&window[1], Token::Identifier(name) if name == offset)
+        }) {
+            cursor = close;
+            continue;
+        }
+        return Some(capture_pointer_assertion(body, parameter));
+    }
+    None
+}
+
+fn capture_pointer_assertion(tokens: &[Token], parameter: &str) -> Option<IteratorArrowAssertion> {
+    for start in 0..tokens.len().saturating_sub(13) {
+        if !matches!(
+            tokens.get(start..start + 13),
+            Some([
+                Token::ParenOpen,
+                Token::KeywordVoid,
+                Token::ParenClose,
+                Token::ParenOpen,
+                Token::ParenOpen,
+                Token::ParenOpen,
+                Token::Identifier(tested),
+                Token::BangEqual,
+                Token::IntegerLiteral(0),
+                Token::ParenClose,
+                Token::ParenClose,
+                Token::PipePipe,
+                Token::ParenOpen,
+            ]) if tested == parameter
+        ) {
+            continue;
+        }
+        let qualified_start = start + 13;
+        let mut function_index = qualified_start;
+        while function_index + 1 < tokens.len() {
+            if matches!(tokens[function_index], Token::Identifier(_))
+                && tokens[function_index + 1] == Token::ParenOpen
+            {
+                break;
+            }
+            function_index += 1;
+        }
+        let Some([
+            Token::Identifier(function),
+            Token::ParenOpen,
+            Token::StringLiteral(file),
+            Token::Comma,
+            Token::IntegerLiteral(line),
+            Token::Comma,
+            Token::StringLiteral(message),
+            Token::ParenClose,
+            Token::Comma,
+            Token::IntegerLiteral(0),
+            Token::ParenClose,
+            Token::ParenClose,
+            Token::Semicolon,
+        ]) = tokens.get(function_index..function_index + 13)
+        else {
+            continue;
+        };
+        let qualified = &tokens[qualified_start..function_index];
+        let mut scopes = Vec::new();
+        let mut index = 0usize;
+        while index < qualified.len() {
+            let Token::Identifier(scope) = &qualified[index] else {
+                scopes.clear();
+                break;
+            };
+            scopes.push(scope.clone());
+            if index + 1 == qualified.len() {
+                break;
+            }
+            if qualified.get(index + 1) != Some(&Token::Colon)
+                || qualified.get(index + 2) != Some(&Token::Colon)
+            {
+                scopes.clear();
+                break;
+            }
+            index += 3;
+        }
+        if scopes.is_empty() {
+            continue;
+        }
+        return Some(IteratorArrowAssertion {
+            scope: scopes.join("::"),
+            function: function.clone(),
+            file: file.clone(),
+            line: *line,
+            message: message.clone(),
+        });
+    }
+    None
 }
 
 #[derive(Clone)]
@@ -285,7 +423,7 @@ impl Parser {
         template_name: &str,
         arguments: &[ResolvedTemplateType],
     ) {
-        let Some((nested, element_index, offset_index)) = self
+        let Some(summary) = self
             .template_iterator_arrow_summaries
             .get(template_name)
             .cloned()
@@ -293,27 +431,31 @@ impl Parser {
             return;
         };
         let Some(element) = arguments
-            .get(element_index)
+            .get(summary.element_index)
             .and_then(|argument| argument.tag.clone())
         else {
             return;
         };
         let Some(offset) = arguments
-            .get(offset_index)
+            .get(summary.offset_index)
             .and_then(|argument| argument.constant)
         else {
             return;
         };
         let Some(storage_offset) =
-            self.resolve_template_iterator_pointer_storage(template_name, &nested)
+            self.resolve_template_iterator_pointer_storage(template_name, &summary.nested)
         else {
             return;
         };
-        self.concrete_template_iterator_arrows
-            .insert(
-                format!("{instance}::{nested}"),
-                (element, offset, storage_offset),
-            );
+        self.concrete_template_iterator_arrows.insert(
+            format!("{instance}::{}", summary.nested),
+            ConcreteIteratorArrow {
+                element,
+                offset,
+                storage_offset,
+                assertion: summary.assertion,
+            },
+        );
     }
 
     fn register_concrete_template_iterator_step(&mut self, instance: &str, template_name: &str) {
@@ -1682,15 +1824,11 @@ impl Parser {
         }
         let element = &parameters[0];
         let offset = &parameters[1];
-        let subtracts_offset = self.tokens[body_start..body_end]
-            .windows(2)
-            .any(|tokens| {
-                tokens[0] == Token::Minus
-                    && matches!(&tokens[1], Token::Identifier(name) if name == offset)
-            });
-        if !subtracts_offset {
+        let Some(assertion) =
+            capture_template_pointer_conversion(&self.tokens[body_start..body_end], element, offset)
+        else {
             return;
-        }
+        };
         let mut cursor = body_start;
         while cursor + 3 < body_end {
             let nested = match self.tokens.get(cursor..cursor + 3) {
@@ -1728,8 +1866,15 @@ impl Parser {
                         && tokens[5] == Token::ParenClose
                 });
             if has_arrow {
-                self.template_iterator_arrow_summaries
-                    .insert(template_name.to_owned(), (nested, 0, 1));
+                self.template_iterator_arrow_summaries.insert(
+                    template_name.to_owned(),
+                    TemplateIteratorArrowSummary {
+                        nested,
+                        element_index: 0,
+                        offset_index: 1,
+                        assertion,
+                    },
+                );
                 return;
             }
             cursor = close;
@@ -1739,7 +1884,7 @@ impl Parser {
     pub(crate) fn resolve_concrete_template_iterator_arrow(
         &self,
         iterator: &str,
-    ) -> Option<(String, u32, u32)> {
+    ) -> Option<ConcreteIteratorArrow> {
         self.concrete_template_iterator_arrows.get(iterator).cloned()
     }
 

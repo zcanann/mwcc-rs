@@ -175,6 +175,31 @@ pub(crate) struct TemplateInstantiationKey {
     pub(crate) arguments: Vec<(Type, bool, Option<String>, Option<String>, Option<u32>)>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct IteratorArrowAssertion {
+    pub(crate) scope: String,
+    pub(crate) function: String,
+    pub(crate) file: Vec<u8>,
+    pub(crate) line: i64,
+    pub(crate) message: Vec<u8>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TemplateIteratorArrowSummary {
+    pub(crate) nested: String,
+    pub(crate) element_index: usize,
+    pub(crate) offset_index: usize,
+    pub(crate) assertion: Option<IteratorArrowAssertion>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ConcreteIteratorArrow {
+    pub(crate) element: String,
+    pub(crate) offset: u32,
+    pub(crate) storage_offset: u32,
+    pub(crate) assertion: Option<IteratorArrowAssertion>,
+}
+
 #[derive(Clone)]
 pub(crate) struct Parser {
     pub(crate) tokens: Vec<Token>,
@@ -257,10 +282,10 @@ pub(crate) struct Parser {
     /// `operator->` that subtracts one non-type offset argument from its node
     /// pointer. Value: `(nested iterator name, element arg, offset arg)`.
     pub(crate) template_iterator_arrow_summaries:
-        HashMap<String, (String, usize, usize)>,
+        HashMap<String, TemplateIteratorArrowSummary>,
     /// Concrete iterator identity -> `(element aggregate, node offset,
     /// pointer-storage offset)`.
-    pub(crate) concrete_template_iterator_arrows: HashMap<String, (String, u32, u32)>,
+    pub(crate) concrete_template_iterator_arrows: HashMap<String, ConcreteIteratorArrow>,
     /// Primary template -> nested iterator whose prefix increment is a
     /// source-proven forwarding step.
     pub(crate) template_iterator_step_summaries: HashMap<String, Vec<String>>,
