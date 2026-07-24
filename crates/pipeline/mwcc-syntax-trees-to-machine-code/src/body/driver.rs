@@ -2925,6 +2925,11 @@ impl Generator {
         if self.try_switch_call_return(function)? {
             return Ok(());
         }
+        // A leaf state machine commonly guards the entire update with an early
+        // return, then dispatches terminal case arms containing nested ifs.
+        if self.try_leading_return_statement_switch(function)? {
+            return Ok(());
+        }
         // A function whose body is a single `switch` lowers to the dispatch tree:
         // the comparisons, then the case bodies, then the default (the `default:`
         // arm if present, else the function's trailing `return`). The cases and

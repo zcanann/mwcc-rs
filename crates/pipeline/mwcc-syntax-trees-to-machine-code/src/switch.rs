@@ -34,6 +34,57 @@ enum Target {
 }
 
 impl Generator {
+    /// Emit `if (guard) return; switch (...)` for a leaf void function.
+    ///
+    /// The guard returns on its TRUE edge; the surviving fallthrough enters the
+    /// ordinary statement-switch dispatcher. Each case is terminal, so nested
+    /// if/else arms can use conditional returns instead of materializing join
+    /// blocks.
+    pub(crate) fn try_leading_return_statement_switch(
+        &mut self,
+        function: &mwcc_syntax_trees::Function,
+    ) -> Compilation<bool> {
+        let [
+            Statement::If {
+                condition,
+                then_body,
+                else_body,
+            },
+            Statement::Switch {
+                scrutinee,
+                arms,
+                default,
+            },
+        ] = function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        if function.return_type != Type::Void
+            || !function.locals.is_empty()
+            || !function.guards.is_empty()
+            || crate::analysis::function_makes_call(function)
+            || !else_body.is_empty()
+            || !matches!(then_body.as_slice(), [Statement::Return(None)])
+        {
+            return Ok(false);
+        }
+        let default_statements = match default {
+            Some(ArmBody::Statements(statements)) => Some(statements.as_slice()),
+            None => None,
+            Some(ArmBody::Return(_)) => return Ok(false),
+        };
+
+        let (options, condition_bit) = self.emit_condition_test(condition)?;
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalToLinkRegister {
+                options: options ^ 8,
+                condition_bit,
+            });
+        self.emit_statement_switch(scrutinee, arms, default_statements)?;
+        Ok(true)
+    }
+
     /// Emit a dense dispatcher whose arms all have the semantic form
     /// `result = callee(forwarded)`, then join at the statement immediately
     /// following the switch. Case bodies retain source order; table entries map
@@ -518,7 +569,7 @@ impl Generator {
             }
         }
 
-        // Each arm's statements, then `blr` (the `break` returns from the void function).
+        // Each arm is terminal: its `break` returns from the void function.
         let mut body_start = vec![0usize; sorted.len()];
         for arm in arms {
             let index = sorted_index_by_value[&arm.value];
@@ -526,24 +577,14 @@ impl Generator {
             let ArmBody::Statements(statements) = &arm.body else {
                 unreachable!()
             };
-            for statement in statements {
-                self.emit_statement(statement)?;
-            }
-            self.output
-                .instructions
-                .push(Instruction::BranchToLinkRegister);
+            self.emit_terminal_switch_block(statements)?;
         }
         // A `default:` arm becomes a trailing default block; without one, the out-of-range
         // branches return directly (rewritten below), so there is nothing to emit here.
         let default_start = match default_statements {
             Some(statements) => {
                 let start = self.output.instructions.len();
-                for statement in statements {
-                    self.emit_statement(statement)?;
-                }
-                self.output
-                    .instructions
-                    .push(Instruction::BranchToLinkRegister);
+                self.emit_terminal_switch_block(statements)?;
                 Some(start)
             }
             None => None,
@@ -590,6 +631,51 @@ impl Generator {
                 },
             }
         }
+        Ok(())
+    }
+
+    fn emit_terminal_switch_block(&mut self, statements: &[Statement]) -> Compilation<()> {
+        if let [Statement::If {
+            condition,
+            then_body,
+            else_body,
+        }] = statements
+        {
+            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            if else_body.is_empty() {
+                self.output
+                    .instructions
+                    .push(Instruction::BranchConditionalToLinkRegister {
+                        options,
+                        condition_bit,
+                    });
+                return self.emit_terminal_switch_block(then_body);
+            }
+
+            let branch_to_else = self.output.instructions.len();
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalForward {
+                    options,
+                    condition_bit,
+                    target: 0,
+                });
+            self.emit_terminal_switch_block(then_body)?;
+            let else_start = self.output.instructions.len();
+            if let Instruction::BranchConditionalForward { target, .. } =
+                &mut self.output.instructions[branch_to_else]
+            {
+                *target = else_start;
+            }
+            return self.emit_terminal_switch_block(else_body);
+        }
+
+        for statement in statements {
+            self.emit_statement(statement)?;
+        }
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         Ok(())
     }
 

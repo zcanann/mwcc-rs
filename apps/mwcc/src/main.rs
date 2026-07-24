@@ -2365,6 +2365,9 @@ mod tests {
     #[path = "float_conditions.rs"]
     mod float_conditions;
 
+    #[path = "terminal_switch.rs"]
+    mod terminal_switch;
+
     #[path = "inline_member_zero_fill.rs"]
     mod inline_member_zero_fill;
 

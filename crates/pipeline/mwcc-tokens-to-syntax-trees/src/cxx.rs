@@ -178,6 +178,19 @@ pub(crate) struct RecoveredCxxMethod {
     pub(crate) cxx_parameters: Vec<CxxParameterType>,
 }
 
+fn mangle_layout_member_method(
+    class: &str,
+    member: &str,
+    method: &MemberMethod,
+) -> Compilation<String> {
+    mangle_qualified_member_function_cv_typed(
+        &class.split("::").collect::<Vec<_>>(),
+        member,
+        &method.cxx_parameters,
+        method.is_const_member,
+    )
+}
+
 /// One entry in CodeWarrior's primary virtual table. Slot offsets include the
 /// two-word ABI header: the first callable entry is therefore byte offset 8.
 #[derive(Clone)]
@@ -2939,21 +2952,15 @@ impl Parser {
                     dispatch,
                     return_struct_tag: method.return_struct_tag.clone(),
                     this_adjustment: 0,
-                    direct_name: Some(mangle_qualified_member_function_typed(
-                        &class_name.split("::").collect::<Vec<_>>(),
-                        function,
-                        &method.cxx_parameters,
+                    direct_name: Some(mangle_layout_member_method(
+                        class_name, function, method,
                     )?),
                     direct_is_inline: method.is_inline,
                     parameters: method.parameters.clone(),
                 }));
             }
             return Ok(Some(ImplicitMemberCall::Direct {
-                name: mangle_qualified_member_function_typed(
-                    &class_name.split("::").collect::<Vec<_>>(),
-                    function,
-                    &method.cxx_parameters,
-                )?,
+                name: mangle_layout_member_method(class_name, function, method)?,
                 is_inline: method.is_inline,
                 this_adjustment: 0,
                 parameters: method.parameters.clone(),
@@ -3027,21 +3034,15 @@ impl Parser {
                     dispatch,
                     return_struct_tag: method.return_struct_tag.clone(),
                     this_adjustment,
-                    direct_name: Some(mangle_qualified_member_function_typed(
-                        &owner.split("::").collect::<Vec<_>>(),
-                        function,
-                        &method.cxx_parameters,
+                    direct_name: Some(mangle_layout_member_method(
+                        &owner, function, &method,
                     )?),
                     direct_is_inline: method.is_inline,
                     parameters: method.parameters.clone(),
                 }));
             }
             return Ok(Some(ImplicitMemberCall::Direct {
-                name: mangle_qualified_member_function_typed(
-                    &owner.split("::").collect::<Vec<_>>(),
-                    function,
-                    &method.cxx_parameters,
-                )?,
+                name: mangle_layout_member_method(&owner, function, &method)?,
                 is_inline: method.is_inline,
                 this_adjustment,
                 parameters: method.parameters.clone(),

@@ -86,7 +86,9 @@ impl Generator {
             Expression::Dereference { pointer } => self.emit_load_from_pointer(pointer, destination),
             Expression::Member { base, offset, member_type, index_stride } => self.emit_member_load(base, *offset, *member_type, *index_stride, destination),
             Expression::MemberAddress { .. } => Err(Diagnostic::error("an array address is not a float value")),
-            Expression::Assign { .. } => Err(Diagnostic::error("float assignment as an expression is not supported yet (roadmap)")),
+            Expression::Assign { target, value } => {
+                self.emit_float_assign(target, value, destination)
+            }
             Expression::Comma { left, right } => {
                 self.emit_comma_side_effect(left)?;
                 self.evaluate_float(right, destination)
@@ -611,12 +613,19 @@ impl Generator {
             if let Expression::FloatLiteral(value) = right {
                 // The standalone form works (the constant loads into the result
                 // register); as a sub-expression the outer operation reorders its
-                // operands depending on the constant-folded inner (a scheduler
-                // concern, Phase E), so defer rather than emit a non-matching order.
+                // operands depending on the constant-folded inner. When the
+                // outer expression already owns f0, keep the memory value there
+                // and allocate a distinct virtual for the literal.
                 if destination == FLOAT_SCRATCH {
-                    return Err(Diagnostic::error(
-                        "float load with constant needs a non-scratch destination (roadmap)",
-                    ));
+                    let literal = self.fresh_virtual_float();
+                    if matches!(operator, BinaryOperator::Subtract | BinaryOperator::Divide) {
+                        self.emit_located_operand(left, destination)?;
+                        self.load_float_literal(literal, *value, double);
+                        return Operands::ordered(destination, literal);
+                    }
+                    self.load_float_literal(literal, *value, double);
+                    self.emit_located_operand(left, destination)?;
+                    return Operands::ordered(literal, destination);
                 }
                 // A commutative op leads with the constant (into the dest), then the memory operand
                 // (scratch): `lfs/lfd f1,const; lfs/lfd f0,(p); op f1,f1,f0`. A non-commutative op
@@ -632,6 +641,24 @@ impl Generator {
                 }
                 return Operands::ordered(destination, FLOAT_SCRATCH);
             }
+            // Mirror the computed-left/located-right case below. Keep the
+            // direct memory value in its own virtual while the nested right
+            // subtree uses f0, then let the enclosing operation write its
+            // requested destination.
+            if matches!(
+                right,
+                Expression::Unary { .. }
+                    | Expression::Binary { .. }
+                    | Expression::Cast { .. }
+                    | Expression::Conditional { .. }
+                    | Expression::Assign { .. }
+                    | Expression::Comma { .. }
+            ) {
+                let located = self.fresh_virtual_float_preferring(1);
+                self.emit_located_operand(left, located)?;
+                self.evaluate_float(right, FLOAT_SCRATCH)?;
+                return Operands::ordered(located, FLOAT_SCRATCH);
+            }
             let right_register = self.float_register_of_leaf(right)?;
             self.emit_located_operand(left, FLOAT_SCRATCH)?;
             return Operands::ordered(FLOAT_SCRATCH, right_register);
@@ -639,9 +666,10 @@ impl Generator {
         if self.is_float_located(right) {
             if let Expression::FloatLiteral(value) = left {
                 if destination == FLOAT_SCRATCH {
-                    return Err(Diagnostic::error(
-                        "float load with constant needs a non-scratch destination (roadmap)",
-                    ));
+                    let literal = self.fresh_virtual_float();
+                    self.load_float_literal(literal, *value, double);
+                    self.emit_located_operand(right, destination)?;
+                    return Operands::ordered(literal, destination);
                 }
                 self.load_float_literal(destination, *value, double);
                 self.emit_located_operand(right, FLOAT_SCRATCH)?;

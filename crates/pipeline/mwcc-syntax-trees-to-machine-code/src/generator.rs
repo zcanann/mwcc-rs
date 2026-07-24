@@ -594,6 +594,9 @@ impl Generator {
                 operator: UnaryOperator::Negate,
                 operand,
             } => self.is_float_operand(operand),
+            Expression::Assign { target, value } => {
+                self.is_float_operand(target) || self.is_float_operand(value)
+            }
             Expression::Comma { right, .. } => self.is_float_operand(right),
             Expression::Conditional {
                 when_true,
