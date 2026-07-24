@@ -87,6 +87,7 @@ mod structured_inline_residue;
 mod structured_inline_assertion;
 mod structured_locals;
 mod structured_member_scale_schedule;
+mod structured_noncopy_packet_schedule;
 mod structured_liveness;
 mod structured_bitset_hint_schedule;
 mod structured_loop_lowering;

@@ -42,6 +42,7 @@ impl Generator {
         self.schedule_structured_guarded_ucode_packets();
         self.schedule_structured_tlut_packet();
         self.schedule_structured_copy_packets();
+        self.schedule_structured_noncopy_packet();
     }
 
     fn reuse_allocator_initialization_zero(&mut self, seed: usize, result: u8, zero: u8) {
