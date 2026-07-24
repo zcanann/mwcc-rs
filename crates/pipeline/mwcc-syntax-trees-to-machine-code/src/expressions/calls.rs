@@ -26,6 +26,11 @@ impl Generator {
     }
 
     pub(crate) fn emit_indirect_branch_and_link(&mut self, register: u8) {
+        // Caller-saved fixed-address bases do not survive a call. MWCC may
+        // deliberately retain one in a nonvolatile home for a sufficiently
+        // dense whole-function access pattern, but that is a frame-planning
+        // decision; the generic call-free cache must end here.
+        self.const_address_bases.clear();
         match self.behavior.frame_convention {
             FrameConvention::Predecrement => {
                 self.output
@@ -370,6 +375,7 @@ impl Generator {
                 .instructions
                 .push(Instruction::ConditionRegisterClear { d: 6 });
         }
+        self.const_address_bases.clear();
         self.record_relocation(RelocationKind::Rel24, name);
         self.output.instructions.push(Instruction::BranchAndLink {
             target: name.to_string(),

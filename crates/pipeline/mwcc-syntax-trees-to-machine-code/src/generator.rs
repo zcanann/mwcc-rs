@@ -305,11 +305,13 @@ pub(crate) struct Generator {
     pub(crate) condition_float_cache: ConditionFloatCache,
     /// Retained constant-address base, keyed by the materialized high half.
     ///
-    /// A fresh virtual lets liveness extend the base across every later access
-    /// with the same high half (and across intervening calls, which forces a
-    /// nonvolatile physical home). A different high half still needs MWCC's
-    /// multi-base look-ahead schedule and therefore defers. Zero-high accesses
-    /// use r0-as-zero directly and are not recorded.
+    /// A fresh virtual lets liveness extend the base across later accesses with
+    /// the same high half inside one call-free region. Calls invalidate the map:
+    /// retaining a base across them is a frame-cost decision that belongs in a
+    /// future whole-function planner, while the ordinary MWCC schedule
+    /// rematerializes it. A different high half still needs MWCC's multi-base
+    /// look-ahead schedule and therefore defers. Zero-high accesses use
+    /// r0-as-zero directly and are not recorded.
     pub(crate) const_address_bases: HashMap<i16, u8>,
     /// Set once a VARIABLE-index subscript store (`a[i] = v`, i not constant) has
     /// scaled its index through the r0 scratch. mwcc pre-scales the indices of
