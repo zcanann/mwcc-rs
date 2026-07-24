@@ -1420,21 +1420,21 @@ pub(crate) fn constant_value(expression: &Expression) -> Option<i64> {
             operator: UnaryOperator::BitNot,
             operand,
         } => constant_value(operand).map(|value| !value),
-        // Preserve casts that do not change the represented integer. This is
-        // enough to fold source-level `OSRoundUp32B(sizeof(pointer))` without
-        // guessing about narrowing, signed wrap, or pointer conversions.
+        // Apply MWCC's two's-complement integer conversion at the target width.
+        // This folds both ordinary narrowing and unsigned packet constants such
+        // as `(unsigned int)-1`, whose represented value is `0xffffffff`.
         Expression::Cast {
             target_type,
             operand,
         } => {
             let value = constant_value(operand)?;
             match target_type {
-                Type::Int if i32::try_from(value).is_ok() => Some(value),
-                Type::UnsignedInt if u32::try_from(value).is_ok() => Some(value),
-                Type::Short if i16::try_from(value).is_ok() => Some(value),
-                Type::UnsignedShort if u16::try_from(value).is_ok() => Some(value),
-                Type::Char if i8::try_from(value).is_ok() => Some(value),
-                Type::UnsignedChar if u8::try_from(value).is_ok() => Some(value),
+                Type::Int => Some(value as i32 as i64),
+                Type::UnsignedInt => Some(value as u32 as i64),
+                Type::Short => Some(value as i16 as i64),
+                Type::UnsignedShort => Some(value as u16 as i64),
+                Type::Char => Some(value as i8 as i64),
+                Type::UnsignedChar => Some(value as u8 as i64),
                 // C's null pointer constant remains the all-zero bit pattern
                 // after conversion to any object/function pointer type.
                 Type::Pointer(_) | Type::StructPointer { .. } if value == 0 => Some(0),
@@ -2142,6 +2142,24 @@ mod tests {
             operand: Box::new(Expression::IntegerLiteral(0)),
         };
         assert_eq!(constant_value(&null), Some(0));
+    }
+
+    #[test]
+    fn integer_constant_casts_apply_the_target_width() {
+        let cast = |target_type, value| Expression::Cast {
+            target_type,
+            operand: Box::new(Expression::IntegerLiteral(value)),
+        };
+        assert_eq!(
+            constant_value(&cast(Type::UnsignedInt, -1)),
+            Some(0xffff_ffff)
+        );
+        assert_eq!(constant_value(&cast(Type::Int, 0xffff_ffff)), Some(-1));
+        assert_eq!(
+            constant_value(&cast(Type::UnsignedShort, -1)),
+            Some(0xffff)
+        );
+        assert_eq!(constant_value(&cast(Type::Char, 0xff)), Some(-1));
     }
 
     #[test]
