@@ -344,8 +344,8 @@ impl CxxFunctionType {
 }
 
 impl CxxParameterType {
-    pub(crate) fn binds_scalar_rvalue_temporary(&self) -> bool {
-        self.is_reference
+    pub(crate) fn scalar_rvalue_temporary_type(&self) -> Option<Type> {
+        (self.is_reference
             && self.pointee_const
             && matches!(
                 self.source_type,
@@ -359,7 +359,8 @@ impl CxxParameterType {
                     | Type::UnsignedLongLong
                     | Type::Float
                     | Type::Double
-            )
+            ))
+        .then_some(self.source_type)
     }
 
     fn source_identity(&self) -> mwcc_syntax_trees::SourceTypeIdentity {

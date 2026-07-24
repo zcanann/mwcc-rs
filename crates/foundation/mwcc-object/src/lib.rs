@@ -176,6 +176,9 @@ pub struct DataObject<'a> {
     /// Compiler-assigned sparse `@N` identity for a frontend/optimizer data
     /// temporary. `None` denotes source data or an ordinary pooled literal.
     pub preassigned_anonymous_ordinal: Option<u32>,
+    /// Whether the preassigned identity establishes a floor for later
+    /// function-owned anonymous objects.
+    pub preassigned_ordinal_advances_counter: bool,
     /// `R_PPC_ADDR32` relocations this object's bytes carry — a pointer global
     /// initialized with the address of another symbol (`int *p = &g;`). Each patches
     /// 4 bytes at `offset` to `target + addend`.

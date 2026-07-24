@@ -1246,8 +1246,8 @@ impl Parser {
                     .trivial_class_temporary_constructions += 1;
             }
         }
-        let mut cxx_const_reference_parameter_positions =
-            std::collections::HashMap::<String, Vec<bool>>::new();
+        let mut cxx_const_reference_parameter_types =
+            std::collections::HashMap::<String, Vec<Option<Type>>>::new();
         let methods = self
             .cxx_free_functions
             .values()
@@ -1281,16 +1281,16 @@ impl Parser {
             let mut positions =
                 Vec::with_capacity(method.cxx_parameters.len() + usize::from(implicit_this));
             if implicit_this {
-                positions.push(false);
+                positions.push(None);
             }
             positions.extend(
                 method
                     .cxx_parameters
                     .iter()
-                    .map(crate::cxx::CxxParameterType::binds_scalar_rvalue_temporary),
+                    .map(crate::cxx::CxxParameterType::scalar_rvalue_temporary_type),
             );
-            if positions.iter().any(|position| *position) {
-                cxx_const_reference_parameter_positions.insert(method.mangled.clone(), positions);
+            if positions.iter().any(Option::is_some) {
+                cxx_const_reference_parameter_types.insert(method.mangled.clone(), positions);
             }
         }
         Ok(TranslationUnit {
@@ -1328,7 +1328,7 @@ impl Parser {
             global_destructor_inline_bump: self.global_destructor_inline_bump,
             function_inline_prebumps: std::mem::take(&mut self.function_inline_prebumps),
             cxx_inline_ordinal_facts: self.cxx_inline_ordinal_facts,
-            cxx_const_reference_parameter_positions,
+            cxx_const_reference_parameter_types,
             inline_expansion_facts: std::mem::take(&mut self.inline_expansion_facts),
             function_inline_string_symbols: std::mem::take(
                 &mut self.function_inline_string_symbols,

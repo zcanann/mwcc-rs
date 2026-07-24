@@ -64,9 +64,12 @@ pub struct DefinedGlobal {
     /// A compiler-created data temporary whose `@N` identity was assigned by
     /// frontend/optimizer analysis before ordinary emitted functions. Unlike a
     /// pooled literal, it does not merely consume one slot from the writer's
-    /// dense front-of-unit counter: the measured ordinal can be sparse and
-    /// therefore also establishes a floor for later anonymous objects.
+    /// dense front-of-unit counter: the measured ordinal can be sparse.
     pub preassigned_anonymous_ordinal: Option<u32>,
+    /// Whether this sparse identity also establishes the starting floor for
+    /// later function-owned anonymous objects. Analysis literals already
+    /// participate in the dense source-accounting stream and therefore do not.
+    pub preassigned_ordinal_advances_counter: bool,
     /// `ADDR32` data relocations the global's bytes carry (a pointer to a symbol).
     pub relocations: Vec<mwcc_object::DataRelocation>,
     /// Non-static functions defined before this object (source-order symbol interleaving).
@@ -249,6 +252,8 @@ pub fn assemble_object(
             force_active: global.force_active,
             is_explicit_zero: global.is_explicit_zero,
             preassigned_anonymous_ordinal: global.preassigned_anonymous_ordinal,
+            preassigned_ordinal_advances_counter: global
+                .preassigned_ordinal_advances_counter,
             relocations: global.relocations.clone(),
             non_static_functions_before: global.non_static_functions_before,
             functions_before: global.functions_before,

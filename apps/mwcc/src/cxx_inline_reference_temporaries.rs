@@ -8,105 +8,142 @@
 
 use mwcc_syntax_trees::{
     ArmBody, Expression, Function, GuardedReturn, LocalDeclaration, Statement, TranslationUnit,
+    Type,
 };
 use std::collections::{HashMap, HashSet};
 
-pub fn count(unit: &TranslationUnit) -> usize {
+#[derive(Debug, Default, PartialEq)]
+pub struct Analysis {
+    pub binding_count: usize,
+    /// Verified scalar images which old mwcceppc retains in initialized data
+    /// after discarding the inline body. Non-literal rvalues still contribute
+    /// to ordinal accounting but cannot be serialized from the retained IR.
+    pub materialized_float_words: Vec<u32>,
+}
+
+pub fn analyze(unit: &TranslationUnit) -> Analysis {
     let mut seen = HashSet::new();
     unit.skipped_inline_definitions
         .iter()
         .filter(|function| seen.insert(function.name.as_str()))
-        .map(|function| {
-            count_function(
-                function,
-                &unit.cxx_const_reference_parameter_positions,
-            )
-        })
+        .map(|function| analyze_function(function, &unit.cxx_const_reference_parameter_types))
         .sum()
 }
 
-fn count_function(function: &Function, bindings: &HashMap<String, Vec<bool>>) -> usize {
+impl std::ops::Add for Analysis {
+    type Output = Self;
+
+    fn add(mut self, other: Self) -> Self {
+        self.binding_count += other.binding_count;
+        self.materialized_float_words
+            .extend(other.materialized_float_words);
+        self
+    }
+}
+
+impl std::iter::Sum for Analysis {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::default(), std::ops::Add::add)
+    }
+}
+
+fn analyze_function(
+    function: &Function,
+    bindings: &HashMap<String, Vec<Option<Type>>>,
+) -> Analysis {
     function
         .locals
         .iter()
-        .map(|local| count_local(local, bindings))
-        .sum::<usize>()
+        .map(|local| analyze_local(local, bindings))
+        .sum::<Analysis>()
         + function
             .statements
             .iter()
-            .map(|statement| count_statement(statement, bindings))
-            .sum::<usize>()
+            .map(|statement| analyze_statement(statement, bindings))
+            .sum::<Analysis>()
         + function
             .guards
             .iter()
-            .map(|guard| count_guard(guard, bindings))
-            .sum::<usize>()
+            .map(|guard| analyze_guard(guard, bindings))
+            .sum::<Analysis>()
         + function
             .return_expression
             .as_ref()
-            .map_or(0, |expression| count_expression(expression, bindings))
+            .map_or_else(Analysis::default, |expression| {
+                analyze_expression(expression, bindings)
+            })
 }
 
-fn count_local(local: &LocalDeclaration, bindings: &HashMap<String, Vec<bool>>) -> usize {
+fn analyze_local(
+    local: &LocalDeclaration,
+    bindings: &HashMap<String, Vec<Option<Type>>>,
+) -> Analysis {
     local
         .initializer
         .as_ref()
-        .map_or(0, |expression| count_expression(expression, bindings))
+        .map_or_else(Analysis::default, |expression| {
+            analyze_expression(expression, bindings)
+        })
 }
 
-fn count_guard(guard: &GuardedReturn, bindings: &HashMap<String, Vec<bool>>) -> usize {
-    count_expression(&guard.condition, bindings) + count_expression(&guard.value, bindings)
+fn analyze_guard(guard: &GuardedReturn, bindings: &HashMap<String, Vec<Option<Type>>>) -> Analysis {
+    analyze_expression(&guard.condition, bindings) + analyze_expression(&guard.value, bindings)
 }
 
-fn count_arm(arm: &ArmBody, bindings: &HashMap<String, Vec<bool>>) -> usize {
+fn analyze_arm(arm: &ArmBody, bindings: &HashMap<String, Vec<Option<Type>>>) -> Analysis {
     match arm {
-        ArmBody::Return(expression) => count_expression(expression, bindings),
+        ArmBody::Return(expression) => analyze_expression(expression, bindings),
         ArmBody::Statements(statements) => statements
             .iter()
-            .map(|statement| count_statement(statement, bindings))
+            .map(|statement| analyze_statement(statement, bindings))
             .sum(),
     }
 }
 
-fn count_statement(statement: &Statement, bindings: &HashMap<String, Vec<bool>>) -> usize {
+fn analyze_statement(
+    statement: &Statement,
+    bindings: &HashMap<String, Vec<Option<Type>>>,
+) -> Analysis {
     match statement {
         Statement::Store { target, value } => {
-            count_expression(target, bindings) + count_expression(value, bindings)
+            analyze_expression(target, bindings) + analyze_expression(value, bindings)
         }
         Statement::Assign { value, .. } | Statement::Expression(value) => {
-            count_expression(value, bindings)
+            analyze_expression(value, bindings)
         }
         Statement::If {
             condition,
             then_body,
             else_body,
         } => {
-            count_expression(condition, bindings)
+            analyze_expression(condition, bindings)
                 + then_body
                     .iter()
-                    .map(|statement| count_statement(statement, bindings))
-                    .sum::<usize>()
+                    .map(|statement| analyze_statement(statement, bindings))
+                    .sum::<Analysis>()
                 + else_body
                     .iter()
-                    .map(|statement| count_statement(statement, bindings))
-                    .sum::<usize>()
+                    .map(|statement| analyze_statement(statement, bindings))
+                    .sum::<Analysis>()
         }
         Statement::Return(expression) => expression
             .as_ref()
-            .map_or(0, |expression| count_expression(expression, bindings)),
+            .map_or_else(Analysis::default, |expression| {
+                analyze_expression(expression, bindings)
+            }),
         Statement::Switch {
             scrutinee,
             arms,
             default,
         } => {
-            count_expression(scrutinee, bindings)
+            analyze_expression(scrutinee, bindings)
                 + arms
                     .iter()
-                    .map(|arm| count_arm(&arm.body, bindings))
-                    .sum::<usize>()
+                    .map(|arm| analyze_arm(&arm.body, bindings))
+                    .sum::<Analysis>()
                 + default
                     .as_ref()
-                    .map_or(0, |arm| count_arm(arm, bindings))
+                    .map_or_else(Analysis::default, |arm| analyze_arm(arm, bindings))
         }
         Statement::Loop {
             initializer,
@@ -117,43 +154,59 @@ fn count_statement(statement: &Statement, bindings: &HashMap<String, Vec<bool>>)
         } => {
             initializer
                 .as_ref()
-                .map_or(0, |expression| count_expression(expression, bindings))
+                .map_or_else(Analysis::default, |expression| {
+                    analyze_expression(expression, bindings)
+                })
                 + condition
                     .as_ref()
-                    .map_or(0, |expression| count_expression(expression, bindings))
-                + step
-                    .as_ref()
-                    .map_or(0, |expression| count_expression(expression, bindings))
+                    .map_or_else(Analysis::default, |expression| {
+                        analyze_expression(expression, bindings)
+                    })
+                + step.as_ref().map_or_else(Analysis::default, |expression| {
+                    analyze_expression(expression, bindings)
+                })
                 + body
                     .iter()
-                    .map(|statement| count_statement(statement, bindings))
-                    .sum::<usize>()
+                    .map(|statement| analyze_statement(statement, bindings))
+                    .sum::<Analysis>()
         }
-        Statement::Break
-        | Statement::Continue
-        | Statement::Goto(_)
-        | Statement::Label(_) => 0,
+        Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => {
+            Analysis::default()
+        }
     }
 }
 
-fn count_call_bindings(
+fn analyze_call_bindings(
     name: &str,
     arguments: &[Expression],
-    bindings: &HashMap<String, Vec<bool>>,
-) -> usize {
+    bindings: &HashMap<String, Vec<Option<Type>>>,
+) -> Analysis {
     let Some(mask) = bindings.get(name) else {
-        return 0;
+        return Analysis::default();
     };
-    let mask = if mask.len() == arguments.len() + 1 && mask.first() == Some(&false) {
+    let mask = if mask.len() == arguments.len() + 1 && mask.first() == Some(&None) {
         &mask[1..]
     } else {
         mask.as_slice()
     };
-    arguments
-        .iter()
-        .zip(mask)
-        .filter(|(argument, binds)| **binds && !is_lvalue(argument))
-        .count()
+    let mut analysis = Analysis::default();
+    for (argument, temporary_type) in arguments.iter().zip(mask) {
+        let Some(temporary_type) = temporary_type else {
+            continue;
+        };
+        if is_lvalue(argument) {
+            continue;
+        }
+        analysis.binding_count += 1;
+        if *temporary_type == Type::Float {
+            if let Expression::FloatLiteral(value) = argument {
+                analysis
+                    .materialized_float_words
+                    .push((*value as f32).to_bits());
+            }
+        }
+    }
+    analysis
 }
 
 fn is_lvalue(expression: &Expression) -> bool {
@@ -166,16 +219,19 @@ fn is_lvalue(expression: &Expression) -> bool {
     )
 }
 
-fn count_expression(expression: &Expression, bindings: &HashMap<String, Vec<bool>>) -> usize {
+fn analyze_expression(
+    expression: &Expression,
+    bindings: &HashMap<String, Vec<Option<Type>>>,
+) -> Analysis {
     match expression {
         Expression::IntegerLiteral(_)
         | Expression::FloatLiteral(_)
         | Expression::StringLiteral(_)
         | Expression::Variable(_)
-        | Expression::CompoundLiteral { .. } => 0,
+        | Expression::CompoundLiteral { .. } => Analysis::default(),
         Expression::AggregateLiteral(elements) => elements
             .iter()
-            .map(|element| count_expression(element, bindings))
+            .map(|element| analyze_expression(element, bindings))
             .sum(),
         Expression::Binary { left, right, .. }
         | Expression::Assign {
@@ -183,7 +239,7 @@ fn count_expression(expression: &Expression, bindings: &HashMap<String, Vec<bool
             value: right,
         }
         | Expression::Comma { left, right } => {
-            count_expression(left, bindings) + count_expression(right, bindings)
+            analyze_expression(left, bindings) + analyze_expression(right, bindings)
         }
         Expression::Unary { operand, .. }
         | Expression::Cast { operand, .. }
@@ -192,41 +248,41 @@ fn count_expression(expression: &Expression, bindings: &HashMap<String, Vec<bool
         | Expression::AddressOf { operand }
         | Expression::PostStep {
             target: operand, ..
-        } => count_expression(operand, bindings),
+        } => analyze_expression(operand, bindings),
         Expression::Conditional {
             condition,
             when_true,
             when_false,
             ..
         } => {
-            count_expression(condition, bindings)
-                + count_expression(when_true, bindings)
-                + count_expression(when_false, bindings)
+            analyze_expression(condition, bindings)
+                + analyze_expression(when_true, bindings)
+                + analyze_expression(when_false, bindings)
         }
         Expression::BitFieldRead {
             extracted, storage, ..
-        } => count_expression(extracted, bindings) + count_expression(storage, bindings),
+        } => analyze_expression(extracted, bindings) + analyze_expression(storage, bindings),
         Expression::Index { base, index } => {
-            count_expression(base, bindings) + count_expression(index, bindings)
+            analyze_expression(base, bindings) + analyze_expression(index, bindings)
         }
         Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
-            count_expression(base, bindings)
+            analyze_expression(base, bindings)
         }
         Expression::CallThrough { target, arguments } => {
-            count_expression(target, bindings)
+            analyze_expression(target, bindings)
                 + arguments
                     .iter()
-                    .map(|argument| count_expression(argument, bindings))
-                    .sum::<usize>()
+                    .map(|argument| analyze_expression(argument, bindings))
+                    .sum::<Analysis>()
         }
         Expression::VirtualCall {
             object, arguments, ..
         } => {
-            count_expression(object, bindings)
+            analyze_expression(object, bindings)
                 + arguments
                     .iter()
-                    .map(|argument| count_expression(argument, bindings))
-                    .sum::<usize>()
+                    .map(|argument| analyze_expression(argument, bindings))
+                    .sum::<Analysis>()
         }
         Expression::ConstructedNew {
             allocation,
@@ -234,19 +290,19 @@ fn count_expression(expression: &Expression, bindings: &HashMap<String, Vec<bool
             arguments,
             ..
         } => {
-            count_expression(allocation, bindings)
-                + count_call_bindings(constructor, arguments, bindings)
+            analyze_expression(allocation, bindings)
+                + analyze_call_bindings(constructor, arguments, bindings)
                 + arguments
                     .iter()
-                    .map(|argument| count_expression(argument, bindings))
-                    .sum::<usize>()
+                    .map(|argument| analyze_expression(argument, bindings))
+                    .sum::<Analysis>()
         }
         Expression::Call { name, arguments } => {
-            count_call_bindings(name, arguments, bindings)
+            analyze_call_bindings(name, arguments, bindings)
                 + arguments
                     .iter()
-                    .map(|argument| count_expression(argument, bindings))
-                    .sum::<usize>()
+                    .map(|argument| analyze_expression(argument, bindings))
+                    .sum::<Analysis>()
         }
     }
 }
@@ -260,7 +316,7 @@ mod tests {
     fn counts_only_rvalues_at_const_reference_positions() {
         let bindings = HashMap::from([(
             "set__1VFRCfRCf".to_string(),
-            vec![false, true, true],
+            vec![None, Some(Type::Float), Some(Type::Float)],
         )]);
         let expression = Expression::Call {
             name: "set__1VFRCfRCf".to_string(),
@@ -275,6 +331,31 @@ mod tests {
             ],
         };
 
-        assert_eq!(count_expression(&expression, &bindings), 1);
+        let analysis = analyze_expression(&expression, &bindings);
+        assert_eq!(analysis.binding_count, 1);
+        assert!(analysis.materialized_float_words.is_empty());
+    }
+
+    #[test]
+    fn retains_literal_float_images_in_argument_order() {
+        let bindings = HashMap::from([(
+            "set__1VFRCfRCf".to_string(),
+            vec![None, Some(Type::Float), Some(Type::Float)],
+        )]);
+        let expression = Expression::Call {
+            name: "set__1VFRCfRCf".to_string(),
+            arguments: vec![
+                Expression::Variable("this".to_string()),
+                Expression::FloatLiteral(0.0),
+                Expression::FloatLiteral(1.25),
+            ],
+        };
+
+        let analysis = analyze_expression(&expression, &bindings);
+        assert_eq!(analysis.binding_count, 2);
+        assert_eq!(
+            analysis.materialized_float_words,
+            vec![0.0f32.to_bits(), 1.25f32.to_bits()]
+        );
     }
 }

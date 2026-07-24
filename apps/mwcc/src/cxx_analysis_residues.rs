@@ -23,6 +23,55 @@ pub struct Capture {
     pub force_upfront_globals: &'static [&'static str],
 }
 
+/// Literal scalar-reference temporaries recovered without replacing the
+/// translation unit's ordinary aggregate ordinal model.
+pub struct LiteralTemporaries {
+    pub objects: Vec<DefinedGlobal>,
+    /// The generic analysis weight already charged every reference binding.
+    /// A retained literal consumes one real object slot instead, so callers
+    /// remove the excess from source-positioned declaration accounting.
+    pub declaration_bump_discount: usize,
+    /// A retained run created after earlier header analysis leaves one
+    /// constant-pool slot between each emitted function's string front and
+    /// numeric pool. A run at the initial counter has no such gap.
+    pub per_function_constant_bump: i32,
+}
+
+pub fn literal_float_temporaries(
+    words: &[u32],
+    initial_anonymous_counter: u8,
+    cxx_inline_bump: usize,
+    reference_binding_weight: u8,
+) -> Option<LiteralTemporaries> {
+    if words.is_empty() || reference_binding_weight == 0 {
+        return None;
+    }
+    let charged = words
+        .len()
+        .saturating_mul(usize::from(reference_binding_weight));
+    let first_ordinal = usize::from(initial_anonymous_counter)
+        .saturating_add(cxx_inline_bump)
+        .saturating_sub(charged)
+        .saturating_sub(1) as u32;
+    Some(LiteralTemporaries {
+        objects: words
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let mut object = word_object(first_ordinal + index as u32, *value);
+                object.preassigned_ordinal_advances_counter = false;
+                object
+            })
+            .collect(),
+        declaration_bump_discount: words
+            .len()
+            .saturating_mul(usize::from(reference_binding_weight.saturating_sub(1))),
+        per_function_constant_bump: i32::from(
+            first_ordinal > u32::from(initial_anonymous_counter).saturating_sub(1),
+        ),
+    })
+}
+
 /// Recognize a measured unit-level C++ analysis shape.
 ///
 /// The guard deliberately uses emitted semantic identities and the vtable
@@ -169,6 +218,7 @@ fn object(
         // creation order, not a source-written `= 0` initializer.
         is_explicit_zero,
         preassigned_anonymous_ordinal: Some(ordinal),
+        preassigned_ordinal_advances_counter: true,
         relocations: Vec::new(),
         non_static_functions_before: 0,
         functions_before: 0,
@@ -182,7 +232,7 @@ fn object(
 
 #[cfg(test)]
 mod tests {
-    use super::{word_object, zero_capture, zero_object};
+    use super::{literal_float_temporaries, word_object, zero_capture, zero_object};
 
     #[test]
     fn residue_objects_preserve_sparse_ordinals_and_storage_class() {
@@ -213,5 +263,28 @@ mod tests {
         );
         assert_eq!(capture.next_anonymous_ordinal, 16);
         assert!(capture.force_upfront_globals.is_empty());
+    }
+
+    #[test]
+    fn literal_temporaries_replace_weighted_bindings_with_data_words() {
+        let residues = literal_float_temporaries(&[0, 0, 0], 2, 102, 2).unwrap();
+        assert_eq!(
+            residues
+                .objects
+                .iter()
+                .map(|object| object.name.as_str())
+                .collect::<Vec<_>>(),
+            ["@97", "@98", "@99"]
+        );
+        assert_eq!(residues.declaration_bump_discount, 3);
+        assert_eq!(residues.per_function_constant_bump, 1);
+        assert!(residues
+            .objects
+            .iter()
+            .all(|object| object.initial_bytes == Some(vec![0, 0, 0, 0])));
+        assert!(residues
+            .objects
+            .iter()
+            .all(|object| !object.preassigned_ordinal_advances_counter));
     }
 }

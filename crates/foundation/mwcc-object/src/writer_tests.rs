@@ -144,6 +144,7 @@ fn leading_pure_vtable_slot_defers_defined_function_symbols() {
         force_active: false,
         is_explicit_zero: false,
         preassigned_anonymous_ordinal: None,
+        preassigned_ordinal_advances_counter: false,
         relocations: vec![crate::DataRelocation {
             offset: 12,
             target: "read__8AbstractFv".into(),
@@ -190,6 +191,7 @@ fn deferred_weak_vtable_waits_for_its_function_reference() {
         force_active: false,
         is_explicit_zero: false,
         preassigned_anonymous_ordinal: None,
+        preassigned_ordinal_advances_counter: false,
         relocations: Vec::new(),
         non_static_functions_before: 0,
         functions_before: 0,
@@ -223,6 +225,7 @@ fn grouped_debug_data_relocations_restore_source_declaration_order() {
             force_active: false,
             is_explicit_zero: false,
             preassigned_anonymous_ordinal: None,
+            preassigned_ordinal_advances_counter: false,
             relocations: Vec::new(),
             non_static_functions_before: 1,
             functions_before: 1,
@@ -243,6 +246,7 @@ fn grouped_debug_data_relocations_restore_source_declaration_order() {
             force_active: false,
             is_explicit_zero: false,
             preassigned_anonymous_ordinal: None,
+            preassigned_ordinal_advances_counter: false,
             relocations: vec![crate::DataRelocation {
                 offset: 0,
                 target: "__vt__8Inline".into(),
@@ -352,6 +356,7 @@ fn data_anchor_precedes_the_first_upfront_local_data_object() {
             force_active: false,
             is_explicit_zero: false,
             preassigned_anonymous_ordinal: None,
+            preassigned_ordinal_advances_counter: false,
             relocations: Vec::new(),
             non_static_functions_before: 0,
             functions_before: 0,
@@ -372,6 +377,7 @@ fn data_anchor_precedes_the_first_upfront_local_data_object() {
             force_active: false,
             is_explicit_zero: false,
             preassigned_anonymous_ordinal: None,
+            preassigned_ordinal_advances_counter: false,
             relocations: Vec::new(),
             non_static_functions_before: 0,
             functions_before: 0,
@@ -392,6 +398,7 @@ fn data_anchor_precedes_the_first_upfront_local_data_object() {
             force_active: false,
             is_explicit_zero: false,
             preassigned_anonymous_ordinal: None,
+            preassigned_ordinal_advances_counter: false,
             relocations: vec![crate::DataRelocation {
                 offset: 0,
                 target: "full".into(),
@@ -464,6 +471,7 @@ fn const_pointer_arrays_emit_reverse_rodata_relocations() {
             force_active: false,
             is_explicit_zero: false,
             preassigned_anonymous_ordinal: None,
+            preassigned_ordinal_advances_counter: false,
             relocations: Vec::new(),
             non_static_functions_before: 0,
             functions_before: 0,
@@ -484,6 +492,7 @@ fn const_pointer_arrays_emit_reverse_rodata_relocations() {
             force_active: false,
             is_explicit_zero: false,
             preassigned_anonymous_ordinal: None,
+            preassigned_ordinal_advances_counter: false,
             relocations: vec![
                 crate::DataRelocation {
                     offset: 0,

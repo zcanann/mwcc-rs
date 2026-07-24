@@ -1059,8 +1059,10 @@ fn compile(
         config.flags.read_only_global_addressing == mwcc_versions::GlobalAddressing::SmallData;
     let mut static_local_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
     let cxx_inline_facts = unit.cxx_inline_ordinal_facts;
+    let cxx_reference_temporary_analysis =
+        cxx_inline_reference_temporaries::analyze(&unit);
     let cxx_reference_bound_scalar_temporaries =
-        cxx_inline_reference_temporaries::count(&unit);
+        cxx_reference_temporary_analysis.binding_count;
     if diagnose_syntax_tree {
         eprintln!(
             "cxx-reference-bound-scalar-temporaries \
@@ -1109,6 +1111,19 @@ fn compile(
             )
         })
         .flatten();
+    let cxx_literal_temporaries = (cxx_analysis_residues.is_none())
+        .then(|| {
+            cxx_analysis_residues::literal_float_temporaries(
+                &cxx_reference_temporary_analysis.materialized_float_words,
+                config.build.initial_anonymous_counter,
+                cxx_inline_bump,
+                behavior.cxx_reference_bound_scalar_temporary_label_bump,
+            )
+        })
+        .flatten();
+    let literal_temporary_bump_discount = cxx_literal_temporaries
+        .as_ref()
+        .map_or(0, |residues| residues.declaration_bump_discount);
     let prototype_name_bump = if config
         .build
         .profile
@@ -1124,12 +1139,14 @@ fn compile(
         // charge the same analysis a second time before emitted functions.
         0
     } else {
-        cxx_inline_bump + prototype_name_bump
+        cxx_inline_bump
+            .saturating_sub(literal_temporary_bump_discount)
+            + prototype_name_bump
     };
     let cxx_rtti_prior_declaration_bump = if cxx_analysis_residues.is_some() {
         0
     } else {
-        unit.skipped_inline_functions
+        (unit.skipped_inline_functions
             + cxx_inline_facts.inline_definitions
                 * usize::from(behavior.cxx_rtti_inline_definition_label_bump)
             + cxx_inline_facts.control_flow_labels
@@ -1152,7 +1169,8 @@ fn compile(
                 * usize::from(behavior.cxx_virtual_destructor_label_bump)
             + cxx_inline_facts.direct_calls
                 * usize::from(behavior.cxx_inline_ipa_call_label_bump)
-            + prototype_name_bump
+            + prototype_name_bump)
+            .saturating_sub(literal_temporary_bump_discount)
     };
     // Static-local positional samples currently track skipped-inline cost.
     // Prototype-name provenance is unit-wide but not yet sampled at each local
@@ -1187,6 +1205,7 @@ fn compile(
                 is_static: true,
                 is_explicit_zero: false,
                 preassigned_anonymous_ordinal: None,
+                preassigned_ordinal_advances_counter: false,
                 relocations: local
                     .relocations
                     .iter()
@@ -1211,6 +1230,11 @@ fn compile(
     } else {
         0
     };
+    if let Some(residues) = &cxx_literal_temporaries {
+        for function in &mut machine_functions {
+            function.constant_number_adjust += residues.per_function_constant_bump;
+        }
+    }
     if diagnose_syntax_tree {
         eprintln!("leading-source-ordinal-bump {leading_source_ordinal_bump}");
         for function in &machine_functions {
@@ -1298,6 +1322,9 @@ fn compile(
         .map_or(&[][..], |capture| capture.force_upfront_globals);
     let mut defined_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> =
         cxx_analysis_residues.map_or_else(Vec::new, |capture| capture.objects);
+    if let Some(residues) = cxx_literal_temporaries {
+        defined_globals.extend(residues.objects);
+    }
     // Distinct pooled string literals, by bytes, to their anonymous `@N` name, and
     // the running `@N` counter — deduplicated across the unit (mwcc `-str reuse`).
     let mut string_pool: std::collections::HashMap<Vec<u8>, String> =
@@ -1510,6 +1537,7 @@ fn compile(
                                         (leading_source_ordinal_bump != 0).then_some(
                                             leading_source_ordinal_bump + string_counter,
                                         ),
+                                    preassigned_ordinal_advances_counter: true,
                                     relocations: Vec::new(),
                                 });
                                 name
@@ -1558,6 +1586,7 @@ fn compile(
                         || owned_string_table),
                 is_explicit_zero,
                 preassigned_anonymous_ordinal: None,
+                preassigned_ordinal_advances_counter: false,
                 relocations,
                 section: global.section.clone(),
             });
@@ -1635,6 +1664,7 @@ fn compile(
                     is_static: global.is_static,
                     is_explicit_zero: false,
                     preassigned_anonymous_ordinal: None,
+                    preassigned_ordinal_advances_counter: false,
                     relocations: Vec::new(),
                 });
                 continue;
@@ -1671,6 +1701,7 @@ fn compile(
                 is_static: global.is_static,
                 is_explicit_zero: false,
                 preassigned_anonymous_ordinal: None,
+                preassigned_ordinal_advances_counter: false,
                 relocations: Vec::new(),
             });
             continue;
@@ -1742,6 +1773,7 @@ fn compile(
             is_static: global.is_static,
             is_explicit_zero,
             preassigned_anonymous_ordinal: None,
+            preassigned_ordinal_advances_counter: false,
             relocations: global
                 .data_relocations
                 .iter()
@@ -1788,6 +1820,7 @@ fn compile(
                                             preassigned_anonymous_ordinal:
                                                 (leading_source_ordinal_bump != 0)
                                                     .then_some(ordinal),
+                                            preassigned_ordinal_advances_counter: true,
                                             relocations: Vec::new(),
                                         },
                                     );
@@ -1895,6 +1928,7 @@ fn compile(
                 is_static: true,
                 is_explicit_zero: false,
                 preassigned_anonymous_ordinal: None,
+                preassigned_ordinal_advances_counter: false,
                 relocations: Vec::new(),
             });
             names
@@ -1932,6 +1966,7 @@ fn compile(
                                     is_static: false,
                                     is_explicit_zero: false,
                                     preassigned_anonymous_ordinal: None,
+                                    preassigned_ordinal_advances_counter: false,
                                     relocations: Vec::new(),
                                 },
                             );
@@ -1968,6 +2003,7 @@ fn compile(
                         is_static: true,
                         is_explicit_zero: false,
                         preassigned_anonymous_ordinal: None,
+                        preassigned_ordinal_advances_counter: false,
                         relocations: Vec::new(),
                     });
                     name

@@ -733,6 +733,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let sparse_counter_floor = input
         .data_objects
         .iter()
+        .filter(|object| object.preassigned_ordinal_advances_counter)
         .filter_map(|object| object.preassigned_anonymous_ordinal)
         .max()
         .map_or(0, |ordinal| ordinal + 1);

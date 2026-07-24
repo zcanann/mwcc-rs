@@ -399,11 +399,13 @@ pub struct TranslationUnit {
     /// Structural facts for version-specific C++ inline ordinal accounting.
     pub cxx_inline_ordinal_facts: CxxInlineOrdinalFacts,
     /// Direct-call parameter positions which bind scalar rvalues to const
-    /// references, keyed by the resolved ABI function name. Instance methods
-    /// include a leading `false` entry for their implicit `this` argument so
-    /// the mask aligns with [`Expression::Call`] arguments.
-    pub cxx_const_reference_parameter_positions:
-        std::collections::HashMap<String, Vec<bool>>,
+    /// references, keyed by the resolved ABI function name. The source scalar
+    /// type is retained because discarded-inline analysis may materialize the
+    /// temporary's exact data image. Instance methods include a leading `None`
+    /// entry for their implicit `this` argument so the mask aligns with
+    /// [`Expression::Call`] arguments.
+    pub cxx_const_reference_parameter_types:
+        std::collections::HashMap<String, Vec<Option<Type>>>,
     /// Inline-substitution provenance keyed by emitted function name.
     pub inline_expansion_facts: std::collections::HashMap<String, InlineExpansionFacts>,
     /// String identities recovered while source-level inline semantics are
