@@ -59,6 +59,7 @@ mod result_call_forward;
 mod saved_pointer_zero_test_schedule;
 mod shared_global_float_pair_schedule;
 mod structured;
+mod structured_allocator_cursor_schedule;
 mod structured_leaf;
 mod structured_call_schedule;
 mod structured_condition_schedule;

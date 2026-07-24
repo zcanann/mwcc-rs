@@ -1356,6 +1356,9 @@ impl Generator {
             .filter_map(|local| self.frame_slots.get(&local.name).map(|slot| slot.offset))
             .collect();
         self.forward_adjacent_frame_scalar_values(&forwardable_frame_scalar_offsets);
+        if !allocator_cursor_preferences.is_empty() {
+            self.schedule_allocator_cursor_entry();
+        }
         self.schedule_structured_entry_zero_store(function);
         self.schedule_structured_shared_member_arguments(function);
         self.schedule_repeated_member_address_call_guards();
