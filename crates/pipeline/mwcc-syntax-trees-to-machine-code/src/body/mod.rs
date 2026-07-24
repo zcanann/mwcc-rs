@@ -17,6 +17,7 @@ mod joystick_count_schedule;
 mod grab_mash_schedule;
 mod mixed_member_zero_reset_schedule;
 mod one_word_aggregate;
+mod canonical_boolean;
 mod symmetric_float_clamp;
 mod symmetric_sum_clamp_schedule;
 mod structured_float_or_schedule;
@@ -133,6 +134,7 @@ pub(crate) use local_select::{
     summarize_unoptimized_local_select, UnoptimizedLocalSelectSummary,
 };
 pub(crate) use one_word_aggregate::source_proven_one_word_aggregate_locals;
+pub(crate) use canonical_boolean::source_proven_canonical_boolean_locals;
 #[allow(unused_imports)]
 pub(crate) use passes::*;
 

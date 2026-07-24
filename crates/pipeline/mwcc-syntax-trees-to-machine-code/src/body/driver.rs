@@ -12,6 +12,8 @@ impl Generator {
             .collect();
         self.one_word_aggregate_locals
             .extend(source_proven_one_word_aggregate_locals(function));
+        self.canonical_boolean_locals
+            .extend(source_proven_canonical_boolean_locals(function));
         // Every aggregate result uses the EABI caller-provided address in r3,
         // including four-byte C++ wrapper classes. Source parameters begin in
         // r4; the result address is not represented as a source Parameter.

@@ -462,7 +462,13 @@ impl Generator {
                         return Err(Diagnostic::error(format!("'{name}' is not an integer")));
                     }
                     let (source, width, signed) = (location.register, location.width, location.signed);
-                    self.emit_widen(destination, source, width, signed);
+                    if self.canonical_boolean_locals.contains(name) {
+                        self.output
+                            .instructions
+                            .push(Instruction::move_register(destination, source));
+                    } else {
+                        self.emit_widen(destination, source, width, signed);
+                    }
                     Ok(())
                 } else if let Some(total_size) =
                     self.global_array_address_extent(name.as_str())

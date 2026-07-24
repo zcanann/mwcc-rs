@@ -403,6 +403,9 @@ pub(crate) struct Generator {
     /// C++ aggregate locals whose source-proven endpoint construction exposes
     /// their complete runtime representation as one word.
     pub(crate) one_word_aggregate_locals: std::collections::HashSet<String>,
+    /// Narrow register locals whose every source assignment writes a complete
+    /// 32-bit canonical boolean value (`0` or `1`).
+    pub(crate) canonical_boolean_locals: std::collections::HashSet<String>,
     /// Large assertion strings whose address high halves remain live in saved
     /// registers across a structured loop.
     pub(crate) loop_assertion_string_highs: Vec<(Vec<u8>, u8)>,
