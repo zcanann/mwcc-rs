@@ -115,6 +115,7 @@ mod store_fill;
 mod store_return_schedule;
 mod stored_guarded_global_callback;
 mod shared_float_store_literal;
+mod shared_mask_word;
 mod switch_assignment_call_tail;
 mod switch_call_dispatcher;
 mod switch_call_return;

@@ -1222,6 +1222,14 @@ impl Generator {
         if let Some(hoisted) = self.hoist_order_independent_leading_guards(function) {
             return self.evaluate_body(&hoisted);
         }
+        // Adjacent boolean masks of one non-volatile flags member share the
+        // source word. Materialize it before assignment normalization so the
+        // ordinary structured allocator can see its full two-statement life.
+        if let Some(materialized) =
+            super::shared_mask_word::materialize_leading_shared_mask_word(function)
+        {
+            return self.evaluate_body(&materialized);
+        }
         // C89 fdlibm locals (`double z; z = x*x;`) normalize into
         // initializers for the float paths, alternating with the guard
         // hoist through this recursion.
