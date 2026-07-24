@@ -2498,6 +2498,9 @@ mod tests {
     #[path = "call_indexed_member.rs"]
     mod call_indexed_member;
 
+    #[path = "call_indexed_global_array.rs"]
+    mod call_indexed_global_array;
+
     #[path = "call_argument_schedules.rs"]
     mod call_argument_schedules;
 

@@ -5,6 +5,101 @@ use super::*;
 use super::members::split_scaled_index;
 
 impl Generator {
+    /// Load `array[call()]` under the legacy explicit-address policy.
+    ///
+    /// The call result remains in r3 and becomes the completed element
+    /// address. MWCC overlaps the independent high-half materialization with
+    /// scaling, stages the relocated low half through r0, and then loads from
+    /// offset zero. An unsigned narrow return fuses its ABI normalization with
+    /// the scale (`u8 << 2` becomes one `rlwinm`).
+    pub(crate) fn try_emit_legacy_call_indexed_global_array_load(
+        &mut self,
+        name: &str,
+        total_size: u32,
+        pointee: Pointee,
+        index: &Expression,
+        destination: u8,
+    ) -> Compilation<bool> {
+        let Expression::Call {
+            name: call,
+            arguments,
+        } = index
+        else {
+            return Ok(false);
+        };
+        if !arguments.is_empty()
+            || self.globals.contains_key(call)
+            || self.locations.contains_key(call)
+            || self.known_locals.contains(call)
+            || self.behavior.global_array_index_style
+                != mwcc_versions::GlobalArrayIndexStyle::ExplicitAddress
+            || (self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8)
+            || matches!(
+                pointee,
+                Pointee::Float
+                    | Pointee::Double
+                    | Pointee::LongLong
+                    | Pointee::UnsignedLongLong
+            )
+            || !pointee.size().is_power_of_two()
+        {
+            return Ok(false);
+        }
+        let Some(return_type) = self.call_return_types.get(call).copied() else {
+            return Ok(false);
+        };
+        if !matches!(
+            return_type,
+            Type::Int | Type::UnsignedInt | Type::UnsignedChar | Type::UnsignedShort
+        ) {
+            return Ok(false);
+        }
+
+        let index_register = Eabi::general_result().number;
+        self.evaluate_general(index, index_register)?;
+        let high = self.fresh_virtual_general_preferring(4);
+        self.emit_address_high(high, name);
+        let shift = pointee.size().trailing_zeros() as u8;
+        match return_type {
+            Type::UnsignedChar | Type::UnsignedShort => {
+                let width = return_type.width();
+                self.output.instructions.push(Instruction::RotateAndMask {
+                    a: index_register,
+                    s: index_register,
+                    shift,
+                    begin: 32 - width - shift,
+                    end: 31 - shift,
+                });
+            }
+            _ => self
+                .output
+                .instructions
+                .push(Instruction::ShiftLeftImmediate {
+                    a: index_register,
+                    s: index_register,
+                    shift,
+                }),
+        }
+        self.record_relocation(RelocationKind::Addr16Lo, name);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: GENERAL_SCRATCH,
+            a: high,
+            immediate: 0,
+        });
+        self.output.instructions.push(Instruction::Add {
+            d: index_register,
+            a: GENERAL_SCRATCH,
+            b: index_register,
+        });
+        self.output.instructions.push(displacement_load(
+            pointee,
+            destination,
+            index_register,
+            0,
+        )?);
+        Ok(true)
+    }
+
     /// Materialize `&array[index]` in r0 for a store RHS.
     ///
     /// `addi r0,r0,lo` cannot carry an address because rA=0 denotes literal
