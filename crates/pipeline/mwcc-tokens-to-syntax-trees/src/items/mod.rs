@@ -1304,6 +1304,7 @@ impl Parser {
             global_aggregate_tags: std::mem::take(&mut self.global_structs),
             global_function_types: std::mem::take(&mut self.global_function_types),
             function_parameter_aggregate_tags: std::mem::take(&mut self.function_parameter_structs),
+            function_local_aggregate_tags: std::mem::take(&mut self.function_local_structs),
             function_return_aggregate_tags: std::mem::take(&mut self.function_return_structs),
             function_return_enumeration_tags: std::mem::take(
                 &mut self.function_return_enums,
@@ -4468,6 +4469,7 @@ impl Parser {
         parameters: Vec<Parameter>,
         cxx_reference_parameters: std::collections::HashSet<String>,
     ) -> Compilation<Function> {
+        let debug_function_name = name.clone();
         self.inline_substitution_count = 0;
         self.current_inline_string_symbols.clear();
         self.current_leaf_statement_lines.clear();
@@ -4701,6 +4703,10 @@ impl Parser {
                 let name = self.parse_identifier()?;
                 if let Some(tag) = &struct_tag {
                     self.variable_structs.insert(name.clone(), tag.clone());
+                    self.function_local_structs.insert(
+                        (debug_function_name.clone(), name.clone()),
+                        tag.clone(),
+                    );
                 }
                 // A class-typed function-local static is dynamically
                 // initialized on first passage, even when its constructor

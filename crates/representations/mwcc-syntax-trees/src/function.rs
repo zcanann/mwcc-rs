@@ -351,6 +351,11 @@ pub struct TranslationUnit {
     /// resolved pointer width/stride; legacy DWARF needs the declaration graph.
     pub function_parameter_aggregate_tags:
         std::collections::HashMap<(String, String), String>,
+    /// Source aggregate identity for each function-local declaration, keyed by
+    /// function and local name. Executable lowering deliberately keeps only a
+    /// struct's size/alignment; debug lowering needs the declaration graph.
+    pub function_local_aggregate_tags:
+        std::collections::HashMap<(String, String), String>,
     /// Source aggregate identity for each struct-returning function. The
     /// compact return [`Type`] retains ABI size/alignment; hidden-result
     /// lowering uses this parallel tag to copy fields with their real scalar

@@ -308,6 +308,7 @@ pub fn parse_located_translation_unit_with_behavior(
         global_types: HashMap::new(),
         global_function_types: HashMap::new(),
         function_parameter_structs: HashMap::new(),
+        function_local_structs: HashMap::new(),
         last_struct_tag: None,
         last_enum_tag: None,
         last_type_was_wchar: false,
@@ -7189,6 +7190,33 @@ blr\n\
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn retains_function_local_aggregate_identity_for_debug_info() {
+        let source = r#"
+            typedef struct Color {
+                unsigned char r, g, b, a;
+            } Color;
+            void paint(void) {
+                Color foreground = { 1, 2, 3, 4 };
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.function_local_aggregate_tags
+                .get(&("paint".into(), "foreground".into()))
+                .map(String::as_str),
+            Some("Color")
+        );
     }
 
     #[test]

@@ -463,6 +463,9 @@ pub(crate) struct Parser {
     /// Function/parameter source aggregate identities retained for debug-info
     /// lowering after the executable type has collapsed to a sized pointer.
     pub(crate) function_parameter_structs: HashMap<(String, String), String>,
+    /// Function/local source aggregate identities retained for debug-info
+    /// lowering after executable lowering keeps only size and alignment.
+    pub(crate) function_local_structs: HashMap<(String, String), String>,
     /// In-scope variables (parameters and scalar locals) mapped to their declared type, so
     /// `sizeof(var)` folds to a constant. Cleared per function in `function_body`.
     pub(crate) variable_types: HashMap<String, Type>,
