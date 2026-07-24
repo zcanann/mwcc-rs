@@ -1636,7 +1636,18 @@ impl Parser {
             if param_codes.is_empty() {
                 param_codes.push('v');
             }
-            name = format!("{name}__F{param_codes}");
+            let namespace_scopes = self
+                .namespace_stack
+                .iter()
+                .filter(|scope| !scope.is_empty())
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            name = if namespace_scopes.is_empty() {
+                format!("{name}__F{param_codes}")
+            } else {
+                let namespace = crate::cxx::encode_qualified_scope(&namespace_scopes)?;
+                format!("{name}__{namespace}F{param_codes}")
+            };
         }
         let mut statics = Vec::new();
         let mut braces = 0i32;
