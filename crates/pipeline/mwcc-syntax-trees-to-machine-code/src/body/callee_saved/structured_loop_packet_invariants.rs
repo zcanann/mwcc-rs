@@ -308,9 +308,21 @@ fn hoist_loop_words(
             _ => statement.clone(),
         })
         .collect();
-    let body = name_dynamic_shallow_fragments(&body, &written, used_names, declarations, next_name);
+    let (body, dynamic_changed) =
+        name_dynamic_shallow_fragments(&body, &written, used_names, declarations, next_name);
+    let (body, zero_changed) = if super::structured_loop_packet_zero::has_repeated_zero_words(&body)
+    {
+        let name = fresh_name(used_names, next_name);
+        declarations.push(unsigned_local(&name));
+        (
+            super::structured_loop_packet_zero::rewrite(&body, &name),
+            true,
+        )
+    } else {
+        (body, false)
+    };
     let changed = !prefix.is_empty();
-    (prefix, body.0, changed || body.1)
+    (prefix, body, changed || dynamic_changed || zero_changed)
 }
 
 fn repeated_invariant_subexpressions<'a>(fragments: &[&'a Expression]) -> Vec<&'a Expression> {
