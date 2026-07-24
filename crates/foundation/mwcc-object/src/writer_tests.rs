@@ -236,14 +236,18 @@ fn grouped_debug_data_relocations_restore_source_declaration_order() {
             size: 4,
             alignment: 4,
             comment_alignment: 4,
-            initial_bytes: None,
+            initial_bytes: Some(vec![0; 4]),
             is_const: false,
             force_full_data_section: false,
             is_static: false,
             force_active: false,
             is_explicit_zero: false,
             preassigned_anonymous_ordinal: None,
-            relocations: Vec::new(),
+            relocations: vec![crate::DataRelocation {
+                offset: 0,
+                target: "__vt__8Inline".into(),
+                addend: 0,
+            }],
             non_static_functions_before: 0,
             functions_before: 0,
             is_weak: false,
@@ -327,6 +331,10 @@ fn grouped_debug_data_relocations_restore_source_declaration_order() {
         .position(|name| name == "__vt__8Inline")
         .unwrap();
     assert_eq!(instance + 1, vtable);
+    assert!(
+        section_index(&object, ".rela.debug") < section_index(&object, ".rela.sdata"),
+        "between-data debug relocations precede small-data relocations"
+    );
 }
 
 #[test]

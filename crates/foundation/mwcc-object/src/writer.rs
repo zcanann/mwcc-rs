@@ -1055,6 +1055,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_jump_table || has_data_relocs {
         order.push(".rela.data");
     }
+    // A between-data debug payload is created after the full-data objects but
+    // before the small-data objects. Its grouped relocation sections retain
+    // that same creation boundary: full-data relas, debug relas, small-data
+    // relas.
+    if debug.is_some_and(|debug| debug.layout.between_full_and_small_data()) {
+        order.push(".rela.line");
+        order.push(".rela.debug");
+    }
     let has_sdata_relocs = input
         .data_objects
         .iter()
@@ -1084,8 +1092,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_sdata2_relocs {
         order.push(".rela.sdata2");
     }
-    if debug
-        .is_some_and(|debug| !debug.layout.before_data() && !debug.layout.interleaved_relocations())
+    if debug.is_some_and(|debug| {
+        !debug.layout.before_data()
+            && !debug.layout.between_full_and_small_data()
+            && !debug.layout.interleaved_relocations()
+    })
     {
         order.push(".rela.line");
         order.push(".rela.debug");
@@ -3862,6 +3873,30 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             0,
         );
     }
+    if debug.is_some_and(|debug| debug.layout.between_full_and_small_data()) {
+        push(
+            ".rela.line",
+            SHT_RELA,
+            0,
+            symtab_section,
+            index_of(".line"),
+            4,
+            12,
+            rela_line.clone(),
+            0,
+        );
+        push(
+            ".rela.debug",
+            SHT_RELA,
+            0,
+            symtab_section,
+            index_of(".debug"),
+            4,
+            12,
+            rela_debug.clone(),
+            0,
+        );
+    }
     if has_sdata_relocs {
         push(
             ".rela.sdata",
@@ -3917,8 +3952,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             0,
         );
     }
-    if debug
-        .is_some_and(|debug| !debug.layout.before_data() && !debug.layout.interleaved_relocations())
+    if debug.is_some_and(|debug| {
+        !debug.layout.before_data()
+            && !debug.layout.between_full_and_small_data()
+            && !debug.layout.interleaved_relocations()
+    })
     {
         push(
             ".rela.line",
