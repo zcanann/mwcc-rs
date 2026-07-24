@@ -4,6 +4,42 @@
 use super::*;
 
 impl Generator {
+    /// Keep the guarded member receiver live through its classifier checks and
+    /// the first call. The call itself clobbers r3, so only the final receiver
+    /// reload before the second call remains.
+    pub(crate) fn schedule_guarded_member_classifier_chain(&mut self) {
+        let Some(start) = self
+            .output
+            .instructions
+            .windows(15)
+            .position(is_guarded_member_classifier_chain)
+        else {
+            return;
+        };
+        let (saved, entry) = match self.output.instructions[start] {
+            Instruction::AddImmediate { d, a, immediate: 0 } => (d, a),
+            _ => unreachable!(),
+        };
+        self.output.instructions[start] = Instruction::Or {
+            a: saved,
+            s: entry,
+            b: entry,
+        };
+        match &mut self.output.instructions[start + 1] {
+            Instruction::LoadWord { d, .. } => *d = Eabi::FIRST_GENERAL_ARGUMENT,
+            _ => unreachable!(),
+        }
+        match &mut self.output.instructions[start + 2] {
+            Instruction::CompareLogicalWordImmediate { a, .. } => {
+                *a = Eabi::FIRST_GENERAL_ARGUMENT
+            }
+            _ => unreachable!(),
+        }
+        // Remove from the end so the earlier physical index stays stable.
+        self.remove_structured_condition_instruction(start + 8);
+        self.remove_structured_condition_instruction(start + 4);
+    }
+
     /// Keep a nonnull-tested member pointer in the first call-argument register.
     ///
     /// A saved owner is still needed by later calls, but the pointer loaded for
@@ -144,6 +180,34 @@ fn is_guarded_member_receiver_reload(window: &[Instruction]) -> bool {
         && test_offset == call_offset)
 }
 
+fn is_guarded_member_classifier_chain(window: &[Instruction]) -> bool {
+    matches!(window, [
+        Instruction::AddImmediate { d: saved, a: entry, immediate: 0 },
+        Instruction::LoadWord { d: tested, a: test_base, offset: test_offset },
+        Instruction::CompareLogicalWordImmediate { a: compared, immediate: 0 },
+        Instruction::BranchConditionalForward { .. },
+        Instruction::LoadWord { d: 3, a: classifier_base, offset: classifier_offset },
+        Instruction::LoadHalfwordZero { d: 0, a: 3, offset: 0 },
+        Instruction::CompareLogicalWordImmediate { a: 0, .. },
+        Instruction::BranchConditionalForward { .. },
+        Instruction::LoadWord { d: 3, a: kind_base, offset: kind_offset },
+        Instruction::BranchAndLink { .. },
+        Instruction::CompareWordImmediate { a: 3, .. },
+        Instruction::BranchConditionalForward { .. },
+        Instruction::LoadWord { d: 3, a: final_base, offset: final_offset },
+        _,
+        Instruction::BranchAndLink { .. },
+    ] if saved != entry
+        && tested == compared
+        && test_base == entry
+        && classifier_base == saved
+        && kind_base == saved
+        && final_base == saved
+        && test_offset == classifier_offset
+        && test_offset == kind_offset
+        && test_offset == final_offset)
+}
+
 fn reuses_preceding_member_load(instructions: &[Instruction], term_start: usize) -> bool {
     let Some(previous) = term_start.checked_sub(4) else {
         return false;
@@ -190,6 +254,28 @@ mod tests {
             Instruction::BranchAndLink { target: "callee".into() },
         ];
         assert!(is_guarded_member_receiver_reload(&instructions));
+    }
+
+    #[test]
+    fn recognizes_a_guarded_member_classifier_call_chain() {
+        let instructions = [
+            Instruction::AddImmediate { d: 30, a: 3, immediate: 0 },
+            Instruction::LoadWord { d: 0, a: 3, offset: 6516 },
+            Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 },
+            Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 15 },
+            Instruction::LoadWord { d: 3, a: 30, offset: 6516 },
+            Instruction::LoadHalfwordZero { d: 0, a: 3, offset: 0 },
+            Instruction::CompareLogicalWordImmediate { a: 0, immediate: 6 },
+            Instruction::BranchConditionalForward { options: 4, condition_bit: 2, target: 15 },
+            Instruction::LoadWord { d: 3, a: 30, offset: 6516 },
+            Instruction::BranchAndLink { target: "kind".into() },
+            Instruction::CompareWordImmediate { a: 3, immediate: 12 },
+            Instruction::BranchConditionalForward { options: 4, condition_bit: 2, target: 15 },
+            Instruction::LoadWord { d: 3, a: 30, offset: 6516 },
+            Instruction::Or { a: 4, s: 31, b: 31 },
+            Instruction::BranchAndLink { target: "consume".into() },
+        ];
+        assert!(is_guarded_member_classifier_chain(&instructions));
     }
 
     #[test]

@@ -1011,6 +1011,7 @@ impl Generator {
         self.schedule_structured_shared_member_arguments(function);
         self.schedule_repeated_member_address_call_guards();
         self.schedule_guarded_member_receiver_reuse();
+        self.schedule_guarded_member_classifier_chain();
         self.schedule_structured_float_store_call_arguments();
         self.schedule_structured_aggregate_constructor();
         self.schedule_structured_member_scales_and_compare();
