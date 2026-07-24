@@ -8,7 +8,6 @@
 mod cxx_analysis_residues;
 mod cxx_inline_reference_temporaries;
 mod cxx_rtti_names;
-mod deferred_inline_residues;
 mod function_order;
 mod global_initializers;
 mod inline_ordinal_positions;
@@ -1220,12 +1219,6 @@ fn compile(
     // Deferred inlining has its own translation-unit emission schedule. Keep the
     // policy isolated from lowering and object layout: both consume its result.
     if config.flags.inline_deferred {
-        deferred_inline_residues::apply(
-            &mut machine_functions,
-            &unit.inline_asm_symbols,
-            &unit.skipped_inline_names,
-            behavior.deferred_function_emission_style,
-        );
         function_order::apply_deferred_emission_order(
             &mut machine_functions,
             behavior.deferred_source_function_label_bump,
