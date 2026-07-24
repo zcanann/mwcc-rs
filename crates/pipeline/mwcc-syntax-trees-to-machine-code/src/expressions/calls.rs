@@ -370,6 +370,9 @@ impl Generator {
         if self.try_emit_reloadable_first_nested_second_arguments(arguments, name)? {
             return Ok(());
         }
+        if self.try_emit_zero_arg_nested_general_argument(arguments, name)? {
+            return Ok(());
+        }
         // Two floating arguments use an independent FPR sequence. When the
         // first value already has a callee-saved home, a call-bearing second
         // argument can be evaluated right-first into f2 and the first restored
