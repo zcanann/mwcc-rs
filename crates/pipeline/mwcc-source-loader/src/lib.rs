@@ -149,16 +149,33 @@ impl LoadContext<'_> {
                     preserve_line_ending(&mut output, line);
                     continue;
                 }
-                if let Some(definition) = parse_define(directive) {
-                    if directive_continuation {
-                        self.macros.remove(definition.name);
-                        let mut logical = String::new();
-                        append_continued_directive(&mut logical, line)?;
-                        continued_define = Some(logical);
-                        directive_continuation = false;
-                    } else {
-                        self.install_define(directive);
+                // A function-like macro may continue before its parameter list
+                // closes. Collect the complete logical directive before asking
+                // `parse_define` to validate the signature; parsing only this
+                // first physical line would discard macros such as the N64
+                // 17-argument `gDPSetCombineLERP`.
+                if directive_continuation
+                    && directive
+                        .strip_prefix("define")
+                        .and_then(directive_argument)
+                        .is_some()
+                {
+                    if let Some(name) = directive
+                        .strip_prefix("define")
+                        .and_then(directive_argument)
+                        .and_then(directive_name)
+                    {
+                        self.macros.remove(name);
                     }
+                    let mut logical = String::new();
+                    append_continued_directive(&mut logical, line)?;
+                    continued_define = Some(logical);
+                    directive_continuation = false;
+                    output.extend_from_slice(line);
+                    continue;
+                }
+                if parse_define(directive).is_some() {
+                    self.install_define(directive);
                     output.extend_from_slice(line);
                     continue;
                 }
@@ -816,6 +833,37 @@ mod tests {
         assert_eq!(
             loaded,
             b"#define DECLARE(name, T) \\\n\nstatic void GXCmd1u8( u8 value);\n"
+        );
+    }
+
+    #[test]
+    fn continued_parameter_lists_are_collected_before_token_pasting() {
+        let scratch = Scratch::new();
+        std::fs::write(
+            scratch.0.join("unit.c"),
+            concat!(
+                "#define G_CCMUX_TEXEL0 1\n",
+                "#define COMBINE(pkt, a0, b0, c0, d0, \\\n",
+                "                a1, b1, c1, d1) \\\n",
+                "  ((pkt) = G_CCMUX_##a0 + G_CCMUX_##d1)\n",
+                "int f(int out) { COMBINE(out, TEXEL0, 0, 0, 0, 0, 0, 0, TEXEL0); return out; }\n"
+            ),
+        )
+        .unwrap();
+
+        let loaded = SourceLoader::default()
+            .load(&scratch.0.join("unit.c"))
+            .unwrap();
+        assert_eq!(
+            loaded,
+            concat!(
+                "#define G_CCMUX_TEXEL0 1\n",
+                "#define COMBINE(pkt, a0, b0, c0, d0, \\\n",
+                "\n",
+                "\n",
+                "int f(int out) { ((out) = 1 + 1); return out; }\n"
+            )
+            .as_bytes()
         );
     }
 
