@@ -648,6 +648,11 @@ fn loop_assignment_flow(
         seen_labels,
     )?;
     assigned |= body_flow.assigned;
+    let body_assignment_dominates_exit = loop_executes_at_least_once(
+        kind,
+        initializer,
+        condition,
+    ) && body_assigns_before_control_exit(body, name);
 
     // `continue` can reach the step without the body's fallthrough state. A
     // step that needs this local must already be safe at loop entry; otherwise
@@ -675,10 +680,103 @@ fn loop_assignment_flow(
     }
 
     Some(AssignmentFlow {
-        initialized: entry_initialized,
+        initialized: entry_initialized
+            || (body_assignment_dominates_exit && body_flow.initialized),
         assigned,
         falls_through: true,
     })
+}
+
+/// Prove only the small constant-entry loop subset needed by definite
+/// assignment. A `do` body always runs once. For a `for`/`while`, substitute a
+/// scalar initializer into the first condition and require that condition to
+/// fold true; later iterations are irrelevant to dominance at loop exit.
+fn loop_executes_at_least_once(
+    kind: LoopKind,
+    initializer: Option<&Expression>,
+    condition: Option<&Expression>,
+) -> bool {
+    if kind == LoopKind::DoWhile {
+        return true;
+    }
+    let Some(condition) = condition else {
+        return true;
+    };
+    let mut values = std::collections::HashMap::new();
+    if let Some(Expression::Assign { target, value }) = initializer {
+        if let Expression::Variable(name) = target.as_ref() {
+            if crate::analysis::constant_value(value).is_some() {
+                values.insert(name.clone(), value.as_ref().clone());
+            }
+        }
+    }
+    let condition = crate::value_tracking::substitute(condition, &values);
+    if let Some(value) = crate::analysis::constant_value(&condition) {
+        return value != 0;
+    }
+    let Expression::Binary {
+        operator,
+        left,
+        right,
+    } = condition
+    else {
+        return false;
+    };
+    let (Some(left), Some(right)) = (
+        crate::analysis::constant_value(&left),
+        crate::analysis::constant_value(&right),
+    ) else {
+        return false;
+    };
+    use mwcc_syntax_trees::BinaryOperator;
+    match operator {
+        BinaryOperator::Equal => left == right,
+        BinaryOperator::NotEqual => left != right,
+        BinaryOperator::Less => left < right,
+        BinaryOperator::LessEqual => left <= right,
+        BinaryOperator::Greater => left > right,
+        BinaryOperator::GreaterEqual => left >= right,
+        _ => false,
+    }
+}
+
+/// Whether the loop body establishes `name` before any path can leave or skip
+/// past the definition. This deliberately accepts only a straight-line prefix:
+/// an assignment before the first conditional/break dominates every body exit,
+/// while more involved proofs remain conservative.
+fn body_assigns_before_control_exit(body: &[Statement], name: &str) -> bool {
+    for statement in body {
+        match statement {
+            Statement::Assign {
+                name: assigned,
+                value,
+            } if assigned == name => return !expression_reads_name(value, name),
+            Statement::Expression(expression) => {
+                if expression_reads_name(expression, name) {
+                    return false;
+                }
+            }
+            Statement::Store { target, value } => {
+                if expression_reads_name(target, name) || expression_reads_name(value, name) {
+                    return false;
+                }
+            }
+            Statement::If { .. }
+            | Statement::Loop { .. }
+            | Statement::Switch { .. }
+            | Statement::Return(_)
+            | Statement::Break
+            | Statement::Continue
+            | Statement::Goto(_)
+            | Statement::Label(_) => return false,
+            Statement::Assign { value, .. } => {
+                if expression_reads_name(value, name) {
+                    return false;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Track assignments embedded in the expression forms introduced by inline
@@ -1213,6 +1311,70 @@ mod tests {
             Statement::Expression(Expression::Variable("card".into())),
         ];
         assert!(is_definitely_assigned_before_reads(&statements, "card"));
+    }
+
+    #[test]
+    fn accepts_a_nonempty_for_loop_prefix_assignment() {
+        let statements = vec![
+            Statement::Loop {
+                kind: LoopKind::For,
+                initializer: Some(Expression::Assign {
+                    target: Box::new(Expression::Variable("index".into())),
+                    value: Box::new(Expression::IntegerLiteral(0)),
+                }),
+                condition: Some(Expression::Binary {
+                    operator: mwcc_syntax_trees::BinaryOperator::Less,
+                    left: Box::new(Expression::Variable("index".into())),
+                    right: Box::new(Expression::IntegerLiteral(2)),
+                }),
+                step: Some(Expression::Assign {
+                    target: Box::new(Expression::Variable("index".into())),
+                    value: Box::new(Expression::Binary {
+                        operator: mwcc_syntax_trees::BinaryOperator::Add,
+                        left: Box::new(Expression::Variable("index".into())),
+                        right: Box::new(Expression::IntegerLiteral(1)),
+                    }),
+                }),
+                body: vec![
+                    Statement::Assign {
+                        name: "card".into(),
+                        value: Expression::IntegerLiteral(1),
+                    },
+                    Statement::If {
+                        condition: Expression::Variable("found".into()),
+                        then_body: vec![Statement::Break],
+                        else_body: Vec::new(),
+                    },
+                ],
+            },
+            Statement::Expression(Expression::Variable("card".into())),
+        ];
+        assert!(is_definitely_assigned_before_reads(&statements, "card"));
+    }
+
+    #[test]
+    fn rejects_a_loop_assignment_after_a_possible_break() {
+        let statements = vec![
+            Statement::Loop {
+                kind: LoopKind::DoWhile,
+                initializer: None,
+                condition: Some(Expression::IntegerLiteral(0)),
+                step: None,
+                body: vec![
+                    Statement::If {
+                        condition: Expression::Variable("stop".into()),
+                        then_body: vec![Statement::Break],
+                        else_body: Vec::new(),
+                    },
+                    Statement::Assign {
+                        name: "value".into(),
+                        value: Expression::IntegerLiteral(1),
+                    },
+                ],
+            },
+            Statement::Expression(Expression::Variable("value".into())),
+        ];
+        assert!(!is_definitely_assigned_before_reads(&statements, "value"));
     }
 
     #[test]
