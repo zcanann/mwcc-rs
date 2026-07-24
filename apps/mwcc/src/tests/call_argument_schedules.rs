@@ -102,3 +102,44 @@ fn reuses_the_first_argument_register_for_a_large_third_string() {
         .windows(arguments_and_call.len())
         .any(|bytes| bytes == arguments_and_call));
 }
+
+#[test]
+fn reconstructs_saved_siblings_after_a_nested_heap_call() {
+    let source = br#"
+        extern void release(void*);
+        extern void* current_heap(void);
+        extern void* allocate(unsigned, void*, int);
+        void* replace(void* old, unsigned count) {
+            release(old);
+            return allocate(count * 16, current_heap(), 0);
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.cpp_exceptions = false;
+    flags.emit_mwcats = false;
+    let config = mwcc_versions::CompilerConfig {
+        build: mwcc_versions::GC_1_2_5N,
+        flags,
+    };
+    let object = compile(
+        source,
+        "nested-general-call-argument.c",
+        config,
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("saved siblings should be reconstructed after the nested call");
+
+    let nested_arguments = [
+        0x48, 0x00, 0x00, 0x01, // bl current_heap
+        0x38, 0x83, 0x00, 0x00, // addi r4,r3,0
+        0x57, 0xe3, 0x20, 0x36, // slwi r3,r31,4
+        0x38, 0xa0, 0x00, 0x00, // li r5,0
+        0x48, 0x00, 0x00, 0x01, // bl allocate
+    ];
+    assert!(object
+        .windows(nested_arguments.len())
+        .any(|bytes| bytes == nested_arguments));
+}

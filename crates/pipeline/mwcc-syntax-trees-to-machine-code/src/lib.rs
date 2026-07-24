@@ -623,6 +623,7 @@ pub fn lower_function(
     generator.schedule_forwarded_member_initialization();
     generator.schedule_mixed_scalar_initialization();
     generator.schedule_pod_constructor_initialization();
+    generator.schedule_saved_receiver_array_release_frame();
     generator.schedule_assertion_float_member_return();
     generator.schedule_guarded_member_classifier_chain();
     generator.schedule_shared_right_float_product_pair();

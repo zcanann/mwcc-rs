@@ -54,6 +54,84 @@ fn stable_call_binary(
 }
 
 impl Generator {
+    /// Marshal one argument-free nested call in a later general-class slot
+    /// before its reloadable siblings.
+    ///
+    /// For `allocate(saved_count * 16, heap(), 0)`, the inner result first
+    /// lands in r3 and is copied to r4. The saved count and literal are then
+    /// reconstructed directly in r3 and r5. This is safe only when every
+    /// sibling reads constants, globals, or nonvolatile registers.
+    pub(crate) fn try_emit_zero_arg_nested_general_argument(
+        &mut self,
+        arguments: &[Expression],
+        name: &str,
+    ) -> Compilation<bool> {
+        let direct_outer = !self.globals.contains_key(name)
+            && !self.locations.contains_key(name)
+            && !self.known_locals.contains(name);
+        let all_general = self.call_parameter_types.get(name).map_or_else(
+            || arguments.iter().all(|argument| !self.is_float_value(argument)),
+            |types| {
+                types.len() >= arguments.len()
+                    && types[..arguments.len()]
+                        .iter()
+                        .all(|ty| !matches!(ty, Type::Float | Type::Double))
+            },
+        );
+        if !direct_outer || !all_general {
+            return Ok(false);
+        }
+        let mut nested = arguments.iter().enumerate().filter_map(|(index, argument)| {
+            let Expression::Call {
+                name: nested_name,
+                arguments: nested_arguments,
+            } = argument
+            else {
+                return None;
+            };
+            (index > 0
+                && nested_arguments.is_empty()
+                && !self.globals.contains_key(nested_name)
+                && !self.locations.contains_key(nested_name)
+                && !self.known_locals.contains(nested_name)
+                && !self.is_float_value(argument))
+            .then_some((index, argument))
+        });
+        let Some((nested_index, nested_argument)) = nested.next() else {
+            return Ok(false);
+        };
+        if nested.next().is_some()
+            || arguments
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != nested_index)
+                .any(|(_, argument)| {
+                    expression_has_call(argument)
+                        || self
+                            .registers_used_by(argument)
+                            .into_iter()
+                            .any(|register| matches!(register, 0 | 3..=12))
+                })
+        {
+            return Ok(false);
+        }
+
+        self.evaluate_general(nested_argument, Eabi::FIRST_GENERAL_ARGUMENT)?;
+        self.emit_integer_materialization_copy(
+            Eabi::FIRST_GENERAL_ARGUMENT + nested_index as u8,
+            Eabi::FIRST_GENERAL_ARGUMENT,
+        );
+        for (index, argument) in arguments.iter().enumerate() {
+            if index != nested_index {
+                self.evaluate_general(
+                    argument,
+                    Eabi::FIRST_GENERAL_ARGUMENT + index as u8,
+                )?;
+            }
+        }
+        Ok(true)
+    }
+
     /// Marshal a general-class nested second argument before a reloadable first
     /// argument. Every register read by the first expression must survive the
     /// nested call; afterward the first value can be reconstructed directly in
