@@ -343,6 +343,239 @@ impl Generator {
         Ok(true)
     }
 
+    /// SDK fixed-head list membership:
+    ///
+    /// `if (thread->state == 0) return 0;`
+    /// `for (active = *(T **)HEAD; active; active = active->next)`
+    /// `    if (thread == active) return 1;`
+    /// `return 0;`
+    ///
+    /// This is the leaf sibling of [`Self::try_list_search_loop`]. The cursor
+    /// starts in r4 because r3 remains the searched pointer/result register.
+    pub(crate) fn try_fixed_head_list_membership(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if function.return_type != Type::Int
+            || !function.guards.is_empty()
+            || !self.frame_slots.is_empty()
+            || function_makes_call(function)
+            || function
+                .return_expression
+                .as_ref()
+                .and_then(constant_value)
+                != Some(0)
+        {
+            return Ok(false);
+        }
+        let [parameter] = function.parameters.as_slice() else {
+            return Ok(false);
+        };
+        let [cursor] = function.locals.as_slice() else {
+            return Ok(false);
+        };
+        if !matches!(parameter.parameter_type, Type::StructPointer { .. })
+            || !matches!(cursor.declared_type, Type::StructPointer { .. })
+            || cursor.initializer.is_some()
+            || cursor.array_length.is_some()
+            || cursor.is_static
+        {
+            return Ok(false);
+        }
+        let [Statement::If {
+            condition: entry_condition,
+            then_body: entry_return,
+            else_body: entry_else,
+        }, Statement::Loop {
+            kind: LoopKind::For,
+            initializer: Some(initializer),
+            condition: Some(loop_condition),
+            step: Some(step),
+            body,
+        }] = function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        if !entry_else.is_empty()
+            || !matches!(
+                entry_return.as_slice(),
+                [Statement::Return(Some(value))] if constant_value(value) == Some(0)
+            )
+        {
+            return Ok(false);
+        }
+        let Expression::Binary {
+            operator: BinaryOperator::Equal,
+            left: entry_left,
+            right: entry_right,
+        } = entry_condition
+        else {
+            return Ok(false);
+        };
+        let Expression::Member {
+            base: entry_base,
+            offset: state_offset,
+            member_type: Type::UnsignedShort,
+            index_stride: None,
+        } = entry_left.as_ref()
+        else {
+            return Ok(false);
+        };
+        if !matches!(entry_base.as_ref(), Expression::Variable(name) if name == &parameter.name)
+            || constant_value(entry_right) != Some(0)
+            || !matches!(loop_condition, Expression::Variable(name) if name == &cursor.name)
+        {
+            return Ok(false);
+        }
+        let Expression::Assign {
+            target: initializer_target,
+            value: initializer_value,
+        } = initializer
+        else {
+            return Ok(false);
+        };
+        let Expression::Member {
+            base: head_base,
+            offset: head_offset,
+            member_type: Type::StructPointer { .. },
+            index_stride: None,
+        } = initializer_value.as_ref()
+        else {
+            return Ok(false);
+        };
+        if !matches!(initializer_target.as_ref(), Expression::Variable(name) if name == &cursor.name)
+        {
+            return Ok(false);
+        }
+        let Some(head_address) = const_address_of(head_base).and_then(|address| {
+            address.checked_add(*head_offset)
+        }) else {
+            return Ok(false);
+        };
+        let Expression::Assign {
+            target: step_target,
+            value: step_value,
+        } = step
+        else {
+            return Ok(false);
+        };
+        let Expression::Member {
+            base: step_base,
+            offset: next_offset,
+            member_type: Type::StructPointer { .. },
+            index_stride: None,
+        } = step_value.as_ref()
+        else {
+            return Ok(false);
+        };
+        if !matches!(step_target.as_ref(), Expression::Variable(name) if name == &cursor.name)
+            || !matches!(step_base.as_ref(), Expression::Variable(name) if name == &cursor.name)
+        {
+            return Ok(false);
+        }
+        let [Statement::If {
+            condition: found_condition,
+            then_body: found_return,
+            else_body: found_else,
+        }] = body.as_slice()
+        else {
+            return Ok(false);
+        };
+        if !found_else.is_empty()
+            || !matches!(
+                found_return.as_slice(),
+                [Statement::Return(Some(value))] if constant_value(value) == Some(1)
+            )
+        {
+            return Ok(false);
+        }
+        let Expression::Binary {
+            operator: BinaryOperator::Equal,
+            left: found_left,
+            right: found_right,
+        } = found_condition
+        else {
+            return Ok(false);
+        };
+        let identity_pair = |left: &Expression, right: &Expression| {
+            matches!(left, Expression::Variable(name) if name == &parameter.name)
+                && matches!(right, Expression::Variable(name) if name == &cursor.name)
+        };
+        if !identity_pair(found_left, found_right)
+            && !identity_pair(found_right, found_left)
+        {
+            return Ok(false);
+        }
+
+        let state_offset = i16::try_from(*state_offset)
+            .map_err(|_| Diagnostic::error("fixed-list state offset is out of range"))?;
+        let next_offset = i16::try_from(*next_offset)
+            .map_err(|_| Diagnostic::error("fixed-list next offset is out of range"))?;
+        let (head_high, head_low) = split_address(head_address);
+        let searched = self.general_register_of(&parameter.name)?;
+        if searched != Eabi::general_result().number {
+            return Ok(false);
+        }
+        const CURSOR: u8 = 4;
+        self.output.pre_scheduled = true;
+        // Function baseline accounting is handled centrally; this body adds
+        // two labels for each `if` and five for the source `for`.
+        self.output.anonymous_label_bump += 9;
+        self.output.instructions.extend([
+            Instruction::LoadHalfwordZero {
+                d: GENERAL_SCRATCH,
+                a: searched,
+                offset: state_offset,
+            },
+            Instruction::CompareLogicalWordImmediate {
+                a: GENERAL_SCRATCH,
+                immediate: 0,
+            },
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 5,
+            },
+            Instruction::load_immediate(Eabi::general_result().number, 0),
+            Instruction::BranchToLinkRegister,
+            Instruction::load_immediate_shifted(CURSOR, head_high),
+            Instruction::LoadWord {
+                d: CURSOR,
+                a: CURSOR,
+                offset: head_low,
+            },
+            Instruction::Branch { target: 13 },
+            Instruction::CompareLogicalWord {
+                a: searched,
+                b: CURSOR,
+            },
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 12,
+            },
+            Instruction::load_immediate(Eabi::general_result().number, 1),
+            Instruction::BranchToLinkRegister,
+            Instruction::LoadWord {
+                d: CURSOR,
+                a: CURSOR,
+                offset: next_offset,
+            },
+            Instruction::CompareLogicalWordImmediate {
+                a: CURSOR,
+                immediate: 0,
+            },
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 8,
+            },
+            Instruction::load_immediate(Eabi::general_result().number, 0),
+            Instruction::BranchToLinkRegister,
+        ]);
+        Ok(true)
+    }
+
     /// The NORMALIZE LOOP (fire 424, e_fmod's tail loop): a NON-counted
     /// `while (hx < BIG) { hx = hx+hx+(lx>>31); lx = lx+lx; iy -= 1; }`
     /// with `return hx + iy` — rotated form with the big bound hoisted

@@ -2408,6 +2408,12 @@ impl Generator {
         if self.try_list_search_loop(function)? {
             return Ok(());
         }
+        // `if (!thread->active) return 0; for (p = *FIXED_HEAD; p;
+        // p = p->next) if (p == thread) return 1;` — SDK thread-list
+        // membership with a fixed-address sentinel head.
+        if self.try_fixed_head_list_membership(function)? {
+            return Ok(());
+        }
         // SDK callback queues insert one intrusive node into a priority-sorted doubly linked
         // list. The empty-tail and predecessor repairs form one scheduled control-flow owner.
         if self.try_sorted_intrusive_insert(function)? {
