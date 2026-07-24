@@ -1913,11 +1913,46 @@ impl Generator {
                         {
                             Ok(())
                         } else {
-                            self.evaluate_register_store_value(
+                            // A passthrough call argument can keep a physical
+                            // entry/result register live without emitting an
+                            // instruction that exposes that liveness to the
+                            // allocator. Reserve such homes while selecting a
+                            // side-effecting postfix RHS so its old-value
+                            // temporary cannot silently overwrite them.
+                            let reserved_live_homes = matches!(value, Expression::PostStep { .. })
+                                .then(|| {
+                                    function
+                                        .locals
+                                        .iter()
+                                        .map(|local| local.name.as_str())
+                                        .chain(
+                                            function
+                                                .parameters
+                                                .iter()
+                                                .map(|parameter| parameter.name.as_str()),
+                                        )
+                                        .filter(|candidate| *candidate != name)
+                                        .filter(|candidate| {
+                                            value_read_before_redefinition(remaining, candidate)
+                                        })
+                                        .filter_map(|candidate| self.locations.get(candidate))
+                                        .filter_map(|location| {
+                                            (!mwcc_vreg::Reg::is_virtual_field(location.register))
+                                                .then_some(location.register)
+                                        })
+                                        .filter(|register| self.reserved.insert(*register))
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default();
+                            let result = self.evaluate_register_store_value(
                                 value,
                                 declared_type,
                                 destination,
-                            )
+                            );
+                            for register in reserved_live_homes {
+                                self.reserved.remove(&register);
+                            }
+                            result
                         }
                         .map_err(|mut diagnostic| {
                             diagnostic.message.push_str(&format!(

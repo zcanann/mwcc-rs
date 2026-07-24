@@ -597,6 +597,10 @@ pub fn lower_function(
     // Coalesce away `mr rX,rX` self-moves the allocator leaves when it colors a value's
     // virtual home to the register the value already holds (mwcc coalesces them).
     coalesce_self_moves(&mut generator);
+    // Revisit the narrow saved-result epilogue on the physical stream. A
+    // source-level return branch can hide the move from the structured
+    // pre-allocation pass until generic scheduling removes that branch.
+    generator.schedule_saved_return_epilogue();
     // Issue the epilogue's saved-LR reload right after the last call (ahead of the
     // post-call computation), as mwcc does — a final pass on the physical stream.
     hoist_link_register_reload(&mut generator);

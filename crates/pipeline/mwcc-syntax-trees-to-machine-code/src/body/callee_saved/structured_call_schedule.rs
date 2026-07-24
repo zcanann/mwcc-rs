@@ -109,7 +109,7 @@ impl Generator {
     /// Hoist the saved-LR load into the issue slot before a final move from a
     /// callee-saved return home. The load is independent of the result move;
     /// MWCC uses that latency schedule before restoring the saved GPR range.
-    pub(super) fn schedule_saved_return_epilogue(&mut self) {
+    pub(crate) fn schedule_saved_return_epilogue(&mut self) {
         let Some(lr_index) = self.output.instructions.iter().rposition(|instruction| {
             matches!(instruction, Instruction::LoadWord { d: 0, a: 1, offset } if *offset == self.frame_size + 4)
         }) else {
@@ -118,13 +118,20 @@ impl Generator {
         let Some(return_index) = lr_index.checked_sub(1) else {
             return;
         };
-        if !matches!(
-            self.output.instructions[return_index],
-            Instruction::Or { a: 3, s, b }
-                if s == b && self.callee_saved.contains(&s)
-        ) || !self.output.instructions[lr_index + 1..].iter().any(|instruction| {
-            matches!(instruction, Instruction::LoadWord { d, a: 1, .. } if self.callee_saved.contains(d))
-        }) {
+        let return_source = match self.output.instructions[return_index] {
+            Instruction::Or { a: 3, s, b } if s == b => s,
+            _ => return,
+        };
+        // Before allocation, the planned home is identified by
+        // `callee_saved`; afterward, the matching stack restore is the
+        // authoritative proof. Supporting both lets this narrow schedule run
+        // on either side of terminal-branch cleanup.
+        let restores_return_source = self.output.instructions[lr_index + 1..]
+            .iter()
+            .any(|instruction| {
+                matches!(instruction, Instruction::LoadWord { d, a: 1, .. } if *d == return_source)
+            });
+        if !self.callee_saved.contains(&return_source) && !restores_return_source {
             return;
         }
         self.output.instructions.swap(return_index, lr_index);
