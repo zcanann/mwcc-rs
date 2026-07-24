@@ -182,7 +182,6 @@ impl Generator {
         };
         if frame_scalar_locals.iter().any(|local| {
             local.is_static
-                || local.is_volatile
                 || class_of(local.declared_type).ok() != Some(ValueClass::General)
                 || local.declared_type.width() > 32
                 || local
@@ -1339,6 +1338,7 @@ impl Generator {
         }
         let forwardable_frame_scalar_offsets = frame_scalar_locals
             .iter()
+            .filter(|local| !local.is_volatile)
             .filter_map(|local| self.frame_slots.get(&local.name).map(|slot| slot.offset))
             .collect();
         self.forward_adjacent_frame_scalar_values(&forwardable_frame_scalar_offsets);
