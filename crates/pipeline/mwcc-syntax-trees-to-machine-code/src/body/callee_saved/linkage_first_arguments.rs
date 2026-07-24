@@ -10,6 +10,7 @@ impl Generator {
     pub(crate) fn schedule_linkage_first_entry_arguments(&mut self) {
         schedule_entry_arguments(&mut self.output);
         schedule_entry_zero_store(&mut self.output);
+        schedule_entry_wide_mask(&mut self.output);
     }
 
     /// Schedule a relocatable function-address pair in any linkage-first body.
@@ -18,6 +19,82 @@ impl Generator {
     pub(crate) fn schedule_linkage_first_function_address(&mut self) {
         schedule_function_address_low(&mut self.output);
     }
+}
+
+/// A two-instruction discontiguous mask is ready at entry, but its low half
+/// writes r0 and therefore must wait until after the saved-LR store.  MWCC puts
+/// the independent high half in the first linkage slot and the dependent low
+/// half immediately before `stwu`.
+fn schedule_entry_wide_mask(output: &mut mwcc_machine_code::MachineFunction) {
+    let Some(link_read) = output.instructions.iter().position(
+        |instruction| matches!(instruction, Instruction::MoveFromLinkRegister { d: 0 }),
+    ) else {
+        return;
+    };
+    let Some(link_store) = output.instructions.iter().position(|instruction| {
+        matches!(instruction, Instruction::StoreWord { s: 0, a: 1, offset: 4 })
+    }) else {
+        return;
+    };
+    let Some(stack_update) = output.instructions.iter().position(|instruction| {
+        matches!(instruction, Instruction::StoreWordWithUpdate { s: 1, a: 1, .. })
+    }) else {
+        return;
+    };
+    if !(link_read < link_store && link_store < stack_update) {
+        return;
+    }
+
+    let candidate = (stack_update + 1..output.instructions.len().saturating_sub(3)).find_map(
+        |high| {
+            let Instruction::AddImmediateShifted {
+                d: high_register,
+                a: 0,
+                ..
+            } = output.instructions[high]
+            else {
+                return None;
+            };
+            let [
+                Instruction::AddImmediate {
+                    d: 0,
+                    a: low_base,
+                    ..
+                },
+                Instruction::LoadWord { d: value, .. },
+                Instruction::AndRecord { a: 0, s, b: 0 },
+            ] = output.instructions.get(high + 1..high + 4)?
+            else {
+                return None;
+            };
+            (high_register != 0 && *low_base == high_register && value == s)
+                .then_some((high, high + 1, high_register))
+        },
+    );
+    let Some((high, low, high_register)) = candidate else {
+        return;
+    };
+    if output.relocations.iter().any(|relocation| {
+        relocation.instruction_index == high || relocation.instruction_index == low
+    }) || output.instructions[link_read + 1..high]
+        .iter()
+        .any(|instruction| touches_general_register(instruction, high_register))
+    {
+        return;
+    }
+
+    let high_instruction = output.instructions.remove(high);
+    output.instructions.insert(link_read + 1, high_instruction);
+    remap_relocations_for_move(&mut output.relocations, high, link_read + 1);
+
+    // Moving the high half earlier leaves the low half at the same index: one
+    // removal before it and one insertion before it cancel out.
+    let low_instruction = output.instructions.remove(low);
+    let stack_update = output.instructions.iter().position(|instruction| {
+        matches!(instruction, Instruction::StoreWordWithUpdate { s: 1, a: 1, .. })
+    }).expect("the recognized stack update remains present");
+    output.instructions.insert(stack_update, low_instruction);
+    remap_relocations_for_move(&mut output.relocations, low, stack_update);
 }
 
 /// A scratch zero feeding the first body store cannot fill the dependency slot
@@ -401,5 +478,68 @@ mod tests {
         ));
         assert_eq!(output.relocations[0].instruction_index, 1);
         assert_eq!(output.relocations[1].instruction_index, 3);
+    }
+
+    #[test]
+    fn splits_a_wide_mask_across_the_linkage_slots() {
+        let mut output = mwcc_machine_code::MachineFunction::new("test");
+        output.instructions = vec![
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 4,
+            },
+            Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -24,
+            },
+            Instruction::StoreWord {
+                s: 31,
+                a: 1,
+                offset: 20,
+            },
+            Instruction::load_immediate(31, 0),
+            Instruction::load_immediate_shifted(4, -32768),
+            Instruction::AddImmediate {
+                d: 0,
+                a: 4,
+                immediate: 0x0f00,
+            },
+            Instruction::LoadWord {
+                d: 5,
+                a: 3,
+                offset: 1640,
+            },
+            Instruction::AndRecord { a: 0, s: 5, b: 0 },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 8,
+            },
+        ];
+
+        schedule_entry_wide_mask(&mut output);
+
+        assert!(matches!(
+            output.instructions.as_slice(),
+            [
+                Instruction::MoveFromLinkRegister { d: 0 },
+                Instruction::AddImmediateShifted { d: 4, a: 0, .. },
+                Instruction::StoreWord {
+                    s: 0,
+                    a: 1,
+                    offset: 4
+                },
+                Instruction::AddImmediate { d: 0, a: 4, .. },
+                Instruction::StoreWordWithUpdate { s: 1, a: 1, .. },
+                Instruction::StoreWord { s: 31, .. },
+                Instruction::AddImmediate { d: 31, a: 0, immediate: 0 },
+                Instruction::LoadWord { d: 5, .. },
+                Instruction::AndRecord { a: 0, s: 5, b: 0 },
+                Instruction::BranchConditionalForward { .. },
+            ]
+        ));
     }
 }
