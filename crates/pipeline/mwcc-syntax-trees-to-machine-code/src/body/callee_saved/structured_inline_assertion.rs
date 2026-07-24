@@ -10,6 +10,59 @@
 use super::*;
 
 impl Generator {
+    /// Fold a cold assertion's inverted two-branch diamond and schedule the
+    /// following float-member return. The incoming object remains available in
+    /// r3 until the cold call, while its saved copy owns the post-call return.
+    pub(crate) fn schedule_assertion_float_member_return(&mut self) {
+        let Some((start, has_redundant_branch)) =
+            (0..self.output.instructions.len()).find_map(|start| {
+                let remaining = &self.output.instructions[start..];
+                if remaining
+                    .get(..18)
+                    .is_some_and(is_unfolded_assertion_float_member_return)
+                {
+                    Some((start, true))
+                } else if remaining
+                    .get(..17)
+                    .is_some_and(is_assertion_float_member_return)
+                {
+                    Some((start, false))
+                } else {
+                    None
+                }
+            })
+        else {
+            return;
+        };
+        let (saved, entry) = match self.output.instructions[start] {
+            Instruction::Or { a: saved, s: entry, b } if entry == b => (saved, entry),
+            _ => unreachable!(),
+        };
+        match &mut self.output.instructions[start + 1] {
+            Instruction::LoadWord { a, .. } => *a = entry,
+            _ => unreachable!(),
+        }
+        if has_redundant_branch {
+            let join = match self.output.instructions[start + 4] {
+                Instruction::Branch { target } => target,
+                _ => unreachable!(),
+            };
+            self.output.instructions[start + 3] = Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: join,
+            };
+            self.remove_structured_condition_instruction(start + 4);
+        }
+        // MWCC starts restoring LR between the dependent pointer and float
+        // loads, then completes the float load before restoring the saved GPR.
+        self.output.instructions.swap(start + 11, start + 12);
+        debug_assert!(matches!(
+            self.output.instructions[start + 13],
+            Instruction::LoadWord { d, .. } if d == saved
+        ));
+    }
+
     pub(super) fn emit_proven_inline_assertion(
         &mut self,
         previous_term: &Expression,
@@ -116,6 +169,53 @@ impl Generator {
     }
 }
 
+fn is_assertion_float_member_return(window: &[Instruction]) -> bool {
+    matches!(window, [
+        Instruction::Or { a: saved, s: entry, b: entry_again },
+        Instruction::LoadWord { d: 0, a: condition_base, .. },
+        Instruction::CompareWordImmediate { a: 0, .. },
+        Instruction::BranchConditionalForward { options: 12, condition_bit: 2, .. },
+        _, _, _, _, _,
+        Instruction::BranchAndLink { target },
+        Instruction::LoadWord { d: 3, a: return_base, .. },
+        Instruction::LoadFloatSingle { d: 1, a: 3, .. },
+        Instruction::LoadWord { d: 0, a: 1, .. },
+        Instruction::LoadWord { d: restored, a: 1, .. },
+        Instruction::AddImmediate { d: 1, a: 1, .. },
+        Instruction::MoveToLinkRegister { s: 0 },
+        Instruction::BranchToLinkRegister,
+    ] if saved != entry
+        && entry == entry_again
+        && condition_base == saved
+        && return_base == saved
+        && restored == saved
+        && target == "__assert")
+}
+
+fn is_unfolded_assertion_float_member_return(window: &[Instruction]) -> bool {
+    matches!(window, [
+        Instruction::Or { a: saved, s: entry, b: entry_again },
+        Instruction::LoadWord { d: 0, a: condition_base, .. },
+        Instruction::CompareWordImmediate { a: 0, .. },
+        Instruction::BranchConditionalForward { options: 4, condition_bit: 2, .. },
+        Instruction::Branch { .. },
+        _, _, _, _, _,
+        Instruction::BranchAndLink { target },
+        Instruction::LoadWord { d: 3, a: return_base, .. },
+        Instruction::LoadFloatSingle { d: 1, a: 3, .. },
+        Instruction::LoadWord { d: 0, a: 1, .. },
+        Instruction::LoadWord { d: restored, a: 1, .. },
+        Instruction::AddImmediate { d: 1, a: 1, .. },
+        Instruction::MoveToLinkRegister { s: 0 },
+        Instruction::BranchToLinkRegister,
+    ] if saved != entry
+        && entry == entry_again
+        && condition_base == saved
+        && return_base == saved
+        && restored == saved
+        && target == "__assert")
+}
+
 fn shared_member_mask_conjunction(expression: &Expression) -> Option<(&Expression, u32, u32)> {
     let Expression::Binary {
         operator: BinaryOperator::LogicalAnd,
@@ -206,5 +306,56 @@ mod tests {
             right: Box::new(Expression::IntegerLiteral(0)),
         };
         assert_eq!(proven_nonzero_name(&comparison), Some("object"));
+    }
+
+    #[test]
+    fn recognizes_a_cold_assertion_before_a_float_member_return() {
+        let instructions = [
+            Instruction::Or { a: 31, s: 3, b: 3 },
+            Instruction::LoadWord { d: 0, a: 31, offset: 4 },
+            Instruction::CompareWordImmediate { a: 0, immediate: 32 },
+            Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 10 },
+            Instruction::AddImmediateShifted { d: 3, a: 0, immediate: 0 },
+            Instruction::AddImmediateShifted { d: 4, a: 0, immediate: 0 },
+            Instruction::AddImmediate { d: 5, a: 4, immediate: 0 },
+            Instruction::AddImmediate { d: 3, a: 3, immediate: 0 },
+            Instruction::AddImmediate { d: 4, a: 0, immediate: 299 },
+            Instruction::BranchAndLink { target: "__assert".into() },
+            Instruction::LoadWord { d: 3, a: 31, offset: 724 },
+            Instruction::LoadFloatSingle { d: 1, a: 3, offset: 0 },
+            Instruction::LoadWord { d: 0, a: 1, offset: 28 },
+            Instruction::LoadWord { d: 31, a: 1, offset: 20 },
+            Instruction::AddImmediate { d: 1, a: 1, immediate: 24 },
+            Instruction::MoveToLinkRegister { s: 0 },
+            Instruction::BranchToLinkRegister,
+        ];
+        assert!(is_assertion_float_member_return(&instructions));
+    }
+
+    #[test]
+    fn recognizes_an_unfolded_cold_assertion_before_a_float_member_return() {
+        let mut instructions = vec![
+            Instruction::Or { a: 31, s: 3, b: 3 },
+            Instruction::LoadWord { d: 0, a: 31, offset: 4 },
+            Instruction::CompareWordImmediate { a: 0, immediate: 32 },
+            Instruction::BranchConditionalForward { options: 4, condition_bit: 2, target: 5 },
+            Instruction::Branch { target: 11 },
+        ];
+        instructions.extend([
+            Instruction::AddImmediateShifted { d: 3, a: 0, immediate: 0 },
+            Instruction::AddImmediateShifted { d: 4, a: 0, immediate: 0 },
+            Instruction::AddImmediate { d: 5, a: 4, immediate: 0 },
+            Instruction::AddImmediate { d: 3, a: 3, immediate: 0 },
+            Instruction::AddImmediate { d: 4, a: 0, immediate: 299 },
+            Instruction::BranchAndLink { target: "__assert".into() },
+            Instruction::LoadWord { d: 3, a: 31, offset: 724 },
+            Instruction::LoadFloatSingle { d: 1, a: 3, offset: 0 },
+            Instruction::LoadWord { d: 0, a: 1, offset: 28 },
+            Instruction::LoadWord { d: 31, a: 1, offset: 20 },
+            Instruction::AddImmediate { d: 1, a: 1, immediate: 24 },
+            Instruction::MoveToLinkRegister { s: 0 },
+            Instruction::BranchToLinkRegister,
+        ]);
+        assert!(is_unfolded_assertion_float_member_return(&instructions));
     }
 }

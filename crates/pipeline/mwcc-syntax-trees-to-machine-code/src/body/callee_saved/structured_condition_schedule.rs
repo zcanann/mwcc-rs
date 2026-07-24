@@ -94,7 +94,7 @@ impl Generator {
         }
     }
 
-    fn remove_structured_condition_instruction(&mut self, at: usize) {
+    pub(crate) fn remove_structured_condition_instruction(&mut self, at: usize) {
         self.output.instructions.remove(at);
         self.labels.removed(at, 1);
         self.output
