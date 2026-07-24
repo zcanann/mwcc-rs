@@ -4,7 +4,7 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-07-24 03:31 UTC at compiler commit `7f639b99`
+Latest targeted checkpoint: 2026-07-24 03:36 UTC at compiler commit `239c1cf8`
 
 Latest measured compiler + harness fingerprint: `4ca51cd13c66eca020e6f691933c6075f99debec63ec5d6ba3a09853753c4bbe:121d3ae4f26965d7109e24043dcb96e73b0ab99435ff0da8079c505e14ff84a1`
 
@@ -76,7 +76,7 @@ This validates the failure-only edit loop: representative audits are useful
 periodic measurements, but recompiling them continuously would spend most of
 its time on known giant-TU timeouts.
 
-Post-holdout compiler work through commit `7f639b99` has not been run over a
+Post-holdout compiler work through commit `239c1cf8` has not been run over a
 new unbiased sample, so it does not change the 7.8% estimate above. On the
 targeted Melee `src/melee/ft/ftcommon.c` diagnostic, the latest checkpoint moved
 relocation-aware parity from 28/109 to 67/109 functions and from 996/15,340 to
