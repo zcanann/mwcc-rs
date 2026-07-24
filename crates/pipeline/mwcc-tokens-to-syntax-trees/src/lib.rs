@@ -4163,6 +4163,17 @@ blr\n\
             3,
         )
         .unwrap();
+        assert_eq!(
+            unit.functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "__ct__Q25Scene7DerivedFv",
+                "__dt__Q25Scene4BaseFv",
+                "__dt__Q25Scene7DerivedFv",
+            ]
+        );
         let constructor = unit
             .functions
             .iter()

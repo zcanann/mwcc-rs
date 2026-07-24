@@ -103,7 +103,7 @@ pub(super) fn add_inline_base_groups(
     classes: &HashMap<String, ClassLayout>,
     class_order: &[String],
     inline_functions: &[Function],
-) -> Compilation<(HashSet<String>, Vec<(String, String)>)> {
+) -> Compilation<(HashMap<String, Vec<String>>, Vec<(String, String)>)> {
     let inline_names = inline_functions
         .iter()
         .map(|function| function.name.as_str())
@@ -120,7 +120,7 @@ pub(super) fn add_inline_base_groups(
         })
         .collect::<VecDeque<_>>();
     let mut visited = HashSet::new();
-    let mut dependency_destructors = HashSet::new();
+    let mut dependency_destructors = HashMap::<String, Vec<String>>::new();
     let mut ordering_edges = Vec::new();
 
     while let Some(owner) = queue.pop_front() {
@@ -142,7 +142,12 @@ pub(super) fn add_inline_base_groups(
             if !inline_names.contains(destructor.as_str()) {
                 continue;
             }
-            dependency_destructors.insert(destructor.clone());
+            let owners = dependency_destructors.entry(destructor.clone()).or_default();
+            if let Some(key_function) = &class.vtable_key_function {
+                if !owners.contains(key_function) {
+                    owners.push(key_function.clone());
+                }
+            }
             let table = vtable_name(&base.name)?;
             if !globals.iter().any(|global| global.name == table) {
                 let mut group = global(base_class, table, Some(&destructor));

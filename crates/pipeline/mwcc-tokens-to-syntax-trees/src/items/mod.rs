@@ -1120,17 +1120,30 @@ impl Parser {
                     .cxx_inline_materialization_sources
                     .remove(&function.name);
                 self.weak_materialized.push(function.name.clone());
-                if early_inline_destructors.contains(&function.name) {
-                    early_materializations.push((function, source));
+                if let Some(owner_keys) = early_inline_destructors.get(&function.name) {
+                    let insertion_index = owner_keys
+                        .iter()
+                        .filter_map(|owner| {
+                            functions
+                                .iter()
+                                .position(|candidate| candidate.name == *owner)
+                        })
+                        .min()
+                        .unwrap_or(0);
+                    early_materializations.push((insertion_index, function, source));
                 } else {
                     functions.push(function);
                     self.function_sources.push(source);
                 }
             }
         }
-        for (index, (function, source)) in early_materializations.into_iter().enumerate() {
+        early_materializations.sort_by_key(|(index, _, _)| *index);
+        let mut inserted = 0;
+        for (index, function, source) in early_materializations {
+            let index = index + inserted;
             functions.insert(index, function);
             self.function_sources.insert(index, source);
+            inserted += 1;
         }
         // A class-scope `static T member;` is an external data declaration.
         // Keep the declarations available to codegen even when their storage
