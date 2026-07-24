@@ -2330,6 +2330,37 @@ mod tests {
     }
 
     #[test]
+    fn compares_a_signed_char_leaf_with_a_signed_char_member() {
+        let source = br#"
+            struct Pair { signed char current; };
+            int changed(signed char previous, struct Pair* pair) {
+                if (previous != pair->current) {
+                    return 1;
+                }
+                return 0;
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.emit_mwcats = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "narrow-leaf-member-compare.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("both signed-char operands should be extended without clobbering the member");
+        assert!(!object.is_empty());
+    }
+
+    #[test]
     fn schedules_in_place_float_updates_with_their_trailing_clamps() {
         let source = br#"
             struct Body { float velocity; };

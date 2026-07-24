@@ -1543,6 +1543,15 @@ impl Generator {
                                 }
                             }
                             _ => {
+                                if self.try_emit_narrow_leaf_member_compare(
+                                    left,
+                                    right,
+                                    left_register,
+                                    signed,
+                                )? {
+                                    return Ok(false_branch_bo_bi(*operator)
+                                        .expect("is_comparison restricts the operator"));
+                                }
                                 // Only one side narrow, or a narrow value mixed with a member/
                                 // load — not modeled; defer rather than miscompile.
                                 if left_extend.is_some()
