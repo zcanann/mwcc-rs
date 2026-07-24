@@ -86,38 +86,70 @@ fn absolute_pool_load(
     output: &mwcc_machine_code::MachineFunction,
     high: usize,
 ) -> Option<AbsolutePoolLoad> {
-    let [Instruction::AddImmediateShifted {
+    let Instruction::AddImmediateShifted {
         d: base,
         a: 0,
         immediate: 0,
-    }, load] = &output.instructions[high..high + 2]
+    } = output.instructions.get(high)?
     else {
         return None;
-    };
-    let (destination, width) = match load {
-        Instruction::LoadFloatSingle { d, a, offset: 0 } if a == base => {
-            (*d, PoolFloatWidth::Single)
-        }
-        Instruction::LoadFloatDouble { d, a, offset: 0 } if a == base => {
-            (*d, PoolFloatWidth::Double)
-        }
-        _ => return None,
     };
     let high_relocation = output
         .relocations
         .iter()
         .find(|relocation| relocation.instruction_index == high)?;
-    let low_relocation = output
-        .relocations
+    if high_relocation.kind != RelocationKind::Addr16Ha {
+        return None;
+    }
+    let search_end = (high + 9).min(output.instructions.len());
+    for low in high + 1..search_end {
+        let load = &output.instructions[low];
+        let loaded = match load {
+            Instruction::LoadFloatSingle { d, a, offset: 0 } if a == base => {
+                Some((*d, PoolFloatWidth::Single))
+            }
+            Instruction::LoadFloatDouble { d, a, offset: 0 } if a == base => {
+                Some((*d, PoolFloatWidth::Double))
+            }
+            _ => None,
+        };
+        if let Some((destination, width)) = loaded {
+            let low_relocation = output
+                .relocations
+                .iter()
+                .find(|relocation| relocation.instruction_index == low)?;
+            if low_relocation.kind == RelocationKind::Addr16Lo
+                && schedule_relocations::same_target_value(
+                    &output.relocations,
+                    &output.constants,
+                    high,
+                    low,
+                )
+                && !has_alternate_entry(&output.instructions, high + 1..low + 1)
+            {
+                return Some(AbsolutePoolLoad {
+                    high,
+                    low,
+                    destination,
+                    width,
+                });
+            }
+            return None;
+        }
+        if is_control_flow(load) || writes_general_register(load, *base) {
+            return None;
+        }
+    }
+    None
+}
+
+fn writes_general_register(instruction: &Instruction, register: u8) -> bool {
+    mwcc_vreg::register_operands(instruction)
         .iter()
-        .find(|relocation| relocation.instruction_index == high + 1)?;
-    (high_relocation.kind == RelocationKind::Addr16Ha
-        && low_relocation.kind == RelocationKind::Addr16Lo)
-        .then_some(AbsolutePoolLoad {
-            high,
-            low: high + 1,
-            destination,
-            width,
+        .any(|operand| {
+            operand.role == mwcc_vreg::RegisterRole::Define
+                && operand.class == mwcc_vreg::Class::General
+                && operand.register == register
         })
 }
 
@@ -238,6 +270,29 @@ mod tests {
             offset: 20,
         });
         assert_eq!(redundant_absolute_pool_load(&output), Some((3, 4)));
+    }
+
+    #[test]
+    fn recognizes_a_pool_load_with_scheduled_work_between_its_halves() {
+        let mut output = repeated_loads(Instruction::LoadFloatSingle {
+            d: 0,
+            a: 31,
+            offset: 20,
+        });
+        output.instructions.insert(
+            1,
+            Instruction::StoreHalfword {
+                s: 5,
+                a: 3,
+                offset: 0,
+            },
+        );
+        for relocation in &mut output.relocations {
+            if relocation.instruction_index >= 1 {
+                relocation.instruction_index += 1;
+            }
+        }
+        assert_eq!(redundant_absolute_pool_load(&output), Some((4, 5)));
     }
 
     #[test]
