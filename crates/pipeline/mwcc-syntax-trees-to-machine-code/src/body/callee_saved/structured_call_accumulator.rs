@@ -296,6 +296,11 @@ impl Generator {
             return;
         }
         let order: &[usize] = match self.behavior.frame_convention {
+            FrameConvention::LinkageFirst
+                if self.behavior.power_pc_7400_scheduling_enabled() =>
+            {
+                &[0, 3, 1, 4, 5, 2, 6]
+            }
             FrameConvention::LinkageFirst => &[0, 1, 3, 4, 5, 2, 6],
             FrameConvention::Predecrement => &[0, 3, 1, 4, 5, 6, 2],
         };
@@ -317,6 +322,11 @@ impl Generator {
             return;
         }
         let order: &[usize] = match self.behavior.frame_convention {
+            FrameConvention::LinkageFirst
+                if self.behavior.power_pc_7400_scheduling_enabled() =>
+            {
+                &[0, 3, 1, 2]
+            }
             FrameConvention::LinkageFirst => &[0, 1, 3, 2],
             FrameConvention::Predecrement => &[0, 3, 1, 2],
         };

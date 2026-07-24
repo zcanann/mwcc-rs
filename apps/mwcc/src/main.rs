@@ -2222,6 +2222,9 @@ mod tests {
     #[path = "bit_reverse_loop.rs"]
     mod bit_reverse_loop;
 
+    #[path = "structured_7400_schedules.rs"]
+    mod structured_7400_schedules;
+
     #[path = "extern_unsized_array.rs"]
     mod extern_unsized_array;
 

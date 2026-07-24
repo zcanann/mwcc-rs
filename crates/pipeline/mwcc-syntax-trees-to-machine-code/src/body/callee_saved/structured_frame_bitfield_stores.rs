@@ -59,6 +59,29 @@ impl Generator {
             stores.push((value, offset));
         }
 
+        if self.behavior.power_pc_7400_scheduling_enabled() {
+            match stores.as_slice() {
+                [first, second, third, fourth] => {
+                    self.evaluate(first.0, Type::UnsignedInt, 0)?;
+                    self.evaluate(second.0, Type::UnsignedInt, 4)?;
+                    self.emit_frame_array_byte_store(0, first.1);
+                    self.evaluate(third.0, Type::UnsignedInt, 3)?;
+                    self.evaluate(fourth.0, Type::UnsignedInt, 0)?;
+                    self.emit_frame_array_byte_store(4, second.1);
+                    self.emit_frame_array_byte_store(3, third.1);
+                    self.emit_frame_array_byte_store(0, fourth.1);
+                }
+                [first, second] => {
+                    self.evaluate(first.0, Type::UnsignedInt, 3)?;
+                    self.evaluate(second.0, Type::UnsignedInt, 0)?;
+                    self.emit_frame_array_byte_store(3, first.1);
+                    self.emit_frame_array_byte_store(0, second.1);
+                }
+                _ => unreachable!("store count was validated above"),
+            }
+            return Ok(true);
+        }
+
         match (self.behavior.frame_convention, stores.as_slice()) {
             (FrameConvention::Predecrement, stores) => {
                 let registers: &[u8] = if stores.len() == 4 {

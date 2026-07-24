@@ -113,6 +113,20 @@ impl Generator {
         let file = self.string_literal_placeholder(file);
         let asserted = self.string_literal_placeholder(asserted);
         match self.behavior.frame_convention {
+            FrameConvention::LinkageFirst
+                if self.behavior.power_pc_7400_scheduling_enabled() =>
+            {
+                self.emit_address_high(3, &file);
+                self.emit_address_high(4, &asserted);
+                self.emit_string_address_low(&asserted, 4, 5);
+                self.emit_string_address_low(&file, 3, 3);
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate(4, line));
+                self.output
+                    .instructions
+                    .push(Instruction::ConditionRegisterClear { d: 6 });
+            }
             FrameConvention::LinkageFirst => {
                 self.emit_address_high(3, &file);
                 self.output
