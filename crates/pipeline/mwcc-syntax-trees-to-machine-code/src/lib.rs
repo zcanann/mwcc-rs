@@ -606,6 +606,7 @@ pub fn lower_function(
     generator.schedule_frame_vector_accumulation();
     generator.schedule_guarded_bitfield_storage_cache();
     generator.schedule_inlined_sign_store();
+    generator.schedule_inlined_acceleration_select();
     generator.schedule_inlined_symmetric_float_clamp();
     generator.schedule_mixed_member_zero_reset();
     generator.schedule_variadic_report_member_arguments();
