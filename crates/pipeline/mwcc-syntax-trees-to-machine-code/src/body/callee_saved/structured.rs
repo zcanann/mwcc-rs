@@ -393,8 +393,10 @@ impl Generator {
         let count = eager_saved_locals.len()
             + saved_parameters.len()
             + parameter_home_reuse.fresh_group_count;
-        let unused_array_two_homes =
-            unused_frame_array && saved_parameters.is_empty() && count == 2;
+        let unused_array_two_homes = unused_frame_array
+            && saved_parameters.is_empty()
+            && count == 2
+            && deferred_home_plan.group_count != 0;
         let first_saved = 32usize.saturating_sub(count);
         let dense_frame = uses_dense_saved_register_range(
             with_frame_array,
@@ -747,7 +749,12 @@ impl Generator {
                 .push(Instruction::BranchAndLink { target: helper });
         }
 
+        let unused_array_eager_homes = unused_frame_array
+            && saved_parameters.is_empty()
+            && deferred_home_plan.group_count == 0
+            && eager_saved_locals.len() >= 2;
         let batched_saved_home_stores = unused_array_two_homes
+            || unused_array_eager_homes
             || saved_home_stores_precede_initialization(
                 self.behavior.frame_convention,
                 eager_saved_locals.len(),
