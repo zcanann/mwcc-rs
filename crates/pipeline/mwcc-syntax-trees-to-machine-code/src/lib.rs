@@ -919,6 +919,33 @@ pub(crate) fn remap_instruction_indices(generator: &mut Generator, permutation: 
     remap_branch_targets(&mut generator.output.instructions, permutation);
 }
 
+/// Remove one instruction after labels have been resolved, preserving every
+/// instruction-index owner. A branch to the erased instruction denotes the
+/// continuation that followed it, so it must target the survivor now occupying
+/// the same slot rather than the preceding instruction.
+pub(crate) fn remove_instruction_retargeting_to_next(
+    generator: &mut Generator,
+    index: usize,
+) {
+    let old_len = generator.output.instructions.len();
+    debug_assert!(index < old_len);
+    generator.output.instructions.remove(index);
+    generator
+        .output
+        .relocations
+        .retain(|relocation| relocation.instruction_index != index);
+    generator.labels.removed_retargeting_to_next(index, 1);
+    let permutation = instruction_removal_permutation(old_len, index);
+    remap_instruction_indices(generator, &permutation);
+}
+
+fn instruction_removal_permutation(old_len: usize, index: usize) -> Vec<usize> {
+    debug_assert!(index < old_len);
+    (0..old_len)
+        .map(|old| if old <= index { old } else { old - 1 })
+        .collect()
+}
+
 fn remap_branch_targets(instructions: &mut [Instruction], permutation: &[usize]) {
     let old_end = permutation.len();
     let new_end = instructions.len();
@@ -1040,6 +1067,24 @@ fn collapse_conditional_skip_to_backward_branch_once(
 #[cfg(test)]
 mod instruction_index_tests {
     use super::*;
+
+    #[test]
+    fn a_branch_to_a_removed_instruction_retargets_to_the_next_survivor() {
+        let mut instructions = vec![
+            Instruction::Branch {
+                target: 2,
+            },
+            Instruction::load_immediate(3, 1),
+            Instruction::load_immediate(4, 2),
+            Instruction::load_immediate(5, 3),
+        ];
+        instructions.remove(2);
+        let permutation = instruction_removal_permutation(4, 2);
+        remap_branch_targets(&mut instructions, &permutation);
+
+        assert_eq!(instructions[0], Instruction::Branch { target: 2 });
+        assert_eq!(instructions[2], Instruction::load_immediate(5, 3));
+    }
 
     #[test]
     fn a_removed_self_move_remaps_the_guarded_continuation() {

@@ -16,20 +16,7 @@ impl Generator {
         safe_offsets: &std::collections::HashSet<i16>,
     ) {
         while let Some(index) = adjacent_forwarded_load(&self.output.instructions, safe_offsets) {
-            self.output.instructions.remove(index);
-            let old_len = self.output.instructions.len() + 1;
-            let permutation: Vec<usize> = (0..old_len)
-                .map(|old| {
-                    if old < index {
-                        old
-                    } else if old == index {
-                        index.saturating_sub(1)
-                    } else {
-                        old - 1
-                    }
-                })
-                .collect();
-            crate::remap_instruction_indices(self, &permutation);
+            crate::remove_instruction_retargeting_to_next(self, index);
         }
     }
 }

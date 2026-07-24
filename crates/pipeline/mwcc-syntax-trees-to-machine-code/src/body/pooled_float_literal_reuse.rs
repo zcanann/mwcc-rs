@@ -20,23 +20,7 @@ impl Generator {
     }
 
     fn remove_redundant_pool_load_instruction(&mut self, index: usize) {
-        let old_len = self.output.instructions.len();
-        self.output.instructions.remove(index);
-        self.output
-            .relocations
-            .retain(|relocation| relocation.instruction_index != index);
-        let permutation: Vec<usize> = (0..old_len)
-            .map(|old| {
-                if old < index {
-                    old
-                } else if old == index {
-                    index.saturating_sub(1)
-                } else {
-                    old - 1
-                }
-            })
-            .collect();
-        crate::remap_instruction_indices(self, &permutation);
+        crate::remove_instruction_retargeting_to_next(self, index);
     }
 }
 
