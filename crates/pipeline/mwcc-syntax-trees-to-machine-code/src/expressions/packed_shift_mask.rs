@@ -120,6 +120,14 @@ fn decompose(expression: &Expression) -> Option<PackedShiftMask<'_>> {
     }
 }
 
+pub(crate) fn is_shallow_packed_shift_mask_expression(expression: &Expression) -> bool {
+    decompose(expression).is_some_and(|pipeline| {
+        pipeline.operations == 2
+            && constant_value(pipeline.source).is_none()
+            && mask_to_run(pipeline.mask).is_some()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

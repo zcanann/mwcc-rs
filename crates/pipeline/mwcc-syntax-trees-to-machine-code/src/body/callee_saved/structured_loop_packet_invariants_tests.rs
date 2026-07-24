@@ -39,6 +39,18 @@ fn repeated_value() -> Expression {
     value
 }
 
+fn shallow_dynamic_value() -> Expression {
+    Expression::Binary {
+        operator: BinaryOperator::ShiftLeft,
+        left: Box::new(Expression::Binary {
+            operator: BinaryOperator::BitAnd,
+            left: Box::new(Expression::Variable("a".into())),
+            right: Box::new(Expression::IntegerLiteral(0xfff)),
+        }),
+        right: Box::new(Expression::IntegerLiteral(2)),
+    }
+}
+
 fn function(statements: Vec<Statement>) -> Function {
     Function {
         return_type: Type::Void,
@@ -177,5 +189,37 @@ fn keeps_single_use_hoists_scoped_to_their_own_loops() {
     assert!(matches!(
         &hoisted.statements[3],
         Statement::Assign { name, .. } if name == "__mwcc_packet_word_1"
+    ));
+}
+
+#[test]
+fn names_a_shallow_dynamic_packet_field_inside_the_loop() {
+    let function = function(vec![
+        Statement::Assign {
+            name: "a".into(),
+            value: Expression::IntegerLiteral(4),
+        },
+        loop_with(vec![
+            Statement::Assign {
+                name: "a".into(),
+                value: Expression::IntegerLiteral(5),
+            },
+            packet_word("cursor", 0, shallow_dynamic_value()),
+        ]),
+    ]);
+    let rewritten = hoist_repeated_packet_words(&function).expect("named dynamic field");
+    let Statement::Loop { body, .. } = &rewritten.statements[1] else {
+        panic!("expected loop")
+    };
+    assert!(matches!(
+        &body[1],
+        Statement::Assign { name, .. } if name == "__mwcc_packet_word_0"
+    ));
+    assert!(matches!(
+        &body[2],
+        Statement::Store {
+            value: Expression::Variable(name),
+            ..
+        } if name == "__mwcc_packet_word_0"
     ));
 }
