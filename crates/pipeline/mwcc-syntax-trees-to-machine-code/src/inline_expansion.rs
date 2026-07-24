@@ -20,8 +20,8 @@ use call_sites::collect_function_calls;
 use mwcc_syntax_trees::{Expression, Function, Statement};
 use returns::rewrite_inline_returns;
 use safety::{
-    composable_function, materializable_arguments, stable_argument, stable_arguments,
-    stable_local_values,
+    automatic_composable_function, composable_function, materializable_arguments,
+    stable_argument, stable_arguments, stable_local_values,
 };
 use std::collections::{HashMap, HashSet};
 use substitution::substitute_statement;
@@ -94,7 +94,8 @@ impl InlineBodySet {
             bodies.insert(function.name.clone(), function.clone());
         }
         for function in definitions.iter().filter(|function| {
-            composable_function(function) && call_counts.get(&function.name).copied() == Some(1)
+            automatic_composable_function(function)
+                && call_counts.get(&function.name).copied() == Some(1)
         }) {
             bodies
                 .entry(function.name.clone())
@@ -446,17 +447,16 @@ impl InlineBodySet {
                         declaration.initializer = None;
                         locals.push(declaration);
                     }
-                    substituted.extend(callee.locals.iter().map(|local| {
-                        substitute_statement(
-                            &Statement::Assign {
-                                name: local.name.clone(),
-                                value: local
-                                    .initializer
-                                    .clone()
-                                    .expect("composable locals are initialized"),
-                            },
-                            &replacements,
-                        )
+                    substituted.extend(callee.locals.iter().filter_map(|local| {
+                        local.initializer.as_ref().map(|initializer| {
+                            substitute_statement(
+                                &Statement::Assign {
+                                    name: local.name.clone(),
+                                    value: initializer.clone(),
+                                },
+                                &replacements,
+                            )
+                        })
                     }));
                     substituted.extend(
                         callee

@@ -7,6 +7,7 @@ mod leading_bitfield_clear_call;
 mod leading_float_update_clamp;
 mod leading_member_store_call;
 mod leading_shared_zero_bitfield_guard;
+mod inlined_sign_store_schedule;
 mod symmetric_float_clamp;
 mod symmetric_float_decay;
 mod sign_selected_member_store;

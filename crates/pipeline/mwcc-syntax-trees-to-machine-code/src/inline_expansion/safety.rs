@@ -28,8 +28,10 @@ pub(super) fn composable_function(function: &Function) -> bool {
             !local.is_static
                 && !local.is_volatile
                 && local.array_length.is_none()
-                && local.initializer.is_some()
+                && (local.initializer.is_some()
+                    || !matches!(local.declared_type, Type::Void | Type::Struct { .. }))
         })
+        && uninitialized_local_reads_are_dominated(function)
         && function.guards.is_empty()
         && (function.return_expression.is_none()
             || matches!(function.return_expression, Some(Expression::Variable(ref name)) if name == "this"))
@@ -39,6 +41,123 @@ pub(super) fn composable_function(function: &Function) -> bool {
             .parameters
             .iter()
             .all(|parameter| !variable_is_modified_or_escaped(function, &parameter.name))
+}
+
+/// Apply MWCC's small-body gate to ordinary one-call definitions newly made
+/// composable by dominated, uninitialized locals. Explicit inline definitions
+/// retain the broader semantic safety check above. Previously composable
+/// initialized-local bodies also retain their established behavior.
+pub(super) fn automatic_composable_function(function: &Function) -> bool {
+    composable_function(function)
+        && (function
+            .locals
+            .iter()
+            .all(|local| local.initializer.is_some())
+            || statement_weight(&function.statements) <= 4)
+}
+
+fn statement_weight(statements: &[Statement]) -> usize {
+    statements
+        .iter()
+        .map(|statement| match statement {
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => 1 + statement_weight(then_body) + statement_weight(else_body),
+            _ => 1,
+        })
+        .sum()
+}
+
+/// Prove that every read of an uninitialized scalar local is dominated by an
+/// assignment on all incoming paths. This admits automatic-inline bodies that
+/// express a select as `if/else` assignments without inventing an initial
+/// value on a missing branch.
+fn uninitialized_local_reads_are_dominated(function: &Function) -> bool {
+    let tracked: HashSet<&str> = function
+        .locals
+        .iter()
+        .filter(|local| local.initializer.is_none())
+        .map(|local| local.name.as_str())
+        .collect();
+    reads_are_dominated(&function.statements, &tracked, &mut HashSet::new())
+}
+
+fn reads_are_dominated<'a>(
+    statements: &'a [Statement],
+    tracked: &HashSet<&'a str>,
+    assigned: &mut HashSet<&'a str>,
+) -> bool {
+    for statement in statements {
+        match statement {
+            Statement::Assign { name, value } => {
+                if reads_unassigned(value, tracked, assigned) {
+                    return false;
+                }
+                if let Some(name) = tracked.get(name.as_str()) {
+                    assigned.insert(*name);
+                }
+            }
+            Statement::Store { target, value } => {
+                if reads_unassigned(target, tracked, assigned)
+                    || reads_unassigned(value, tracked, assigned)
+                {
+                    return false;
+                }
+            }
+            Statement::Expression(expression) => {
+                if reads_unassigned(expression, tracked, assigned) {
+                    return false;
+                }
+            }
+            Statement::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                if reads_unassigned(condition, tracked, assigned) {
+                    return false;
+                }
+                let mut then_assigned = assigned.clone();
+                let mut else_assigned = assigned.clone();
+                if !reads_are_dominated(then_body, tracked, &mut then_assigned)
+                    || !reads_are_dominated(else_body, tracked, &mut else_assigned)
+                {
+                    return false;
+                }
+                assigned.retain(|name| {
+                    then_assigned.contains(name) && else_assigned.contains(name)
+                });
+                assigned.extend(then_assigned.intersection(&else_assigned).copied());
+            }
+            Statement::Return(value) => {
+                if value
+                    .as_ref()
+                    .is_some_and(|value| reads_unassigned(value, tracked, assigned))
+                {
+                    return false;
+                }
+            }
+            Statement::Switch { .. }
+            | Statement::Break
+            | Statement::Continue
+            | Statement::Goto(_)
+            | Statement::Label(_)
+            | Statement::Loop { .. } => return false,
+        }
+    }
+    true
+}
+
+fn reads_unassigned(
+    expression: &Expression,
+    tracked: &HashSet<&str>,
+    assigned: &HashSet<&str>,
+) -> bool {
+    tracked
+        .iter()
+        .any(|name| !assigned.contains(name) && expression_mentions(expression, name))
 }
 
 fn composable_statements(statements: &[Statement], local_names: &HashSet<&str>) -> bool {

@@ -4352,6 +4352,65 @@ mod tests {
     }
 
     #[test]
+    fn inlines_a_conditionally_assigned_sign_store_under_file_ipa() {
+        let source = br#"
+            struct CommonData { float threshold; };
+            extern struct CommonData* common_data;
+            struct Object {
+                char facing_padding[44];
+                float facing;
+                char input_padding[1520];
+                float stick_x;
+            };
+            void update_facing(struct Object* object) {
+                float direction;
+                if (object->stick_x >= 0) {
+                    direction = 1;
+                } else {
+                    direction = -1;
+                }
+                object->facing = direction;
+            }
+            void compiled(struct Object* object) {
+                if ((object->stick_x < 0 ? -object->stick_x : object->stick_x)
+                    > common_data->threshold) {
+                    update_facing(object);
+                }
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.emit_mwcats = false;
+        flags.ipa_file = true;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "ipa-sign-store.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("file IPA should inline the dominated conditional local");
+        let expected_text = [
+            0xc0, 0x43, 0x06, 0x20, 0xc0, 0x00, 0x00, 0x00, 0xfc, 0x02, 0x00, 0x40, 0x40,
+            0x80, 0x00, 0x0c, 0xfc, 0x20, 0x10, 0x50, 0x48, 0x00, 0x00, 0x08, 0xfc, 0x20,
+            0x10, 0x90, 0x80, 0x80, 0x00, 0x00, 0xc0, 0x04, 0x00, 0x00, 0xfc, 0x01, 0x00,
+            0x40, 0x4c, 0x81, 0x00, 0x20, 0xc0, 0x00, 0x00, 0x00, 0xfc, 0x02, 0x00, 0x40,
+            0x4c, 0x41, 0x13, 0x82, 0x40, 0x82, 0x00, 0x0c, 0xc0, 0x00, 0x00, 0x00, 0x48,
+            0x00, 0x00, 0x08, 0xc0, 0x00, 0x00, 0x00, 0xd0, 0x03, 0x00, 0x2c, 0x4e, 0x80,
+            0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected_text.len())
+            .any(|bytes| bytes == expected_text));
+    }
+
+    #[test]
     fn schedules_sign_directed_float_decay_with_zero_crossing_clamps() {
         let source = br#"
             struct Object {
