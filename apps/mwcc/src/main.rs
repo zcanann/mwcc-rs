@@ -2414,6 +2414,9 @@ mod tests {
     #[path = "raise_family.rs"]
     mod raise_family;
 
+    #[path = "pointer_fallback.rs"]
+    mod pointer_fallback;
+
     #[path = "aggregate_member_copy.rs"]
     mod aggregate_member_copy;
 

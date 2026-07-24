@@ -14,6 +14,7 @@ mod cxx;
 mod cxx_analysis_facts;
 mod cxx_new;
 mod cxx_rtti;
+mod cxx_static_data;
 mod expressions;
 mod explicit_instantiations;
 mod items;
@@ -239,6 +240,7 @@ pub fn parse_located_translation_unit_with_behavior(
         namespace_stack: Vec::new(),
         cxx_namespaces: std::collections::HashSet::new(),
         cxx_data_objects: std::collections::HashMap::new(),
+        cxx_static_data_members: std::collections::HashMap::new(),
         current_cxx_layout_scope: None,
         current_member_scope: None,
         force_active: false,
@@ -2546,6 +2548,46 @@ blr\n\
             .globals
             .iter()
             .any(|global| global.name == "half$localstatic1$helper__3stdFf"));
+    }
+
+    #[test]
+    fn qualifies_later_declared_class_statics_in_inline_bodies() {
+        let source = r#"
+            class Heap {
+            public:
+                static Heap* current() { return sCurrent; }
+            private:
+                static Heap* sCurrent;
+            };
+            Heap* use_current() { return Heap::current(); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        let accessor = unit
+            .skipped_inline_definitions
+            .iter()
+            .find(|function| function.name == "current__4HeapFv")
+            .expect("the in-class accessor should be recoverable");
+        assert!(matches!(
+            accessor.return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Variable(name))
+                if name == "sCurrent__4Heap"
+        ));
+        assert!(unit.globals.iter().any(|global| {
+            global.name == "sCurrent__4Heap"
+                && global.is_extern
+                && matches!(
+                    global.declared_type,
+                    mwcc_syntax_trees::Type::StructPointer { .. }
+                )
+        }));
     }
 
     #[test]

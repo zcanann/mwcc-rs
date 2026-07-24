@@ -4,9 +4,10 @@
 use super::*;
 
 impl Generator {
-    /// Lower `if (primary) return primary; return fallback;` when both values
-    /// are word-sized globals. MWCC keeps the first load live in r3 and turns
-    /// the successful arm into `bnelr`, avoiding a duplicate reload.
+    /// Lower `if (primary) return primary; return fallback;` for a word-sized
+    /// global, or a member loaded through the result-register parameter. MWCC
+    /// keeps the first load live in r3 and turns the successful arm into
+    /// `bnelr`, avoiding a duplicate reload.
     pub(crate) fn try_global_pointer_fallback_getter(
         &mut self,
         function: &Function,
@@ -19,11 +20,7 @@ impl Generator {
             return Ok(false);
         }
         let guard = &function.guards[0];
-        let (
-            Expression::Variable(condition),
-            Expression::Variable(guard_value),
-            Some(Expression::Variable(fallback)),
-        ) = (
+        let (condition, guard_value, Some(Expression::Variable(fallback))) = (
             &guard.condition,
             &guard.value,
             function.return_expression.as_ref(),
@@ -31,15 +28,36 @@ impl Generator {
         else {
             return Ok(false);
         };
-        if condition != guard_value
-            || !matches!(self.globals.get(condition), Some(Type::Pointer(_) | Type::StructPointer { .. }))
-            || !matches!(self.globals.get(fallback), Some(Type::Pointer(_) | Type::StructPointer { .. }))
+        if !same_operand(condition, guard_value)
+            || !matches!(
+                self.globals.get(fallback),
+                Some(Type::Pointer(_) | Type::StructPointer { .. })
+            )
         {
             return Ok(false);
         }
 
         let result = Eabi::general_result().number;
-        self.emit_global_load_value(condition, result)?;
+        match condition {
+            Expression::Variable(primary)
+                if matches!(
+                    self.globals.get(primary),
+                    Some(Type::Pointer(_) | Type::StructPointer { .. })
+                ) =>
+            {
+                self.emit_global_load_value(primary, result)?;
+            }
+            Expression::Member {
+                base,
+                member_type: Type::Pointer(_) | Type::StructPointer { .. },
+                ..
+            } if matches!(base.as_ref(), Expression::Variable(name)
+                if self.lookup_general(name) == Some(result)) =>
+            {
+                self.evaluate_tail(condition, function.return_type, result)?;
+            }
+            _ => return Ok(false),
+        }
         self.output
             .instructions
             .push(Instruction::CompareLogicalWordImmediate {

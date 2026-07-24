@@ -602,6 +602,11 @@ pub(crate) struct Parser {
     /// CodeWarrior ABI symbols. Semantic lookup stays source-shaped while ELF
     /// declarations and relocations use the mangled boundary name.
     pub(crate) cxx_data_objects: std::collections::HashMap<String, String>,
+    /// Static data members declared by each class body. Declaration recovery
+    /// records the complete class before parsing any in-class inline body, so
+    /// an accessor may name a member declared later in the class.
+    pub(crate) cxx_static_data_members:
+        std::collections::HashMap<(String, String), Type>,
     /// Lexical class scope used only while recovering one object layout.
     /// Unqualified nested value types must resolve against their containing
     /// class before namespace/global names with the same terminal spelling.
