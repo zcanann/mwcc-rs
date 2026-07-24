@@ -633,6 +633,11 @@ impl Generator {
             // bytes, but creates no retained value-table lane. Its logical
             // frame already accounts for the array and every saved home.
             LegacyCalleeSavedFrameLayout::PreserveLogicalSize
+        } else if is_plain_short_circuit_call_if(function) {
+            // A single call-bearing conjunction has no retained local table.
+            // Its saved entry values therefore use the ordinary value-origin
+            // lane instead of reserving the full incoming parameter table.
+            LegacyCalleeSavedFrameLayout::InferFromValueOrigin
         } else {
             LegacyCalleeSavedFrameLayout::RetainEntryParameterTable
         };
@@ -1943,6 +1948,24 @@ fn logical_and_count(expression: &Expression) -> u32 {
         } => 1 + logical_and_count(left) + logical_and_count(right),
         _ => 0,
     }
+}
+
+fn is_plain_short_circuit_call_if(function: &Function) -> bool {
+    function.return_type == Type::Void
+        && function.return_expression.is_none()
+        && function.locals.is_empty()
+        && matches!(
+            function.statements.as_slice(),
+            [Statement::If {
+                condition: Expression::Binary {
+                    operator: BinaryOperator::LogicalAnd,
+                    ..
+                },
+                then_body,
+                else_body,
+            }] if else_body.is_empty()
+                && matches!(then_body.as_slice(), [Statement::Expression(Expression::Call { .. })])
+        )
 }
 
 pub(super) fn logical_and_terms(expression: &Expression) -> Vec<&Expression> {
