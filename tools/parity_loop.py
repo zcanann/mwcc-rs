@@ -23,7 +23,7 @@ from reference_parity import (
 )
 
 
-INVENTORY_SCHEMA_VERSION = 5
+INVENTORY_SCHEMA_VERSION = 6
 
 
 def acquire_state_lock(state: Path) -> TextIO:

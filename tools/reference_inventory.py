@@ -2,10 +2,12 @@
 """Inventory the authoritative MWCC configuration of reference projects.
 
 The decomp projects already describe every object with its source path, MWCC
-version, and exact flag vector in ``configure.py``.  Generating build.ninja is
-not a useful way to read that information: it requires an extracted game image
-and writes generated files into the project.  This tool intercepts the project's
-``generate_build`` call instead and serializes the fully resolved object model.
+version, and flag vector in ``configure.py``. Generating build.ninja is not a
+useful way to read that information: it requires an extracted game image and
+writes generated files into the project. This tool intercepts the project's
+``generate_build`` call instead, resolves known cross-generation flag
+incompatibilities with explicit provenance, and serializes the resulting object
+model.
 
 By default every immediate child of the reference-project root is inspected and
 a deterministic JSON document is written to stdout.  ``GC/1.3.2r`` is recorded
@@ -26,6 +28,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -33,9 +36,69 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from parity_identity import configuration_id
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 SOURCE_SUFFIXES = {".c", ".cc", ".cp", ".cpp", ".cxx"}
 EXCLUDED_MW_VERSIONS = {"GC/1.3.2r", "ProDG/3.5"}
+
+
+def normalize_compiler_flags(
+    mw_version: str, flags: Sequence[Any], source: Optional[str] = None
+) -> Tuple[List[Any], List[Dict[str, str]]]:
+    """Resolve cross-generation spellings before invoking a selected compiler.
+
+    Some multi-variant project configurations reuse Wii-wide base flags for
+    libraries that explicitly select an older GC compiler. ``-enc SJIS`` and
+    build 163 are one such impossible combination; the project's own GC-era
+    spelling is ``-multibyte``. Record every substitution so the inventory
+    remains auditable rather than silently manufacturing a usable command.
+    """
+
+    normalized = list(flags)
+    changes: List[Dict[str, str]] = []
+    if not mw_version.startswith("GC/"):
+        return normalized, changes
+    for index, entry in enumerate(normalized):
+        if not isinstance(entry, str):
+            continue
+        try:
+            tokens = shlex.split(entry)
+        except ValueError:
+            continue
+        if tokens == ["-enc", "SJIS"]:
+            normalized[index] = "-multibyte"
+            changes.append(
+                {
+                    "from": entry,
+                    "to": "-multibyte",
+                    "reason": "GC compiler encoding-option compatibility",
+                }
+            )
+    if source is not None and source.startswith("libs/dolphin/src/"):
+        tokenized = set()
+        for entry in normalized:
+            if not isinstance(entry, str):
+                continue
+            try:
+                tokenized.add(tuple(shlex.split(entry)))
+            except ValueError:
+                continue
+        for include in (
+            "libs/dolphin/include",
+            "libs/dolphin/include/dolphin",
+        ):
+            option = ("-i", include)
+            if option in tokenized:
+                continue
+            rendered = f"-i {include}"
+            normalized.append(rendered)
+            changes.append(
+                {
+                    "from": "<missing>",
+                    "to": rendered,
+                    "reason": "GC Dolphin-library include compatibility",
+                }
+            )
+    return normalized, changes
 
 
 def source_metadata(path: Path) -> Dict[str, Any]:
@@ -181,16 +244,33 @@ def capture_project(project: Path, variant: Optional[str]) -> List[Dict[str, Any
                     if callable(completed)
                     else bool(completed)
                 )
+                mw_version = options["mw_version"]
+                source_name = source.as_posix()
+                cflags, cflag_normalizations = normalize_compiler_flags(
+                    mw_version,
+                    jsonable(options.get("cflags") or []),
+                    source_name,
+                )
+                extra_cflags, extra_cflag_normalizations = normalize_compiler_flags(
+                    mw_version, jsonable(options.get("extra_cflags") or [])
+                )
+                flag_normalizations = [
+                    {**change, "field": "cflags"} for change in cflag_normalizations
+                ] + [
+                    {**change, "field": "extra_cflags"}
+                    for change in extra_cflag_normalizations
+                ]
                 captured.append(
                     {
                         "project": project.name,
                         "variant": str(config_version),
-                        "source": source.as_posix(),
+                        "source": source_name,
                         **metadata,
                         "language": "c++" if source.suffix.lower() != ".c" else "c",
-                        "mw_version": options["mw_version"],
-                        "cflags": jsonable(options.get("cflags") or []),
-                        "extra_cflags": jsonable(options.get("extra_cflags") or []),
+                        "mw_version": mw_version,
+                        "cflags": cflags,
+                        "extra_cflags": extra_cflags,
+                        "flag_normalizations": flag_normalizations,
                         "library": options.get("lib"),
                         "shift_jis": bool(options.get("shift_jis")),
                         "extab_padding": jsonable(options.get("extab_padding")),

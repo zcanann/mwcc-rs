@@ -43,6 +43,7 @@ from parity_loop import (
     persistent_compiler_image,
     reusable_audit_manifest,
 )
+from reference_inventory import normalize_compiler_flags
 from reference_parity import (
     bounded_completion_order,
     cached_record_reusable,
@@ -84,6 +85,50 @@ def row(**overrides):
     value.update(overrides)
     value["configuration_id"] = configuration_id(value)
     return value
+
+
+class ReferenceInventoryTests(unittest.TestCase):
+    def test_gc_encoding_flag_is_normalized_with_provenance(self):
+        flags, changes = normalize_compiler_flags(
+            "GC/1.2.5n", ['-pragma "cats off"', "-enc SJIS"]
+        )
+        self.assertEqual(flags, ['-pragma "cats off"', "-multibyte"])
+        self.assertEqual(
+            changes,
+            [
+                {
+                    "from": "-enc SJIS",
+                    "to": "-multibyte",
+                    "reason": "GC compiler encoding-option compatibility",
+                }
+            ],
+        )
+
+    def test_wii_encoding_flag_is_unchanged(self):
+        flags, changes = normalize_compiler_flags("Wii/1.0", ["-enc SJIS"])
+        self.assertEqual(flags, ["-enc SJIS"])
+        self.assertEqual(changes, [])
+
+    def test_gc_dolphin_source_receives_its_library_include_roots(self):
+        flags, changes = normalize_compiler_flags(
+            "GC/1.2.5n",
+            ["-i include", "-i libs/revolution/include"],
+            "libs/dolphin/src/dvd/dvdFatal.c",
+        )
+        self.assertEqual(
+            flags[-2:],
+            [
+                "-i libs/dolphin/include",
+                "-i libs/dolphin/include/dolphin",
+            ],
+        )
+        self.assertEqual(
+            [change["reason"] for change in changes],
+            [
+                "GC Dolphin-library include compatibility",
+                "GC Dolphin-library include compatibility",
+            ],
+        )
 
 
 def refctx_fixture(
