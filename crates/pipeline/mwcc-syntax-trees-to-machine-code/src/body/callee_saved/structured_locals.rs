@@ -734,6 +734,47 @@ pub(super) fn body_uses_local(statements: &[Statement], name: &str) -> bool {
     })
 }
 
+/// Recognize a pointer phi whose true arm selects a frame aggregate and whose
+/// false arm selects null. Build 163 keeps this short-lived condition value in
+/// r4, alongside frame-address call arguments, rather than the r3 result lane.
+pub(super) fn is_frame_address_null_select(function: &Function, name: &str) -> bool {
+    let frame_aggregates: std::collections::HashSet<&str> = function
+        .locals
+        .iter()
+        .filter_map(|local| {
+            matches!(local.declared_type, Type::Struct { .. }).then_some(local.name.as_str())
+        })
+        .collect();
+    if frame_aggregates.is_empty() {
+        return false;
+    }
+    function.statements.iter().any(|statement| {
+        let Statement::If {
+            then_body,
+            else_body,
+            ..
+        } = statement
+        else {
+            return false;
+        };
+        let selects_frame = then_body.iter().any(|statement| {
+            matches!(statement,
+                Statement::Assign {
+                    name: assigned,
+                    value: Expression::AddressOf { operand },
+                } if assigned == name
+                    && matches!(operand.as_ref(), Expression::Variable(frame)
+                        if frame_aggregates.contains(frame.as_str())))
+        });
+        let selects_null = else_body.iter().any(|statement| {
+            matches!(statement,
+                Statement::Assign { name: assigned, value }
+                    if assigned == name && crate::analysis::is_zero_literal(value))
+        });
+        selects_frame && selects_null
+    })
+}
+
 fn expression_assigns_name(expression: &Expression, name: &str) -> bool {
     matches!(expression,
         Expression::Assign { target, .. }
