@@ -170,9 +170,11 @@ fn analyze_statement(
                     .map(|statement| analyze_statement(statement, bindings))
                     .sum::<Analysis>()
         }
-        Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => {
-            Analysis::default()
-        }
+        Statement::Break
+        | Statement::Continue
+        | Statement::Goto(_)
+        | Statement::Label(_)
+        | Statement::InlineAsm(_) => Analysis::default(),
     }
 }
 

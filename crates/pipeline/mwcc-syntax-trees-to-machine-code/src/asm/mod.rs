@@ -108,6 +108,107 @@ pub(crate) fn append_embedded_asm(
     Ok(())
 }
 
+/// A position-independent assembled fragment for an embedded `asm { ... }`
+/// statement. Instruction and relocation indices are local to the fragment;
+/// the ordinary body emitter rebases them at the statement's final position.
+pub(crate) struct InlineAsmFragment {
+    pub(crate) instructions: Vec<Instruction>,
+    pub(crate) relocations: Vec<Relocation>,
+    pub(crate) symbol_order: Vec<String>,
+}
+
+/// Assemble an embedded block without synthesizing a function return or
+/// linkage frame. This is deliberately distinct from `assemble_asm_function`:
+/// the surrounding C/C++ function owns its prologue, epilogue, scheduling, and
+/// object metadata.
+pub(crate) fn assemble_inline_block(
+    body: &[AsmItem],
+    behavior: &Behavior,
+) -> Compilation<InlineAsmFragment> {
+    let mut labels = HashMap::new();
+    let mut index = 0usize;
+    for item in body {
+        match item {
+            AsmItem::Label(name) => {
+                labels.insert(name.as_str(), index);
+            }
+            AsmItem::Entry(name) => {
+                return Err(Diagnostic::error(format!(
+                    "an embedded inline-asm block cannot define entry symbol '{name}'"
+                )));
+            }
+            AsmItem::Instruction(line) if emits_word(line) => index += 1,
+            AsmItem::Instruction(_) => {}
+        }
+    }
+
+    let mut instructions = Vec::new();
+    let mut relocations = Vec::new();
+    let mut symbol_order = Vec::new();
+    for item in body {
+        let AsmItem::Instruction(line) = item else {
+            continue;
+        };
+        if matches!(line.mnemonic.as_str(), "fralloc" | "frfree" | "nofralloc") {
+            return Err(Diagnostic::error(format!(
+                "frame directive '{}' is valid only in an asm function",
+                line.mnemonic
+            )));
+        }
+        let instruction_index = instructions.len();
+        let Some(instruction) = assemble_line(line, &labels, instruction_index)? else {
+            continue;
+        };
+        instructions.push(instruction);
+        for operand in &line.operands {
+            let relocation = match operand {
+                AsmOperand::Symbol { name, suffix }
+                | AsmOperand::SymbolMemory { name, suffix, .. } => {
+                    Some((name, relocation_kind(*suffix)))
+                }
+                AsmOperand::SmallDataSymbolMemory { name, .. } => {
+                    Some((name, RelocationKind::EmbSda21))
+                }
+                _ => None,
+            };
+            if let Some((name, kind)) = relocation {
+                relocations.push(Relocation {
+                    instruction_index,
+                    kind,
+                    target: RelocationTarget::External(name.clone()),
+                });
+                if !symbol_order.contains(name) {
+                    symbol_order.push(name.clone());
+                }
+            }
+        }
+        if matches!(line.mnemonic.as_str(), "b" | "bl") {
+            if let Some(AsmOperand::Label(name)) = line.operands.first() {
+                if !labels.contains_key(name.as_str()) {
+                    relocations.push(Relocation {
+                        instruction_index,
+                        kind: RelocationKind::Rel24,
+                        target: RelocationTarget::External(name.clone()),
+                    });
+                    if !symbol_order.contains(name) {
+                        symbol_order.push(name.clone());
+                    }
+                }
+            }
+        }
+    }
+    if behavior.asm_branch_optimization_style
+        == AsmBranchOptimizationStyle::ChaseAndCollapseReturns
+    {
+        apply_branch_peepholes(&mut instructions);
+    }
+    Ok(InlineAsmFragment {
+        instructions,
+        relocations,
+        symbol_order,
+    })
+}
+
 /// Assemble an inline-`asm` function into a finished [`MachineFunction`]. The
 /// caller has already established `function.asm_body` is `Some`.
 pub(crate) fn assemble_asm_function(

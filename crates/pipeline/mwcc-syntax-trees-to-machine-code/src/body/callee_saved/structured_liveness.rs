@@ -70,6 +70,9 @@ fn flow(
             continue;
         }
         match statement {
+            Statement::InlineAsm(_) => {
+                prior_call |= statement_has_call(statement);
+            }
             Statement::If {
                 condition,
                 then_body,

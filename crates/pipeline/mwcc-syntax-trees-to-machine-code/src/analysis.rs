@@ -99,9 +99,11 @@ pub(crate) fn values_live_across_call(function: &Function) -> Option<Vec<String>
     }
     for statement in &function.statements {
         let expressions: Vec<&Expression> = match statement {
-            Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => {
-                vec![]
-            }
+            Statement::InlineAsm(_)
+            | Statement::Break
+            | Statement::Continue
+            | Statement::Goto(_)
+            | Statement::Label(_) => vec![],
             Statement::Store { target, value } => vec![target, value],
             Statement::Assign { value, .. } => vec![value],
             Statement::Expression(expression) => vec![expression],
@@ -231,6 +233,7 @@ pub(crate) fn function_uses_name(function: &Function, name: &str) -> bool {
             Statement::Expression(expression) | Statement::Return(Some(expression)) => {
                 expression_reads_name(expression, name)
             }
+            Statement::InlineAsm(_) => false,
             Statement::If {
                 condition,
                 then_body,
@@ -846,7 +849,11 @@ fn statement_reads_across_call(
     registers: &HashSet<&str>,
 ) -> bool {
     match statement {
-        Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => false,
+        Statement::InlineAsm(_)
+        | Statement::Break
+        | Statement::Continue
+        | Statement::Goto(_)
+        | Statement::Label(_) => false,
         Statement::Store { target, value } => {
             expression_reads_across_call(target, prior_call, registers)
                 || expression_reads_across_call(value, prior_call, registers)
@@ -1257,6 +1264,16 @@ pub(crate) fn expression_has_side_effect(expression: &Expression) -> bool {
 /// Whether a function makes a call (and so needs the non-leaf prologue).
 pub(crate) fn statement_has_call(statement: &Statement) -> bool {
     match statement {
+        Statement::InlineAsm(items) => items.iter().any(|item| {
+            matches!(
+                item,
+                mwcc_syntax_trees::AsmItem::Instruction(instruction)
+                    if matches!(
+                        instruction.mnemonic.as_str(),
+                        "bl" | "blrl" | "bctrl"
+                    )
+            )
+        }),
         Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => false,
         Statement::Store { target, value } => {
             expression_has_call(target) || expression_has_call(value)

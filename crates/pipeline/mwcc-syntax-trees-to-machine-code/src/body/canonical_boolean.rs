@@ -123,6 +123,7 @@ fn statement_assigns_only_booleans(
         | Statement::Continue
         | Statement::Goto(_)
         | Statement::Label(_) => true,
+        Statement::InlineAsm(_) => false,
     }
 }
 

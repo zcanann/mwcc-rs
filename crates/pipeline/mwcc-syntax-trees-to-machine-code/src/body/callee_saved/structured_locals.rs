@@ -200,6 +200,7 @@ fn collect_deferred_interval(
             collect_expression_interval(expression, name, position, interval);
         }
         let reads = match statement {
+            Statement::InlineAsm(_) => false,
             Statement::Store { target, value } => {
                 expression_reads_name(target, name) || expression_reads_name(value, name)
             }
@@ -533,6 +534,7 @@ fn assignment_flow(
             assigned |= expression_assigned;
         }
         let reads_before_assignment = match statement {
+            Statement::InlineAsm(_) => false,
             Statement::Assign {
                 name: assigned_name,
                 value,
@@ -793,7 +795,8 @@ fn body_assigns_before_control_exit(body: &[Statement], name: &str) -> bool {
             | Statement::Break
             | Statement::Continue
             | Statement::Goto(_)
-            | Statement::Label(_) => return false,
+            | Statement::Label(_)
+            | Statement::InlineAsm(_) => return false,
             Statement::Assign { value, .. } => {
                 if expression_reads_name(value, name) {
                     return false;
@@ -916,6 +919,7 @@ fn expression_initialization_flow(
 
 pub(super) fn body_uses_local(statements: &[Statement], name: &str) -> bool {
     statements.iter().any(|statement| match statement {
+        Statement::InlineAsm(_) => false,
         Statement::Store { target, value } => {
             expression_reads_name(target, name) || expression_reads_name(value, name)
         }

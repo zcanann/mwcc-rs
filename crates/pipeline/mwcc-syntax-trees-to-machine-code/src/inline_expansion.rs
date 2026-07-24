@@ -17,7 +17,9 @@ mod value_body;
 mod value_calls;
 
 use call_sites::collect_function_calls;
-use mwcc_syntax_trees::{AsmItem, Expression, Function, Statement, Type};
+use mwcc_syntax_trees::{
+    AsmItem, Expression, Function, InlineAsmBlock, Statement, Type,
+};
 use returns::rewrite_inline_returns;
 use safety::{
     automatic_composable_function, composable_function, materializable_arguments,
@@ -123,13 +125,15 @@ impl InlineBodySet {
             collect_function_calls(function, &mut call_counts);
         }
         let mut bodies = HashMap::new();
-        for function in skipped
-            .iter()
-            .filter(|function| {
-                !asm_fragments.contains_key(&function.name) && composable_function(function)
-            })
-        {
-            bodies.insert(function.name.clone(), function.clone());
+        for function in skipped {
+            if asm_fragments.contains_key(&function.name) {
+                continue;
+            }
+            let materialized = materialize_embedded_asm_statements(function);
+            let function = materialized.as_ref().unwrap_or(function);
+            if composable_function(function) {
+                bodies.insert(function.name.clone(), function.clone());
+            }
         }
         for function in definitions.iter().filter(|function| {
             automatic_composable_function(function)
@@ -751,9 +755,11 @@ impl InlineBodySet {
                         .is_some_and(|expression| self.expression_contains_call(expression))
                     || body.iter().any(|statement| self.contains_call(statement))
             }
-            Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => {
-                false
-            }
+            Statement::InlineAsm(_)
+            | Statement::Break
+            | Statement::Continue
+            | Statement::Goto(_)
+            | Statement::Label(_) => false,
         }
     }
 
@@ -835,6 +841,52 @@ impl InlineBodySet {
             | Expression::CompoundLiteral { .. } => false,
         }
     }
+}
+
+/// Move top-level embedded assembly blocks into the ordered statement tree used
+/// by retained-inline composition. A zero-argument inline helper can then be
+/// spliced into an arbitrarily nested caller arm without losing the assembly's
+/// semantic position. Parameterized blocks remain outside this subset because
+/// their symbolic operands require C-local register binding, not textual
+/// substitution.
+fn materialize_embedded_asm_statements(function: &Function) -> Option<Function> {
+    if function.inline_asm_blocks.is_empty() {
+        return None;
+    }
+    if !function.parameters.is_empty() || !function.locals.is_empty() {
+        return None;
+    }
+    if function
+        .inline_asm_blocks
+        .iter()
+        .any(|block| block.statement_index > function.statements.len())
+    {
+        return None;
+    }
+
+    let mut blocks: Vec<&InlineAsmBlock> = function.inline_asm_blocks.iter().collect();
+    blocks.sort_by_key(|block| block.statement_index);
+    let mut statements =
+        Vec::with_capacity(function.statements.len() + function.inline_asm_blocks.len());
+    let mut cursor = 0;
+    for index in 0..=function.statements.len() {
+        while blocks
+            .get(cursor)
+            .is_some_and(|block| block.statement_index == index)
+        {
+            statements.push(Statement::InlineAsm(blocks[cursor].items.clone()));
+            cursor += 1;
+        }
+        if let Some(statement) = function.statements.get(index) {
+            statements.push(statement.clone());
+        }
+    }
+
+    Some(Function {
+        statements,
+        inline_asm_blocks: Vec::new(),
+        ..function.clone()
+    })
 }
 
 /// Parameter substitution can turn a callee guard into a compile-time branch
@@ -940,7 +992,8 @@ fn remove_overwritten_vptr_stores(statements: Vec<Statement>) -> Vec<Statement> 
 mod tests {
     use super::*;
     use mwcc_syntax_trees::{
-        BinaryOperator, LocalDeclaration, LoopKind, Parameter, Pointee, Type,
+        AsmInstruction, AsmItem, AsmOperand, BinaryOperator, InlineAsmBlock,
+        LocalDeclaration, LoopKind, Parameter, Pointee, Type,
     };
 
     fn function(name: &str, parameters: Vec<Parameter>, statements: Vec<Statement>) -> Function {
@@ -1110,6 +1163,48 @@ mod tests {
             .expect("both statement bodies should compose");
         assert_eq!(expanded.statement_body_substitutions, 2);
         assert_eq!(expanded.statement_frame_residue_substitutions, 1);
+    }
+
+    #[test]
+    fn composes_zero_argument_embedded_asm_at_a_nested_call_site() {
+        let mut helper = function("configure", Vec::new(), Vec::new());
+        helper.inline_asm_blocks = vec![InlineAsmBlock {
+            statement_index: 0,
+            items: vec![AsmItem::Instruction(AsmInstruction {
+                mnemonic: "li".into(),
+                operands: vec![AsmOperand::Gpr(3), AsmOperand::Immediate(4)],
+                source_line: 7,
+            })],
+        }];
+        let caller = function(
+            "caller",
+            Vec::new(),
+            vec![Statement::If {
+                condition: Expression::Variable("enabled".into()),
+                then_body: vec![Statement::Expression(Expression::Call {
+                    name: "configure".into(),
+                    arguments: Vec::new(),
+                })],
+                else_body: Vec::new(),
+            }],
+        );
+
+        let expanded = InlineBodySet::analyze(&[helper])
+            .expand_calls(&caller)
+            .expect("the embedded-asm helper should compose");
+        assert!(matches!(
+            expanded.statements.as_slice(),
+            [Statement::If { then_body, .. }]
+                if matches!(
+                    then_body.as_slice(),
+                    [Statement::InlineAsm(items)]
+                        if matches!(
+                            items.as_slice(),
+                            [AsmItem::Instruction(AsmInstruction { mnemonic, .. })]
+                                if mnemonic == "li"
+                        )
+                )
+        ));
     }
 
     #[test]

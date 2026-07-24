@@ -168,6 +168,7 @@ fn reads_are_dominated<'a>(
                     return false;
                 }
             }
+            Statement::InlineAsm(_) => {}
             Statement::If {
                 condition,
                 then_body,
@@ -219,7 +220,7 @@ fn reads_unassigned(
 
 fn composable_statements(statements: &[Statement], local_names: &HashSet<&str>) -> bool {
     statements.iter().all(|statement| match statement {
-        Statement::Store { .. } | Statement::Expression(_) => true,
+        Statement::Store { .. } | Statement::Expression(_) | Statement::InlineAsm(_) => true,
         Statement::Assign { name, .. } => local_names.contains(name.as_str()),
         Statement::If {
             then_body,
@@ -531,6 +532,7 @@ pub(super) fn parameter_requires_materialization(function: &Function, name: &str
 
 fn statement_modifies_or_escapes(statement: &Statement, name: &str) -> bool {
     match statement {
+        Statement::InlineAsm(_) => false,
         Statement::Store { target, value } => {
             matches!(target, Expression::Variable(target_name) if target_name == name)
                 || expression_modifies_or_escapes(target, name)

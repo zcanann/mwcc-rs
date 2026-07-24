@@ -4212,6 +4212,30 @@ impl Generator {
                 ))
             }
             Statement::Store { target, value } => self.emit_store(target, value),
+            Statement::InlineAsm(items) => {
+                let mut fragment = crate::asm::assemble_inline_block(items, &self.behavior)?;
+                let base = self.output.instructions.len();
+                for instruction in &mut fragment.instructions {
+                    match instruction {
+                        Instruction::Branch { target }
+                        | Instruction::BranchConditionalForward { target, .. } => {
+                            *target += base;
+                        }
+                        _ => {}
+                    }
+                }
+                for relocation in &mut fragment.relocations {
+                    relocation.instruction_index += base;
+                }
+                self.output.instructions.extend(fragment.instructions);
+                self.output.relocations.extend(fragment.relocations);
+                for symbol in fragment.symbol_order {
+                    if !self.output.symbol_order.contains(&symbol) {
+                        self.output.symbol_order.push(symbol);
+                    }
+                }
+                Ok(())
+            }
             Statement::Expression(Expression::Call { name, arguments }) => {
                 self.emit_call(name, arguments, None, false)
             }

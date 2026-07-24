@@ -153,6 +153,25 @@ fn collect_statement(
     referenced: &mut HashSet<String>,
 ) {
     match statement {
+        Statement::InlineAsm(items) => {
+            for item in items {
+                let AsmItem::Instruction(instruction) = item else {
+                    continue;
+                };
+                for operand in &instruction.operands {
+                    let target = match operand {
+                        AsmOperand::Label(name)
+                        | AsmOperand::Symbol { name, .. }
+                        | AsmOperand::SymbolMemory { name, .. }
+                        | AsmOperand::SmallDataSymbolMemory { name, .. } => Some(name),
+                        _ => None,
+                    };
+                    if let Some(target) = target {
+                        record(target, owner, candidates, referenced);
+                    }
+                }
+            }
+        }
         Statement::Store { target, value } => {
             collect_expression(target, owner, candidates, referenced);
             collect_expression(value, owner, candidates, referenced);

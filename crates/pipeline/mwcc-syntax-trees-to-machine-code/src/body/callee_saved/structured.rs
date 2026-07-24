@@ -2556,7 +2556,8 @@ fn supports_statements(
     allow_global_search_loop: bool,
 ) -> bool {
     statements.iter().all(|statement| match statement {
-        Statement::Store { .. }
+        Statement::InlineAsm(_)
+        | Statement::Store { .. }
         | Statement::Expression(_)
         | Statement::Return(Some(_))
         | Statement::Return(None)
@@ -2611,6 +2612,7 @@ fn pure_local_alias(local: &LocalDeclaration) -> Option<&str> {
 fn value_read_before_redefinition(statements: &[Statement], name: &str) -> bool {
     for statement in statements {
         match statement {
+            Statement::InlineAsm(_) => {}
             Statement::Assign {
                 name: assigned,
                 value,

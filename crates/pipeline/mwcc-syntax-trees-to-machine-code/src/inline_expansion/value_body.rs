@@ -331,7 +331,8 @@ fn statement_expression(statement: &Statement) -> Option<Expression> {
             when_false: Box::new(statement_sequence(else_body)?),
             origin: ConditionalOrigin::IfAssignments,
         }),
-        Statement::Return(_)
+        Statement::InlineAsm(_)
+        | Statement::Return(_)
         | Statement::Switch { .. }
         | Statement::Break
         | Statement::Continue

@@ -68,7 +68,11 @@ fn collect_statement_calls(statements: &[Statement], counts: &mut HashMap<String
                 }
                 collect_statement_calls(body, counts);
             }
-            Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => {}
+            Statement::InlineAsm(_)
+            | Statement::Break
+            | Statement::Continue
+            | Statement::Goto(_)
+            | Statement::Label(_) => {}
         }
     }
 }

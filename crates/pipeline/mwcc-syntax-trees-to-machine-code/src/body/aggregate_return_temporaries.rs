@@ -83,6 +83,7 @@ fn rewrite_statements(
     let mut changed = false;
     for statement in statements {
         match statement {
+            Statement::InlineAsm(_) => {}
             Statement::Store { target, value } => {
                 changed |= rewrite_expression(
                     target,

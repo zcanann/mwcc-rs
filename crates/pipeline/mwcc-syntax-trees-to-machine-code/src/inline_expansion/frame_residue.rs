@@ -54,6 +54,7 @@ fn has_memory_mutation_before_surviving_call(statements: &[Statement]) -> bool {
 
 fn statement_contains_call(statement: &Statement) -> bool {
     match statement {
+        Statement::InlineAsm(_) => crate::analysis::statement_has_call(statement),
         Statement::Store { target, value } => {
             expression_contains_call(target) || expression_contains_call(value)
         }

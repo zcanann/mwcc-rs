@@ -182,7 +182,8 @@ impl Generator {
                     Statement::Break
                     | Statement::Continue
                     | Statement::Goto(_)
-                    | Statement::Label(_) => 0,
+                    | Statement::Label(_)
+                    | Statement::InlineAsm(_) => 0,
                 })
                 .sum()
         }

@@ -139,6 +139,7 @@ pub(crate) fn if_select(
 /// Control-flow statements are treated conservatively as referencing everything.
 pub(crate) fn statement_references_name(statement: &Statement, name: &str) -> bool {
     match statement {
+        Statement::InlineAsm(_) => true,
         // Jumps redirect control anywhere — conservative, like the other
         // control-flow arms below.
         Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => true,
@@ -1999,6 +2000,7 @@ pub(crate) fn function_calls_any(
     fn statement_calls(statement: &Statement, names: &std::collections::HashSet<String>) -> bool {
         use mwcc_syntax_trees::Statement as S;
         match statement {
+            S::InlineAsm(_) => false,
             S::Break | S::Continue | S::Goto(_) | S::Label(_) => false,
             S::Store { target, value } => {
                 expression_calls(target, names) || expression_calls(value, names)

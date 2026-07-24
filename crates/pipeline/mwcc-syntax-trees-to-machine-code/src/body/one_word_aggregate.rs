@@ -94,7 +94,8 @@ fn assigns_one_word_value(statement: &Statement, name: &str) -> bool {
         | Statement::Break
         | Statement::Continue
         | Statement::Goto(_)
-        | Statement::Label(_) => false,
+        | Statement::Label(_)
+        | Statement::InlineAsm(_) => false,
     }
 }
 

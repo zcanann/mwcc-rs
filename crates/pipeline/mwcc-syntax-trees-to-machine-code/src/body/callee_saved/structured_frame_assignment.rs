@@ -280,6 +280,7 @@ pub(super) fn is_transient_direct_call_argument_local(
         }
         for statement in statements {
             match statement {
+                Statement::InlineAsm(_) => {}
                 Statement::Store { target, value } => {
                     add_expression!(target);
                     add_expression!(value);
@@ -681,6 +682,7 @@ fn rewrite_low_mask_statement(
     cleared: u32,
 ) -> bool {
     match statement {
+        Statement::InlineAsm(_) => false,
         Statement::Store { target, value } => {
             !expression_reads_name(target, name) && high_shift_only(value, name, cleared)
         }
@@ -829,6 +831,7 @@ pub(super) fn sink_single_use_parameter_assignment(function: &Function) -> Optio
 
 fn statement_reads_name(statement: &Statement, name: &str) -> bool {
     match statement {
+        Statement::InlineAsm(_) => false,
         Statement::Store { target, value } => {
             expression_reads_name(target, name) || expression_reads_name(value, name)
         }

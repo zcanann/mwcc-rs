@@ -655,6 +655,7 @@ fn normalize_capture_arm(body: &mut ArmBody) {
 fn normalize_capture_statements(statements: &mut [Statement]) {
     for statement in statements {
         match statement {
+            Statement::InlineAsm(_) => {}
             Statement::Store { target, value } => {
                 normalize_capture_expression(target);
                 normalize_capture_expression(value);

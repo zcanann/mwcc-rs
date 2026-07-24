@@ -36,6 +36,7 @@ pub(super) fn expand_statement(
         )
     };
     match statement {
+        Statement::InlineAsm(_) => statement.clone(),
         Statement::Store { target, value } => Statement::Store {
             target: expression(target, active, changed, value_body_substitutions),
             value: expression(value, active, changed, value_body_substitutions),

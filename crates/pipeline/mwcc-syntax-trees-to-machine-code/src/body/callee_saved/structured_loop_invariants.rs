@@ -296,6 +296,7 @@ fn statements_write_name(statements: &[Statement], name: &str) -> bool {
         | Statement::Continue
         | Statement::Goto(_)
         | Statement::Label(_) => false,
+        Statement::InlineAsm(_) => true,
     })
 }
 

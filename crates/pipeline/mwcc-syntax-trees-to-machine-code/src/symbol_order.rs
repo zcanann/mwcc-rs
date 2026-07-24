@@ -9,7 +9,9 @@
 //! assignment's value before its target, and registers data-only subtraction
 //! operands right-first. The object writer consumes the resolved order uniformly.
 
-use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Statement, Type};
+use mwcc_syntax_trees::{
+    AsmItem, AsmOperand, BinaryOperator, Expression, Function, Statement, Type,
+};
 use mwcc_versions::SymbolTraversalStyle;
 
 /// The data and call references collected during the traversal, kept apart so the
@@ -157,6 +159,33 @@ fn collect_assignment(target: &Expression, value: &Expression, names: &mut Names
 
 fn collect_statement(statement: &Statement, names: &mut Names) {
     match statement {
+        Statement::InlineAsm(items) => {
+            for item in items {
+                let AsmItem::Instruction(instruction) = item else {
+                    continue;
+                };
+                for operand in &instruction.operands {
+                    let name = match operand {
+                        AsmOperand::Symbol { name, .. }
+                        | AsmOperand::SymbolMemory { name, .. }
+                        | AsmOperand::SmallDataSymbolMemory { name, .. } => Some(name),
+                        AsmOperand::Label(name)
+                            if matches!(instruction.mnemonic.as_str(), "b" | "bl") =>
+                        {
+                            Some(name)
+                        }
+                        _ => None,
+                    };
+                    if let Some(name) = name {
+                        if matches!(instruction.mnemonic.as_str(), "b" | "bl") {
+                            names.push_call(name.clone());
+                        } else {
+                            names.push_data(name.clone());
+                        }
+                    }
+                }
+            }
+        }
         Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => {}
         Statement::Store { target, value } => collect_assignment(target, value, names),
         Statement::Assign { value, .. } => collect(value, names),

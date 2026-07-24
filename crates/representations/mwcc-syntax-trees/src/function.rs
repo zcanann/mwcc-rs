@@ -108,6 +108,11 @@ pub enum Statement {
     Assign { name: String, value: Expression },
     /// A bare expression evaluated for its side effects, e.g. `g();`.
     Expression(Expression),
+    /// An embedded Metrowerks `asm { ... }` block at its semantic body
+    /// position. The frontend keeps source blocks in `Function::inline_asm_blocks`;
+    /// retained-inline composition materializes this statement form so assembly
+    /// moves with the surrounding structured control flow.
+    InlineAsm(Vec<AsmItem>),
     /// `if (condition) { then_body } [else { else_body }]` — a conditional block.
     If {
         condition: Expression,
