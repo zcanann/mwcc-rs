@@ -4212,6 +4212,106 @@ mod tests {
     }
 
     #[test]
+    fn schedules_a_friction_limited_acceleration_clamp_as_one_region() {
+        let source = br#"
+            struct State {
+                char pad0[116];
+                float output;
+                char pad1[8];
+                float current_velocity;
+                char pad2[260];
+                float horizontal_limit;
+            };
+            void apply_friction(struct State* state, float friction) {
+                if ((friction < 0 ? -friction : friction) >=
+                    (state->current_velocity < 0
+                        ? -state->current_velocity
+                        : state->current_velocity)) {
+                    friction = -state->current_velocity;
+                } else if (state->current_velocity > 0) {
+                    friction = -friction;
+                }
+                state->output = friction;
+            }
+            void compiled(
+                struct State* state,
+                float velocity,
+                float acceleration,
+                float target,
+                float friction
+            ) {
+                if (!target) {
+                    apply_friction(state, friction);
+                    return;
+                }
+                if (!(velocity * acceleration < 0)) {
+                    if (acceleration > 0) {
+                        if (velocity + acceleration > target) {
+                            acceleration = -friction;
+                            if (velocity + acceleration < target) {
+                                acceleration = target - velocity;
+                            }
+                            if (velocity + acceleration > state->horizontal_limit) {
+                                acceleration = state->horizontal_limit - velocity;
+                            }
+                        }
+                    } else if (velocity + acceleration < target) {
+                        acceleration = friction;
+                        if (velocity + acceleration > target) {
+                            acceleration = target - velocity;
+                        }
+                        if (velocity + acceleration < -state->horizontal_limit) {
+                            acceleration = -state->horizontal_limit - velocity;
+                        }
+                    }
+                }
+                state->output = acceleration;
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.emit_mwcats = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "friction-limited-acceleration.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the inlined friction fallback and limit ladders should share their lanes");
+        let expected_text = [
+            0xc0, 0xa0, 0x00, 0x00, 0xfc, 0x03, 0x28, 0x00, 0x40, 0x82, 0x00, 0x60, 0xc0,
+            0x43, 0x00, 0x80, 0xfc, 0x02, 0x28, 0x40, 0x40, 0x80, 0x00, 0x0c, 0xfc, 0x20,
+            0x10, 0x50, 0x48, 0x00, 0x00, 0x08, 0xfc, 0x20, 0x10, 0x90, 0xc0, 0x00, 0x00,
+            0x00, 0xfc, 0x04, 0x00, 0x40, 0x40, 0x80, 0x00, 0x0c, 0xfc, 0x00, 0x20, 0x50,
+            0x48, 0x00, 0x00, 0x08, 0xfc, 0x00, 0x20, 0x90, 0xfc, 0x00, 0x08, 0x40, 0x4c,
+            0x41, 0x13, 0x82, 0x40, 0x82, 0x00, 0x0c, 0xfc, 0x80, 0x10, 0x50, 0x48, 0x00,
+            0x00, 0x14, 0xc0, 0x00, 0x00, 0x00, 0xfc, 0x02, 0x00, 0x40, 0x40, 0x81, 0x00,
+            0x08, 0xfc, 0x80, 0x20, 0x50, 0xd0, 0x83, 0x00, 0x74, 0x4e, 0x80, 0x00, 0x20,
+            0xec, 0x01, 0x00, 0xb2, 0xfc, 0x00, 0x28, 0x40, 0x41, 0x80, 0x00, 0x7c, 0xfc,
+            0x02, 0x28, 0x40, 0x40, 0x81, 0x00, 0x3c, 0xec, 0x01, 0x10, 0x2a, 0xfc, 0x00,
+            0x18, 0x40, 0x40, 0x81, 0x00, 0x68, 0xfc, 0x40, 0x20, 0x50, 0xec, 0x01, 0x10,
+            0x2a, 0xfc, 0x00, 0x18, 0x40, 0x40, 0x80, 0x00, 0x08, 0xec, 0x43, 0x08, 0x28,
+            0xec, 0x01, 0x10, 0x2a, 0xc0, 0x63, 0x01, 0x88, 0xfc, 0x00, 0x18, 0x40, 0x40,
+            0x81, 0x00, 0x44, 0xec, 0x43, 0x08, 0x28, 0x48, 0x00, 0x00, 0x3c, 0xec, 0x01,
+            0x10, 0x2a, 0xfc, 0x00, 0x18, 0x40, 0x40, 0x80, 0x00, 0x30, 0xec, 0x01, 0x20,
+            0x2a, 0xfc, 0x40, 0x20, 0x90, 0xfc, 0x00, 0x18, 0x40, 0x40, 0x81, 0x00, 0x08,
+            0xec, 0x43, 0x08, 0x28, 0xc0, 0x03, 0x01, 0x88, 0xec, 0x61, 0x10, 0x2a, 0xfc,
+            0x00, 0x00, 0x50, 0xfc, 0x03, 0x00, 0x40, 0x40, 0x80, 0x00, 0x08, 0xec, 0x40,
+            0x08, 0x28, 0xd0, 0x43, 0x00, 0x74, 0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected_text.len())
+            .any(|bytes| bytes == expected_text));
+    }
+
+    #[test]
     fn retains_a_shared_zero_across_two_vector_product_groups() {
         let source = br#"
             struct Vec3 { float x; float y; float z; };
