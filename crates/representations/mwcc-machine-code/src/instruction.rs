@@ -462,4 +462,45 @@ impl Instruction {
                     | RoundToSingle { .. }
             )
     }
+
+    /// The FPR defined by this instruction, when it has one. Comparisons and
+    /// stores only consume FPRs and therefore return `None`.
+    pub fn float_destination(&self) -> Option<u8> {
+        use Instruction::*;
+        match self {
+            LoadFloatDouble { d, .. }
+            | LoadFloatDoubleIndexed { d, .. }
+            | LoadFloatDoubleWithUpdate { d, .. }
+            | LoadFloatSingle { d, .. }
+            | LoadFloatSingleIndexed { d, .. }
+            | LoadFloatSingleWithUpdate { d, .. }
+            | PairedSingleQuantizedLoad { d, .. }
+            | PairedSingleQuantizedLoadIndexed { d, .. }
+            | FloatAddSingle { d, .. }
+            | FloatSubtractSingle { d, .. }
+            | FloatMultiplySingle { d, .. }
+            | FloatDivideSingle { d, .. }
+            | FloatMultiplyAddSingle { d, .. }
+            | FloatMultiplySubtractSingle { d, .. }
+            | FloatNegativeMultiplySubtractSingle { d, .. }
+            | FloatNegativeMultiplyAddSingle { d, .. }
+            | FloatAddDouble { d, .. }
+            | FloatSubtractDouble { d, .. }
+            | FloatMultiplyDouble { d, .. }
+            | FloatDivideDouble { d, .. }
+            | FloatMultiplyAddDouble { d, .. }
+            | FloatMultiplySubtractDouble { d, .. }
+            | FloatNegativeMultiplySubtractDouble { d, .. }
+            | FloatSelect { d, .. }
+            | RoundToSingle { d, .. }
+            | FloatReciprocalSqrtEstimate { d, .. }
+            | FloatMove { d, .. }
+            | PairedSingleMove { d, .. }
+            | FloatNegate { d, .. }
+            | FloatAbsolute { d, .. }
+            | ConvertToIntegerWordZero { d, .. }
+            | MoveFromFpscr { d } => Some(*d),
+            _ => None,
+        }
+    }
 }
