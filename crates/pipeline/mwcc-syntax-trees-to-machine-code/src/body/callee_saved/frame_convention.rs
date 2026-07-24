@@ -12,6 +12,9 @@ impl Generator {
             return;
         }
         schedule_interleaved_saved_register_copy(&mut self.output.instructions);
+        if self.callee_saved.len() == 2 && self.callee_saved_float == 2 {
+            retain_entry_base_for_saved_member_load(&mut self.output.instructions);
+        }
         for index in 0..self.output.instructions.len().saturating_sub(1) {
             let saved = match (
                 &self.output.instructions[index],
@@ -1084,6 +1087,27 @@ fn schedule_interleaved_saved_register_copy(instructions: &mut [Instruction]) {
     }
 }
 
+fn retain_entry_base_for_saved_member_load(instructions: &mut [Instruction]) {
+    for index in 0..instructions.len().saturating_sub(2) {
+        let entry = match (
+            &instructions[index],
+            &instructions[index + 1],
+            &instructions[index + 2],
+        ) {
+            (
+                Instruction::Or { a: saved, s: entry, b },
+                Instruction::LoadFloatSingle { a: 0, .. },
+                Instruction::LoadWord { d, a: load_base, .. },
+            ) if entry == b && saved == load_base && saved != d => *entry,
+            _ => continue,
+        };
+        let Instruction::LoadWord { a, .. } = &mut instructions[index + 2] else {
+            unreachable!();
+        };
+        *a = entry;
+    }
+}
+
 /// Keep a callee-saved frame slot tied to the physical register captured by
 /// its prologue store. The save use and epilogue reload definition are
 /// disconnected live ranges, so allocation may initially assign the reload a
@@ -1225,6 +1249,20 @@ mod tests {
                 Instruction::move_register(30, 3),
             ]
         );
+    }
+
+    #[test]
+    fn retains_the_entry_base_for_a_saved_member_load() {
+        let mut instructions = [
+            Instruction::move_register(30, 3),
+            Instruction::LoadFloatSingle { d: 0, a: 0, offset: 0 },
+            Instruction::LoadWord { d: 31, a: 30, offset: 44 },
+        ];
+        retain_entry_base_for_saved_member_load(&mut instructions);
+        assert!(matches!(
+            instructions[2],
+            Instruction::LoadWord { d: 31, a: 3, offset: 44 }
+        ));
     }
 
     #[test]
