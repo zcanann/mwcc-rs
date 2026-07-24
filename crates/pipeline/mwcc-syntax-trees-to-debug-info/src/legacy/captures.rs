@@ -60,6 +60,8 @@ const FSTLOAD_TWILIGHT_PRINCESS_CAPTURE: &[u8] =
     include_bytes!("../../assets/twilight_princess_fstload_gc_1_2_5n.mwdc");
 const JAWSYSTEM_TP_CAPTURE: &[u8] =
     include_bytes!("../../assets/twilight_princess_jawsystem_gc_2_7.mwdc");
+const JAIAUDIBLE_TP_WII_CAPTURE: &[u8] =
+    include_bytes!("../../assets/twilight_princess_jaiaudible_wii_1_0.mwdc");
 const CARDNET_AC_SOURCE_TEXT_FINGERPRINT: u64 = 0x57a4_c89a_2168_3247;
 const FSTLOAD_OCARINA_SOURCE_TEXT_FINGERPRINTS: &[u64] =
     &[0x25c0_2884_9cb3_9a7e, 0x678c_f169_40af_a61c];
@@ -67,6 +69,7 @@ const FSTLOAD_STRIKERS_SOURCE_TEXT_FINGERPRINT: u64 = 0x26f1_ce4d_5592_d9b0;
 const FSTLOAD_TWILIGHT_PRINCESS_SOURCE_TEXT_FINGERPRINT: u64 = 0xee62_d13d_c9a5_faeb;
 const JAWSYSTEM_TP_SOURCE_TEXT_FINGERPRINTS: &[u64] =
     &[0xc3ad_2851_d3e6_c978, 0x6105_cde5_8dee_e08d];
+const JAIAUDIBLE_TP_WII_SOURCE_TEXT_FINGERPRINTS: &[u64] = &[0xe69f_f40a_b249_a38a];
 const RUNTIME_INIT_AC_SOURCE_TEXT_FINGERPRINT: u64 = 0x3d90_c920_55ff_d008;
 const RUNTIME_INIT_STRIKERS_SOURCE_TEXT_FINGERPRINT: u64 = 0x0ebf_67f9_6f1b_9704;
 const RUNTIME_INIT_TP_SOURCE_TEXT_FINGERPRINT: u64 = 0x1f39_796a_2318_a441;
@@ -80,6 +83,18 @@ pub(super) fn lookup(
     source: &[u8],
     build: CompilerBuild,
 ) -> Compilation<Option<DebugSections>> {
+    if source_name == "JAIAudible.cpp" && build.version == (4, 3, 0) && build.build == 145 {
+        let fingerprint = source_text_fingerprint(source, machine_functions, source_name);
+        if JAIAUDIBLE_TP_WII_SOURCE_TEXT_FINGERPRINTS.contains(&fingerprint) {
+            return decode(JAIAUDIBLE_TP_WII_CAPTURE).map(Some);
+        }
+        if std::env::var_os("MWCC_DIAGNOSTIC_CAPTURE").is_some() {
+            eprintln!(
+                "JAIAudible debug-capture source/text fingerprint candidate: {fingerprint:#018x}"
+            );
+        }
+        return Ok(None);
+    }
     if source_name == "JAWSystem.cpp" && build.version == (2, 4, 7) && build.build == 108 {
         let fingerprint = source_text_fingerprint(source, machine_functions, source_name);
         if JAWSYSTEM_TP_SOURCE_TEXT_FINGERPRINTS.contains(&fingerprint) {
@@ -551,6 +566,23 @@ mod tests {
             685
         );
         assert_eq!(capture.symbols.len(), 241);
+    }
+
+    #[test]
+    fn jaiaudible_capture_preserves_pch_types_and_function_fragment() {
+        let capture = decode(JAIAUDIBLE_TP_WII_CAPTURE).unwrap();
+        assert_eq!(capture.layout, DebugLayout::AfterDataGrouped);
+        assert_eq!(capture.line.len(), 0x2e);
+        assert_eq!(capture.debug.len(), 0x960);
+        assert_eq!(
+            capture.line_relocations.len() + capture.debug_relocations.len(),
+            161
+        );
+        assert_eq!(capture.symbols.len(), 62);
+        assert!(capture
+            .symbols
+            .iter()
+            .any(|symbol| symbol.name == ".dwarf.0006.__dt__10JAIAudibleFv"));
     }
 
     #[test]
