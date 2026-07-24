@@ -39,6 +39,17 @@ impl Generator {
             operand: inner,
         } = operand
         {
+            // Generated headers commonly preserve a source-level cast around a
+            // member that already has exactly that integer type. It has no
+            // conversion semantics, so expose the load to the ordinary operand
+            // placer; otherwise the wrapper falsely raises the expression's
+            // scratch need (notably `(u16)p->field << 1`).
+            if matches!(
+                inner.as_ref(),
+                Expression::Member { member_type, .. } if member_type == target_type
+            ) {
+                return self.place_operand(inner, destination, prefer_destination);
+            }
             if target_type.width() == 32 && self.plain_integer_leaf_register(inner).is_some() {
                 return self.place_operand(inner, destination, prefer_destination);
             }

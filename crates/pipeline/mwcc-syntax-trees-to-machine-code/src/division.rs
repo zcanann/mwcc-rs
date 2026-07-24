@@ -169,27 +169,28 @@ impl Generator {
             ));
         }
 
-        // register divide: dividend (leaf stays, sub-expr -> scratch via the
-        // allocator's virtual temporaries), then divisor.
-        let dividend = self.place_operand_or_scratch(left, d)?;
-        let divisor =
-            if let Some(register) = leaf_name(right).and_then(|name| self.lookup_general(name)) {
-                register
-            } else {
-                // a sub-expression divisor needs the scratch, which the dividend may occupy.
-                if dividend == GENERAL_SCRATCH {
-                    return Err(Diagnostic::error(
-                        "divisor and dividend both need scratch (roadmap M1)",
-                    ));
-                }
-                if !fits_single_scratch(right, true) {
-                    return Err(Diagnostic::error(
-                        "divisor needs the full register allocator (roadmap M1)",
-                    ));
-                }
-                self.evaluate_general(right, GENERAL_SCRATCH)?;
-                GENERAL_SCRATCH
-            };
+        // Register divide. A computed divisor owns r0, so place its dividend in
+        // a virtual home first; the allocator then keeps that value live while
+        // the divisor is formed. This is the same two-value placement used by
+        // ordinary binary expressions and avoids a selection-time "both need
+        // scratch" fork for e.g. `4096 / (member << 1)`.
+        let divisor_leaf = leaf_name(right).and_then(|name| self.lookup_general(name));
+        let dividend = if divisor_leaf.is_some() {
+            self.place_operand_or_scratch(left, d)?
+        } else {
+            self.with_reserved_inputs(right, |generator| {
+                let home = generator.fresh_virtual_general();
+                generator
+                    .place_operand(left, home, true)?
+                    .ok_or_else(|| Diagnostic::error("could not place divide dividend"))
+            })?
+        };
+        let divisor = if let Some(register) = divisor_leaf {
+            register
+        } else {
+            self.evaluate_general(right, GENERAL_SCRATCH)?;
+            GENERAL_SCRATCH
+        };
         self.output.instructions.push(if signed {
             Instruction::DivideWord {
                 d,
