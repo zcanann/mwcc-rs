@@ -2771,6 +2771,19 @@ impl Parser {
                 )));
             }
         }
+        // A primary-template method may be an exact one-line wrapper around a
+        // recovered base method (`return Iterator(Base::begin())`). Declaration
+        // recovery records only source-proven equivalents, so using the base
+        // call here does not guess from container or member names.
+        if let Some((base, forwarded_member)) =
+            self.resolve_inline_template_base_forwarder(class, member, argument_count)
+        {
+            if let Some(call) =
+                self.resolve_member_call_in_class(&base, &forwarded_member, arguments)?
+            {
+                return Ok(Some(call));
+            }
+        }
         // The shared resolver uses complete layouts when available and safely
         // falls back to a declaration-only primary-base chain. The latter is
         // important for templates whose concrete layout could not be recovered:
