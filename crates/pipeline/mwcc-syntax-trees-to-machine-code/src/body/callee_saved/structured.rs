@@ -1253,8 +1253,68 @@ impl Generator {
                                 self.begin_condition_float_cache(condition),
                             )
                         };
+                    struct ConditionBranches {
+                        skip_body: Vec<usize>,
+                        enter_body: Vec<usize>,
+                    }
                     let condition_result = (|| {
                         self.preload_condition_global_cache(condition)?;
+                        let groups = entry_alias
+                            .is_none()
+                            .then(|| logical_or_groups(condition))
+                            .flatten();
+                        if let Some(groups) = groups {
+                            let mut skip_body = Vec::new();
+                            let mut enter_body = Vec::new();
+                            for (group_index, group) in groups.iter().enumerate() {
+                                let last_group = group_index + 1 == groups.len();
+                                let mut advance_group = Vec::new();
+                                for (term_index, term) in group.iter().copied().enumerate() {
+                                    let term_start = self.output.instructions.len();
+                                    let (options, condition_bit) = self
+                                        .emit_condition_test(term)
+                                        .map_err(|mut diagnostic| {
+                                            diagnostic.message.push_str(&format!(
+                                                " (in structured if condition {statement_index})"
+                                            ));
+                                            diagnostic
+                                        })?;
+                                    self.reuse_short_circuit_member_base(term_index, term_start);
+                                    let branch = self.output.instructions.len();
+                                    if !last_group && term_index + 1 == group.len() {
+                                        self.output.instructions.push(
+                                            Instruction::BranchConditionalForward {
+                                                options: options ^ 8,
+                                                condition_bit,
+                                                target: 0,
+                                            },
+                                        );
+                                        enter_body.push(branch);
+                                    } else {
+                                        self.output.instructions.push(
+                                            Instruction::BranchConditionalForward {
+                                                options,
+                                                condition_bit,
+                                                target: 0,
+                                            },
+                                        );
+                                        if last_group {
+                                            skip_body.push(branch);
+                                        } else {
+                                            advance_group.push(branch);
+                                        }
+                                    }
+                                }
+                                let next_group = self.output.instructions.len();
+                                for branch in advance_group {
+                                    self.patch_forward(branch, next_group);
+                                }
+                            }
+                            return Ok(ConditionBranches {
+                                skip_body,
+                                enter_body,
+                            });
+                        }
                         let mut branches = Vec::with_capacity(terms.len());
                         for (term_index, term) in terms.iter().copied().enumerate() {
                             let term_start = self.output.instructions.len();
@@ -1300,7 +1360,10 @@ impl Generator {
                                 }
                             }
                         }
-                        Ok(branches)
+                        Ok(ConditionBranches {
+                            skip_body: branches,
+                            enter_body: Vec::new(),
+                        })
                     })();
                     let carry_fallthrough_cache = matches!(
                         then_body.last(),
@@ -1319,6 +1382,10 @@ impl Generator {
                     self.restore_condition_float_cache(previous_float_cache);
                     let branches = condition_result?;
                     self.commit_structured_float_handoff();
+                    let body_start = self.output.instructions.len();
+                    for branch in branches.enter_body {
+                        self.patch_forward(branch, body_start);
+                    }
                     self.emit_structured_statements(
                         then_body,
                         function,
@@ -1336,7 +1403,7 @@ impl Generator {
                         diagnostic
                     })?;
                     let target = self.output.instructions.len();
-                    for branch in branches {
+                    for branch in branches.skip_body {
                         if let Instruction::BranchConditionalForward {
                             target: branch_target,
                             ..
@@ -1895,4 +1962,67 @@ pub(super) fn logical_and_terms(expression: &Expression) -> Vec<&Expression> {
     }
     collect(expression, &mut terms);
     terms
+}
+
+/// A top-level OR expressed as ordered AND groups. This is the source CFG for
+/// conditions such as `(a && b) || (c && d)`: each failed group advances to the
+/// next one, while a completed group enters the guarded body directly.
+fn logical_or_groups(expression: &Expression) -> Option<Vec<Vec<&Expression>>> {
+    let Expression::Binary {
+        operator: BinaryOperator::LogicalOr,
+        ..
+    } = expression
+    else {
+        return None;
+    };
+    fn collect<'a>(expression: &'a Expression, groups: &mut Vec<Vec<&'a Expression>>) {
+        if let Expression::Binary {
+            operator: BinaryOperator::LogicalOr,
+            left,
+            right,
+        } = expression
+        {
+            collect(left, groups);
+            collect(right, groups);
+        } else {
+            groups.push(logical_and_terms(expression));
+        }
+    }
+    let mut groups = Vec::new();
+    collect(expression, &mut groups);
+    Some(groups)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decomposes_a_disjunction_into_ordered_conjunction_groups() {
+        let variable = |name: &str| Expression::Variable(name.into());
+        let condition = Expression::Binary {
+            operator: BinaryOperator::LogicalOr,
+            left: Box::new(Expression::Binary {
+                operator: BinaryOperator::LogicalAnd,
+                left: Box::new(variable("a")),
+                right: Box::new(variable("b")),
+            }),
+            right: Box::new(Expression::Binary {
+                operator: BinaryOperator::LogicalAnd,
+                left: Box::new(variable("c")),
+                right: Box::new(variable("d")),
+            }),
+        };
+
+        let groups = logical_or_groups(&condition).expect("the top-level OR should decompose");
+        assert_eq!(groups.len(), 2);
+        assert!(matches!(groups[0].as_slice(), [
+            Expression::Variable(a),
+            Expression::Variable(b),
+        ] if a == "a" && b == "b"));
+        assert!(matches!(groups[1].as_slice(), [
+            Expression::Variable(c),
+            Expression::Variable(d),
+        ] if c == "c" && d == "d"));
+    }
 }
