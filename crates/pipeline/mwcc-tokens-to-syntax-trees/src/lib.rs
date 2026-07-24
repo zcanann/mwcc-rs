@@ -578,6 +578,39 @@ mod tests {
     }
 
     #[test]
+    fn lays_out_nested_typedef_structs_with_repeated_member_declarators() {
+        let source = r#"
+            struct Color { unsigned bits; };
+            class Writer {
+                typedef struct Mapping {
+                    Color min;
+                    Color max;
+                } Mapping;
+                typedef struct Corners {
+                    Color left, right;
+                    Color bottom_left, bottom_right;
+                } Corners;
+                Mapping mapping;
+                Corners corners;
+                unsigned tail;
+            };
+            unsigned read(Writer* writer) { return writer->tail; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].return_expression,
+            Some(Expression::Member { offset: 24, .. })
+        ));
+    }
+
+    #[test]
     fn reuses_class_parameter_analysis_after_first_materialization() {
         let source = r#"
             template <typename T> class C { public: void set(T* pointer, int count); };

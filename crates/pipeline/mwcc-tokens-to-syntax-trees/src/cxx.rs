@@ -3507,13 +3507,25 @@ impl Parser {
 
         self.expect(Token::BraceOpen)?;
         while *self.peek() != Token::BraceClose {
+            let nested_typedef_definition =
+                matches!(self.peek(), Token::Identifier(word) if word == "typedef")
+                    && (matches!(self.peek_at(1), Token::KeywordStruct)
+                        || matches!(self.peek_at(1), Token::Identifier(word) if word == "class"))
+                    && matches!(self.peek_at(2), Token::Identifier(_))
+                    && matches!(self.peek_at(3), Token::BraceOpen | Token::Colon);
             let nested_definition = (matches!(self.peek(), Token::KeywordStruct)
                 || matches!(self.peek(), Token::Identifier(word) if word == "class"))
                 && matches!(self.peek_at(1), Token::Identifier(_))
                 && matches!(self.peek_at(2), Token::BraceOpen | Token::Colon);
-            if nested_definition {
+            if nested_typedef_definition || nested_definition {
+                if nested_typedef_definition {
+                    self.advance();
+                }
                 let (nested_name, nested_layout, nested_class) =
-                    self.parse_class_definition_in_scope(Some(&qualified_name), false)?;
+                    self.parse_class_definition_in_scope(
+                        Some(&qualified_name),
+                        nested_typedef_definition,
+                    )?;
                 let nested_qualified = format!("{qualified_name}::{nested_name}");
                 self.struct_typedefs
                     .insert(nested_name, nested_qualified.clone());
@@ -3931,68 +3943,76 @@ impl Parser {
                     });
                 continue;
             }
-            if matches!(self.peek(), Token::Colon) {
-                return Err(Diagnostic::error(
-                    "a C++ bit-field member is not supported yet (roadmap)",
-                ));
-            }
             let element_size = type_size(field_type);
-            let array_extent = self.parse_array_declarator_extent(element_size)?;
-            if *self.peek() != Token::Semicolon {
-                return Err(Diagnostic::error(
-                    "a multi-declarator class member is not supported yet (roadmap)",
-                ));
-            }
-            self.advance();
-            let align = type_alignment(field_type)
-                .max(u32::from(attribute_align))
-                .max(1);
-            offset = offset.div_ceil(align) * align;
-            let (field_size, array_element, array_bytes, array_stride) =
-                if let Some((total_bytes, first_index_stride)) = array_extent {
-                    let element = if matches!(
-                        field_type,
-                        Type::Struct { .. } | Type::Pointer(_) | Type::StructPointer { .. }
-                    ) {
-                        None
-                    } else {
-                        Some(pointee_of(field_type)?)
-                    };
-                    (
-                        total_bytes,
-                        element,
-                        Some(total_bytes),
-                        first_index_stride,
-                    )
-                } else {
-                    (element_size, None, None, row_pointer_stride)
-                };
-            layout.insert_field(
-                field_name.clone(),
-                StructField {
-                    member_type: field_type,
-                    source_fundamental: None,
-                    offset,
-                    struct_tag,
-                    array_element,
-                    array_bytes,
-                    array_stride,
-                    bit_field: None,
-                },
-            );
-            if field_is_function_pointer_typedef {
-                layout.function_pointer_fields.insert(field_name.clone());
-                if let Some(function_type) = field_function_type {
-                    layout
-                        .function_pointer_types
-                        .insert(field_name.clone(), function_type);
+            let mut field_name = field_name;
+            loop {
+                if matches!(self.peek(), Token::Colon) {
+                    return Err(Diagnostic::error(
+                        "a C++ bit-field member is not supported yet (roadmap)",
+                    ));
                 }
+                let array_extent = self.parse_array_declarator_extent(element_size)?;
+                if !matches!(self.peek(), Token::Comma | Token::Semicolon) {
+                    return Err(Diagnostic::error(
+                        "an unsupported class member declarator follows its name (roadmap)",
+                    ));
+                }
+                let align = type_alignment(field_type)
+                    .max(u32::from(attribute_align))
+                    .max(1);
+                offset = offset.div_ceil(align) * align;
+                let (field_size, array_element, array_bytes, array_stride) =
+                    if let Some((total_bytes, first_index_stride)) = array_extent {
+                        let element = if matches!(
+                            field_type,
+                            Type::Struct { .. } | Type::Pointer(_) | Type::StructPointer { .. }
+                        ) {
+                            None
+                        } else {
+                            Some(pointee_of(field_type)?)
+                        };
+                        (
+                            total_bytes,
+                            element,
+                            Some(total_bytes),
+                            first_index_stride,
+                        )
+                    } else {
+                        (element_size, None, None, row_pointer_stride)
+                    };
+                layout.insert_field(
+                    field_name.clone(),
+                    StructField {
+                        member_type: field_type,
+                        source_fundamental: None,
+                        offset,
+                        struct_tag: struct_tag.clone(),
+                        array_element,
+                        array_bytes,
+                        array_stride,
+                        bit_field: None,
+                    },
+                );
+                if field_is_function_pointer_typedef {
+                    layout.function_pointer_fields.insert(field_name.clone());
+                    if let Some(function_type) = field_function_type.clone() {
+                        layout
+                            .function_pointer_types
+                            .insert(field_name.clone(), function_type);
+                    }
+                }
+                class.fields.push(field_name);
+                offset = offset.checked_add(field_size).ok_or_else(|| {
+                    Diagnostic::error("C++ class layout exceeds the 32-bit address space")
+                })?;
+                max_align = max_align.max(align);
+                if self.eat_keyword(Token::Comma) {
+                    field_name = self.parse_identifier()?;
+                    continue;
+                }
+                self.expect(Token::Semicolon)?;
+                break;
             }
-            class.fields.push(field_name);
-            offset = offset.checked_add(field_size).ok_or_else(|| {
-                Diagnostic::error("C++ class layout exceeds the 32-bit address space")
-            })?;
-            max_align = max_align.max(align);
         }
         self.expect(Token::BraceClose)?;
         if trailing_typedef_alias {
