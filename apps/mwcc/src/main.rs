@@ -4267,6 +4267,63 @@ mod tests {
                 }
                 state->output = acceleration;
             }
+
+            struct GroundState {
+                char pad0[228];
+                float output;
+                char pad1[4];
+                float current_velocity;
+                char pad2[84];
+                float horizontal_limit;
+            };
+            void apply_ground_friction(struct GroundState* state, float friction) {
+                if ((friction < 0 ? -friction : friction) >
+                    (state->current_velocity < 0
+                        ? -state->current_velocity
+                        : state->current_velocity)) {
+                    friction = -state->current_velocity;
+                } else if (state->current_velocity > 0) {
+                    friction = -friction;
+                }
+                state->output = friction;
+            }
+            void compiled_ground(
+                struct GroundState* state,
+                float acceleration,
+                float target,
+                float friction
+            ) {
+                if (!target) {
+                    apply_ground_friction(state, friction);
+                    return;
+                }
+                if (!(state->current_velocity * acceleration < 0)) {
+                    if (acceleration > 0) {
+                        if (state->current_velocity + acceleration > target) {
+                            acceleration = -friction;
+                            if (state->current_velocity + acceleration < target) {
+                                acceleration = target - state->current_velocity;
+                            }
+                            if (state->current_velocity + acceleration >
+                                state->horizontal_limit) {
+                                acceleration = state->horizontal_limit -
+                                    state->current_velocity;
+                            }
+                        }
+                    } else if (state->current_velocity + acceleration < target) {
+                        acceleration = friction;
+                        if (state->current_velocity + acceleration > target) {
+                            acceleration = target - state->current_velocity;
+                        }
+                        if (state->current_velocity + acceleration <
+                            -state->horizontal_limit) {
+                            acceleration = -state->horizontal_limit -
+                                state->current_velocity;
+                        }
+                    }
+                }
+                state->output = acceleration;
+            }
         "#;
         let mut flags = mwcc_versions::Flags::default();
         flags.debug_info = false;
@@ -4309,6 +4366,30 @@ mod tests {
         assert!(object
             .windows(expected_text.len())
             .any(|bytes| bytes == expected_text));
+        let expected_ground_text = [
+            0xc0, 0x80, 0x00, 0x00, 0xfc, 0x02, 0x20, 0x00, 0x40, 0x82, 0x00, 0x5c, 0xc0,
+            0x43, 0x00, 0xec, 0xfc, 0x02, 0x20, 0x40, 0x40, 0x80, 0x00, 0x0c, 0xfc, 0x20,
+            0x10, 0x50, 0x48, 0x00, 0x00, 0x08, 0xfc, 0x20, 0x10, 0x90, 0xc0, 0x00, 0x00,
+            0x00, 0xfc, 0x03, 0x00, 0x40, 0x40, 0x80, 0x00, 0x0c, 0xfc, 0x00, 0x18, 0x50,
+            0x48, 0x00, 0x00, 0x08, 0xfc, 0x00, 0x18, 0x90, 0xfc, 0x00, 0x08, 0x40, 0x40,
+            0x81, 0x00, 0x0c, 0xfc, 0x60, 0x10, 0x50, 0x48, 0x00, 0x00, 0x14, 0xc0, 0x00,
+            0x00, 0x00, 0xfc, 0x02, 0x00, 0x40, 0x40, 0x81, 0x00, 0x08, 0xfc, 0x60, 0x18,
+            0x50, 0xd0, 0x63, 0x00, 0xe4, 0x4e, 0x80, 0x00, 0x20, 0xc0, 0xa3, 0x00, 0xec,
+            0xec, 0x05, 0x00, 0x72, 0xfc, 0x00, 0x20, 0x40, 0x41, 0x80, 0x00, 0x7c, 0xfc,
+            0x01, 0x20, 0x40, 0x40, 0x81, 0x00, 0x3c, 0xec, 0x05, 0x08, 0x2a, 0xfc, 0x00,
+            0x10, 0x40, 0x40, 0x81, 0x00, 0x68, 0xfc, 0x20, 0x18, 0x50, 0xec, 0x05, 0x08,
+            0x2a, 0xfc, 0x00, 0x10, 0x40, 0x40, 0x80, 0x00, 0x08, 0xec, 0x22, 0x28, 0x28,
+            0xec, 0x05, 0x08, 0x2a, 0xc0, 0x43, 0x01, 0x44, 0xfc, 0x00, 0x10, 0x40, 0x40,
+            0x81, 0x00, 0x44, 0xec, 0x22, 0x28, 0x28, 0x48, 0x00, 0x00, 0x3c, 0xec, 0x05,
+            0x08, 0x2a, 0xfc, 0x00, 0x10, 0x40, 0x40, 0x80, 0x00, 0x30, 0xec, 0x05, 0x18,
+            0x2a, 0xfc, 0x20, 0x18, 0x90, 0xfc, 0x00, 0x10, 0x40, 0x40, 0x81, 0x00, 0x08,
+            0xec, 0x22, 0x28, 0x28, 0xc0, 0x03, 0x01, 0x44, 0xec, 0x45, 0x08, 0x2a, 0xfc,
+            0x00, 0x00, 0x50, 0xfc, 0x02, 0x00, 0x40, 0x40, 0x80, 0x00, 0x08, 0xec, 0x20,
+            0x28, 0x28, 0xd0, 0x23, 0x00, 0xe4, 0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected_ground_text.len())
+            .any(|bytes| bytes == expected_ground_text));
     }
 
     #[test]
