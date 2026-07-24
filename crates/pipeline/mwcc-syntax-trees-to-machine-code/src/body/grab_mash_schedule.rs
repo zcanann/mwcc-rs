@@ -97,6 +97,11 @@ impl Generator {
         self.output
             .relocations
             .sort_by_key(|relocation| relocation.instruction_index);
+        // MWCC retains two optimizer-only labels for this complete transaction
+        // even though neither survives in the scheduled instruction stream.
+        // Keep later unwind and pool symbol ordinals aligned with that hidden
+        // label accounting.
+        self.output.anonymous_label_bump += 2;
     }
 
     fn remove_grab_mash_instruction(&mut self, at: usize) {
