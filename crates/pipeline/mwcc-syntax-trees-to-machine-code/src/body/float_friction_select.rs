@@ -175,9 +175,6 @@ impl Generator {
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
-        if function.name == "ftCommon_ApplyFrictionAir" {
-            eprintln!("{function:#?}");
-        }
         let Some(shape) = recognize(function) else {
             return Ok(false);
         };
