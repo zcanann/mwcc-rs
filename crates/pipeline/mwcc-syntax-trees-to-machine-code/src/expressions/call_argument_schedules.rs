@@ -35,7 +35,95 @@ fn constant_indexed_address_base(expression: &Expression) -> Option<&Expression>
     Some(base.as_ref())
 }
 
+fn stable_call_binary(
+    expression: &Expression,
+) -> Option<(BinaryOperator, &Expression, &Expression, bool)> {
+    let Expression::Binary {
+        operator: operator @ (BinaryOperator::Add | BinaryOperator::Subtract),
+        left,
+        right,
+    } = expression
+    else {
+        return None;
+    };
+    match (left.as_ref(), right.as_ref()) {
+        (stable, call @ Expression::Call { .. }) => Some((*operator, stable, call, false)),
+        (call @ Expression::Call { .. }, stable) => Some((*operator, stable, call, true)),
+        _ => None,
+    }
+}
+
 impl Generator {
+    /// Marshal a general-class nested second argument before a reloadable first
+    /// argument. Every register read by the first expression must survive the
+    /// nested call; afterward the first value can be reconstructed directly in
+    /// r3 while the complete nested expression is formed in r4.
+    ///
+    /// This covers both saved leaves (`registerState(this, new State)`) and
+    /// saved-base member reads (`set(p->field, saved + get(p->field))`).
+    pub(crate) fn try_emit_reloadable_first_nested_second_arguments(
+        &mut self,
+        arguments: &[Expression],
+        name: &str,
+    ) -> Compilation<bool> {
+        let [first, second] = arguments else {
+            return Ok(false);
+        };
+        let direct_call = !self.globals.contains_key(name) && !self.locations.contains_key(name);
+        let both_general = self.call_parameter_types.get(name).is_some_and(|types| {
+            types.len() >= 2
+                && !matches!(types[0], Type::Float | Type::Double)
+                && !matches!(types[1], Type::Float | Type::Double)
+        });
+        let first_is_reloadable = !expression_has_call(first)
+            && self
+                .registers_used_by(first)
+                .into_iter()
+                .all(|register| !matches!(register, 0 | 3..=12));
+        if !direct_call
+            || !both_general
+            || !first_is_reloadable
+            || !expression_has_call(second)
+        {
+            return Ok(false);
+        }
+
+        if let Some((operator, stable, nested_call, call_is_left)) = stable_call_binary(second) {
+            let Some(stable_register) = leaf_name(stable).and_then(|name| self.lookup_general(name))
+            else {
+                return Ok(false);
+            };
+            if stable_register < 14 || self.is_float_value(nested_call) {
+                return Ok(false);
+            }
+            self.evaluate_general(nested_call, GENERAL_SCRATCH)?;
+            self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT)?;
+            let (left, right) = if call_is_left {
+                (GENERAL_SCRATCH, stable_register)
+            } else {
+                (stable_register, GENERAL_SCRATCH)
+            };
+            self.output.instructions.push(match operator {
+                BinaryOperator::Add => Instruction::Add {
+                    d: Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                    a: left,
+                    b: right,
+                },
+                BinaryOperator::Subtract => Instruction::SubtractFrom {
+                    d: Eabi::FIRST_GENERAL_ARGUMENT + 1,
+                    a: right,
+                    b: left,
+                },
+                _ => unreachable!(),
+            });
+            return Ok(true);
+        }
+
+        self.evaluate_general(second, Eabi::FIRST_GENERAL_ARGUMENT + 1)?;
+        self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT)?;
+        Ok(true)
+    }
+
     /// Marshal `(saved_object, i16, saved_float)` with the FPR copy first.
     /// Both saved values survive any preceding call. MWCC exposes the float
     /// move earliest, then materializes the GPR arguments in ABI order.

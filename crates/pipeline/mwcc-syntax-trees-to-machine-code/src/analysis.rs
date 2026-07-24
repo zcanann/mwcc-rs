@@ -1061,19 +1061,19 @@ fn reads_register_after_call(expression: &Expression, registers: &HashSet<&str>)
                 || ((expression_has_call(when_true) || expression_has_call(when_false))
                     && reads_register(condition, registers))
         }
-        // A call's arguments run left-to-right before the call; a read is unsafe
-        // only if an earlier argument already made a call.
+        // A nested call in a later argument is scheduled before cheaper earlier
+        // arguments so its result can be marshaled without being clobbered.
+        // Those earlier register reads therefore cross the nested call. Within
+        // each argument, retain the ordinary expression-order analysis.
         Expression::Call { arguments, .. } => {
-            let mut argument_called = false;
-            for argument in arguments {
-                if argument_called && reads_register(argument, registers) {
+            for (index, argument) in arguments.iter().enumerate() {
+                if arguments[index + 1..].iter().any(expression_has_call)
+                    && reads_register(argument, registers)
+                {
                     return true;
                 }
                 if reads_register_after_call(argument, registers) {
                     return true;
-                }
-                if expression_has_call(argument) {
-                    argument_called = true;
                 }
             }
             false
@@ -2346,6 +2346,35 @@ mod tests {
             }),
         };
         assert!(!reads_register_after_call(&assertion, &registers));
+    }
+
+    #[test]
+    fn a_nested_later_argument_makes_an_earlier_member_base_live() {
+        let member = || Expression::Member {
+            base: Box::new(var("object")),
+            offset: 0,
+            member_type: Type::Int,
+            index_stride: None,
+        };
+        let call = Expression::Call {
+            name: "consume".into(),
+            arguments: vec![
+                member(),
+                Expression::Binary {
+                    operator: BinaryOperator::Add,
+                    left: Box::new(var("saved")),
+                    right: Box::new(Expression::Call {
+                        name: "produce".into(),
+                        arguments: vec![member()],
+                    }),
+                },
+            ],
+        };
+
+        assert!(expression_reads_name_across_call(
+            &call, "object", false
+        ));
+        assert!(expression_reads_name_across_call(&call, "saved", false));
     }
 }
 

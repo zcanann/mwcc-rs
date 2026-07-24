@@ -383,29 +383,8 @@ impl Generator {
                 return Ok(());
             }
         }
-        // A general-class SECOND argument may likewise contain a nested call
-        // when the first leaf already survives calls in a callee-saved register
-        // (or is reloadable from a global). Evaluate the nested value into r4,
-        // then restore the first argument into r3. This is the C++
-        // `registerState(this, new State)` shape: allocation and construction
-        // finish before the preserved object pointer is marshaled.
-        if let [first @ Expression::Variable(first_name), second] = arguments {
-            let parameter_types = self.call_parameter_types.get(name);
-            let both_general = parameter_types.is_some_and(|types| {
-                types.len() >= 2
-                    && !matches!(types[0], Type::Float | Type::Double)
-                    && !matches!(types[1], Type::Float | Type::Double)
-            });
-            let first_survives_call = self.globals.contains_key(first_name.as_str())
-                || self
-                    .locations
-                    .get(first_name.as_str())
-                    .is_some_and(|location| location.register >= 14);
-            if both_general && first_survives_call && expression_has_call(second) {
-                self.evaluate_general(second, Eabi::FIRST_GENERAL_ARGUMENT + 1)?;
-                self.evaluate_general(first, Eabi::FIRST_GENERAL_ARGUMENT)?;
-                return Ok(());
-            }
+        if self.try_emit_reloadable_first_nested_second_arguments(arguments, name)? {
+            return Ok(());
         }
         // Two floating arguments use an independent FPR sequence. When the
         // first value already has a callee-saved home, a call-bearing second
