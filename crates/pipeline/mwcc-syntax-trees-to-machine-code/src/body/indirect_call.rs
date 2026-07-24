@@ -1,12 +1,70 @@
-//! Bare indirect-call statements through a memory-resident function pointer with constant
-//! arguments: `(*s->fp)(k)`, `(**pp)(k)`. The no-argument form lives in `emit_statement`; this
-//! module handles the argument case, where the pointer's base collides with the argument
-//! registers and mwcc copies it out to r4 before loading the callee.
+//! Bare indirect-call statements through a memory-resident function pointer.
+//!
+//! This module owns both the general statement form and the measured whole-function schedule
+//! for constant arguments. Keeping the callee staging and argument-safety rules together avoids
+//! teaching the statement driver about indirect-call register dependencies.
 
 #[allow(unused_imports)]
 use super::*;
 
 impl Generator {
+    /// Emit a bare indirect-call statement such as `actor->proc(actor)`.
+    ///
+    /// The callee is staged in r12 before the call. Arguments are currently accepted only when
+    /// every one is a word-sized general-register leaf and the left-to-right moves are acyclic:
+    /// no destination may still hold a later argument. This covers both pure pass-through calls
+    /// and the common `saved_actor->proc(saved_actor)` tail while ensuring argument marshaling
+    /// cannot destroy either the callee or a later argument. Cyclic moves and computed arguments
+    /// keep deferring until their schedules can be modeled explicitly.
+    pub(crate) fn emit_bare_indirect_call_statement(
+        &mut self,
+        target: &Expression,
+        arguments: &[Expression],
+    ) -> Compilation<()> {
+        if !matches!(
+            target,
+            Expression::Dereference { .. } | Expression::Member { .. }
+        ) {
+            return Err(Diagnostic::error(
+                "this bare indirect-call target is not supported yet (roadmap)",
+            ));
+        }
+        let argument_moves = arguments
+            .iter()
+            .enumerate()
+            .map(|(index, argument)| {
+                let (source, width, _) = self.leaf_info(argument)?;
+                if width != 32 || source == 12 {
+                    return Err(Diagnostic::error(
+                        "arguments to a bare indirect call need dependency-aware marshaling (roadmap)",
+                    ));
+                }
+                Ok((source, Eabi::FIRST_GENERAL_ARGUMENT + index as u8))
+            })
+            .collect::<Compilation<Vec<_>>>()?;
+        let overwrites_later_source =
+            argument_moves.iter().enumerate().any(|(index, &(source, target))| {
+                source != target
+                    && argument_moves[index + 1..]
+                        .iter()
+                        .any(|&(later_source, _)| later_source == target)
+            });
+        if arguments.len() > 8 || overwrites_later_source {
+            return Err(Diagnostic::error(
+                "arguments to a bare indirect call need dependency-aware marshaling (roadmap)",
+            ));
+        }
+
+        self.evaluate(target, Type::UnsignedInt, 12)?;
+        for (argument, &(source, target)) in arguments.iter().zip(&argument_moves) {
+            if source != target {
+                self.evaluate_general(argument, target)?;
+            }
+        }
+        self.emit_indirect_branch_and_link(12);
+        Ok(())
+    }
+
     /// A bare indirect call through a MEMORY-resident function pointer, passing small integer
     /// constants: `void f(struct S *s){ s->cb(7); }` / `void f(VF *pp){ (**pp)(7); }`. The callee
     /// address lives at `off(param)`; its base sits in r3, colliding with the first argument, so
