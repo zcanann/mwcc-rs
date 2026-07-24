@@ -233,6 +233,75 @@ fn names_a_shallow_dynamic_packet_field_inside_the_loop() {
 }
 
 #[test]
+fn reuses_a_dynamic_packet_field_until_an_input_changes() {
+    let function = function(vec![
+        Statement::Assign {
+            name: "a".into(),
+            value: Expression::IntegerLiteral(4),
+        },
+        loop_with(vec![
+            Statement::Assign {
+                name: "a".into(),
+                value: Expression::IntegerLiteral(5),
+            },
+            packet_word("cursor", 0, shallow_dynamic_value()),
+            packet_word("cursor", 8, shallow_dynamic_value()),
+        ]),
+    ]);
+    let rewritten = hoist_repeated_packet_words(&function).expect("shared dynamic field");
+    let Statement::Loop { body, .. } = &rewritten.statements[1] else {
+        panic!("expected loop")
+    };
+    assert!(matches!(
+        &body[1..4],
+        [
+            Statement::Assign { name: source, .. },
+            Statement::Store {
+                value: Expression::Variable(first),
+                ..
+            },
+            Statement::Store {
+                value: Expression::Variable(second),
+                ..
+            },
+        ] if source == first && first == second
+    ));
+}
+
+#[test]
+fn recomputes_a_dynamic_packet_field_after_an_input_changes() {
+    let function = function(vec![
+        Statement::Assign {
+            name: "a".into(),
+            value: Expression::IntegerLiteral(4),
+        },
+        loop_with(vec![
+            Statement::Assign {
+                name: "a".into(),
+                value: Expression::IntegerLiteral(5),
+            },
+            packet_word("cursor", 0, shallow_dynamic_value()),
+            Statement::Assign {
+                name: "a".into(),
+                value: Expression::IntegerLiteral(6),
+            },
+            packet_word("cursor", 8, shallow_dynamic_value()),
+        ]),
+    ]);
+    let rewritten = hoist_repeated_packet_words(&function).expect("renamed dynamic fields");
+    let Statement::Loop { body, .. } = &rewritten.statements[1] else {
+        panic!("expected loop")
+    };
+    assert!(matches!(
+        (&body[1], &body[4]),
+        (
+            Statement::Assign { name: first, .. },
+            Statement::Assign { name: second, .. },
+        ) if first != second
+    ));
+}
+
+#[test]
 fn shares_a_common_subexpression_between_invariant_fields() {
     let function = function(vec![
         Statement::Assign {

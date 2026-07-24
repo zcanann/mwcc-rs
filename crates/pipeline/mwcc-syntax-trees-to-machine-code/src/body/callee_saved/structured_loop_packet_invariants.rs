@@ -363,8 +363,9 @@ fn name_dynamic_shallow_fragments(
     next_name: &mut usize,
 ) -> (Vec<Statement>, bool) {
     let mut output = Vec::with_capacity(body.len());
+    let mut named: Vec<(&Expression, String, Vec<String>, usize)> = Vec::new();
     let mut changed = false;
-    for statement in body {
+    for (statement_index, statement) in body.iter().enumerate() {
         let Statement::Store { target, value } = statement else {
             output.push(statement.clone());
             continue;
@@ -400,12 +401,31 @@ fn name_dynamic_shallow_fragments(
         }
         let mut replacements = Vec::with_capacity(fragments.len());
         for fragment in fragments {
+            if let Some((_, name, _, _)) = named.iter().find(|(candidate, _, reads, named_at)| {
+                if !crate::analysis::structurally_equal(candidate, fragment) {
+                    return false;
+                }
+                let between = if *named_at < statement_index {
+                    &body[*named_at + 1..statement_index]
+                } else {
+                    &[]
+                };
+                let reassigned = assigned_names(between);
+                !reads.iter().any(|read| reassigned.contains(read))
+            }) {
+                replacements.push((fragment, name.clone()));
+                continue;
+            }
             let name = fresh_name(used_names, next_name);
+            let reads = pure_integer_arithmetic(fragment)
+                .map(|(reads, _)| reads)
+                .unwrap_or_default();
             declarations.push(unsigned_local(&name));
             output.push(Statement::Assign {
                 name: name.clone(),
                 value: fragment.clone(),
             });
+            named.push((fragment, name.clone(), reads, statement_index));
             replacements.push((fragment, name));
         }
         output.push(Statement::Store {
