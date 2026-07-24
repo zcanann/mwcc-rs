@@ -205,7 +205,7 @@ fn hoist_loop_words(
         declarations.push(unsigned_local(&name));
         prefix.push(Statement::Assign {
             name: name.clone(),
-            value: value.clone(),
+            value: super::structured_loop_packet_algebra::simplify(value),
         });
         replacements.push((value, name));
     }
