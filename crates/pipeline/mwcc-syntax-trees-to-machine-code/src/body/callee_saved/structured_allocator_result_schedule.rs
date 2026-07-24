@@ -37,6 +37,7 @@ impl Generator {
         self.move_instruction_before(region.zero, region.result_copy + 1);
         self.move_instruction_before(region.pool_high, region.result_copy + 2);
         self.reuse_allocator_initialization_zero(region.result_copy + 1, region.result, 5);
+        self.schedule_allocator_initialization_prefix(region.result);
     }
 
     fn reuse_allocator_initialization_zero(&mut self, seed: usize, result: u8, zero: u8) {
@@ -90,6 +91,28 @@ impl Generator {
             .collect();
         crate::remap_instruction_indices(self, &permutation);
     }
+
+    fn schedule_allocator_initialization_prefix(&mut self, result: u8) {
+        let Some(prefix) = allocator_initialization_prefix(&self.output, result) else {
+            return;
+        };
+
+        self.move_instruction_before(prefix.constant_high, prefix.first_width);
+        let prefix = allocator_initialization_prefix(&self.output, result)
+            .expect("moving the independent high half preserves the prefix");
+        self.move_instruction_before(prefix.pool_low, prefix.first_width);
+        let prefix = allocator_initialization_prefix(&self.output, result)
+            .expect("moving the pool low half preserves the prefix");
+        self.move_instruction_before(prefix.constant_low, prefix.first_width);
+        let prefix = allocator_initialization_prefix(&self.output, result)
+            .expect("moving the independent low half preserves the prefix");
+        assign_allocator_initialization_registers(
+            &mut self.output.instructions,
+            prefix.object,
+            result,
+        );
+        self.move_instruction_before(prefix.compare, prefix.first_shift);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -101,6 +124,17 @@ struct AllocatorCursorResult {
     pool_high: usize,
     pool_low: usize,
     result: u8,
+}
+
+#[derive(Clone, Copy)]
+struct AllocatorInitializationPrefix {
+    first_width: usize,
+    first_shift: usize,
+    pool_low: usize,
+    constant_high: usize,
+    constant_low: usize,
+    compare: usize,
+    object: u8,
 }
 
 fn allocator_cursor_result(
@@ -180,6 +214,229 @@ fn allocator_cursor_result(
         });
     }
     None
+}
+
+fn allocator_initialization_prefix(
+    output: &mwcc_machine_code::MachineFunction,
+    result: u8,
+) -> Option<AllocatorInitializationPrefix> {
+    let first_width = output.instructions.windows(4).position(|window| {
+        matches!(
+            window,
+            [
+                Instruction::LoadHalfwordZero {
+                    d: width,
+                    a: object,
+                    offset: 8,
+                },
+                Instruction::ShiftLeftImmediate {
+                    a: scaled,
+                    s: width_source,
+                    shift: 2,
+                },
+                Instruction::AddImmediate {
+                    d: adjusted,
+                    a: scaled_source,
+                    immediate: 1,
+                },
+                Instruction::StoreHalfword {
+                    s: stored,
+                    a,
+                    offset: 2,
+                },
+            ] if width == width_source
+                && scaled == scaled_source
+                && adjusted == stored
+                && *a == result
+                && *object != result
+        )
+    })?;
+    let object = match output.instructions[first_width] {
+        Instruction::LoadHalfwordZero { a, .. } => a,
+        _ => unreachable!("the first width load was matched"),
+    };
+    let first_branch = output.instructions[first_width..]
+        .iter()
+        .position(is_result_schedule_barrier)
+        .map(|offset| first_width + offset)?;
+    let search_start = first_width.saturating_sub(4);
+    let pool_low = (search_start..first_branch).find(|&index| {
+        matches!(
+            output.instructions[index],
+            Instruction::LoadFloatSingle { offset: 0, .. }
+        ) && output.relocations.iter().any(|relocation| {
+            relocation.instruction_index == index && relocation.kind == RelocationKind::Addr16Lo
+        })
+    })?;
+    let constant_high = (search_start..first_branch).find(|&index| {
+        matches!(
+            output.instructions[index],
+            Instruction::AddImmediateShifted {
+                a: 0,
+                immediate: 1,
+                ..
+            }
+        )
+    })?;
+    let constant_register = match output.instructions[constant_high] {
+        Instruction::AddImmediateShifted { d, .. } => d,
+        _ => unreachable!("the constant high half was matched"),
+    };
+    let constant_low = (constant_high + 1..first_branch).find(|&index| {
+        matches!(
+            output.instructions[index],
+            Instruction::AddImmediate {
+                a,
+                immediate: -12,
+                ..
+            } if a == constant_register
+        )
+    })?;
+    let compare = (search_start..first_branch).find(|&index| {
+        matches!(
+            output.instructions[index],
+            Instruction::CompareWordImmediate { immediate: 0, .. }
+        )
+    })?;
+    if output.instructions.iter().any(|instruction| {
+        matches!(
+            instruction,
+            Instruction::BranchConditionalForward { target, .. }
+                | Instruction::Branch { target }
+                if (search_start..first_branch).contains(target)
+        )
+    }) {
+        return None;
+    }
+    Some(AllocatorInitializationPrefix {
+        first_width,
+        first_shift: first_width + 1,
+        pool_low,
+        constant_high,
+        constant_low,
+        compare,
+        object,
+    })
+}
+
+fn assign_allocator_initialization_registers(
+    instructions: &mut [Instruction],
+    object: u8,
+    result: u8,
+) {
+    for (load_offset, store_offset) in [(20, 4), (28, 12)] {
+        if let Some(start) = instructions.windows(2).position(|window| {
+            matches!(
+                window,
+                [
+                    Instruction::LoadWord {
+                        d: loaded,
+                        a: 1,
+                        offset,
+                    },
+                    Instruction::StoreHalfword {
+                        s,
+                        a,
+                        offset: stored_offset,
+                    },
+                ] if loaded == s
+                    && *offset == load_offset
+                    && *a == result
+                    && *stored_offset == store_offset
+            )
+        }) {
+            let Instruction::LoadWord { d, .. } = &mut instructions[start] else {
+                unreachable!()
+            };
+            *d = 3;
+            let Instruction::StoreHalfword { s, .. } = &mut instructions[start + 1] else {
+                unreachable!()
+            };
+            *s = 3;
+        }
+    }
+    for (load_offset, store_offset) in [(8, 2), (10, 10)] {
+        if let Some(start) = instructions.windows(4).position(|window| {
+            matches!(
+                window,
+                [
+                    Instruction::LoadHalfwordZero {
+                        d: loaded,
+                        a,
+                        offset,
+                    },
+                    Instruction::ShiftLeftImmediate {
+                        a: scaled,
+                        s,
+                        shift: 2,
+                    },
+                    Instruction::AddImmediate {
+                        d: adjusted,
+                        a: scaled_source,
+                        immediate: 1,
+                    },
+                    Instruction::StoreHalfword {
+                        s: stored,
+                        a: store_base,
+                        offset: stored_offset,
+                    },
+                ] if loaded == s
+                    && scaled == scaled_source
+                    && adjusted == stored
+                    && *a == object
+                    && *offset == load_offset
+                    && *store_base == result
+                    && *stored_offset == store_offset
+            )
+        }) {
+            instructions[start] = Instruction::LoadHalfwordZero {
+                d: if load_offset == 8 { 4 } else { 3 },
+                a: object,
+                offset: load_offset,
+            };
+            instructions[start + 1] = Instruction::ShiftLeftImmediate {
+                a: 3,
+                s: if load_offset == 8 { 4 } else { 3 },
+                shift: 2,
+            };
+            instructions[start + 2] = Instruction::AddImmediate {
+                d: 3,
+                a: 3,
+                immediate: 1,
+            };
+            instructions[start + 3] = Instruction::StoreHalfword {
+                s: 3,
+                a: result,
+                offset: store_offset,
+            };
+        }
+    }
+    if let Some(start) = instructions.windows(2).position(|window| {
+        matches!(
+            window,
+            [
+                Instruction::LoadWord {
+                    d: loaded,
+                    a,
+                    offset: 0,
+                },
+                Instruction::StoreWord {
+                    s,
+                    a: store_base,
+                    offset: 16,
+                },
+            ] if loaded == s && *a == object && *store_base == result
+        )
+    }) {
+        let Instruction::LoadWord { d, .. } = &mut instructions[start] else {
+            unreachable!()
+        };
+        *d = 3;
+        let Instruction::StoreWord { s, .. } = &mut instructions[start + 1] else {
+            unreachable!()
+        };
+        *s = 3;
+    }
 }
 
 fn reusable_zero_store(window: &[Instruction], result: u8, offsets: &[i16]) -> bool {
@@ -333,5 +590,81 @@ mod tests {
             31,
             &[8, 24, 26],
         ));
+    }
+
+    #[test]
+    fn recognizes_the_preallocation_scalar_initialization_prefix() {
+        let mut output = mwcc_machine_code::MachineFunction {
+            instructions: vec![
+                Instruction::LoadHalfwordZero {
+                    d: 0,
+                    a: 33,
+                    offset: 8,
+                },
+                Instruction::ShiftLeftImmediate {
+                    a: 47,
+                    s: 0,
+                    shift: 2,
+                },
+                Instruction::AddImmediate {
+                    d: 0,
+                    a: 47,
+                    immediate: 1,
+                },
+                Instruction::StoreHalfword {
+                    s: 0,
+                    a: 36,
+                    offset: 2,
+                },
+                Instruction::LoadFloatSingle {
+                    d: 48,
+                    a: 4,
+                    offset: 0,
+                },
+                Instruction::AddImmediateShifted {
+                    d: 53,
+                    a: 0,
+                    immediate: 1,
+                },
+                Instruction::AddImmediate {
+                    d: 0,
+                    a: 53,
+                    immediate: -12,
+                },
+                Instruction::StoreHalfword {
+                    s: 0,
+                    a: 36,
+                    offset: 20,
+                },
+                Instruction::CompareWordImmediate {
+                    a: 34,
+                    immediate: 0,
+                },
+                Instruction::BranchConditionalForward {
+                    options: 12,
+                    condition_bit: 2,
+                    target: 10,
+                },
+            ],
+            ..Default::default()
+        };
+        output.relocations.push(Relocation {
+            instruction_index: 4,
+            kind: RelocationKind::Addr16Lo,
+            target: RelocationTarget::Constant(0),
+        });
+        let prefix = allocator_initialization_prefix(&output, 36).expect("the prefix should match");
+        assert_eq!(
+            (
+                prefix.first_width,
+                prefix.first_shift,
+                prefix.pool_low,
+                prefix.constant_high,
+                prefix.constant_low,
+                prefix.compare,
+                prefix.object,
+            ),
+            (0, 1, 4, 5, 6, 8, 33)
+        );
     }
 }
