@@ -1416,6 +1416,8 @@ impl Generator {
                     && !bit_field_operand(right)
                     && self.signedness_of(left)?
                     && self.signedness_of(right)?;
+                let scalarized_one_word_member =
+                    is_scalarized_one_word_member(left, &self.one_word_aggregate_locals);
                 // A memory-valued left operand may need a temporary address GPR.
                 // Keep every fixed register read by the right operand live while
                 // selecting that address; otherwise `global.field == parameter`
@@ -1488,7 +1490,7 @@ impl Generator {
                         } else {
                             left_register
                         };
-                        if signed {
+                        if signed || (constant == 0 && scalarized_one_word_member) {
                             self.output
                                 .instructions
                                 .push(Instruction::CompareWordImmediate {
@@ -1541,7 +1543,7 @@ impl Generator {
                                     narrow_signed,
                                 );
                             }
-                        } else if signed {
+                        } else if signed || scalarized_one_word_member {
                             self.output
                                 .instructions
                                 .push(Instruction::CompareWordImmediate {
@@ -1773,7 +1775,9 @@ impl Generator {
                 });
         } else if self.is_signed_byte_load(condition)? {
             self.emit_widen_record(GENERAL_SCRATCH, register, 8, true);
-        } else if self.signedness_of(condition)? {
+        } else if is_scalarized_one_word_member(condition, &self.one_word_aggregate_locals)
+            || self.signedness_of(condition)?
+        {
             self.output
                 .instructions
                 .push(Instruction::CompareWordImmediate {
@@ -1802,6 +1806,19 @@ impl Generator {
         if let Expression::Comma { left, right } = operand {
             self.emit_comma_side_effect(left)?;
             return self.condition_operand_register(right);
+        }
+        // A source-proven one-word aggregate already has its sole offset-zero
+        // member in the scalarized local home. Comparing that member can use the
+        // home directly instead of copying the value through the scratch.
+        if is_scalarized_one_word_member(operand, &self.one_word_aggregate_locals) {
+            let Expression::Member { base, .. } = operand else {
+                unreachable!("scalarized member recognition guarantees a member");
+            };
+            if let Expression::Variable(name) = base.as_ref() {
+                if let Some(register) = self.lookup_general(name) {
+                    return Ok(register);
+                }
+            }
         }
         if let Some((base, offset, member_type)) = as_member(operand) {
             self.emit_member_load(base, offset, member_type, None, GENERAL_SCRATCH)?;
@@ -1854,5 +1871,40 @@ impl Generator {
             return Ok(GENERAL_SCRATCH);
         }
         self.general_register_of_leaf(operand)
+    }
+}
+
+fn is_scalarized_one_word_member(
+    expression: &Expression,
+    one_word_aggregates: &std::collections::HashSet<String>,
+) -> bool {
+    matches!(
+        expression,
+        Expression::Member { base, offset: 0, .. }
+            if matches!(base.as_ref(), Expression::Variable(name)
+                if one_word_aggregates.contains(name))
+    )
+}
+
+#[cfg(test)]
+mod scalarized_member_tests {
+    use super::*;
+
+    #[test]
+    fn only_an_offset_zero_member_of_a_proven_aggregate_is_scalarized() {
+        let proven = std::collections::HashSet::from(["it".to_string()]);
+        let member = |name: &str, offset| Expression::Member {
+            base: Box::new(Expression::Variable(name.into())),
+            offset,
+            member_type: Type::StructPointer { element_size: 0 },
+            index_stride: None,
+        };
+
+        assert!(is_scalarized_one_word_member(&member("it", 0), &proven));
+        assert!(!is_scalarized_one_word_member(&member("it", 4), &proven));
+        assert!(!is_scalarized_one_word_member(
+            &member("unproven", 0),
+            &proven
+        ));
     }
 }
