@@ -2501,6 +2501,9 @@ mod tests {
     #[path = "call_indexed_global_array.rs"]
     mod call_indexed_global_array;
 
+    #[path = "function_address_select.rs"]
+    mod function_address_select;
+
     #[path = "call_argument_schedules.rs"]
     mod call_argument_schedules;
 

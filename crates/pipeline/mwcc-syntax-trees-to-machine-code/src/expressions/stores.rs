@@ -1639,22 +1639,7 @@ impl Generator {
             // materializes it absolutely (`lis t,sym@ha; addi r0,t,sym@lo`) even with
             // small-data on, since functions are not in the small-data area.
             if !self.locations.contains_key(name) && !self.globals.contains_key(name.as_str()) {
-                let high = self.fresh_virtual_general();
-                self.emit_address_high(high, name);
-                self.record_relocation(RelocationKind::Addr16Lo, name);
-                let source = if self.behavior.function_address_store_style
-                    == FunctionAddressStoreStyle::DirectAddress
-                {
-                    high
-                } else {
-                    GENERAL_SCRATCH
-                };
-                self.output.instructions.push(Instruction::AddImmediate {
-                    d: source,
-                    a: high,
-                    immediate: 0,
-                });
-                return Ok(source);
+                return Ok(self.emit_function_address_store_value(name));
             }
             // A data GLOBAL value is loaded into the scratch — `gi = gj` is `lwz r0,gj; stw r0,gi`
             // — since a global is not held in a register like a parameter or local. A NARROW store
@@ -1751,6 +1736,13 @@ impl Generator {
             origin,
         } = value
         {
+            if let Some(source) = self.try_emit_function_address_null_store_select(
+                condition,
+                when_true,
+                when_false,
+            )? {
+                return Ok(source);
+            }
             if let Some(phi) =
                 self.try_emit_legacy_store_phi_select(condition, when_true, when_false, *origin)?
             {

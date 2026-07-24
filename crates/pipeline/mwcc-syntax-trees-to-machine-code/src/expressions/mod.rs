@@ -14,6 +14,7 @@ mod calls;
 mod constructed_new;
 mod constructor_initializers;
 mod driver;
+mod function_address;
 mod global_array_decay;
 mod global_array_index;
 mod globals;
