@@ -136,12 +136,18 @@ pub(crate) fn if_select(
 }
 
 /// Whether a statement references (reads, writes, or takes the address of) `name`.
-/// Control-flow statements are treated conservatively as referencing everything.
+///
+/// Walk structured control flow instead of treating its mere presence as a use.
+/// This matters for dead declarations in ordinary optimized functions: a local
+/// initialized before an unrelated `if` is still dead when neither arm reads it.
 pub(crate) fn statement_references_name(statement: &Statement, name: &str) -> bool {
+    let arm_references_name = |arm: &mwcc_syntax_trees::ArmBody| match arm {
+        mwcc_syntax_trees::ArmBody::Return(value) => expression_reads_name(value, name),
+        mwcc_syntax_trees::ArmBody::Statements(statements) => statements
+            .iter()
+            .any(|statement| statement_references_name(statement, name)),
+    };
     match statement {
-        // Jumps redirect control anywhere — conservative, like the other
-        // control-flow arms below.
-        Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => true,
         Statement::Store { target, value } => {
             expression_reads_name(target, name) || expression_reads_name(value, name)
         }
@@ -150,10 +156,48 @@ pub(crate) fn statement_references_name(statement: &Statement, name: &str) -> bo
             value,
         } => target == name || expression_reads_name(value, name),
         Statement::Expression(expression) => expression_reads_name(expression, name),
-        Statement::If { .. }
-        | Statement::Switch { .. }
-        | Statement::Loop { .. }
-        | Statement::Return(_) => true,
+        Statement::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            expression_reads_name(condition, name)
+                || then_body
+                    .iter()
+                    .any(|statement| statement_references_name(statement, name))
+                || else_body
+                    .iter()
+                    .any(|statement| statement_references_name(statement, name))
+        }
+        Statement::Switch {
+            scrutinee,
+            arms,
+            default,
+        } => {
+            expression_reads_name(scrutinee, name)
+                || arms.iter().any(|arm| arm_references_name(&arm.body))
+                || default.as_ref().is_some_and(arm_references_name)
+        }
+        Statement::Loop {
+            initializer,
+            condition,
+            step,
+            body,
+            ..
+        } => {
+            initializer
+                .iter()
+                .chain(condition)
+                .chain(step)
+                .any(|expression| expression_reads_name(expression, name))
+                || body
+                    .iter()
+                    .any(|statement| statement_references_name(statement, name))
+        }
+        Statement::Return(value) => value
+            .as_ref()
+            .is_some_and(|expression| expression_reads_name(expression, name)),
+        Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => false,
     }
 }
 
@@ -1999,6 +2043,40 @@ mod tests {
             is_const: false,
             row_bytes: None,
         }
+    }
+
+    #[test]
+    fn dead_local_is_removed_across_unrelated_structured_control_flow() {
+        let function = Function {
+            return_type: Type::Int,
+            name: "dead_before_if".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: vec![automatic_local(
+                "unused",
+                Type::Float,
+                Some(Expression::FloatLiteral(1.0)),
+            )],
+            statements: vec![Statement::If {
+                condition: Expression::IntegerLiteral(1),
+                then_body: vec![Statement::Return(Some(Expression::IntegerLiteral(1)))],
+                else_body: vec![Statement::Return(Some(Expression::IntegerLiteral(0)))],
+            }],
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+
+        let cleaned = remove_dead_locals(&function)
+            .expect("structured control flow must not keep an unrelated local alive");
+        assert!(cleaned.locals.is_empty());
     }
 
     #[test]
