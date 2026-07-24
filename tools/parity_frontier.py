@@ -11,7 +11,13 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from parity_dashboard import latest_observations, load_inventory, load_results
+from parity_dashboard import (
+    failure_reason,
+    latest_observations,
+    load_inventory,
+    load_results,
+    normalize_reason,
+)
 from parity_identity import configuration_id
 
 
@@ -54,6 +60,62 @@ def choose(
     return sorted(identities, key=lambda identity: rank(identity, seed, epoch, bucket))[:count]
 
 
+def choose_diverse(
+    identities: List[str],
+    count: int,
+    seed: str,
+    epoch: str,
+    bucket: str,
+    rows_by_identity: Dict[str, Dict[str, Any]],
+    observations: Dict[str, Dict[str, Any]],
+) -> List[str]:
+    """Choose deterministically while round-robining failure families.
+
+    A pure hash rank can fill a small frontier with many configurations that
+    all fail in the same shared header. Grouping by project and normalized
+    diagnostic preserves failure bias but spends the first round on distinct
+    compiler surfaces before taking a second example from any family.
+    """
+
+    groups: Dict[tuple[str, str, str], List[str]] = {}
+    for identity in sorted(
+        identities, key=lambda item: rank(item, seed, epoch, bucket)
+    ):
+        row = rows_by_identity[identity]
+        observation = observations.get(identity)
+        reason = (
+            normalize_reason(failure_reason(observation))
+            if observation is not None
+            else "untested"
+        )
+        status = work_status(observation)
+        groups.setdefault((status, row["project"], reason), []).append(identity)
+    status_priority = {status: index for index, status in enumerate(PRIORITY)}
+    ordered_groups = sorted(
+        groups,
+        key=lambda group: (
+            status_priority.get(group[0], len(PRIORITY)),
+            rank(groups[group][0], seed, epoch, f"{bucket}:GROUP"),
+        ),
+    )
+    selected: List[str] = []
+    round_index = 0
+    while len(selected) < count:
+        added = False
+        for group in ordered_groups:
+            members = groups[group]
+            if round_index >= len(members):
+                continue
+            selected.append(members[round_index])
+            added = True
+            if len(selected) == count:
+                break
+        if not added:
+            break
+        round_index += 1
+    return selected
+
+
 def candidate_rows(inventory: Dict[str, Any], args: argparse.Namespace) -> List[Dict[str, Any]]:
     rows = []
     for row in inventory["translation_units"]:
@@ -80,6 +142,7 @@ def build_frontier(
 ) -> Dict[str, Any]:
     build_observations = build_observations if build_observations is not None else observations
     universe = {row["configuration_id"] for row in rows}
+    rows_by_identity = {row["configuration_id"]: row for row in rows}
     by_status: Dict[str, List[str]] = {}
     for identity in universe:
         observation = observations.get(identity)
@@ -106,12 +169,23 @@ def build_frontier(
         selected_set.update(picked)
         probed_versions.append(version)
 
-    for status in PRIORITY:
-        remaining = work_target - len(selected)
-        if remaining <= 0:
-            break
-        candidates = [identity for identity in by_status.get(status, []) if identity not in selected_set]
-        picked = choose(candidates, remaining, args.seed, args.epoch, status)
+    remaining = work_target - len(selected)
+    if remaining > 0:
+        candidates = [
+            identity
+            for status in PRIORITY
+            for identity in by_status.get(status, [])
+            if identity not in selected_set
+        ]
+        picked = choose_diverse(
+            candidates,
+            remaining,
+            args.seed,
+            args.epoch,
+            "WORK",
+            rows_by_identity,
+            observations,
+        )
         selected.extend(picked)
         selected_set.update(picked)
 
