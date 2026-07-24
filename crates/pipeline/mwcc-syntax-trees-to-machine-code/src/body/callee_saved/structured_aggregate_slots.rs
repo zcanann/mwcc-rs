@@ -12,6 +12,17 @@ pub(super) fn plan_aggregate_frame_slots(
     locals: &[&LocalDeclaration],
     statements: &[Statement],
 ) -> Compilation<std::collections::HashMap<String, i16>> {
+    plan_aggregate_frame_slots_from(locals, statements, 8)
+}
+
+/// Place aggregates after an already reserved low-frame prefix, such as a
+/// retained entry lane plus an unused source array. Keeping the base explicit
+/// prevents independently planned frame-local families from overlapping.
+pub(super) fn plan_aggregate_frame_slots_from(
+    locals: &[&LocalDeclaration],
+    statements: &[Statement],
+    base_offset: u32,
+) -> Compilation<std::collections::HashMap<String, i16>> {
     let mut result_locals = Vec::new();
     let mut ordinary_locals = Vec::new();
     for local in locals {
@@ -23,7 +34,7 @@ pub(super) fn plan_aggregate_frame_slots(
     }
 
     let mut placements = std::collections::HashMap::new();
-    let mut offset = 8u32;
+    let mut offset = base_offset;
     for local in result_locals
         .into_iter()
         .chain(ordinary_locals.into_iter().rev())
@@ -96,5 +107,13 @@ mod tests {
         assert_eq!(slots["position"], 8);
         assert_eq!(slots["effect"], 20);
         assert_eq!(slots["argument"], 32);
+    }
+
+    #[test]
+    fn places_aggregates_after_a_reserved_array_prefix() {
+        let vector = aggregate("vector", 12);
+        let slots = plan_aggregate_frame_slots_from(&[&vector], &[], 16).unwrap();
+
+        assert_eq!(slots["vector"], 16);
     }
 }

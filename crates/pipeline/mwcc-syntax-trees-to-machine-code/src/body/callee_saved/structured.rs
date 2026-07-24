@@ -10,7 +10,9 @@ use super::structured_call_accumulator::{
     call_accumulator_assignment_count, call_accumulator_names,
     fold_zero_initialized_call_accumulator, in_place_call_combined_return_name,
 };
-use super::structured_aggregate_slots::plan_aggregate_frame_slots;
+use super::structured_aggregate_slots::{
+    plan_aggregate_frame_slots, plan_aggregate_frame_slots_from,
+};
 use super::structured_call_schedule::transient_call_argument_register;
 use super::structured_entry_alias::{
     fold_entry_alias_zero_test, plan_first_call_alias, EntryAliasBoundary, EntryParameterAlias,
@@ -162,6 +164,20 @@ impl Generator {
         } else {
             None
         };
+        let frame_array_bytes = match frame_array {
+            Some(array) => {
+                let length = array.array_length.expect("frame array was gated");
+                let Some(bytes) = u16::from(array.declared_type.width() / 8)
+                    .checked_mul(length)
+                    .filter(|bytes| *bytes != 0 && *bytes <= u16::from(u8::MAX))
+                else {
+                    return Ok(false);
+                };
+                i16::try_from(bytes)
+                    .map_err(|_| Diagnostic::error("structured local frame is too large"))?
+            }
+            None => 0,
+        };
         let unused_frame_array = frame_array
             .is_some_and(|array| !body_uses_local(&function.statements, &array.name));
         let supported_plain_return = structured_return_is_supported(function);
@@ -181,7 +197,9 @@ impl Generator {
             .locals
             .iter()
             .filter(|local| {
-                local.array_length.is_none() && address_taken.contains(local.name.as_str())
+                local.array_length.is_none()
+                    && !matches!(local.declared_type, Type::Struct { .. })
+                    && address_taken.contains(local.name.as_str())
             })
             .collect();
         if frame_scalar_locals.iter().any(|local| {
@@ -334,6 +352,8 @@ impl Generator {
             }
             i16::try_from(end.saturating_sub(8))
                 .map_err(|_| Diagnostic::error("structured aggregate frame is too large"))?
+                .checked_add(frame_array_bytes)
+                .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?
         } else if !self.frame_slots.is_empty() {
             let end = self
                 .frame_slots
@@ -343,16 +363,8 @@ impl Generator {
                 .unwrap_or(8);
             i16::try_from(end.saturating_sub(8))
                 .map_err(|_| Diagnostic::error("structured aggregate frame is too large"))?
-        } else if let Some(array) = frame_array {
-            let length = array.array_length.expect("frame array was gated");
-            let Some(bytes) = u16::from(array.declared_type.width() / 8)
-                .checked_mul(length)
-                .filter(|bytes| *bytes != 0 && *bytes <= u16::from(u8::MAX))
-            else {
-                return Ok(false);
-            };
-            i16::try_from(bytes)
-                .map_err(|_| Diagnostic::error("structured local frame is too large"))?
+        } else if frame_array.is_some() {
+            frame_array_bytes
         } else {
             0
         };
@@ -493,7 +505,7 @@ impl Generator {
             })
             .collect();
         let mut plan = mwcc_vreg::FramePlan::with_local_region(homes.clone(), local_region_bytes);
-        if frame_array.is_none() && !aggregate_frame_locals.is_empty() {
+        if !aggregate_frame_locals.is_empty() {
             let placements =
                 plan_aggregate_frame_slots(&aggregate_frame_locals, &function.statements)?;
             for local in aggregate_frame_locals.iter().rev() {
@@ -531,6 +543,12 @@ impl Generator {
                         && !eager_saved_locals
                             .iter()
                             .any(|saved| saved.name == local.name)
+                        && !saved_float_locals
+                            .iter()
+                            .any(|saved| saved.name == local.name)
+                        && !ephemeral_locals
+                            .iter()
+                            .any(|ephemeral| ephemeral.name == local.name)
                         && pure_local_alias(local).is_none()
                         && !is_call_result_local(&function.statements, &local.name)
                         && !is_transient_biased_scaled_member_call_local(
@@ -562,6 +580,27 @@ impl Generator {
                     })?
                 }
             };
+            if !aggregate_frame_locals.is_empty() {
+                let aggregate_base = u32::try_from(
+                    array_offset
+                        .checked_add(frame_array_bytes)
+                        .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?,
+                )
+                .map_err(|_| Diagnostic::error("structured local frame is out of range"))?;
+                let placements = plan_aggregate_frame_slots_from(
+                    &aggregate_frame_locals,
+                    &function.statements,
+                    aggregate_base,
+                )?;
+                for local in &aggregate_frame_locals {
+                    let Some(slot) = self.frame_slots.get_mut(&local.name) else {
+                        return Err(Diagnostic::error(
+                            "structured aggregate slot was not initialized",
+                        ));
+                    };
+                    slot.offset = placements[&local.name];
+                }
+            }
             if self.behavior.frame_convention == FrameConvention::LinkageFirst {
                 let occupied = i32::from(array_offset)
                     + i32::from(local_region_bytes)
@@ -569,7 +608,13 @@ impl Generator {
                 // The legacy value graph retains the terminal pointer alias as
                 // one scalar slot but only rounds this frame to a doubleword.
                 // Ordinary structured frames retain their 16-byte rounding.
-                let alignment = if folded_terminal_pointer_alias { 8 } else { 16 };
+                let alignment = if folded_terminal_pointer_alias
+                    || saved_float_plan.group_count != 0
+                {
+                    8
+                } else {
+                    16
+                };
                 let frame_size = if dense_frame && !eager_saved_locals.is_empty() {
                     // A dense legacy frame retains the caller-linkage word
                     // between the local region and its contiguous saved-GPR
@@ -587,7 +632,7 @@ impl Generator {
                 FrameSlot {
                     offset: array_offset,
                     class: ValueClass::General,
-                    size: local_region_bytes as u8,
+                    size: frame_array_bytes as u8,
                     value_type: array.declared_type,
                     parameter_register: None,
                     is_array: true,
