@@ -49,8 +49,7 @@ use super::structured_loop_member_cache::cache_repeated_loop_members;
 use super::structured_loop_assertion_strings::plan_loop_assertion_strings;
 use super::structured_loop_lowering::lower_structured_loops;
 use super::structured_loop_register_pressure::{
-    plan_dense_loop_register_window, primary_dense_loop_carried_local,
-    secondary_dense_loop_carried_local, tertiary_dense_loop_carried_local,
+    plan_dense_loop_carried_locals, plan_dense_loop_register_window,
 };
 use super::structured_preloop_alias::fold_preloop_comma_pointer_alias;
 use super::structured_locals::{
@@ -384,12 +383,8 @@ impl Generator {
         };
         let dense_loop_window =
             plan_dense_loop_register_window(&function.statements, &ephemeral_locals);
-        let primary_loop_carried =
-            primary_dense_loop_carried_local(&function.statements, &ephemeral_locals);
-        let secondary_loop_carried =
-            secondary_dense_loop_carried_local(&function.statements, &ephemeral_locals);
-        let tertiary_loop_carried =
-            tertiary_dense_loop_carried_local(&function.statements, &ephemeral_locals);
+        let dense_loop_carried =
+            plan_dense_loop_carried_locals(&function.statements, &ephemeral_locals);
         let frame_publication =
             StructuredFramePublication::plan(function, &frame_scalar_locals, dense_loop_window);
         if let Some(publication) = &frame_publication {
@@ -1445,22 +1440,13 @@ impl Generator {
                         .expect("aggregate-call companion preference was checked"),
                     )
                 }
-                ValueClass::General
-                    if primary_loop_carried == Some(local.name.as_str()) =>
-                {
-                    self.fresh_virtual_general_preferring(30)
+                ValueClass::General => {
+                    if let Some(register) = dense_loop_carried.preference_for(&local.name) {
+                        self.fresh_virtual_general_preferring(register)
+                    } else {
+                        self.fresh_virtual_general()
+                    }
                 }
-                ValueClass::General
-                    if secondary_loop_carried == Some(local.name.as_str()) =>
-                {
-                    self.fresh_virtual_general_preferring(29)
-                }
-                ValueClass::General
-                    if tertiary_loop_carried == Some(local.name.as_str()) =>
-                {
-                    self.fresh_virtual_general_preferring(28)
-                }
-                ValueClass::General => self.fresh_virtual_general(),
                 ValueClass::Float => self.fresh_virtual_float_preferring(
                     self.ephemeral_float_home_preference(function, &ephemeral_locals),
                 ),

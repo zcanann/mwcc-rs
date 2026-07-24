@@ -13,46 +13,44 @@ use super::structured_locals::body_uses_local;
 
 pub(super) const DENSE_SAVED_GPR_COUNT: usize = 18;
 
-/// The first source local carried around a saturated loop.
-///
-/// MWCC assigns this primary loop quantum to r30. Later carried values require
-/// coupled packet-cursor scheduling before their descending preferences are
-/// safe, so this planner deliberately owns only the first role.
-pub(super) fn primary_dense_loop_carried_local<'a>(
-    statements: &[Statement],
-    ephemeral_locals: &[&'a LocalDeclaration],
-) -> Option<&'a str> {
-    dense_loop_carried_local(statements, ephemeral_locals, 0)
+const DENSE_LOOP_CARRIED_REGISTERS: [u8; 4] = [30, 29, 28, 27];
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct DenseLoopCarriedPlan<'a> {
+    locals: [Option<&'a str>; DENSE_LOOP_CARRIED_REGISTERS.len()],
 }
 
-/// The second carried value in the same dense-loop allocation order.
-pub(super) fn secondary_dense_loop_carried_local<'a>(
-    statements: &[Statement],
-    ephemeral_locals: &[&'a LocalDeclaration],
-) -> Option<&'a str> {
-    dense_loop_carried_local(statements, ephemeral_locals, 1)
+impl DenseLoopCarriedPlan<'_> {
+    pub(super) fn preference_for(&self, local: &str) -> Option<u8> {
+        self.locals
+            .iter()
+            .position(|candidate| *candidate == Some(local))
+            .map(|rank| DENSE_LOOP_CARRIED_REGISTERS[rank])
+    }
 }
 
-/// The third carried value in the same dense-loop allocation order.
-pub(super) fn tertiary_dense_loop_carried_local<'a>(
+/// Plan the measured descending homes for values carried around one saturated
+/// loop. Packet scheduling is coupled to these lanes, so this bounded plan only
+/// exposes roles whose interaction has been verified.
+pub(super) fn plan_dense_loop_carried_locals<'a>(
     statements: &[Statement],
     ephemeral_locals: &[&'a LocalDeclaration],
-) -> Option<&'a str> {
-    dense_loop_carried_local(statements, ephemeral_locals, 2)
-}
-
-fn dense_loop_carried_local<'a>(
-    statements: &[Statement],
-    ephemeral_locals: &[&'a LocalDeclaration],
-    rank: usize,
-) -> Option<&'a str> {
-    let loop_statement = dense_loop_statement(statements, ephemeral_locals)?;
-    ephemeral_locals
-        .iter()
-        .filter(|local| class_of(local.declared_type).ok() == Some(ValueClass::General))
-        .filter(|local| loop_carries_name(loop_statement, &local.name))
-        .nth(rank)
-        .map(|local| local.name.as_str())
+) -> DenseLoopCarriedPlan<'a> {
+    let mut plan = DenseLoopCarriedPlan {
+        locals: [None; DENSE_LOOP_CARRIED_REGISTERS.len()],
+    };
+    let Some(loop_statement) = dense_loop_statement(statements, ephemeral_locals) else {
+        return plan;
+    };
+    for (slot, local) in plan.locals.iter_mut().zip(
+        ephemeral_locals
+            .iter()
+            .filter(|local| class_of(local.declared_type).ok() == Some(ValueClass::General))
+            .filter(|local| loop_carries_name(loop_statement, &local.name)),
+    ) {
+        *slot = Some(local.name.as_str());
+    }
+    plan
 }
 
 /// Return the saved-home count for a source loop that saturates MWCC's saved
@@ -289,8 +287,17 @@ mod tests {
                     right: Box::new(Expression::IntegerLiteral(1)),
                 },
             ),
+            read("v4"),
+            assign(
+                "v4",
+                Expression::Binary {
+                    operator: BinaryOperator::Add,
+                    left: Box::new(Expression::Variable("v4".into())),
+                    right: Box::new(Expression::IntegerLiteral(1)),
+                },
+            ),
         ];
-        body.extend(locals[4..].iter().map(|local| read(&local.name)));
+        body.extend(locals[5..].iter().map(|local| read(&local.name)));
         let statements = vec![Statement::Loop {
             kind: LoopKind::While,
             initializer: None,
@@ -299,17 +306,13 @@ mod tests {
             body,
         }];
 
+        let plan = plan_dense_loop_carried_locals(&statements, &references);
         assert_eq!(
-            primary_dense_loop_carried_local(&statements, &references),
-            Some("v0")
+            plan.locals,
+            [Some("v0"), Some("v2"), Some("v3"), Some("v4")]
         );
-        assert_eq!(
-            secondary_dense_loop_carried_local(&statements, &references),
-            Some("v2")
-        );
-        assert_eq!(
-            tertiary_dense_loop_carried_local(&statements, &references),
-            Some("v3")
-        );
+        assert_eq!(plan.preference_for("v0"), Some(30));
+        assert_eq!(plan.preference_for("v4"), Some(27));
+        assert_eq!(plan.preference_for("v5"), None);
     }
 }
