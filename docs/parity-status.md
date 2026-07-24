@@ -79,10 +79,9 @@ its time on known giant-TU timeouts.
 Post-holdout compiler work through commit `93eff0d7` has not been run over a
 new unbiased sample, so it does not change the 7.8% estimate above. On the
 targeted Melee `src/melee/ft/ftcommon.c` diagnostic, the latest checkpoint moved
-relocation-aware parity from 28/109 to 51/109 functions and from 996/15,340 to
-3,012/15,340 reference code bytes. Paired movement was +24/-1 functions and
-+2,052/-36 exact bytes, for net movement of +23 functions and +2,016 bytes.
-The gains were `ftCommon_ClampAirDrift`, `ftCommon_FallBasic`,
+relocation-aware parity from 28/109 to 52/109 functions and from 996/15,340 to
+3,048/15,340 reference code bytes. Paired movement was +24/-0 functions and
++2,052 exact bytes. The gains were `ftCommon_ClampAirDrift`, `ftCommon_FallBasic`,
 `ftCommon_CalcHitlag`, `ftCommon_8007DB58`, `ftCommon_SetAccessory`,
 `ftCommon_8007FF74`, `ftCommon_8007DB24`, `ftCommon_8007D28C`,
 `ftCo_GetLStickAngle`, `ftCo_GetCStickAngle`, `ftCommon_8007D780`,
@@ -91,9 +90,8 @@ The gains were `ftCommon_ClampAirDrift`, `ftCommon_FallBasic`,
 `ftCommon_8007EF5C`, `ftCommon_8007CDA4`, `ftCommon_8007CDF8`,
 `ftCommon_8007D5D4`, `ftCommon_CheckFallFast`, and the twin decay functions
 `ftCommon_8007CCA0` and `ftCommon_8007CE4C`, plus the file-IPA sign store
-`ftCommon_8007DA24`. `ftCommon_8007D268` regressed by 36 bytes and has re-entered
-the failure pool. This is evidence of local forward movement, not a corpus-level
-percentage.
+`ftCommon_8007DA24`. This is evidence of local forward movement, not a
+corpus-level percentage.
 
 ## Historical baseline: fresh current-population holdout
 
