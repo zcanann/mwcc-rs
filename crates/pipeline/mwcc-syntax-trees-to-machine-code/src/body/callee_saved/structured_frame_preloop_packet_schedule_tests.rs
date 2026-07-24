@@ -121,7 +121,13 @@ fn serial_fixture() -> Vec<Instruction> {
 
 #[test]
 fn recognizes_three_serial_packets_before_the_divisor() {
-    assert!(is_serial_preloop_packets(&serial_fixture()));
+    assert_eq!(
+        serial_preloop_packet_lanes(&serial_fixture()),
+        Some(DivisorLanes {
+            width: 10,
+            quotient: 4,
+        })
+    );
 }
 
 #[test]
@@ -131,5 +137,30 @@ fn rejects_a_cursor_store_through_the_wrong_packet_base() {
         unreachable!()
     };
     *a = 9;
-    assert!(!is_serial_preloop_packets(&instructions));
+    assert_eq!(serial_preloop_packet_lanes(&instructions), None);
+}
+
+#[test]
+fn preserves_nondefault_divisor_lanes() {
+    let mut instructions = serial_fixture();
+    let Instruction::LoadHalfwordZero { d, .. } = &mut instructions[23] else {
+        unreachable!()
+    };
+    *d = 11;
+    let Instruction::RotateAndMask { s, .. } = &mut instructions[25] else {
+        unreachable!()
+    };
+    *s = 11;
+    let Instruction::DivideWordUnsigned { d, .. } = &mut instructions[26] else {
+        unreachable!()
+    };
+    *d = 30;
+
+    assert_eq!(
+        serial_preloop_packet_lanes(&instructions),
+        Some(DivisorLanes {
+            width: 11,
+            quotient: 30,
+        })
+    );
 }

@@ -15,14 +15,19 @@ const SCHEDULE: [usize; 28] = [
 
 impl Generator {
     pub(crate) fn schedule_structured_frame_preloop_packets(&mut self) {
-        let Some(start) = self
-            .output
-            .instructions
-            .windows(29)
-            .position(is_serial_preloop_packets)
+        let Some(region) =
+            self.output
+                .instructions
+                .windows(29)
+                .enumerate()
+                .find_map(|(start, window)| {
+                    serial_preloop_packet_lanes(window)
+                        .map(|lanes| PreloopPacketRegion { start, lanes })
+                })
         else {
             return;
         };
+        let start = region.start;
 
         let mut current: Vec<usize> = (0..SCHEDULE.len()).collect();
         for (destination, &original) in SCHEDULE.iter().enumerate() {
@@ -36,12 +41,27 @@ impl Generator {
                 current.insert(destination, moved);
             }
         }
-        assign_packet_lanes(&mut self.output.instructions[start..start + SCHEDULE.len()]);
+        assign_packet_lanes(
+            &mut self.output.instructions[start..start + SCHEDULE.len()],
+            region.lanes,
+        );
     }
 }
 
-fn is_serial_preloop_packets(window: &[Instruction]) -> bool {
-    window.len() == 29
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PreloopPacketRegion {
+    start: usize,
+    lanes: DivisorLanes,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DivisorLanes {
+    width: u8,
+    quotient: u8,
+}
+
+fn serial_preloop_packet_lanes(window: &[Instruction]) -> Option<DivisorLanes> {
+    (window.len() == 29
         && matches!(
             &window[..8],
             [
@@ -163,7 +183,9 @@ fn is_serial_preloop_packets(window: &[Instruction]) -> bool {
         && cursor_dependencies(window)
         && word_dependencies(window, 2, 3, 4)
         && word_dependencies(window, 5, 6, 7)
-        && word_dependencies(window, 11, 12, 13)
+        && word_dependencies(window, 11, 12, 13))
+    .then(|| divisor_lanes(window))
+    .flatten()
 }
 
 fn cursor_dependencies(window: &[Instruction]) -> bool {
@@ -213,7 +235,36 @@ fn word_dependencies(window: &[Instruction], high: usize, low: usize, store: usi
     )
 }
 
-fn assign_packet_lanes(window: &mut [Instruction]) {
+fn divisor_lanes(window: &[Instruction]) -> Option<DivisorLanes> {
+    let [Instruction::LoadHalfwordZero { d: width, .. }, Instruction::AddImmediate {
+        d: dividend,
+        a: 0,
+        immediate: 4096,
+    }, Instruction::RotateAndMask {
+        a: divisor,
+        s: scaled_width,
+        shift: 1,
+        begin: 15,
+        end: 30,
+    }, Instruction::DivideWordUnsigned {
+        d: quotient,
+        a: divide_dividend,
+        b: divide_divisor,
+    }] = &window[23..27]
+    else {
+        return None;
+    };
+    (width == scaled_width
+        && dividend == divide_dividend
+        && divisor == divide_divisor
+        && width != quotient)
+        .then_some(DivisorLanes {
+            width: *width,
+            quotient: *quotient,
+        })
+}
+
+fn assign_packet_lanes(window: &mut [Instruction], lanes: DivisorLanes) {
     window[0] = Instruction::AddImmediate {
         d: 0,
         a: 3,
@@ -311,18 +362,22 @@ fn assign_packet_lanes(window: &mut [Instruction]) {
         offset: 4,
     };
     window[25] = Instruction::LoadHalfwordZero {
-        d: 10,
+        d: lanes.width,
         a: 26,
         offset: 4,
     };
     window[26] = Instruction::RotateAndMask {
         a: 0,
-        s: 10,
+        s: lanes.width,
         shift: 1,
         begin: 15,
         end: 30,
     };
-    window[27] = Instruction::DivideWordUnsigned { d: 4, a: 3, b: 0 };
+    window[27] = Instruction::DivideWordUnsigned {
+        d: lanes.quotient,
+        a: 3,
+        b: 0,
+    };
 }
 
 #[cfg(test)]
