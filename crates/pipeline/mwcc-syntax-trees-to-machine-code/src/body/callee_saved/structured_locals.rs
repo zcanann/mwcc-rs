@@ -65,10 +65,17 @@ pub(super) fn plan_deferred_saved_homes(
             &mut cursor,
             &mut interval,
         )?;
-        if interval.assignment_count == 0 {
-            return None;
-        }
-        let first_assignment = interval.first_assignment?;
+        let first_assignment = if interval.assignment_count == 0
+            && local.initializer.is_some()
+        {
+            // An entry initializer defines the value before statement zero.
+            // Its interval otherwise follows the same overlap rules as a
+            // deferred assignment, but it can never reuse a home whose value
+            // expires later in the body.
+            0
+        } else {
+            interval.first_assignment?
+        };
         let last_read = interval.last_read.unwrap_or(first_assignment);
         if last_read < first_assignment {
             return None;

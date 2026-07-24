@@ -36,6 +36,51 @@ fn constant_indexed_address_base(expression: &Expression) -> Option<&Expression>
 }
 
 impl Generator {
+    /// Marshal `(saved_object, i16, saved_float)` with the FPR copy first.
+    /// Both saved values survive any preceding call. MWCC exposes the float
+    /// move earliest, then materializes the GPR arguments in ABI order.
+    pub(crate) fn try_emit_saved_float_tail_arguments(
+        &mut self,
+        arguments: &[Expression],
+        name: &str,
+        direct_call: bool,
+    ) -> Compilation<bool> {
+        let [
+            Expression::Variable(first_name),
+            second @ Expression::IntegerLiteral(value),
+            third @ Expression::Variable(third_name),
+        ] = arguments
+        else {
+            return Ok(false);
+        };
+        let expected_types = self.call_parameter_types.get(name).is_some_and(|types| {
+            types.len() >= 3
+                && !matches!(types[0], Type::Float | Type::Double)
+                && !matches!(types[1], Type::Float | Type::Double)
+                && matches!(types[2], Type::Float | Type::Double)
+        });
+        let Some(first_source) = self.lookup_general(first_name) else {
+            return Ok(false);
+        };
+        let Ok(third_source) = self.float_register_of(third_name) else {
+            return Ok(false);
+        };
+        if !direct_call
+            || !self.behavior.schedule_latency_slots
+            || !expected_types
+            || first_source < 14
+            || third_source < 14
+            || !(i16::MIN as i64..=i16::MAX as i64).contains(value)
+        {
+            return Ok(false);
+        }
+
+        self.evaluate_float(third, Eabi::FIRST_FLOAT_ARGUMENT)?;
+        self.emit_integer_materialization_copy(Eabi::FIRST_GENERAL_ARGUMENT, first_source);
+        self.evaluate_general(second, Eabi::FIRST_GENERAL_ARGUMENT + 1)?;
+        Ok(true)
+    }
+
     /// Marshal a word member followed by two constant-indexed addresses from
     /// the same pointer base.
     ///

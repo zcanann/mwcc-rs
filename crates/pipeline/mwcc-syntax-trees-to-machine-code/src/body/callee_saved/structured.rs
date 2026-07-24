@@ -317,12 +317,6 @@ impl Generator {
         let (saved_float_locals, saved_locals): (Vec<_>, Vec<_>) = saved_locals
             .into_iter()
             .partition(|local| class_of(local.declared_type).ok() == Some(ValueClass::Float));
-        if saved_float_locals
-            .iter()
-            .any(|local| local.initializer.is_some())
-        {
-            decline!("an entry-initialized saved float local is unsupported");
-        }
         let Some(saved_float_plan) = plan_deferred_saved_homes(function, &saved_float_locals)
         else {
             decline!("saved float-home planning rejected the body");
@@ -949,6 +943,9 @@ impl Generator {
             let group = saved_float_plan.group(&local.name);
             let preferred = 31u8.saturating_sub(u8::try_from(group).unwrap_or(17));
             let home = self.fresh_virtual_float_preferring(preferred);
+            if let Some(initializer) = &local.initializer {
+                self.evaluate(initializer, local.declared_type, home)?;
+            }
             self.locations.insert(
                 local.name.clone(),
                 Location {
@@ -1092,6 +1089,7 @@ impl Generator {
         self.schedule_guarded_member_receiver_reuse();
         self.schedule_guarded_member_classifier_chain();
         self.schedule_structured_float_store_call_arguments();
+        self.schedule_entry_initialized_saved_float(function);
         self.schedule_structured_aggregate_constructor();
         self.schedule_structured_member_scales_and_compare();
         self.schedule_structured_virtual_calls();

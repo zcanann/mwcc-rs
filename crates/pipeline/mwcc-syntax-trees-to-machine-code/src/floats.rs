@@ -237,6 +237,10 @@ impl Generator {
                 let source = if self.is_float_located(operand) {
                     self.emit_located_operand(operand, FLOAT_SCRATCH)?;
                     FLOAT_SCRATCH
+                } else if self.is_float_call_value(operand) {
+                    let result = mwcc_target::Eabi::float_result().number;
+                    self.evaluate_float(operand, result)?;
+                    result
                 } else if is_complex(operand) {
                     if !fits_single_scratch(operand, true) {
                         return Err(Diagnostic::error("float negation operand needs the full register allocator (roadmap M1)"));
