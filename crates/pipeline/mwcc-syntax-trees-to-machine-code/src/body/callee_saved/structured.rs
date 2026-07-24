@@ -2125,11 +2125,16 @@ impl Generator {
                                         .collect::<Vec<_>>()
                                 })
                                 .unwrap_or_default();
+                            let packed_minimum = self.packed_shift_mask_min_operations;
+                            if name.starts_with("__mwcc_packet_word_") {
+                                self.packed_shift_mask_min_operations = 2;
+                            }
                             let result = self.evaluate_register_store_value(
                                 value,
                                 declared_type,
                                 destination,
                             );
+                            self.packed_shift_mask_min_operations = packed_minimum;
                             for register in reserved_live_homes {
                                 self.reserved.remove(&register);
                             }

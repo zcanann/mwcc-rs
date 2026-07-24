@@ -27,7 +27,9 @@ impl Generator {
         // One parent/child pair is already owned by the ordinary rotate-mask
         // selector and by measured packet schedules built around it. This pass
         // owns only deeper macro residue that those selectors cannot collapse.
-        if pipeline.operations < 3 || constant_value(pipeline.source).is_some() {
+        if pipeline.operations < self.packed_shift_mask_min_operations
+            || constant_value(pipeline.source).is_some()
+        {
             return Ok(false);
         }
         let Some((begin, end)) = mask_to_run(pipeline.mask) else {

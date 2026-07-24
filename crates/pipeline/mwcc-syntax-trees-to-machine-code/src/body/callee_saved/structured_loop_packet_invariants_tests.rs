@@ -160,7 +160,7 @@ fn does_not_hoist_an_address_taken_input() {
 }
 
 #[test]
-fn does_not_combine_single_uses_from_separate_loops() {
+fn keeps_single_use_hoists_scoped_to_their_own_loops() {
     let function = function(vec![
         Statement::Assign {
             name: "a".into(),
@@ -169,5 +169,13 @@ fn does_not_combine_single_uses_from_separate_loops() {
         loop_with(vec![packet_word("cursor", 0, repeated_value())]),
         loop_with(vec![packet_word("cursor", 8, repeated_value())]),
     ]);
-    assert!(hoist_repeated_packet_words(&function).is_none());
+    let hoisted = hoist_repeated_packet_words(&function).expect("two loop-local hoists");
+    assert!(matches!(
+        &hoisted.statements[1],
+        Statement::Assign { name, .. } if name == "__mwcc_packet_word_0"
+    ));
+    assert!(matches!(
+        &hoisted.statements[3],
+        Statement::Assign { name, .. } if name == "__mwcc_packet_word_1"
+    ));
 }

@@ -324,6 +324,11 @@ pub(crate) struct Generator {
     /// the wrong (interleaved, r0-reusing) order. Constant-index stores use a
     /// displacement (no r0 scaling) and never set or consult this.
     pub(crate) emitted_variable_index_store: bool,
+    /// Minimum cast/mask/shift depth owned by the packed rotate-mask selector.
+    /// Ordinary source expressions use three to preserve the shallow legacy
+    /// schedules; compiler-created packet invariants temporarily lower it to
+    /// two while their complete expression tree is being emitted.
+    pub(crate) packed_shift_mask_min_operations: usize,
     /// Float/double constants pre-loaded into fixed FPRs for a distinct-float-constant store
     /// run (`gf=1.0f; gg=2.0f`, or the `double` `lfd` variant): mwcc pre-loads each into a
     /// distinct FPR (`lfs f1,@a; lfs f0,@b; stfs f1,gf; stfs f0,gg`), so `place_store_value`

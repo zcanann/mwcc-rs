@@ -404,6 +404,7 @@ pub fn lower_function(
         condition_float_cache: Default::default(),
         const_address_bases: HashMap::new(),
         emitted_variable_index_store: false,
+        packed_shift_mask_min_operations: 3,
         prematerialized_float_constants: Vec::new(),
         preloaded_float_compare_literal: None,
         structured_float_handoff: None,

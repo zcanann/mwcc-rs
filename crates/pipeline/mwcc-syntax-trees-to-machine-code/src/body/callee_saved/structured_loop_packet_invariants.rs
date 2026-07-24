@@ -176,7 +176,7 @@ fn hoist_loop_words(
             .then_some(value)
         })
         .collect();
-    let mut groups: Vec<(&Expression, Vec<String>)> = Vec::new();
+    let mut groups: Vec<&Expression> = Vec::new();
     for (index, candidate) in candidates.iter().enumerate() {
         let Some((reads, operation_count)) = pure_integer_arithmetic(candidate) else {
             continue;
@@ -188,22 +188,19 @@ fn hoist_loop_words(
             || reads.iter().any(|name| written.contains(name))
             || groups
                 .iter()
-                .any(|(existing, _)| crate::analysis::structurally_equal(existing, candidate))
+                .any(|existing| crate::analysis::structurally_equal(existing, candidate))
             || !candidates[index + 1..]
                 .iter()
                 .any(|other| crate::analysis::structurally_equal(candidate, other))
         {
             continue;
         }
-        groups.push((candidate, reads));
-    }
-    if groups.is_empty() {
-        return (Vec::new(), body.to_vec(), false);
+        groups.push(candidate);
     }
 
     let mut prefix = Vec::with_capacity(groups.len());
     let mut replacements = Vec::with_capacity(groups.len());
-    for (value, _) in groups {
+    for value in groups {
         let name = fresh_name(used_names, next_name);
         declarations.push(unsigned_local(&name));
         prefix.push(Statement::Assign {
@@ -212,23 +209,93 @@ fn hoist_loop_words(
         });
         replacements.push((value, name));
     }
-    let body = body
+    let body: Vec<_> = body
         .iter()
         .map(|statement| match statement {
-            Statement::Store { target, value } => {
-                let replacement = replacements.iter().find_map(|(candidate, name)| {
-                    crate::analysis::structurally_equal(candidate, value)
-                        .then(|| Expression::Variable(name.clone()))
-                });
-                Statement::Store {
-                    target: target.clone(),
-                    value: replacement.unwrap_or_else(|| value.clone()),
-                }
-            }
+            Statement::Store { target, value } => Statement::Store {
+                target: target.clone(),
+                value: super::structured_loop_packet_invariant_rewrite::replace(
+                    value,
+                    &replacements,
+                ),
+            },
             _ => statement.clone(),
         })
         .collect();
-    (prefix, body, true)
+
+    let eligible = |expression: &Expression| {
+        let Some((reads, operation_count)) = pure_integer_arithmetic(expression) else {
+            return false;
+        };
+        if !reads.iter().all(|name| assigned.contains(name))
+            || !reads.iter().all(|name| stable_names.contains(name))
+            || reads.iter().any(|name| written.contains(name))
+        {
+            return false;
+        }
+        !reads.is_empty() && operation_count >= 2
+    };
+    let mut fragments: Vec<&Expression> = Vec::new();
+    for statement in &body {
+        let Statement::Store { target, value } = statement else {
+            continue;
+        };
+        if !matches!(
+            target,
+            Expression::Member {
+                member_type: Type::UnsignedInt,
+                index_stride: None,
+                ..
+            }
+        ) {
+            continue;
+        }
+        let mut maximal = Vec::new();
+        if crate::analysis::constant_value(value)
+            .is_some_and(|constant| constant != 0 && i16::try_from(constant).is_err())
+        {
+            maximal.push(value);
+        } else {
+            super::structured_loop_packet_invariant_rewrite::collect_maximal(
+                value,
+                &eligible,
+                &mut maximal,
+            );
+        }
+        for candidate in maximal {
+            if !fragments
+                .iter()
+                .any(|existing| crate::analysis::structurally_equal(existing, candidate))
+            {
+                fragments.push(candidate);
+            }
+        }
+    }
+    let mut fragment_replacements = Vec::with_capacity(fragments.len());
+    for value in fragments {
+        let name = fresh_name(used_names, next_name);
+        declarations.push(unsigned_local(&name));
+        prefix.push(Statement::Assign {
+            name: name.clone(),
+            value: value.clone(),
+        });
+        fragment_replacements.push((value, name));
+    }
+    let body = body
+        .iter()
+        .map(|statement| match statement {
+            Statement::Store { target, value } => Statement::Store {
+                target: target.clone(),
+                value: super::structured_loop_packet_invariant_rewrite::replace(
+                    value,
+                    &fragment_replacements,
+                ),
+            },
+            _ => statement.clone(),
+        })
+        .collect();
+    let changed = !prefix.is_empty();
+    (prefix, body, changed)
 }
 
 fn pure_integer_arithmetic(expression: &Expression) -> Option<(Vec<String>, usize)> {
