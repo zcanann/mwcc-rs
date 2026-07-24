@@ -1457,7 +1457,7 @@ impl Generator {
                 self.legacy_inline_expansion_frame_bytes +=
                     crate::inline_expansion::legacy_statement_body_frame_residue_bytes(
                         &expanded.function,
-                        expanded.statement_body_substitutions,
+                        expanded.statement_frame_residue_substitutions,
                     );
                 self.output.anonymous_label_bump += crate::inline_expansion::ordinal_residue(
                     self.inline_expansion_facts,

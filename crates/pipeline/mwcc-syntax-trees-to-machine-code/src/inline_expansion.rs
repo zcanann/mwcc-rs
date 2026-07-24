@@ -65,6 +65,7 @@ pub(crate) fn ordinal_residue(
 pub(crate) struct ExpandedCalls {
     pub(crate) function: Function,
     pub(crate) statement_body_substitutions: usize,
+    pub(crate) statement_frame_residue_substitutions: usize,
     pub(crate) value_body_substitutions: usize,
 }
 
@@ -235,6 +236,7 @@ impl InlineBodySet {
     pub(crate) fn expand_calls_with_facts(&self, function: &Function) -> Option<ExpandedCalls> {
         let mut changed = false;
         let mut statement_body_substitutions = 0;
+        let mut statement_frame_residue_substitutions = 0;
         let mut value_body_substitutions = 0;
         let mut active = HashSet::new();
         let stable_variables = stable_local_values(function);
@@ -255,6 +257,7 @@ impl InlineBodySet {
             &mut occupied_names,
             &mut next_local_id,
             &mut statement_body_substitutions,
+            &mut statement_frame_residue_substitutions,
         );
         let initializers: Vec<_> = locals
             .iter()
@@ -347,6 +350,7 @@ impl InlineBodySet {
         Some(ExpandedCalls {
             function: expanded,
             statement_body_substitutions,
+            statement_frame_residue_substitutions,
             value_body_substitutions,
         })
     }
@@ -361,6 +365,7 @@ impl InlineBodySet {
         occupied_names: &mut HashSet<String>,
         next_local_id: &mut usize,
         statement_body_substitutions: &mut usize,
+        statement_frame_residue_substitutions: &mut usize,
     ) -> Vec<Statement> {
         let mut output = Vec::new();
         for statement in statements {
@@ -477,6 +482,11 @@ impl InlineBodySet {
                     }
                     *changed = true;
                     *statement_body_substitutions += 1;
+                    let mut callee_calls = HashMap::new();
+                    collect_function_calls(callee, &mut callee_calls);
+                    if !callee_calls.is_empty() {
+                        *statement_frame_residue_substitutions += 1;
+                    }
                     active.insert(name.clone());
                     output.extend(self.expand_statements(
                         &substituted,
@@ -487,6 +497,7 @@ impl InlineBodySet {
                         occupied_names,
                         next_local_id,
                         statement_body_substitutions,
+                        statement_frame_residue_substitutions,
                     ));
                     active.remove(name);
                 }
@@ -505,6 +516,7 @@ impl InlineBodySet {
                         occupied_names,
                         next_local_id,
                         statement_body_substitutions,
+                        statement_frame_residue_substitutions,
                     ),
                     else_body: self.expand_statements(
                         else_body,
@@ -515,6 +527,7 @@ impl InlineBodySet {
                         occupied_names,
                         next_local_id,
                         statement_body_substitutions,
+                        statement_frame_residue_substitutions,
                     ),
                 }),
                 _ => output.push(statement.clone()),
@@ -769,6 +782,46 @@ mod tests {
             is_const: false,
             row_bytes: None,
         }
+    }
+
+    #[test]
+    fn frame_residue_counts_only_call_bearing_statement_bodies() {
+        let leaf = function(
+            "leaf",
+            Vec::new(),
+            vec![Statement::Store {
+                target: Expression::Variable("memory".into()),
+                value: Expression::IntegerLiteral(0),
+            }],
+        );
+        let call_bearing = function(
+            "call_bearing",
+            Vec::new(),
+            vec![Statement::Expression(Expression::Call {
+                name: "external".into(),
+                arguments: Vec::new(),
+            })],
+        );
+        let caller = function(
+            "caller",
+            Vec::new(),
+            vec![
+                Statement::Expression(Expression::Call {
+                    name: "leaf".into(),
+                    arguments: Vec::new(),
+                }),
+                Statement::Expression(Expression::Call {
+                    name: "call_bearing".into(),
+                    arguments: Vec::new(),
+                }),
+            ],
+        );
+
+        let expanded = InlineBodySet::analyze(&[leaf, call_bearing])
+            .expand_calls_with_facts(&caller)
+            .expect("both statement bodies should compose");
+        assert_eq!(expanded.statement_body_substitutions, 2);
+        assert_eq!(expanded.statement_frame_residue_substitutions, 1);
     }
 
     #[test]
