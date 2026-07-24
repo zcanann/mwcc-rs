@@ -354,13 +354,14 @@ pub(super) fn materializable_arguments(
     function: &Function,
     arguments: &[Expression],
     stable_variables: &HashSet<String>,
+    allow_changing_scalars: bool,
 ) -> bool {
     function.parameters.len() == arguments.len()
         && function
             .parameters
             .iter()
             .zip(arguments)
-            .all(|(_, argument)| {
+            .all(|(parameter, argument)| {
                 stable_argument(argument, stable_variables)
                     // A scalar local read is side-effect-free at the call site.
                     // Copying it into a hygienic inline parameter preserves the
@@ -368,6 +369,9 @@ pub(super) fn materializable_arguments(
                     // caller local is reassigned elsewhere in the function.
                     || (automatic_parameter_select_store_body(function)
                         && matches!(argument, Expression::Variable(_)))
+                    || (allow_changing_scalars
+                        && matches!(argument, Expression::Variable(_))
+                        && !matches!(parameter.parameter_type, Type::Void | Type::Struct { .. }))
                     || matches!(
                         argument,
                         Expression::Member {

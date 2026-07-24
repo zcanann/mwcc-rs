@@ -82,11 +82,17 @@ impl Generator {
             },
             None => None,
         };
+        let Some(shared_base) = self.lookup_general(first_name) else {
+            return Ok(false);
+        };
         if !direct_call
             || first_name != second_name
             || *width == 0
             || u16::from(*shift) + u16::from(*width) > 8
-            || self.lookup_general(first_name) != Some(Eabi::FIRST_GENERAL_ARGUMENT)
+            // r4 is overwritten by the second load before the first member is
+            // evaluated. r3 is safe because it is overwritten last; any other
+            // shared base (including a callee-saved loop home) is independent.
+            || shared_base == Eabi::FIRST_GENERAL_ARGUMENT + 1
             || third_info.is_some_and(|(register, width, _)| {
                 width != 32 || register == Eabi::FIRST_GENERAL_ARGUMENT + 1
             })

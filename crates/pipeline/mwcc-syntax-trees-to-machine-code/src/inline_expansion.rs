@@ -281,10 +281,18 @@ impl InlineBodySet {
         }
         let mut expanded = self.clone();
         expanded.bodies.extend(self.repeatable_bodies.clone());
-        expanded.expand_calls_with_facts(function)
+        expanded.expand_calls_with_facts_policy(function, true)
     }
 
     pub(crate) fn expand_calls_with_facts(&self, function: &Function) -> Option<ExpandedCalls> {
+        self.expand_calls_with_facts_policy(function, false)
+    }
+
+    fn expand_calls_with_facts_policy(
+        &self,
+        function: &Function,
+        allow_changing_scalar_arguments: bool,
+    ) -> Option<ExpandedCalls> {
         let mut changed = false;
         let mut statement_body_substitutions = 0;
         let mut statement_frame_residue_substitutions = 0;
@@ -310,6 +318,7 @@ impl InlineBodySet {
             &mut statement_body_substitutions,
             &mut statement_frame_residue_substitutions,
             function.return_expression.is_none(),
+            allow_changing_scalar_arguments,
         );
         let initializers: Vec<_> = locals
             .iter()
@@ -419,6 +428,7 @@ impl InlineBodySet {
         statement_body_substitutions: &mut usize,
         statement_frame_residue_substitutions: &mut usize,
         allow_terminal_local_reuse: bool,
+        allow_changing_scalar_arguments: bool,
     ) -> Vec<Statement> {
         let mut output = Vec::new();
         for (statement_index, statement) in statements.iter().enumerate() {
@@ -434,6 +444,7 @@ impl InlineBodySet {
                             &self.bodies[name],
                             arguments,
                             stable_variables,
+                            allow_changing_scalar_arguments,
                         ) || (allow_terminal_local_reuse
                             && statement_index + 1 == statements.len()
                             && terminal_scalar_arguments(
@@ -565,6 +576,7 @@ impl InlineBodySet {
                         statement_body_substitutions,
                         statement_frame_residue_substitutions,
                         false,
+                        allow_changing_scalar_arguments,
                     ));
                     active.remove(name);
                 }
@@ -585,6 +597,7 @@ impl InlineBodySet {
                         statement_body_substitutions,
                         statement_frame_residue_substitutions,
                         false,
+                        allow_changing_scalar_arguments,
                     ),
                     else_body: self.expand_statements(
                         else_body,
@@ -597,6 +610,7 @@ impl InlineBodySet {
                         statement_body_substitutions,
                         statement_frame_residue_substitutions,
                         false,
+                        allow_changing_scalar_arguments,
                     ),
                 }),
                 Statement::Loop {
@@ -621,6 +635,7 @@ impl InlineBodySet {
                         statement_body_substitutions,
                         statement_frame_residue_substitutions,
                         false,
+                        allow_changing_scalar_arguments,
                     ),
                 }),
                 _ => output.push(statement.clone()),
@@ -1726,10 +1741,16 @@ mod tests {
                 initializer: None,
                 condition: Some(Expression::Variable("value".into())),
                 step: None,
-                body: vec![Statement::Expression(Expression::Call {
-                    name: "helper".into(),
-                    arguments: vec![Expression::Variable("value".into())],
-                })],
+                body: vec![
+                    Statement::Expression(Expression::Call {
+                        name: "helper".into(),
+                        arguments: vec![Expression::Variable("value".into())],
+                    }),
+                    Statement::Assign {
+                        name: "value".into(),
+                        value: Expression::IntegerLiteral(3),
+                    },
+                ],
             }],
         );
         let ordinary_caller = function(
@@ -1755,8 +1776,14 @@ mod tests {
         assert!(matches!(expanded.function.statements.as_slice(), [
             Statement::Loop { body, .. }
         ] if matches!(body.as_slice(), [
-            Statement::Expression(Expression::Call { name, .. })
-        ] if name == "consume")));
+            Statement::Assign { name: captured, value: Expression::Variable(source) },
+            Statement::Expression(Expression::Call { name, arguments }),
+            Statement::Assign { name: reassigned, value: Expression::IntegerLiteral(3) },
+        ] if captured.starts_with("__mwcc_inline_helper_")
+            && source == "value"
+            && name == "consume"
+            && matches!(arguments.as_slice(), [Expression::Variable(argument)] if argument == captured)
+            && reassigned == "value")));
     }
 
     #[test]

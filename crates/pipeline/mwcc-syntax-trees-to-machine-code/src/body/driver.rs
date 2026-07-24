@@ -3352,6 +3352,12 @@ impl Generator {
             if self.try_async_state_callback(function)? {
                 return Ok(());
             }
+            // A small multi-use helper expanded at its sole loop call site can
+            // leave the iterator, selected object, and entry arguments live
+            // across calls in the loop body.
+            if self.try_inlined_short_circuit_call_loop(function)? {
+                return Ok(());
+            }
             // General structured body with values spanning conditional calls:
             // assign virtual callee-saved homes once, then lower its forward
             // branches through the ordinary expression/store emitters.
