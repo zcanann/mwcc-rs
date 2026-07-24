@@ -37,6 +37,7 @@ mod condition_linkage;
 mod conditional_float_call_arguments;
 mod conditional_float_requantize;
 mod conditional_friction_select;
+mod conditional_integer_call_arguments;
 mod conditional;
 mod conditional_member_copy;
 mod constructor_pod_initialization_schedule;
