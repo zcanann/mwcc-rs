@@ -74,9 +74,63 @@ fn classify(function: &Function) -> Option<SerialFoldPlan<'_>> {
     {
         return None;
     }
-    let [card, result, id, code, index] = function.locals.as_slice() else {
+    let statements = match function.statements.as_slice() {
+        [Statement::Expression(Expression::Cast {
+            target_type: Type::Void,
+            operand,
+        }), rest @ ..]
+            if constant_value(operand) == Some(0) =>
+        {
+            rest
+        }
+        statements => statements,
+    };
+    let [validation, acquire, acquire_guard, id_assignment, fold, output_store] = statements else {
         return None;
     };
+    // Bind roles from the lifetime operations rather than declaration order.
+    // The frontend preserves source order, while older recovered ASTs grouped
+    // locals by use; neither ordering is part of the C semantics.
+    let Statement::Assign {
+        name: result_name,
+        value:
+            Expression::Call {
+                arguments: acquire_arguments,
+                ..
+            },
+    } = acquire
+    else {
+        return None;
+    };
+    let [acquire_channel, Expression::AddressOf { operand: acquire_card }] =
+        acquire_arguments.as_slice()
+    else {
+        return None;
+    };
+    let Expression::Variable(card_name) = acquire_card.as_ref() else {
+        return None;
+    };
+    if !variable(acquire_channel, &channel.name) {
+        return None;
+    }
+    let card = function
+        .locals
+        .iter()
+        .find(|local| local.name == *card_name)?;
+    let result = function
+        .locals
+        .iter()
+        .find(|local| local.name == *result_name)?;
+    let id = function.locals.iter().find(|local| {
+        local.name != card.name && matches!(local.declared_type, Type::StructPointer { .. })
+    })?;
+    let code = function
+        .locals
+        .iter()
+        .find(|local| local.declared_type == Type::UnsignedLongLong)?;
+    let index = function.locals.iter().find(|local| {
+        local.name != result.name && local.declared_type == Type::Int
+    })?;
     if !matches!(card.declared_type, Type::StructPointer { .. })
         || !ordinary(result, Type::Int)
         || !matches!(id.declared_type, Type::StructPointer { .. })
@@ -93,21 +147,6 @@ fn classify(function: &Function) -> Option<SerialFoldPlan<'_>> {
     {
         return None;
     }
-
-    let statements = match function.statements.as_slice() {
-        [Statement::Expression(Expression::Cast {
-            target_type: Type::Void,
-            operand,
-        }), rest @ ..]
-            if constant_value(operand) == Some(0) =>
-        {
-            rest
-        }
-        statements => statements,
-    };
-    let [validation, acquire, acquire_guard, id_assignment, fold, output_store] = statements else {
-        return None;
-    };
 
     let Statement::If {
         condition:
