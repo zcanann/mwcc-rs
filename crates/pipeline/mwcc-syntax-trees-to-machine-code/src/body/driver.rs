@@ -3393,6 +3393,11 @@ impl Generator {
         if self.try_symmetric_float_decay_return(function)? {
             return Ok(());
         }
+        // Targeted member acceleration keeps the current value and pooled zero
+        // live through both sign-specific overshoot checks.
+        if self.try_member_acceleration_clamp(function)? {
+            return Ok(());
+        }
         // A one-use +/-1 float local selected from a member condition is an
         // ephemeral f0 value, not an ordinary allocated local.
         if self.try_sign_selected_member_store(function)? {

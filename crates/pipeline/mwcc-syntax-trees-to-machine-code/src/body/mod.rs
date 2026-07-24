@@ -5,6 +5,7 @@
 mod call_prologue;
 mod leading_bitfield_clear_call;
 mod leading_float_update_clamp;
+mod member_acceleration_clamp;
 mod leading_member_store_call;
 mod leading_shared_zero_bitfield_guard;
 mod inlined_sign_store_schedule;

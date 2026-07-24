@@ -2346,6 +2346,58 @@ mod tests {
     }
 
     #[test]
+    fn retains_member_velocity_across_target_acceleration_clamps() {
+        let source = br#"
+            struct Body {
+                char before_output[116];
+                float output;
+                char before_current[8];
+                float current;
+            };
+            void clamp(struct Body* body, float acceleration, float target, float unused) {
+                if (!target) {
+                    acceleration = -body->current;
+                } else if (!(body->current * acceleration < 0)) {
+                    if (acceleration > 0) {
+                        if (body->current + acceleration > target) {
+                            acceleration = target - body->current;
+                        }
+                    } else if (body->current + acceleration < target) {
+                        acceleration = target - body->current;
+                    }
+                }
+                body->output = acceleration;
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "member-acceleration-clamp.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the target clamp should retain its member and pooled zero");
+        let expected = [
+            0xc0, 0x60, 0x00, 0x00, 0xfc, 0x02, 0x18, 0x00, 0x40, 0x82, 0x00, 0x10, 0xc0, 0x03,
+            0x00, 0x80, 0xfc, 0x20, 0x00, 0x50, 0x48, 0x00, 0x00, 0x40, 0xc0, 0x83, 0x00, 0x80,
+            0xec, 0x04, 0x00, 0x72, 0xfc, 0x00, 0x18, 0x40, 0x41, 0x80, 0x00, 0x30, 0xfc, 0x01,
+            0x18, 0x40, 0x40, 0x81, 0x00, 0x18, 0xec, 0x04, 0x08, 0x2a, 0xfc, 0x00, 0x10, 0x40,
+            0x40, 0x81, 0x00, 0x1c, 0xec, 0x22, 0x20, 0x28, 0x48, 0x00, 0x00, 0x14, 0xec, 0x04,
+            0x08, 0x2a, 0xfc, 0x00, 0x10, 0x40, 0x40, 0x80, 0x00, 0x08, 0xec, 0x22, 0x20, 0x28,
+            0xd0, 0x23, 0x00, 0x74, 0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object.windows(expected.len()).any(|bytes| bytes == expected));
+    }
+
+    #[test]
     fn shares_the_conversion_frame_for_conditional_float_requantization() {
         let source = br#"
             struct Params {
@@ -4655,6 +4707,67 @@ mod tests {
             0x00, 0x90, 0x4e, 0x80, 0x00, 0x20, 0x4c, 0x80, 0x00, 0x20, 0xec, 0x21, 0x10,
             0x2a, 0xfc, 0x01, 0x00, 0x40, 0x4c, 0x81, 0x00, 0x20, 0xfc, 0x20, 0x00, 0x90,
             0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected_text.len())
+            .any(|bytes| bytes == expected_text));
+    }
+
+    #[test]
+    fn schedules_member_acceleration_toward_a_target_velocity() {
+        let source = br#"
+            struct State {
+                char pad0[228];
+                float output;
+                char pad1[4];
+                float velocity;
+            };
+            void compiled(
+                struct State* state,
+                float acceleration,
+                float target,
+                float unused
+            ) {
+                if (!target) {
+                    acceleration = -state->velocity;
+                } else if (!(state->velocity * acceleration < 0)) {
+                    if (acceleration > 0) {
+                        if (state->velocity + acceleration > target) {
+                            acceleration = target - state->velocity;
+                        }
+                    } else if (state->velocity + acceleration < target) {
+                        acceleration = target - state->velocity;
+                    }
+                }
+                state->output = acceleration;
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.emit_mwcats = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "member-acceleration-clamp.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the member and pooled zero should remain live through both clamp arms");
+        let expected_text = [
+            0xc0, 0x60, 0x00, 0x00, 0xfc, 0x02, 0x18, 0x00, 0x40, 0x82, 0x00, 0x10, 0xc0,
+            0x03, 0x00, 0xec, 0xfc, 0x20, 0x00, 0x50, 0x48, 0x00, 0x00, 0x40, 0xc0, 0x83,
+            0x00, 0xec, 0xec, 0x04, 0x00, 0x72, 0xfc, 0x00, 0x18, 0x40, 0x41, 0x80, 0x00,
+            0x30, 0xfc, 0x01, 0x18, 0x40, 0x40, 0x81, 0x00, 0x18, 0xec, 0x04, 0x08, 0x2a,
+            0xfc, 0x00, 0x10, 0x40, 0x40, 0x81, 0x00, 0x1c, 0xec, 0x22, 0x20, 0x28, 0x48,
+            0x00, 0x00, 0x14, 0xec, 0x04, 0x08, 0x2a, 0xfc, 0x00, 0x10, 0x40, 0x40, 0x80,
+            0x00, 0x08, 0xec, 0x22, 0x20, 0x28, 0xd0, 0x23, 0x00, 0xe4, 0x4e, 0x80, 0x00,
+            0x20,
         ];
         assert!(object
             .windows(expected_text.len())
