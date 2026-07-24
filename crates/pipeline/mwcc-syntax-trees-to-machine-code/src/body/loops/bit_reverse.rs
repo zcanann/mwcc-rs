@@ -30,7 +30,8 @@ impl Generator {
             return Ok(false);
         }
 
-        let policy = super::policy::IntegerLoopPolicy::resolve(self.behavior.integer_loop_style);
+        let policy = super::policy::IntegerLoopPolicy::resolve(self.behavior.integer_loop_style)
+            .with_latency_interleaving(self.behavior.power_pc_7400_scheduling_enabled());
         let unroll = match self.behavior.optimization_goal {
             mwcc_versions::OptimizationGoal::Size => 1,
             mwcc_versions::OptimizationGoal::Performance if policy.dependency_first => 4,
@@ -83,7 +84,11 @@ impl Generator {
         let loop_body = self.fresh_label();
         self.bind_label(loop_body);
         for _ in 0..unroll {
-            self.emit_bit_reverse_iteration(data_register, policy.dependency_first);
+            self.emit_bit_reverse_iteration(
+                data_register,
+                policy.dependency_first,
+                policy.counter_fills_result_latency,
+            );
         }
         self.emit_branch_conditional_to(16, 0, loop_body);
         self.output
@@ -100,7 +105,12 @@ impl Generator {
         Ok(true)
     }
 
-    fn emit_bit_reverse_iteration(&mut self, data: u8, dependency_first: bool) {
+    fn emit_bit_reverse_iteration(
+        &mut self,
+        data: u8,
+        dependency_first: bool,
+        counter_fills_result_latency: bool,
+    ) {
         const MASK: u8 = 5;
         const TOP_BIT: u8 = 6;
         const WORK: u8 = 7;
@@ -187,7 +197,7 @@ impl Generator {
             a: LOW_COUNT,
             b: 0,
         });
-        if !dependency_first {
+        if !dependency_first && !counter_fills_result_latency {
             self.output.instructions.push(Instruction::AddImmediate {
                 d: LOW_COUNT,
                 a: LOW_COUNT,
@@ -202,6 +212,13 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::ShiftLeftWord { a: 0, s: 4, b: 0 });
+        if counter_fills_result_latency {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: LOW_COUNT,
+                a: LOW_COUNT,
+                immediate: 1,
+            });
+        }
         self.output.instructions.push(Instruction::Or {
             a: WORK,
             s: WORK,

@@ -2219,6 +2219,9 @@ mod tests {
     #[path = "xnor_feedback_loop.rs"]
     mod xnor_feedback_loop;
 
+    #[path = "bit_reverse_loop.rs"]
+    mod bit_reverse_loop;
+
     #[path = "extern_unsized_array.rs"]
     mod extern_unsized_array;
 

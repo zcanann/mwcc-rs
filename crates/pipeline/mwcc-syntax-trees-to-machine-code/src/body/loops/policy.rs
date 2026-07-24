@@ -7,6 +7,7 @@ pub(crate) struct IntegerLoopPolicy {
     pub(crate) compare_before_ctr: bool,
     pub(crate) scaffold_after_ctr: bool,
     pub(crate) dependency_first: bool,
+    pub(crate) counter_fills_result_latency: bool,
     pub(crate) recompute_recorded_immediate: bool,
     pub(crate) sign_extract_through_scratch: bool,
     pub(crate) reuse_count_home: bool,
@@ -19,6 +20,7 @@ impl IntegerLoopPolicy {
                 compare_before_ctr: false,
                 scaffold_after_ctr: false,
                 dependency_first: false,
+                counter_fills_result_latency: false,
                 recompute_recorded_immediate: false,
                 sign_extract_through_scratch: false,
                 reuse_count_home: true,
@@ -27,11 +29,23 @@ impl IntegerLoopPolicy {
                 compare_before_ctr: true,
                 scaffold_after_ctr: true,
                 dependency_first: true,
+                counter_fills_result_latency: false,
                 recompute_recorded_immediate: true,
                 sign_extract_through_scratch: true,
                 reuse_count_home: false,
             },
         }
+    }
+
+    /// Overlay the issue-order decisions made by a processor latency model
+    /// without changing the build family's register-allocation policy.
+    pub(crate) fn with_latency_interleaving(mut self, enabled: bool) -> Self {
+        if enabled {
+            self.scaffold_after_ctr = false;
+            self.dependency_first = false;
+            self.counter_fills_result_latency = true;
+        }
+        self
     }
 
     pub(crate) fn pair_temporaries(
@@ -92,5 +106,25 @@ mod tests {
                 sign: Some(9),
             }
         );
+    }
+
+    #[test]
+    fn latency_interleaving_preserves_legacy_allocation_traits() {
+        let legacy = IntegerLoopPolicy::resolve(IntegerLoopStyle::LegacyDependencyFirst);
+        let interleaved = legacy.with_latency_interleaving(true);
+
+        assert!(!interleaved.scaffold_after_ctr);
+        assert!(!interleaved.dependency_first);
+        assert!(interleaved.counter_fills_result_latency);
+        assert_eq!(interleaved.compare_before_ctr, legacy.compare_before_ctr);
+        assert_eq!(
+            interleaved.recompute_recorded_immediate,
+            legacy.recompute_recorded_immediate
+        );
+        assert_eq!(
+            interleaved.sign_extract_through_scratch,
+            legacy.sign_extract_through_scratch
+        );
+        assert_eq!(interleaved.reuse_count_home, legacy.reuse_count_home);
     }
 }
