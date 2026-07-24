@@ -24,6 +24,23 @@ pub(super) fn same_relocated_value(
                 || same_constant_target(&first.target, &second.target, constants)))
 }
 
+pub(super) fn same_target_value(
+    relocations: &[Relocation],
+    constants: &[PoolConstant],
+    first_index: usize,
+    second_index: usize,
+) -> bool {
+    let first = relocations
+        .iter()
+        .find(|relocation| relocation.instruction_index == first_index);
+    let second = relocations
+        .iter()
+        .find(|relocation| relocation.instruction_index == second_index);
+    matches!((first, second), (Some(first), Some(second))
+        if same_relocation_target(&first.target, &second.target)
+            || same_constant_target(&first.target, &second.target, constants))
+}
+
 fn same_constant_target(
     left: &RelocationTarget,
     right: &RelocationTarget,

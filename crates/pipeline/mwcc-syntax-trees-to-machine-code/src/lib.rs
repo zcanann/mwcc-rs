@@ -603,6 +603,9 @@ pub fn lower_function(
     generator.schedule_shared_float_store_literal(function);
     generator.schedule_guarded_bitfield_storage_cache();
     generator.schedule_inlined_sign_store();
+    generator.schedule_inlined_symmetric_float_clamp();
+    generator.schedule_mixed_member_zero_reset();
+    generator.schedule_variadic_report_member_arguments();
     generator.schedule_ground_knockback_projection();
     generator.schedule_guarded_member_alias_initialization();
 
