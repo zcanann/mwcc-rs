@@ -12,6 +12,7 @@ const TERMINAL_COPY_PACKET: [usize; 6] = [2, 3, 5, 1, 0, 4];
 
 impl Generator {
     pub(super) fn schedule_structured_copy_packets(&mut self) {
+        narrow_copy_mode_dimensions(&mut self.output.instructions);
         let Some(first) = conditional_copy_packet(&self.output.instructions) else {
             return;
         };
@@ -82,6 +83,42 @@ impl Generator {
             })
             .collect();
         crate::remap_instruction_indices(self, &permutation);
+    }
+}
+
+fn narrow_copy_mode_dimensions(instructions: &mut [Instruction]) {
+    for start in 0..instructions.len().saturating_sub(2) {
+        let replacement = match &instructions[start..start + 3] {
+            [Instruction::LoadHalfwordZero {
+                d: loaded,
+                a: object,
+                offset: load_offset,
+            }, Instruction::ShiftLeftImmediate {
+                a: shifted,
+                s: shift_source,
+                shift: 2,
+            }, Instruction::StoreHalfword {
+                s: stored,
+                a: result,
+                offset: store_offset,
+            }] if loaded == shift_source
+                && shifted == stored
+                && matches!((*load_offset, *store_offset), (8, 6) | (10, 14))
+                && object != result =>
+            {
+                Some((*shifted, *shift_source))
+            }
+            _ => None,
+        };
+        if let Some((destination, source)) = replacement {
+            instructions[start + 1] = Instruction::RotateAndMask {
+                a: destination,
+                s: source,
+                shift: 2,
+                begin: 16,
+                end: 29,
+            };
+        }
     }
 }
 
@@ -245,5 +282,37 @@ mod tests {
         ];
         let packet = terminal_copy_packet(&instructions).expect("the packet should match");
         assert_eq!((packet.start, packet.cursor, packet.saved), (0, 37, 36));
+    }
+
+    #[test]
+    fn narrows_copy_mode_dimensions_after_scaling() {
+        let mut instructions = vec![
+            Instruction::LoadHalfwordZero {
+                d: 0,
+                a: 33,
+                offset: 8,
+            },
+            Instruction::ShiftLeftImmediate {
+                a: 0,
+                s: 0,
+                shift: 2,
+            },
+            Instruction::StoreHalfword {
+                s: 0,
+                a: 36,
+                offset: 6,
+            },
+        ];
+        narrow_copy_mode_dimensions(&mut instructions);
+        assert!(matches!(
+            instructions[1],
+            Instruction::RotateAndMask {
+                a: 0,
+                s: 0,
+                shift: 2,
+                begin: 16,
+                end: 29,
+            }
+        ));
     }
 }
