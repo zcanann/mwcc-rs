@@ -239,18 +239,21 @@ impl Generator {
         // `= a+b`, `= gi`, `= 5`, `= (float)int_x` on the GX write-gather-pipe and plain
         // const-address stores). A same-class width cast of a register leaf (`(u8)x` ->
         // `stb`) still stores from that register, so it stays a leaf.
-        let is_register_leaf = match value {
-            Expression::Variable(name) => self.locations.contains_key(name.as_str()),
-            Expression::Cast {
-                target_type,
-                operand,
-            } => {
-                matches!(operand.as_ref(), Expression::Variable(name) if self.locations.contains_key(name.as_str()))
-                    && (matches!(target_type, Type::Float | Type::Double)
-                        == self.is_float_value(operand))
-            }
-            _ => false,
-        };
+        let address_identity_source =
+            address_identity_leaf(value).and_then(|name| self.lookup_general(name));
+        let is_register_leaf = address_identity_source.is_some()
+            || match value {
+                Expression::Variable(name) => self.locations.contains_key(name.as_str()),
+                Expression::Cast {
+                    target_type,
+                    operand,
+                } => {
+                    matches!(operand.as_ref(), Expression::Variable(name) if self.locations.contains_key(name.as_str()))
+                        && (matches!(target_type, Type::Float | Type::Double)
+                            == self.is_float_value(operand))
+                }
+                _ => false,
+            };
         if !is_register_leaf {
             return Ok(false);
         }
@@ -276,7 +279,10 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::load_immediate_shifted(base, high));
-        let source = self.place_store_value(value, pointee)?;
+        let source = match address_identity_source {
+            Some(source) => source,
+            None => self.place_store_value(value, pointee)?,
+        };
         if restore {
             self.reserved.remove(&base);
         }

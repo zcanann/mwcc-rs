@@ -8527,6 +8527,41 @@ blr\n\
     }
 
     #[test]
+    fn ignores_macro_empty_statements_inside_switch_arms() {
+        let source = r#"
+            void report(int);
+            int inspect(int state) {
+                switch (state) {
+                case 0:
+                    if (!state) { report(1); } ;
+                    if (state) { report(2); } ;
+                    break;
+                default:
+                    return 3;
+                }
+                return 0;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let Statement::Switch { arms, .. } = &unit.functions[0].statements[0] else {
+            panic!("{:#?}", unit.functions[0]);
+        };
+        assert!(matches!(
+            &arms[0].body,
+            mwcc_syntax_trees::ArmBody::Statements(statements)
+                if statements.len() == 2
+                    && statements.iter().all(|statement| matches!(statement, Statement::If { .. }))
+        ));
+    }
+
+    #[test]
     fn parses_a_top_level_comma_expression_statement() {
         let source = r#"
             void first(int);

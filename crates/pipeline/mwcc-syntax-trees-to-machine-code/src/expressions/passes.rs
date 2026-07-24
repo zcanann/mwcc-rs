@@ -13,6 +13,34 @@ pub(crate) fn load_base_name(expression: &Expression) -> Option<&str> {
     }
 }
 
+/// A pointer leaf whose address expression is exactly the same pointer value.
+///
+/// `&p->first` needs no instruction when `first` is at offset zero, just as
+/// `&*p` cancels to `p`. Store scheduling uses this to distinguish address
+/// expressions that are already register-resident from those that must emit an
+/// `addi` or another address calculation.
+pub(crate) fn address_identity_leaf(expression: &Expression) -> Option<&str> {
+    let Expression::AddressOf { operand } = expression else {
+        return None;
+    };
+    match operand.as_ref() {
+        Expression::Member {
+            base,
+            offset: 0,
+            index_stride: None,
+            ..
+        }
+        | Expression::MemberAddress {
+            base,
+            offset: 0,
+            index_stride: None,
+            ..
+        } => leaf_name(base),
+        Expression::Dereference { pointer } => leaf_name(pointer),
+        _ => None,
+    }
+}
+
 /// The displacement load for a pointee type (`lwz`/`lbz`/`lha`/`lhz`/`lfs`).
 pub(crate) fn displacement_load(
     pointee: Pointee,
@@ -169,6 +197,51 @@ pub(crate) fn const_address_of(pointer: &Expression) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognizes_instruction_free_address_values() {
+        let pointer = Expression::Variable("pointer".into());
+        let first_member = Expression::AddressOf {
+            operand: Box::new(Expression::Member {
+                base: Box::new(pointer.clone()),
+                offset: 0,
+                member_type: Type::Int,
+                index_stride: None,
+            }),
+        };
+        let later_member = Expression::AddressOf {
+            operand: Box::new(Expression::Member {
+                base: Box::new(pointer.clone()),
+                offset: 4,
+                member_type: Type::Int,
+                index_stride: None,
+            }),
+        };
+        let canonical_array_member = Expression::AddressOf {
+            operand: Box::new(Expression::MemberAddress {
+                base: Box::new(pointer.clone()),
+                offset: 0,
+                element: Pointee::Char,
+                index_stride: None,
+            }),
+        };
+        let cancelled_dereference = Expression::AddressOf {
+            operand: Box::new(Expression::Dereference {
+                pointer: Box::new(pointer),
+            }),
+        };
+
+        assert_eq!(address_identity_leaf(&first_member), Some("pointer"));
+        assert_eq!(address_identity_leaf(&later_member), None);
+        assert_eq!(
+            address_identity_leaf(&canonical_array_member),
+            Some("pointer")
+        );
+        assert_eq!(
+            address_identity_leaf(&cancelled_dereference),
+            Some("pointer")
+        );
+    }
 
     #[test]
     fn cancels_address_of_fixed_address_dereference() {

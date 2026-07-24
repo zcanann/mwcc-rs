@@ -612,6 +612,14 @@ impl Parser {
                 braced = false;
                 continue;
             }
+            // Macro expansions commonly leave an empty statement after a
+            // braced assertion (`if (...) { ... } ;`). A switch arm is still
+            // an ordinary statement sequence, so discard the same lone
+            // semicolons that function and nested-block parsers already do.
+            if *self.peek() == Token::Semicolon {
+                self.advance();
+                continue;
+            }
             if *self.peek() == Token::KeywordIf {
                 statements.push(self.parse_if_statement(local_names, block_locals)?);
                 continue;
