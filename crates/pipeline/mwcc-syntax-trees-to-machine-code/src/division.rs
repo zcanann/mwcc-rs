@@ -169,6 +169,42 @@ impl Generator {
             ));
         }
 
+        // A narrowed memory value shifted by a constant is a split divisor
+        // schedule: load it first, materialize the dividend in that load's
+        // latency slot, then fuse the zero-extension and shift into rlwinm.
+        // Keeping this as one division placement decision also leaves both
+        // operands visible to the virtual allocator.
+        if let Some((value, width, amount)) = narrow_unsigned_shifted_divisor(right) {
+            self.evaluate_general(value, GENERAL_SCRATCH)?;
+            let dividend_target = if d == GENERAL_SCRATCH {
+                self.fresh_virtual_general()
+            } else {
+                d
+            };
+            let dividend = self
+                .place_operand(left, dividend_target, true)?
+                .ok_or_else(|| Diagnostic::error("could not place divide dividend"))?;
+            if !self.emit_narrow_unsigned_shift(
+                GENERAL_SCRATCH,
+                GENERAL_SCRATCH,
+                width,
+                true,
+                amount,
+            ) {
+                return Err(Diagnostic::error(
+                    "narrow shifted divisor exceeds the fused rotate-mask range",
+                ));
+            }
+            self.output
+                .instructions
+                .push(Instruction::DivideWordUnsigned {
+                    d,
+                    a: dividend,
+                    b: GENERAL_SCRATCH,
+                });
+            return Ok(());
+        }
+
         // Register divide. A computed divisor owns r0, so place its dividend in
         // a virtual home first; the allocator then keeps that value live while
         // the divisor is formed. This is the same two-value placement used by
@@ -771,6 +807,48 @@ impl Generator {
         });
         Ok(())
     }
+}
+
+/// Recognize an unsigned narrow value shifted left under optional integer
+/// conversion wrappers. Returns the load/value expression, source width, and
+/// shift amount so division can interleave the independent dividend materialization.
+fn narrow_unsigned_shifted_divisor(expression: &Expression) -> Option<(&Expression, u8, u8)> {
+    let shifted = match expression {
+        Expression::Cast {
+            target_type,
+            operand,
+        } if target_type.width() == 32 => operand.as_ref(),
+        other => other,
+    };
+    let Expression::Binary {
+        operator: mwcc_syntax_trees::BinaryOperator::ShiftLeft,
+        left,
+        right,
+    } = shifted
+    else {
+        return None;
+    };
+    let amount = u8::try_from(constant_value(right)?).ok()?;
+    let (value, width) = match left.as_ref() {
+        Expression::Cast {
+            target_type: mwcc_syntax_trees::Type::UnsignedChar,
+            operand,
+        } => (operand.as_ref(), 8),
+        Expression::Cast {
+            target_type: mwcc_syntax_trees::Type::UnsignedShort,
+            operand,
+        } => (operand.as_ref(), 16),
+        Expression::Member {
+            member_type: mwcc_syntax_trees::Type::UnsignedChar,
+            ..
+        } => (left.as_ref(), 8),
+        Expression::Member {
+            member_type: mwcc_syntax_trees::Type::UnsignedShort,
+            ..
+        } => (left.as_ref(), 16),
+        _ => return None,
+    };
+    Some((value, width, amount))
 }
 
 /// The signed magic number and post-shift for division by `d` (|d| >= 2), per
