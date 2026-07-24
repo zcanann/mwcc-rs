@@ -62,6 +62,16 @@ pub struct StaticLocal {
     pub relocations: Vec<(u32, String, i32)>,
 }
 
+/// A D-form load whose immediate is the final section-relative displacement of
+/// a named `.data` object. Function lowering records the semantic target;
+/// object layout patches the instruction only after all source-positioned
+/// strings, statics, and jump tables have received their offsets.
+#[derive(Debug, Clone)]
+pub struct DataSectionDisplacement {
+    pub instruction_index: usize,
+    pub symbol: String,
+}
+
 /// A function's worth of machine code.
 #[derive(Debug, Clone, Default)]
 pub struct MachineFunction {
@@ -72,6 +82,9 @@ pub struct MachineFunction {
     pub instructions: Vec<Instruction>,
     /// `.text` relocations, by the instruction they patch.
     pub relocations: Vec<Relocation>,
+    /// Late-bound D-form immediates that name an object through the unit's
+    /// zero-offset `...data.0` anchor.
+    pub data_section_displacements: Vec<DataSectionDisplacement>,
     /// Read-only constants this function loads from `.sdata2`. Each becomes an
     /// anonymous `@N` object that the function's `R_PPC_EMB_SDA21` loads reference.
     pub constants: Vec<PoolConstant>,
@@ -244,6 +257,7 @@ impl MachineFunction {
             section: None,
             instructions: Vec::new(),
             relocations: Vec::new(),
+            data_section_displacements: Vec::new(),
             constants: Vec::new(),
             string_literals: Vec::new(),
             packed_string_literals: false,

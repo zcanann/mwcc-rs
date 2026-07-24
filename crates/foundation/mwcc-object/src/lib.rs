@@ -228,6 +228,9 @@ pub struct FunctionObject<'a> {
     /// symbols carry a `.comment` attribute (0x00080000).
     pub force_active: bool,
     pub text: &'a [u8],
+    /// Byte offsets of D-form instruction immediates whose final value is the
+    /// section-relative offset of the named `.data` object.
+    pub data_section_displacements: Vec<(u32, String)>,
     /// `.text` relocations against external symbols (globals, callees) or pooled
     /// constants. Offsets are relative to this function's start.
     pub relocations: Vec<TextRelocation>,

@@ -58,6 +58,20 @@ fn pool_numbers_can_precede_the_ordinary_function_position() {
 }
 
 #[test]
+fn data_section_displacements_patch_only_the_d_form_immediate() {
+    let mut text = vec![0xa0, 0x63, 0, 0];
+    let sections = HashMap::from([("table", ".data")]);
+    let offsets = HashMap::from([("table", 0x1c)]);
+    apply_data_section_displacements(
+        &mut text,
+        &[(2, "table".to_owned())],
+        &sections,
+        &offsets,
+    );
+    assert_eq!(text, [0xa0, 0x63, 0, 0x1c]);
+}
+
+#[test]
 fn comment_header_records_pooling_mode() {
     let enabled = comment_record(
         CommentFormat {

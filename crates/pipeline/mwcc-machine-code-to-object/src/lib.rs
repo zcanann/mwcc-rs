@@ -130,6 +130,16 @@ pub fn assemble_object(
                 .collect(),
             force_active: function.force_active,
             text,
+            data_section_displacements: function
+                .data_section_displacements
+                .iter()
+                .map(|fixup| {
+                    (
+                        fixup.instruction_index as u32 * 4 + 2,
+                        fixup.symbol.clone(),
+                    )
+                })
+                .collect(),
             // Each codegen relocation patches one instruction; its byte offset
             // (relative to the function) is four times the instruction index plus
             // the kind's field offset (the ADDR16 immediate sits in the low

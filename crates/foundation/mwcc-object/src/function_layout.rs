@@ -152,6 +152,7 @@ mod tests {
             entry_points: Vec::new(),
             force_active: false,
             text,
+            data_section_displacements: Vec::new(),
             relocations: Vec::new(),
             constants: Vec::new(),
             frame: None,

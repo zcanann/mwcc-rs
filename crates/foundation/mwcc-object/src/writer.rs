@@ -131,6 +131,25 @@ struct Section {
     size: u32,
 }
 
+fn apply_data_section_displacements(
+    text: &mut [u8],
+    fixups: &[(u32, String)],
+    data_section: &HashMap<&str, &str>,
+    data_offsets: &HashMap<&str, u32>,
+) {
+    for (byte_offset, symbol) in fixups {
+        assert_eq!(
+            data_section.get(symbol.as_str()).copied(),
+            Some(".data"),
+            "late data displacement must target a defined .data object"
+        );
+        let displacement = i16::try_from(data_offsets[symbol.as_str()])
+            .expect("late data displacement must fit a D-form immediate");
+        let start = *byte_offset as usize;
+        text[start..start + 2].copy_from_slice(&displacement.to_be_bytes());
+    }
+}
+
 pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let functions = &input.functions;
     let debug = input.debug.as_ref();
@@ -147,17 +166,6 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         .iter()
         .flat_map(|section| section.order.iter().copied())
         .collect();
-    let mut code_payloads: HashMap<&str, Vec<u8>> = HashMap::new();
-    for section in &function_layout.sections {
-        let mut payload = Vec::with_capacity(section.byte_len as usize);
-        for &index in &section.order {
-            while payload.len() % input.object_format.code_alignment as usize != 0 {
-                payload.push(0);
-            }
-            payload.extend_from_slice(functions[index].text);
-        }
-        code_payloads.insert(section.name, payload);
-    }
     let function_section = |index: usize| functions[index].section.unwrap_or(".text");
 
     let has_text_relocations = functions
@@ -488,6 +496,31 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         {
             place(object, ".sbss", &mut sbss_size);
         }
+    }
+    // Function bodies can address a named object through the translation
+    // unit's zero-offset `.data` anchor and carry its section displacement in a
+    // D-form load. Those immediates cannot be selected until creation-order
+    // data layout above has interleaved all source-positioned strings, statics,
+    // globals, and jump tables. Patch private copies of the encoded text now;
+    // no ELF relocation belongs on the load itself.
+    let mut code_payloads: HashMap<&str, Vec<u8>> = HashMap::new();
+    for section in &function_layout.sections {
+        let mut payload = Vec::with_capacity(section.byte_len as usize);
+        for &index in &section.order {
+            while payload.len() % input.object_format.code_alignment as usize != 0 {
+                payload.push(0);
+            }
+            let function = &functions[index];
+            let mut text = function.text.to_vec();
+            apply_data_section_displacements(
+                &mut text,
+                &function.data_section_displacements,
+                &data_section,
+                &data_offsets,
+            );
+            payload.extend_from_slice(&text);
+        }
+        code_payloads.insert(section.name, payload);
     }
     // `.sdata`/`.rodata`/`.data` file bytes: each initialized object's bytes at its
     // offset. (`.sdata2` const-global bytes are laid into the pool below, with the
