@@ -4,7 +4,7 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-07-24 01:10 UTC at compiler commit `0955835e`
+Latest targeted checkpoint: 2026-07-24 01:17 UTC at compiler commit `b6255e3b`
 
 Latest measured compiler + harness fingerprint: `4ca51cd13c66eca020e6f691933c6075f99debec63ec5d6ba3a09853753c4bbe:121d3ae4f26965d7109e24043dcb96e73b0ab99435ff0da8079c505e14ff84a1`
 
@@ -76,17 +76,18 @@ This validates the failure-only edit loop: representative audits are useful
 periodic measurements, but recompiling them continuously would spend most of
 its time on known giant-TU timeouts.
 
-Post-holdout compiler work through commit `0955835e` has not been run over a
+Post-holdout compiler work through commit `b6255e3b` has not been run over a
 new unbiased sample, so it does not change the 7.8% estimate above. On the
 targeted Melee `src/melee/ft/ftcommon.c` diagnostic, the latest checkpoint moved
-relocation-aware parity from 28/109 to 42/109 functions and from 996/15,340 to
-2,164/15,340 reference code bytes. The paired gain was +14/-0 functions and +1,168
-exact bytes: `ftCommon_ClampAirDrift`, `ftCommon_FallBasic`, and
-`ftCommon_CalcHitlag`, `ftCommon_8007DB58`, `ftCommon_SetAccessory`, and
+relocation-aware parity from 28/109 to 43/109 functions and from 996/15,340 to
+2,256/15,340 reference code bytes. The paired gain was +15/-0 functions and +1,260
+exact bytes: `ftCommon_ClampAirDrift`, `ftCommon_FallBasic`,
+`ftCommon_CalcHitlag`, `ftCommon_8007DB58`, `ftCommon_SetAccessory`,
 `ftCommon_8007FF74`, `ftCommon_8007DB24`, `ftCommon_8007D28C`,
-`ftCo_GetLStickAngle`, `ftCo_GetCStickAngle`, `ftCommon_8007D780`, and
-`ftCommon_8007F9B4`, `ftCommon_8007E2A4`, and `ftCommon_8007E690`. This is evidence of local forward movement, not a
-corpus-level percentage.
+`ftCo_GetLStickAngle`, `ftCo_GetCStickAngle`, `ftCommon_8007D780`,
+`ftCommon_8007F9B4`, `ftCommon_8007E2A4`, `ftCommon_8007E690`, and
+`ftCommon_ApplyGroundMovementNoSlide`. This is evidence of local forward
+movement, not a corpus-level percentage.
 
 ## Historical baseline: fresh current-population holdout
 
