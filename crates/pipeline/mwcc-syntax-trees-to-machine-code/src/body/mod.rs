@@ -73,6 +73,7 @@ mod fixed_port_replay_update;
 mod frame_vector_accumulation_schedule;
 mod guards_ifs;
 mod global_struct_member_search;
+mod global_bitfield_dirty_update;
 mod ground_knockback_projection_schedule;
 mod guarded_aggregate_update;
 mod guarded_float_table_index;
@@ -132,6 +133,7 @@ mod tokenizer;
 mod trig_quadrant_dispatch;
 mod unoptimized_integer_round_up;
 mod variadic;
+mod zero_call_forward;
 
 pub(crate) use callee_saved::{
     summarize_queue_pop, summarize_queue_service, QueuePopSummary, QueueServiceSummary,

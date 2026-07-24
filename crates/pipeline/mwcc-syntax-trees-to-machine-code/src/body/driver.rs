@@ -1166,6 +1166,12 @@ impl Generator {
         if self.try_conditional_integer_call_arguments(function)? {
             return Ok(());
         }
+        if self.try_global_bitfield_dirty_update(function)? {
+            return Ok(());
+        }
+        if self.try_zero_call_forward(function)? {
+            return Ok(());
+        }
         // InlineBodySet is the authoritative distinction between skipped
         // definitions that still require semantic AST composition and pure
         // inline-asm helpers that lower directly at their call site.
