@@ -28,6 +28,9 @@ use super::structured_frame_assignment::{
 };
 use super::structured_frame_arrays::plan_structured_frame_arrays;
 use super::structured_frame_entry::structured_dense_frame_entry_index;
+use super::structured_frame_publication::{
+    StructuredFramePublication, CURSOR_OFFSET, LOCAL_REGION_BYTES, OWNER_OFFSET,
+};
 use super::structured_home_layout::{
     allocator_result_cursor_preferences, compact_aggregate_scratch_frame_pair,
     dense_eager_deferred_preferences, dense_eager_home_preference,
@@ -360,6 +363,13 @@ impl Generator {
         else {
             decline!("ephemeral-local planning rejected the body");
         };
+        let dense_loop_window =
+            plan_dense_loop_register_window(&function.statements, &ephemeral_locals);
+        let frame_publication =
+            StructuredFramePublication::plan(function, &frame_scalar_locals, dense_loop_window);
+        if let Some(publication) = &frame_publication {
+            saved_parameters.retain(|parameter| parameter.name != publication.parameter);
+        }
         let (saved_float_locals, saved_locals): (Vec<_>, Vec<_>) = saved_locals
             .into_iter()
             .partition(|local| class_of(local.declared_type).ok() == Some(ValueClass::Float));
@@ -379,7 +389,10 @@ impl Generator {
         };
 
         let scalar_only_frame_bytes = if frame_arrays.is_empty() {
-            i16::try_from(frame_scalar_locals.len() * 4)
+            frame_publication.as_ref().map_or_else(
+                || i16::try_from(frame_scalar_locals.len() * 4),
+                |_| Ok(LOCAL_REGION_BYTES),
+            )
                 .map_err(|_| Diagnostic::error("structured scalar frame is too large"))?
         } else {
             0
@@ -477,7 +490,7 @@ impl Generator {
         let loop_assertion_strings =
             (value_home_count == 4).then_some(planned_loop_assertion_strings).flatten();
         let base_home_count = value_home_count + 2 * usize::from(loop_assertion_strings.is_some());
-        let count = plan_dense_loop_register_window(&function.statements, &ephemeral_locals)
+        let count = dense_loop_window
             .filter(|window| value_home_count <= *window)
             .unwrap_or(base_home_count);
         let unused_array_two_homes = unused_frame_array
@@ -598,6 +611,21 @@ impl Generator {
                         5 => 29,
                         _ => unreachable!("loop assertion plan has six saved homes"),
                     };
+                    self.fresh_virtual_general_preferring(preferred)
+                } else if let Some(preferred) = frame_publication
+                    .as_ref()
+                    .and_then(|publication| {
+                        (home_index >= eager_saved_locals.len()
+                            && home_index
+                                < eager_saved_locals.len() + saved_parameters.len())
+                        .then(|| {
+                            publication.saved_parameter_preference(
+                                home_index - eager_saved_locals.len(),
+                            )
+                        })
+                        .flatten()
+                    })
+                {
                     self.fresh_virtual_general_preferring(preferred)
                 } else if let Some(&preferred) = allocator_cursor_preferences.get(&home_index) {
                     self.fresh_virtual_general_preferring(preferred)
@@ -837,7 +865,9 @@ impl Generator {
             }
             let mut scalar_offset =
                 if frame_arrays.is_empty() {
-                    8
+                    frame_publication
+                        .as_ref()
+                        .map_or(8, |_| CURSOR_OFFSET)
                 } else {
                     array_offset
                         .checked_sub(i16::try_from(frame_scalar_locals.len() * 4).map_err(
@@ -860,6 +890,24 @@ impl Generator {
                 scalar_offset = scalar_offset
                     .checked_add(4)
                     .ok_or_else(|| Diagnostic::error("structured scalar frame is too large"))?;
+            }
+            if let Some(publication) = &frame_publication {
+                let incoming = self
+                    .locations
+                    .get(&publication.parameter)
+                    .expect("publication parameter was eligibility checked")
+                    .register;
+                self.frame_slots.insert(
+                    publication.parameter.clone(),
+                    FrameSlot {
+                        offset: OWNER_OFFSET,
+                        class: ValueClass::General,
+                        size: 4,
+                        value_type: Type::Pointer(Pointee::Pointer),
+                        parameter_register: Some(incoming),
+                        is_array: false,
+                    },
+                );
             }
             for array in frame_arrays {
                 // A source-level padding array reserves bytes but has no value
@@ -995,6 +1043,46 @@ impl Generator {
             saved_parameter_homes.push((parameter.name.clone(), home, incoming));
         }
         let deferred_home_base = saved_parameter_base + saved_parameter_homes.len();
+        let publication_entry_emitted = if let Some(publication) = &frame_publication {
+            let incoming = self
+                .frame_slots
+                .get(&publication.parameter)
+                .and_then(|slot| slot.parameter_register)
+                .expect("publication parameter has an incoming register");
+            let cursor_slot = self
+                .frame_slots
+                .get(&publication.cursor)
+                .copied()
+                .expect("publication cursor has a frame slot");
+            let [last_extent, first_extent, base] = saved_parameter_homes.as_slice() else {
+                return Err(Diagnostic::error(
+                    "dense cursor publication requires three retained parameters",
+                ));
+            };
+            self.output.instructions.extend([
+                Instruction::StoreWord {
+                    s: incoming,
+                    a: 1,
+                    offset: OWNER_OFFSET,
+                },
+                Instruction::move_register(base.1, base.2),
+                Instruction::LoadWord {
+                    d: incoming,
+                    a: incoming,
+                    offset: 0,
+                },
+                Instruction::move_register(first_extent.1, first_extent.2),
+                Instruction::move_register(last_extent.1, last_extent.2),
+                Instruction::StoreWord {
+                    s: incoming,
+                    a: 1,
+                    offset: cursor_slot.offset,
+                },
+            ]);
+            true
+        } else {
+            false
+        };
         let stagger_dense_parameter_copies =
             dense_saved_range && saved_parameter_base != 0 && saved_parameter_homes.len() >= 2;
         if batched_saved_home_stores {
@@ -1235,6 +1323,12 @@ impl Generator {
             );
         }
         for local in &frame_scalar_locals {
+            if frame_publication
+                .as_ref()
+                .is_some_and(|publication| publication.cursor == local.name)
+            {
+                continue;
+            }
             if let Some(initializer) = &local.initializer {
                 self.emit_store(&Expression::Variable(local.name.clone()), initializer)?;
             }
@@ -1252,7 +1346,7 @@ impl Generator {
                         // body starts with a guard, packet store, or ordinary
                         // scalar assignment, home the preserved parameters in
                         // source order and lower from statement zero.
-                        if !batched_saved_home_stores {
+                        if !batched_saved_home_stores && !publication_entry_emitted {
                             for (_, home, incoming) in &saved_parameter_homes {
                                 self.output
                                     .instructions
