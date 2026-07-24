@@ -6910,6 +6910,62 @@ blr\n\
     }
 
     #[test]
+    fn resolves_sizeof_through_an_anonymous_struct_array_member() {
+        let source = r#"
+            typedef struct Queue {
+                int count;
+                struct {
+                    void* callback;
+                    int device;
+                } entries[3];
+            } Queue;
+            int entry_size(Queue* queue) {
+                return sizeof(queue->entries[0]);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::IntegerLiteral(8))
+        ));
+    }
+
+    #[test]
+    fn resolves_sizeof_through_a_struct_pointer_member() {
+        let source = r#"
+            struct Value {
+                int first;
+                short second;
+            };
+            struct Holder {
+                Value* value;
+            };
+            int value_size(Holder* holder) {
+                return sizeof(*holder->value);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::IntegerLiteral(8))
+        ));
+    }
+
+    #[test]
     fn resolves_sizeof_through_a_global_struct_pointer() {
         let source = r#"
             struct Data {

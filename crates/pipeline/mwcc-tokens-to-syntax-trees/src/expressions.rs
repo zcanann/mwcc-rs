@@ -252,6 +252,11 @@ impl Parser {
             } => match member_type {
                 Type::Pointer(pointee) => Some(Self::sizeof_type_bytes(pointee.element())),
                 Type::StructPointer { element_size } => Some(*element_size),
+                // Struct arrays and struct-pointer members are normalized to
+                // storage-shaped members before postfix `[]` / `*` is applied.
+                // The member's aggregate width is therefore the pointee/element
+                // width even though the transient pointer wrapper is gone.
+                Type::Struct { size, .. } => Some(*size),
                 _ => None,
             },
             Expression::MemberAddress { element, .. } => {
