@@ -34,6 +34,7 @@ use super::structured_home_layout::{
 use super::structured_liveness::{
     read_after_possible_call, read_after_possible_call_in_return,
 };
+use super::structured_loop_lowering::lower_structured_loops;
 use super::structured_locals::{
     body_uses_local, dead_ephemeral_float_locals, is_definitely_assigned_before_reads,
     is_frame_address_null_select, plan_deferred_saved_homes, plan_ephemeral_locals,
@@ -167,10 +168,15 @@ impl Generator {
             && frame_arrays
                 .iter()
                 .all(|array| !body_uses_local(&function.statements, &array.name));
+        // Keep source loops visible to definite-assignment and lifetime
+        // planning. Their canonical label/goto graph is only the emission view.
+        let lowered_structured_function =
+            lower_structured_loops(function, &self.global_array_sizes);
+        let structured_function = lowered_structured_function.as_ref().unwrap_or(function);
         let supported_plain_return = structured_return_is_supported(function);
         if (!with_frame_array && !supported_plain_return)
             || !supports_statements(
-                &function.statements,
+                &structured_function.statements,
                 function,
                 &self.global_array_sizes,
                 with_frame_array,
@@ -1054,9 +1060,9 @@ impl Generator {
             0
         };
         let alias_statements = if dense_frame {
-            &function.statements[dense_statement_start..]
+            &structured_function.statements[dense_statement_start..]
         } else {
-            function.statements.as_slice()
+            structured_function.statements.as_slice()
         };
         // A declaration initializer call has already clobbered the incoming
         // ABI registers before the first statement. Only extend an entry alias
@@ -1096,8 +1102,8 @@ impl Generator {
         {
             let alias = entry_parameter_alias.as_ref().expect("checked above");
             self.emit_structured_statements(
-                &function.statements[..1],
-                function,
+                &structured_function.statements[..1],
+                structured_function,
                 &ephemeral_locals,
                 false,
                 &mut return_branches,
@@ -1111,7 +1117,7 @@ impl Generator {
                 .register = alias.home;
             self.release_dead_ephemeral_float_locations(
                 &ephemeral_locals,
-                &function.statements[1..],
+                &structured_function.statements[1..],
             );
             1
         } else {
@@ -1120,8 +1126,8 @@ impl Generator {
         let mut condition_alias = entry_parameter_alias
             .filter(|alias| alias.boundary == EntryAliasBoundary::AfterFirstConditionTerm);
         self.emit_structured_statements(
-            &function.statements[statement_start..],
-            function,
+            &structured_function.statements[statement_start..],
+            structured_function,
             &ephemeral_locals,
             true,
             &mut return_branches,
@@ -1234,7 +1240,8 @@ impl Generator {
         // Each source-level `if` creates a pair of optimizer labels even when
         // both collapse to direct instruction offsets. Build 163 exposes those
         // otherwise-hidden labels through the later unwind-symbol ordinal.
-        self.output.anonymous_label_bump += structured_hidden_label_count(&function.statements);
+        self.output.anonymous_label_bump +=
+            structured_hidden_label_count(&structured_function.statements);
         if !call_accumulators.is_empty() {
             // Each normalized call result leaves one optimizer-only label. The
             // modern branchless terminal select consumes two more labels even

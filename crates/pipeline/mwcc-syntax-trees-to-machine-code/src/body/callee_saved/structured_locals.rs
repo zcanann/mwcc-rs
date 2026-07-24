@@ -373,8 +373,11 @@ pub(super) fn plan_ephemeral_locals<'a>(
                 && !frame_locals.contains(local.name.as_str())
         })
         .collect();
-    if ephemeral.iter().any(|local| {
-        local.is_static
+    let unsupported: Vec<_> = ephemeral
+        .iter()
+        .copied()
+        .filter(|local| {
+            local.is_static
             || local.is_volatile
             || local.array_length.is_some()
             || !matches!(
@@ -384,7 +387,21 @@ pub(super) fn plan_ephemeral_locals<'a>(
             || local.initializer.as_ref().is_some_and(expression_has_call)
             || (local.initializer.is_none()
                 && !is_definitely_assigned_before_reads(&function.statements, &local.name))
-    }) {
+        })
+        .collect();
+    if !unsupported.is_empty() {
+        if std::env::var_os("MWCC_CAPTURE_FUNCTION")
+            .is_some_and(|name| name == std::ffi::OsStr::new(&function.name))
+        {
+            eprintln!(
+                "structured ephemeral planning rejected: {}",
+                unsupported
+                    .iter()
+                    .map(|local| local.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
         return None;
     }
     Some(ephemeral)
@@ -449,6 +466,29 @@ fn assignment_flow(
                     (!falls_through || initialized) && incoming.into_iter().all(|state| state);
                 falls_through = true;
             }
+            continue;
+        }
+        if let Statement::Loop {
+            kind,
+            initializer,
+            condition,
+            step,
+            body,
+        } = statement
+        {
+            let flow = loop_assignment_flow(
+                *kind,
+                initializer.as_ref(),
+                condition.as_ref(),
+                step.as_ref(),
+                body,
+                name,
+                initialized,
+                pending_gotos,
+                seen_labels,
+            )?;
+            initialized = flow.initialized;
+            assigned |= flow.assigned;
             continue;
         }
         if !falls_through {
@@ -543,29 +583,6 @@ fn assignment_flow(
                     }
                 };
             }
-            Statement::Loop {
-                kind: LoopKind::For,
-                initializer: Some(initializer),
-                condition: Some(condition),
-                step,
-                body,
-            } if loop_executes_at_least_once(initializer, condition) => {
-                if expression_assigns_name(initializer, name) {
-                    initialized = true;
-                    assigned = true;
-                }
-                let body_flow =
-                    assignment_flow(body, name, initialized, pending_gotos, seen_labels)?;
-                initialized = body_flow.initialized;
-                assigned |= body_flow.assigned;
-                if step
-                    .as_ref()
-                    .is_some_and(|step| expression_assigns_name(step, name))
-                {
-                    initialized = true;
-                    assigned = true;
-                }
-            }
             Statement::Goto(label) => {
                 if seen_labels.contains(label) {
                     return None;
@@ -584,6 +601,83 @@ fn assignment_flow(
         initialized,
         assigned,
         falls_through,
+    })
+}
+
+/// Validate one lexical iteration while retaining the conservative state that
+/// can flow past a possibly-zero-iteration loop. Definitions inside the body
+/// still count for local planning when all of their reads are dominated within
+/// that same body; they simply do not become definitely initialized afterward.
+#[allow(clippy::too_many_arguments)]
+fn loop_assignment_flow(
+    kind: LoopKind,
+    initializer: Option<&Expression>,
+    condition: Option<&Expression>,
+    step: Option<&Expression>,
+    body: &[Statement],
+    name: &str,
+    initialized: bool,
+    pending_gotos: &mut std::collections::HashMap<String, Vec<bool>>,
+    seen_labels: &mut std::collections::HashSet<String>,
+) -> Option<AssignmentFlow> {
+    let mut entry_initialized = initialized;
+    let mut assigned = false;
+    if let Some(initializer) = initializer {
+        let (next, initializer_assigned) =
+            expression_initialization_flow(initializer, name, entry_initialized)?;
+        entry_initialized = next;
+        assigned |= initializer_assigned;
+    }
+
+    // A pre-test condition executes even when the body does not. Definitions
+    // in it therefore dominate the loop exit just like a `for` initializer.
+    if kind != LoopKind::DoWhile {
+        if let Some(condition) = condition {
+            let (next, condition_assigned) =
+                expression_initialization_flow(condition, name, entry_initialized)?;
+            entry_initialized = next;
+            assigned |= condition_assigned;
+        }
+    }
+
+    let body_flow = assignment_flow(
+        body,
+        name,
+        entry_initialized,
+        pending_gotos,
+        seen_labels,
+    )?;
+    assigned |= body_flow.assigned;
+
+    // `continue` can reach the step without the body's fallthrough state. A
+    // step that needs this local must already be safe at loop entry; otherwise
+    // validating the normal fallthrough is sufficient for its assignments.
+    if let Some(step) = step {
+        expression_initialization_flow(step, name, entry_initialized)?;
+        if body_flow.falls_through {
+            let (_, step_assigned) =
+                expression_initialization_flow(step, name, body_flow.initialized)?;
+            assigned |= step_assigned;
+        }
+    }
+
+    if kind == LoopKind::DoWhile {
+        if let Some(condition) = condition {
+            let condition_entry = if body_flow.falls_through {
+                body_flow.initialized
+            } else {
+                entry_initialized
+            };
+            let (_, condition_assigned) =
+                expression_initialization_flow(condition, name, condition_entry)?;
+            assigned |= condition_assigned;
+        }
+    }
+
+    Some(AssignmentFlow {
+        initialized: entry_initialized,
+        assigned,
+        falls_through: true,
     })
 }
 
@@ -788,25 +882,6 @@ fn expression_assigns_name(expression: &Expression, name: &str) -> bool {
             if matches!(target.as_ref(), Expression::Variable(assigned) if assigned == name))
 }
 
-fn loop_executes_at_least_once(initializer: &Expression, condition: &Expression) -> bool {
-    let Expression::Assign { target, value } = initializer else {
-        return false;
-    };
-    let Some(initial) = constant_value(value) else {
-        return false;
-    };
-    let Expression::Variable(counter) = target.as_ref() else {
-        return false;
-    };
-    matches!(condition,
-        Expression::Binary {
-            operator: BinaryOperator::Less,
-            left,
-            right,
-        } if matches!(left.as_ref(), Expression::Variable(name) if name == counter)
-            && constant_value(right).is_some_and(|bound| initial < bound))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -909,6 +984,68 @@ mod tests {
         )
         .expect("the branch-local float lifetime is valid");
         assert_eq!(planned.len(), 1);
+    }
+
+    #[test]
+    fn accepts_a_value_defined_and_consumed_within_each_loop_iteration() {
+        let statements = vec![Statement::Loop {
+            kind: LoopKind::For,
+            initializer: Some(Expression::Assign {
+                target: Box::new(Expression::Variable("cursor".into())),
+                value: Box::new(Expression::Variable("head".into())),
+            }),
+            condition: Some(Expression::Variable("cursor".into())),
+            step: Some(Expression::Assign {
+                target: Box::new(Expression::Variable("cursor".into())),
+                value: Box::new(Expression::Member {
+                    base: Box::new(Expression::Variable("cursor".into())),
+                    offset: 8,
+                    member_type: Type::StructPointer { element_size: 0 },
+                    index_stride: None,
+                }),
+            }),
+            body: vec![
+                Statement::Assign {
+                    name: "temporary".into(),
+                    value: Expression::IntegerLiteral(1),
+                },
+                Statement::Expression(Expression::Call {
+                    name: "consume".into(),
+                    arguments: vec![Expression::Variable("temporary".into())],
+                }),
+            ],
+        }];
+
+        assert!(is_definitely_assigned_before_reads(&statements, "cursor"));
+        assert!(is_definitely_assigned_before_reads(
+            &statements,
+            "temporary"
+        ));
+    }
+
+    #[test]
+    fn rejects_a_loop_local_read_before_its_iteration_assignment() {
+        let statements = vec![Statement::Loop {
+            kind: LoopKind::While,
+            initializer: None,
+            condition: Some(Expression::IntegerLiteral(1)),
+            step: None,
+            body: vec![
+                Statement::Expression(Expression::Call {
+                    name: "consume".into(),
+                    arguments: vec![Expression::Variable("temporary".into())],
+                }),
+                Statement::Assign {
+                    name: "temporary".into(),
+                    value: Expression::IntegerLiteral(1),
+                },
+            ],
+        }];
+
+        assert!(!is_definitely_assigned_before_reads(
+            &statements,
+            "temporary"
+        ));
     }
 
     #[test]

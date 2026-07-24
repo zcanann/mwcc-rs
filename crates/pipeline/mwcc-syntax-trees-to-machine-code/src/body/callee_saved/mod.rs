@@ -83,6 +83,7 @@ mod structured_inline_assertion;
 mod structured_locals;
 mod structured_member_scale_schedule;
 mod structured_liveness;
+mod structured_loop_lowering;
 mod structured_parameter_home_reuse;
 mod structured_prologue;
 mod structured_store_schedule;
