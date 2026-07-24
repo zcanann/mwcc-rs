@@ -623,7 +623,6 @@ pub fn lower_function(
     generator.schedule_shared_right_float_product_pair();
     generator.schedule_shared_float_store_literal(function);
     generator.schedule_frame_vector_accumulation();
-    generator.schedule_shared_guard_storage_byte();
     generator.schedule_shared_global_float_pairs();
     generator.schedule_guarded_bitfield_storage_cache();
     generator.schedule_inlined_sign_store();

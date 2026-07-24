@@ -4,33 +4,6 @@
 use super::*;
 
 impl Generator {
-    /// Keep one storage byte live through adjacent short-circuit bit tests.
-    /// Both terms branch to the same false edge, so the first load remains
-    /// available on the only path that reaches the second mask.
-    pub(crate) fn schedule_shared_guard_storage_byte(&mut self) {
-        let Some(start) = self
-            .output
-            .instructions
-            .windows(6)
-            .position(is_reloaded_guard_storage_byte)
-        else {
-            return;
-        };
-        match &mut self.output.instructions[start] {
-            Instruction::LoadByteZero { d, .. } => *d = Eabi::FIRST_GENERAL_ARGUMENT,
-            _ => unreachable!(),
-        }
-        for index in [start + 1, start + 4] {
-            match &mut self.output.instructions[index] {
-                Instruction::RotateAndMaskRecord { s, .. } => {
-                    *s = Eabi::FIRST_GENERAL_ARGUMENT
-                }
-                _ => unreachable!(),
-            }
-        }
-        self.remove_structured_condition_instruction(start + 3);
-    }
-
     /// Retain a tested bitfield storage byte through a pure guard and delay an
     /// unrelated shared-global load until its first dependent term.
     ///
@@ -125,19 +98,6 @@ impl Generator {
     }
 }
 
-fn is_reloaded_guard_storage_byte(window: &[Instruction]) -> bool {
-    matches!(window, [
-        Instruction::LoadByteZero { d: 0, a: first_base, offset: first_offset },
-        Instruction::RotateAndMaskRecord { a: 0, s: 0, .. },
-        Instruction::BranchConditionalForward { target: first_target, .. },
-        Instruction::LoadByteZero { d: 0, a: second_base, offset: second_offset },
-        Instruction::RotateAndMaskRecord { a: 0, s: 0, .. },
-        Instruction::BranchConditionalForward { target: second_target, .. },
-    ] if first_base == second_base
-        && first_offset == second_offset
-        && first_target == second_target)
-}
-
 fn is_guarded_bitfield_storage_cache(window: &[Instruction]) -> bool {
     matches!(window, [
         Instruction::LoadWord { d: global, a: 0, .. },
@@ -210,37 +170,4 @@ mod tests {
         assert!(is_guarded_bitfield_storage_cache(&instructions));
     }
 
-    #[test]
-    fn recognizes_adjacent_masks_of_one_guard_storage_byte() {
-        let instructions = [
-            Instruction::LoadByteZero { d: 0, a: 31, offset: 8729 },
-            Instruction::RotateAndMaskRecord {
-                a: 0,
-                s: 0,
-                shift: 26,
-                begin: 31,
-                end: 31,
-            },
-            Instruction::BranchConditionalForward {
-                options: 4,
-                condition_bit: 2,
-                target: 8,
-            },
-            Instruction::LoadByteZero { d: 0, a: 31, offset: 8729 },
-            Instruction::RotateAndMaskRecord {
-                a: 0,
-                s: 0,
-                shift: 30,
-                begin: 31,
-                end: 31,
-            },
-            Instruction::BranchConditionalForward {
-                options: 4,
-                condition_bit: 2,
-                target: 8,
-            },
-        ];
-
-        assert!(is_reloaded_guard_storage_byte(&instructions));
-    }
 }
