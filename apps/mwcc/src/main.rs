@@ -2165,6 +2165,9 @@ mod tests {
     #[path = "grab_mash.rs"]
     mod grab_mash;
 
+    #[path = "bitfield_conditions.rs"]
+    mod bitfield_conditions;
+
     #[test]
     fn parity_keep_going_is_an_explicit_diagnostic_flag() {
         let ordinary = parse_invocation(&[]);

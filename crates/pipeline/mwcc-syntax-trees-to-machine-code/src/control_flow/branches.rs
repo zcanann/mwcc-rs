@@ -1356,7 +1356,19 @@ impl Generator {
                         return self.emit_condition_test(&rewritten);
                     }
                 }
-                let signed = self.signedness_of(left)? && self.signedness_of(right)?;
+                // Although narrow unsigned bit-fields undergo C integer promotion
+                // to `int`, mwcc retains their unsigned storage provenance when
+                // selecting a compare (`field == 1` uses `cmplwi`, not `cmpwi`).
+                // Keep that instruction-selection quirk local to comparisons so
+                // arithmetic on the promoted value still has ordinary `int`
+                // semantics.
+                let bit_field_operand = |expression: &Expression| {
+                    matches!(expression, Expression::BitFieldRead { .. })
+                };
+                let signed = !bit_field_operand(left)
+                    && !bit_field_operand(right)
+                    && self.signedness_of(left)?
+                    && self.signedness_of(right)?;
                 // A memory-valued left operand may need a temporary address GPR.
                 // Keep every fixed register read by the right operand live while
                 // selecting that address; otherwise `global.field == parameter`
@@ -1741,6 +1753,7 @@ impl Generator {
             operand,
             Expression::Conditional { .. }
                 | Expression::Cast { .. }
+                | Expression::BitFieldRead { .. }
                 | Expression::Binary {
                     operator: BinaryOperator::LogicalAnd
                         | BinaryOperator::LogicalOr

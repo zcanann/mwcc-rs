@@ -12,9 +12,10 @@ impl Generator {
     /// either arm. The initial empty-else form came from Mario Party 4's
     /// `fn_1_0`; the two-arm form occurs in BFBB's `xBaseSave`.
     ///
-    /// Keep the allocation boundary intentionally narrow until the oracle
-    /// matrix establishes multi-survivor copy and restore schedules: one
-    /// general-class live-in and straight-line arm statements.
+    /// Entry copies happen before the condition, but condition arguments retain
+    /// their incoming homes through the call. The selected arm then switches to
+    /// the saved homes. This boundary is essential when the same object pointer
+    /// feeds both the call condition and a later arm call.
     pub(crate) fn try_call_condition_live_in_if(
         &mut self,
         function: &Function,
@@ -45,41 +46,43 @@ impl Generator {
             return Ok(false);
         }
 
-        let survivors: Vec<&mwcc_syntax_trees::Parameter> = function
-            .parameters
-            .iter()
-            .filter(|parameter| {
-                !expression_reads_name(condition, &parameter.name)
-                    && then_body
-                        .iter()
-                        .chain(else_body)
-                        .any(|statement| statement_reads_name(statement, &parameter.name))
-            })
-            .collect();
-        let [survivor] = survivors.as_slice() else {
-            return Ok(false);
-        };
-        let Some(location) = self.locations.get(&survivor.name) else {
-            return Ok(false);
-        };
-        if location.class != ValueClass::General {
+        let survivors = arm_live_parameters(&function.parameters, then_body, else_body);
+        if survivors.is_empty() {
             return Ok(false);
         }
-        let incoming = location.register;
+        let Some(incoming) = survivors
+            .iter()
+            .map(|survivor| {
+                self.locations
+                    .get(&survivor.name)
+                    .filter(|location| location.class == ValueClass::General)
+                    .map(|location| location.register)
+            })
+            .collect::<Option<Vec<_>>>()
+        else {
+            return Ok(false);
+        };
 
         self.non_leaf = true;
-        let home = self.fresh_virtual_general();
-        let plan = mwcc_vreg::FramePlan::sized_for(vec![home]);
+        let homes: Vec<u8> = survivors
+            .iter()
+            .map(|_| self.fresh_virtual_general())
+            .collect();
+        let plan = mwcc_vreg::FramePlan::sized_for(homes.clone());
         self.frame_size = plan.frame_size;
-        self.callee_saved = vec![home];
+        self.callee_saved = homes.clone();
         self.output
             .instructions
-            .extend(plan.prologue_interleaved(&[incoming]));
-        if let Some(location) = self.locations.get_mut(&survivor.name) {
-            location.register = home;
-        }
+            .extend(plan.prologue_interleaved(&incoming));
 
+        // The condition still sees every parameter in its incoming EABI home;
+        // only the arm crosses the call and consumes the saved copies.
         let (options, condition_bit) = self.emit_condition_test(condition)?;
+        for (survivor, home) in survivors.iter().zip(&homes) {
+            if let Some(location) = self.locations.get_mut(&survivor.name) {
+                location.register = *home;
+            }
+        }
         let alternate = self.fresh_label();
         self.emit_branch_conditional_to(options, condition_bit, alternate);
         for statement in then_body {
@@ -112,6 +115,23 @@ fn straight_line_arm_statement(statement: &Statement) -> bool {
     )
 }
 
+fn arm_live_parameters<'a>(
+    parameters: &'a [mwcc_syntax_trees::Parameter],
+    then_body: &[Statement],
+    else_body: &[Statement],
+) -> Vec<&'a mwcc_syntax_trees::Parameter> {
+    parameters
+        .iter()
+        .rev()
+        .filter(|parameter| {
+            then_body
+                .iter()
+                .chain(else_body)
+                .any(|statement| statement_reads_name(statement, &parameter.name))
+        })
+        .collect()
+}
+
 fn statement_reads_name(statement: &Statement, name: &str) -> bool {
     match statement {
         Statement::Store { target, value } => {
@@ -121,5 +141,37 @@ fn statement_reads_name(statement: &Statement, name: &str) -> bool {
             expression_reads_name(value, name)
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retains_parameters_read_by_both_the_call_condition_and_its_arm() {
+        let parameters = vec![
+            mwcc_syntax_trees::Parameter {
+                parameter_type: Type::StructPointer { element_size: 8 },
+                name: "object".into(),
+            },
+            mwcc_syntax_trees::Parameter {
+                parameter_type: Type::Int,
+                name: "amount".into(),
+            },
+        ];
+        let arm = vec![Statement::Expression(Expression::Call {
+            name: "consume".into(),
+            arguments: vec![
+                Expression::Variable("object".into()),
+                Expression::Variable("amount".into()),
+            ],
+        })];
+
+        let names: Vec<_> = arm_live_parameters(&parameters, &arm, &[])
+            .into_iter()
+            .map(|parameter| parameter.name.as_str())
+            .collect();
+        assert_eq!(names, ["amount", "object"]);
     }
 }
