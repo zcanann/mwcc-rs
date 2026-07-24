@@ -11,6 +11,7 @@ impl Generator {
         if self.behavior.frame_convention != FrameConvention::LinkageFirst {
             return;
         }
+        schedule_interleaved_saved_register_copy(&mut self.output.instructions);
         for index in 0..self.output.instructions.len().saturating_sub(1) {
             let saved = match (
                 &self.output.instructions[index],
@@ -1023,6 +1024,66 @@ impl Generator {
     }
 }
 
+/// Move an entry-value copy out of a pair of GPR saves before canonicalizing
+/// their frame slots. The copy overwrites the lower-numbered saved register,
+/// so leaving it between the stores prevents the save-order pass from seeing
+/// the pair and can make its independently canonicalized restores target the
+/// wrong slots.
+fn schedule_interleaved_saved_register_copy(instructions: &mut [Instruction]) {
+    for index in 0..instructions.len().saturating_sub(2) {
+        let [first_store, copy, second_store] = &instructions[index..index + 3] else {
+            unreachable!("a three-instruction window has three entries")
+        };
+        let (
+            Instruction::StoreWord {
+                s: first,
+                a: 1,
+                offset: first_offset,
+            },
+            Instruction::StoreWord {
+                s: second,
+                a: 1,
+                offset: second_offset,
+            },
+        ) = (first_store, second_store)
+        else {
+            continue;
+        };
+        let (first, second, first_offset, second_offset) =
+            (*first, *second, *first_offset, *second_offset);
+        let copies_entry = matches!(
+            copy,
+            Instruction::Or { a, s, b }
+                if *a == first && s == b && *s < 14
+        ) || matches!(
+            copy,
+            Instruction::AddImmediate { d, a, immediate: 0 }
+                if *d == first && *a < 14
+        );
+        if !(copies_entry
+            && (14..=31).contains(&first)
+            && (14..=31).contains(&second)
+            && first < second
+            && first_offset == second_offset.saturating_add(4))
+        {
+            continue;
+        }
+
+        let entry_copy = instructions[index + 1].clone();
+        instructions[index] = Instruction::StoreWord {
+            s: second,
+            a: 1,
+            offset: first_offset,
+        };
+        instructions[index + 1] = Instruction::StoreWord {
+            s: first,
+            a: 1,
+            offset: second_offset,
+        };
+        instructions[index + 2] = entry_copy;
+    }
+}
+
 /// Keep a callee-saved frame slot tied to the physical register captured by
 /// its prologue store. The save use and epilogue reload definition are
 /// disconnected live ranges, so allocation may initially assign the reload a
@@ -1127,6 +1188,42 @@ mod tests {
                 .map(|relocation| relocation.instruction_index)
                 .collect::<Vec<_>>(),
             [3, 0, 1, 2, 4]
+        );
+    }
+
+    #[test]
+    fn saved_register_pair_precedes_an_entry_copy() {
+        let mut instructions = vec![
+            Instruction::StoreWord {
+                s: 30,
+                a: 1,
+                offset: 36,
+            },
+            Instruction::move_register(30, 3),
+            Instruction::StoreWord {
+                s: 31,
+                a: 1,
+                offset: 32,
+            },
+        ];
+
+        schedule_interleaved_saved_register_copy(&mut instructions);
+
+        assert_eq!(
+            instructions,
+            [
+                Instruction::StoreWord {
+                    s: 31,
+                    a: 1,
+                    offset: 36,
+                },
+                Instruction::StoreWord {
+                    s: 30,
+                    a: 1,
+                    offset: 32,
+                },
+                Instruction::move_register(30, 3),
+            ]
         );
     }
 
