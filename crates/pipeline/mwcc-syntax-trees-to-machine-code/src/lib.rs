@@ -691,6 +691,7 @@ pub fn lower_function(
     generator.schedule_reciprocal_frame_fill();
     generator.reuse_absolute_pooled_float_literals();
     generator.finalize_structured_noncopy_conversion_lanes();
+    generator.finalize_structured_guarded_ucode_packet_registers();
     generator.finalize_structured_noncopy_packet_registers();
     generator.finalize_structured_noncopy_tail_packet_registers();
 
