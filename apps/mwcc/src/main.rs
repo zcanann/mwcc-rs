@@ -2401,6 +2401,9 @@ mod tests {
     #[path = "call_argument_schedules.rs"]
     mod call_argument_schedules;
 
+    #[path = "raise_family.rs"]
+    mod raise_family;
+
     #[path = "aggregate_member_copy.rs"]
     mod aggregate_member_copy;
 

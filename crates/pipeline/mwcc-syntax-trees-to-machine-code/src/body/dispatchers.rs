@@ -1091,7 +1091,8 @@ impl Generator {
     /// local loaded from a static dispatch table, tested through guard blocks,
     /// conditionally cleared, and finally CALLED — with the local and the int
     /// parameter living in callee-saved registers across the calls. Every order
-    /// below is the measured 44-instruction signal.c raise() capture; the
+    /// below is the measured 44-instruction bare raise() transaction (48 with
+    /// MSL's begin/end critical-region calls); the
     /// registers are allocator-chosen (v_temp -> r31, v_sig -> r30 from the
     /// call-crossing pool; the address chain's virtual takes the freed r3).
     pub(crate) fn try_raise_family(&mut self, function: &Function) -> Compilation<bool> {
@@ -1124,11 +1125,49 @@ impl Generator {
         {
             decline!(6);
         }
-        let [s0, s1, s2, s3, s4, s5] = function.statements.as_slice() else {
-            decline!(7)
-        };
+        // MSL's public `raise` wraps the table transaction in critical-region
+        // calls, while the freestanding/canary form has the same six semantic
+        // statements without those wrappers. Keep one structural lowering for
+        // both forms: the calls merely occupy the two transaction boundaries.
+        let (s0, begin_critical, s1, s2, end_critical, s3, s4, s5) =
+            match function.statements.as_slice() {
+                [s0, s1, s2, s3, s4, s5] => (s0, None, s1, s2, None, s3, s4, s5),
+                [s0, begin, s1, s2, end, s3, s4, s5] => {
+                    let critical_call = |statement: &Statement| {
+                        let Statement::Expression(Expression::Call { name, arguments }) = statement
+                        else {
+                            return None;
+                        };
+                        let [argument] = arguments.as_slice() else {
+                            return None;
+                        };
+                        let argument =
+                            constant_value(argument).and_then(|value| i16::try_from(value).ok())?;
+                        Some((name.clone(), argument))
+                    };
+                    let Some(begin) = critical_call(begin) else {
+                        decline!(7)
+                    };
+                    let Some(end) = critical_call(end) else {
+                        decline!(7)
+                    };
+                    (s0, Some(begin), s1, s2, Some(end), s3, s4, s5)
+                }
+                _ => decline!(7),
+            };
         let is_sig = |expression: &Expression| matches!(expression, Expression::Variable(name) if name == sig);
         let is_temp = |expression: &Expression| matches!(expression, Expression::Variable(name) if name == temp);
+        // Function-pointer sentinels use implementation-defined casts such as
+        // `(__signal_func_ptr)1`. They are deliberately not general integer
+        // constants in `constant_value`, but this family compares their exact
+        // bit patterns and therefore may recognize the wrapped literal.
+        let sentinel_value = |expression: &Expression| match expression {
+            Expression::Cast {
+                target_type: Type::Pointer(_) | Type::StructPointer { .. },
+                operand,
+            } => constant_value(operand),
+            other => constant_value(other),
+        };
         // temp compared to a constant, through an optional cast (the source
         // writes `(unsigned long) temp != 1`).
         let temp_versus =
@@ -1141,7 +1180,7 @@ impl Generator {
                 else {
                     return false;
                 };
-                if *found != operator || constant_value(right) != Some(constant) {
+                if *found != operator || sentinel_value(right) != Some(constant) {
                     return false;
                 }
                 match left.as_ref() {
@@ -1236,7 +1275,7 @@ impl Generator {
             decline!(19)
         };
         if table_of(target).as_deref() != Some(table.as_str())
-            || !matches!(constant_value(value), Some(0))
+            || !matches!(sentinel_value(value), Some(0))
         {
             decline!(20);
         }
@@ -1360,6 +1399,15 @@ impl Generator {
         // LOAD: the address chain in a fresh virtual (takes the freed r3), the
         // element folded through lwzu's pre-decrement.
         self.bind_label(load);
+        if let Some((name, argument)) = begin_critical {
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(result, argument));
+            self.record_relocation(RelocationKind::Rel24, &name);
+            self.output
+                .instructions
+                .push(Instruction::BranchAndLink { target: name });
+        }
         let address = self.fresh_virtual_general();
         self.emit_address_high(address, &table);
         if legacy_raise {
@@ -1425,6 +1473,15 @@ impl Generator {
         });
         // GUARD3: the mixed ==||(&&) chain sharing one cold return block.
         self.bind_label(skip_store);
+        if let Some((name, argument)) = end_critical {
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(result, argument));
+            self.record_relocation(RelocationKind::Rel24, &name);
+            self.output
+                .instructions
+                .push(Instruction::BranchAndLink { target: name });
+        }
         self.output
             .instructions
             .push(Instruction::CompareLogicalWordImmediate {
