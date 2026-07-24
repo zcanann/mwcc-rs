@@ -1413,6 +1413,13 @@ impl Generator {
         if self.try_writeback_norm(function)? {
             return Ok(());
         }
+        // A common diagnostics helper combines the EABI parameter-save area
+        // with a frame-resident formatting buffer and a final sink call. It is
+        // a complete frame owner, so claim it before the side-effect-free
+        // variadic family and the conservative general gate.
+        if self.try_variadic_buffer_sink(function)? {
+            return Ok(());
+        }
         // Even a side-effect-free variadic definition receives the EABI
         // parameter-save area. Its self-contained owner runs before the broader
         // variadic gate.

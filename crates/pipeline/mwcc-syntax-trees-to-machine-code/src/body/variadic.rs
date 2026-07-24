@@ -3,6 +3,8 @@
 #[allow(unused_imports)]
 use super::*;
 
+mod buffer_sink;
+
 impl Generator {
     /// Emit the complete side-effect-free variadic-function family.
     ///

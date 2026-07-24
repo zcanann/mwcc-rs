@@ -103,6 +103,11 @@ impl LoadContext<'_> {
             "__FILE__".to_string(),
             macro_expansion::Macro::Object(file_value.as_bytes().to_vec()),
         );
+        // `__LINE__` is similarly contextual, but changes before every physical
+        // source line is expanded. Preserve an including file's current value
+        // across recursive include loading just as we do for `__FILE__`.
+        let previous_line_definition = self.definitions.get("__LINE__").cloned();
+        let previous_line_macro = self.macros.get("__LINE__").cloned();
         let source = std::fs::read(&canonical).map_err(|error| {
             Diagnostic::error(format!("cannot read {}: {error}", canonical.display()))
         })?;
@@ -112,6 +117,13 @@ impl LoadContext<'_> {
         let mut continued_define: Option<String> = None;
         let mut lexical_state = macro_expansion::LexicalState::default();
         for (line_index, line) in physical_lines(&source).enumerate() {
+            let line_value = (line_index + 1).to_string();
+            self.definitions
+                .insert("__LINE__".to_string(), line_value.clone());
+            self.macros.insert(
+                "__LINE__".to_string(),
+                macro_expansion::Macro::Object(line_value.into_bytes()),
+            );
             if let Some(logical) = continued_define.as_mut() {
                 append_continued_directive(logical, line)?;
                 let continues = line_continues(line);
@@ -200,6 +212,22 @@ impl LoadContext<'_> {
             }
             None => {
                 self.macros.remove("__FILE__");
+            }
+        }
+        match previous_line_definition {
+            Some(value) => {
+                self.definitions.insert("__LINE__".to_string(), value);
+            }
+            None => {
+                self.definitions.remove("__LINE__");
+            }
+        }
+        match previous_line_macro {
+            Some(value) => {
+                self.macros.insert("__LINE__".to_string(), value);
+            }
+            None => {
+                self.macros.remove("__LINE__");
             }
         }
         Ok(output)
@@ -660,6 +688,38 @@ mod tests {
                 "char *header_file = \"header.h\";\n",
                 "#line 3\n",
                 "char *after = \"unit.c\";\n"
+            )
+            .as_bytes()
+        );
+    }
+
+    #[test]
+    fn line_macro_tracks_macro_invocations_and_include_boundaries() {
+        let scratch = Scratch::new();
+        std::fs::write(
+            scratch.0.join("header.h"),
+            b"#define HEADER_LINE() __LINE__\nint header_line = HEADER_LINE();\n",
+        )
+        .unwrap();
+        std::fs::write(
+            scratch.0.join("unit.c"),
+            b"#define CURRENT_LINE() __LINE__\nint before = CURRENT_LINE();\n#include \"header.h\"\nint after = CURRENT_LINE();\n",
+        )
+        .unwrap();
+
+        let loaded = SourceLoader::default()
+            .load(&scratch.0.join("unit.c"))
+            .unwrap();
+        assert_eq!(
+            loaded,
+            concat!(
+                "#define CURRENT_LINE() __LINE__\n",
+                "int before = 2;\n",
+                "#line 1\n",
+                "#define HEADER_LINE() __LINE__\n",
+                "int header_line = 2;\n",
+                "#line 4\n",
+                "int after = 4;\n"
             )
             .as_bytes()
         );
