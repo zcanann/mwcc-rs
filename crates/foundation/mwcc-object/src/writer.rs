@@ -39,7 +39,7 @@ fn initialized_object_is_upfront(
     initialized_globals_before_deferred_functions: bool,
 ) -> bool {
     !(object.is_weak && object.name.starts_with("__vt__"))
-        && (object.non_static_functions_before == 0
+        && (object.functions_before == 0
             || initialized_globals_before_deferred_functions)
 }
 
@@ -2517,7 +2517,6 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         }
     }
     let mut functions_seen = 0usize;
-    let mut non_static_functions_seen = 0usize;
     for (index, function) in functions.iter().enumerate() {
         // A function-local static initializer creates its address targets while
         // compiling the owning body. The LOCAL object symbols were emitted in
@@ -2993,12 +2992,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // functions, lands after the preceding function's referenced
         // externals, not up front).
         functions_seen += 1;
-        if !function.is_static {
-            non_static_functions_seen += 1;
-        }
         for object in &input.data_objects {
             if is_initialized_run_object(object)
-                && object.non_static_functions_before == non_static_functions_seen
+                && object.functions_before == functions_seen
                 && !global_symbols.contains_key(object.name)
             {
                 emit_initialized_object!(object);

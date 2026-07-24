@@ -99,11 +99,20 @@ fn external_cxx_const_follows_earlier_function_strings_into_sdata() {
         .iter()
         .find(|(name, _, _)| name == "value__6Values")
         .unwrap();
+    let sink_position = symbols
+        .iter()
+        .position(|(name, _, _)| name.starts_with("sink"))
+        .unwrap();
+    let value_position = symbols
+        .iter()
+        .position(|(name, _, _)| name == "value__6Values")
+        .unwrap();
 
     assert_eq!(string.1, ".sdata");
     assert_eq!(string.2, 0);
     assert_eq!(value.1, ".sdata");
     assert_eq!(value.2, 8);
+    assert!(sink_position < value_position);
 }
 
 #[test]
