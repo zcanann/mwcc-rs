@@ -1214,6 +1214,12 @@ impl Generator {
         if self.try_conditional_friction_select(function)? {
             return Ok(());
         }
+        // The display-list transaction's measured register schedule depends on
+        // distinguishing the typed actor alias from the entry parameter. Claim
+        // it before generic immutable-pointer propagation erases that identity.
+        if self.try_guarded_display_list_packet(function)? {
+            return Ok(());
+        }
         if let Some(inlined) = inline_immutable_pointer_aliases(function) {
             return self.evaluate_body(&inlined);
         }
@@ -1360,9 +1366,6 @@ impl Generator {
             return Ok(());
         }
         if self.try_dual_conditional_member_callbacks(function)? {
-            return Ok(());
-        }
-        if self.try_guarded_display_list_packet(function)? {
             return Ok(());
         }
         if self.try_global_aggregate_call_initialization(function)? {
