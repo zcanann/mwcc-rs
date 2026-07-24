@@ -71,6 +71,7 @@ mod structured_entry_zero_store;
 mod structured_early_return_schedule;
 mod structured_float_compare;
 mod structured_frame_assignment;
+mod structured_frame_arrays;
 mod structured_frame_bitfield_stores;
 mod structured_frame_call_schedule;
 mod structured_frame_entry;

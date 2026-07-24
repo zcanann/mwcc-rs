@@ -24,6 +24,7 @@ use super::structured_frame_assignment::{
     is_transient_shifted_member_mask_call_local, plan_dense_eager_pointer_round_up,
     sink_low_mask_parameter_assignment, sink_single_use_parameter_assignment,
 };
+use super::structured_frame_arrays::plan_structured_frame_arrays;
 use super::structured_frame_entry::structured_dense_frame_entry_index;
 use super::structured_home_layout::{
     compact_aggregate_scratch_frame_pair, dense_eager_deferred_preferences,
@@ -57,7 +58,7 @@ impl Generator {
         self.try_callee_saved_structured_body_impl(function, false)
     }
 
-    /// The same virtual-register path with one uninitialized automatic array
+    /// The same virtual-register path with uninitialized automatic byte arrays
     /// composed below its saved homes and a shared integer-valued exit.
     pub(crate) fn try_callee_saved_structured_frame_body(
         &mut self,
@@ -140,48 +141,32 @@ impl Generator {
         } else {
             Vec::new()
         };
-        let frame_array = if with_frame_array {
-            let mut arrays = function
-                .locals
-                .iter()
-                .filter(|local| local.array_length.is_some());
-            let array = arrays.next();
-            if array.is_none() && aggregate_frame_locals.is_empty() {
+        let frame_array_plan = if with_frame_array {
+            let Some(plan) = plan_structured_frame_arrays(&function.locals) else {
+                decline!("automatic array shape is unsupported");
+            };
+            if plan.arrays.is_empty() && aggregate_frame_locals.is_empty() {
                 decline!("frame mode requires an automatic array or aggregate slot");
             }
-            if arrays.next().is_some()
-                || array.is_some_and(|array| {
-                    array.is_static
-                        || array.initializer.is_some()
-                        || array.data_bytes.is_some()
-                        || !matches!(array.declared_type, Type::Char | Type::UnsignedChar)
-                })
-                || !((function.return_type == Type::Void && function.return_expression.is_none())
+            if !((function.return_type == Type::Void && function.return_expression.is_none())
                     || (matches!(function.return_type, Type::Int | Type::UnsignedInt)
                         && function.return_expression.is_some()))
             {
-                decline!("automatic array or return shape is unsupported");
+                decline!("automatic-array return shape is unsupported");
             }
-            array
+            plan
         } else {
-            None
-        };
-        let frame_array_bytes = match frame_array {
-            Some(array) => {
-                let length = array.array_length.expect("frame array was gated");
-                let Some(bytes) = u16::from(array.declared_type.width() / 8)
-                    .checked_mul(length)
-                    .filter(|bytes| *bytes != 0 && *bytes <= u16::from(u8::MAX))
-                else {
-                    return Ok(false);
-                };
-                i16::try_from(bytes)
-                    .map_err(|_| Diagnostic::error("structured local frame is too large"))?
+            super::structured_frame_arrays::StructuredFrameArrays {
+                arrays: Vec::new(),
+                total_bytes: 0,
             }
-            None => 0,
         };
-        let unused_frame_array = frame_array
-            .is_some_and(|array| !body_uses_local(&function.statements, &array.name));
+        let frame_arrays = &frame_array_plan.arrays;
+        let frame_array_bytes = frame_array_plan.total_bytes;
+        let unused_frame_array = !frame_arrays.is_empty()
+            && frame_arrays
+                .iter()
+                .all(|array| !body_uses_local(&function.statements, &array.name));
         let supported_plain_return = structured_return_is_supported(function);
         if (!with_frame_array && !supported_plain_return)
             || !supports_statements(
@@ -359,7 +344,7 @@ impl Generator {
                 .unwrap_or(8);
             i16::try_from(end.saturating_sub(8))
                 .map_err(|_| Diagnostic::error("structured aggregate frame is too large"))?
-        } else if frame_array.is_some() {
+        } else if !frame_arrays.is_empty() {
             frame_array_bytes
         } else {
             0
@@ -551,7 +536,7 @@ impl Generator {
                 );
             }
         }
-        if let Some(array) = frame_array {
+        if !frame_arrays.is_empty() {
             let extra_scalar_words = function
                 .locals
                 .iter()
@@ -651,17 +636,28 @@ impl Generator {
                 plan.frame_size = i16::try_from(frame_size)
                     .map_err(|_| Diagnostic::error("structured legacy frame is too large"))?;
             }
-            self.frame_slots.insert(
-                array.name.clone(),
-                FrameSlot {
-                    offset: array_offset,
-                    class: ValueClass::General,
-                    size: frame_array_bytes as u8,
-                    value_type: array.declared_type,
-                    parameter_register: None,
-                    is_array: true,
-                },
-            );
+            let mut next_array_offset = array_offset;
+            for array in frame_arrays {
+                let array_bytes = u16::from(array.declared_type.width() / 8)
+                    * array.array_length.expect("frame array was gated");
+                let array_size = u8::try_from(array_bytes).map_err(|_| {
+                    Diagnostic::error("structured automatic byte array is too large")
+                })?;
+                self.frame_slots.insert(
+                    array.name.clone(),
+                    FrameSlot {
+                        offset: next_array_offset,
+                        class: ValueClass::General,
+                        size: array_size,
+                        value_type: array.declared_type,
+                        parameter_register: None,
+                        is_array: true,
+                    },
+                );
+                next_array_offset = next_array_offset
+                    .checked_add(i16::from(array_size))
+                    .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
+            }
             let mut scalar_offset = array_offset;
             for local in &frame_scalar_locals {
                 scalar_offset -= 4;
@@ -677,22 +673,24 @@ impl Generator {
                     },
                 );
             }
-            let pointee = match array.declared_type {
-                Type::Char => Pointee::Char,
-                Type::UnsignedChar => Pointee::UnsignedChar,
-                _ => unreachable!("structured frame array type was gated"),
-            };
-            self.locations.insert(
-                array.name.clone(),
-                Location {
-                    class: ValueClass::General,
-                    register: GENERAL_SCRATCH,
-                    signed: false,
-                    width: 32,
-                    pointee: Some(pointee),
-                    stride: None,
-                },
-            );
+            for array in frame_arrays {
+                let pointee = match array.declared_type {
+                    Type::Char => Pointee::Char,
+                    Type::UnsignedChar => Pointee::UnsignedChar,
+                    _ => unreachable!("structured frame array type was gated"),
+                };
+                self.locations.insert(
+                    array.name.clone(),
+                    Location {
+                        class: ValueClass::General,
+                        register: GENERAL_SCRATCH,
+                        signed: false,
+                        width: 32,
+                        pointee: Some(pointee),
+                        stride: None,
+                    },
+                );
+            }
         }
         self.non_leaf = true;
         self.frame_size = plan.frame_size;
