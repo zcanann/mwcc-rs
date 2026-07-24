@@ -1123,6 +1123,9 @@ impl Generator {
     /// comma recurses. A side effect in a form not modeled here defers rather than
     /// silently dropping it.
     pub(crate) fn emit_comma_side_effect(&mut self, expression: &Expression) -> Compilation<()> {
+        if self.try_emit_scalarized_vec3_copy(expression)? {
+            return Ok(());
+        }
         match expression {
             Expression::Variable(_)
             | Expression::IntegerLiteral(_)

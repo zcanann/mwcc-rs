@@ -82,7 +82,9 @@ pub(super) fn substitute_expression(
             // visible after inlining assertion guards around by-reference
             // parameters: `&local ? 0 : __assert(...)` disappears entirely in
             // MWCC instead of materializing and testing the frame address.
-            if matches!(condition, Expression::AddressOf { .. }) {
+            if matches!(&condition, Expression::AddressOf { operand }
+                if matches!(operand.as_ref(), Expression::Variable(_)))
+            {
                 substitute_expression(when_true, replacements)
             } else {
                 Expression::Conditional {
