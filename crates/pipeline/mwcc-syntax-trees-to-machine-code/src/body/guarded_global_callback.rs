@@ -568,6 +568,16 @@ fn direct_global_callback(function: &Function) -> Option<&str> {
                 && zero_argument_callback(call, global))
             .then_some(global.as_str())
         }
+        [Statement::If {
+            condition: Expression::Variable(global),
+            then_body,
+            else_body,
+        }] => (else_body.is_empty()
+            && matches!(
+                then_body.as_slice(),
+                [Statement::Expression(call)] if zero_argument_callback(call, global)
+            ))
+        .then_some(global.as_str()),
         _ => None,
     }
 }
@@ -623,6 +633,34 @@ mod direct_tests {
                 arguments: Vec::new(),
             }),
         ]);
+
+        assert_eq!(direct_global_callback(&function), None);
+    }
+
+    #[test]
+    fn recognizes_a_bare_global_truth_guard() {
+        let function = function(vec![Statement::If {
+            condition: Expression::Variable("callback".into()),
+            then_body: vec![Statement::Expression(Expression::Call {
+                name: "callback".into(),
+                arguments: Vec::new(),
+            })],
+            else_body: Vec::new(),
+        }]);
+
+        assert_eq!(direct_global_callback(&function), Some("callback"));
+    }
+
+    #[test]
+    fn rejects_a_different_callback_under_a_bare_truth_guard() {
+        let function = function(vec![Statement::If {
+            condition: Expression::Variable("callback".into()),
+            then_body: vec![Statement::Expression(Expression::Call {
+                name: "other".into(),
+                arguments: Vec::new(),
+            })],
+            else_body: Vec::new(),
+        }]);
 
         assert_eq!(direct_global_callback(&function), None);
     }
