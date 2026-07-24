@@ -3273,6 +3273,14 @@ impl Parser {
                             .with_function_type(cxx_function_type),
                         );
                     }
+                    // In-class definitions are recovered through this ordinary
+                    // qualified-definition path. Their declarations may carry
+                    // a default argument, but that expression is not part of
+                    // the function body and must not obstruct semantic inline
+                    // capture (`C::C(T value = default_value) { ... }`).
+                    if self.cplusplus {
+                        self.skip_cxx_default_argument()?;
+                    }
                     if *self.peek() == Token::Comma {
                         self.advance();
                     } else {

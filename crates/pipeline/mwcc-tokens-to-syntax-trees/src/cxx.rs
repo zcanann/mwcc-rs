@@ -4862,7 +4862,7 @@ impl Parser {
     /// Skip a parameter's default initializer while preserving the comma or
     /// closing parenthesis that terminates the parameter. Nested calls, array
     /// literals, and braced aggregate values may contain their own commas.
-    fn skip_cxx_default_argument(&mut self) -> Compilation<()> {
+    pub(crate) fn skip_cxx_default_argument(&mut self) -> Compilation<()> {
         if !self.eat_keyword(Token::Equals) {
             return Ok(());
         }

@@ -4632,6 +4632,36 @@ blr\n\
     }
 
     #[test]
+    fn retains_in_class_constructor_bodies_with_default_parameters() {
+        let source = r#"
+            struct Base {
+                Base(char* name = "<Base>") { value = name; }
+                char* value;
+            };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let constructor = unit
+            .skipped_inline_definitions
+            .iter()
+            .find(|function| function.name == "__ct__4BaseFPc")
+            .expect("the default argument must not hide the constructor body");
+        assert!(matches!(
+            constructor.statements.as_slice(),
+            [Statement::Store {
+                target: Expression::Member { offset: 0, .. },
+                value: Expression::Variable(name),
+            }] if name == "name"
+        ));
+    }
+
+    #[test]
     fn retains_const_in_class_inline_member_expression_bodies() {
         let source = r#"
             struct Box {
