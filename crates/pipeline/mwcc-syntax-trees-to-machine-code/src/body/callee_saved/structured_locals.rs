@@ -88,20 +88,31 @@ pub(super) fn plan_deferred_saved_homes(
     let mut group_first_assignments = Vec::<usize>::new();
     let mut group_by_name = std::collections::HashMap::new();
     for (name, first_assignment, last_read) in intervals {
-        // MWCC reuses the most recently expired local home. This is a LIFO
-        // lifetime discipline, not first-fit coloring: when several homes are
-        // free, a new deferred local takes the one whose previous value died
-        // latest (for example a status result reuses the just-dead length home,
-        // not an older answer home).
-        let starts_load_batch = starts_deferred_load_batch(function, name);
-        let group = (!name.starts_with("__mwcc_value_") && !starts_load_batch)
+        // Ordinary assignments use MWCC's LIFO lifetime discipline: when
+        // several homes are free, the next local takes the one whose previous
+        // value died latest. Consecutive frame loads consume the expired homes
+        // in FIFO order, while the first load and a source-early result keep
+        // distinct homes for the batch scheduler.
+        let load_batch_position = deferred_load_batch_position(function, name);
+        let preserves_pre_frame_home = load_batch_position.is_some()
+            && declared_before_automatic_array(function, name);
+        let group = (!name.starts_with("__mwcc_value_")
+            && load_batch_position != Some(0)
+            && !preserves_pre_frame_home)
             .then(|| {
-                group_last_reads
+                let expired = group_last_reads
                     .iter()
                     .enumerate()
-                    .filter(|(_, previous_last_read)| **previous_last_read < first_assignment)
-                    .max_by_key(|(_, previous_last_read)| **previous_last_read)
-                    .map(|(group, _)| group)
+                    .filter(|(_, previous_last_read)| **previous_last_read < first_assignment);
+                if load_batch_position.is_some() {
+                    expired
+                        .min_by_key(|(_, previous_last_read)| **previous_last_read)
+                        .map(|(group, _)| group)
+                } else {
+                    expired
+                        .max_by_key(|(_, previous_last_read)| **previous_last_read)
+                        .map(|(group, _)| group)
+                }
             })
             .flatten()
             .unwrap_or_else(|| {
@@ -119,25 +130,35 @@ pub(super) fn plan_deferred_saved_homes(
     })
 }
 
-fn starts_deferred_load_batch(function: &Function, candidate: &str) -> bool {
-    function
-        .statements
+fn deferred_load_batch_position(function: &Function, candidate: &str) -> Option<usize> {
+    let assignment = function.statements.iter().position(
+        |statement| matches!(statement, Statement::Assign { name, value } if name == candidate && is_direct_load(value)),
+    )?;
+    let start = function.statements[..assignment]
         .iter()
-        .enumerate()
-        .any(|(index, statement)| match statement {
-            Statement::Assign { name, value } => name == candidate
-                && is_direct_load(value)
-                && function.statements.get(index + 1).is_some_and(
-                    |next| matches!(next, Statement::Assign { value, .. } if is_direct_load(value)),
-                )
-                && index.checked_sub(1).is_none_or(|previous| {
-                    !matches!(
-                        &function.statements[previous],
-                        Statement::Assign { value, .. } if is_direct_load(value)
-                    )
-                }),
-            _ => false,
-        })
+        .rposition(
+            |statement| !matches!(statement, Statement::Assign { value, .. } if is_direct_load(value)),
+        )
+        .map_or(0, |index| index + 1);
+    let end = function.statements[assignment..]
+        .iter()
+        .position(
+            |statement| !matches!(statement, Statement::Assign { value, .. } if is_direct_load(value)),
+        )
+        .map_or(function.statements.len(), |offset| assignment + offset);
+    (end - start >= 2).then_some(assignment - start)
+}
+
+fn declared_before_automatic_array(function: &Function, candidate: &str) -> bool {
+    let candidate = function
+        .locals
+        .iter()
+        .position(|local| local.name == candidate);
+    let array = function
+        .locals
+        .iter()
+        .position(|local| local.array_length.is_some());
+    matches!((candidate, array), (Some(candidate), Some(array)) if candidate < array)
 }
 
 fn is_direct_load(expression: &Expression) -> bool {

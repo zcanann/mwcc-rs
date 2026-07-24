@@ -31,7 +31,8 @@ use super::structured_frame_entry::structured_dense_frame_entry_index;
 use super::structured_home_layout::{
     compact_aggregate_scratch_frame_pair, dense_eager_deferred_preferences,
     dense_eager_home_preference, paired_eager_deferred_preference,
-    saved_float_home_preference,
+    rounded_pointer_dense_home_preference, saved_float_home_preference,
+    uses_rounded_pointer_dense_layout,
 };
 use super::structured_liveness::{
     read_after_possible_call, read_after_possible_call_in_return,
@@ -453,12 +454,22 @@ impl Generator {
             }
         }
         let deferred_preference_base = eager_saved_locals.len() + saved_parameters.len();
+        let rounded_pointer_lifetime_order = dense_eager_round_up.is_some()
+            && uses_rounded_pointer_dense_layout(
+                eager_saved_locals.len(),
+                saved_parameters.len(),
+                count,
+            );
+        let rounded_pointer_dense_layout = rounded_pointer_lifetime_order
+            && self.behavior.power_pc_7400_scheduling_enabled();
         let dense_deferred_preferences = dense_eager_deferred_preferences(
             eager_saved_locals.len(),
             saved_parameters.len(),
             count,
             &deferred_home_plan,
             &parameter_home_reuse,
+            rounded_pointer_dense_layout,
+            rounded_pointer_lifetime_order,
         );
         let homes: Vec<u8> = (0..count)
             .map(|home_index| {
@@ -471,6 +482,23 @@ impl Generator {
                     home_index,
                 ) {
                     self.fresh_virtual_general_preferring(preferred)
+                } else if rounded_pointer_dense_layout {
+                    let preferred = dense_deferred_preferences
+                        .get(&home_index)
+                        .copied()
+                        .or_else(|| {
+                            rounded_pointer_dense_home_preference(
+                                eager_saved_locals.len(),
+                                saved_parameters.len(),
+                                count,
+                                home_index,
+                            )
+                        });
+                    if let Some(register) = preferred {
+                        self.fresh_virtual_general_preferring(register)
+                    } else {
+                        self.fresh_virtual_general()
+                    }
                 } else if dense_frame && !eager_saved_locals.is_empty() {
                     let preferred = dense_deferred_preferences
                         .get(&home_index)
@@ -1314,11 +1342,17 @@ impl Generator {
         self.schedule_saved_return_epilogue();
         self.schedule_saved_receiver_entry_epilogue();
         self.schedule_legacy_inline_expansion_residue();
+        if rounded_pointer_dense_layout {
+            self.schedule_power_pc_7400_rounded_pointer_entry();
+        }
         if dense_frame {
             self.coalesce_member_xor_call_argument_loads();
         }
         if dense_frame && self.behavior.power_pc_7400_scheduling_enabled() {
             self.schedule_power_pc_7400_call_result_handoff(first_saved as u8);
+        }
+        if rounded_pointer_dense_layout {
+            self.schedule_power_pc_7400_rounded_pointer_body();
         }
         Ok(true)
     }

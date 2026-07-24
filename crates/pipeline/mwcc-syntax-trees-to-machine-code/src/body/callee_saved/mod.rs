@@ -86,6 +86,7 @@ mod structured_liveness;
 mod structured_loop_lowering;
 mod structured_parameter_home_reuse;
 mod structured_prologue;
+mod structured_rounded_pointer_schedule;
 mod structured_store_schedule;
 mod structured_saved_float_initializer;
 mod structured_shared_member_arguments;

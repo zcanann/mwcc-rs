@@ -299,7 +299,12 @@ impl Generator {
         if !is_coalesced_shift_add_window(&self.output.instructions[emitted_start..], home) {
             return;
         }
-        let staged = self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT);
+        let preferred = if self.behavior.power_pc_7400_scheduling_enabled() {
+            Eabi::FIRST_GENERAL_ARGUMENT + 1
+        } else {
+            Eabi::FIRST_GENERAL_ARGUMENT
+        };
+        let staged = self.fresh_virtual_general_preferring(preferred);
         let [Instruction::ShiftLeftImmediate { a, .. }, Instruction::AddImmediate { a: source, .. }] =
             &mut self.output.instructions[emitted_start..]
         else {

@@ -135,6 +135,62 @@ impl Generator {
         }
     }
 
+    /// The 7400 rounded-pointer frame fills both dependent initializer gaps
+    /// with incoming-parameter saves: one between the global high and scale,
+    /// then one between the raw pointer adjustment and its alignment mask.
+    pub(super) fn schedule_power_pc_7400_rounded_pointer_entry(&mut self) {
+        let Some(first_call) = self
+            .output
+            .instructions
+            .iter()
+            .position(|instruction| matches!(instruction, Instruction::BranchAndLink { .. }))
+        else {
+            return;
+        };
+        let scale = self.output.instructions[..first_call]
+            .iter()
+            .position(|instruction| matches!(instruction, Instruction::MultiplyImmediate { .. }));
+        if let Some(scale) = scale {
+            if let Some(parameter_copy) = self.output.instructions[scale + 1..first_call]
+                .iter()
+                .position(|instruction| {
+                    matches!(
+                        instruction,
+                        Instruction::AddImmediate {
+                            a: 4,
+                            immediate: 0,
+                            ..
+                        }
+                    )
+                })
+                .map(|offset| scale + 1 + offset)
+            {
+                self.move_instruction_before(parameter_copy, scale);
+            }
+        }
+
+        let Some(mask) = self.output.instructions[..first_call]
+            .windows(2)
+            .position(|window| {
+                matches!(
+                    window[0],
+                    Instruction::AndContiguousMask { .. }
+                        | Instruction::RotateAndMask { .. }
+                        | Instruction::ClearLeftImmediate { .. }
+                ) && matches!(
+                    window[1],
+                    Instruction::AddImmediate {
+                        immediate: 0,
+                        ..
+                    }
+                )
+            })
+        else {
+            return;
+        };
+        self.move_instruction_before(mask + 1, mask);
+    }
+
     pub(super) fn try_emit_structured_wide_saved_initializer(
         &mut self,
         initializer: &Expression,

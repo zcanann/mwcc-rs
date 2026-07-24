@@ -93,12 +93,48 @@ impl Generator {
             // materialization. Its home therefore retains the logical `mr`
             // encoding even in an otherwise addi-normalized dense frame.
             let value_to_saved_home = a >= first_saved && !logical_call_result_homes.contains(&a);
-            if s == b && (saved_to_argument || value_to_saved_home) {
+            let immediately_forwarded_call_result = a >= first_saved
+                && index > 0
+                && matches!(
+                    self.output.instructions[index - 1],
+                    Instruction::BranchAndLink { .. }
+                )
+                && matches!(
+                    self.output.instructions.get(index + 1),
+                    Some(Instruction::BranchAndLink { .. })
+                );
+            if s == b
+                && (saved_to_argument
+                    || (value_to_saved_home && !immediately_forwarded_call_result))
+            {
                 self.output.instructions[index] = Instruction::AddImmediate {
                     d: a,
                     a: s,
                     immediate: 0,
                 };
+            }
+        }
+        for index in 1..self.output.instructions.len().saturating_sub(1) {
+            if matches!(
+                (
+                    &self.output.instructions[index - 1],
+                    &self.output.instructions[index],
+                    &self.output.instructions[index + 1],
+                ),
+                (
+                    Instruction::BranchAndLink { .. },
+                    Instruction::AddImmediate {
+                        d,
+                        a: 3,
+                        immediate: 0,
+                    },
+                    Instruction::BranchAndLink { .. },
+                ) if *d >= first_saved
+            ) {
+                let Instruction::AddImmediate { d, .. } = self.output.instructions[index] else {
+                    unreachable!("immediate call result was gated");
+                };
+                self.output.instructions[index] = Instruction::move_register(d, 3);
             }
         }
 
@@ -399,8 +435,8 @@ impl Generator {
     /// then commits r0 to the saved home.
     pub(super) fn schedule_power_pc_7400_call_result_handoff(&mut self, first_saved: u8) {
         let mut start = 0;
-        while start + 3 < self.output.instructions.len() {
-            let saved = match &self.output.instructions[start..start + 4] {
+        while start + 2 < self.output.instructions.len() {
+            let saved = match &self.output.instructions[start..start + 2] {
                 [
                     Instruction::BranchAndLink { .. },
                     Instruction::AddImmediate {
@@ -408,24 +444,56 @@ impl Generator {
                         a: 3,
                         immediate: 0,
                     },
-                    Instruction::AddImmediate {
-                        d: 3,
-                        a: next_argument,
-                        immediate: 0,
-                    },
-                    Instruction::BranchAndLink { .. },
-                ] if *saved >= first_saved && saved != next_argument => *saved,
+                ] if *saved >= first_saved => *saved,
                 _ => {
                     start += 1;
                     continue;
                 }
             };
+            let Some(next_call) = self.output.instructions[start + 2..]
+                .iter()
+                .position(|instruction| matches!(instruction, Instruction::BranchAndLink { .. }))
+                .map(|offset| start + 2 + offset)
+            else {
+                break;
+            };
+            let Some(argument) = self.output.instructions[start + 2..next_call]
+                .iter()
+                .position(|instruction| {
+                    matches!(
+                        instruction,
+                        Instruction::AddImmediate {
+                            d: 3,
+                            a,
+                            immediate: 0,
+                        } if *a != saved
+                    )
+                })
+                .map(|offset| start + 2 + offset)
+            else {
+                start = next_call;
+                continue;
+            };
+            let independent_prefix = self.output.instructions[start + 2..argument]
+                .iter()
+                .all(|instruction| {
+                    !mwcc_vreg::register_operands(instruction)
+                        .iter()
+                        .any(|operand| {
+                            operand.class == mwcc_vreg::Class::General
+                                && (operand.register == 3 || operand.register == saved)
+                        })
+                });
+            if !independent_prefix {
+                start = next_call;
+                continue;
+            }
             self.output.instructions[start + 1] = Instruction::AddImmediate {
                 d: 0,
                 a: 3,
                 immediate: 0,
             };
-            let insertion = start + 3;
+            let insertion = argument + 1;
             self.output
                 .instructions
                 .insert(insertion, Instruction::move_register(saved, 0));
@@ -446,7 +514,7 @@ impl Generator {
                     relocation.instruction_index += 1;
                 }
             }
-            start += 5;
+            start = next_call + 2;
         }
     }
 
