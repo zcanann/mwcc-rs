@@ -635,6 +635,7 @@ pub fn lower_function(
     generator.schedule_ground_knockback_projection();
     generator.schedule_guarded_member_alias_initialization();
     generator.schedule_entry_saved_zero_test();
+    generator.schedule_saved_pointer_zero_test();
     generator.schedule_reciprocal_frame_fill();
 
     ordinal_accounting::apply(
