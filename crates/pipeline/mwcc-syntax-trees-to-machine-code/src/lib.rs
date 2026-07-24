@@ -700,6 +700,7 @@ pub fn lower_function(
     generator.schedule_structured_frame_packet_call();
     generator.reuse_structured_loop_packet_setup();
     generator.schedule_structured_frame_preloop_packets();
+    generator.schedule_structured_frame_sign_clamp_load();
 
     ordinal_accounting::apply(
         function,
