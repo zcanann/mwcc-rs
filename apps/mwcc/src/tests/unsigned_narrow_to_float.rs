@@ -61,4 +61,37 @@ fn schedules_unsigned_halfword_to_float_across_optimizer_families() {
             build.label
         );
     }
+
+}
+
+#[test]
+fn promotes_a_computed_integer_expression_beside_a_float_load() {
+    let source = br#"
+        struct Value {
+            unsigned short x;
+            float scale;
+        };
+        extern void consume(void);
+
+        void product(struct Value* value, int* result) {
+            *result = ((unsigned)value->x << 2) * value->scale;
+            consume();
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.emit_mwcats = false;
+    flags.inline_enabled = false;
+    compile(
+        source,
+        "computed-unsigned-to-float.c",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_2_6,
+            flags,
+        },
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("a computed integer operand should promote before float arithmetic");
 }

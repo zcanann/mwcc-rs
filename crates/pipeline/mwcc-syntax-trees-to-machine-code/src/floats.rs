@@ -135,8 +135,14 @@ impl Generator {
                 // instruction selection (`x * 4` pools `4.0f`). Keeping that
                 // normalization here lets every floating binary owner share
                 // the ordinary literal-placement and scheduling paths.
-                if matches!(left.as_ref(), Expression::IntegerLiteral(_))
-                    || matches!(right.as_ref(), Expression::IntegerLiteral(_))
+                if matches!(
+                    operator,
+                    BinaryOperator::Add
+                        | BinaryOperator::Subtract
+                        | BinaryOperator::Multiply
+                        | BinaryOperator::Divide
+                ) && (matches!(left.as_ref(), Expression::IntegerLiteral(_))
+                    || matches!(right.as_ref(), Expression::IntegerLiteral(_)))
                 {
                     let promoted = Expression::Binary {
                         operator: *operator,
@@ -251,7 +257,9 @@ impl Generator {
                     return Err(Diagnostic::error("expression needs the full register allocator (roadmap M1)"));
                 }
                 let operands = self.place_float_operands(*operator, left, right, destination, double)?;
-                self.output.instructions.push(float_combine(*operator, destination, operands, double)?);
+                self.output
+                    .instructions
+                    .push(float_combine(*operator, destination, operands, double)?);
                 Ok(())
             }
             Expression::Unary { operator: UnaryOperator::Negate, operand } => {
@@ -381,7 +389,9 @@ impl Generator {
             .cast_operand_width(integer_operand)
             .is_some_and(|width| width < 32)
             || !(self.is_word_load(integer_operand)
-                || self.general_register_of_leaf(integer_operand).is_ok())
+                || self.general_register_of_leaf(integer_operand).is_ok()
+                || (is_complex(integer_operand)
+                    && fits_single_scratch(integer_operand, false)))
             || !(self.is_float_operand(float_operand) || self.is_float_leaf(float_operand))
         {
             return Ok(false);
