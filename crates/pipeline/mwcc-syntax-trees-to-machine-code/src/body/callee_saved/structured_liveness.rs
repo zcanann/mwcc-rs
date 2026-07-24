@@ -1,7 +1,7 @@
 //! Path-sensitive saved-home liveness for structured control flow.
 
 use crate::analysis::*;
-use mwcc_syntax_trees::{Expression, Statement};
+use mwcc_syntax_trees::{Expression, LoopKind, Statement};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,8 +129,7 @@ fn flow(
                 }
             }
             Statement::Expression(value) => {
-                read_after |= expression_reads_name_across_call(value, name, prior_call);
-                prior_call |= statement_has_call(statement);
+                read_after |= advance_expression(value, name, &mut prior_call);
             }
             Statement::Return(expression) => {
                 read_after |= expression.as_ref().is_some_and(|value| {
@@ -152,7 +151,49 @@ fn flow(
                 falls_through = false;
             }
             Statement::Break | Statement::Continue => falls_through = false,
-            Statement::Switch { .. } | Statement::Loop { .. } => {
+            Statement::Loop {
+                kind,
+                initializer,
+                condition,
+                step,
+                body,
+            } => {
+                if let Some(initializer) = initializer {
+                    read_after |= advance_expression(initializer, name, &mut prior_call);
+                }
+                let mut iteration_call = prior_call;
+                if *kind != LoopKind::DoWhile {
+                    if let Some(condition) = condition {
+                        read_after |=
+                            advance_expression(condition, name, &mut iteration_call);
+                    }
+                }
+                let body_flow = flow(
+                    body,
+                    name,
+                    iteration_call,
+                    pending_gotos,
+                    seen_labels,
+                );
+                read_after |= body_flow.read_after_call;
+                if body_flow.falls_through {
+                    iteration_call = body_flow.call_on_fallthrough;
+                    if let Some(step) = step {
+                        read_after |= advance_expression(step, name, &mut iteration_call);
+                    }
+                    if let Some(condition) = condition {
+                        // A do/while reaches its condition in this iteration;
+                        // while/for reaches it on the backedge into the next.
+                        read_after |=
+                            advance_expression(condition, name, &mut iteration_call);
+                    }
+                }
+                // The loop may not execute (except do/while), may break, or may
+                // complete an iteration. Preserve every possible call-bearing
+                // exit conservatively for the following statement.
+                prior_call |= statement_has_call(statement);
+            }
+            Statement::Switch { .. } => {
                 prior_call |= statement_has_call(statement);
             }
             Statement::Label(_) => unreachable!("labels are handled before reachability"),
@@ -163,6 +204,23 @@ fn flow(
         call_on_fallthrough: prior_call,
         falls_through,
     }
+}
+
+/// Advance call-state through one expression, treating a direct assignment as
+/// a new definition after its right-hand side has been evaluated. This keeps a
+/// loop counter assigned after a call from inheriting the old value's lifetime,
+/// while still observing a read-modify-write step such as `i = i + 1`.
+fn advance_expression(expression: &Expression, name: &str, prior_call: &mut bool) -> bool {
+    if let Expression::Assign { target, value } = expression {
+        if matches!(target.as_ref(), Expression::Variable(assigned) if assigned == name) {
+            let read_after = expression_reads_name_across_call(value, name, *prior_call);
+            *prior_call = false;
+            return read_after;
+        }
+    }
+    let read_after = expression_reads_name_across_call(expression, name, *prior_call);
+    *prior_call |= expression_has_call(expression);
+    read_after
 }
 
 #[cfg(test)]
@@ -286,6 +344,60 @@ mod tests {
             &statements,
             Some(&tail),
             "object"
+        ));
+    }
+
+    #[test]
+    fn a_for_counter_stepped_after_a_body_call_needs_a_saved_home() {
+        let statements = vec![Statement::Loop {
+            kind: LoopKind::For,
+            initializer: Some(Expression::Assign {
+                target: Box::new(Expression::Variable("index".into())),
+                value: Box::new(Expression::IntegerLiteral(0)),
+            }),
+            condition: Some(Expression::Binary {
+                operator: mwcc_syntax_trees::BinaryOperator::Less,
+                left: Box::new(Expression::Variable("index".into())),
+                right: Box::new(Expression::IntegerLiteral(4)),
+            }),
+            step: Some(Expression::Assign {
+                target: Box::new(Expression::Variable("index".into())),
+                value: Box::new(Expression::Binary {
+                    operator: mwcc_syntax_trees::BinaryOperator::Add,
+                    left: Box::new(Expression::Variable("index".into())),
+                    right: Box::new(Expression::IntegerLiteral(1)),
+                }),
+            }),
+            body: vec![call("consume")],
+        }];
+
+        assert!(read_after_possible_call_in_return(
+            &statements,
+            None,
+            "index"
+        ));
+    }
+
+    #[test]
+    fn a_loop_step_redefinition_kills_the_prior_call_lifetime() {
+        let statements = vec![Statement::Loop {
+            kind: LoopKind::For,
+            initializer: Some(Expression::Assign {
+                target: Box::new(Expression::Variable("index".into())),
+                value: Box::new(Expression::IntegerLiteral(0)),
+            }),
+            condition: Some(Expression::Variable("index".into())),
+            step: Some(Expression::Assign {
+                target: Box::new(Expression::Variable("index".into())),
+                value: Box::new(Expression::IntegerLiteral(0)),
+            }),
+            body: vec![call("consume")],
+        }];
+
+        assert!(!read_after_possible_call_in_return(
+            &statements,
+            None,
+            "index"
         ));
     }
 
