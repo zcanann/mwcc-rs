@@ -36,6 +36,7 @@ mod conditional_float_requantize;
 mod conditional_friction_select;
 mod conditional;
 mod conditional_member_copy;
+mod constructor_pod_initialization_schedule;
 mod conditional_member_select_tail;
 mod control_block_unique_copy;
 mod cxx_global_startup;
