@@ -4,7 +4,7 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-07-24 04:11 UTC at compiler commit `f3b26ee1`
+Latest targeted checkpoint: 2026-07-24 04:29 UTC at compiler commit `df852a37`
 
 Latest measured compiler + harness fingerprint: `4ca51cd13c66eca020e6f691933c6075f99debec63ec5d6ba3a09853753c4bbe:121d3ae4f26965d7109e24043dcb96e73b0ab99435ff0da8079c505e14ff84a1`
 
@@ -76,15 +76,13 @@ This validates the failure-only edit loop: representative audits are useful
 periodic measurements, but recompiling them continuously would spend most of
 its time on known giant-TU timeouts.
 
-Post-holdout compiler work through commit `5438662f` has not been run over a
+Post-holdout compiler work through commit `df852a37` has not been run over a
 new unbiased sample, so it does not change the 7.8% estimate above. On the
 targeted Melee `src/melee/ft/ftcommon.c` diagnostic, the latest checkpoint moved
-relocation-aware parity from 28/109 to 74/109 functions and from 996/15,340 to
-6,584/15,340 reference code bytes. Paired movement was +46/-0 functions and
-+5,588 exact bytes. Of the 75 functions that emitted in this diagnostic, 74 were
-relocation-aware exact. `ftCommon_GrabMash` newly emitted at 380 bytes against
-372 reference bytes, with 39 instruction edits and five relocation edits; the
-other 34 remained compile/defer coverage gaps. The
+relocation-aware parity from 28/109 to 75/109 functions and from 996/15,340 to
+6,956/15,340 reference code bytes. Paired movement was +47/-0 functions and
++5,960 exact bytes. All 75 functions that emitted in this diagnostic were
+relocation-aware exact; the other 34 remained compile/defer coverage gaps. The
 gains were `ftCommon_ClampAirDrift`, `ftCommon_FallBasic`,
 `ftCommon_CalcHitlag`, `ftCommon_8007DB58`, `ftCommon_SetAccessory`,
 `ftCommon_8007FF74`, `ftCommon_8007DB24`, `ftCommon_8007D28C`,
@@ -122,8 +120,10 @@ indexed global callback tables then made `ftCommon_8007E79C`,
 `ftCommon_8007E7E4`, `ftCommon_8007F578`, `ftCommon_8007F824`, and
 `ftCommon_8007F86C` exact. Allocating wide masks and loaded float comparisons,
 extending narrow leaf/member comparisons, and scheduling shared-base bit-field
-call arguments then made `ftCommon_GrabMash` compile completely. This is
-evidence of local forward movement, not a corpus-level percentage.
+call arguments then made `ftCommon_GrabMash` compile completely. The complete
+cross-statement transaction schedule then made it byte- and
+relocation-exact. This is evidence of local forward movement, not a corpus-level
+percentage.
 
 ## Historical baseline: fresh current-population holdout
 
