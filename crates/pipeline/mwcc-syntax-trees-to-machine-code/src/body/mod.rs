@@ -40,6 +40,7 @@ mod endian_stack_unpack;
 mod expression_statement;
 mod float_store_fill;
 mod float_friction_select;
+mod friction_limited_acceleration_clamp;
 mod fixed_address_object_flush;
 mod fixed_port_bitfield;
 mod fixed_port_indexed_bitfield;

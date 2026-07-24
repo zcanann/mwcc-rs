@@ -3403,6 +3403,9 @@ impl Generator {
         if self.try_member_acceleration_clamp(function)? {
             return Ok(());
         }
+        if self.try_friction_limited_acceleration_clamp(function)? {
+            return Ok(());
+        }
         if self.try_member_float_friction_select(function)? {
             return Ok(());
         }
