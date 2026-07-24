@@ -601,6 +601,7 @@ pub fn lower_function(
     generator.schedule_guarded_member_classifier_chain();
     generator.schedule_shared_right_float_product_pair();
     generator.schedule_shared_float_store_literal(function);
+    generator.schedule_guarded_bitfield_storage_cache();
 
     ordinal_accounting::apply(
         function,
@@ -812,7 +813,7 @@ fn coalesce_self_moves(generator: &mut Generator) {
 /// permutation. Branch destinations are instruction indices just like
 /// relocation owners; leaving them stale after deleting a self-move can skip
 /// the first instruction of a guarded continuation.
-fn remap_instruction_indices(generator: &mut Generator, permutation: &[usize]) {
+pub(crate) fn remap_instruction_indices(generator: &mut Generator, permutation: &[usize]) {
     for relocation in &mut generator.output.relocations {
         relocation.instruction_index = permutation[relocation.instruction_index];
     }
