@@ -235,43 +235,16 @@ impl Generator {
         {
             return Ok(false);
         }
-        let [Statement::If {
-            condition:
-                Expression::Binary {
-                    operator: BinaryOperator::NotEqual,
-                    left,
-                    right,
-                },
-            then_body,
-            else_body,
-        }] = function.statements.as_slice()
-        else {
+        let Some(global) = direct_global_callback(function) else {
             return Ok(false);
         };
-        let Expression::Variable(global) = left.as_ref() else {
-            return Ok(false);
-        };
-        let [Statement::Expression(call)] = then_body.as_slice() else {
-            return Ok(false);
-        };
-        let call_matches = match call {
-            Expression::Call { name, arguments } => name == global && arguments.is_empty(),
-            Expression::CallThrough { target, arguments } => {
-                arguments.is_empty()
-                    && matches!(target.as_ref(), Expression::Variable(name) if name == global)
-            }
-            _ => false,
-        };
-        if constant_value(right) != Some(0) || !else_body.is_empty() || !call_matches {
-            return Ok(false);
-        }
-        let Some(&global_type) = self.globals.get(global.as_str()) else {
+        let Some(&global_type) = self.globals.get(global) else {
             return Ok(false);
         };
 
         self.output.pre_scheduled = true;
         self.emit_plain_nonleaf_prologue();
-        self.evaluate(&Expression::Variable(global.clone()), global_type, 12)?;
+        self.evaluate(&Expression::Variable(global.to_string()), global_type, 12)?;
         self.output
             .instructions
             .push(Instruction::CompareLogicalWordImmediate {
@@ -552,6 +525,127 @@ impl Generator {
             b: alias,
         });
         self.emit_guarded_callback_tail(alias, done);
+    }
+}
+
+fn direct_global_callback(function: &Function) -> Option<&str> {
+    match function.statements.as_slice() {
+        [Statement::If {
+            condition:
+                Expression::Binary {
+                    operator: BinaryOperator::NotEqual,
+                    left,
+                    right,
+                },
+            then_body,
+            else_body,
+        }] => {
+            let Expression::Variable(global) = left.as_ref() else {
+                return None;
+            };
+            (constant_value(right) == Some(0)
+                && else_body.is_empty()
+                && matches!(
+                    then_body.as_slice(),
+                    [Statement::Expression(call)] if zero_argument_callback(call, global)
+                ))
+            .then_some(global.as_str())
+        }
+        [Statement::If {
+            condition:
+                Expression::Unary {
+                    operator: UnaryOperator::LogicalNot,
+                    operand,
+                },
+            then_body,
+            else_body,
+        }, Statement::Expression(call)] => {
+            let Expression::Variable(global) = operand.as_ref() else {
+                return None;
+            };
+            (matches!(then_body.as_slice(), [Statement::Return(None)])
+                && else_body.is_empty()
+                && zero_argument_callback(call, global))
+            .then_some(global.as_str())
+        }
+        _ => None,
+    }
+}
+
+fn zero_argument_callback(expression: &Expression, global: &str) -> bool {
+    match expression {
+        Expression::Call { name, arguments } => name == global && arguments.is_empty(),
+        Expression::CallThrough { target, arguments } => {
+            arguments.is_empty()
+                && matches!(target.as_ref(), Expression::Variable(name) if name == global)
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod direct_tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_early_null_return_before_direct_callback() {
+        let function = function(vec![
+            Statement::If {
+                condition: Expression::Unary {
+                    operator: UnaryOperator::LogicalNot,
+                    operand: Box::new(Expression::Variable("callback".into())),
+                },
+                then_body: vec![Statement::Return(None)],
+                else_body: Vec::new(),
+            },
+            Statement::Expression(Expression::Call {
+                name: "callback".into(),
+                arguments: Vec::new(),
+            }),
+        ]);
+
+        assert_eq!(direct_global_callback(&function), Some("callback"));
+    }
+
+    #[test]
+    fn rejects_a_call_to_a_different_global_after_the_guard() {
+        let function = function(vec![
+            Statement::If {
+                condition: Expression::Unary {
+                    operator: UnaryOperator::LogicalNot,
+                    operand: Box::new(Expression::Variable("callback".into())),
+                },
+                then_body: vec![Statement::Return(None)],
+                else_body: Vec::new(),
+            },
+            Statement::Expression(Expression::Call {
+                name: "other".into(),
+                arguments: Vec::new(),
+            }),
+        ]);
+
+        assert_eq!(direct_global_callback(&function), None);
+    }
+
+    fn function(statements: Vec<Statement>) -> Function {
+        Function {
+            return_type: Type::Void,
+            name: "invoke".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: Vec::new(),
+            statements,
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        }
     }
 }
 
