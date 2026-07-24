@@ -272,9 +272,9 @@ fn hoist_loop_words(
         }
     }
     let mut fragment_replacements = Vec::with_capacity(fragments.len());
-    let common = repeated_invariant_subexpression(&fragments);
-    let mut common_replacements = Vec::new();
-    if let Some(value) = common {
+    let common = repeated_invariant_subexpressions(&fragments);
+    let mut common_replacements = Vec::with_capacity(common.len());
+    for value in common {
         let name = fresh_name(used_names, next_name);
         declarations.push(unsigned_local(&name));
         prefix.push(Statement::Assign {
@@ -313,28 +313,46 @@ fn hoist_loop_words(
     (prefix, body.0, changed || body.1)
 }
 
-fn repeated_invariant_subexpression<'a>(fragments: &[&'a Expression]) -> Option<&'a Expression> {
-    fragments
-        .iter()
-        .enumerate()
-        .flat_map(|(index, fragment)| {
-            crate::analysis::computed_subexpressions(fragment)
-                .into_iter()
-                .filter_map(move |candidate| {
-                    let (_, operations) = pure_integer_arithmetic(candidate)?;
-                    (operations >= 2
-                        && fragments[index + 1..].iter().any(|other| {
-                            crate::analysis::computed_subexpressions(other)
-                                .iter()
-                                .any(|nested| {
-                                    crate::analysis::structurally_equal(candidate, nested)
-                                })
-                        }))
-                    .then_some((candidate, operations))
+fn repeated_invariant_subexpressions<'a>(fragments: &[&'a Expression]) -> Vec<&'a Expression> {
+    let mut candidates: Vec<(&Expression, usize)> = Vec::new();
+    for (index, fragment) in fragments.iter().enumerate() {
+        for candidate in crate::analysis::computed_subexpressions(fragment) {
+            let Some((_, operations)) = pure_integer_arithmetic(candidate) else {
+                continue;
+            };
+            if operations < 2
+                || candidates
+                    .iter()
+                    .any(|(existing, _)| crate::analysis::structurally_equal(existing, candidate))
+                || !fragments[index + 1..].iter().any(|other| {
+                    crate::analysis::computed_subexpressions(other)
+                        .iter()
+                        .any(|nested| crate::analysis::structurally_equal(candidate, nested))
                 })
-        })
-        .max_by_key(|(_, operations)| *operations)
-        .map(|(candidate, _)| candidate)
+            {
+                continue;
+            }
+            candidates.push((candidate, operations));
+        }
+    }
+    candidates.sort_by_key(|(_, operations)| std::cmp::Reverse(*operations));
+
+    let mut selected: Vec<&'a Expression> = Vec::new();
+    for (candidate, _) in candidates {
+        if selected.iter().any(|existing| {
+            computation_contains(existing, candidate) || computation_contains(candidate, existing)
+        }) {
+            continue;
+        }
+        selected.push(candidate);
+    }
+    selected
+}
+
+fn computation_contains(expression: &Expression, candidate: &Expression) -> bool {
+    crate::analysis::computed_subexpressions(expression)
+        .into_iter()
+        .any(|nested| crate::analysis::structurally_equal(nested, candidate))
 }
 
 fn name_dynamic_shallow_fragments(

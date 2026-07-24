@@ -266,3 +266,37 @@ fn shares_a_common_subexpression_between_invariant_fields() {
             && matches!(second_left.as_ref(), Expression::Variable(name) if name == source)
     ));
 }
+
+#[test]
+fn shares_multiple_independent_subexpressions_between_invariant_fields() {
+    let first_common = shallow_dynamic_value();
+    let second_common = Expression::Binary {
+        operator: BinaryOperator::ShiftLeft,
+        left: Box::new(Expression::Binary {
+            operator: BinaryOperator::Add,
+            left: Box::new(Expression::Variable("a".into())),
+            right: Box::new(Expression::IntegerLiteral(3)),
+        }),
+        right: Box::new(Expression::IntegerLiteral(4)),
+    };
+    let field = |command, operator| Expression::Binary {
+        operator,
+        left: Box::new(Expression::Binary {
+            operator: BinaryOperator::BitOr,
+            left: Box::new(first_common.clone()),
+            right: Box::new(Expression::IntegerLiteral(command)),
+        }),
+        right: Box::new(second_common.clone()),
+    };
+    let first = field(0xf400_0000, BinaryOperator::Add);
+    let second = field(0xf200_0000, BinaryOperator::BitXor);
+    let shared = repeated_invariant_subexpressions(&[&first, &second]);
+
+    assert_eq!(shared.len(), 2);
+    assert!(shared
+        .iter()
+        .any(|value| crate::analysis::structurally_equal(value, &first_common)));
+    assert!(shared
+        .iter()
+        .any(|value| crate::analysis::structurally_equal(value, &second_common)));
+}
