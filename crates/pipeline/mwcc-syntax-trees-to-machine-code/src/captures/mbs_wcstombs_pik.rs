@@ -8,8 +8,14 @@ use mwcc_syntax_trees::{Function, Type};
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
 const MBS_WCSTOMBS_PIK_AST_HASH: u64 = 0x8e001d087650f703; // mbs_mel (f514)
-/// Cosmetic AST variants with IDENTICAL instruction streams (@N-normalized).
-const MBS_WCSTOMBS_PIK_AST_HASHES: &[u64] = &[MBS_WCSTOMBS_PIK_AST_HASH, 0x7c6bcb19e8ec6f14];
+const MBS_WCSTOMBS_PIK_TWO_STEP_SIGN_EXTEND_AST_HASH: u64 = 0xafd58fe7a7dc20c4;
+/// Measured semantic variants of the same runtime loop. The current Pikmin
+/// spelling uses a distinct two-step sign-extension schedule below.
+const MBS_WCSTOMBS_PIK_AST_HASHES: &[u64] = &[
+    MBS_WCSTOMBS_PIK_AST_HASH,
+    0x7c6bcb19e8ec6f14,
+    MBS_WCSTOMBS_PIK_TWO_STEP_SIGN_EXTEND_AST_HASH,
+];
 
 impl Generator {
     pub(super) fn try_mbs_wcstombs_pik(&mut self, function: &Function) -> Compilation<bool> {
@@ -34,27 +40,41 @@ impl Generator {
             0xbd60acb658c79e45 => 0, // mbs_mel (f514)
             _ => return Ok(false),
         };
+        let two_step_sign_extend = hash == MBS_WCSTOMBS_PIK_TWO_STEP_SIGN_EXTEND_AST_HASH;
         // -- emit (the capture, verbatim) --
         let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =
             std::collections::HashMap::new();
-        for target in [4, 12] {
+        let exit_target = if two_step_sign_extend { 13 } else { 12 };
+        for target in [4, exit_target] {
             labels.insert(target, self.fresh_label());
         }
-        self.output
-            .instructions
-            .push(Instruction::load_immediate(6, 0));
-        self.output
-            .instructions
-            .push(Instruction::MoveToCountRegister { s: 5 });
-        self.output
-            .instructions
-            .push(Instruction::CompareLogicalWordImmediate { a: 5, immediate: 0 });
-        self.emit_branch_conditional_to(4, 1, labels[&12]); // ble
+        if two_step_sign_extend {
+            self.output
+                .instructions
+                .push(Instruction::CompareLogicalWordImmediate { a: 5, immediate: 0 });
+            self.output
+                .instructions
+                .push(Instruction::MoveToCountRegister { s: 5 });
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(6, 0));
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(6, 0));
+            self.output
+                .instructions
+                .push(Instruction::MoveToCountRegister { s: 5 });
+            self.output
+                .instructions
+                .push(Instruction::CompareLogicalWordImmediate { a: 5, immediate: 0 });
+        }
+        self.emit_branch_conditional_to(4, 1, labels[&exit_target]); // ble
         self.bind_label(labels[&4]);
         self.output
             .instructions
             .push(Instruction::LoadHalfwordZero {
-                d: 5,
+                d: if two_step_sign_extend { 0 } else { 5 },
                 a: 4,
                 offset: 0,
             });
@@ -63,6 +83,11 @@ impl Generator {
             a: 4,
             immediate: 2,
         });
+        if two_step_sign_extend {
+            self.output
+                .instructions
+                .push(Instruction::ExtendSignByte { a: 5, s: 0 });
+        }
         self.output
             .instructions
             .push(Instruction::ExtendSignByteRecord { a: 0, s: 5 });
@@ -76,14 +101,14 @@ impl Generator {
             a: 3,
             immediate: 1,
         });
-        self.emit_branch_conditional_to(12, 2, labels[&12]); // beq
+        self.emit_branch_conditional_to(12, 2, labels[&exit_target]); // beq
         self.output.instructions.push(Instruction::AddImmediate {
             d: 6,
             a: 6,
             immediate: 1,
         });
         self.emit_branch_conditional_to(16, 0, labels[&4]); // bdnz
-        self.bind_label(labels[&12]);
+        self.bind_label(labels[&exit_target]);
         self.output
             .instructions
             .push(Instruction::move_register(3, 6));
