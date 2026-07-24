@@ -1964,6 +1964,9 @@ impl Generator {
         if self.try_guarded_global_reuse_call(function)? {
             return Ok(());
         }
+        if self.try_guarded_global_callback(function)? {
+            return Ok(());
+        }
         // `if (gi) f(gi);` — a global read in BOTH an if-condition and its then-body. mwcc loads the
         // global ONCE into the argument register, tests it there, and reuses it for the guarded call
         // (`lwz r3,gi; cmpwi r3,0; beq; bl f`); our codegen loads it into the scratch for the test, then

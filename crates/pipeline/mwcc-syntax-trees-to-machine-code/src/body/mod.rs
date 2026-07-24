@@ -51,6 +51,7 @@ mod guards_ifs;
 mod global_struct_member_search;
 mod ground_knockback_projection_schedule;
 mod guarded_aggregate_update;
+mod guarded_global_callback;
 mod guarded_member_decrement_if_else;
 mod if_else;
 mod indirect_call;
