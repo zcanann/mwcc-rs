@@ -5622,6 +5622,32 @@ blr\n\
     }
 
     #[test]
+    fn normalizes_array_delete_to_the_eabi_runtime_call() {
+        let source = r#"
+            void destroy(int* values) { delete[] values; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Call { name, arguments }
+            )] if name == "__dla__FPv"
+                && matches!(
+                    arguments.as_slice(),
+                    [mwcc_syntax_trees::Expression::Variable(value)] if value == "values"
+                )
+        ));
+    }
+
+    #[test]
     fn virtual_delete_materializes_an_inline_destructor_and_vtable() {
         let source = r#"
             class Item { public: virtual ~Item() {} };
@@ -5850,6 +5876,69 @@ blr\n\
             &unit.functions[0].return_expression,
             Some(mwcc_syntax_trees::Expression::Call { name, arguments })
                 if name == "__nwa__FUlP7JKRHeapi" && arguments.len() == 3
+        ));
+    }
+
+    #[test]
+    fn normalizes_heap_returned_by_a_static_member_call_for_array_new() {
+        let source = r#"
+            class JKRHeap {};
+            class Bank {
+            public:
+                static JKRHeap* getCurrentHeap();
+            };
+            unsigned char* create(unsigned count) {
+                return new (Bank::getCurrentHeap(), 0) unsigned char[count];
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Call { name, arguments })
+                if name == "__nwa__FUlP7JKRHeapi" && arguments.len() == 3
+        ));
+    }
+
+    #[test]
+    fn normalizes_trivial_class_placement_array_without_a_cookie() {
+        let source = r#"
+            class JKRHeap {};
+            struct Record { int key; float value; };
+            extern JKRHeap* heap;
+            Record* create(unsigned count) {
+                return new (heap, 0) Record[count];
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Call { name, arguments })
+                if name == "__nwa__FUlP7JKRHeapi"
+                    && matches!(
+                        arguments.first(),
+                        Some(mwcc_syntax_trees::Expression::Binary {
+                            operator: mwcc_syntax_trees::BinaryOperator::Multiply,
+                            right,
+                            ..
+                        }) if matches!(
+                            right.as_ref(),
+                            mwcc_syntax_trees::Expression::IntegerLiteral(8)
+                        )
+                    )
         ));
     }
 
@@ -6789,6 +6878,34 @@ blr\n\
         assert_eq!(command.data_bytes.as_deref(), Some(&[0, 0, 0, 0][..]));
         assert_eq!(marker.data_bytes.as_deref(), Some(&[1, 0, 0, 0][..]));
         assert!(light.is_static && command.is_static && marker.is_static);
+    }
+
+    #[test]
+    fn serializes_nested_static_pointer_relocations() {
+        let source = r#"
+            void initialize(void) {
+                static int value;
+                {
+                    static int* pointer = &value;
+                }
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let pointer = unit.functions[0]
+            .locals
+            .iter()
+            .find(|local| local.name == "pointer")
+            .unwrap();
+
+        assert_eq!(pointer.data_bytes.as_deref(), Some(&[0, 0, 0, 0][..]));
+        assert_eq!(pointer.data_relocations, [(0, "value".to_string(), 0)]);
     }
 
     #[test]

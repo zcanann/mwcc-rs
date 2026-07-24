@@ -1185,6 +1185,9 @@ impl Parser {
             | Expression::Dereference { pointer: operand } => {
                 self.cxx_expression_struct_tag(operand)
             }
+            Expression::Call { name, .. } => {
+                self.function_return_structs.get(name).map(String::as_str)
+            }
             _ => None,
         }
     }

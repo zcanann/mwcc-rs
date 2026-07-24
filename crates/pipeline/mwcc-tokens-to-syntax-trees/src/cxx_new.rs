@@ -22,12 +22,8 @@ impl Parser {
         if self.eat_keyword(Token::BracketOpen) {
             let count = self.expression()?;
             self.expect(Token::BracketClose)?;
-            if matches!(allocated_type, Type::Struct { .. }) {
-                return Err(Diagnostic::error(
-                    "C++ class array new needs element construction and an array cookie (roadmap)",
-                ));
-            }
-            let element_bytes = allocation_bytes(allocated_type)?;
+            let element_bytes =
+                self.array_element_bytes(allocated_type, aggregate_tag.as_deref())?;
             let bytes = scale_allocation_count(count, element_bytes);
             return Ok(Expression::Call {
                 name: "__nwa__FUl".to_owned(),
@@ -94,12 +90,10 @@ impl Parser {
         if self.eat_keyword(Token::BracketOpen) {
             let count = self.expression()?;
             self.expect(Token::BracketClose)?;
-            if matches!(allocated_type, Type::Struct { .. }) {
-                return Err(Diagnostic::error(
-                    "C++ class placement array new needs element construction and an array cookie (roadmap)",
-                ));
-            }
-            let bytes = scale_allocation_count(count, allocation_bytes(allocated_type)?);
+            let bytes = scale_allocation_count(
+                count,
+                self.array_element_bytes(allocated_type, aggregate_tag.as_deref())?,
+            );
             let allocator = self.resolve_placement_array_allocator(&placement_arguments)?;
             let mut arguments = vec![bytes];
             arguments.append(&mut placement_arguments);
@@ -222,19 +216,64 @@ impl Parser {
             .iter()
             .any(|base| self.cxx_class_is_or_derives_from(&base.name, target))
     }
+
+    /// Return the allocation stride when an array element needs no constructor,
+    /// destructor, vptr, base, or class-valued member lifetime work.
+    fn array_element_bytes(
+        &self,
+        allocated_type: Type,
+        aggregate_tag: Option<&str>,
+    ) -> Compilation<u32> {
+        let Type::Struct { size, .. } = allocated_type else {
+            return allocation_bytes(allocated_type);
+        };
+        let tag = aggregate_tag.ok_or_else(|| {
+            Diagnostic::error("C++ class array allocation has no aggregate identity")
+        })?;
+        let class = self.cxx_classes.get(tag).ok_or_else(|| {
+            Diagnostic::error(format!(
+                "C++ class array new for '{tag}' needs recovered lifetime information (roadmap)"
+            ))
+        })?;
+        let layout = self.structs.get(tag).ok_or_else(|| {
+            Diagnostic::error(format!(
+                "C++ class array new for '{tag}' needs a recovered layout (roadmap)"
+            ))
+        })?;
+        let has_source_constructor = self
+            .cxx_constructors
+            .get(tag)
+            .is_some_and(|constructors| !constructors.is_empty());
+        let has_class_value_member = layout
+            .fields
+            .values()
+            .any(|field| matches!(field.member_type, Type::Struct { .. }));
+        if !class.bases.is_empty()
+            || !class.constructors.is_empty()
+            || has_source_constructor
+            || class.declares_destructor
+            || class.is_polymorphic
+            || has_class_value_member
+        {
+            return Err(Diagnostic::error(format!(
+                "C++ class array new for '{tag}' needs element construction and an array cookie (roadmap)"
+            )));
+        }
+        Ok(size)
+    }
 }
 
-fn allocation_bytes(allocated_type: Type) -> Compilation<u8> {
+fn allocation_bytes(allocated_type: Type) -> Compilation<u32> {
     match allocated_type {
         Type::Void => Err(Diagnostic::error("cannot allocate an object of type void")),
         Type::Struct { .. } => Err(Diagnostic::error(
             "C++ class allocation needs constructor-aware lowering (roadmap)",
         )),
-        other => Ok(other.width() / 8),
+        other => Ok(u32::from(other.width() / 8)),
     }
 }
 
-fn scale_allocation_count(count: Expression, element_bytes: u8) -> Expression {
+fn scale_allocation_count(count: Expression, element_bytes: u32) -> Expression {
     if element_bytes == 1 {
         count
     } else if let Expression::IntegerLiteral(count) = count {
