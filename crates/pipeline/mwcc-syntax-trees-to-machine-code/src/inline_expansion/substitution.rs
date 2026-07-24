@@ -105,9 +105,21 @@ pub(super) fn substitute_expression(
         Expression::IndexedUpdateValue { value } => Expression::IndexedUpdateValue {
             value: Box::new(substitute_expression(value, replacements)),
         },
-        Expression::Dereference { pointer } => Expression::Dereference {
-            pointer: Box::new(substitute_expression(pointer, replacements)),
-        },
+        Expression::Dereference { pointer } => {
+            let pointer = substitute_expression(pointer, replacements);
+            // Inline by-reference parameters commonly substitute `&lvalue` for
+            // a callee-side `*pointer`. Preserve the C lvalue identity `*&x ==
+            // x` here, before an enclosing scalar member access is rebuilt.
+            // The Member arm below can then fold embedded aggregate offsets
+            // into the original base instead of materializing a fake pointer.
+            if let Expression::AddressOf { operand } = pointer {
+                *operand
+            } else {
+                Expression::Dereference {
+                    pointer: Box::new(pointer),
+                }
+            }
+        }
         Expression::AddressOf { operand } => Expression::AddressOf {
             operand: Box::new(substitute_expression(operand, replacements)),
         },
@@ -259,5 +271,45 @@ pub(super) fn substitute_expression(
         | Expression::FloatLiteral(_)
         | Expression::StringLiteral(_)
         | Expression::CompoundLiteral { .. } => expression.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mwcc_syntax_trees::Type;
+
+    #[test]
+    fn folds_a_substituted_reference_back_into_its_member_lvalue() {
+        let expression = Expression::Member {
+            base: Box::new(Expression::Dereference {
+                pointer: Box::new(Expression::Variable("translate".into())),
+            }),
+            offset: 4,
+            member_type: Type::Float,
+            index_stride: None,
+        };
+        let replacements = HashMap::from([(
+            "translate".into(),
+            Expression::AddressOf {
+                operand: Box::new(Expression::Member {
+                    base: Box::new(Expression::Variable("fighter".into())),
+                    offset: 6780,
+                    member_type: Type::Struct { size: 12, align: 4 },
+                    index_stride: None,
+                }),
+            },
+        )]);
+
+        let substituted = substitute_expression(&expression, &replacements);
+        assert!(matches!(
+            substituted,
+            Expression::Member {
+                base,
+                offset: 6784,
+                member_type: Type::Float,
+                index_stride: None,
+            } if matches!(base.as_ref(), Expression::Variable(name) if name == "fighter")
+        ));
     }
 }
