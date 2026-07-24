@@ -1626,6 +1626,14 @@ impl Generator {
             return Ok(source);
         }
         if let Expression::Variable(name) = value {
+            // An address-taken scalar has a frame home rather than a register
+            // location. Reload its value before storing through another
+            // pointer; otherwise the external-symbol fallback below would
+            // incorrectly materialize the local's source name as an address.
+            if self.frame_slots.contains_key(name.as_str()) {
+                self.evaluate_general(value, GENERAL_SCRATCH)?;
+                return Ok(GENERAL_SCRATCH);
+            }
             // A bare identifier that is neither a local nor a known data global is
             // an external symbol (a function, typically) — store its *address*. mwcc
             // materializes it absolutely (`lis t,sym@ha; addi r0,t,sym@lo`) even with

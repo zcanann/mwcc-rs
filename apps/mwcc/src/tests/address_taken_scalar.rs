@@ -136,3 +136,39 @@ fn forwards_a_just_published_frame_scalar_to_its_next_use() {
         "the immediately reused value was reloaded from its frame slot"
     );
 }
+
+#[test]
+fn reloads_an_address_taken_scalar_for_a_pointer_store() {
+    let source = br#"
+        extern void mutate(int*);
+
+        void bridge(int* output, int value) {
+            int slot = value;
+            mutate(&slot);
+            *output = slot;
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.emit_mwcats = false;
+    flags.inline_enabled = false;
+    let object = compile(
+        source,
+        "stored-address-taken-scalar.c",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_2_6,
+            flags,
+        },
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("the frame scalar pointer store should compile");
+
+    assert!(
+        !object
+            .windows(b"slot\0".len())
+            .any(|bytes| bytes == b"slot\0"),
+        "the frame scalar was misclassified as an external symbol"
+    );
+}
