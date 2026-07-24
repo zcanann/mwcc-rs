@@ -19,6 +19,10 @@ impl DeferredSavedHomePlan {
         self.group_by_name[name]
     }
 
+    pub(super) fn group_if_present(&self, name: &str) -> Option<usize> {
+        self.group_by_name.get(name).copied()
+    }
+
     pub(super) fn first_assignment(&self, group: usize) -> usize {
         self.group_first_assignments[group]
     }

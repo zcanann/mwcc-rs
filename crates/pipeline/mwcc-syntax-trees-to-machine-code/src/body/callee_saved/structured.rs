@@ -29,10 +29,10 @@ use super::structured_frame_assignment::{
 use super::structured_frame_arrays::plan_structured_frame_arrays;
 use super::structured_frame_entry::structured_dense_frame_entry_index;
 use super::structured_home_layout::{
-    compact_aggregate_scratch_frame_pair, dense_eager_deferred_preferences,
-    dense_eager_home_preference, paired_eager_deferred_preference,
-    rounded_pointer_dense_home_preference, saved_float_home_preference,
-    uses_rounded_pointer_dense_layout,
+    allocator_result_cursor_preferences, compact_aggregate_scratch_frame_pair,
+    dense_eager_deferred_preferences, dense_eager_home_preference,
+    paired_eager_deferred_preference, rounded_pointer_dense_home_preference,
+    saved_float_home_preference, uses_rounded_pointer_dense_layout,
 };
 use super::structured_liveness::{
     read_after_possible_call, read_after_possible_call_in_return,
@@ -564,6 +564,18 @@ impl Generator {
             rounded_pointer_dense_layout,
             rounded_pointer_lifetime_order,
         );
+        let allocator_cursor_preferences =
+            (dense_frame && self.behavior.frame_convention == FrameConvention::Predecrement)
+                .then(|| {
+                    allocator_result_cursor_preferences(
+                        function,
+                        &deferred_home_plan,
+                        eager_saved_locals.len(),
+                        saved_parameters.len(),
+                        count,
+                    )
+                })
+                .unwrap_or_default();
         let homes: Vec<u8> = (0..count)
             .map(|home_index| {
                 if loop_assertion_strings.is_some() {
@@ -576,6 +588,8 @@ impl Generator {
                         5 => 29,
                         _ => unreachable!("loop assertion plan has six saved homes"),
                     };
+                    self.fresh_virtual_general_preferring(preferred)
+                } else if let Some(&preferred) = allocator_cursor_preferences.get(&home_index) {
                     self.fresh_virtual_general_preferring(preferred)
                 } else if let Some(preferred) = paired_eager_deferred_preference(
                     with_frame_array,
