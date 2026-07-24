@@ -611,6 +611,46 @@ mod tests {
     }
 
     #[test]
+    fn resolves_unique_qualified_methods_after_owner_layout_recovery_fails() {
+        let source = r#"
+            namespace api {
+                class Item {
+                public:
+                    void set(float value) { frame = value; }
+                    MissingLayout missing;
+                    float frame;
+                };
+            }
+            namespace home {
+                class Owner {
+                public:
+                    void update();
+                    api::Item* item;
+                };
+                void Owner::update() { item->set(1.0f); }
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let update = unit
+            .functions
+            .iter()
+            .find(|function| function.name == "update__Q24home5OwnerFv")
+            .expect("the caller should survive the incomplete callee layout");
+        assert!(matches!(
+            update.statements.as_slice(),
+            [Statement::Expression(Expression::Call { name, .. })]
+                if name == "set__Q23api4ItemFf"
+        ));
+    }
+
+    #[test]
     fn reuses_class_parameter_analysis_after_first_materialization() {
         let source = r#"
             template <typename T> class C { public: void set(T* pointer, int count); };
@@ -4802,6 +4842,44 @@ blr\n\
             } if matches!(operand.as_ref(), Expression::Variable(vtable)
                 if vtable == "__vt__Q23efx3Arg")
         )));
+    }
+
+    #[test]
+    fn value_initializes_scalar_constructor_members_to_zero() {
+        let source = r#"
+            namespace api { class Group; }
+            struct Controller {
+                Controller() : group(), count() {}
+                api::Group* group;
+                unsigned count;
+            };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let constructor = unit
+            .skipped_inline_definitions
+            .iter()
+            .find(|function| function.name == "__ct__10ControllerFv")
+            .expect("the constructor should be retained");
+        assert!(matches!(
+            constructor.statements.as_slice(),
+            [
+                Statement::Store {
+                    target: Expression::Member { offset: 0, .. },
+                    value: Expression::IntegerLiteral(0)
+                },
+                Statement::Store {
+                    target: Expression::Member { offset: 4, .. },
+                    value: Expression::IntegerLiteral(0)
+                }
+            ]
+        ));
     }
 
     #[test]
