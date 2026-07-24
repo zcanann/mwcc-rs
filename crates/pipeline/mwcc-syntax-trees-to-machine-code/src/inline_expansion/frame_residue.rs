@@ -26,19 +26,10 @@ pub(super) fn legacy_statement_body_frame_residue_bytes(
     function: &Function,
     substitutions: usize,
 ) -> usize {
-    if substitutions == 0 || !has_top_level_memory_mutation_and_call(&function.statements) {
+    if substitutions == 0 || !has_memory_mutation_before_surviving_call(&function.statements) {
         return 0;
     }
     substitutions * 8
-}
-
-fn has_top_level_memory_mutation_and_call(statements: &[Statement]) -> bool {
-    statements.iter().any(statement_contains_call)
-        && statements.iter().any(|statement| match statement {
-            Statement::Store { .. } => true,
-            Statement::Expression(expression) => expression_contains_memory_mutation(expression),
-            _ => false,
-        })
 }
 
 fn has_memory_mutation_before_surviving_call(statements: &[Statement]) -> bool {
@@ -154,60 +145,6 @@ fn expression_contains_call(expression: &Expression) -> bool {
     }
 }
 
-fn expression_contains_memory_mutation(expression: &Expression) -> bool {
-    match expression {
-        Expression::Assign { target, value } => {
-            !matches!(target.as_ref(), Expression::Variable(_))
-                || expression_contains_memory_mutation(value)
-        }
-        Expression::Comma { left, right } | Expression::Binary { left, right, .. } => {
-            expression_contains_memory_mutation(left)
-                || expression_contains_memory_mutation(right)
-        }
-        Expression::Conditional {
-            condition,
-            when_true,
-            when_false,
-            ..
-        } => {
-            expression_contains_memory_mutation(condition)
-                || expression_contains_memory_mutation(when_true)
-                || expression_contains_memory_mutation(when_false)
-        }
-        Expression::AggregateLiteral(elements) => {
-            elements.iter().any(expression_contains_memory_mutation)
-        }
-        Expression::Unary { operand, .. }
-        | Expression::Cast { operand, .. }
-        | Expression::BitFieldRead {
-            extracted: operand, ..
-        }
-        | Expression::IndexedUpdateValue { value: operand }
-        | Expression::Dereference { pointer: operand }
-        | Expression::AddressOf { operand }
-        | Expression::PostStep {
-            target: operand, ..
-        }
-        | Expression::Member { base: operand, .. }
-        | Expression::MemberAddress { base: operand, .. } => {
-            expression_contains_memory_mutation(operand)
-        }
-        Expression::Index { base, index } => {
-            expression_contains_memory_mutation(base)
-                || expression_contains_memory_mutation(index)
-        }
-        Expression::Call { .. }
-        | Expression::CallThrough { .. }
-        | Expression::VirtualCall { .. }
-        | Expression::ConstructedNew { .. }
-        | Expression::IntegerLiteral(_)
-        | Expression::FloatLiteral(_)
-        | Expression::StringLiteral(_)
-        | Expression::Variable(_)
-        | Expression::CompoundLiteral { .. } => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,39 +215,6 @@ mod tests {
             call("external"),
         ]);
         assert_eq!(legacy_statement_body_frame_residue_bytes(&function, 1), 8);
-    }
-
-    #[test]
-    fn retains_one_lane_for_a_top_level_statement_body_after_a_surviving_call() {
-        let function = function(vec![
-            call("external"),
-            Statement::Expression(Expression::Assign {
-                target: Box::new(Expression::Member {
-                    base: Box::new(Expression::Variable("memory".into())),
-                    offset: 0,
-                    member_type: Type::Int,
-                    index_stride: None,
-                }),
-                value: Box::new(Expression::IntegerLiteral(0)),
-            }),
-        ]);
-        assert_eq!(legacy_statement_body_frame_residue_bytes(&function, 1), 8);
-    }
-
-    #[test]
-    fn ignores_nested_mutation_from_an_unrelated_control_flow_call() {
-        let function = function(vec![Statement::If {
-            condition: Expression::Call {
-                name: "external".into(),
-                arguments: Vec::new(),
-            },
-            then_body: vec![Statement::Store {
-                target: Expression::Variable("memory".into()),
-                value: Expression::IntegerLiteral(0),
-            }],
-            else_body: Vec::new(),
-        }]);
-        assert_eq!(legacy_statement_body_frame_residue_bytes(&function, 1), 0);
     }
 
 }
