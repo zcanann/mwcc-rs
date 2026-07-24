@@ -303,8 +303,7 @@ impl Generator {
             s: 3,
             clear: 27,
         });
-        let fill_mask_latency = self.behavior.scheduler_enabled
-            && self.behavior.scheduling_model == SchedulingModel::PowerPc7400;
+        let fill_mask_latency = self.behavior.power_pc_7400_scheduling_enabled();
         if fill_mask_latency {
             self.output.instructions.push(Instruction::AddImmediate {
                 d: iteration,

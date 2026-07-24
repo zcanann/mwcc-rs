@@ -838,6 +838,11 @@ impl ActiveQuirk {
 }
 
 impl Behavior {
+    /// Whether instruction scheduling uses the PowerPC 7400 latency model.
+    pub fn power_pc_7400_scheduling_enabled(self) -> bool {
+        self.scheduler_enabled && self.scheduling_model == SchedulingModel::PowerPc7400
+    }
+
     /// Resolve every codegen decision for `config`, collapsing the build's
     /// profile and the flags into one flat set of values.
     pub fn resolve(config: &CompilerConfig) -> Self {
@@ -2144,6 +2149,9 @@ mod tests {
             Behavior::resolve(&config).scheduling_model,
             SchedulingModel::PowerPc7400
         );
+        assert!(!Behavior::resolve(&config).power_pc_7400_scheduling_enabled());
+        config.flags.scheduler_enabled = true;
+        assert!(Behavior::resolve(&config).power_pc_7400_scheduling_enabled());
     }
 
     #[test]

@@ -75,15 +75,20 @@ impl Generator {
             return Ok(false);
         }
 
-        self.output
-            .instructions
-            .push(Instruction::CompareLogicalWordImmediate {
-                a: count,
-                immediate: 0,
-            });
-        self.output
-            .instructions
-            .push(Instruction::MoveToCountRegister { s: count });
+        let compare_count = Instruction::CompareLogicalWordImmediate {
+            a: count,
+            immediate: 0,
+        };
+        let initialize_count = Instruction::MoveToCountRegister { s: count };
+        if self.behavior.power_pc_7400_scheduling_enabled() {
+            self.output
+                .instructions
+                .extend([initialize_count, compare_count]);
+        } else {
+            self.output
+                .instructions
+                .extend([compare_count, initialize_count]);
+        }
         self.output
             .instructions
             .push(Instruction::BranchConditionalToLinkRegister {
@@ -190,10 +195,12 @@ impl Generator {
         bit: u8,
         data_shift: Instruction,
     ) {
-        self.output
-            .instructions
-            .push(Instruction::Eqv { a: 0, s: 5, b: 0 });
-        self.output.instructions.push(data_shift);
+        let equivalence = Instruction::Eqv { a: 0, s: 5, b: 0 };
+        if self.behavior.power_pc_7400_scheduling_enabled() {
+            self.output.instructions.extend([data_shift, equivalence]);
+        } else {
+            self.output.instructions.extend([equivalence, data_shift]);
+        }
         self.output.instructions.push(Instruction::RotateAndMask {
             a: 0,
             s: 0,
