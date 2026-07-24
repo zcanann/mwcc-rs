@@ -4017,6 +4017,67 @@ mod tests {
     }
 
     #[test]
+    fn retains_a_shared_zero_across_two_vector_product_groups() {
+        let source = br#"
+            struct Vec3 { float x; float y; float z; };
+            struct CollData { char pad[340]; struct Vec3 normal; };
+            struct Fighter {
+                char pad0[116];
+                struct Vec3 anim_velocity;
+                struct Vec3 self_velocity;
+                char pad1[88];
+                float ground_acceleration;
+                char pad2[4];
+                float ground_velocity;
+                char pad3[1536];
+                struct CollData collision;
+            };
+            struct Object { char pad[44]; struct Fighter* user_data; };
+            struct Object* compiled(struct Object* object) {
+                struct Fighter* fighter = object->user_data;
+                struct Vec3* normal = &fighter->collision.normal;
+                fighter->anim_velocity.x = normal->y * fighter->ground_acceleration;
+                fighter->anim_velocity.y = -normal->x * fighter->ground_acceleration;
+                fighter->anim_velocity.z = 0;
+                fighter->self_velocity.x = normal->y * fighter->ground_velocity;
+                fighter->self_velocity.y = -normal->x * fighter->ground_velocity;
+                fighter->self_velocity.z = 0;
+                return object;
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.emit_mwcats = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "shared-vector-zero.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the repeated zero should stay live across the product group");
+        let expected_text = [
+            0x80, 0x83, 0x00, 0x2c, 0xc0, 0x04, 0x00, 0xe4, 0xc0, 0x24, 0x08, 0x48, 0xec,
+            0x01, 0x00, 0x32, 0xd0, 0x04, 0x00, 0x74, 0xc0, 0x24, 0x08, 0x44, 0xc0, 0x04,
+            0x00, 0xe4, 0xfc, 0x20, 0x08, 0x50, 0xec, 0x01, 0x00, 0x32, 0xd0, 0x04, 0x00,
+            0x78, 0xc0, 0x40, 0x00, 0x00, 0xd0, 0x44, 0x00, 0x7c, 0xc0, 0x24, 0x08, 0x48,
+            0xc0, 0x04, 0x00, 0xec, 0xec, 0x01, 0x00, 0x32, 0xd0, 0x04, 0x00, 0x80, 0xc0,
+            0x24, 0x08, 0x44, 0xc0, 0x04, 0x00, 0xec, 0xfc, 0x20, 0x08, 0x50, 0xec, 0x01,
+            0x00, 0x32, 0xd0, 0x04, 0x00, 0x84, 0xd0, 0x44, 0x00, 0x88, 0x4e, 0x80, 0x00,
+            0x20,
+        ];
+        assert!(object
+            .windows(expected_text.len())
+            .any(|bytes| bytes == expected_text));
+    }
+
+    #[test]
     fn command_line_pool_mode_is_last_wins() {
         let off = parse_invocation(&["-pool".into(), "off".into()]);
         assert!(!off.flags.pooling_enabled);

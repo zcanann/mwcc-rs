@@ -597,6 +597,7 @@ pub fn lower_function(
     // here. Apply final cross-owner schedules only when their complete measured
     // physical instruction region is present.
     generator.schedule_shared_right_float_product_pair();
+    generator.schedule_shared_float_store_literal(function);
 
     ordinal_accounting::apply(
         function,

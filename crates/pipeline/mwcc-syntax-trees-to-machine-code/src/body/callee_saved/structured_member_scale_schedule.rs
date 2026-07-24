@@ -27,12 +27,11 @@ impl Generator {
             .enumerate()
             .find_map(|(start, window)| {
                 (is_member_scale_pair(window)
-                    && same_relocated_literal(
+                    && schedule_relocations::same_relocated_value(
                         &self.output.relocations,
                         &self.output.constants,
                         start,
-                        0,
-                        4,
+                        start + 4,
                     ))
                 .then_some(start)
             })
@@ -116,69 +115,6 @@ impl Generator {
     }
 }
 
-fn same_relocated_literal(
-    relocations: &[mwcc_machine_code::Relocation],
-    constants: &[mwcc_machine_code::PoolConstant],
-    start: usize,
-    first: usize,
-    second: usize,
-) -> bool {
-    let first = relocations
-        .iter()
-        .find(|relocation| relocation.instruction_index == start + first);
-    let second = relocations
-        .iter()
-        .find(|relocation| relocation.instruction_index == start + second);
-    matches!((first, second), (Some(first), Some(second))
-        if first.kind == second.kind
-            && (same_relocation_target(&first.target, &second.target)
-                || same_constant_target(&first.target, &second.target, constants)))
-}
-
-fn same_constant_target(
-    left: &mwcc_machine_code::RelocationTarget,
-    right: &mwcc_machine_code::RelocationTarget,
-    constants: &[mwcc_machine_code::PoolConstant],
-) -> bool {
-    use mwcc_machine_code::RelocationTarget;
-    match (left, right) {
-        (RelocationTarget::Constant(left), RelocationTarget::Constant(right)) => {
-            constants.get(*left) == constants.get(*right)
-        }
-        (
-            RelocationTarget::ConstantWithAddend(left, left_addend),
-            RelocationTarget::ConstantWithAddend(right, right_addend),
-        ) => left_addend == right_addend && constants.get(*left) == constants.get(*right),
-        _ => false,
-    }
-}
-
-fn same_relocation_target(
-    left: &mwcc_machine_code::RelocationTarget,
-    right: &mwcc_machine_code::RelocationTarget,
-) -> bool {
-    use mwcc_machine_code::RelocationTarget;
-    match (left, right) {
-        (RelocationTarget::External(left), RelocationTarget::External(right)) => left == right,
-        (
-            RelocationTarget::ExternalWithAddend(left, left_addend),
-            RelocationTarget::ExternalWithAddend(right, right_addend),
-        ) => left == right && left_addend == right_addend,
-        (RelocationTarget::Constant(left), RelocationTarget::Constant(right)) => left == right,
-        (
-            RelocationTarget::ConstantWithAddend(left, left_addend),
-            RelocationTarget::ConstantWithAddend(right, right_addend),
-        ) => left == right && left_addend == right_addend,
-        (RelocationTarget::JumpTable, RelocationTarget::JumpTable)
-        | (RelocationTarget::AnonymousRodata, RelocationTarget::AnonymousRodata) => true,
-        (RelocationTarget::JumpTableAt(left), RelocationTarget::JumpTableAt(right))
-        | (
-            RelocationTarget::AnonymousRodataAt(left),
-            RelocationTarget::AnonymousRodataAt(right),
-        ) => left == right,
-        _ => false,
-    }
-}
 
 fn is_member_scale_pair(window: &[Instruction]) -> bool {
     matches!(window, [
