@@ -4747,6 +4747,44 @@ blr\n\
     }
 
     #[test]
+    fn value_initializes_scalar_constructor_members_to_zero() {
+        let source = r#"
+            namespace api { class Group; }
+            struct Controller {
+                Controller() : group(), count() {}
+                api::Group* group;
+                unsigned count;
+            };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let constructor = unit
+            .skipped_inline_definitions
+            .iter()
+            .find(|function| function.name == "__ct__10ControllerFv")
+            .expect("the constructor should be retained");
+        assert!(matches!(
+            constructor.statements.as_slice(),
+            [
+                Statement::Store {
+                    target: Expression::Member { offset: 0, .. },
+                    value: Expression::IntegerLiteral(0)
+                },
+                Statement::Store {
+                    target: Expression::Member { offset: 4, .. },
+                    value: Expression::IntegerLiteral(0)
+                }
+            ]
+        ));
+    }
+
+    #[test]
     fn synthesizes_the_vptr_for_an_implicit_polymorphic_base_constructor() {
         let source = r#"
             struct Base { virtual void act() = 0; };

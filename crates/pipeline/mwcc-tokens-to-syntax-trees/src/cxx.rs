@@ -4957,6 +4957,22 @@ impl Parser {
                 }
                 continue;
             };
+            // `member()` value-initializes a scalar subobject. For arithmetic
+            // and pointer fields that is an all-bits-zero store; it is not a
+            // constructor call and does not depend on the pointee being a
+            // complete class.
+            if arguments.is_empty() && !matches!(field.member_type, Type::Struct { .. }) {
+                statements.push(Statement::Store {
+                    target: Expression::Member {
+                        base: Box::new(Expression::Variable("this".to_string())),
+                        offset: field.offset,
+                        member_type: field.member_type,
+                        index_stride: None,
+                    },
+                    value: Expression::IntegerLiteral(0),
+                });
+                continue;
+            }
             let aggregate_copy = !matches!(field.member_type, Type::Struct { .. })
                 || matches!(
                     arguments.as_slice(),
