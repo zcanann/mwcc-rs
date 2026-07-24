@@ -265,6 +265,10 @@ pub struct CxxInlineOrdinalFacts {
     pub inline_definition_parameters: usize,
     /// Automatic declarators inside in-class inline definitions.
     pub inline_definition_local_declarators: usize,
+    /// Const-qualified subset of `inline_definition_local_declarators`.
+    /// Several frontend generations retain these folded declarations in the
+    /// anonymous analysis stream even when mutable automatics are free.
+    pub inline_definition_const_local_declarators: usize,
     /// User-declared nonvirtual destructors defined in class bodies.
     pub nonvirtual_destructors: usize,
     /// Class-valued temporary constructions split by destructor complexity.

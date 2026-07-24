@@ -1051,6 +1051,9 @@ fn compile(
         config.flags.read_only_global_addressing == mwcc_versions::GlobalAddressing::SmallData;
     let mut static_local_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
     let cxx_inline_facts = unit.cxx_inline_ordinal_facts;
+    let mutable_inline_local_declarators = cxx_inline_facts
+        .inline_definition_local_declarators
+        .saturating_sub(cxx_inline_facts.inline_definition_const_local_declarators);
     let cxx_inline_bump = cxx_inline_facts.class_definitions
         * usize::from(behavior.cxx_class_definition_label_bump)
         + cxx_inline_facts.inline_definitions
@@ -1059,8 +1062,10 @@ fn compile(
             * usize::from(behavior.deferred_cxx_inline_definition_label_bump)
         + cxx_inline_facts.inline_definition_parameters
             * usize::from(behavior.dropped_inline_parameter_label_weight)
-        + cxx_inline_facts.inline_definition_local_declarators
+        + mutable_inline_local_declarators
             * usize::from(behavior.dropped_inline_local_declaration_label_weight)
+        + cxx_inline_facts.inline_definition_const_local_declarators
+            * usize::from(behavior.dropped_inline_const_local_declaration_label_weight)
         + cxx_inline_facts.control_flow_labels
             * usize::from(behavior.cxx_inline_control_flow_label_weight)
         + cxx_inline_facts.nonvirtual_destructors
@@ -1109,8 +1114,10 @@ fn compile(
                 * usize::from(behavior.cxx_rtti_inline_definition_label_bump)
             + cxx_inline_facts.control_flow_labels
                 * usize::from(behavior.cxx_inline_control_flow_label_weight)
-            + cxx_inline_facts.inline_definition_local_declarators
+            + mutable_inline_local_declarators
                 * usize::from(behavior.dropped_inline_local_declaration_label_weight)
+            + cxx_inline_facts.inline_definition_const_local_declarators
+                * usize::from(behavior.dropped_inline_const_local_declaration_label_weight)
             + cxx_inline_facts.nonvirtual_destructors
                 * usize::from(behavior.cxx_nonvirtual_destructor_label_bump)
             + cxx_inline_facts.trivial_class_temporary_constructions

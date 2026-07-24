@@ -1420,6 +1420,12 @@ impl Parser {
                                     &self.tokens,
                                     body_start - 1,
                                 );
+                            self.cxx_inline_ordinal_facts
+                                .inline_definition_const_local_declarators +=
+                                crate::inline_body_analysis::const_local_declarators(
+                                    &self.tokens,
+                                    body_start - 1,
+                                );
                             self.cxx_inline_ordinal_facts.control_flow_labels +=
                                 inline_control_flow_labels(&self.tokens[body_start..index]);
                             self.cxx_inline_ordinal_facts.direct_calls += self.tokens
@@ -1542,6 +1548,9 @@ impl Parser {
             facts.inline_definition_parameters;
         self.cxx_inline_ordinal_facts
             .inline_definition_local_declarators += facts.inline_definition_local_declarators;
+        self.cxx_inline_ordinal_facts
+            .inline_definition_const_local_declarators +=
+            facts.inline_definition_const_local_declarators;
         self.cxx_inline_ordinal_facts.nonvirtual_destructors += facts.nonvirtual_destructors;
         self.cxx_inline_ordinal_facts.virtual_destructors += facts.virtual_destructors;
         self.cxx_inline_ordinal_facts.direct_calls += facts.direct_calls;

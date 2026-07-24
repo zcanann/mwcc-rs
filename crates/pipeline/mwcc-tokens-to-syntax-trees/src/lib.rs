@@ -3268,6 +3268,7 @@ blr\n\
                 inline_definitions: 4,
                 inline_definition_parameters: 0,
                 inline_definition_local_declarators: 0,
+                inline_definition_const_local_declarators: 0,
                 nonvirtual_destructors: 0,
                 trivial_class_temporary_constructions: 0,
                 nontrivial_class_temporary_constructions: 0,
@@ -3392,6 +3393,40 @@ blr\n\
         .unwrap();
 
         assert_eq!(unit.cxx_inline_ordinal_facts.control_flow_labels, 2);
+    }
+
+    #[test]
+    fn distinguishes_const_locals_inside_dropped_in_class_definitions() {
+        let source = r#"
+            class Values {
+            public:
+                int total() {
+                    int mutable_value = 1;
+                    const int folded_value = 2;
+                    return mutable_value + folded_value;
+                }
+            };
+            int probe() { return 0; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.cxx_inline_ordinal_facts
+                .inline_definition_local_declarators,
+            2
+        );
+        assert_eq!(
+            unit.cxx_inline_ordinal_facts
+                .inline_definition_const_local_declarators,
+            1
+        );
     }
 
     #[test]
