@@ -4,7 +4,7 @@ Last fresh holdout: 2026-07-23 22:53 UTC at compiler commit `c0962f28`
 
 Latest paired checkpoint: 2026-07-23 17:44 UTC at compiler commit `869596ad`
 
-Latest targeted checkpoint: 2026-07-24 03:45 UTC at compiler commit `839b203c`
+Latest targeted checkpoint: 2026-07-24 04:03 UTC at compiler commit `c53de9bf`
 
 Latest measured compiler + harness fingerprint: `4ca51cd13c66eca020e6f691933c6075f99debec63ec5d6ba3a09853753c4bbe:121d3ae4f26965d7109e24043dcb96e73b0ab99435ff0da8079c505e14ff84a1`
 
@@ -76,12 +76,14 @@ This validates the failure-only edit loop: representative audits are useful
 periodic measurements, but recompiling them continuously would spend most of
 its time on known giant-TU timeouts.
 
-Post-holdout compiler work through commit `839b203c` has not been run over a
+Post-holdout compiler work through commit `c53de9bf` has not been run over a
 new unbiased sample, so it does not change the 7.8% estimate above. On the
 targeted Melee `src/melee/ft/ftcommon.c` diagnostic, the latest checkpoint moved
-relocation-aware parity from 28/109 to 68/109 functions and from 996/15,340 to
-5,888/15,340 reference code bytes. Paired movement was +40/-0 functions and
-+4,892 exact bytes. The gains were `ftCommon_ClampAirDrift`, `ftCommon_FallBasic`,
+relocation-aware parity from 28/109 to 69/109 functions and from 996/15,340 to
+6,212/15,340 reference code bytes. Paired movement was +41/-0 functions and
++5,216 exact bytes. All 69 functions that emitted in this diagnostic were
+relocation-aware exact; the other 40 remained compile/defer coverage gaps. The
+gains were `ftCommon_ClampAirDrift`, `ftCommon_FallBasic`,
 `ftCommon_CalcHitlag`, `ftCommon_8007DB58`, `ftCommon_SetAccessory`,
 `ftCommon_8007FF74`, `ftCommon_8007DB24`, `ftCommon_8007D28C`,
 `ftCo_GetLStickAngle`, `ftCo_GetCStickAngle`, `ftCommon_8007D780`,
@@ -112,8 +114,9 @@ structured two-arm friction owner then made `ftCommon_8007CF58` and
 `ftCommon_8007D050` exact. Scheduling the full friction-bounded acceleration
 region made `ftCommon_8007D174` exact. Generalizing that semantic owner to keep
 a member-backed velocity live through the ladder then made
-`ftCommon_8007C98C` exact. This is evidence of local forward movement, not a
-corpus-level percentage.
+`ftCommon_8007C98C` exact. Scheduling the complete three-guard joystick-count
+transaction made `ftCommon_8008031C` exact. This is evidence of local forward
+movement, not a corpus-level percentage.
 
 ## Historical baseline: fresh current-population holdout
 
