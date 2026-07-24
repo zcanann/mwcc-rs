@@ -27,6 +27,7 @@ use super::structured_frame_assignment::{
 use super::structured_frame_entry::structured_dense_frame_entry_index;
 use super::structured_home_layout::{
     dense_eager_deferred_preferences, dense_eager_home_preference,
+    paired_eager_deferred_preference,
 };
 use super::structured_liveness::{
     read_after_possible_call, read_after_possible_call_in_return,
@@ -452,7 +453,15 @@ impl Generator {
         );
         let homes: Vec<u8> = (0..count)
             .map(|home_index| {
-                if dense_frame && !eager_saved_locals.is_empty() {
+                if let Some(preferred) = paired_eager_deferred_preference(
+                    with_frame_array,
+                    eager_saved_locals.len(),
+                    saved_parameters.len(),
+                    deferred_home_plan.group_count,
+                    home_index,
+                ) {
+                    self.fresh_virtual_general_preferring(preferred)
+                } else if dense_frame && !eager_saved_locals.is_empty() {
                     let preferred = dense_deferred_preferences
                         .get(&home_index)
                         .copied()
@@ -674,6 +683,12 @@ impl Generator {
             // bytes, but creates no retained value-table lane. Its logical
             // frame already accounts for the array and every saved home.
             LegacyCalleeSavedFrameLayout::PreserveLogicalSize
+        } else if !with_frame_array
+            && eager_saved_locals.len() == 1
+            && saved_parameters.is_empty()
+            && deferred_home_plan.group_count == 1
+        {
+            LegacyCalleeSavedFrameLayout::RetainEagerLocalLane
         } else if is_plain_short_circuit_call_if(function) {
             // A single call-bearing conjunction has no retained local table.
             // Its saved entry values therefore use the ordinary value-origin
@@ -747,7 +762,11 @@ impl Generator {
             && saved_parameters.is_empty()
             && deferred_home_plan.group_count == 0
             && eager_saved_locals.len() >= 2;
+        let paired_eager_deferred_homes = self.legacy_callee_saved_frame_layout
+            == LegacyCalleeSavedFrameLayout::RetainEagerLocalLane
+            && count == 2;
         let batched_saved_home_stores = unused_array_two_homes
+            || paired_eager_deferred_homes
             || unused_array_eager_homes
             || saved_home_stores_precede_initialization(
                 self.behavior.frame_convention,

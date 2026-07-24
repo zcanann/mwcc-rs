@@ -168,6 +168,7 @@ pub(crate) enum LegacyCalleeSavedFrameLayout {
     #[default]
     InferFromValueOrigin,
     RetainEntryParameterTable,
+    RetainEagerLocalLane,
     ReserveForwardedParameterLane,
     PreserveLogicalSize,
 }

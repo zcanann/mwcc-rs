@@ -279,6 +279,11 @@ impl Generator {
                                 | Instruction::LoadHalfwordAlgebraicIndexed { .. }
                         )
                 });
+        let loaded_home_before_call = self.output.instructions[..first_call]
+            .iter()
+            .any(|instruction| {
+                matches!(instruction, Instruction::LoadWord { d, .. } if physical_saved.contains(d))
+            });
         let promoted_parameter_count = self.output.instructions[..first_call]
             .iter()
             .filter(|instruction| {
@@ -290,6 +295,8 @@ impl Generator {
             == LegacyCalleeSavedFrameLayout::PreserveLogicalSize;
         let reserve_forwarded_parameter_lane = self.legacy_callee_saved_frame_layout
             == LegacyCalleeSavedFrameLayout::ReserveForwardedParameterLane;
+        let retain_eager_local_lane = self.legacy_callee_saved_frame_layout
+            == LegacyCalleeSavedFrameLayout::RetainEagerLocalLane;
         // Build 163 keeps dead call-initializer results in its frame-pressure
         // accounting even after eliminating the values. Only that erased-local
         // case exposes the pairwise lane count; ordinary promoted values retain
@@ -309,6 +316,11 @@ impl Generator {
                 self.entry_parameter_words.div_ceil(2).max(1)
             } else if materialized_home_before_call {
                 1
+            } else if retain_eager_local_lane
+                && physical_saved.len() == 2
+                && loaded_home_before_call
+            {
+                1
             } else {
                 usize::from(reserve_forwarded_parameter_lane)
             }
@@ -319,6 +331,11 @@ impl Generator {
             {
                 self.entry_parameter_words.div_ceil(2).max(1)
             } else if materialized_home_before_call {
+                1
+            } else if retain_eager_local_lane
+                && physical_saved.len() == 2
+                && loaded_home_before_call
+            {
                 1
             } else {
                 usize::from(reserve_forwarded_parameter_lane)
@@ -343,7 +360,15 @@ impl Generator {
                     && !slot.is_array
                     && matches!(slot.value_type, Type::Struct { size: 12, .. })
             });
-        let retained_frame_bytes = if shares_inline_aggregate_lane {
+        // A scalarized statement-body inline uses the eager local's retained
+        // lane as its own optimizer residue. The provenance is recorded twice
+        // (value origin and inline expansion), but represents one physical
+        // eight-byte lane, just like the frame-resident aggregate case above.
+        let shares_inline_eager_lane = retain_eager_local_lane
+            && entry_lane_bytes == 8
+            && inline_lane_bytes == 8
+            && physical_saved.len() == 2;
+        let retained_frame_bytes = if shares_inline_aggregate_lane || shares_inline_eager_lane {
             entry_lane_bytes.max(inline_lane_bytes)
         } else {
             entry_lane_bytes.saturating_add(inline_lane_bytes)
@@ -459,6 +484,24 @@ impl Generator {
                     a: source,
                     immediate: 0,
                 };
+            }
+        }
+
+        // A retained eager-local lane gives the entry-loaded object the lower
+        // home while a later call result occupies the higher one. Build 163
+        // materializes the eager object into r3 with `addi`, distinguishing
+        // this collision-resolved value from an ordinary forwarding move.
+        if retain_eager_local_lane && physical_saved.len() == 2 {
+            for instruction in &mut self.output.instructions[..first_call] {
+                if let Instruction::Or { a: 3, s, b } = *instruction {
+                    if s == b && physical_saved.contains(&s) {
+                        *instruction = Instruction::AddImmediate {
+                            d: 3,
+                            a: s,
+                            immediate: 0,
+                        };
+                    }
+                }
             }
         }
 

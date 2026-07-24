@@ -9,6 +9,24 @@
 use super::structured_locals::DeferredSavedHomePlan;
 use super::structured_parameter_home_reuse::StructuredParameterHomeReuse;
 
+/// A linkage-first body with one entry-loaded local and one later call result
+/// assigns the long-lived entry value to r30 and the later value to r31. This
+/// is the compact two-home analogue of the dense lifetime-class layout below.
+pub(super) fn paired_eager_deferred_preference(
+    with_frame_array: bool,
+    eager_count: usize,
+    parameter_count: usize,
+    deferred_count: usize,
+    home_index: usize,
+) -> Option<u8> {
+    (!with_frame_array
+        && eager_count == 1
+        && parameter_count == 0
+        && deferred_count == 1
+        && home_index < 2)
+        .then_some(if home_index == 0 { 30 } else { 31 })
+}
+
 pub(super) fn dense_eager_deferred_preferences(
     eager_count: usize,
     parameter_count: usize,
@@ -144,6 +162,13 @@ pub(super) fn dense_eager_home_preference(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pairs_one_eager_local_below_one_deferred_result() {
+        assert_eq!(paired_eager_deferred_preference(false, 1, 0, 1, 0), Some(30));
+        assert_eq!(paired_eager_deferred_preference(false, 1, 0, 1, 1), Some(31));
+        assert_eq!(paired_eager_deferred_preference(true, 1, 0, 1, 0), None);
+    }
 
     #[test]
     fn lays_out_mixed_dense_home_classes_without_overlap() {

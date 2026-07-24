@@ -26,7 +26,13 @@ pub(super) fn legacy_statement_body_frame_residue_bytes(
     function: &Function,
     substitutions: usize,
 ) -> usize {
-    if substitutions == 0 || !has_memory_mutation_before_surviving_call(&function.statements) {
+    // `substitutions` is parser provenance for an inlined statement body, so
+    // its mutation need not precede the caller's first surviving call. A
+    // setter expanded after an earlier call still leaves its allocator lane;
+    // call-free bodies need no non-leaf frame residue.
+    if substitutions == 0
+        || !function.statements.iter().any(statement_contains_call)
+    {
         return 0;
     }
     substitutions * 8
@@ -215,5 +221,26 @@ mod tests {
             call("external"),
         ]);
         assert_eq!(legacy_statement_body_frame_residue_bytes(&function, 1), 8);
+    }
+
+    #[test]
+    fn retains_one_lane_for_a_statement_body_after_an_earlier_call() {
+        let function = function(vec![
+            call("external"),
+            Statement::Store {
+                target: Expression::Variable("memory".into()),
+                value: Expression::IntegerLiteral(0),
+            },
+        ]);
+        assert_eq!(legacy_statement_body_frame_residue_bytes(&function, 1), 8);
+    }
+
+    #[test]
+    fn omits_statement_body_residue_in_a_call_free_function() {
+        let function = function(vec![Statement::Store {
+            target: Expression::Variable("memory".into()),
+            value: Expression::IntegerLiteral(0),
+        }]);
+        assert_eq!(legacy_statement_body_frame_residue_bytes(&function, 1), 0);
     }
 }
