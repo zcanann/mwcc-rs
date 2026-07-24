@@ -280,6 +280,21 @@ impl Generator {
         return_type: Type,
     ) -> Compilation<()> {
         let (options, condition_bit) = self.emit_condition_test(condition)?;
+
+        // A bare void return has no arm body to schedule.  MWCC flips the
+        // branch-if-false sense produced by `emit_condition_test` and targets
+        // LR directly, leaving the continuation as fall-through:
+        // `if (count >= 0) return; count = 0;` -> `bgelr; li; stw; blr`.
+        if matches!(then_body, [Statement::Return(None)]) {
+            self.output
+                .instructions
+                .push(Instruction::BranchConditionalToLinkRegister {
+                    options: options ^ 8,
+                    condition_bit,
+                });
+            return Ok(());
+        }
+
         let branch_index = self.output.instructions.len();
         self.output
             .instructions

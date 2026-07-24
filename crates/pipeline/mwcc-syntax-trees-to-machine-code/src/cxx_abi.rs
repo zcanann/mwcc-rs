@@ -1174,14 +1174,13 @@ pub(crate) fn lower_virtual_constructor(
     output
         .instructions
         .push(Instruction::load_immediate_shifted(4, 0));
-    let value_register = if scalar_stores.is_empty() { 0 } else { 4 };
     output.instructions.push(Instruction::AddImmediate {
-        d: value_register,
+        d: 0,
         a: 4,
         immediate: 0,
     });
     output.instructions.push(Instruction::StoreWord {
-        s: value_register,
+        s: 0,
         a: 3,
         offset: vptr_offset,
     });
