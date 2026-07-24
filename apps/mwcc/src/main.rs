@@ -2299,6 +2299,37 @@ mod tests {
     }
 
     #[test]
+    fn materializes_a_wide_mask_beside_a_member_load() {
+        let source = br#"
+            struct Fighter {
+                char pad0[1640];
+                unsigned int input;
+            };
+            unsigned int test(struct Fighter* fighter) {
+                return fighter->input & 0x80000f00u;
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.emit_mwcats = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "wide-mask-member.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("a computed mask should occupy a virtual while the member base remains live");
+        assert!(!object.is_empty());
+    }
+
+    #[test]
     fn schedules_in_place_float_updates_with_their_trailing_clamps() {
         let source = br#"
             struct Body { float velocity; };

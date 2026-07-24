@@ -312,12 +312,12 @@ impl Generator {
                 }
             }
             (Some((base, offset, member_type)), None) => {
-                let right_register = self.wide_leaf_register(right)?;
+                let right_register = self.place_located_sibling(right, base)?;
                 self.emit_member_load(base, offset, member_type, None, GENERAL_SCRATCH)?;
                 Operands::ordered(GENERAL_SCRATCH, right_register)
             }
             (None, Some((base, offset, member_type))) => {
-                let left_register = self.wide_leaf_register(left)?;
+                let left_register = self.place_located_sibling(left, base)?;
                 self.emit_member_load(base, offset, member_type, None, GENERAL_SCRATCH)?;
                 Operands::ordered(left_register, GENERAL_SCRATCH)
             }
@@ -568,6 +568,28 @@ impl Generator {
             ));
         }
         self.general_register_of_leaf(operand)
+    }
+
+    /// Keep a register-resident wide leaf in place, or materialize a computed
+    /// sibling while the address inputs of a located operand remain live.
+    ///
+    /// Member loads consume the scratch register, so a literal or expression
+    /// beside one must use a virtual register.  Reserving the member base lets
+    /// the allocator coalesce that virtual without destroying the address that
+    /// the following load still needs.
+    fn place_located_sibling(
+        &mut self,
+        operand: &Expression,
+        located: &Expression,
+    ) -> Compilation<u8> {
+        if matches!(operand, Expression::Variable(_)) && !self.is_narrow_leaf(operand) {
+            return self.general_register_of_leaf(operand);
+        }
+        self.with_reserved_inputs(located, |generator| {
+            let register = generator.fresh_virtual_general();
+            generator.evaluate_general(operand, register)?;
+            Ok(register)
+        })
     }
 
     /// Run `body` with the registers read by `expression` reserved, restoring the
