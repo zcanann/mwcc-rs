@@ -41,6 +41,7 @@ mod fixed_address_object_flush;
 mod fixed_port_bitfield;
 mod fixed_port_indexed_bitfield;
 mod fixed_port_replay_update;
+mod frame_vector_accumulation_schedule;
 mod guards_ifs;
 mod global_struct_member_search;
 mod ground_knockback_projection_schedule;
