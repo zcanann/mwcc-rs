@@ -2534,6 +2534,9 @@ impl Parser {
                 } else {
                     None
                 };
+            if self.cplusplus && name == "operator" {
+                name = crate::cxx::parse_arithmetic_operator_name(self)?;
+            }
             let namespace_scope = qualified_scope
                 .as_ref()
                 .filter(|scope| self.cxx_namespaces.contains(scope.as_str()))
@@ -3110,9 +3113,16 @@ impl Parser {
                         } else {
                             parameter_type
                         };
-                        if let Some(tag) = &struct_tag {
-                            if !name.is_empty() {
+                        if !name.is_empty() {
+                            if let Some(tag) = &struct_tag {
                                 self.variable_structs.insert(name.clone(), tag.clone());
+                            } else {
+                                // Parser clones reuse the declaration
+                                // environment while recovering discarded
+                                // inlines. A same-named scalar parameter must
+                                // not inherit an aggregate identity from an
+                                // earlier function.
+                                self.variable_structs.remove(&name);
                             }
                         }
                         if is_reference && !name.is_empty() {

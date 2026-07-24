@@ -4602,6 +4602,54 @@ blr\n\
     }
 
     #[test]
+    fn retains_arithmetic_operator_inline_definitions_under_abi_names() {
+        let source = r#"
+            struct Value {
+                Value(const float& source) { value = source; }
+                float value;
+            };
+            inline Value operator*(const Value& value, const float& scale) {
+                return Value(value.value * scale);
+            }
+            inline Value operator+(const Value& left, const Value& right) {
+                return Value(left.value + right.value);
+            }
+            inline Value operator-(const Value& value) {
+                return Value(-value.value);
+            }
+            inline Value operator/(const Value& value, const float& scale) {
+                return value * (1.0f / scale);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let names = unit
+            .skipped_inline_definitions
+            .iter()
+            .map(|function| function.name.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert!(names.contains("__ml__FRC5ValueRCf"));
+        assert!(names.contains("__pl__FRC5ValueRC5Value"));
+        assert!(names.contains("__mi__FRC5Value"));
+        assert!(names.contains("__dv__FRC5ValueRCf"));
+        let division = unit
+            .skipped_inline_definitions
+            .iter()
+            .find(|function| function.name == "__dv__FRC5ValueRCf")
+            .unwrap();
+        assert!(matches!(
+            division.return_expression,
+            Some(Expression::Call { ref name, .. }) if name == "__ml__FRC5ValueRCf"
+        ));
+    }
+
+    #[test]
     fn constructor_installs_its_vptr_before_default_constructing_members() {
         let source = r#"
             struct Member { Member(); int value; };
