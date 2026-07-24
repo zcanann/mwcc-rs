@@ -213,23 +213,32 @@ impl Generator {
         }
         self.emit_indirect_branch_and_link(12);
         if let Some(destination) = destination {
-            let result = if float_result {
-                Eabi::float_result().number
-            } else {
-                Eabi::general_result().number
-            };
-            if destination != result {
-                self.output.instructions.push(if float_result {
-                    Instruction::FloatMove {
-                        d: destination,
-                        b: result,
-                    }
-                } else {
-                    Instruction::move_register(destination, result)
-                });
-            }
+            self.emit_call_result_copy(destination, float_result);
         }
         Ok(())
+    }
+
+    fn emit_call_result_copy(&mut self, destination: u8, float_result: bool) {
+        let result = if float_result {
+            Eabi::float_result().number
+        } else {
+            Eabi::general_result().number
+        };
+        if destination == result {
+            return;
+        }
+        if float_result {
+            self.output.instructions.push(Instruction::FloatMove {
+                d: destination,
+                b: result,
+            });
+        } else if destination >= 14 {
+            self.emit_integer_materialization_copy(destination, result);
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::move_register(destination, result));
+        }
     }
 
     /// Emit a direct call. Arguments are placed in the EABI argument registers,
@@ -250,21 +259,7 @@ impl Generator {
             self.emit_arguments(arguments, name)?;
             self.emit_indirect_branch_and_link(12);
             if let Some(destination) = destination {
-                let result = if float_result {
-                    Eabi::float_result().number
-                } else {
-                    Eabi::general_result().number
-                };
-                if destination != result {
-                    self.output.instructions.push(if float_result {
-                        Instruction::FloatMove {
-                            d: destination,
-                            b: result,
-                        }
-                    } else {
-                        Instruction::move_register(destination, result)
-                    });
-                }
+                self.emit_call_result_copy(destination, float_result);
             }
             return Ok(());
         }
@@ -277,21 +272,7 @@ impl Generator {
             self.emit_global_load_value(name, 12)?;
             self.emit_indirect_branch_and_link(12);
             if let Some(destination) = destination {
-                let result = if float_result {
-                    Eabi::float_result().number
-                } else {
-                    Eabi::general_result().number
-                };
-                if destination != result {
-                    self.output.instructions.push(if float_result {
-                        Instruction::FloatMove {
-                            d: destination,
-                            b: result,
-                        }
-                    } else {
-                        Instruction::move_register(destination, result)
-                    });
-                }
+                self.emit_call_result_copy(destination, float_result);
             }
             return Ok(());
         }
@@ -320,21 +301,7 @@ impl Generator {
             target: name.to_string(),
         });
         if let Some(destination) = destination {
-            let result = if float_result {
-                Eabi::float_result().number
-            } else {
-                Eabi::general_result().number
-            };
-            if destination != result {
-                self.output.instructions.push(if float_result {
-                    Instruction::FloatMove {
-                        d: destination,
-                        b: result,
-                    }
-                } else {
-                    Instruction::move_register(destination, result)
-                });
-            }
+            self.emit_call_result_copy(destination, float_result);
         }
         Ok(())
     }
