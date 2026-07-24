@@ -4573,6 +4573,53 @@ blr\n\
     }
 
     #[test]
+    fn retains_a_direct_constructor_for_a_function_local_static() {
+        let source = r#"
+            namespace fx {
+                struct Source {
+                    unsigned value;
+                };
+                struct Pixel {
+                    Pixel(unsigned value);
+                    Pixel(const Source& value);
+                    ~Pixel();
+                    unsigned value;
+                };
+            }
+            void use() {
+                static fx::Pixel pixel(3);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let [local] = unit.functions[0].locals.as_slice() else {
+            panic!("expected one local");
+        };
+        assert!(local.is_static);
+        assert!(matches!(
+            local.initializer.as_ref(),
+            Some(Expression::Call { name, arguments })
+                if name == "__ct__Q22fx5PixelFUi"
+                    && matches!(
+                        arguments.as_slice(),
+                        [
+                            Expression::AddressOf { operand },
+                            Expression::IntegerLiteral(3)
+                        ] if matches!(
+                            operand.as_ref(),
+                            Expression::Variable(variable) if variable == "pixel"
+                        )
+                    )
+        ), "{:?}", local.initializer);
+    }
+
+    #[test]
     fn retains_implicit_default_constructor_calls_for_automatic_objects() {
         let source = r#"
             namespace fx {

@@ -75,6 +75,22 @@ pub(crate) fn arithmetic_operator_name(operator: BinaryOperator) -> Option<&'sta
     }
 }
 
+fn is_cxx_arithmetic_type(value_type: Type) -> bool {
+    matches!(
+        value_type,
+        Type::Int
+            | Type::UnsignedInt
+            | Type::Char
+            | Type::UnsignedChar
+            | Type::Short
+            | Type::UnsignedShort
+            | Type::Float
+            | Type::Double
+            | Type::LongLong
+            | Type::UnsignedLongLong
+    )
+}
+
 /// The C++-only information that a plain C struct layout cannot retain.
 /// Declaration order controls constructor initialization order, while base
 /// names distinguish a base initializer from an identically shaped member.
@@ -1111,6 +1127,30 @@ impl Parser {
             .collect();
         match exact.as_slice() {
             [method] => Ok(Some(method.mangled.clone())),
+            [] => {
+                // After exact matching, admit only the small conversion class
+                // whose ranking is unambiguous in the modeled type system.
+                // This distinguishes `C(unsigned)` from `C(const Aggregate&)`
+                // for an integer literal without pretending to rank two
+                // competing arithmetic conversions.
+                let viable = candidates
+                    .iter()
+                    .filter(|method| {
+                        self.cxx_arguments_have_unique_scalar_conversions(
+                            &method.parameters,
+                            &method.cxx_parameters,
+                            method.variadic,
+                            arguments,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                match viable.as_slice() {
+                    [method] => Ok(Some(method.mangled.clone())),
+                    _ => Err(Diagnostic::error(format!(
+                        "C++ function call '{key}' is ambiguous (roadmap)"
+                    ))),
+                }
+            }
             _ => Err(Diagnostic::error(format!(
                 "C++ function call '{key}' is ambiguous (roadmap)"
             ))),
@@ -1142,6 +1182,37 @@ impl Parser {
             }
             self.cxx_expression_type(argument)
                 .is_none_or(|actual| parameters.get(index) == Some(&actual))
+        })
+    }
+
+    fn cxx_arguments_have_unique_scalar_conversions(
+        &self,
+        parameters: &[Type],
+        cxx_parameters: &[CxxParameterType],
+        variadic: bool,
+        arguments: &[Expression],
+    ) -> bool {
+        arguments.iter().enumerate().all(|(index, argument)| {
+            let Some(parameter) = cxx_parameters.get(index) else {
+                return variadic;
+            };
+            if let Some(expected) = parameter.qualified_name.as_deref() {
+                return self.cxx_expression_struct_tag(argument).is_some_and(|actual| {
+                    expected == actual
+                        || expected.rsplit("::").next() == actual.rsplit("::").next()
+                });
+            }
+            if self.cxx_expression_struct_tag(argument).is_some() {
+                return false;
+            }
+            let (Some(expected), Some(actual)) = (
+                parameters.get(index).copied(),
+                self.cxx_expression_type(argument),
+            ) else {
+                return false;
+            };
+            expected == actual
+                || (is_cxx_arithmetic_type(expected) && is_cxx_arithmetic_type(actual))
         })
     }
 
@@ -4184,6 +4255,42 @@ impl Parser {
                     ))
                 }),
         }
+    }
+
+    /// Parse `object(args...)` after a local class-object declarator and retain
+    /// the constructor invocation with its implicit placement address.
+    ///
+    /// Block declarations emit the returned call at the declaration position.
+    /// A function-local static stores it as its dynamic initializer so later
+    /// lowering can add the once guard and destructor registration without
+    /// mistaking the source argument for a constant data initializer.
+    pub(crate) fn parse_direct_local_constructor_call(
+        &mut self,
+        class_name: &str,
+        object_name: &str,
+    ) -> Compilation<Expression> {
+        self.expect(Token::ParenOpen)?;
+        let mut arguments = Vec::new();
+        if *self.peek() != Token::ParenClose {
+            loop {
+                arguments.push(self.expression()?);
+                if !self.eat_keyword(Token::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect(Token::ParenClose)?;
+        let constructor = self.resolve_placement_constructor(class_name, &arguments)?;
+        let arguments =
+            self.lower_placement_constructor_arguments(class_name, &constructor, arguments);
+        let mut call_arguments = vec![Expression::AddressOf {
+            operand: Box::new(Expression::Variable(object_name.to_owned())),
+        }];
+        call_arguments.extend(arguments);
+        Ok(Expression::Call {
+            name: constructor,
+            arguments: call_arguments,
+        })
     }
 
     /// Materialize the compiler-generated default constructor needed by a

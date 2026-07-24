@@ -796,35 +796,23 @@ impl Parser {
                     })
                     && !matches!(self.peek(), Token::Equals | Token::BraceOpen);
                 let constructor_call = if explicit_constructor || implicit_default_constructor {
-                    let mut arguments = Vec::new();
                     if explicit_constructor {
-                        self.expect(Token::ParenOpen)?;
-                        if *self.peek() != Token::ParenClose {
-                            loop {
-                                arguments.push(self.expression()?);
-                                if !self.eat_keyword(Token::Comma) {
-                                    break;
-                                }
-                            }
-                        }
-                        self.expect(Token::ParenClose)?;
+                        Some(Statement::Expression(
+                            self.parse_direct_local_constructor_call(
+                                struct_tag.as_deref().expect("checked above"),
+                                &name,
+                            )?,
+                        ))
+                    } else {
+                        let class_name = struct_tag.as_deref().expect("checked above");
+                        let constructor = self.resolve_placement_constructor(class_name, &[])?;
+                        Some(Statement::Expression(Expression::Call {
+                            name: constructor,
+                            arguments: vec![Expression::AddressOf {
+                                operand: Box::new(Expression::Variable(name.clone())),
+                            }],
+                        }))
                     }
-                    let class_name = struct_tag.as_deref().expect("checked above");
-                    let constructor =
-                        self.resolve_placement_constructor(class_name, &arguments)?;
-                    let arguments = self.lower_placement_constructor_arguments(
-                        class_name,
-                        &constructor,
-                        arguments,
-                    );
-                    let mut call_arguments = vec![Expression::AddressOf {
-                        operand: Box::new(Expression::Variable(name.clone())),
-                    }];
-                    call_arguments.extend(arguments);
-                    Some(Statement::Expression(Expression::Call {
-                        name: constructor,
-                        arguments: call_arguments,
-                    }))
                 } else {
                     None
                 };

@@ -13,7 +13,9 @@ pub struct Parameter {
 
 /// A local variable declaration: `type name [= expression];`. The initializer is
 /// `None` for an uninitialized local (`int x;`), whose value comes from a later
-/// assignment.
+/// assignment. For a dynamically initialized function-local static class
+/// object, it is the constructor call that guarded-static lowering must execute
+/// once; it is not a constant data image.
 #[derive(Debug, Clone)]
 pub struct LocalDeclaration {
     pub declared_type: Type,
