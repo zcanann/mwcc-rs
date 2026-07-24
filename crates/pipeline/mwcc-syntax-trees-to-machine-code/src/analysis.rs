@@ -1685,6 +1685,13 @@ pub(crate) fn has_repeated_nonleaf_subexpression(expression: &Expression) -> boo
 /// Collect every Binary/Unary COMPUTATION node in the tree (recursing through loads, casts, calls,
 /// etc. to find nested computations, but not counting those non-arithmetic nodes themselves).
 fn collect_computed_subexpressions<'a>(expression: &'a Expression, into: &mut Vec<&'a Expression>) {
+    // Constant arithmetic is folded as a unit before instruction selection.
+    // Macro-expanded bit packing contains many repeated shapes such as
+    // `(1 << 8) - 1`; those never become runtime common sub-expressions and
+    // must not trigger the CSE guard.
+    if constant_value(expression).is_some() {
+        return;
+    }
     match expression {
         Expression::CompoundLiteral { .. } => {}
         Expression::CallThrough { target, arguments } => {
@@ -2238,6 +2245,29 @@ mod tests {
         // c + a*b: c (1) lighter than a*b (2); the multiply is evaluated first.
         let product = mul(var("a"), var("b"));
         assert!(register_need(&product) > register_need(&var("c")));
+    }
+
+    #[test]
+    fn repeated_constant_arithmetic_does_not_need_runtime_cse() {
+        let mask = binary(
+            BinaryOperator::Subtract,
+            binary(
+                BinaryOperator::ShiftLeft,
+                Expression::IntegerLiteral(1),
+                Expression::IntegerLiteral(8),
+            ),
+            Expression::IntegerLiteral(1),
+        );
+        let packed = binary(BinaryOperator::BitOr, mask.clone(), mask);
+        assert_eq!(constant_value(&packed), Some(255));
+        assert!(!has_repeated_nonleaf_subexpression(&packed));
+    }
+
+    #[test]
+    fn repeated_variable_arithmetic_still_needs_runtime_cse() {
+        let increment = add(var("value"), Expression::IntegerLiteral(1));
+        let repeated = add(increment.clone(), increment);
+        assert!(has_repeated_nonleaf_subexpression(&repeated));
     }
 
     #[test]
