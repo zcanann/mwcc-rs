@@ -27,7 +27,9 @@ impl Generator {
         }
         let left_home = self.fresh_virtual_float_preferring(2);
         let a = self.place_condition_float_load(left, left_home)?;
-        let b = self.place_condition_float_load(right, FLOAT_SCRATCH)?;
+        let b = self.with_reserved_inputs(left, |generator| {
+            generator.place_condition_float_load(right, FLOAT_SCRATCH)
+        })?;
         Ok(Some((a, b)))
     }
 
@@ -56,7 +58,9 @@ impl Generator {
 
         let loaded_home = self.fresh_virtual_float_preferring(2);
         let loaded = self.place_condition_float_load(left, loaded_home)?;
-        self.place_condition_float_load(operand, FLOAT_SCRATCH)?;
+        self.with_reserved_inputs(left, |generator| {
+            generator.place_condition_float_load(operand, FLOAT_SCRATCH)
+        })?;
         self.output.instructions.push(Instruction::FloatNegate {
             d: FLOAT_SCRATCH,
             b: FLOAT_SCRATCH,
