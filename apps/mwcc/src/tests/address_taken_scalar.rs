@@ -90,3 +90,49 @@ fn stores_a_later_assignment_to_an_address_taken_scalar() {
         "the assigned value was not stored before the frame address escaped"
     );
 }
+
+#[test]
+fn forwards_a_just_published_frame_scalar_to_its_next_use() {
+    let source = br#"
+        extern int produce(void);
+        extern void consume_value(int);
+        extern void consume_address(int*);
+
+        void bridge(void) {
+            int slot;
+            slot = produce();
+            consume_value(slot);
+            consume_address(&slot);
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.emit_mwcats = false;
+    flags.inline_enabled = false;
+    let object = compile(
+        source,
+        "forwarded-address-taken-scalar.c",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_2_6,
+            flags,
+        },
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("the published frame value should compile");
+
+    let expected = [
+        0x48, 0x00, 0x00, 0x01, // bl produce
+        0x90, 0x61, 0x00, 0x08, // stw r3,8(r1)
+        0x48, 0x00, 0x00, 0x01, // bl consume_value (no intervening lwz)
+        0x38, 0x61, 0x00, 0x08, // addi r3,r1,8
+        0x48, 0x00, 0x00, 0x01, // bl consume_address
+    ];
+    assert!(
+        object
+            .windows(expected.len())
+            .any(|bytes| bytes == expected),
+        "the immediately reused value was reloaded from its frame slot"
+    );
+}

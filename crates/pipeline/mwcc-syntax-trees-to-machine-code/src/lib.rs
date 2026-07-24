@@ -615,6 +615,18 @@ pub fn lower_function(
     // Coalesce away `mr rX,rX` self-moves the allocator leaves when it colors a value's
     // virtual home to the register the value already holds (mwcc coalesces them).
     coalesce_self_moves(&mut generator);
+    // Allocation can coalesce a just-published frame value and its immediate
+    // reload to the same physical register even when their virtual lanes were
+    // distinct during selection. Remove that newly visible reload only for
+    // non-volatile source scalars; branch-entry and wider forwarding regions
+    // remain guarded by the dedicated frame-value pass.
+    let forwardable_frame_scalar_offsets = function
+        .locals
+        .iter()
+        .filter(|local| !local.is_volatile)
+        .filter_map(|local| generator.frame_slots.get(&local.name).map(|slot| slot.offset))
+        .collect();
+    generator.forward_adjacent_frame_scalar_values(&forwardable_frame_scalar_offsets);
     // Revisit the narrow saved-result epilogue on the physical stream. A
     // source-level return branch can hide the move from the structured
     // pre-allocation pass until generic scheduling removes that branch.

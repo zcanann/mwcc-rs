@@ -182,6 +182,7 @@ impl Generator {
         };
         if frame_scalar_locals.iter().any(|local| {
             local.is_static
+                || local.is_volatile
                 || class_of(local.declared_type).ok() != Some(ValueClass::General)
                 || local.declared_type.width() > 32
                 || local
@@ -1336,6 +1337,11 @@ impl Generator {
                 *branch_target = target;
             }
         }
+        let forwardable_frame_scalar_offsets = frame_scalar_locals
+            .iter()
+            .filter_map(|local| self.frame_slots.get(&local.name).map(|slot| slot.offset))
+            .collect();
+        self.forward_adjacent_frame_scalar_values(&forwardable_frame_scalar_offsets);
         self.schedule_structured_entry_zero_store(function);
         self.schedule_structured_shared_member_arguments(function);
         self.schedule_repeated_member_address_call_guards();
