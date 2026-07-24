@@ -419,7 +419,7 @@ impl InlineBodySet {
         }
         drop(allocator);
         expanded.locals = locals;
-        expanded.statements = statements;
+        expanded.statements = remove_overwritten_vptr_stores(statements);
         let calls_remain = self.calls_any(&expanded);
         if calls_remain
             && std::env::var_os("MWCC_CAPTURE_FUNCTION")
@@ -880,6 +880,48 @@ fn constant_inline_condition(condition: &Expression) -> Option<bool> {
     })
 }
 
+/// Remove a base-constructor vptr installation when an inlined derived
+/// constructor immediately overwrites the same slot. Restrict this to adjacent
+/// compiler-synthesized vtable-address stores: neither right-hand side can have
+/// side effects, and no intervening statement can observe the base value.
+fn remove_overwritten_vptr_stores(statements: Vec<Statement>) -> Vec<Statement> {
+    fn target(statement: &Statement) -> Option<(&str, u32)> {
+        let Statement::Store {
+            target:
+                Expression::Member {
+                    base,
+                    offset,
+                    index_stride: None,
+                    ..
+                },
+            value: Expression::AddressOf { operand },
+        } = statement
+        else {
+            return None;
+        };
+        let Expression::Variable(base) = base.as_ref() else {
+            return None;
+        };
+        let Expression::Variable(vtable) = operand.as_ref() else {
+            return None;
+        };
+        vtable.starts_with("__vt__").then_some((base, *offset))
+    }
+
+    let mut output = Vec::with_capacity(statements.len());
+    for statement in statements {
+        if let (Some(previous), Some(current)) =
+            (output.last().and_then(target), target(&statement))
+        {
+            if previous == current {
+                output.pop();
+            }
+        }
+        output.push(statement);
+    }
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -921,6 +963,55 @@ mod tests {
             is_const: false,
             row_bytes: None,
         }
+    }
+
+    #[test]
+    fn removes_an_inlined_base_vptr_immediately_overwritten_by_the_derived_vptr() {
+        fn vptr_store(vtable: &str) -> Statement {
+            Statement::Store {
+                target: Expression::Member {
+                    base: Box::new(Expression::Variable("this".into())),
+                    offset: 0,
+                    member_type: Type::UnsignedInt,
+                    index_stride: None,
+                },
+                value: Expression::AddressOf {
+                    operand: Box::new(Expression::Variable(vtable.into())),
+                },
+            }
+        }
+
+        let object_parameter = Parameter {
+            parameter_type: Type::StructPointer { element_size: 8 },
+            name: "this".into(),
+        };
+        let base = function(
+            "base_constructor",
+            vec![object_parameter.clone()],
+            vec![vptr_store("__vt__4Base")],
+        );
+        let derived = function(
+            "derived_constructor",
+            vec![object_parameter],
+            vec![
+                Statement::Expression(Expression::Call {
+                    name: "base_constructor".into(),
+                    arguments: vec![Expression::Variable("this".into())],
+                }),
+                vptr_store("__vt__7Derived"),
+            ],
+        );
+
+        let expanded = InlineBodySet::analyze(&[base, derived.clone()])
+            .expand_calls(&derived)
+            .expect("the trivial base constructor should inline");
+        assert!(matches!(
+            expanded.statements.as_slice(),
+            [Statement::Store {
+                value: Expression::AddressOf { operand },
+                ..
+            }] if matches!(operand.as_ref(), Expression::Variable(name) if name == "__vt__7Derived")
+        ));
     }
 
     #[test]

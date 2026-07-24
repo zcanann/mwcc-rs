@@ -42,13 +42,43 @@ pub(crate) fn lower(
         return None;
     }
 
-    let (vtable, vptr_offset) = parse_vptr_store(&function.statements[0], globals)?;
-    let actions = function.statements[1..]
+    let (mut vtable, vptr_offset) = parse_vptr_store(&function.statements[0], globals)?;
+    let mut tail_start = 1;
+    if config.flags.ipa_file {
+        while let Some((next_vtable, next_offset)) = function
+            .statements
+            .get(tail_start)
+            .and_then(|statement| parse_vptr_store(statement, globals))
+        {
+            // An inlined trivial base constructor can install its vptr
+            // immediately before the complete-object constructor overwrites
+            // the same slot. File IPA retains only the final installation.
+            if next_offset != vptr_offset {
+                return None;
+            }
+            vtable = next_vtable;
+            tail_start += 1;
+        }
+    }
+    let actions = function.statements[tail_start..]
         .iter()
         .map(|statement| parse_tail_action(statement, globals))
         .collect::<Option<Vec<_>>>()?;
 
     let mut output = MachineFunction::new(function.name.clone());
+    if config.flags.ipa_file {
+        if let Some(value) = reused_immediate(&actions, vptr_offset) {
+            emit_ipa_reused_immediate(
+                &mut output,
+                &vtable,
+                vptr_offset,
+                value,
+                &actions,
+            );
+            finish(&mut output, function, &config);
+            return Some(output);
+        }
+    }
     output
         .instructions
         .push(Instruction::load_immediate_shifted(4, 0));
@@ -106,6 +136,94 @@ pub(crate) fn lower(
     }
 
     output.instructions.push(Instruction::BranchToLinkRegister);
+    finish(&mut output, function, &config);
+    Some(output)
+}
+
+fn reused_immediate(actions: &[TailAction], vptr_offset: i16) -> Option<i16> {
+    if actions.len() < 2 {
+        return None;
+    }
+    let (first_offset, value) = match actions.first()? {
+        TailAction::StoreImmediate { offset, value } => (*offset, *value),
+        TailAction::StoreThisGlobal { .. } => return None,
+    };
+    if first_offset == vptr_offset {
+        return None;
+    }
+    actions.iter().skip(1).all(|action| {
+        matches!(
+            action,
+            TailAction::StoreImmediate {
+                offset,
+                value: found,
+            } if *offset != vptr_offset && *found == value
+        )
+    })
+    .then_some(value)
+}
+
+fn emit_ipa_reused_immediate(
+    output: &mut MachineFunction,
+    vtable: &str,
+    vptr_offset: i16,
+    value: i16,
+    actions: &[TailAction],
+) {
+    output.instructions.extend([
+        Instruction::load_immediate_shifted(4, 0),
+        Instruction::load_immediate(0, value),
+        Instruction::AddImmediate {
+            d: 4,
+            a: 4,
+            immediate: 0,
+        },
+    ]);
+    let first_offset = match &actions[0] {
+        TailAction::StoreImmediate { offset, .. } => *offset,
+        TailAction::StoreThisGlobal { .. } => {
+            unreachable!("the reused-immediate schedule was validated")
+        }
+    };
+    output.instructions.extend([
+        Instruction::StoreWord {
+            s: 0,
+            a: 3,
+            offset: first_offset,
+        },
+        Instruction::StoreWord {
+            s: 4,
+            a: 3,
+            offset: vptr_offset,
+        },
+    ]);
+    for action in &actions[1..] {
+        let TailAction::StoreImmediate { offset, .. } = action else {
+            unreachable!("the reused-immediate schedule was validated")
+        };
+        output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 3,
+            offset: *offset,
+        });
+    }
+    output.instructions.push(Instruction::BranchToLinkRegister);
+    output.relocations = vec![
+        Relocation {
+            instruction_index: 0,
+            kind: RelocationKind::Addr16Ha,
+            target: RelocationTarget::External(vtable.to_string()),
+        },
+        Relocation {
+            instruction_index: 2,
+            kind: RelocationKind::Addr16Lo,
+            target: RelocationTarget::External(vtable.to_string()),
+        },
+    ];
+    output.symbol_order = vec![vtable.to_string()];
+}
+
+fn finish(output: &mut MachineFunction, function: &Function, config: &CompilerConfig) {
     output.is_static = function.is_static;
     output.is_weak = function.is_weak;
     output.section = function.section.clone();
@@ -115,7 +233,6 @@ pub(crate) fn lower(
         // post-function analysis block before the following unwind pair.
         output.post_function_anonymous_bump = Some(0);
     }
-    Some(output)
 }
 
 fn parse_vptr_store(
