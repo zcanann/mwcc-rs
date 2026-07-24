@@ -1755,6 +1755,86 @@ class FrontierTests(unittest.TestCase):
             frontier["previous_status_counts"], {"DEFER": 1}
         )
 
+    def test_frontier_round_robins_projects_and_normalized_failure_families(self):
+        rows = [
+            row(project="wind", source=f"src/actor{index}.cpp")
+            for index in range(4)
+        ]
+        rows.extend(
+            [
+                row(project="wind", source="src/other.cpp"),
+                row(project="prime", source="src/actor.cpp"),
+            ]
+        )
+        observations = {
+            item["configuration_id"]: {
+                "status": "DEFER",
+                "output": (
+                    f"DEFER {item['source']} — expected ParenOpen, found Less "
+                    f"at token {1000 + index} (line 90, column 21)"
+                ),
+            }
+            for index, item in enumerate(rows[:4])
+        }
+        observations[rows[4]["configuration_id"]] = {
+            "status": "DEFER",
+            "output": "DEFER src/other.cpp — switch dispatch is not implemented",
+        }
+        observations[rows[5]["configuration_id"]] = {
+            "status": "DEFER",
+            "output": (
+                "DEFER src/actor.cpp — expected ParenOpen, found Less "
+                "at token 5000 (line 90, column 21)"
+            ),
+        }
+        args = argparse.Namespace(size=3, byte_audit=0, seed="seed", epoch="0")
+        frontier = build_frontier(rows, observations, args)
+        chosen = set(frontier["configuration_ids"])
+        self.assertEqual(len(chosen.intersection(
+            item["configuration_id"] for item in rows[:4]
+        )), 1)
+        self.assertIn(rows[4]["configuration_id"], chosen)
+        self.assertIn(rows[5]["configuration_id"], chosen)
+
+    def test_frontier_does_not_fill_from_one_higher_priority_family(self):
+        diff_rows = [
+            row(project="wind", source=f"src/actor{index}.cpp")
+            for index in range(4)
+        ]
+        defer_rows = [
+            row(project=f"project{index}", source="src/unit.c")
+            for index in range(2)
+        ]
+        rows = diff_rows + defer_rows
+        observations = {
+            item["configuration_id"]: {
+                "status": "DIFF",
+                "output": "DIFF object bytes differ",
+            }
+            for item in diff_rows
+        }
+        observations.update(
+            {
+                item["configuration_id"]: {
+                    "status": "DEFER",
+                    "output": f"DEFER distinct failure {index}",
+                }
+                for index, item in enumerate(defer_rows)
+            }
+        )
+        args = argparse.Namespace(size=3, byte_audit=0, seed="seed", epoch="0")
+        frontier = build_frontier(rows, observations, args)
+        chosen = set(frontier["configuration_ids"])
+        self.assertEqual(
+            len(chosen.intersection(
+                item["configuration_id"] for item in diff_rows
+            )),
+            1,
+        )
+        self.assertTrue(all(
+            item["configuration_id"] in chosen for item in defer_rows
+        ))
+
     def test_frontier_reserves_a_probe_for_an_unobserved_version(self):
         rows = [row(source=f"src/a{index}.c") for index in range(5)]
         rows.append(row(source="src/wii.c", mw_version="Wii/1.0"))

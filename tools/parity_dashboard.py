@@ -37,6 +37,11 @@ def normalize_reason(reason: str) -> str:
     reason = re.sub(r"member '[^']+' on a non-struct-pointer base", "member access on a non-struct-pointer base", reason)
     reason = re.sub(r"struct '[^']+' is not declared", "struct is not declared", reason)
     reason = re.sub(r"0x[0-9a-fA-F]+", "<candidate>", reason)
+    reason = re.sub(
+        r"at token \d+ \(line \d+, column \d+\)",
+        "at source location",
+        reason,
+    )
     return reason
 
 
