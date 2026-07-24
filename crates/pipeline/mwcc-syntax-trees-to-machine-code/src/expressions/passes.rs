@@ -105,6 +105,19 @@ pub(crate) fn pointee_of_type(value_type: Type) -> Option<Pointee> {
     })
 }
 
+/// Storage type for one frame-resident value.
+///
+/// A complete four-byte aggregate is copied as one word when it is used as a
+/// value (not through one of its members). This is intentionally frame-local:
+/// treating every four-byte aggregate global as a scalar would erase object
+/// addressing semantics.
+pub(crate) fn frame_value_pointee(value_type: Type) -> Option<Pointee> {
+    match value_type {
+        Type::Struct { size: 4, .. } => Some(Pointee::UnsignedInt),
+        other => pointee_of_type(other),
+    }
+}
+
 /// The scaled-arithmetic stride for a pointer type: a struct pointer's element size
 /// (so `p + n` advances by whole structs), or `None` for a scalar pointer (which
 /// scales by its `pointee` size) and a non-pointer. A zero element size — an opaque
@@ -197,6 +210,16 @@ pub(crate) fn const_address_of(pointer: &Expression) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn treats_only_one_word_frame_aggregates_as_scalar_storage() {
+        let word = Type::Struct { size: 4, align: 4 };
+        let wider = Type::Struct { size: 8, align: 4 };
+
+        assert_eq!(frame_value_pointee(word), Some(Pointee::UnsignedInt));
+        assert_eq!(frame_value_pointee(wider), None);
+        assert_eq!(pointee_of_type(word), None);
+    }
 
     #[test]
     fn recognizes_instruction_free_address_values() {

@@ -295,6 +295,10 @@ pub(crate) struct Parser {
     pub(crate) concrete_template_iterator_steps: HashMap<String, (u32, u32)>,
     /// `(aggregate, zero-argument member)` -> returned pointer-field offset.
     pub(crate) source_pointer_accessors: HashMap<(String, String), u32>,
+    /// `(aggregate, zero-argument member)` -> exact one-word iterator endpoint
+    /// construction recovered from the method body.
+    pub(crate) source_iterator_endpoints:
+        HashMap<(String, String), crate::iterator_semantics::IteratorEndpoint>,
     /// Iterator aggregate -> `(pointer-storage offset, next-link offset)` for
     /// an exact `storage = storage->accessor(); return *this;` prefix step.
     pub(crate) source_iterator_pointer_steps: HashMap<String, (u32, u32)>,

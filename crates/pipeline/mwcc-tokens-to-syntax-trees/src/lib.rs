@@ -263,6 +263,7 @@ pub fn parse_located_translation_unit_with_behavior(
         template_iterator_step_summaries: std::collections::HashMap::new(),
         concrete_template_iterator_steps: std::collections::HashMap::new(),
         source_pointer_accessors: std::collections::HashMap::new(),
+        source_iterator_endpoints: std::collections::HashMap::new(),
         source_iterator_pointer_steps: std::collections::HashMap::new(),
         source_iterator_step_forwarders: std::collections::HashMap::new(),
         source_iterator_equality_fields: std::collections::HashMap::new(),
@@ -7093,7 +7094,12 @@ blr\n\
                 namespace report {
                     void Panic(const char*, int, const char*, ...);
                 }
-                class Node {};
+                class Node {
+                public:
+                    Node* GetNext() const { return next; }
+                private:
+                    Node* next;
+                };
                 class ListBase {
                     friend class Inspector;
                 public:
@@ -7101,9 +7107,16 @@ blr\n\
                     class Iterator {
                         friend class ListBase;
                         Node* node;
+                    public:
+                        explicit Iterator(Node* pointer) : node(pointer) {}
+                        Node* operator->() const { return node; }
+                        friend bool operator==(Iterator lhs, Iterator rhs) {
+                            return lhs.node == rhs.node;
+                        }
                     };
-                    Iterator GetBeginIter() { return Iterator(); }
-                    int count;
+                    Iterator GetBeginIter() { return Iterator(anchor.GetNext()); }
+                    Iterator GetEndIter() { return Iterator(&anchor); }
+                    Node anchor;
                 };
                 template <typename T, int Offset>
                 class List : public ListBase {
@@ -7111,13 +7124,22 @@ blr\n\
                     class Iterator {
                         friend class List;
                         typedef T Element;
-                        Node* node;
+                        ListBase::Iterator iterator;
                     public:
-                        T* operator->() const { return GetPointer(node); }
+                        T* operator->() const { return GetPointer(iterator.operator->()); }
+                        friend bool operator==(Iterator lhs, Iterator rhs) {
+                            return lhs.iterator == rhs.iterator;
+                        }
+                        friend bool operator!=(Iterator lhs, Iterator rhs) {
+                            return !(lhs == rhs);
+                        }
                     };
                     typedef Iterator ConstIterator;
                     Iterator GetBeginIter() {
                         return Iterator(ListBase::GetBeginIter());
+                    }
+                    Iterator GetEndIter() {
+                        return Iterator(ListBase::GetEndIter());
                     }
                     static T* GetPointer(Node* pointer) {
                         (void)(((pointer != 0))
@@ -7134,6 +7156,9 @@ blr\n\
                 int begin(EntryList& list) {
                     EntryList::Iterator local = list.GetBeginIter();
                     return local->payload;
+                }
+                int empty(EntryList& list) {
+                    return list.GetBeginIter() == list.GetEndIter();
                 }
             }
         "#;
@@ -7194,6 +7219,24 @@ blr\n\
                         right.as_ref(),
                         mwcc_syntax_trees::Expression::Member { offset: 4, .. }
                     )
+        ));
+        assert!(matches!(
+            unit.functions[1].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Binary {
+                operator: mwcc_syntax_trees::BinaryOperator::Equal,
+                left,
+                right,
+            }) if matches!(
+                left.as_ref(),
+                mwcc_syntax_trees::Expression::Member { offset: 0, .. }
+            ) && matches!(
+                right.as_ref(),
+                mwcc_syntax_trees::Expression::AddressOf { operand }
+                    if matches!(
+                        operand.as_ref(),
+                        mwcc_syntax_trees::Expression::Member { offset: 0, .. }
+                    )
+            )
         ));
     }
 

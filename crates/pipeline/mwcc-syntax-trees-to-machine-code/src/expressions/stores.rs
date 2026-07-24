@@ -212,7 +212,7 @@ impl Generator {
                         "assignment to a whole frame array is not supported",
                     ));
                 }
-                let pointee = pointee_of_type(slot.value_type).ok_or_else(|| {
+                let pointee = frame_value_pointee(slot.value_type).ok_or_else(|| {
                     Diagnostic::error(
                         "this volatile frame-slot type is not supported yet (roadmap)",
                     )
