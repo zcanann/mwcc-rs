@@ -54,7 +54,7 @@ impl Generator {
         }
     }
 
-    fn move_instruction_before(&mut self, from: usize, to: usize) {
+    pub(super) fn move_instruction_before(&mut self, from: usize, to: usize) {
         debug_assert!(to < from);
         let instruction = self.output.instructions.remove(from);
         self.output.instructions.insert(to, instruction);

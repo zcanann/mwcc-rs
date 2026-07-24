@@ -542,7 +542,7 @@ impl Generator {
             }
         }
         if !frame_arrays.is_empty() {
-            let extra_scalar_words = function
+            let mut extra_scalar_words = function
                 .locals
                 .iter()
                 .filter(|local| {
@@ -580,6 +580,14 @@ impl Generator {
                         && body_uses_local(&function.statements, &local.name)
                 })
                 .count();
+            if global_member_search_entry {
+                // A linkage-first search-loop frame retains one source-local
+                // table word for each deferred value, even when overlapping
+                // lifetimes let several of those values share saved homes.
+                // The table displaces the automatic arrays but not the value
+                // allocator's physical saved-register count.
+                extra_scalar_words += deferred_saved_locals.len();
+            }
             let array_offset = match self.behavior.frame_convention {
                 FrameConvention::Predecrement => 8,
                 FrameConvention::LinkageFirst => {
@@ -1304,6 +1312,9 @@ impl Generator {
         self.schedule_saved_return_epilogue();
         self.schedule_saved_receiver_entry_epilogue();
         self.schedule_legacy_inline_expansion_residue();
+        if dense_frame && self.behavior.power_pc_7400_scheduling_enabled() {
+            self.schedule_power_pc_7400_call_result_handoff(first_saved as u8);
+        }
         Ok(true)
     }
 

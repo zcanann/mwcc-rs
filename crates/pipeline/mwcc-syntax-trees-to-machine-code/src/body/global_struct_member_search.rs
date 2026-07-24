@@ -275,6 +275,7 @@ impl Generator {
             } else {
                 None
             };
+        let power_pc_7400_dense = legacy_dense && self.behavior.power_pc_7400_scheduling_enabled();
         self.emit_address_high(address_high, search.global);
         if let Some(link_store) = legacy_link_store.take() {
             self.output.instructions.push(link_store);
@@ -287,6 +288,14 @@ impl Generator {
                 .instructions
                 .push(delayed_prefix.take().expect("frame prefix pending"));
         }
+        if power_pc_7400_dense {
+            self.record_relocation(RelocationKind::Addr16Lo, search.global);
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: base,
+                a: address_high,
+                immediate: 0,
+            });
+        }
         self.output
             .instructions
             .push(Instruction::load_immediate(GENERAL_SCRATCH, search.bound));
@@ -295,30 +304,49 @@ impl Generator {
                 .instructions
                 .push(Instruction::MoveToCountRegister { s: GENERAL_SCRATCH });
         }
-        self.record_relocation(RelocationKind::Addr16Lo, search.global);
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: base,
-            a: address_high,
-            immediate: 0,
-        });
-        if legacy_dense {
+        if !power_pc_7400_dense {
+            self.record_relocation(RelocationKind::Addr16Lo, search.global);
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: base,
+                a: address_high,
+                immediate: 0,
+            });
+        }
+        if legacy_dense && !power_pc_7400_dense {
             self.output
                 .instructions
                 .push(Instruction::MoveToCountRegister { s: GENERAL_SCRATCH });
         }
         if self.behavior.frame_convention == FrameConvention::LinkageFirst {
+            if power_pc_7400_dense {
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate(displacement, 0));
+            }
             self.output
                 .instructions
                 .push(delayed_prefix.take().expect("frame prefix pending"));
+            if !power_pc_7400_dense {
+                self.output
+                    .instructions
+                    .push(Instruction::load_immediate(counter, 0));
+            }
+        }
+        if !power_pc_7400_dense {
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(displacement, 0));
+        }
+        if let Some(save_multiple) = delayed_save_multiple {
+            self.output.instructions.push(save_multiple);
+        }
+        if power_pc_7400_dense {
             self.output
                 .instructions
                 .push(Instruction::load_immediate(counter, 0));
-        }
-        self.output
-            .instructions
-            .push(Instruction::load_immediate(displacement, 0));
-        if let Some(save_multiple) = delayed_save_multiple {
-            self.output.instructions.push(save_multiple);
+            self.output
+                .instructions
+                .push(Instruction::MoveToCountRegister { s: GENERAL_SCRATCH });
         }
         if self.behavior.frame_convention == FrameConvention::Predecrement {
             self.output
@@ -332,7 +360,7 @@ impl Generator {
                 immediate: 0,
             });
         }
-        if legacy_dense {
+        if legacy_dense && !power_pc_7400_dense {
             // In the dense linkage-first frame the counter initialization fills
             // the final save's latency slot immediately before the loop head.
             let counter_init = self

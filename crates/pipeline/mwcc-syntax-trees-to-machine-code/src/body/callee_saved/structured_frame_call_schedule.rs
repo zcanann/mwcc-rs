@@ -106,6 +106,9 @@ impl Generator {
         self.schedule_shifted_member_mask_call();
         self.schedule_call_result_member_mask_call(first_saved);
         self.schedule_recycled_call_result_argument(recycled_call_result_homes);
+        if self.behavior.power_pc_7400_scheduling_enabled() {
+            self.schedule_power_pc_7400_mask_call_arguments();
+        }
 
         // When a saved value and a frame address are the final independent
         // arguments of a dense-frame call, build 163 forwards the saved value
@@ -290,6 +293,160 @@ impl Generator {
                 self.output.instructions[start + destination] = window[source].clone();
             }
             start += 11;
+        }
+    }
+
+    /// The 7400 scheduler fills producer latency in dense frame-array calls
+    /// with independent argument materializations. The legacy semantic
+    /// schedules above establish one of two dependency-complete windows; this
+    /// overlay moves only the independent r3 and frame-address arguments.
+    fn schedule_power_pc_7400_mask_call_arguments(&mut self) {
+        let mut start = 0;
+        while start + 9 < self.output.instructions.len() {
+            let window = &self.output.instructions[start..start + 10];
+            let call_result_window = matches!(
+                window,
+                [
+                    Instruction::LoadWord { d: 0, .. },
+                    Instruction::AddImmediate {
+                        d: result_home,
+                        a: 3,
+                        immediate: 0,
+                    },
+                    Instruction::AddImmediate {
+                        d: 6,
+                        a: forwarded,
+                        immediate: 0,
+                    },
+                    Instruction::Xor { a: 0, b: 0, .. },
+                    Instruction::AndContiguousMask {
+                        a: masked,
+                        s: 0,
+                        ..
+                    },
+                    Instruction::AddImmediate {
+                        d: 4,
+                        a: mask_source,
+                        immediate: 0,
+                    },
+                    Instruction::AddImmediate { d: 3, .. },
+                    Instruction::AddImmediate { d: 5, a: 1, .. },
+                    Instruction::AddImmediate {
+                        d: 7,
+                        a: 0,
+                        immediate: 1,
+                    },
+                    Instruction::BranchAndLink { .. },
+                ] if result_home == forwarded && masked == mask_source
+            );
+            let shifted_window = matches!(
+                window,
+                [
+                    Instruction::LoadWord { d: 0, .. },
+                    Instruction::ShiftLeftImmediate { a: shifted, .. },
+                    Instruction::AddImmediate {
+                        d: 6,
+                        a: 3,
+                        immediate: 0,
+                    },
+                    Instruction::Xor {
+                        a: 0,
+                        s: xor_source,
+                        b: 0,
+                    },
+                    Instruction::AndContiguousMask {
+                        a: masked,
+                        s: 0,
+                        ..
+                    },
+                    Instruction::AddImmediate { d: 3, .. },
+                    Instruction::AddImmediate {
+                        d: 4,
+                        a: mask_source,
+                        immediate: 0,
+                    },
+                    Instruction::AddImmediate { d: 5, a: 1, .. },
+                    Instruction::AddImmediate {
+                        d: 7,
+                        a: 0,
+                        immediate: 1,
+                    },
+                    Instruction::BranchAndLink { .. },
+                ] if shifted == xor_source && masked == mask_source
+            );
+            let argument_destination = if call_result_window {
+                start + 2
+            } else if shifted_window {
+                start + 3
+            } else {
+                start += 1;
+                continue;
+            };
+            let argument_source = if call_result_window {
+                start + 6
+            } else {
+                start + 5
+            };
+            self.move_instruction_before(argument_source, argument_destination);
+            self.move_instruction_before(start + 7, start + 5);
+            start += 10;
+        }
+    }
+
+    /// A saved call result followed immediately by another call cannot remain
+    /// in r3 while that call's first argument is formed. On the 7400 MWCC
+    /// stages the result through r0, fills the latency slot with the argument,
+    /// then commits r0 to the saved home.
+    pub(super) fn schedule_power_pc_7400_call_result_handoff(&mut self, first_saved: u8) {
+        let mut start = 0;
+        while start + 3 < self.output.instructions.len() {
+            let saved = match &self.output.instructions[start..start + 4] {
+                [
+                    Instruction::BranchAndLink { .. },
+                    Instruction::AddImmediate {
+                        d: saved,
+                        a: 3,
+                        immediate: 0,
+                    },
+                    Instruction::AddImmediate {
+                        d: 3,
+                        a: next_argument,
+                        immediate: 0,
+                    },
+                    Instruction::BranchAndLink { .. },
+                ] if *saved >= first_saved && saved != next_argument => *saved,
+                _ => {
+                    start += 1;
+                    continue;
+                }
+            };
+            self.output.instructions[start + 1] = Instruction::AddImmediate {
+                d: 0,
+                a: 3,
+                immediate: 0,
+            };
+            let insertion = start + 3;
+            self.output
+                .instructions
+                .insert(insertion, Instruction::move_register(saved, 0));
+            for instruction in &mut self.output.instructions {
+                match instruction {
+                    Instruction::Branch { target }
+                    | Instruction::BranchConditionalForward { target, .. }
+                        if *target >= insertion =>
+                    {
+                        *target += 1;
+                    }
+                    _ => {}
+                }
+            }
+            self.labels.inserted(insertion, 1);
+            for relocation in &mut self.output.relocations {
+                if relocation.instruction_index >= insertion {
+                    relocation.instruction_index += 1;
+                }
+            }
+            start += 5;
         }
     }
 }
