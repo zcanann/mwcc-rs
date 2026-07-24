@@ -83,6 +83,26 @@ impl Generator {
         }
         // A float conditional branch advances mwcc's anonymous-`@N` counter by 3.
         self.output.has_float_branch = true;
+        // A value/store select may choose between two memory-resident floating
+        // values. They have no persistent FPRs to feed the leaf-select path:
+        // branch to the false arm and load either value directly into the
+        // requested result register. This is the canonical member-selection
+        // shape (`dst = kind == K ? object->a : object->b`).
+        if !tail
+            && self.is_float_located(when_true)
+            && self.is_float_located(when_false)
+        {
+            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            let false_arm = self.fresh_label();
+            let join = self.fresh_label();
+            self.emit_branch_conditional_to(options, condition_bit, false_arm);
+            self.evaluate_float(when_true, destination)?;
+            self.emit_branch_to(join);
+            self.bind_label(false_arm);
+            self.evaluate_float(when_false, destination)?;
+            self.bind_label(join);
+            return Ok(());
+        }
         // Each arm is a float leaf (its value in a register) or the NEGATION of a leaf (the fabs
         // family `cond ? -x : x`: the base is in the register, the arm value is `fneg base`). The
         // negated arm becomes an `fneg` tail; a plain leaf becomes the branch-returned value or `fmr`.

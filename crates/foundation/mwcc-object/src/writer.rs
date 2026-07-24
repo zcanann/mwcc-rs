@@ -364,7 +364,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         .collect();
     for source_position in 0..=input.functions.len() {
         for object in input.data_objects.iter().filter(|object| {
-            object.functions_before == source_position
+            // Diagnostic partial-TU emission can omit a source function while
+            // retaining a later file-scope object. Collapse any now-unreachable
+            // source position onto the tail of the emitted function stream.
+            object.functions_before.min(input.functions.len()) == source_position
                 && section_of(object) == ".data"
                 && !string_owner.contains_key(object.name)
                 && object.static_local_owner.is_none()
