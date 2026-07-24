@@ -3928,6 +3928,58 @@ mod tests {
     }
 
     #[test]
+    fn folds_an_immutable_embedded_member_pointer_into_scalar_accesses() {
+        let source = br#"
+            struct Vec2 { float x; float y; };
+            struct CollData { char pad[340]; struct Vec2 normal; };
+            struct Fighter {
+                char pad0[152];
+                struct Vec2 shield_knockback;
+                char pad1[84];
+                float ground_velocity;
+                char pad2[1528];
+                struct CollData collision;
+            };
+            struct Object { char pad[44]; struct Fighter* user_data; };
+            struct Object* compiled(struct Object* object) {
+                struct Fighter* fighter = object->user_data;
+                struct CollData* collision = &fighter->collision;
+                fighter->shield_knockback.x =
+                    collision->normal.y * fighter->ground_velocity;
+                fighter->shield_knockback.y =
+                    -collision->normal.x * fighter->ground_velocity;
+                return object;
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.emit_mwcats = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "embedded-member-alias.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the immutable embedded-member pointer should fold");
+        let expected_text = [
+            0x80, 0x83, 0x00, 0x2c, 0xc0, 0x04, 0x00, 0xf4, 0xc0, 0x24, 0x08, 0x48, 0xec,
+            0x01, 0x00, 0x32, 0xd0, 0x04, 0x00, 0x98, 0xc0, 0x24, 0x08, 0x44, 0xc0, 0x04,
+            0x00, 0xf4, 0xfc, 0x20, 0x08, 0x50, 0xec, 0x01, 0x00, 0x32, 0xd0, 0x04, 0x00,
+            0x9c, 0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected_text.len())
+            .any(|bytes| bytes == expected_text));
+    }
+
+    #[test]
     fn command_line_pool_mode_is_last_wins() {
         let off = parse_invocation(&["-pool".into(), "off".into()]);
         assert!(!off.flags.pooling_enabled);

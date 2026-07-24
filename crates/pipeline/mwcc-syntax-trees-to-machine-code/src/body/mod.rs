@@ -66,6 +66,7 @@ mod passes;
 mod punned_ladder_policy;
 mod punned_select;
 mod punned_writeback;
+mod paired_float_product_schedule;
 mod queue_callback_fold;
 mod range_guarded_array_address;
 mod register_inline_asm;

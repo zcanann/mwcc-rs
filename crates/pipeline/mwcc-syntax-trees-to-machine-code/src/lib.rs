@@ -593,6 +593,10 @@ pub fn lower_function(
     generator.schedule_linkage_first_function_address();
     generator.schedule_linkage_first_inline_zero();
     generator.schedule_guarded_report_store(function);
+    // Whole-body owners, generic scheduling, and physical allocation converge
+    // here. Apply final cross-owner schedules only when their complete measured
+    // physical instruction region is present.
+    generator.schedule_shared_right_float_product_pair();
 
     ordinal_accounting::apply(
         function,
