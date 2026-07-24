@@ -314,6 +314,21 @@ impl Generator {
             let register = self.member_base_register(base)?;
             return Ok(Some((register, u32::from(element.size()))));
         }
+        // A pointer-valued member is an address value, not inline array
+        // storage. Load that pointer once, then scale arithmetic by its
+        // recovered pointee type (`object->vectors[index]`, for example).
+        if let Expression::Member { member_type, .. } = operand {
+            let size = match member_type {
+                Type::StructPointer { element_size } if *element_size != 0 => *element_size,
+                Type::Pointer(pointee) => u32::from(pointee.size()),
+                _ => 0,
+            };
+            if size != 0 {
+                let register = self.fresh_virtual_general_preferring(3);
+                self.evaluate_general(operand, register)?;
+                return Ok(Some((register, size)));
+            }
+        }
         if let Some(size) = self.scaled_pointer(operand) {
             return Ok(Some((self.general_register_of_leaf(operand)?, size)));
         }
@@ -470,7 +485,12 @@ impl Generator {
             });
             return Ok(true);
         }
-        let integer_register = self.general_register_of_leaf(integer)?;
+        let integer_register = if leaf_name(integer).is_some() {
+            self.general_register_of_leaf(integer)?
+        } else {
+            self.evaluate_general(integer, GENERAL_SCRATCH)?;
+            GENERAL_SCRATCH
+        };
         // Scale the index by the element size: a power-of-two element shifts (`slwi`),
         // any other size (a struct stride like 12) multiplies (`mulli`); a byte element
         // needs neither.
