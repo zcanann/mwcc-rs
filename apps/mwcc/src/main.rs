@@ -1336,9 +1336,15 @@ fn compile(
         {
             continue;
         }
+        // C++ gives a non-static const definition external linkage only when
+        // explicitly requested (including an out-of-class static-data-member
+        // definition). Legacy MWCC stores those externally visible objects in
+        // writable data; C consts and internal C++ consts remain read-only.
+        let const_is_read_only =
+            global.is_const && !(is_cxx && !global.is_static && !global.is_weak);
         let force_full_data_section = global.section.is_none()
             && ((behavior.inferred_array_uses_full_data_section && global.array_length_inferred)
-                || (global.is_const && !read_only_small_data));
+                || (const_is_read_only && !read_only_small_data));
         // A `static const` SCALAR is folded into its readers (or elided when unused),
         // so keep dropping it. A `static const` ARRAY can't be folded into a register —
         // mwcc emits it to `.rodata` with a LOCAL symbol — so let it fall through to the
@@ -1523,7 +1529,7 @@ fn compile(
                 // A `static const` fn-pointer reference routes to `.sdata2` (read-only)
                 // as a LOCAL; the writable `int *p = &g;` case stays non-const in `.sdata`.
                 // A section override handles its own placement, so const is irrelevant there.
-                is_const: global.is_const && global.section.is_none(),
+                is_const: const_is_read_only && global.section.is_none(),
                 force_full_data_section,
                 // A section-attributed static (`.dtors`), a `static const` reference,
                 // or a static function-pointer TABLE binds LOCAL; a plain writable
@@ -1575,7 +1581,7 @@ fn compile(
             element_size,
             struct_alignment,
             global.array_length.is_some(),
-            global.is_const,
+            const_is_read_only,
             global.attribute_alignment.map_or(1, u32::from),
             config.flags.optimization == mwcc_versions::Optimization::O0,
             config.build.profile.large_aggregate_comment_alignment(),
@@ -1608,7 +1614,7 @@ fn compile(
                     alignment,
                     comment_alignment,
                     initial_bytes: Some(bytes.clone()),
-                    is_const: true,
+                    is_const: const_is_read_only,
                     force_full_data_section,
                     is_static: global.is_static,
                     is_explicit_zero: false,
@@ -1643,7 +1649,7 @@ fn compile(
                 alignment,
                 comment_alignment,
                 initial_bytes: Some(initial_bytes),
-                is_const: true,
+                is_const: const_is_read_only,
                 force_full_data_section,
                 is_static: global.is_static,
                 is_explicit_zero: false,
@@ -2409,6 +2415,9 @@ mod tests {
 
     #[path = "virtual_destructor.rs"]
     mod virtual_destructor;
+
+    #[path = "cxx_const_data.rs"]
+    mod cxx_const_data;
 
     #[test]
     fn parity_keep_going_is_an_explicit_diagnostic_flag() {

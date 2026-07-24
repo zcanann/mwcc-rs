@@ -453,13 +453,58 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             place(object, ".bss", &mut bss_size);
         }
     }
+    // Small initialized data follows the same creation timeline as `.data`.
+    // Function-owned strings/statics therefore precede file declarations that
+    // occur after their owner, even though the invocation layer discovers all
+    // file globals before it resolves function string pools.
     let mut sdata_size = 0u32;
+    let mut placed_sdata: std::collections::HashSet<&'a str> =
+        std::collections::HashSet::new();
+    for source_position in 0..=input.functions.len() {
+        for object in input.data_objects.iter().filter(|object| {
+            object.functions_before.min(input.functions.len()) == source_position
+                && section_of(object) == ".sdata"
+                && !string_owner.contains_key(object.name)
+                && object.static_local_owner.is_none()
+        }) {
+            if placed_sdata.insert(object.name) {
+                place(object, ".sdata", &mut sdata_size);
+            }
+        }
+        if source_position == input.functions.len() {
+            continue;
+        }
+        let function = &input.functions[source_position];
+        for object in input.data_objects.iter().filter(|object| {
+            object.static_local_owner == Some(source_position)
+                && section_of(object) == ".sdata"
+        }) {
+            if placed_sdata.insert(object.name) {
+                place(object, ".sdata", &mut sdata_size);
+            }
+        }
+        for name in &function.string_names {
+            if let Some(object) = input
+                .data_objects
+                .iter()
+                .find(|object| object.name == name.as_str() && section_of(object) == ".sdata")
+            {
+                if placed_sdata.insert(object.name) {
+                    place(object, ".sdata", &mut sdata_size);
+                }
+            }
+        }
+    }
+    // Preserve emission for synthetic objects that intentionally have no
+    // source-position owner.
     for object in input
         .data_objects
         .iter()
         .filter(|object| section_of(object) == ".sdata")
     {
-        place(object, ".sdata", &mut sdata_size);
+        if placed_sdata.insert(object.name) {
+            place(object, ".sdata", &mut sdata_size);
+        }
     }
     // mwcc lays `.sbss` out as: EXPLICITLY zero-initialized globals (`int a = 0;`) in
     // DECLARATION order, then UNINITIALIZED globals (`int a;`) in REVERSE declaration order.
