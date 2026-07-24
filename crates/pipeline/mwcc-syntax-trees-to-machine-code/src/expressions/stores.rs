@@ -5,6 +5,83 @@ use super::implicit_narrow_store::legacy_narrow_store_binary_alu;
 use super::*;
 
 impl Generator {
+    /// Emit a floating assignment expression while preserving its value in
+    /// `destination`. The address is formed first and kept live while the RHS
+    /// is evaluated, matching the ordinary member-store schedule without
+    /// forcing the value through a synthetic variable.
+    pub(crate) fn emit_float_assign(
+        &mut self,
+        target: &Expression,
+        value: &Expression,
+        destination: u8,
+    ) -> Compilation<()> {
+        if let Expression::Variable(name) = target {
+            if let Some(location) = self
+                .locations
+                .get(name.as_str())
+                .filter(|location| location.class == ValueClass::Float)
+            {
+                let register = location.register;
+                self.evaluate_float(value, destination)?;
+                if register != destination {
+                    self.output.instructions.push(Instruction::FloatMove {
+                        d: register,
+                        b: destination,
+                    });
+                }
+                return Ok(());
+            }
+            if let Some(&global_type) = self.globals.get(name.as_str()) {
+                let pointee = pointee_of_type(global_type).ok_or_else(|| {
+                    Diagnostic::error("global float assignment has a non-scalar target")
+                })?;
+                if !matches!(pointee, Pointee::Float | Pointee::Double) {
+                    return Err(Diagnostic::error(
+                        "floating assignment has a non-floating global target",
+                    ));
+                }
+                self.evaluate_float(value, destination)?;
+                self.emit_global_store(name, pointee, destination)?;
+                return Ok(());
+            }
+        }
+        if let Expression::Member {
+            base,
+            offset,
+            member_type,
+            index_stride: None,
+        } = target
+        {
+            let pointee = pointee_of_type(*member_type).ok_or_else(|| {
+                Diagnostic::error("floating member assignment has a non-scalar target")
+            })?;
+            if !matches!(pointee, Pointee::Float | Pointee::Double) {
+                return Err(Diagnostic::error(
+                    "floating assignment has a non-floating member target",
+                ));
+            }
+            let address = self.member_base_register(base)?;
+            let restore = address != GENERAL_SCRATCH && self.reserved.insert(address);
+            self.evaluate_float(value, destination)?;
+            if restore {
+                self.reserved.remove(&address);
+            }
+            let displacement = i16::try_from(*offset).map_err(|_| {
+                Diagnostic::error("floating member assignment offset is out of range")
+            })?;
+            self.output.instructions.push(displacement_store(
+                pointee,
+                destination,
+                address,
+                displacement,
+            )?);
+            return Ok(());
+        }
+        Err(Diagnostic::error(
+            "floating assignment expression target is not supported yet (roadmap)",
+        ))
+    }
+
     /// Emit `target = value` as an expression: compute `value` into the
     /// destination, store it to `target`, and leave the value in the destination
     /// (so the surrounding expression can use it). Global targets only for now.

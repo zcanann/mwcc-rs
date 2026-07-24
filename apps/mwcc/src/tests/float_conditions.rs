@@ -68,3 +68,40 @@ fn multiplies_a_constant_indexed_float_member_in_place() {
     ];
     assert!(object.windows(expected.len()).any(|bytes| bytes == expected));
 }
+
+#[test]
+fn preserves_a_compound_float_member_assignment_value() {
+    let source = br#"
+        struct Frame { float current; float delta; float limit; };
+        void compiled(struct Frame* frame) {
+            if ((frame->current += frame->delta) >= frame->limit) {
+                frame->limit = frame->current;
+            }
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.cpp_exceptions = false;
+    flags.emit_mwcats = false;
+    let config = mwcc_versions::CompilerConfig {
+        build: mwcc_versions::GC_3_0A3,
+        flags,
+    };
+    let object = compile(
+        source,
+        "compound-float-member.c",
+        config,
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("a compound float member assignment should remain usable as a value");
+
+    let update = [
+        0xc0, 0x23, 0x00, 0x00, // lfs f1,0(r3)
+        0xc0, 0x03, 0x00, 0x04, // lfs f0,4(r3)
+        0xec, 0x21, 0x00, 0x2a, // fadds f1,f1,f0
+        0xd0, 0x23, 0x00, 0x00, // stfs f1,0(r3)
+    ];
+    assert!(object.windows(update.len()).any(|bytes| bytes == update));
+}
