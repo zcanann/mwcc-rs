@@ -27,35 +27,6 @@ impl Generator {
         self.move_instruction_before(start + 8, start + 6);
         self.schedule_allocator_cursor_result();
     }
-
-    fn schedule_allocator_cursor_result(&mut self) {
-        let Some(region) = allocator_cursor_result(&self.output) else {
-            return;
-        };
-        let Instruction::AddImmediateShifted { d, .. } =
-            &mut self.output.instructions[region.pool_high]
-        else {
-            unreachable!("the pool high half was matched")
-        };
-        *d = Eabi::FIRST_GENERAL_ARGUMENT + 1;
-        let Instruction::LoadFloatSingle { a, .. } = &mut self.output.instructions[region.pool_low]
-        else {
-            unreachable!("the pool load was matched")
-        };
-        *a = Eabi::FIRST_GENERAL_ARGUMENT + 1;
-        self.output.instructions[region.zero] = Instruction::load_immediate(5, 0);
-        let Instruction::StoreHalfword { s, a, .. } =
-            &mut self.output.instructions[region.first_store]
-        else {
-            unreachable!("the first member store was matched")
-        };
-        *s = 5;
-        *a = Eabi::FIRST_GENERAL_ARGUMENT;
-
-        self.move_instruction_before(region.cursor_reload, region.result_copy);
-        self.move_instruction_before(region.zero, region.result_copy + 1);
-        self.move_instruction_before(region.pool_high, region.result_copy + 2);
-    }
 }
 
 fn allocator_cursor_entry(instructions: &[Instruction]) -> Option<usize> {
@@ -120,98 +91,9 @@ fn allocator_cursor_entry(instructions: &[Instruction]) -> Option<usize> {
     })
 }
 
-#[derive(Clone, Copy)]
-struct AllocatorCursorResult {
-    result_copy: usize,
-    cursor_reload: usize,
-    zero: usize,
-    first_store: usize,
-    pool_high: usize,
-    pool_low: usize,
-}
-
-fn allocator_cursor_result(
-    output: &mwcc_machine_code::MachineFunction,
-) -> Option<AllocatorCursorResult> {
-    for result_copy in 1..output.instructions.len().saturating_sub(4) {
-        if !matches!(
-            output.instructions[result_copy - 1],
-            Instruction::BranchAndLink { .. }
-        ) {
-            continue;
-        }
-        let [Instruction::Or {
-            a: result,
-            s: Eabi::FIRST_GENERAL_ARGUMENT,
-            b: Eabi::FIRST_GENERAL_ARGUMENT,
-        }, Instruction::LoadWord {
-            d: cursor, a: 1, ..
-        }, Instruction::AddImmediate {
-            d: 0,
-            a: 0,
-            immediate: 0,
-        }, Instruction::StoreHalfword {
-            s: 0,
-            a: store_base,
-            offset: 0,
-        }, ..] = &output.instructions[result_copy..]
-        else {
-            continue;
-        };
-        if result != store_base || result == cursor {
-            continue;
-        }
-        let search_end = (result_copy + 12).min(output.instructions.len().saturating_sub(1));
-        let Some(pool_high) = (result_copy + 4..search_end).find(|&high| {
-            matches!(
-                (&output.instructions[high], &output.instructions[high + 1]),
-                (
-                    Instruction::AddImmediateShifted {
-                        d: base,
-                        a: 0,
-                        immediate: 0,
-                    },
-                    Instruction::LoadFloatSingle {
-                        d: _,
-                        a: load_base,
-                        offset: 0,
-                    },
-                ) if base == load_base
-            ) && output.relocations.iter().any(|relocation| {
-                relocation.instruction_index == high && relocation.kind == RelocationKind::Addr16Ha
-            }) && output.relocations.iter().any(|relocation| {
-                relocation.instruction_index == high + 1
-                    && relocation.kind == RelocationKind::Addr16Lo
-            })
-        }) else {
-            continue;
-        };
-        if output.instructions.iter().any(|instruction| {
-            matches!(
-                instruction,
-                Instruction::BranchConditionalForward { target, .. }
-                    | Instruction::Branch { target }
-                    if (result_copy..=pool_high + 1).contains(target)
-            )
-        }) {
-            continue;
-        }
-        return Some(AllocatorCursorResult {
-            result_copy,
-            cursor_reload: result_copy + 1,
-            zero: result_copy + 2,
-            first_store: result_copy + 3,
-            pool_high,
-            pool_low: pool_high + 1,
-        });
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mwcc_machine_code::{Relocation, RelocationTarget};
 
     #[test]
     fn recognizes_the_published_cursor_allocator_entry() {
@@ -258,73 +140,5 @@ mod tests {
             },
         ];
         assert_eq!(allocator_cursor_entry(&instructions), Some(0));
-    }
-
-    #[test]
-    fn recognizes_the_allocator_result_publication_window() {
-        let mut output = mwcc_machine_code::MachineFunction {
-            instructions: vec![
-                Instruction::BranchAndLink {
-                    target: "allocate".into(),
-                },
-                Instruction::move_register(31, 3),
-                Instruction::LoadWord {
-                    d: 29,
-                    a: 1,
-                    offset: 8,
-                },
-                Instruction::load_immediate(0, 0),
-                Instruction::StoreHalfword {
-                    s: 0,
-                    a: 31,
-                    offset: 0,
-                },
-                Instruction::LoadHalfwordZero {
-                    d: 0,
-                    a: 26,
-                    offset: 8,
-                },
-                Instruction::ShiftLeftImmediate {
-                    a: 3,
-                    s: 0,
-                    shift: 2,
-                },
-                Instruction::AddImmediateShifted {
-                    d: 3,
-                    a: 0,
-                    immediate: 0,
-                },
-                Instruction::LoadFloatSingle {
-                    d: 1,
-                    a: 3,
-                    offset: 0,
-                },
-            ],
-            ..Default::default()
-        };
-        output.relocations = vec![
-            Relocation {
-                instruction_index: 7,
-                kind: RelocationKind::Addr16Ha,
-                target: RelocationTarget::Constant(0),
-            },
-            Relocation {
-                instruction_index: 8,
-                kind: RelocationKind::Addr16Lo,
-                target: RelocationTarget::Constant(0),
-            },
-        ];
-        let region = allocator_cursor_result(&output).expect("the result window should match");
-        assert_eq!(
-            (
-                region.result_copy,
-                region.cursor_reload,
-                region.zero,
-                region.first_store,
-                region.pool_high,
-                region.pool_low,
-            ),
-            (1, 2, 3, 4, 7, 8)
-        );
     }
 }
