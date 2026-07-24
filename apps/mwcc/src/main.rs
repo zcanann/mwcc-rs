@@ -3750,6 +3750,58 @@ mod tests {
     }
 
     #[test]
+    fn schedules_member_float_absolute_value_before_the_first_call_argument() {
+        let source = br#"
+            struct Stick { float x; float y; };
+            struct Fighter { char padding[1568]; struct Stick stick; };
+            extern float atan2f(float, float);
+            float compiled(struct Fighter* fighter) {
+                return atan2f(
+                    fighter->stick.y,
+                    fighter->stick.x < 0
+                        ? -fighter->stick.x
+                        : fighter->stick.x);
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.emit_mwcats = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "float-abs-arguments.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the member-backed absolute value call should compile");
+        let expected_text = [
+            0x7c, 0x08, 0x02, 0xa6, // mflr r0
+            0x90, 0x01, 0x00, 0x04, // stw r0,4(r1)
+            0x94, 0x21, 0xff, 0xf8, // stwu r1,-8(r1)
+            0xc0, 0x43, 0x06, 0x20, // lfs f2,1568(r3)
+            0xc0, 0x00, 0x00, 0x00, // lfs f0,@zero
+            0xfc, 0x02, 0x00, 0x40, // fcmpo cr0,f2,f0
+            0x40, 0x80, 0x00, 0x08, // bge nonnegative
+            0xfc, 0x40, 0x10, 0x50, // fneg f2,f2
+            0xc0, 0x23, 0x06, 0x24, // lfs f1,1572(r3)
+            0x48, 0x00, 0x00, 0x01, // bl atan2f
+            0x80, 0x01, 0x00, 0x0c, // lwz r0,12(r1)
+            0x38, 0x21, 0x00, 0x08, // addi r1,r1,8
+            0x7c, 0x08, 0x03, 0xa6, // mtlr r0
+            0x4e, 0x80, 0x00, 0x20, // blr
+        ];
+        assert!(object
+            .windows(expected_text.len())
+            .any(|bytes| bytes == expected_text));
+    }
+
+    #[test]
     fn command_line_pool_mode_is_last_wins() {
         let off = parse_invocation(&["-pool".into(), "off".into()]);
         assert!(!off.flags.pooling_enabled);

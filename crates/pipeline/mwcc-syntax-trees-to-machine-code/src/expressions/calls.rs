@@ -531,6 +531,9 @@ impl Generator {
         if self.try_emit_member_prefixed_float_shift_arguments(arguments, name, direct_call)? {
             return Ok(());
         }
+        if self.try_emit_member_float_abs_arguments(arguments, name, direct_call)? {
+            return Ok(());
+        }
         // With packed `@stringBaseN` literals, MWCC schedules the complete
         // absolute address of a second string argument before a cheap first
         // member-address adjustment. This keeps the dependent `addi` pair

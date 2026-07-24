@@ -73,6 +73,20 @@ impl Generator {
                 b: FLOAT_SCRATCH,
             });
         let (less_options, condition_bit) = positive_branch(BinaryOperator::Less);
+        if source == destination {
+            // The nonnegative arm is already in its final register. MWCC emits
+            // a one-arm conditional here (`bge done; fneg fD,fD`) instead of
+            // retaining the general move/join diamond after the self-move is
+            // eliminated.
+            let done = self.fresh_label();
+            self.emit_branch_conditional_to(less_options ^ 8, condition_bit, done);
+            self.output.instructions.push(Instruction::FloatNegate {
+                d: destination,
+                b: source,
+            });
+            self.bind_label(done);
+            return Ok(());
+        }
         let nonnegative = self.fresh_label();
         let join = self.fresh_label();
         self.emit_branch_conditional_to(less_options ^ 8, condition_bit, nonnegative);

@@ -25,6 +25,68 @@ fn direct_member_address(expression: &Expression) -> Option<(&Expression, u32)> 
 }
 
 impl Generator {
+    /// Marshal `(member_y, ABS(member_x))` with the conditional argument first.
+    ///
+    /// Both values share the incoming object pointer. MWCC forms the more
+    /// expensive second argument in f2 first, then issues the independent f1
+    /// member load immediately before the call. Besides matching its latency
+    /// schedule, this keeps argument evaluation from obscuring the in-place
+    /// absolute-value shape.
+    pub(crate) fn try_emit_member_float_abs_arguments(
+        &mut self,
+        arguments: &[Expression],
+        name: &str,
+        direct_call: bool,
+    ) -> Compilation<bool> {
+        let [first @ Expression::Member {
+            base: first_base,
+            member_type: Type::Float,
+            index_stride: None,
+            ..
+        }, second] = arguments
+        else {
+            return Ok(false);
+        };
+        let Some(second_value @ Expression::Member {
+            base: second_base,
+            member_type: Type::Float,
+            index_stride: None,
+            ..
+        }) = crate::float_abs_select::abs_select_value(second)
+        else {
+            return Ok(false);
+        };
+        let (Expression::Variable(first_base), Expression::Variable(second_base)) =
+            (first_base.as_ref(), second_base.as_ref())
+        else {
+            return Ok(false);
+        };
+        let both_float = self.call_parameter_types.get(name).is_some_and(|types| {
+            types.len() >= 2 && types[0] == Type::Float && types[1] == Type::Float
+        });
+        if !direct_call
+            || !self.behavior.schedule_latency_slots
+            || !both_float
+            || first_base != second_base
+            || self
+                .locations
+                .get(first_base.as_str())
+                .map(|location| location.register)
+                != Some(Eabi::FIRST_GENERAL_ARGUMENT)
+        {
+            return Ok(false);
+        }
+
+        self.evaluate_float(second_value, Eabi::FIRST_FLOAT_ARGUMENT + 1)?;
+        self.emit_float_abs_select(
+            Eabi::FIRST_FLOAT_ARGUMENT + 1,
+            Eabi::FIRST_FLOAT_ARGUMENT + 1,
+            false,
+        )?;
+        self.evaluate_float(first, Eabi::FIRST_FLOAT_ARGUMENT)?;
+        Ok(true)
+    }
+
     /// Marshal `(object, object->float, f2, f3, object->float)` after a small
     /// forwarding wrapper has been inlined. The middle values already occupy
     /// their ABI registers; MWCC issues the independent high member load first,
