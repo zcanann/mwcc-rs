@@ -196,9 +196,7 @@ fn classify(function: &Function) -> Option<Shape<'_>> {
     let object_alias_offset = member_offset(alias.initializer.as_ref()?, &object.name)?;
     let (entry_guard, callback) = match function.statements.as_slice() {
         [statement] => {
-            if let Some((first, second, callback)) =
-                either_null_callback(statement, &alias.name)
-            {
+            if let Some((first, second, callback)) = either_null_callback(statement, &alias.name) {
                 (EntryGuard::EnterIfEitherNull(first, second), callback)
             } else {
                 (EntryGuard::None, statement)
@@ -227,10 +225,87 @@ fn classify(function: &Function) -> Option<Shape<'_>> {
 }
 
 impl Generator {
-    pub(crate) fn try_guarded_global_callback(
-        &mut self,
-        function: &Function,
-    ) -> Compilation<bool> {
+    fn try_guarded_direct_global_callback(&mut self, function: &Function) -> Compilation<bool> {
+        if function.return_type != Type::Void
+            || !function.parameters.is_empty()
+            || !function.locals.is_empty()
+            || !function.guards.is_empty()
+            || function.return_expression.is_some()
+            || self.behavior.frame_convention != FrameConvention::LinkageFirst
+        {
+            return Ok(false);
+        }
+        let [Statement::If {
+            condition:
+                Expression::Binary {
+                    operator: BinaryOperator::NotEqual,
+                    left,
+                    right,
+                },
+            then_body,
+            else_body,
+        }] = function.statements.as_slice()
+        else {
+            return Ok(false);
+        };
+        let Expression::Variable(global) = left.as_ref() else {
+            return Ok(false);
+        };
+        let [Statement::Expression(call)] = then_body.as_slice() else {
+            return Ok(false);
+        };
+        let call_matches = match call {
+            Expression::Call { name, arguments } => name == global && arguments.is_empty(),
+            Expression::CallThrough { target, arguments } => {
+                arguments.is_empty()
+                    && matches!(target.as_ref(), Expression::Variable(name) if name == global)
+            }
+            _ => false,
+        };
+        if constant_value(right) != Some(0) || !else_body.is_empty() || !call_matches {
+            return Ok(false);
+        }
+        let Some(&global_type) = self.globals.get(global.as_str()) else {
+            return Ok(false);
+        };
+
+        self.output.pre_scheduled = true;
+        self.emit_plain_nonleaf_prologue();
+        self.evaluate(&Expression::Variable(global.clone()), global_type, 12)?;
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate {
+                a: 12,
+                immediate: 0,
+            });
+        let skip = self.output.instructions.len();
+        self.output
+            .instructions
+            .push(Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 0,
+            });
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 12 });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegisterAndLink);
+        let epilogue = self.output.instructions.len();
+        if let Instruction::BranchConditionalForward { target, .. } =
+            &mut self.output.instructions[skip]
+        {
+            *target = epilogue;
+        }
+        self.emit_epilogue_and_return();
+        Ok(true)
+    }
+
+    pub(crate) fn try_guarded_global_callback(&mut self, function: &Function) -> Compilation<bool> {
+        if self.try_guarded_direct_global_callback(function)? {
+            return Ok(true);
+        }
         let Some(shape) = classify(function) else {
             return Ok(false);
         };
@@ -281,10 +356,7 @@ impl Generator {
             });
             self.output
                 .instructions
-                .push(Instruction::CompareLogicalWordImmediate {
-                    a: 0,
-                    immediate: 0,
-                });
+                .push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 });
             self.emit_branch_conditional_to(12, 2, done);
             self.output.instructions.push(Instruction::LoadWord {
                 d: 5,
@@ -309,7 +381,8 @@ impl Generator {
                 .instructions
                 .push(Instruction::Add { d: 4, a: 0, b: 4 });
             self.emit_guarded_callback_tail(4, done);
-        } else if let EntryGuard::EnterIfEitherNull(first_offset, second_offset) = shape.entry_guard {
+        } else if let EntryGuard::EnterIfEitherNull(first_offset, second_offset) = shape.entry_guard
+        {
             self.output.instructions.push(Instruction::StoreWord {
                 s: 0,
                 a: 1,
@@ -336,7 +409,11 @@ impl Generator {
                 done,
             );
         } else {
-            let table_register = if shape.second_argument.is_some() { 5 } else { 4 };
+            let table_register = if shape.second_argument.is_some() {
+                5
+            } else {
+                4
+            };
             let alias_register = table_register + 1;
             self.emit_address_high(table_register, shape.callback_table);
             self.output.instructions.push(Instruction::StoreWord {
@@ -437,10 +514,7 @@ impl Generator {
         });
         self.output
             .instructions
-            .push(Instruction::CompareLogicalWordImmediate {
-                a: 0,
-                immediate: 0,
-            });
+            .push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 });
         let dispatch = self.fresh_label();
         self.emit_branch_conditional_to(12, 2, dispatch);
         self.output.instructions.push(Instruction::LoadWord {
@@ -450,10 +524,7 @@ impl Generator {
         });
         self.output
             .instructions
-            .push(Instruction::CompareLogicalWordImmediate {
-                a: 0,
-                immediate: 0,
-            });
+            .push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 });
         self.emit_branch_conditional_to(4, 2, done);
         self.bind_label(dispatch);
         self.output.instructions.push(Instruction::LoadWord {
@@ -475,9 +546,11 @@ impl Generator {
                 s: 5,
                 shift: 2,
             });
-        self.output
-            .instructions
-            .push(Instruction::Add { d: alias, a: 0, b: alias });
+        self.output.instructions.push(Instruction::Add {
+            d: alias,
+            a: 0,
+            b: alias,
+        });
         self.emit_guarded_callback_tail(alias, done);
     }
 }
