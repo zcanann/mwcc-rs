@@ -13,6 +13,17 @@ use mwcc_versions::{
 /// larger schedules remain with ordinary lowering until modeled explicitly.
 pub(crate) fn lower(function: &Function, config: CompilerConfig) -> Option<MachineFunction> {
     let deleting_callee = match_deleting_shell(function)?;
+    lower_matched(function, config, deleting_callee)
+}
+
+/// Lower a deleting shell whose surrounding C++ lifetime syntax was already
+/// validated by another ABI owner (notably a 4.x empty virtual destructor after
+/// its dead self-vptr store is removed).
+pub(super) fn lower_matched(
+    function: &Function,
+    config: CompilerConfig,
+    deleting_callee: String,
+) -> Option<MachineFunction> {
     let behavior = Behavior::resolve(&config);
     if behavior.optimization < Optimization::O2 {
         return None;

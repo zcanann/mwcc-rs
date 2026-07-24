@@ -2400,6 +2400,9 @@ mod tests {
     #[path = "member_float_select.rs"]
     mod member_float_select;
 
+    #[path = "virtual_destructor.rs"]
+    mod virtual_destructor;
+
     #[test]
     fn parity_keep_going_is_an_explicit_diagnostic_flag() {
         let ordinary = parse_invocation(&[]);
