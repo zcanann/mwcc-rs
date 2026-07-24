@@ -22,11 +22,28 @@ pub(super) fn primary_dense_loop_carried_local<'a>(
     statements: &[Statement],
     ephemeral_locals: &[&'a LocalDeclaration],
 ) -> Option<&'a str> {
+    dense_loop_carried_local(statements, ephemeral_locals, 0)
+}
+
+/// The second carried value in the same dense-loop allocation order.
+pub(super) fn secondary_dense_loop_carried_local<'a>(
+    statements: &[Statement],
+    ephemeral_locals: &[&'a LocalDeclaration],
+) -> Option<&'a str> {
+    dense_loop_carried_local(statements, ephemeral_locals, 1)
+}
+
+fn dense_loop_carried_local<'a>(
+    statements: &[Statement],
+    ephemeral_locals: &[&'a LocalDeclaration],
+    rank: usize,
+) -> Option<&'a str> {
     let loop_statement = dense_loop_statement(statements, ephemeral_locals)?;
     ephemeral_locals
         .iter()
         .filter(|local| class_of(local.declared_type).ok() == Some(ValueClass::General))
-        .find(|local| loop_carries_name(loop_statement, &local.name))
+        .filter(|local| loop_carries_name(loop_statement, &local.name))
+        .nth(rank)
         .map(|local| local.name.as_str())
 }
 
@@ -246,8 +263,17 @@ mod tests {
             ),
             assign("v1", Expression::IntegerLiteral(7)),
             read("v1"),
+            read("v2"),
+            assign(
+                "v2",
+                Expression::Binary {
+                    operator: BinaryOperator::Add,
+                    left: Box::new(Expression::Variable("v2".into())),
+                    right: Box::new(Expression::IntegerLiteral(1)),
+                },
+            ),
         ];
-        body.extend(locals[2..].iter().map(|local| read(&local.name)));
+        body.extend(locals[3..].iter().map(|local| read(&local.name)));
         let statements = vec![Statement::Loop {
             kind: LoopKind::While,
             initializer: None,
@@ -259,6 +285,10 @@ mod tests {
         assert_eq!(
             primary_dense_loop_carried_local(&statements, &references),
             Some("v0")
+        );
+        assert_eq!(
+            secondary_dense_loop_carried_local(&statements, &references),
+            Some("v2")
         );
     }
 }

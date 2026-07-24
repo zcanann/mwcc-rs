@@ -50,6 +50,7 @@ use super::structured_loop_assertion_strings::plan_loop_assertion_strings;
 use super::structured_loop_lowering::lower_structured_loops;
 use super::structured_loop_register_pressure::{
     plan_dense_loop_register_window, primary_dense_loop_carried_local,
+    secondary_dense_loop_carried_local,
 };
 use super::structured_preloop_alias::fold_preloop_comma_pointer_alias;
 use super::structured_locals::{
@@ -385,6 +386,8 @@ impl Generator {
             plan_dense_loop_register_window(&function.statements, &ephemeral_locals);
         let primary_loop_carried =
             primary_dense_loop_carried_local(&function.statements, &ephemeral_locals);
+        let secondary_loop_carried =
+            secondary_dense_loop_carried_local(&function.statements, &ephemeral_locals);
         let frame_publication =
             StructuredFramePublication::plan(function, &frame_scalar_locals, dense_loop_window);
         if let Some(publication) = &frame_publication {
@@ -1444,6 +1447,11 @@ impl Generator {
                     if primary_loop_carried == Some(local.name.as_str()) =>
                 {
                     self.fresh_virtual_general_preferring(30)
+                }
+                ValueClass::General
+                    if secondary_loop_carried == Some(local.name.as_str()) =>
+                {
+                    self.fresh_virtual_general_preferring(29)
                 }
                 ValueClass::General => self.fresh_virtual_general(),
                 ValueClass::Float => self.fresh_virtual_float_preferring(
