@@ -49,6 +49,7 @@ mod cached_member_guard;
 mod expression_statement;
 mod float_store_fill;
 mod float_friction_select;
+mod float_call_guard_return;
 mod float_octant_table_dispatch;
 mod forwarded_member_initialization_schedule;
 mod friction_limited_acceleration_clamp;

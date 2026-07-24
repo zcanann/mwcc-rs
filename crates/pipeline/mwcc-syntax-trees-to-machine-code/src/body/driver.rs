@@ -2360,6 +2360,9 @@ impl Generator {
         {
             return Ok(());
         }
+        if self.try_float_call_guard_return(function)? {
+            return Ok(());
+        }
         // A nested sign/quadrant tree around one verified guarded float-table
         // helper is leaf after inlining. It owns the shared `.data` base and
         // conversion frame, so claim it before the general structured-frame
