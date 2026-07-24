@@ -142,7 +142,7 @@ pub(crate) use register_inline_asm::lower_register_inline_asm_wrapper;
 use trig_quadrant_dispatch::TrigQuadrant;
 pub(crate) use crate::expressions::pointer_stride;
 pub(crate) use crate::expressions::{
-    const_address_pointer, displacement_store, pointee_of_type, split_address,
+    const_address_of, const_address_pointer, displacement_store, pointee_of_type, split_address,
 };
 pub(crate) use crate::generator::*;
 pub(crate) use long_long_support::{unsigned_word_clock, ClockRead};
