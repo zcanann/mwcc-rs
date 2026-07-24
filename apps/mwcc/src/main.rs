@@ -2630,6 +2630,69 @@ mod tests {
     }
 
     #[test]
+    fn preserves_a_float_call_argument_while_deriving_later_arguments() {
+        let source = br#"
+            struct Attributes {
+                char padding[100];
+                float scale;
+                float base;
+                float maximum;
+                float friction;
+                char tail[272];
+            };
+            struct Fighter {
+                char padding[272];
+                struct Attributes attributes;
+                char middle[908];
+                float stick;
+            };
+            extern void apply(struct Fighter*, float, float, float, float);
+            void update(struct Fighter* fighter, float velocity) {
+                float scaled;
+                float flat;
+                float stick = fighter->stick;
+                struct Attributes* attributes = &fighter->attributes;
+                scaled = stick * attributes->scale;
+                if (stick > 0) {
+                    flat = attributes->base;
+                } else {
+                    flat = -attributes->base;
+                }
+                apply(fighter, velocity, scaled + flat,
+                      stick * attributes->maximum, attributes->friction);
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "derived-float-call-arguments.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the incoming f1 argument should survive the derived arguments");
+        let expected = [
+            0x7c, 0x08, 0x02, 0xa6, 0x38, 0x83, 0x01, 0x10, 0x90, 0x01, 0x00, 0x04, 0x94, 0x21,
+            0xff, 0xf8, 0xc0, 0x00, 0x00, 0x00, 0xc0, 0xa3, 0x06, 0x20, 0xc0, 0x43, 0x01, 0x74,
+            0xfc, 0x05, 0x00, 0x40, 0xec, 0x45, 0x00, 0xb2, 0x40, 0x81, 0x00, 0x0c, 0xc0, 0x64,
+            0x00, 0x68, 0x48, 0x00, 0x00, 0x0c, 0xc0, 0x04, 0x00, 0x68, 0xfc, 0x60, 0x00, 0x50,
+            0xc0, 0x04, 0x00, 0x6c, 0xec, 0x42, 0x18, 0x2a, 0xc0, 0x84, 0x00, 0x70, 0xec, 0x65,
+            0x00, 0x32, 0x48, 0x00, 0x00, 0x01, 0x80, 0x01, 0x00, 0x0c, 0x38, 0x21, 0x00, 0x08,
+            0x7c, 0x08, 0x03, 0xa6, 0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected.len())
+            .any(|bytes| bytes == expected));
+    }
+
+    #[test]
     fn dispatches_on_a_member_of_a_freshly_loaded_pointer_local() {
         let source = br#"
             struct State { int mode; };

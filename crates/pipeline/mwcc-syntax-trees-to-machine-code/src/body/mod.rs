@@ -16,6 +16,7 @@ mod bounded_member_cursor;
 mod callee_saved;
 mod comma_operator;
 mod condition_linkage;
+mod conditional_float_call_arguments;
 mod conditional_float_requantize;
 mod conditional;
 mod conditional_member_copy;

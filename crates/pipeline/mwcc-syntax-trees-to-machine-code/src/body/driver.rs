@@ -1157,6 +1157,11 @@ impl Generator {
         if self.try_leading_bitfield_clear_call(function)? {
             return Ok(());
         }
+        // A loaded float selector and its sign-selected derivatives must not
+        // overwrite a float parameter that remains an argument of the final call.
+        if self.try_conditional_float_call_arguments(function)? {
+            return Ok(());
+        }
         if let Some(inlined) = inline_immutable_pointer_aliases(function) {
             return self.evaluate_body(&inlined);
         }
