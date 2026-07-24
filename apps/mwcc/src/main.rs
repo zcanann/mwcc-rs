@@ -2665,6 +2665,55 @@ mod tests {
     }
 
     #[test]
+    fn schedules_a_guarded_report_before_a_call_result_member_store() {
+        let source = br#"
+            struct Holder {
+                int padding[2];
+                void* value;
+            };
+            extern void report(const char*, ...);
+            extern void assertion(const char*, int, const char*);
+            extern void* load(void*);
+            void attach(struct Holder* holder, void* source) {
+                if (holder->value != 0) {
+                    report("value already exists\n");
+                    assertion("fixture.c", 10, "0");
+                }
+                holder->value = load(source);
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "guarded-report-store.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the guarded report should retain both call-crossing parameters");
+        let expected = [
+            0x7c, 0x08, 0x02, 0xa6, 0x90, 0x01, 0x00, 0x04, 0x94, 0x21, 0xff, 0xe8, 0x93, 0xe1,
+            0x00, 0x14, 0x3b, 0xe4, 0x00, 0x00, 0x93, 0xc1, 0x00, 0x10, 0x7c, 0x7e, 0x1b, 0x78,
+            0x80, 0x03, 0x00, 0x08, 0x28, 0x00, 0x00, 0x00, 0x41, 0x82, 0x00, 0x28, 0x3c, 0x60,
+            0x00, 0x00, 0x4c, 0xc6, 0x31, 0x82, 0x38, 0x63, 0x00, 0x00, 0x48, 0x00, 0x00, 0x01,
+            0x3c, 0x60, 0x00, 0x00, 0x38, 0x63, 0x00, 0x00, 0x38, 0x80, 0x00, 0x0a, 0x38, 0xa0,
+            0x00, 0x00, 0x48, 0x00, 0x00, 0x01, 0x7f, 0xe3, 0xfb, 0x78, 0x48, 0x00, 0x00, 0x01,
+            0x90, 0x7e, 0x00, 0x08, 0x80, 0x01, 0x00, 0x1c, 0x83, 0xe1, 0x00, 0x14, 0x83, 0xc1,
+            0x00, 0x10, 0x38, 0x21, 0x00, 0x18, 0x7c, 0x08, 0x03, 0xa6, 0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected.len())
+            .any(|bytes| bytes == expected));
+    }
+
+    #[test]
     fn retains_a_shared_zero_across_a_bit_field_update_and_guard() {
         let source = br#"
             struct CommonData { void* padding; int value; };
