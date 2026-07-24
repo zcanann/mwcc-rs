@@ -350,21 +350,12 @@ impl Generator {
         for (index, &register) in physical_saved.iter().enumerate() {
             let old_offset = old_size - 4 * (index as i16 + 1);
             let new_offset = new_size - 4 * (index as i16 + 1);
-            for instruction in &mut self.output.instructions {
-                match instruction {
-                    Instruction::StoreWord { s, a: 1, offset }
-                        if *s == register && *offset == old_offset =>
-                    {
-                        *offset = new_offset
-                    }
-                    Instruction::LoadWord { d, a: 1, offset }
-                        if *d == register && *offset == old_offset =>
-                    {
-                        *offset = new_offset
-                    }
-                    _ => {}
-                }
-            }
+            relayout_callee_saved_slot(
+                &mut self.output.instructions,
+                register,
+                old_offset,
+                new_offset,
+            );
         }
         for instruction in &mut self.output.instructions {
             match instruction {
@@ -960,6 +951,32 @@ impl Generator {
     }
 }
 
+/// Keep a callee-saved frame slot tied to the physical register captured by
+/// its prologue store. The save use and epilogue reload definition are
+/// disconnected live ranges, so allocation may initially assign the reload a
+/// different physical identity even though both represent one ABI slot.
+fn relayout_callee_saved_slot(
+    instructions: &mut [Instruction],
+    saved_register: u8,
+    old_offset: i16,
+    new_offset: i16,
+) {
+    for instruction in instructions {
+        match instruction {
+            Instruction::StoreWord { s, a: 1, offset }
+                if *s == saved_register && *offset == old_offset =>
+            {
+                *offset = new_offset;
+            }
+            Instruction::LoadWord { d, a: 1, offset } if *offset == old_offset => {
+                *d = saved_register;
+                *offset = new_offset;
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Remap instruction-index relocations after `[0..=end]` rotates left once.
 fn remap_prefix_rotate_left(
     relocations: &mut [mwcc_machine_code::Relocation],
@@ -997,6 +1014,40 @@ mod tests {
                 .map(|relocation| relocation.instruction_index)
                 .collect::<Vec<_>>(),
             [3, 0, 1, 2, 4]
+        );
+    }
+
+    #[test]
+    fn callee_saved_slot_restores_the_register_that_was_saved() {
+        let mut instructions = vec![
+            Instruction::StoreWord {
+                s: 30,
+                a: 1,
+                offset: 20,
+            },
+            Instruction::LoadWord {
+                d: 31,
+                a: 1,
+                offset: 20,
+            },
+        ];
+
+        relayout_callee_saved_slot(&mut instructions, 30, 20, 36);
+
+        assert_eq!(
+            instructions,
+            [
+                Instruction::StoreWord {
+                    s: 30,
+                    a: 1,
+                    offset: 36,
+                },
+                Instruction::LoadWord {
+                    d: 30,
+                    a: 1,
+                    offset: 36,
+                },
+            ]
         );
     }
 }
