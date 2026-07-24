@@ -64,6 +64,7 @@ mod forwarded_member_initialization_schedule;
 mod friction_limited_acceleration_clamp;
 mod fixed_address_object_flush;
 mod fixed_port_bitfield;
+mod fixed_port_global_replay;
 mod fixed_port_indexed_bitfield;
 mod fixed_port_matrix_packets;
 mod fixed_port_order_switch;
