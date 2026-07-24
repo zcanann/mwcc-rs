@@ -1336,9 +1336,11 @@ impl Parser {
                 &mut self.section_prototypes_with_prior_plain_declaration,
             ),
             skipped_inline_names: std::mem::take(&mut self.skipped_inline_names),
-            skipped_inline_definitions: std::mem::take(
+            skipped_inline_definitions: std::sync::Arc::try_unwrap(std::mem::replace(
                 &mut self.skipped_inline_definitions,
-            ),
+                std::sync::Arc::new(Vec::new()),
+            ))
+            .unwrap_or_else(|definitions| definitions.as_ref().clone()),
             skipped_inline_signatures: std::mem::take(
                 &mut self.skipped_inline_signatures,
             ),
@@ -1483,14 +1485,16 @@ impl Parser {
                     .entry(name.clone())
                     .or_insert(*fundamental);
             }
-            for (source_name, methods) in probe.cxx_free_functions {
-                let retained = self.cxx_free_functions.entry(source_name).or_default();
+            for (source_name, methods) in probe.cxx_free_functions.iter() {
+                let retained = std::sync::Arc::make_mut(&mut self.cxx_free_functions)
+                    .entry(source_name.clone())
+                    .or_default();
                 for method in methods {
                     if !retained
                         .iter()
                         .any(|existing| existing.mangled == method.mangled)
                     {
-                        retained.push(method);
+                        retained.push(method.clone());
                     }
                 }
             }
@@ -1500,7 +1504,7 @@ impl Parser {
                 .iter()
                 .any(|existing| existing.name == function.name)
             {
-                self.skipped_inline_definitions.push(function);
+                std::sync::Arc::make_mut(&mut self.skipped_inline_definitions).push(function);
             }
         } else if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() {
             eprintln!(
@@ -2015,7 +2019,7 @@ impl Parser {
                 if !self.cxx_classes.contains_key(&name) {
                     self.cxx_class_declaration_order.push(name.clone());
                 }
-                self.cxx_classes.insert(name, class);
+                std::sync::Arc::make_mut(&mut self.cxx_classes).insert(name, class);
                 return Ok(());
             }
             // A Metrowerks inline-`asm` function DEFINITION: `[static] asm <ret>
@@ -2508,10 +2512,10 @@ impl Parser {
                 && matches!(self.peek_at(1), Token::Identifier(_))
                 && *self.peek_at(2) == Token::ParenClose
             {
-                self.tokens.remove(self.position); // `(`
-                self.locations.remove(self.position);
-                self.tokens.remove(self.position + 1); // `)` (the name shifted down)
-                self.locations.remove(self.position + 1);
+                std::sync::Arc::make_mut(&mut self.tokens).remove(self.position); // `(`
+                std::sync::Arc::make_mut(&mut self.locations).remove(self.position);
+                std::sync::Arc::make_mut(&mut self.tokens).remove(self.position + 1); // `)` (the name shifted down)
+                std::sync::Arc::make_mut(&mut self.locations).remove(self.position + 1);
             }
             // Function-pointer declarator: `RET (*name)(params)` — a pointer-typed
             // global (a 4-byte address). The return/parameter types don't affect

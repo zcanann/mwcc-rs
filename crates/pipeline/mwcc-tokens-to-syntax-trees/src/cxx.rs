@@ -922,7 +922,9 @@ impl Parser {
         variadic: bool,
     ) {
         let key = self.free_cxx_source_name(source_name);
-        let methods = self.cxx_free_functions.entry(key).or_default();
+        let methods = std::sync::Arc::make_mut(&mut self.cxx_free_functions)
+            .entry(key)
+            .or_default();
         if !methods.iter().any(|method| method.mangled == mangled) {
             methods.push(RecoveredCxxMethod {
                 mangled: mangled.to_string(),
@@ -944,7 +946,9 @@ impl Parser {
         variadic: bool,
     ) {
         let key = format!("{scope}::{source_name}");
-        let methods = self.cxx_free_functions.entry(key).or_default();
+        let methods = std::sync::Arc::make_mut(&mut self.cxx_free_functions)
+            .entry(key)
+            .or_default();
         if !methods.iter().any(|method| method.mangled == mangled) {
             methods.push(RecoveredCxxMethod {
                 mangled: mangled.to_string(),
@@ -1822,7 +1826,9 @@ impl Parser {
             parameters: signature.parameters,
             cxx_parameters: signature.cxx_parameters,
         };
-        let methods = self.cxx_constructors.entry(class.to_owned()).or_default();
+        let methods = std::sync::Arc::make_mut(&mut self.cxx_constructors)
+            .entry(class.to_owned())
+            .or_default();
         if !methods.iter().any(|existing| existing.mangled == mangled) {
             methods.push(method);
         }
@@ -1906,8 +1912,8 @@ impl Parser {
 
         let (tokens, locations): (Vec<_>, Vec<_>) = source.into_iter().unzip();
         let mut probe = self.clone();
-        probe.tokens = tokens;
-        probe.locations = locations;
+        probe.tokens = std::sync::Arc::new(tokens);
+        probe.locations = std::sync::Arc::new(locations);
         probe.position = 0;
         probe.namespace_stack.clear();
         probe.recover_skipped_inline_definition = true;
@@ -1952,7 +1958,7 @@ impl Parser {
                 .iter()
                 .any(|existing| existing.name == function.name)
             {
-                self.skipped_inline_definitions.push(function);
+                std::sync::Arc::make_mut(&mut self.skipped_inline_definitions).push(function);
             }
         } else if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some()
             || std::env::var("MWCC_CAPTURE_INLINE")
@@ -1983,7 +1989,16 @@ impl Parser {
             .instantiated_template_control_flow_labels += new_template_control_flow;
         self.instantiated_inline_template_members
             .extend(probe.instantiated_inline_template_members.iter().cloned());
-        for function in &probe.skipped_inline_definitions {
+        // Every caller creates `probe` by cloning `self` immediately before
+        // isolated parsing, and this pool is append-only. Inspect only the
+        // generated suffix: rescanning the inherited prefix for every inline
+        // body made large C++ translation units quadratic in the number of
+        // recovered definitions.
+        for function in probe
+            .skipped_inline_definitions
+            .iter()
+            .skip(self.skipped_inline_definitions.len())
+        {
             if self
                 .skipped_inline_definitions
                 .iter()
@@ -1992,7 +2007,8 @@ impl Parser {
                 continue;
             }
             self.skipped_inline_names.insert(function.name.clone());
-            self.skipped_inline_definitions.push(function.clone());
+            std::sync::Arc::make_mut(&mut self.skipped_inline_definitions)
+                .push(function.clone());
         }
     }
 
@@ -2033,7 +2049,8 @@ impl Parser {
                     self.cxx_class_declaration_order
                         .push(qualified.to_owned());
                 }
-                self.cxx_classes.insert(qualified.to_owned(), class);
+                std::sync::Arc::make_mut(&mut self.cxx_classes)
+                    .insert(qualified.to_owned(), class);
             }
             Err(error) if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() => {
                 let start = self.position.saturating_sub(24);
@@ -2084,7 +2101,7 @@ impl Parser {
                 if !self.cxx_classes.contains_key(&qualified) {
                     self.cxx_class_declaration_order.push(qualified.clone());
                 }
-                self.cxx_classes.insert(qualified, class);
+                std::sync::Arc::make_mut(&mut self.cxx_classes).insert(qualified, class);
             }
             Err(error) if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() => {
                 eprintln!("nested-class layout recovery failed in '{outer}': {error}");
@@ -2373,7 +2390,7 @@ impl Parser {
                         )
                         .ok()?
                     };
-                    self.cxx_explicit_instance_methods
+                    std::sync::Arc::make_mut(&mut self.cxx_explicit_instance_methods)
                         .entry((class.to_string(), member))
                         .or_default()
                         .push(RecoveredCxxMethod {
@@ -2416,17 +2433,17 @@ impl Parser {
                 self.skipped_inline_names.insert(mangled.clone());
             }
             let prototype_parameters = if is_static {
-                self.cxx_static_methods
+                std::sync::Arc::make_mut(&mut self.cxx_static_methods)
                     .entry((class.to_string(), member))
                     .or_default()
                     .push(method);
                 parameters
             } else {
-                self.cxx_instance_methods
+                std::sync::Arc::make_mut(&mut self.cxx_instance_methods)
                     .entry((class.to_string(), member.clone()))
                     .or_default()
                     .push(method.clone());
-                self.cxx_explicit_instance_methods
+                std::sync::Arc::make_mut(&mut self.cxx_explicit_instance_methods)
                     .entry((class.to_string(), member))
                     .or_default()
                     .push(method);
@@ -3707,7 +3724,8 @@ impl Parser {
                     self.cxx_class_declaration_order
                         .push(nested_qualified.clone());
                 }
-                self.cxx_classes.insert(nested_qualified, nested_class);
+                std::sync::Arc::make_mut(&mut self.cxx_classes)
+                    .insert(nested_qualified, nested_class);
                 continue;
             }
             // Empty member declarations are valid C++ and commonly survive
@@ -4643,7 +4661,7 @@ impl Parser {
         }
         let element_size = layout.size;
         self.skipped_inline_names.insert(mangled.clone());
-        self.skipped_inline_definitions.push(Function {
+        std::sync::Arc::make_mut(&mut self.skipped_inline_definitions).push(Function {
             return_type: Type::StructPointer { element_size },
             name: mangled.clone(),
             is_static: false,

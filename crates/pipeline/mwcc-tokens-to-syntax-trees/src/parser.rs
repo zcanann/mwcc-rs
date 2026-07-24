@@ -4,6 +4,7 @@ use mwcc_core::{Compilation, Diagnostic};
 use mwcc_syntax_trees::{Pointee, SourceFundamentalType, Type};
 use mwcc_tokens::{SourceLocation, Token};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Clone, Copy)]
 pub(crate) struct PragmaState {
@@ -206,8 +207,12 @@ pub(crate) struct ConcreteIteratorArrow {
 
 #[derive(Clone)]
 pub(crate) struct Parser {
-    pub(crate) tokens: Vec<Token>,
-    pub(crate) locations: Vec<SourceLocation>,
+    /// The normalized token stream is read-only for almost every parser path.
+    /// Speculative C++ declaration probes clone the complete parser frequently,
+    /// so share this large allocation and copy it only at the two declarator
+    /// normalization sites that actually edit tokens.
+    pub(crate) tokens: Arc<Vec<Token>>,
+    pub(crate) locations: Arc<Vec<SourceLocation>>,
     pub(crate) position: usize,
     /// Whether plain (unqualified) `char` is signed — the build's `char` default
     /// (mainline/1.3.2+ signed; GC/1.3 build 53 and `-char unsigned` unsigned).
@@ -245,7 +250,7 @@ pub(crate) struct Parser {
     /// so an unrelated class cannot satisfy an array extent by name alone.
     pub(crate) cxx_layout_constants: HashMap<String, i64>,
     /// C++-specific base and declaration-order information for class layouts.
-    pub(crate) cxx_classes: HashMap<String, crate::cxx::ClassLayout>,
+    pub(crate) cxx_classes: Arc<HashMap<String, crate::cxx::ClassLayout>>,
     /// Fully-qualified C++ class names in first definition order. Late vtable
     /// ownership follows destructor definitions, but ABI helper emission uses
     /// this original class declaration order.
@@ -358,7 +363,8 @@ pub(crate) struct Parser {
     /// Static class-member overloads recovered from aggregate declarations,
     /// keyed by fully-qualified `(class, member)` name. Calls carry no implicit
     /// `this`, but still require CodeWarrior member-function mangling.
-    pub(crate) cxx_static_methods: HashMap<(String, String), Vec<crate::cxx::RecoveredCxxMethod>>,
+    pub(crate) cxx_static_methods:
+        Arc<HashMap<(String, String), Vec<crate::cxx::RecoveredCxxMethod>>>,
     /// Class-specific scalar deallocation functions, preserving whether the
     /// explicit object-size argument belongs in deleting-destructor calls.
     pub(crate) cxx_class_deletes: HashMap<String, (String, usize)>,
@@ -368,20 +374,23 @@ pub(crate) struct Parser {
     /// Constructor overloads recovered independently of object layout. Large
     /// headers may contain unsupported unrelated methods while their constructor
     /// signatures and inline bodies remain fully usable.
-    pub(crate) cxx_constructors: HashMap<String, Vec<crate::cxx::RecoveredCxxMethod>>,
+    pub(crate) cxx_constructors:
+        Arc<HashMap<String, Vec<crate::cxx::RecoveredCxxMethod>>>,
     /// Free C++ function overloads recovered from prototypes/definitions,
     /// keyed by their unqualified source name. Calls resolve by arity only when
     /// that selects one ABI symbol unambiguously.
-    pub(crate) cxx_free_functions: HashMap<String, Vec<crate::cxx::RecoveredCxxMethod>>,
+    pub(crate) cxx_free_functions:
+        Arc<HashMap<String, Vec<crate::cxx::RecoveredCxxMethod>>>,
     /// Non-virtual, non-inline instance methods recovered from skipped class
     /// bodies. These support direct `object->member(args)` calls without layout.
-    pub(crate) cxx_instance_methods: HashMap<(String, String), Vec<crate::cxx::RecoveredCxxMethod>>,
+    pub(crate) cxx_instance_methods:
+        Arc<HashMap<(String, String), Vec<crate::cxx::RecoveredCxxMethod>>>,
     /// Non-inline instance declarations addressable through explicit
     /// qualification (`Base::method()`). Virtual declarations live here too:
     /// explicit qualification suppresses dispatch without changing ordinary
     /// `object->method()` resolution.
     pub(crate) cxx_explicit_instance_methods:
-        HashMap<(String, String), Vec<crate::cxx::RecoveredCxxMethod>>,
+        Arc<HashMap<(String, String), Vec<crate::cxx::RecoveredCxxMethod>>>,
     /// Declaration-only single-primary-base relationships. This is deliberately
     /// independent of class layout: large headers can preserve safe zero-offset
     /// base qualification even when their fields cannot yet be recovered.
@@ -646,7 +655,10 @@ pub(crate) struct Parser {
     /// Fully parsed bodies of skipped inline definitions. These are never
     /// emitted, but downstream interprocedural summaries may prove a call-site
     /// expansion from their semantics instead of inferring it from a name.
-    pub(crate) skipped_inline_definitions: Vec<mwcc_syntax_trees::Function>,
+    /// The pool is append-only while parsing, so speculative parser clones can
+    /// share it and pay for a deep copy only when a probe actually discovers a
+    /// new generated definition.
+    pub(crate) skipped_inline_definitions: Arc<Vec<mwcc_syntax_trees::Function>>,
     /// Declared types for skipped inline definitions, retained independently of
     /// whether the speculative semantic-body parser accepts the body.
     pub(crate) skipped_inline_signatures: Vec<(String, Type, Vec<Type>)>,

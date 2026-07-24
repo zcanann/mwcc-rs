@@ -1982,7 +1982,8 @@ impl Parser {
                     if !self.cxx_classes.contains_key(&qualified) {
                         self.cxx_class_declaration_order.push(qualified.clone());
                     }
-                    self.cxx_classes.insert(qualified.clone(), class);
+                    std::sync::Arc::make_mut(&mut self.cxx_classes)
+                        .insert(qualified.clone(), class);
                     if self
                         .source_iterator_step_forwarders
                         .contains_key(&qualified)
