@@ -1151,6 +1151,12 @@ impl Generator {
         if let Some(cleaned) = remove_dead_locals(function) {
             return self.evaluate_body(&cleaned);
         }
+        // A pointer alias used for one bit-field clear followed by a call on
+        // the owning object has two distinct live values. Claim it before
+        // immutable-alias inlining can collapse both onto the call register.
+        if self.try_leading_bitfield_clear_call(function)? {
+            return Ok(());
+        }
         if let Some(inlined) = inline_immutable_pointer_aliases(function) {
             return self.evaluate_body(&inlined);
         }

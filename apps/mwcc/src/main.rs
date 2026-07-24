@@ -2673,6 +2673,51 @@ mod tests {
     }
 
     #[test]
+    fn preserves_an_owner_argument_across_an_alias_bitfield_clear() {
+        let source = br#"
+            struct State {
+                char padding[8729];
+                unsigned char active : 1;
+            };
+            struct Object {
+                char padding[44];
+                struct State* state;
+            };
+            extern void destroy(struct Object*);
+            void release(struct Object* object) {
+                struct State* state = object->state;
+                state->active = 0;
+                destroy(object);
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "alias-bitfield-clear.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("the owner should remain in r3 for the trailing call");
+        let expected = [
+            0x7c, 0x08, 0x02, 0xa6, 0x38, 0xa0, 0x00, 0x00, 0x90, 0x01, 0x00, 0x04, 0x94, 0x21,
+            0xff, 0xf8, 0x80, 0x83, 0x00, 0x2c, 0x88, 0x04, 0x22, 0x19, 0x50, 0xa0, 0x3e, 0x30,
+            0x98, 0x04, 0x22, 0x19, 0x48, 0x00, 0x00, 0x01, 0x80, 0x01, 0x00, 0x0c, 0x38, 0x21,
+            0x00, 0x08, 0x7c, 0x08, 0x03, 0xa6, 0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected.len())
+            .any(|bytes| bytes == expected));
+    }
+
+    #[test]
     fn schedules_two_guarded_callbacks_after_shared_alias_calls() {
         let source = br#"
             struct Object;

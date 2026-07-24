@@ -3,8 +3,9 @@
 //! Split by family (fire 525); behavior-identical to the former single body.rs.
 
 mod call_prologue;
-mod leading_member_store_call;
+mod leading_bitfield_clear_call;
 mod leading_float_update_clamp;
+mod leading_member_store_call;
 mod leading_shared_zero_bitfield_guard;
 mod symmetric_float_clamp;
 mod sign_selected_member_store;
