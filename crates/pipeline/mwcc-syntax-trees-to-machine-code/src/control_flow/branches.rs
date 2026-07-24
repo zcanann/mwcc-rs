@@ -39,6 +39,27 @@ impl Generator {
             return Err(Diagnostic::error("a logical (&&/||) condition in a select/guard needs short-circuit lowering (roadmap #21)"));
         }
 
+        // A string-valued ternary is a pointer diamond. Each arm materializes
+        // its literal address into the same result register and joins before
+        // the surrounding call. This is the SDK report idiom
+        // `streaming ? "ON" : "OFF"`; treating the strings as scalar leaves
+        // loses their relocation-bearing address materialization.
+        if matches!(
+            (when_true, when_false),
+            (Expression::StringLiteral(_), Expression::StringLiteral(_))
+        ) {
+            let (options, condition_bit) = self.emit_condition_test(condition)?;
+            let false_arm = self.fresh_label();
+            let join = self.fresh_label();
+            self.emit_branch_conditional_to(options, condition_bit, false_arm);
+            self.evaluate_general(when_true, destination)?;
+            self.emit_branch_to(join);
+            self.bind_label(false_arm);
+            self.evaluate_general(when_false, destination)?;
+            self.bind_label(join);
+            return Ok(());
+        }
+
         if self.try_emit_legacy_nested_phi_select(
             condition,
             when_true,
