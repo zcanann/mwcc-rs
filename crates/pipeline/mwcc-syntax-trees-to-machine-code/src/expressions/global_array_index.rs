@@ -5,6 +5,76 @@ use super::*;
 use super::members::split_scaled_index;
 
 impl Generator {
+    /// Materialize `&array[index]` in r0 for a store RHS.
+    ///
+    /// `addi r0,r0,lo` cannot carry an address because rA=0 denotes literal
+    /// zero. Keep the relocated high half in a short-lived virtual, complete
+    /// the base in r0, then reuse that virtual's preferred physical register
+    /// for the scaled index. This is MWCC's `index; lis; addi r0; scale; add`
+    /// schedule for member-indexed queue/table links.
+    pub(crate) fn emit_global_array_element_address_to_scratch(
+        &mut self,
+        name: &str,
+        total_size: u32,
+        element_size: u32,
+        index: &Expression,
+    ) -> Compilation<()> {
+        if constant_value(index).is_some() {
+            return Err(Diagnostic::error(
+                "a constant global-array element address into the scratch register is not supported yet (roadmap)",
+            ));
+        }
+
+        let index_register = match self.general_register_of_leaf(index) {
+            Ok(register) => register,
+            Err(_) => {
+                let register = self.fresh_virtual_general_preferring(5);
+                self.evaluate_general(index, register)?;
+                register
+            }
+        };
+        let small = self.behavior.global_addressing == GlobalAddressing::SmallData
+            && total_size <= 8;
+        if small {
+            self.emit_global_array_base(name, total_size, GENERAL_SCRATCH)?;
+        } else {
+            let high = self.fresh_virtual_general_preferring(4);
+            self.emit_address_high(high, name);
+            self.record_relocation(RelocationKind::Addr16Lo, name);
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: GENERAL_SCRATCH,
+                a: high,
+                immediate: 0,
+            });
+        }
+
+        let scaled = self.fresh_virtual_general_preferring(4);
+        if element_size.is_power_of_two() {
+            self.output
+                .instructions
+                .push(Instruction::ShiftLeftImmediate {
+                    a: scaled,
+                    s: index_register,
+                    shift: element_size.trailing_zeros() as u8,
+                });
+        } else {
+            let immediate = i16::try_from(element_size).map_err(|_| {
+                Diagnostic::error("global-array element size is too large to scale (roadmap)")
+            })?;
+            self.output.instructions.push(Instruction::MultiplyImmediate {
+                d: scaled,
+                a: index_register,
+                immediate,
+            });
+        }
+        self.output.instructions.push(Instruction::Add {
+            d: GENERAL_SCRATCH,
+            a: GENERAL_SCRATCH,
+            b: scaled,
+        });
+        Ok(())
+    }
+
     /// Load `array[leaf * factor + offset]` when the constant offset can stay in
     /// the final D-form load.  Keeping the offset out of the computed index is
     /// important: mwcc scales only the variable term, forms one element address,
