@@ -410,18 +410,26 @@ fn update_conditional_state(
         }
         return true;
     }
-    if directive == "else" || directive.starts_with("else ") {
+    if is_control_directive(directive, "else") {
         if let Some(branch) = stack.last_mut() {
             branch.active = branch.parent_active && !branch.branch_taken;
             branch.branch_taken = true;
         }
         return true;
     }
-    if directive == "endif" || directive.starts_with("endif ") {
+    if is_control_directive(directive, "endif") {
         stack.pop();
         return true;
     }
     false
+}
+
+fn is_control_directive(directive: &str, keyword: &str) -> bool {
+    directive == keyword
+        || directive
+            .strip_prefix(keyword)
+            .and_then(|suffix| suffix.as_bytes().first())
+            .is_some_and(u8::is_ascii_whitespace)
 }
 
 fn parse_directive(line: &[u8]) -> Option<&str> {
@@ -824,6 +832,39 @@ mod tests {
         loader.define("ENABLED", "1");
         let loaded = loader.load(&scratch.0.join("unit.c")).unwrap();
         assert_eq!(loaded, b"#define LOCAL 3\n\nint yes;\n\n\n\n\n\n\n");
+    }
+
+    #[test]
+    fn tabbed_else_and_endif_do_not_activate_the_fallback_branch() {
+        let scratch = Scratch::new();
+        std::fs::write(
+            scratch.0.join("unit.c"),
+            concat!(
+                "#ifdef ENABLED\n",
+                "#define VALUE 0xe1\n",
+                "#else\t/* fallback */\n",
+                "#define VALUE 0xb4\n",
+                "#endif\t/* ENABLED */\n",
+                "int selected = VALUE;\n"
+            ),
+        )
+        .unwrap();
+
+        let mut loader = SourceLoader::default();
+        loader.define("ENABLED", "1");
+        let loaded = loader.load(&scratch.0.join("unit.c")).unwrap();
+        assert_eq!(
+            loaded,
+            concat!(
+                "\n",
+                "#define VALUE 0xe1\n",
+                "\n",
+                "\n",
+                "\n",
+                "int selected = 0xe1;\n"
+            )
+            .as_bytes()
+        );
     }
 
     #[test]
