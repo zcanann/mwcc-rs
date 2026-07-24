@@ -26,8 +26,9 @@ use super::structured_frame_assignment::{
 };
 use super::structured_frame_entry::structured_dense_frame_entry_index;
 use super::structured_home_layout::{
-    dense_eager_deferred_preferences, dense_eager_home_preference,
-    paired_eager_deferred_preference,
+    compact_aggregate_scratch_frame_pair, dense_eager_deferred_preferences,
+    dense_eager_home_preference, paired_eager_deferred_preference,
+    saved_float_home_preference,
 };
 use super::structured_liveness::{
     read_after_possible_call, read_after_possible_call_in_return,
@@ -399,6 +400,15 @@ impl Generator {
         let unused_array_aggregate_eager_homes = unused_array_eager_homes
             && frame_array_bytes == 4
             && !aggregate_frame_locals.is_empty();
+        let compact_aggregate_scratch_pair = compact_aggregate_scratch_frame_pair(
+            unused_frame_array,
+            frame_array_bytes,
+            aggregate_frame_locals.len(),
+            eager_saved_locals.len(),
+            saved_parameters.len(),
+            deferred_home_plan.group_count,
+            count,
+        );
         let first_saved = 32usize.saturating_sub(count);
         let dense_frame = uses_dense_saved_register_range(
             with_frame_array,
@@ -772,6 +782,7 @@ impl Generator {
             == LegacyCalleeSavedFrameLayout::RetainEagerLocalLane
             && count == 2;
         let batched_saved_home_stores = unused_array_two_homes
+            || compact_aggregate_scratch_pair
             || paired_eager_deferred_homes
             || unused_array_eager_homes
             || saved_home_stores_precede_initialization(
@@ -966,7 +977,11 @@ impl Generator {
             .max(u8::try_from(saved_float_plan.group_count).unwrap_or(18));
         for local in saved_float_locals {
             let group = saved_float_plan.group(&local.name);
-            let preferred = 31u8.saturating_sub(u8::try_from(group).unwrap_or(17));
+            let preferred = saved_float_home_preference(
+                group,
+                saved_float_plan.group_count,
+                compact_aggregate_scratch_pair,
+            );
             let home = self.fresh_virtual_float_preferring(preferred);
             if let Some(initializer) = &local.initializer {
                 self.evaluate(initializer, local.declared_type, home)?;

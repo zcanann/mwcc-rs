@@ -9,6 +9,40 @@
 use super::structured_locals::DeferredSavedHomePlan;
 use super::structured_parameter_home_reuse::StructuredParameterHomeReuse;
 
+/// A four-byte dead scratch array beside one live aggregate preserves a compact
+/// legacy frame. Its incoming object and deferred pointer establish both GPR
+/// save slots before initialization, and its paired deferred floats grow from
+/// f30 toward f31 rather than descending from f31.
+pub(super) fn compact_aggregate_scratch_frame_pair(
+    unused_frame_array: bool,
+    frame_array_bytes: i16,
+    aggregate_count: usize,
+    eager_count: usize,
+    parameter_count: usize,
+    deferred_count: usize,
+    total_count: usize,
+) -> bool {
+    unused_frame_array
+        && frame_array_bytes == 4
+        && aggregate_count == 1
+        && eager_count == 0
+        && parameter_count == 1
+        && deferred_count == 1
+        && total_count == 2
+}
+
+pub(super) fn saved_float_home_preference(
+    group: usize,
+    group_count: usize,
+    ascending_pair: bool,
+) -> u8 {
+    if ascending_pair && group_count == 2 {
+        30u8.saturating_add(u8::try_from(group).unwrap_or(1).min(1))
+    } else {
+        31u8.saturating_sub(u8::try_from(group).unwrap_or(17))
+    }
+}
+
 /// A linkage-first body with one entry-loaded local and one later call result
 /// assigns the long-lived entry value to r30 and the later value to r31. This
 /// is the compact two-home analogue of the dense lifetime-class layout below.
@@ -171,6 +205,16 @@ mod tests {
         assert_eq!(paired_eager_deferred_preference(false, 1, 0, 1, true, 1), Some(31));
         assert_eq!(paired_eager_deferred_preference(true, 1, 0, 1, true, 0), None);
         assert_eq!(paired_eager_deferred_preference(false, 1, 0, 1, false, 0), None);
+    }
+
+    #[test]
+    fn recognizes_the_compact_aggregate_scratch_frame_pair() {
+        assert!(compact_aggregate_scratch_frame_pair(true, 4, 1, 0, 1, 1, 2));
+        assert!(!compact_aggregate_scratch_frame_pair(true, 8, 1, 0, 1, 1, 2));
+        assert!(!compact_aggregate_scratch_frame_pair(true, 4, 0, 0, 1, 1, 2));
+        assert_eq!(saved_float_home_preference(0, 2, true), 30);
+        assert_eq!(saved_float_home_preference(1, 2, true), 31);
+        assert_eq!(saved_float_home_preference(0, 2, false), 31);
     }
 
     #[test]
