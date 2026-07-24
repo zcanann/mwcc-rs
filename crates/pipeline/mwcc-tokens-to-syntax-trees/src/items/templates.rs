@@ -155,6 +155,7 @@ impl Parser {
                 self.instantiate_struct_template_layout_with_arguments(template_name, &arguments);
             self.register_concrete_template_iterator_arrow(&tag, template_name, &arguments);
             self.register_concrete_template_iterator_step(&tag, template_name);
+            self.register_concrete_template_iterator_comparison(&tag, template_name);
             return self.finish_template_instance_type(tag, layout, end);
         }
         let (tag, argument, end) = self.parse_template_spelling_at(self.position)?;
@@ -340,6 +341,38 @@ impl Parser {
             };
             self.concrete_template_iterator_steps
                 .insert(format!("{instance}::{nested}"), step);
+        }
+    }
+
+    fn register_concrete_template_iterator_comparison(
+        &mut self,
+        instance: &str,
+        template_name: &str,
+    ) {
+        let Some(nested_iterators) = self
+            .template_iterator_comparison_summaries
+            .get(template_name)
+            .cloned()
+        else {
+            return;
+        };
+        for nested in nested_iterators {
+            let suffix = format!("{template_name}::{nested}");
+            let mut matches = self
+                .structs
+                .keys()
+                .filter(|tag| *tag == &suffix || tag.ends_with(&format!("::{suffix}")));
+            let Some(generic) = matches.next().cloned() else {
+                continue;
+            };
+            if matches.next().is_some() {
+                continue;
+            }
+            let Some(comparison) = self.resolve_iterator_pointer_comparison(&generic) else {
+                continue;
+            };
+            self.concrete_template_iterator_comparisons
+                .insert(format!("{instance}::{nested}"), comparison);
         }
     }
 
@@ -1759,6 +1792,15 @@ impl Parser {
                             .entry(template_name.to_owned())
                             .or_default();
                         if !summaries.contains(&nested) {
+                            summaries.push(nested.clone());
+                        }
+                    }
+                    if self.source_iterator_equality_fields.contains_key(&qualified) {
+                        let summaries = self
+                            .template_iterator_comparison_summaries
+                            .entry(template_name.to_owned())
+                            .or_default();
+                        if !summaries.contains(&nested) {
                             summaries.push(nested);
                         }
                     }
@@ -2230,7 +2272,7 @@ impl Parser {
                                         .unwrap_or_else(|| base.clone());
                                     self.inline_template_base_forwarders.insert(
                                         (class_name.clone(), member_name.clone(), arity),
-                                        (base, base_member.clone()),
+                                        (base, base_member.clone(), wrapper.clone()),
                                     );
                                 }
                             }
@@ -2435,7 +2477,7 @@ impl Parser {
         instance: &str,
         member: &str,
         arity: usize,
-    ) -> Option<(String, String)> {
+    ) -> Option<(String, String, String)> {
         let qualified = self.qualify_cxx_class_name(instance);
         let primary = self
             .template_aliases
