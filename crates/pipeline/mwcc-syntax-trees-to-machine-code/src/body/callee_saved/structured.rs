@@ -369,7 +369,6 @@ impl Generator {
             eager_saved_locals.len(),
             &saved_parameters,
             &deferred_home_plan,
-            with_frame_array && !eager_saved_locals.is_empty(),
         );
         let count = eager_saved_locals.len()
             + saved_parameters.len()

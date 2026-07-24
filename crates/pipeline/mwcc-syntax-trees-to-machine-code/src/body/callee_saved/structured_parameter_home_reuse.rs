@@ -22,36 +22,37 @@ impl StructuredParameterHomeReuse {
         eager_count: usize,
         saved_parameters: &[&Parameter],
         deferred: &DeferredSavedHomePlan,
-        enabled: bool,
     ) -> Self {
         let mut reused_parameter_by_group = vec![None; deferred.group_count];
-        if enabled {
-            let mut parameters: Vec<_> = saved_parameters
-                .iter()
-                .enumerate()
-                .filter(|(_, parameter)| {
-                    function
-                        .return_expression
-                        .as_ref()
-                        .is_none_or(|expression| {
-                            !expression_reads_name(expression, &parameter.name)
-                        })
-                })
-                .filter_map(|(index, parameter)| {
-                    structured_name_last_read(function, &parameter.name)
-                        .map(|last_read| (index, last_read))
-                })
-                .collect();
-            parameters.sort_by_key(|(_, last_read)| std::cmp::Reverse(*last_read));
+        let mut parameters: Vec<_> = saved_parameters
+            .iter()
+            .enumerate()
+            .filter(|(_, parameter)| {
+                function
+                    .return_expression
+                    .as_ref()
+                    .is_none_or(|expression| {
+                        !expression_reads_name(expression, &parameter.name)
+                    })
+            })
+            .filter_map(|(index, parameter)| {
+                structured_name_last_read(function, &parameter.name)
+                    .map(|last_read| (index, last_read))
+            })
+            .collect();
+        parameters.sort_by_key(|(_, last_read)| std::cmp::Reverse(*last_read));
 
-            for (parameter, last_read) in parameters {
-                let reusable = (0..deferred.group_count)
-                    .filter(|group| reused_parameter_by_group[*group].is_none())
-                    .filter(|group| deferred.first_assignment(*group) > last_read)
-                    .max_by_key(|group| deferred.first_assignment(*group));
-                if let Some(group) = reusable {
-                    reused_parameter_by_group[group] = Some(parameter);
-                }
+        for (parameter, last_read) in parameters {
+            let reusable = (0..deferred.group_count)
+                .filter(|group| reused_parameter_by_group[*group].is_none())
+                // A local assignment defines its result only after the entire
+                // right-hand side has consumed the parameter. A final parameter
+                // read and the local definition in the same statement therefore
+                // have adjacent, non-overlapping live intervals.
+                .filter(|group| deferred.first_assignment(*group) >= last_read)
+                .max_by_key(|group| deferred.first_assignment(*group));
+            if let Some(group) = reusable {
+                reused_parameter_by_group[group] = Some(parameter);
             }
         }
 
@@ -149,7 +150,6 @@ mod tests {
             0,
             &[&function.parameters[0]],
             &deferred,
-            true,
         );
 
         assert_eq!(reuse.fresh_group_count, 0);
@@ -165,10 +165,37 @@ mod tests {
             0,
             &[&function.parameters[0]],
             &deferred,
-            true,
         );
 
         assert_eq!(reuse.fresh_group_count, 1);
         assert_eq!(reuse.home_index(deferred.group("late")), 1);
+    }
+
+    #[test]
+    fn reuses_a_parameter_consumed_by_the_defining_call() {
+        let mut function = function(false);
+        function.statements = vec![
+            Statement::Assign {
+                name: "late".into(),
+                value: Expression::Call {
+                    name: "produce".into(),
+                    arguments: vec![Expression::Variable("incoming".into())],
+                },
+            },
+            Statement::Expression(Expression::Call {
+                name: "consume".into(),
+                arguments: vec![Expression::Variable("late".into())],
+            }),
+        ];
+        let deferred = plan_deferred_saved_homes(&function, &[&function.locals[0]]).unwrap();
+        let reuse = StructuredParameterHomeReuse::plan(
+            &function,
+            0,
+            &[&function.parameters[0]],
+            &deferred,
+        );
+
+        assert_eq!(reuse.fresh_group_count, 0);
+        assert_eq!(reuse.home_index(deferred.group("late")), 0);
     }
 }
