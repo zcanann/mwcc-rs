@@ -2093,6 +2093,7 @@ fn compile(
         } else {
             mwcc_machine_code_to_object::FunctionSymbolOrder::ReferencesFirst
         },
+        weak_vtable_function_symbol_tail: behavior.weak_vtable_function_symbol_tail,
         initialized_globals_before_deferred_functions: config.flags.inline_deferred,
         local_data_symbols_in_declaration_order: behavior.local_data_symbol_order
             == mwcc_versions::LocalDataSymbolOrder::DeclarationOrder,

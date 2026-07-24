@@ -112,7 +112,7 @@ pub fn materialize(unit: &mut TranslationUnit) {
             Vec::new(),
             true,
             false,
-            1,
+            4,
         );
         if late_weak_vtable.is_some() {
             if let Some((non_static_functions_before, functions_before)) = owner_position {
@@ -125,6 +125,7 @@ pub fn materialize(unit: &mut TranslationUnit) {
         // An all-inline class has no early key-function owner. Its RTTI name is
         // therefore allocated at the constructor's source-function frontier,
         // immediately before the late weak vtable group.
+        let late_weak_owner = late_weak_vtable.is_some();
         if let Some(vtable) = late_weak_vtable {
             generated.push(vtable);
         }
@@ -163,8 +164,8 @@ pub fn materialize(unit: &mut TranslationUnit) {
             rtti,
             vec![0; 8],
             relocations,
-            false,
-            true,
+            late_weak_owner,
+            !late_weak_owner,
             4,
         );
         if let Some((non_static_functions_before, functions_before)) = owner_position {

@@ -768,6 +768,7 @@ pub struct Behavior {
     pub cxx_rtti_inherited_virtual_destructor_label_bump: u8,
     pub cxx_rtti_initial_virtual_label_discount: u8,
     pub cxx_rtti_inline_definition_label_bump: u8,
+    pub weak_vtable_function_symbol_tail: bool,
     /// Whether initialized `T a[] = ...` objects bypass small-data routing.
     pub inferred_array_uses_full_data_section: bool,
     /// Post-resolution optimization of branches written in `asm` functions.
@@ -1192,6 +1193,10 @@ impl Behavior {
                 .build
                 .profile
                 .cxx_rtti_inline_definition_label_bump(),
+            weak_vtable_function_symbol_tail: config
+                .build
+                .profile
+                .weak_vtable_function_symbol_tail(),
             inferred_array_uses_full_data_section: config
                 .build
                 .profile

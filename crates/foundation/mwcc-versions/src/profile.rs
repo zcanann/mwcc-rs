@@ -1319,6 +1319,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         self.cxx_inline_definition_label_bump()
     }
 
+    /// Register weak vtable-owned inline function symbols in reverse slot
+    /// order after the ordinary source-function symbol stream.
+    fn weak_vtable_function_symbol_tail(&self) -> bool {
+        false
+    }
+
     /// Whether an initialized array whose written length was inferred from `[]`
     /// bypasses the small-data size threshold. Build 163 places writable forms
     /// in `.data` and const forms in `.rodata`; the 2.4.x mainline uses the same
@@ -1847,6 +1853,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn cxx_rtti_initial_virtual_label_discount(&self, _whole_file: bool) -> u8 {
         1
+    }
+
+    fn weak_vtable_function_symbol_tail(&self) -> bool {
+        true
     }
 
     fn retain_unused_c_inline_asm_symbols(&self) -> bool {

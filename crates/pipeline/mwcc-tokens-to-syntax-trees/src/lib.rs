@@ -2135,6 +2135,17 @@ blr\n\
             .expect("weak vtable retained");
         assert!(name_index < vtable_index);
         assert_eq!(unit.globals[name_index].functions_before, 1);
+        assert!(matches!(
+            unit.globals[name_index].declared_type,
+            Type::Struct { align: 4, .. }
+        ));
+        let rtti = unit
+            .globals
+            .iter()
+            .find(|global| global.name == "__RTTI__5Count")
+            .expect("RTTI handle materialized");
+        assert!(rtti.is_static);
+        assert!(!rtti.is_weak);
     }
 
     #[test]

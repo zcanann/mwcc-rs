@@ -227,6 +227,7 @@ fn data_anchor_precedes_the_first_upfront_local_data_object() {
             code_alignment: 4,
             sdata2_writable: false,
             function_symbol_order: FunctionSymbolOrder::ReferencesFirst,
+            weak_vtable_function_symbol_tail: false,
             initialized_globals_before_deferred_functions: false,
             local_data_symbols_in_declaration_order: false,
             small_zero_statics_in_declaration_order: false,

@@ -40,6 +40,9 @@ pub struct ObjectFormat {
     /// Whether the `.sdata2` constant pool carries ELF's `SHF_WRITE` bit.
     pub sdata2_writable: bool,
     pub function_symbol_order: FunctionSymbolOrder,
+    /// Weak vtable-owned inline functions keep forward text layout but expose
+    /// reverse-slot symbol discovery after ordinary source functions.
+    pub weak_vtable_function_symbol_tail: bool,
     /// Deferred code generation completes initialized file-scope declarations
     /// before its reversed function-emission pass, regardless of where those
     /// declarations appeared between source functions.
