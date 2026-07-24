@@ -4,6 +4,33 @@
 use super::*;
 
 impl Generator {
+    /// Keep a nonnull-tested member pointer in the first call-argument register.
+    ///
+    /// A saved owner is still needed by later calls, but the pointer loaded for
+    /// the guard is already the receiver of the first call in the taken arm.
+    /// MWCC tests that value in r3 and consumes it directly instead of loading
+    /// the same member again through the saved owner.
+    pub(super) fn schedule_guarded_member_receiver_reuse(&mut self) {
+        let Some(start) = self
+            .output
+            .instructions
+            .windows(8)
+            .position(is_guarded_member_receiver_reload)
+        else {
+            return;
+        };
+        let receiver = Eabi::FIRST_GENERAL_ARGUMENT;
+        match &mut self.output.instructions[start + 1] {
+            Instruction::LoadWord { d, .. } => *d = receiver,
+            _ => unreachable!(),
+        }
+        match &mut self.output.instructions[start + 2] {
+            Instruction::CompareLogicalWordImmediate { a, .. } => *a = receiver,
+            _ => unreachable!(),
+        }
+        self.remove_structured_condition_instruction(start + 4);
+    }
+
     /// Collapse two nested nonnull checks of the same member address into the
     /// receiver-producing record add plus a plain second test that MWCC keeps
     /// for the inlined wrapper boundary. The final direct call then consumes
@@ -98,6 +125,25 @@ fn is_repeated_member_address_call(window: &[Instruction]) -> bool {
         && first_offset == call_offset)
 }
 
+fn is_guarded_member_receiver_reload(window: &[Instruction]) -> bool {
+    matches!(window, [
+        Instruction::Or { a: saved, s: entry, b: entry_again },
+        Instruction::LoadWord { d: tested, a: test_base, offset: test_offset },
+        Instruction::CompareLogicalWordImmediate { a: compared, immediate: 0 },
+        Instruction::BranchConditionalForward { .. },
+        Instruction::LoadWord { d: 3, a: call_base, offset: call_offset },
+        Instruction::AddImmediate { d: 5, a: 0, immediate: 0 },
+        Instruction::AddImmediate { d: 6, a: 0, immediate: 0 },
+        Instruction::BranchAndLink { .. },
+    ] if saved != entry
+        && entry == entry_again
+        && test_base == entry
+        && tested == compared
+        && *tested != 3
+        && call_base == saved
+        && test_offset == call_offset)
+}
+
 fn reuses_preceding_member_load(instructions: &[Instruction], term_start: usize) -> bool {
     let Some(previous) = term_start.checked_sub(4) else {
         return false;
@@ -130,6 +176,21 @@ fn reuses_preceding_member_load(instructions: &[Instruction], term_start: usize)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognizes_a_guard_receiver_reloaded_through_its_saved_owner() {
+        let instructions = [
+            Instruction::Or { a: 31, s: 3, b: 3 },
+            Instruction::LoadWord { d: 0, a: 3, offset: 8352 },
+            Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 },
+            Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 12 },
+            Instruction::LoadWord { d: 3, a: 31, offset: 8352 },
+            Instruction::AddImmediate { d: 5, a: 0, immediate: 0 },
+            Instruction::AddImmediate { d: 6, a: 0, immediate: 0 },
+            Instruction::BranchAndLink { target: "callee".into() },
+        ];
+        assert!(is_guarded_member_receiver_reload(&instructions));
+    }
 
     #[test]
     fn recognizes_a_member_base_live_across_the_first_false_edge() {
