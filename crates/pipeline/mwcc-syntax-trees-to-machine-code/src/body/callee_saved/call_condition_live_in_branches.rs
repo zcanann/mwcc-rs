@@ -64,6 +64,11 @@ impl Generator {
         };
 
         self.non_leaf = true;
+        // Inline accessors expanded into this branch have no temporary live
+        // across the condition call.  The general inline-residue estimate is
+        // intentionally conservative for straight-line bodies; this CFG owner
+        // has enough liveness information to discharge that retained lane.
+        self.legacy_inline_expansion_frame_bytes = 0;
         let homes: Vec<u8> = survivors
             .iter()
             .map(|_| self.fresh_virtual_general())
@@ -106,6 +111,67 @@ impl Generator {
         self.output.anonymous_label_bump += 2;
         Ok(true)
     }
+
+    /// Finish the build-163 issue order for a call in the selected arm.  When
+    /// two saved entry values are forwarded and one also feeds a computed
+    /// earlier argument, MWCC issues the independent forwards first and spells
+    /// the whole copy group as `addi ...,0`.
+    pub(crate) fn schedule_call_condition_live_in_arguments(&mut self) {
+        if self.behavior.frame_convention != FrameConvention::LinkageFirst {
+            return;
+        }
+        schedule_forwarded_argument_group(&mut self.output.instructions);
+    }
+}
+
+fn schedule_forwarded_argument_group(instructions: &mut [Instruction]) -> bool {
+    if instructions.len() < 4 {
+        return false;
+    }
+    for index in 0..=instructions.len() - 4 {
+        let (computed_base, computed_offset, first_source, second_source) =
+            match &instructions[index..index + 4] {
+                [
+                    Instruction::AddImmediate {
+                        d: 4,
+                        a: computed_base,
+                        immediate: computed_offset,
+                    },
+                    Instruction::Or { a: 5, s: first_source, b: first_source_b },
+                    Instruction::Or { a: 6, s: second_source, b: second_source_b },
+                    Instruction::BranchAndLink { .. },
+                ] if first_source == first_source_b
+                    && second_source == second_source_b
+                    && computed_base == first_source
+                    && *computed_offset != 0
+                    // This is a post-allocation pass. Registers r14-r31 are the
+                    // physical nonvolatile GPR set; the generator's saved-home
+                    // list still contains its virtual identities here.
+                    && *first_source >= 14
+                    && *second_source >= 14 =>
+                {
+                    (*computed_base, *computed_offset, *first_source, *second_source)
+                }
+                _ => continue,
+            };
+        instructions[index] = Instruction::AddImmediate {
+            d: 5,
+            a: first_source,
+            immediate: 0,
+        };
+        instructions[index + 1] = Instruction::AddImmediate {
+            d: 6,
+            a: second_source,
+            immediate: 0,
+        };
+        instructions[index + 2] = Instruction::AddImmediate {
+            d: 4,
+            a: computed_base,
+            immediate: computed_offset,
+        };
+        return true;
+    }
+    false
 }
 
 fn straight_line_arm_statement(statement: &Statement) -> bool {
@@ -173,5 +239,26 @@ mod tests {
             .map(|parameter| parameter.name.as_str())
             .collect();
         assert_eq!(names, ["amount", "object"]);
+    }
+
+    #[test]
+    fn forwards_saved_arguments_before_their_computed_sibling() {
+        let mut instructions = vec![
+            Instruction::AddImmediate { d: 4, a: 30, immediate: 2 },
+            Instruction::Or { a: 5, s: 30, b: 30 },
+            Instruction::Or { a: 6, s: 31, b: 31 },
+            Instruction::BranchAndLink { target: "sink".into() },
+        ];
+
+        assert!(schedule_forwarded_argument_group(&mut instructions));
+        assert_eq!(
+            instructions,
+            vec![
+                Instruction::AddImmediate { d: 5, a: 30, immediate: 0 },
+                Instruction::AddImmediate { d: 6, a: 31, immediate: 0 },
+                Instruction::AddImmediate { d: 4, a: 30, immediate: 2 },
+                Instruction::BranchAndLink { target: "sink".into() },
+            ]
+        );
     }
 }
