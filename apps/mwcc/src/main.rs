@@ -4352,6 +4352,57 @@ mod tests {
     }
 
     #[test]
+    fn schedules_sign_directed_float_decay_with_zero_crossing_clamps() {
+        let source = br#"
+            struct Object {
+                char pad[240];
+                float value;
+            };
+            void compiled(struct Object* object, float amount) {
+                if (object->value < 0) {
+                    object->value += amount;
+                    if (object->value > 0) {
+                        object->value = 0;
+                    }
+                } else {
+                    object->value -= amount;
+                    if (object->value < 0) {
+                        object->value = 0;
+                    }
+                }
+            }
+        "#;
+        let mut flags = mwcc_versions::Flags::default();
+        flags.debug_info = false;
+        flags.cpp_exceptions = false;
+        flags.emit_mwcats = false;
+        let config = mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_2_5N,
+            flags,
+        };
+        let object = compile(
+            source,
+            "symmetric-float-decay.c",
+            config,
+            Some(SourceLanguage::C),
+            None,
+            false,
+        )
+        .expect("sign-directed decay should preserve MWCC's float schedule");
+        let expected_text = [
+            0xc0, 0x03, 0x00, 0xf0, 0xc0, 0x40, 0x00, 0x00, 0xfc, 0x00, 0x10, 0x40, 0x40,
+            0x80, 0x00, 0x20, 0xec, 0x00, 0x08, 0x2a, 0xd0, 0x03, 0x00, 0xf0, 0xc0, 0x03,
+            0x00, 0xf0, 0xfc, 0x00, 0x10, 0x40, 0x4c, 0x81, 0x00, 0x20, 0xd0, 0x43, 0x00,
+            0xf0, 0x4e, 0x80, 0x00, 0x20, 0xec, 0x00, 0x08, 0x28, 0xd0, 0x03, 0x00, 0xf0,
+            0xc0, 0x03, 0x00, 0xf0, 0xfc, 0x00, 0x10, 0x40, 0x4c, 0x80, 0x00, 0x20, 0xd0,
+            0x43, 0x00, 0xf0, 0x4e, 0x80, 0x00, 0x20,
+        ];
+        assert!(object
+            .windows(expected_text.len())
+            .any(|bytes| bytes == expected_text));
+    }
+
+    #[test]
     fn command_line_pool_mode_is_last_wins() {
         let off = parse_invocation(&["-pool".into(), "off".into()]);
         assert!(!off.flags.pooling_enabled);
