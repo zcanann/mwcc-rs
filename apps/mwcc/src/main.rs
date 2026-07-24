@@ -51,6 +51,37 @@ struct Invocation {
     parity_keep_going: bool,
 }
 
+fn is_string_mode_token(value: &str) -> bool {
+    let mut saw_suboption = false;
+    for part in value
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        saw_suboption = true;
+        if !matches!(
+            part,
+            "reuse" | "noreuse" | "pool" | "nopool" | "readonly" | "noreadonly"
+        ) {
+            return false;
+        }
+    }
+    saw_suboption
+}
+
+fn apply_string_mode(flags: &mut mwcc_versions::Flags, value: &str) {
+    for part in value.split(',').map(str::trim) {
+        match part {
+            "readonly" => flags.string_literals_read_only = true,
+            "noreadonly" => flags.string_literals_read_only = false,
+            "pool" => flags.string_literals_packed = true,
+            "nopool" => flags.string_literals_packed = false,
+            "reuse" | "noreuse" | "" => {}
+            _ => {}
+        }
+    }
+}
+
 fn parse_invocation(arguments: &[String]) -> Invocation {
     use mwcc_versions::{CharDefault, EnumStorage, GlobalAddressing, Optimization};
     let mut invocation = Invocation {
@@ -178,16 +209,16 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
             // cancel a standalone `-rostr` (the GC 3.0 project lines use both).
             "-str" => {
                 index += 1;
-                if let Some(value) = arguments.get(index) {
-                    for part in value.split(',') {
-                        match part {
-                            "readonly" => invocation.flags.string_literals_read_only = true,
-                            "noreadonly" => invocation.flags.string_literals_read_only = false,
-                            "pool" => invocation.flags.string_literals_packed = true,
-                            "nopool" => invocation.flags.string_literals_packed = false,
-                            _ => {}
-                        }
+                while let Some(value) = arguments.get(index) {
+                    apply_string_mode(&mut invocation.flags, value);
+                    if !value.trim_end().ends_with(',')
+                        || !arguments
+                            .get(index + 1)
+                            .is_some_and(|next| is_string_mode_token(next))
+                    {
+                        break;
                     }
+                    index += 1;
                 }
             }
             // Modern command lines spell the same read-only string-pool mode
@@ -3903,6 +3934,15 @@ mod tests {
         let read_only = parse_invocation(&["-str".into(), "reuse,pool,readonly".into()]);
         assert!(read_only.flags.string_literals_read_only);
         assert!(read_only.flags.string_literals_packed);
+
+        let spaced_suboptions = parse_invocation(&[
+            "-str".into(),
+            "reuse,".into(),
+            "pool,".into(),
+            "readonly".into(),
+        ]);
+        assert!(spaced_suboptions.flags.string_literals_read_only);
+        assert!(spaced_suboptions.flags.string_literals_packed);
 
         let restated_pooling = parse_invocation(&[
             "-str".into(),
