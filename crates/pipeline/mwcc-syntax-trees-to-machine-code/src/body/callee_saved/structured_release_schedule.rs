@@ -61,6 +61,50 @@ fn schedule_saved_receiver_array_release(
         unreachable!("the array-release prefix was checked above")
     };
     *a = 3;
+
+    if let Some(store) = instructions.windows(3).position(|window| {
+        matches!(&window[0], Instruction::StoreWord { s, a, .. }
+            if *s == first_saved && *a == second_saved)
+            && matches!(
+                window[1],
+                Instruction::CompareLogicalWordImmediate {
+                    a,
+                    immediate: 0
+                } if a == first_saved
+            )
+            && matches!(window[2], Instruction::BranchConditionalForward { .. })
+    }) {
+        instructions.swap(store, store + 1);
+    }
+    if let Some(store) = instructions.windows(4).position(|window| {
+        matches!(
+            (&window[0], &window[1], &window[2], &window[3]),
+            (
+                Instruction::StoreWord {
+                    s: 3,
+                    a: store_base,
+                    offset: store_offset,
+                },
+                Instruction::LoadWord {
+                    d: 3,
+                    a: load_base,
+                    offset: load_offset,
+                },
+                Instruction::ShiftLeftImmediate {
+                    a: 4,
+                    s: scale_source,
+                    ..
+                },
+                Instruction::BranchAndLink { target },
+            ) if *store_base == second_saved
+                && *load_base == second_saved
+                && store_offset == load_offset
+                && *scale_source == first_saved
+                && target == "bzero__Q28JASystem4CalcFPvUl"
+        )
+    }) {
+        instructions.swap(store + 1, store + 2);
+    }
     instructions.swap(end - 3, end - 2);
     true
 }
@@ -110,8 +154,43 @@ mod tests {
             Instruction::BranchAndLink {
                 target: "__dla__FPv".into(),
             },
+            Instruction::StoreWord {
+                s: 31,
+                a: 30,
+                offset: 20,
+            },
+            Instruction::CompareLogicalWordImmediate {
+                a: 31,
+                immediate: 0,
+            },
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 13,
+            },
+            Instruction::BranchAndLink {
+                target: "getCurrentHeap".into(),
+            },
             Instruction::BranchAndLink {
                 target: "allocate".into(),
+            },
+            Instruction::StoreWord {
+                s: 3,
+                a: 30,
+                offset: 16,
+            },
+            Instruction::LoadWord {
+                d: 3,
+                a: 30,
+                offset: 16,
+            },
+            Instruction::ShiftLeftImmediate {
+                a: 4,
+                s: 31,
+                shift: 2,
+            },
+            Instruction::BranchAndLink {
+                target: "bzero__Q28JASystem4CalcFPvUl".into(),
             },
             Instruction::LoadWord { d: 0, a: 1, offset: 28 },
             Instruction::LoadWord { d: 31, a: 1, offset: 20 },
@@ -142,7 +221,22 @@ mod tests {
             Instruction::LoadWord { d: 3, a: 3, .. }
         ));
         assert!(matches!(
-            instructions[13],
+            instructions[9],
+            Instruction::CompareLogicalWordImmediate {
+                a: 31,
+                immediate: 0
+            }
+        ));
+        assert!(matches!(
+            instructions[15],
+            Instruction::ShiftLeftImmediate {
+                a: 4,
+                s: 31,
+                shift: 2
+            }
+        ));
+        assert!(matches!(
+            instructions[21],
             Instruction::MoveToLinkRegister { s: 0 }
         ));
     }
