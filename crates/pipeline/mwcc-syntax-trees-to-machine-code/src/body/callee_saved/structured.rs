@@ -39,6 +39,7 @@ use super::structured_liveness::{
 };
 use super::structured_loop_invariants::hoist_iterator_end_sentinels;
 use super::structured_loop_lowering::lower_structured_loops;
+use super::structured_preloop_alias::fold_preloop_comma_pointer_alias;
 use super::structured_locals::{
     body_uses_local, dead_ephemeral_float_locals, is_definitely_assigned_before_reads,
     is_frame_address_null_select, plan_deferred_saved_homes, plan_ephemeral_locals,
@@ -111,6 +112,8 @@ impl Generator {
         let hoisted_iterator_end =
             hoist_iterator_end_sentinels(function, &self.one_word_aggregate_locals);
         let function = hoisted_iterator_end.as_ref().unwrap_or(function);
+        let folded_preloop_alias = fold_preloop_comma_pointer_alias(function);
+        let function = folded_preloop_alias.as_ref().unwrap_or(function);
         let capture = std::env::var_os("MWCC_CAPTURE_FUNCTION")
             .is_some_and(|name| name == std::ffi::OsStr::new(&function.name));
         macro_rules! decline {

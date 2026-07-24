@@ -94,13 +94,20 @@ fn hoist_in_statements(
                 if let Some((endpoint, _)) = invariant {
                     let name = fresh_name(used_names, next_name);
                     declarations.push(pointer_local(&name));
-                    output.push(Statement::Assign {
-                        name: name.clone(),
-                        value: endpoint,
-                    });
+                    let endpoint = Expression::Assign {
+                        target: Box::new(Expression::Variable(name.clone())),
+                        value: Box::new(endpoint),
+                    };
+                    let initializer = match initializer {
+                        Some(initializer) => Expression::Comma {
+                            left: Box::new(initializer.clone()),
+                            right: Box::new(endpoint),
+                        },
+                        None => endpoint,
+                    };
                     output.push(Statement::Loop {
                         kind: *kind,
-                        initializer: initializer.clone(),
+                        initializer: Some(initializer),
                         condition: Some(replace_endpoint(condition, &name)),
                         step: step.clone(),
                         body,
@@ -437,7 +444,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hoists_a_proven_iterator_anchor_immediately_before_its_loop() {
+    fn hoists_a_proven_iterator_anchor_after_the_loop_initializer() {
         let iterator = "it".to_owned();
         let function = Function {
             return_type: Type::Void,
@@ -520,18 +527,16 @@ mod tests {
         .expect("proven endpoint should hoist");
 
         assert_eq!(hoisted.locals.len(), 3);
-        assert!(matches!(
-            hoisted.statements.as_slice(),
-            [
-                Statement::Assign {
-                    name,
-                    value: Expression::AddressOf { .. },
-                },
-                Statement::Loop {
-                    condition: Some(Expression::Binary { right, .. }),
-                    ..
-                },
-            ] if matches!(right.as_ref(), Expression::Variable(right_name) if right_name == name)
-        ));
+        let [Statement::Loop {
+            initializer: Some(Expression::Assign { target, value }),
+            condition: Some(Expression::Binary { right, .. }),
+            ..
+        }] = hoisted.statements.as_slice()
+        else {
+            panic!("the endpoint assignment should become the loop initializer")
+        };
+        assert!(matches!(target.as_ref(), Expression::Variable(name)
+            if matches!(right.as_ref(), Expression::Variable(right_name) if right_name == name)));
+        assert!(matches!(value.as_ref(), Expression::AddressOf { .. }));
     }
 }
