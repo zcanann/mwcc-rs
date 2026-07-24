@@ -1225,6 +1225,37 @@ impl Generator {
                 }
             }
             if is_comparison(*operator) {
+                // Inline composition and hidden aggregate-result storage can
+                // prefix either operand with an ordered effect. Sequence that
+                // effect before selecting registers for both surviving values:
+                // peeling only inside `condition_operand_register` would load
+                // the opposite operand first and let the call clobber it.
+                if let Expression::Comma {
+                    left: prefix,
+                    right: surviving,
+                } = left.as_ref()
+                {
+                    self.emit_comma_side_effect(prefix)?;
+                    let normalized = Expression::Binary {
+                        operator: *operator,
+                        left: surviving.clone(),
+                        right: right.clone(),
+                    };
+                    return self.emit_condition_test(&normalized);
+                }
+                if let Expression::Comma {
+                    left: prefix,
+                    right: surviving,
+                } = right.as_ref()
+                {
+                    self.emit_comma_side_effect(prefix)?;
+                    let normalized = Expression::Binary {
+                        operator: *operator,
+                        left: left.clone(),
+                        right: surviving.clone(),
+                    };
+                    return self.emit_condition_test(&normalized);
+                }
                 // A floating-point comparison branches off `fcmpo`/`fcmpu`, not `cmpw`.
                 // Either side yielding a float (leaf, load, or arithmetic
                 // subtree) selects it. Restricting this to direct operands sent

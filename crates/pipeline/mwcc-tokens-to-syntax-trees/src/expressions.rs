@@ -1158,6 +1158,7 @@ impl Parser {
             Expression::VirtualCall { .. } => self.expression_struct_tag.take(),
             _ => None,
         };
+        let mut pending_arrow_effect: Option<Expression> = None;
         loop {
             match self.peek() {
                 // `(*fp)(args)` — an indirect call through a function-pointer
@@ -1346,23 +1347,67 @@ impl Parser {
                     let field = self.parse_identifier()?;
                     if is_arrow {
                         if let Some(tag) = struct_tag.as_deref() {
-                            if let Some((element, offset, storage_offset)) =
+                            if let Some(arrow) =
                                 self.resolve_concrete_template_iterator_arrow(tag)
                             {
                                 let element_size =
-                                    self.structs.get(&element).map_or(0, |layout| layout.size);
+                                    self.structs.get(&arrow.element).map_or(0, |layout| layout.size);
                                 expression = Expression::Member {
                                     base: Box::new(expression),
-                                    offset: storage_offset,
+                                    offset: arrow.storage_offset,
                                     member_type: Type::StructPointer { element_size: 0 },
                                     index_stride: None,
                                 };
-                                if offset != 0 {
+                                if let Some(assertion) = arrow.assertion {
+                                    let arguments = vec![
+                                        Expression::StringLiteral(assertion.file),
+                                        Expression::IntegerLiteral(assertion.line),
+                                        Expression::StringLiteral(assertion.message),
+                                    ];
+                                    let name = self
+                                        .resolve_qualified_free_cxx_call(
+                                            &assertion.scope,
+                                            &assertion.function,
+                                            &arguments,
+                                        )?
+                                        .ok_or_else(|| {
+                                            Diagnostic::error(format!(
+                                                "iterator pointer assertion '{}::{}' has no recovered declaration",
+                                                assertion.scope, assertion.function
+                                            ))
+                                        })?;
+                                    let effect = Expression::Cast {
+                                        target_type: Type::Void,
+                                        operand: Box::new(Expression::Binary {
+                                            operator: BinaryOperator::LogicalOr,
+                                            left: Box::new(Expression::Binary {
+                                                operator: BinaryOperator::NotEqual,
+                                                left: Box::new(expression.clone()),
+                                                right: Box::new(Expression::IntegerLiteral(0)),
+                                            }),
+                                            right: Box::new(Expression::Comma {
+                                                left: Box::new(Expression::Call {
+                                                    name,
+                                                    arguments,
+                                                }),
+                                                right: Box::new(Expression::IntegerLiteral(0)),
+                                            }),
+                                        }),
+                                    };
+                                    pending_arrow_effect = Some(match pending_arrow_effect {
+                                        Some(previous) => Expression::Comma {
+                                            left: Box::new(previous),
+                                            right: Box::new(effect),
+                                        },
+                                        None => effect,
+                                    });
+                                }
+                                if arrow.offset != 0 {
                                     expression = Expression::Binary {
                                         operator: mwcc_syntax_trees::BinaryOperator::Subtract,
                                         left: Box::new(expression),
                                         right: Box::new(Expression::IntegerLiteral(i64::from(
-                                            offset,
+                                            arrow.offset,
                                         ))),
                                     };
                                 }
@@ -1370,7 +1415,7 @@ impl Parser {
                                     target_type: Type::StructPointer { element_size },
                                     operand: Box::new(expression),
                                 };
-                                struct_tag = Some(element);
+                                struct_tag = Some(arrow.element);
                             }
                         }
                     }
@@ -1586,6 +1631,12 @@ impl Parser {
                 }
                 _ => break,
             }
+        }
+        if let Some(effect) = pending_arrow_effect {
+            expression = Expression::Comma {
+                left: Box::new(effect),
+                right: Box::new(expression),
+            };
         }
         // Record the resolved struct tag so a wrapping `(...)` can recover it (the
         // base of `((struct S *)x)->field` is parsed in a nested `factor`).

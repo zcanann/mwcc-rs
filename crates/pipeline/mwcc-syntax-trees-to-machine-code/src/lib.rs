@@ -11,6 +11,7 @@ use mwcc_versions::{Behavior, CompilerConfig};
 use std::collections::{HashMap, HashSet};
 
 mod analysis;
+mod allocation_frame;
 mod arithmetic;
 mod asm;
 mod body;
@@ -767,12 +768,13 @@ fn allocate_registers(generator: &mut Generator) -> Compilation<Vec<u8>> {
         mwcc_core::Diagnostic::error(format!("register allocation failed: {error:?}"))
     })?;
     let used_float = allocation.assigned_float_callee_saved(&generator.constraints);
+    let used = allocation.assigned_callee_saved(&generator.constraints);
+    generator.reconcile_allocated_general_frame(&allocation, &used)?;
     mwcc_vreg::apply(&mut generator.output.instructions, &allocation);
     // FRAME-METADATA CONSISTENCY: every callee-saved register the allocation used
     // must correspond to a save slot the arm declared (generator.callee_saved, one
     // entry per prologue save). A mismatch would emit unwind metadata that disagrees
     // with the actual saves — defer instead of shipping a wrong extab.
-    let used = allocation.assigned_callee_saved(&generator.constraints);
     if used.len() > generator.callee_saved.len() {
         return Err(mwcc_core::Diagnostic::error(format!(
             "allocation used {} callee-saved register(s) but the frame declares {} save slot(s) (frame builder needed)",

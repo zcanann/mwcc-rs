@@ -7090,13 +7090,17 @@ blr\n\
     fn recovers_friend_bearing_layouts_and_expression_template_arguments() {
         let source = r#"
             namespace api {
+                namespace report {
+                    void Panic(const char*, int, const char*, ...);
+                }
+                class Node {};
                 class ListBase {
                     friend class Inspector;
                 public:
                     class Iterator;
                     class Iterator {
                         friend class ListBase;
-                        int* node;
+                        Node* node;
                     };
                     Iterator GetBeginIter() { return Iterator(); }
                     int count;
@@ -7107,7 +7111,7 @@ blr\n\
                     class Iterator {
                         friend class List;
                         typedef T Element;
-                        int* node;
+                        Node* node;
                     public:
                         T* operator->() const { return GetPointer(node); }
                     };
@@ -7115,7 +7119,9 @@ blr\n\
                     Iterator GetBeginIter() {
                         return Iterator(ListBase::GetBeginIter());
                     }
-                    static T* GetPointer(int* pointer) {
+                    static T* GetPointer(Node* pointer) {
+                        (void)(((pointer != 0))
+                            || (api::report::Panic("List.h", 73, "null pointer"), 0));
                         return pointer - Offset;
                     }
                 };
@@ -7162,8 +7168,32 @@ blr\n\
             }
         ));
         assert!(matches!(
-            unit.functions[0].return_expression,
-            Some(mwcc_syntax_trees::Expression::Member { offset: 4, .. })
+            unit.functions[0].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Comma { left, right })
+                if matches!(
+                    left.as_ref(),
+                    mwcc_syntax_trees::Expression::Cast { operand, .. }
+                        if matches!(
+                            operand.as_ref(),
+                            mwcc_syntax_trees::Expression::Binary {
+                                operator: mwcc_syntax_trees::BinaryOperator::LogicalOr,
+                                right: failure,
+                                ..
+                            } if matches!(
+                                failure.as_ref(),
+                                mwcc_syntax_trees::Expression::Comma { left: call, .. }
+                                    if matches!(
+                                        call.as_ref(),
+                                        mwcc_syntax_trees::Expression::Call { name, .. }
+                                            if name.contains("Panic")
+                                    )
+                            )
+                        )
+                )
+                    && matches!(
+                        right.as_ref(),
+                        mwcc_syntax_trees::Expression::Member { offset: 4, .. }
+                    )
         ));
     }
 
