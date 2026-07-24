@@ -2078,6 +2078,53 @@ blr\n\
     }
 
     #[test]
+    fn constructor_materializes_inline_virtual_callbacks_and_weak_vtable() {
+        let source = r#"
+            struct Count {
+                Count();
+                virtual void add() {}
+                virtual void sub() {}
+                int value;
+            };
+            Count::Count() { value = 0; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.functions
+                .iter()
+                .map(|function| (function.name.as_str(), function.is_weak))
+                .collect::<Vec<_>>(),
+            [
+                ("__ct__5CountFv", false),
+                ("add__5CountFv", true),
+                ("sub__5CountFv", true),
+            ]
+        );
+        let vtable = unit
+            .globals
+            .iter()
+            .find(|global| global.name == "__vt__5Count")
+            .expect("the constructor needs the all-inline callback vtable");
+        assert!(vtable.is_weak);
+        assert!(vtable
+            .data_relocations
+            .iter()
+            .any(|(_, target, _)| target == "add__5CountFv"));
+        assert!(vtable
+            .data_relocations
+            .iter()
+            .any(|(_, target, _)| target == "sub__5CountFv"));
+    }
+
+    #[test]
     fn inherited_virtual_override_materializes_implicit_destructor_closure() {
         let source = r#"
             class Base {

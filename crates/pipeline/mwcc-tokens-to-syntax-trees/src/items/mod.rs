@@ -3454,24 +3454,27 @@ impl Parser {
                             // its inline deleting destructor is then pulled from
                             // the vtable-referenced materialization queue below.
                             if class.vtable_key_function.is_none()
-                                && class.has_virtual_destructor
                                 && !globals.iter().any(|global| global.name == vtable)
                             {
-                                let scopes: Vec<&str> = scope.split("::").collect();
-                                let destructor = crate::cxx::mangle_qualified_member_function(
-                                    &scopes,
-                                    "__dt",
-                                    &[],
-                                )?;
-                                if self
-                                    .cxx_inline_materializations
-                                    .iter()
-                                    .any(|candidate| candidate.name == destructor)
-                                {
+                                let destructor = if class.has_virtual_destructor {
+                                    let scopes: Vec<&str> = scope.split("::").collect();
+                                    let destructor = crate::cxx::mangle_qualified_member_function(
+                                        &scopes,
+                                        "__dt",
+                                        &[],
+                                    )?;
+                                    self.cxx_inline_materializations
+                                        .iter()
+                                        .any(|candidate| candidate.name == destructor)
+                                        .then_some(destructor)
+                                } else {
+                                    None
+                                };
+                                if !class.has_virtual_destructor || destructor.is_some() {
                                     let mut table = cxx_vtables::global(
                                         class,
                                         vtable,
-                                        Some(&destructor),
+                                        destructor.as_deref(),
                                     );
                                     table.is_weak = true;
                                     globals.push(table);
