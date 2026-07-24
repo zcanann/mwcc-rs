@@ -303,7 +303,9 @@ impl Generator {
             s: 3,
             clear: 27,
         });
-        if self.behavior.frame_convention == FrameConvention::Predecrement {
+        let fill_mask_latency = self.behavior.scheduler_enabled
+            && self.behavior.scheduling_model == SchedulingModel::PowerPc7400;
+        if fill_mask_latency {
             self.output.instructions.push(Instruction::AddImmediate {
                 d: iteration,
                 a: iteration,
@@ -315,7 +317,7 @@ impl Generator {
             a: 3,
             immediate: 1,
         });
-        if self.behavior.frame_convention == FrameConvention::LinkageFirst {
+        if !fill_mask_latency {
             self.output.instructions.push(Instruction::AddImmediate {
                 d: iteration,
                 a: iteration,

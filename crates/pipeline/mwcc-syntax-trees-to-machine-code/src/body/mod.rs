@@ -145,5 +145,5 @@ pub(crate) use mwcc_versions::{
     GuardedMemberInitializationStyle,
     IntegerComparisonValueStyle, LongLongTimerStyle, NarrowComputedReturnStyle,
     NestedGlobalDispatchSchedule, PlainLinkageEpilogueStyle, PointerCallStoreEpilogueStyle,
-    PointerWalkerScheduleStyle, RaiseFamilyStyle, WideConstantAddSchedule,
+    PointerWalkerScheduleStyle, RaiseFamilyStyle, SchedulingModel, WideConstantAddSchedule,
 };

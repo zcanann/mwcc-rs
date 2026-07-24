@@ -12,7 +12,7 @@
 //! constant buried in instruction selection.
 
 use crate::config::CompilerConfig;
-use crate::flags::{GlobalAddressing, Optimization, OptimizationGoal};
+use crate::flags::{GlobalAddressing, Optimization, OptimizationGoal, SchedulingModel};
 use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
     CallDispatcherStyle, CoefficientTableRelocationStyle, CommaValuePlacementStyle,
@@ -605,6 +605,8 @@ pub struct Behavior {
     /// Whether the invocation runs mwcc's O4 latency scheduler over selected
     /// instructions and linkage save/reload slots.
     pub schedule_latency_slots: bool,
+    /// Processor latency model selected by the scheduling pragma.
+    pub scheduling_model: SchedulingModel,
     /// Optimization-level policy for ctor/dtor function-pointer walkers.
     pub pointer_walker_schedule_style: PointerWalkerScheduleStyle,
     /// Optimization-level policy for absolute load/store displacement folding.
@@ -949,6 +951,7 @@ impl Behavior {
             mem_copy_word_schedule_style: config.build.profile.mem_copy_word_schedule_style(),
             mem_copy_remainder_mask_style: config.build.profile.mem_copy_remainder_mask_style(),
             schedule_latency_slots: config.flags.optimization == Optimization::O4,
+            scheduling_model: config.flags.scheduling_model,
             pointer_walker_schedule_style: match config.flags.optimization {
                 Optimization::O0 => PointerWalkerScheduleStyle::DirectAddressDuplicateLoad,
                 Optimization::O1 => PointerWalkerScheduleStyle::ScratchAddressDuplicateLoad,
@@ -2135,6 +2138,12 @@ mod tests {
         assert!(Behavior::resolve(&config).scheduler_enabled);
         config.flags.scheduler_enabled = false;
         assert!(!Behavior::resolve(&config).scheduler_enabled);
+
+        config.flags.scheduling_model = SchedulingModel::PowerPc7400;
+        assert_eq!(
+            Behavior::resolve(&config).scheduling_model,
+            SchedulingModel::PowerPc7400
+        );
     }
 
     #[test]

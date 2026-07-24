@@ -65,6 +65,17 @@ pub enum EnumStorage {
     Minimum,
 }
 
+/// Processor model selected by `-pragma "scheduling …"`.
+///
+/// This is separate from [`Flags::scheduler_enabled`]: `-schedule off`
+/// disables instruction reordering, while the pragma selects the latency model
+/// used when scheduling remains enabled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchedulingModel {
+    Default,
+    PowerPc7400,
+}
+
 /// The codegen-affecting flags of one invocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Flags {
@@ -110,6 +121,8 @@ pub struct Flags {
     /// `-schedule off` disables mwcc's instruction-overlap scheduler while
     /// leaving optimization and register allocation enabled.
     pub scheduler_enabled: bool,
+    /// Processor latency model selected by `-pragma "scheduling 7400"`.
+    pub scheduling_model: SchedulingModel,
     /// `-fp_contract on` allows multiply-add/subtract contraction. `off`
     /// preserves the source-level multiply and add/subtract instructions.
     pub fp_contract: bool,
@@ -146,6 +159,7 @@ impl Default for Flags {
             pooling_enabled: true,
             use_lmw_stmw: false,
             scheduler_enabled: true,
+            scheduling_model: SchedulingModel::Default,
             fp_contract: true,
             debug_info: false,
             ipa_file: false,

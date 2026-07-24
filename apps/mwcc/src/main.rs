@@ -178,15 +178,19 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                     _ => invocation.flags.rtti,
                 };
             }
-            // `-pragma "cats off"` suppresses the Code Address Table section.
-            // Accept `on` as well so the last command-line pragma wins, as in mwcc.
+            // Code-address-table and processor-scheduling pragmas are
+            // independent invocation policies.
             "-pragma" => {
                 index += 1;
-                invocation.flags.emit_mwcats = match arguments.get(index).map(String::as_str) {
-                    Some("cats off") => false,
-                    Some("cats on") => true,
-                    _ => invocation.flags.emit_mwcats,
-                };
+                match arguments.get(index).map(String::as_str) {
+                    Some("cats off") => invocation.flags.emit_mwcats = false,
+                    Some("cats on") => invocation.flags.emit_mwcats = true,
+                    Some("scheduling 7400") => {
+                        invocation.flags.scheduling_model =
+                            mwcc_versions::SchedulingModel::PowerPc7400;
+                    }
+                    _ => {}
+                }
             }
             // `-inline …`: a `deferred` setting emits functions in reverse order.
             "-inline" => {
@@ -2209,6 +2213,9 @@ mod tests {
     #[path = "inlined_short_circuit_call_loop.rs"]
     mod inlined_short_circuit_call_loop;
 
+    #[path = "call_live_counter_loop.rs"]
+    mod call_live_counter_loop;
+
     #[path = "extern_unsized_array.rs"]
     mod extern_unsized_array;
 
@@ -3927,6 +3934,13 @@ mod tests {
             "cats on".into(),
         ]);
         assert!(last_wins.flags.emit_mwcats);
+
+        let scheduled = parse_invocation(&["-pragma".into(), "scheduling 7400".into()]);
+        assert_eq!(
+            scheduled.flags.scheduling_model,
+            mwcc_versions::SchedulingModel::PowerPc7400
+        );
+        assert!(scheduled.flags.emit_mwcats);
     }
 
     #[test]
