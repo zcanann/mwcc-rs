@@ -70,6 +70,7 @@ impl Generator {
             &mut pending_gotos,
             &mut None,
         )?;
+        self.retain_guarded_nested_member_base();
         debug_assert!(pending_gotos.is_empty());
         if let Some(return_expression) = &function.return_expression {
             let result = match function.return_type {

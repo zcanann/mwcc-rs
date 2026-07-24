@@ -834,6 +834,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         false
     }
 
+    /// Build 163 colors a guarded nested-member value before its retained base;
+    /// the 2.4.x allocator gives the retained base the lower register instead.
+    fn legacy_guarded_nested_member_base_order(&self) -> bool {
+        false
+    }
+
     fn int_call_result_conversion_style(&self) -> IntCallResultConversionStyle {
         IntCallResultConversionStyle::ValueStoreFirst
     }
@@ -1912,6 +1918,10 @@ impl CodegenProfile for Gc233Build163 {
     }
 
     fn legacy_float_cast_schedule(&self) -> bool {
+        true
+    }
+
+    fn legacy_guarded_nested_member_base_order(&self) -> bool {
         true
     }
 
