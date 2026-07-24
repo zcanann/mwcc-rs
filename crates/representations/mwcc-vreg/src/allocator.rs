@@ -253,14 +253,25 @@ impl Allocator for LinearScan {
 
             // A value live ACROSS a call (strictly inside its range — a result defined
             // at the call or an argument last used at it needs no saving) must survive
-            // the callee: it draws from the callee-saved pool, highest first (r31, r30,
-            // …), exactly mwcc's assignment order. Floating values use the
-            // corresponding f31-down pool so calls cannot clobber live values.
+            // the callee, so it draws only from the callee-saved pool. Other values
+            // prefer the volatile pool but may spill into callee-saved registers when
+            // pressure exceeds it; the frame reconciler adds the required saves.
             let crosses_call = crosses_call(interval, calls);
-            let pool: &[u8] = match (crosses_call, class) {
-                (true, Class::General) => &constraints.general_callee_saved,
-                (true, Class::Float) => &constraints.float_callee_saved,
-                (false, _) => constraints.pool(class),
+            let pool: Vec<u8> = match (crosses_call, class) {
+                (true, Class::General) => constraints.general_callee_saved.clone(),
+                (true, Class::Float) => constraints.float_callee_saved.clone(),
+                (false, Class::General) => constraints
+                    .general_pool
+                    .iter()
+                    .chain(&constraints.general_callee_saved)
+                    .copied()
+                    .collect(),
+                (false, Class::Float) => constraints
+                    .float_pool
+                    .iter()
+                    .chain(&constraints.float_callee_saved)
+                    .copied()
+                    .collect(),
             };
             // The consumer-tree preference wins when free (policy #1); the pool
             // order is the fallback. The class SCRATCH (r0) is a legal preference —
@@ -554,9 +565,26 @@ mod tests {
     #[test]
     fn running_out_of_registers_is_an_honest_error() {
         // A pool of one register, two simultaneously-live values.
-        let constraints = RegisterConstraints { general_pool: vec![3], ..RegisterConstraints::gekko() };
+        let constraints = RegisterConstraints {
+            general_pool: vec![3],
+            general_callee_saved: Vec::new(),
+            ..RegisterConstraints::gekko()
+        };
         let intervals = [gpr(0, 0, 4), gpr(1, 1, 5)];
         let error = LinearScan.allocate(&intervals, &[], &[], &constraints).unwrap_err();
         assert_eq!(error, AllocationError::OutOfRegisters { class: Class::General, at: 1 });
+    }
+
+    #[test]
+    fn pressure_may_use_callee_saved_registers_without_crossing_a_call() {
+        let constraints = RegisterConstraints {
+            general_pool: vec![3],
+            general_callee_saved: vec![31],
+            ..RegisterConstraints::gekko()
+        };
+        let intervals = [gpr(0, 0, 4), gpr(1, 1, 5)];
+        let allocation = LinearScan.allocate(&intervals, &[], &[], &constraints).unwrap();
+        assert_eq!(allocation.physical(phys(0)), Some(3));
+        assert_eq!(allocation.physical(phys(1)), Some(31));
     }
 }

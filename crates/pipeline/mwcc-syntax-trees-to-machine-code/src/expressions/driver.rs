@@ -800,18 +800,6 @@ impl Generator {
                         }
                     }
                 }
-                // `(a-b)-(c-d)`, `a*b-c*d`: a SUBTRACT whose BOTH operands are computed binary
-                // expressions evaluates the two sub-trees in an order/allocation our straight-line path
-                // does not match mwcc's (unlike `+`, subtraction is not commutative, so it cannot reuse
-                // the overlap idiom). Defer until the keystone allocator schedules it; a leaf/constant
-                // operand keeps the byte-exact single-scratch shape (`a-b-c`, `a-(b-c)`). Placed AFTER
-                // the distributive fold so `a*5 - a*3` collapses to `a*2` first.
-                if *operator == BinaryOperator::Subtract
-                    && matches!(left.as_ref(), Expression::Binary { .. })
-                    && matches!(right.as_ref(), Expression::Binary { .. })
-                {
-                    return Err(Diagnostic::error("a subtract of two computed sub-expressions needs the keystone allocator (roadmap)"));
-                }
                 // A signed char load (member `p->x`, element `a[i]`, deref `*p`) that is a
                 // DIRECT operand of a comparison or a signed divide is loaded raw by these
                 // branchless idioms — `p->x > 0` / `p->x / 2` operate on the zero-extended byte
