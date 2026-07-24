@@ -211,9 +211,16 @@ impl Generator {
                     // then flip it. Build 163 instead preserves the masked value
                     // and feeds it through its negate/cntlzw equality sequence.
                     if !self.behavior.negate_before_zero_equality {
-                        if let Some((variable, mask)) = as_masked_leaf(value) {
+                        if let Some((variable, mask)) =
+                            as_masked_leaf(value).or_else(|| as_masked_load(value))
+                        {
                             if mask.is_power_of_two() {
-                                let register = self.general_register_of_leaf(variable)?;
+                                let register = if leaf_name(variable).is_some() {
+                                    self.general_register_of_leaf(variable)?
+                                } else {
+                                    self.evaluate_general(variable, GENERAL_SCRATCH)?;
+                                    GENERAL_SCRATCH
+                                };
                                 let shift = ((32 - mask.trailing_zeros()) % 32) as u8;
                                 self.output.instructions.push(Instruction::RotateAndMask {
                                     a: GENERAL_SCRATCH,
@@ -326,9 +333,16 @@ impl Generator {
             // x != 0 : sign bit of (-x | x)
             BinaryOperator::NotEqual if is_zero_literal(right) => {
                 // `(x & (1<<k)) != 0`: extract bit k to the low bit with one rlwinm.
-                if let Some((variable, mask)) = as_masked_leaf(left) {
+                if let Some((variable, mask)) =
+                    as_masked_leaf(left).or_else(|| as_masked_load(left))
+                {
                     if mask.is_power_of_two() {
-                        let register = self.general_register_of_leaf(variable)?;
+                        let register = if leaf_name(variable).is_some() {
+                            self.general_register_of_leaf(variable)?
+                        } else {
+                            self.evaluate_general(variable, GENERAL_SCRATCH)?;
+                            GENERAL_SCRATCH
+                        };
                         let shift = ((32 - mask.trailing_zeros()) % 32) as u8;
                         self.output.instructions.push(Instruction::RotateAndMask {
                             a: d,

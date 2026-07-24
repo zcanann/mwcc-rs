@@ -2427,6 +2427,8 @@ mod tests {
     mod implicit_int_to_float_argument;
     #[path = "narrow_shifted_divisor.rs"]
     mod narrow_shifted_divisor;
+    #[path = "masked_member_boolean.rs"]
+    mod masked_member_boolean;
 
     #[path = "unsigned_narrow_to_float.rs"]
     mod unsigned_narrow_to_float;
