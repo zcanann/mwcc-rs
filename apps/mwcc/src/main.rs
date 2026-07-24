@@ -2378,7 +2378,7 @@ mod tests {
     }
 
     #[test]
-    fn marshals_shared_base_byte_bitfield_and_saved_leaf_arguments() {
+    fn marshals_shared_base_byte_and_bitfield_arguments() {
         let source = br#"
             struct Fighter {
                 unsigned char player;
@@ -2388,7 +2388,11 @@ mod tests {
                 unsigned char flag3 : 1;
                 unsigned char report_flag : 1;
             };
+            extern int enabled(int player, int flag);
             extern void report(int player, int flag, int result);
+            int test_pair(struct Fighter* fighter) {
+                return enabled(fighter->player, fighter->report_flag);
+            }
             void test(struct Fighter* fighter, int unused0, int unused1, int result) {
                 report(fighter->player, fighter->report_flag, result);
             }
@@ -2410,6 +2414,14 @@ mod tests {
             false,
         )
         .expect("the dependent member arguments should not clobber their shared base");
+        let expected_pair = [
+            0x88, 0x83, 0x00, 0x01, // lbz r4,1(r3)
+            0x88, 0x63, 0x00, 0x00, // lbz r3,0(r3)
+            0x54, 0x84, 0xef, 0xfe, // rlwinm r4,r4,29,31,31
+        ];
+        assert!(object
+            .windows(expected_pair.len())
+            .any(|bytes| bytes == expected_pair));
         let expected_arguments = [
             0x88, 0x83, 0x00, 0x01, // lbz r4,1(r3)
             0x7c, 0xc5, 0x33, 0x78, // mr r5,r6

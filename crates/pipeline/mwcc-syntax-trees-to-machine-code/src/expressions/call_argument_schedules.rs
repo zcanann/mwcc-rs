@@ -25,32 +25,39 @@ fn direct_member_address(expression: &Expression) -> Option<(&Expression, u32)> 
 }
 
 impl Generator {
-    /// Marshal `(base->byte, base->bits, saved)` while `base` still occupies
+    /// Marshal `(base->byte, base->bits[, saved])` while `base` still occupies
     /// the first argument register.
     ///
     /// The second byte load starts first, the saved leaf fills its latency
     /// slot, and only then may the first load overwrite r3.  The independent
     /// rotate completes immediately before the call.
-    pub(crate) fn try_emit_shared_base_bitfield_leaf_arguments(
+    pub(crate) fn try_emit_shared_base_bitfield_arguments(
         &mut self,
         arguments: &[Expression],
         direct_call: bool,
     ) -> Compilation<bool> {
-        let [
-            first @ Expression::Member {
-                base: first_base,
-                member_type: Type::UnsignedChar,
-                index_stride: None,
-                ..
-            },
-            Expression::BitFieldRead {
-                storage,
-                shift,
-                width,
-                ..
-            },
-            third @ Expression::Variable(_),
-        ] = arguments
+        let (first, bit_field, third) = match arguments {
+            [first, bit_field] => (first, bit_field, None),
+            [first, bit_field, third @ Expression::Variable(_)] => {
+                (first, bit_field, Some(third))
+            }
+            _ => return Ok(false),
+        };
+        let Expression::Member {
+            base: first_base,
+            member_type: Type::UnsignedChar,
+            index_stride: None,
+            ..
+        } = first
+        else {
+            return Ok(false);
+        };
+        let Expression::BitFieldRead {
+            storage,
+            shift,
+            width,
+            ..
+        } = bit_field
         else {
             return Ok(false);
         };
@@ -68,16 +75,21 @@ impl Generator {
         else {
             return Ok(false);
         };
-        let Ok((third_register, third_width, _)) = self.leaf_info(third) else {
-            return Ok(false);
+        let third_info = match third {
+            Some(third) => match self.leaf_info(third) {
+                Ok(info) => Some(info),
+                Err(_) => return Ok(false),
+            },
+            None => None,
         };
         if !direct_call
             || first_name != second_name
             || *width == 0
             || u16::from(*shift) + u16::from(*width) > 8
             || self.lookup_general(first_name) != Some(Eabi::FIRST_GENERAL_ARGUMENT)
-            || third_width != 32
-            || third_register == Eabi::FIRST_GENERAL_ARGUMENT + 1
+            || third_info.is_some_and(|(register, width, _)| {
+                width != 32 || register == Eabi::FIRST_GENERAL_ARGUMENT + 1
+            })
         {
             return Ok(false);
         }
@@ -92,7 +104,9 @@ impl Generator {
             None,
             second_argument,
         )?;
-        self.evaluate_general(third, third_argument)?;
+        if let Some(third) = third {
+            self.evaluate_general(third, third_argument)?;
+        }
         self.evaluate_general(first, first_argument)?;
         self.output.instructions.push(Instruction::RotateAndMask {
             a: second_argument,
