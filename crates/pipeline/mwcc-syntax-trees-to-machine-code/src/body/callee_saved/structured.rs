@@ -1671,7 +1671,7 @@ impl Generator {
                     if is_folded_terminal_pointer_load_alias(function, statement_index) {
                         continue;
                     }
-                    if self.try_emit_frame_aggregate_virtual_assignment(name, value)? {
+                    if self.try_emit_frame_aggregate_call_assignment(name, value)? {
                         continue;
                     }
                     let declared_type = function
@@ -1913,7 +1913,11 @@ impl Generator {
                         {
                             Ok(())
                         } else {
-                            self.evaluate(value, declared_type, destination)
+                            self.evaluate_register_store_value(
+                                value,
+                                declared_type,
+                                destination,
+                            )
                         }
                         .map_err(|mut diagnostic| {
                             diagnostic.message.push_str(&format!(

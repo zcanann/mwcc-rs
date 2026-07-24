@@ -6475,7 +6475,36 @@ blr\n\
         .unwrap();
         assert!(matches!(
             unit.functions[0].return_expression,
-            Some(mwcc_syntax_trees::Expression::Member { offset: 4, .. })
+            Some(mwcc_syntax_trees::Expression::Member {
+                offset: 4,
+                ref base,
+                ..
+            }) if matches!(
+                base.as_ref(),
+                mwcc_syntax_trees::Expression::Cast { operand, .. }
+                    if matches!(
+                        operand.as_ref(),
+                        mwcc_syntax_trees::Expression::Member {
+                            offset: 0,
+                            member_type: mwcc_syntax_trees::Type::StructPointer { .. },
+                            ..
+                        }
+                    )
+            )
+        ));
+        assert!(unit.skipped_inline_signatures.iter().any(
+            |(name, return_type, parameters)| {
+                name.contains("GetBeginIter")
+                    && *return_type
+                        == (mwcc_syntax_trees::Type::Struct {
+                            size: 4,
+                            align: 4,
+                        })
+                    && matches!(
+                        parameters.first(),
+                        Some(mwcc_syntax_trees::Type::StructPointer { .. })
+                    )
+            }
         ));
     }
 

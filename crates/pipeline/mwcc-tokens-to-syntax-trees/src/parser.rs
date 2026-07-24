@@ -258,8 +258,9 @@ pub(crate) struct Parser {
     /// pointer. Value: `(nested iterator name, element arg, offset arg)`.
     pub(crate) template_iterator_arrow_summaries:
         HashMap<String, (String, usize, usize)>,
-    /// Concrete iterator identity -> `(element aggregate, node offset)`.
-    pub(crate) concrete_template_iterator_arrows: HashMap<String, (String, u32)>,
+    /// Concrete iterator identity -> `(element aggregate, node offset,
+    /// pointer-storage offset)`.
+    pub(crate) concrete_template_iterator_arrows: HashMap<String, (String, u32, u32)>,
     /// Out-of-class primary-template constructor initializer summaries. Each
     /// entry maps a concrete field to the constructor argument copied into it;
     /// value construction is admitted only when the summary covers the entire

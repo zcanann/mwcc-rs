@@ -4213,7 +4213,7 @@ impl Generator {
                 }
             }
             Statement::Assign { name, value } if self.frame_slots.contains_key(name) => {
-                if self.try_emit_frame_aggregate_virtual_assignment(name, value)? {
+                if self.try_emit_frame_aggregate_call_assignment(name, value)? {
                     Ok(())
                 } else {
                     self.emit_store(&Expression::Variable(name.clone()), value)

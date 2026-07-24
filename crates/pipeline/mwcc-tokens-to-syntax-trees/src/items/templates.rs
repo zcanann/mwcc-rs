@@ -302,8 +302,67 @@ impl Parser {
         else {
             return;
         };
+        let Some(storage_offset) =
+            self.resolve_template_iterator_pointer_storage(template_name, &nested)
+        else {
+            return;
+        };
         self.concrete_template_iterator_arrows
-            .insert(format!("{instance}::{nested}"), (element, offset));
+            .insert(
+                format!("{instance}::{nested}"),
+                (element, offset, storage_offset),
+            );
+    }
+
+    /// Prove that a recovered template iterator is a one-word wrapper around
+    /// pointer storage and return that storage's byte offset. Nested one-word
+    /// wrappers are followed through their source aggregate identities; an
+    /// ambiguous or non-pointer terminal rejects the arrow summary.
+    fn resolve_template_iterator_pointer_storage(
+        &self,
+        template_name: &str,
+        nested: &str,
+    ) -> Option<u32> {
+        let suffix = format!("{template_name}::{nested}");
+        let mut matches = self
+            .structs
+            .keys()
+            .filter(|tag| *tag == &suffix || tag.ends_with(&format!("::{suffix}")));
+        let iterator = matches.next()?.clone();
+        if matches.next().is_some() {
+            return None;
+        }
+        self.resolve_one_word_pointer_storage(&iterator, &mut Default::default())
+    }
+
+    fn resolve_one_word_pointer_storage(
+        &self,
+        tag: &str,
+        visiting: &mut std::collections::HashSet<String>,
+    ) -> Option<u32> {
+        if !visiting.insert(tag.to_owned()) {
+            return None;
+        }
+        let layout = self.structs.get(tag)?;
+        if layout.size != 4 {
+            return None;
+        }
+        let mut fields = layout.fields.values().filter(|field| {
+            field.array_bytes.is_none() && field.bit_field.is_none()
+        });
+        let field = fields.next()?;
+        if fields.next().is_some() {
+            return None;
+        }
+        match field.member_type {
+            Type::Pointer(_) | Type::StructPointer { .. } => Some(field.offset),
+            Type::Struct { size: 4, .. } => {
+                let nested = field.struct_tag.as_deref()?;
+                let offset = self.resolve_one_word_pointer_storage(nested, visiting)?;
+                field.offset.checked_add(offset)
+            }
+            _ => None,
+        }
     }
 
     /// Whether the current token begins a concrete template instance whose
@@ -1618,7 +1677,7 @@ impl Parser {
     pub(crate) fn resolve_concrete_template_iterator_arrow(
         &self,
         iterator: &str,
-    ) -> Option<(String, u32)> {
+    ) -> Option<(String, u32, u32)> {
         self.concrete_template_iterator_arrows.get(iterator).cloned()
     }
 

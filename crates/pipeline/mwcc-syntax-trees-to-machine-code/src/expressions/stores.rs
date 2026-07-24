@@ -1032,43 +1032,9 @@ impl Generator {
         target: &Expression,
         value: &Expression,
     ) -> Compilation<bool> {
-        if let (
-            Expression::Variable(target_name),
-            Expression::VirtualCall {
-                object,
-                vptr_offset,
-                slot_offset,
-                return_type: Type::Struct { size, .. },
-                variadic,
-                arguments,
-            },
-        ) = (target, value)
-        {
-            if let Some(slot) = self.frame_slots.get(target_name).copied() {
-                if matches!(slot.value_type, Type::Struct { size: slot_size, .. } if slot_size == *size)
-                    && !slot.is_array
-                {
-                    let result_address = Expression::AddressOf {
-                        operand: Box::new(target.clone()),
-                    };
-                    self.emit_virtual_call_with_aggregate_result(
-                        object,
-                        *vptr_offset,
-                        *slot_offset,
-                        *variadic,
-                        arguments,
-                        &result_address,
-                    )?;
-                    for offset in (0..*size).step_by(4) {
-                        let offset = i16::try_from(offset).map_err(|_| {
-                            Diagnostic::error("frame aggregate result is too large")
-                        })?;
-                        self.written_slots.insert(slot.offset.checked_add(offset).ok_or_else(
-                            || Diagnostic::error("frame aggregate result is out of range"),
-                        )?);
-                    }
-                    return Ok(true);
-                }
+        if let Expression::Variable(target_name) = target {
+            if self.try_emit_frame_aggregate_call_assignment(target_name, value)? {
+                return Ok(true);
             }
         }
         let Expression::Variable(source_name) = value else {
@@ -1740,6 +1706,26 @@ impl Generator {
         self.narrow_truncation_context = saved_truncation_context;
         evaluated?;
         Ok(GENERAL_SCRATCH)
+    }
+
+    /// Evaluate a value directly into an allocator-owned register local.
+    ///
+    /// Inline value composition can make a source-level local initializer a
+    /// comma expression: the left side binds inline parameters and the right
+    /// side produces the initializer. This is a proven destination position,
+    /// just like [`Self::place_store_value`], so preserve the left-side effects
+    /// and let the surviving value use the local's register directly.
+    pub(crate) fn evaluate_register_store_value(
+        &mut self,
+        value: &Expression,
+        value_type: Type,
+        destination: u8,
+    ) -> Compilation<()> {
+        if let Expression::Comma { left, right } = value {
+            self.emit_comma_side_effect(left)?;
+            return self.evaluate_register_store_value(right, value_type, destination);
+        }
+        self.evaluate(value, value_type, destination)
     }
 
     /// A masked merge stored back through one of its source objects evaluates

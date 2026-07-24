@@ -1301,11 +1301,17 @@ impl Parser {
                     let field = self.parse_identifier()?;
                     if is_arrow {
                         if let Some(tag) = struct_tag.as_deref() {
-                            if let Some((element, offset)) =
+                            if let Some((element, offset, storage_offset)) =
                                 self.resolve_concrete_template_iterator_arrow(tag)
                             {
                                 let element_size =
                                     self.structs.get(&element).map_or(0, |layout| layout.size);
+                                expression = Expression::Member {
+                                    base: Box::new(expression),
+                                    offset: storage_offset,
+                                    member_type: Type::StructPointer { element_size: 0 },
+                                    index_stride: None,
+                                };
                                 if offset != 0 {
                                     expression = Expression::Binary {
                                         operator: mwcc_syntax_trees::BinaryOperator::Subtract,

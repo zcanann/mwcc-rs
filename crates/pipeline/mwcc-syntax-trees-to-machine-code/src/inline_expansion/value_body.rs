@@ -89,7 +89,10 @@ pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
     if function.locals.is_empty() && function.statements.is_empty() {
         return Some(ValueInlineBody {
             source: function.clone(),
-            expression: function.return_expression.clone()?,
+            expression: normalize_reference_result(
+                function.return_type,
+                function.return_expression.clone()?,
+            ),
         });
     }
     if let Some(expression) = summarize_result_selection(function) {
@@ -98,12 +101,44 @@ pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
             expression,
         });
     }
-    summarize_sequenced_body(function, function.return_expression.clone()?).map(|expression| {
+    summarize_sequenced_body(
+        function,
+        normalize_reference_result(
+            function.return_type,
+            function.return_expression.clone()?,
+        ),
+    )
+    .map(|expression| {
         ValueInlineBody {
             source: function.clone(),
             expression,
         }
     })
+}
+
+/// Preserve the address-valued result of a C++ reference accessor.
+///
+/// References use the pointer ABI type in the syntax tree, while their return
+/// expression remains the referenced aggregate lvalue. A non-inlined call
+/// communicates the pointer result through its signature; an inline summary
+/// must make that address conversion explicit before the call node disappears.
+fn normalize_reference_result(return_type: Type, result: Expression) -> Expression {
+    if matches!(return_type, Type::StructPointer { .. })
+        && matches!(
+            result,
+            Expression::Member {
+                member_type: Type::Struct { .. },
+                index_stride: None,
+                ..
+            }
+        )
+    {
+        Expression::AddressOf {
+            operand: Box::new(result),
+        }
+    } else {
+        result
+    }
 }
 
 fn sequenced_aggregate_void_body(function: &Function) -> bool {
@@ -426,6 +461,31 @@ mod tests {
         assert!(matches!(
             summary.expression,
             Expression::Member { offset: 4, .. }
+        ));
+    }
+
+    #[test]
+    fn preserves_a_reference_accessor_as_an_address_valued_summary() {
+        let mut function = empty_function(
+            "get_reference",
+            Type::StructPointer { element_size: 20 },
+        );
+        function.parameters.push(Parameter {
+            parameter_type: Type::StructPointer { element_size: 56 },
+            name: "object".into(),
+        });
+        function.return_expression = Some(Expression::Member {
+            base: Box::new(Expression::Variable("object".into())),
+            offset: 16,
+            member_type: Type::Struct { size: 20, align: 4 },
+            index_stride: None,
+        });
+
+        let summary = summarize_automatic(&function).expect("reference accessor");
+        assert!(matches!(
+            summary.expression,
+            Expression::AddressOf { operand }
+                if matches!(operand.as_ref(), Expression::Member { offset: 16, .. })
         ));
     }
 
