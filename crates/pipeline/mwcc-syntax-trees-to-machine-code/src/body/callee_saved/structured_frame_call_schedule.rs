@@ -449,6 +449,105 @@ impl Generator {
             start += 5;
         }
     }
+
+    /// Keep a member value in r3 when it feeds both a saved-value XOR and the
+    /// immediately following call. The generic expression path loads through
+    /// r0 for the XOR and reloads the same member into the ABI argument home;
+    /// MWCC extends the first load through both uses.
+    pub(super) fn coalesce_member_xor_call_argument_loads(&mut self) {
+        let mut call = 0;
+        while call < self.output.instructions.len() {
+            if !matches!(
+                self.output.instructions[call],
+                Instruction::BranchAndLink { .. }
+            ) {
+                call += 1;
+                continue;
+            }
+            let Some((load, xor, reload)) =
+                shared_member_xor_call_loads(&self.output.instructions, call)
+            else {
+                call += 1;
+                continue;
+            };
+            let (base, offset) = match self.output.instructions[load] {
+                Instruction::LoadWord { a, offset, .. } => (a, offset),
+                _ => unreachable!("shared member load was gated"),
+            };
+            self.output.instructions[load] = Instruction::LoadWord {
+                d: 3,
+                a: base,
+                offset,
+            };
+            let Instruction::Xor { a, s, .. } = self.output.instructions[xor] else {
+                unreachable!("shared member XOR was gated");
+            };
+            self.output.instructions[xor] = Instruction::Xor { a, s, b: 3 };
+            self.remove_structured_condition_instruction(reload);
+            call -= 1;
+            call += 1;
+        }
+    }
+}
+
+fn shared_member_xor_call_loads(
+    instructions: &[Instruction],
+    call: usize,
+) -> Option<(usize, usize, usize)> {
+    let start = instructions[..call]
+        .iter()
+        .rposition(|instruction| matches!(instruction, Instruction::BranchAndLink { .. }))
+        .map_or(0, |previous_call| previous_call + 1);
+    let reload = instructions[start..call]
+        .iter()
+        .rposition(|instruction| matches!(instruction, Instruction::LoadWord { d: 3, .. }))
+        .map(|offset| start + offset)?;
+    let (base, offset) = match instructions[reload] {
+        Instruction::LoadWord { a, offset, .. } => (a, offset),
+        _ => unreachable!("reload search was gated"),
+    };
+    if instructions[reload + 1..call].iter().any(|instruction| {
+        mwcc_vreg::register_operands(instruction)
+            .iter()
+            .any(|operand| operand.class == mwcc_vreg::Class::General && operand.register == 3)
+    }) {
+        return None;
+    }
+    let xor = instructions[start..reload]
+        .iter()
+        .rposition(|instruction| matches!(instruction, Instruction::Xor { a, s, b: 0 } if a == s))
+        .map(|offset| start + offset)?;
+    let load = instructions[start..xor]
+        .iter()
+        .rposition(|instruction| {
+            matches!(
+                instruction,
+                Instruction::LoadWord {
+                    d: 0,
+                    a,
+                    offset: candidate_offset,
+                } if *a == base && *candidate_offset == offset
+            )
+        })
+        .map(|offset| start + offset)?;
+    let r0_survives = instructions[load + 1..xor].iter().all(|instruction| {
+        !mwcc_vreg::register_operands(instruction)
+            .iter()
+            .any(|operand| operand.class == mwcc_vreg::Class::General && operand.register == 0)
+    });
+    let r3_survives =
+        instructions[load + 1..reload]
+            .iter()
+            .enumerate()
+            .all(|(relative, instruction)| {
+                load + 1 + relative == xor
+                    || !mwcc_vreg::register_operands(instruction)
+                        .iter()
+                        .any(|operand| {
+                            operand.class == mwcc_vreg::Class::General && operand.register == 3
+                        })
+            });
+    (r0_survives && r3_survives).then_some((load, xor, reload))
 }
 
 fn recycled_result_argument_move(

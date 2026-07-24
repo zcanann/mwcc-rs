@@ -16,6 +16,41 @@ pub(super) fn transient_call_argument_register(
         .filter(|register| *register <= 10)
 }
 
+/// Select the ABI home when a terminal offset computation is consumed directly
+/// by the immediately following call. MWCC forms these in the argument register
+/// instead of retaining the reassigned local's older saved-register home.
+pub(super) fn terminal_offset_call_argument_register(
+    value: &Expression,
+    next: Option<&Statement>,
+    candidate: &str,
+) -> Option<u8> {
+    let is_offset = matches!(
+        value,
+        Expression::Binary {
+            operator: BinaryOperator::Add,
+            left,
+            right,
+        } if (matches!(left.as_ref(), Expression::Variable(_))
+            && constant_value(right).is_some())
+            || (constant_value(left).is_some()
+                && matches!(right.as_ref(), Expression::Variable(_)))
+    ) || matches!(
+        value,
+        Expression::Binary {
+            operator: BinaryOperator::Subtract,
+            left,
+            right,
+        } if matches!(left.as_ref(), Expression::Variable(_))
+            && constant_value(right).is_some()
+    );
+    is_offset
+        .then(|| next.and_then(|statement| statement_call_argument_index(statement, candidate)))
+        .flatten()
+        .and_then(|index| u8::try_from(index).ok())
+        .and_then(|index| Eabi::FIRST_GENERAL_ARGUMENT.checked_add(index))
+        .filter(|register| *register <= 10)
+}
+
 fn statement_call_argument_index(statement: &Statement, candidate: &str) -> Option<usize> {
     match statement {
         Statement::Store { target, value } => expression_call_argument_index(target, candidate)
@@ -420,6 +455,33 @@ mod tests {
         assert_eq!(
             transient_call_argument_register(&[statement], "length"),
             Some(6),
+        );
+    }
+
+    #[test]
+    fn selects_an_immediate_terminal_offset_argument() {
+        let offset = Expression::Binary {
+            operator: BinaryOperator::Add,
+            left: Box::new(Expression::Variable("dummy".into())),
+            right: Box::new(Expression::IntegerLiteral(20)),
+        };
+        let statement = call(vec![
+            Expression::IntegerLiteral(0),
+            Expression::IntegerLiteral(0),
+            Expression::IntegerLiteral(0),
+            Expression::Variable("length".into()),
+        ]);
+        assert_eq!(
+            terminal_offset_call_argument_register(&offset, Some(&statement), "length"),
+            Some(6),
+        );
+        assert_eq!(
+            terminal_offset_call_argument_register(
+                &Expression::Variable("dummy".into()),
+                Some(&statement),
+                "length",
+            ),
+            None,
         );
     }
 }

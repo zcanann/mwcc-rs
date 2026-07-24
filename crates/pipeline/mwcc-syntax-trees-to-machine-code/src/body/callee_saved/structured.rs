@@ -13,7 +13,9 @@ use super::structured_call_accumulator::{
 use super::structured_aggregate_slots::{
     plan_aggregate_frame_slots, plan_aggregate_frame_slots_from,
 };
-use super::structured_call_schedule::transient_call_argument_register;
+use super::structured_call_schedule::{
+    terminal_offset_call_argument_register, transient_call_argument_register,
+};
 use super::structured_entry_alias::{
     fold_entry_alias_zero_test, plan_first_call_alias, EntryAliasBoundary, EntryParameterAlias,
 };
@@ -1312,6 +1314,9 @@ impl Generator {
         self.schedule_saved_return_epilogue();
         self.schedule_saved_receiver_entry_epilogue();
         self.schedule_legacy_inline_expansion_residue();
+        if dense_frame {
+            self.coalesce_member_xor_call_argument_loads();
+        }
         if dense_frame && self.behavior.power_pc_7400_scheduling_enabled() {
             self.schedule_power_pc_7400_call_result_handoff(first_saved as u8);
         }
@@ -1761,8 +1766,19 @@ impl Generator {
                         )
                         .and_then(|source| self.locations.get(source))
                         .is_some_and(|source| source.register == previous);
+                        let terminal_argument = terminal_volatile
+                            .then(|| {
+                                terminal_offset_call_argument_register(
+                                    value,
+                                    statements.get(statement_index + 1),
+                                    name,
+                                )
+                            })
+                            .flatten();
                         let destination = if terminal_result {
                             Eabi::general_result().number
+                        } else if let Some(register) = terminal_argument {
+                            register
                         } else if separates_live_alias {
                             if let Some(register) = transient_call_argument_register(
                                 &statements[statement_index + 1..],
@@ -1856,7 +1872,7 @@ impl Generator {
                             ));
                             diagnostic
                         })?;
-                        if terminal_result || separates_live_alias {
+                        if terminal_result || separates_live_alias || terminal_argument.is_some() {
                             self.locations
                                 .get_mut(name)
                                 .expect("structured assignment home")
