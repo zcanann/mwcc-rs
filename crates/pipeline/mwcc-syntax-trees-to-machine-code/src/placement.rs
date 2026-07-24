@@ -153,7 +153,19 @@ impl Generator {
                 self.with_reserved_inputs(left, |generator| {
                     generator.evaluate_general(right, GENERAL_SCRATCH)
                 })?;
-                Operands::ordered(self.general_register_of_leaf(left)?, GENERAL_SCRATCH)
+                // A literal shifted by a computed amount (`1 << (31 - n)`) is
+                // not an immediate-form shift: mwcc computes the amount in r0,
+                // materializes the literal in a stable register, then emits the
+                // register shift.  Give the literal a virtual home so it remains
+                // live beside the scratch-resident amount.
+                let left_register = if let Expression::IntegerLiteral(value) = left {
+                    let register = self.fresh_virtual_general();
+                    self.load_integer_constant(register, *value);
+                    register
+                } else {
+                    self.general_register_of_leaf(left)?
+                };
+                Operands::ordered(left_register, GENERAL_SCRATCH)
             }
             (true, true) => {
                 // A constant-divide alongside another complex operand needs liveness-aware
@@ -368,6 +380,16 @@ impl Generator {
         {
             return self.place_global_member_operands(operator, left, right);
         }
+        // A global paired with a computed operand needs two simultaneously live
+        // values.  Arithmetic/bitwise commutative operations and subtraction
+        // have measured canonical placement below; other non-commutative
+        // operators retain their existing honest defer.
+        if ((self.is_global(left) && is_complex(right))
+            || (self.is_global(right) && is_complex(left)))
+            && (is_commutative(operator) || operator == BinaryOperator::Subtract)
+        {
+            return self.place_global_computed_operands(operator, left, right);
+        }
         match (self.is_global(left), self.is_global(right)) {
             (true, true) => {
                 let left_name = leaf_name(left).unwrap();
@@ -422,6 +444,45 @@ impl Generator {
             }
             (false, false) => unreachable!("caller checked one side is a global"),
         }
+    }
+
+    /// Place one global and one computed operand using the binary anchor model.
+    fn place_global_computed_operands(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+    ) -> Compilation<Operands> {
+        let subtract = operator == BinaryOperator::Subtract;
+        if !subtract {
+            // Commutative expressions are canonicalized independently of source
+            // order: compute the non-global side in scratch, then load the global
+            // into a stable result-colored virtual (`g | a*b` and `a*b | g`
+            // share one schedule).
+            let (global, computed) = if self.is_global(left) {
+                (left, right)
+            } else {
+                (right, left)
+            };
+            self.evaluate_general(computed, GENERAL_SCRATCH)?;
+            let global_register = self.fresh_virtual_general();
+            self.emit_global_load(leaf_name(global).unwrap(), global_register)?;
+            return Operands::ordered(global_register, GENERAL_SCRATCH);
+        }
+        // Subtraction anchors its right operand.  The left operand then uses
+        // scratch, preserving source order in the final `subf`.
+        let (anchor, other) = (right, left);
+        let anchor_register = self.fresh_virtual_general();
+        let (anchor_register, other_register) = if self.is_global(anchor) {
+            self.evaluate_general(other, GENERAL_SCRATCH)?;
+            self.emit_global_load(leaf_name(anchor).unwrap(), anchor_register)?;
+            (anchor_register, GENERAL_SCRATCH)
+        } else {
+            self.evaluate_general(anchor, anchor_register)?;
+            self.emit_global_load(leaf_name(other).unwrap(), GENERAL_SCRATCH)?;
+            (anchor_register, GENERAL_SCRATCH)
+        };
+        Operands::ordered(other_register, anchor_register)
     }
 
     /// The base register of a located operand (`*pointer` or `base->field`): the
