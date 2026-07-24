@@ -251,6 +251,8 @@ pub fn parse_located_translation_unit_with_behavior(
         struct_templates: HashMap::new(),
         template_instantiation_stack: std::cell::RefCell::new(Vec::new()),
         inline_template_members: std::collections::HashSet::new(),
+        inline_template_member_control_flow_labels: std::collections::HashMap::new(),
+        instantiated_inline_template_members: std::collections::HashSet::new(),
         inline_template_accessors: std::collections::HashMap::new(),
         template_value_constructors: std::collections::HashMap::new(),
         empty_nested_template_types: std::collections::HashSet::new(),
@@ -3357,6 +3359,7 @@ blr\n\
                 inherited_virtual_destructor_declarations: 0,
                 direct_calls: 1,
                 control_flow_labels: 0,
+                instantiated_template_control_flow_labels: 0,
             }
         );
     }
@@ -5066,6 +5069,54 @@ blr\n\
                 }
             )] if arguments.len() == 1
         ));
+    }
+
+    #[test]
+    fn counts_control_flow_only_for_instantiated_inline_template_members() {
+        let source = r#"
+            template <typename T> struct Array {
+                void add(T* value) {
+                    if (value) {}
+                    else {}
+                }
+            };
+            template <typename T> struct Math {
+                static T absolute(T value) {
+                    if (value < 0) return -value;
+                    return value;
+                }
+                static T unused(T value) {
+                    if (value) return value;
+                    return 0;
+                }
+            };
+            typedef Math<float> Mathf;
+            struct Heap {
+                Array<Heap>* children;
+                void add(Heap* child) {
+                    children->add(child);
+                    children->add(child);
+                }
+                static bool isZero(float value) {
+                    return Mathf::absolute(value) == 0.0f;
+                }
+            };
+            int probe() { return 0; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.cxx_inline_ordinal_facts
+                .instantiated_template_control_flow_labels,
+            5
+        );
     }
 
     #[test]

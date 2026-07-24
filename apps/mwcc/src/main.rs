@@ -1077,6 +1077,8 @@ fn compile(
             * usize::from(behavior.dropped_inline_const_local_declaration_label_weight)
         + cxx_inline_facts.control_flow_labels
             * usize::from(behavior.cxx_inline_control_flow_label_weight)
+        + cxx_inline_facts.instantiated_template_control_flow_labels
+            * usize::from(behavior.cxx_inline_control_flow_label_weight)
         + cxx_inline_facts.nonvirtual_destructors
             * usize::from(behavior.cxx_nonvirtual_destructor_label_bump)
         + cxx_inline_facts.nonvirtual_destructors
@@ -1124,6 +1126,8 @@ fn compile(
             + cxx_inline_facts.inline_definitions
                 * usize::from(behavior.cxx_rtti_inline_definition_label_bump)
             + cxx_inline_facts.control_flow_labels
+                * usize::from(behavior.cxx_inline_control_flow_label_weight)
+            + cxx_inline_facts.instantiated_template_control_flow_labels
                 * usize::from(behavior.cxx_inline_control_flow_label_weight)
             + mutable_inline_local_declarators
                 * usize::from(behavior.dropped_inline_local_declaration_label_weight)
