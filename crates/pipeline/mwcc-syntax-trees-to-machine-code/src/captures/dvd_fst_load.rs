@@ -28,6 +28,7 @@ const METROID_PRIME_CONTEXT: u64 = 0x9b6025ea7315ba33;
 const MELEE_AND_OCARINA_AST_HASH: u64 = 0xad73f2acbb39792d;
 const MELEE_CONTEXT: u64 = 0x3a2d2eb82e4d72e8;
 const OCARINA_CONTEXT: u64 = 0xb824835db13d77aa;
+const STRIKERS_CONTEXT: u64 = 0x302419ada04faf02;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LoaderVariant {
@@ -87,6 +88,7 @@ impl Generator {
                 LoaderVariant::StaticSignedLegacyEpilogue
             }
             (MELEE_AND_OCARINA_AST_HASH, OCARINA_CONTEXT) => LoaderVariant::StaticSignedWindWaker,
+            (MELEE_AND_OCARINA_AST_HASH, STRIKERS_CONTEXT) => LoaderVariant::StaticSigned,
             _ => {
                 if std::env::var_os("MWCC_DIAGNOSTIC_CAPTURE").is_some() {
                     eprintln!(
