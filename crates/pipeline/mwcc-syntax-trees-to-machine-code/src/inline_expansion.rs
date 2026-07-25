@@ -32,6 +32,11 @@ use value_body::ValueInlineBody;
 
 #[derive(Clone, Debug, Default)]
 pub struct InlineBodySet {
+    /// Read-only ordinary definitions available to semantic transaction
+    /// lowerers. Generic automatic inlining still uses the narrower `bodies`
+    /// maps below; retaining this view does not make arbitrary functions
+    /// composable.
+    definitions: HashMap<String, Function>,
     bodies: HashMap<String, Function>,
     /// Ordinary small definitions that MWCC may expand selectively at hot
     /// structured call sites even when the TU calls them more than once.
@@ -216,6 +221,10 @@ impl InlineBodySet {
             }
         }
         Self {
+            definitions: definitions
+                .iter()
+                .map(|function| (function.name.clone(), function.clone()))
+                .collect(),
             bodies,
             repeatable_bodies,
             values,
@@ -280,6 +289,12 @@ impl InlineBodySet {
         self.bodies
             .get(name)
             .or_else(|| self.repeatable_bodies.get(name))
+    }
+
+    /// An ordinary same-translation-unit definition, exposed only for
+    /// lowerers that validate the complete callee shape before composing it.
+    pub(crate) fn definition_body(&self, name: &str) -> Option<&Function> {
+        self.definitions.get(name)
     }
 
     /// Whether this function calls a definition that cannot be materialized as

@@ -31,6 +31,31 @@ struct VectorLoop<'a> {
     mask_address: u16,
 }
 
+#[derive(Clone, Copy)]
+struct RegisterSchedule {
+    counter: u8,
+    offsets: u8,
+    destination: u8,
+    state: u8,
+    mask: u8,
+}
+
+const DIRECT_REGISTERS: RegisterSchedule = RegisterSchedule {
+    counter: 27,
+    offsets: 28,
+    destination: 29,
+    state: 30,
+    mask: 31,
+};
+
+const WRAPPER_REGISTERS: RegisterSchedule = RegisterSchedule {
+    counter: 28,
+    offsets: 31,
+    destination: 27,
+    state: 30,
+    mask: 29,
+};
+
 fn var(expression: &Expression, expected: &str) -> bool {
     matches!(expression, Expression::Variable(name) if name == expected)
 }
@@ -390,6 +415,23 @@ fn classify_loop(function: &Function) -> Option<VectorLoop<'_>> {
     })
 }
 
+fn classify_zero_argument_wrapper(function: &Function) -> Option<&str> {
+    if function.return_type != Type::Void
+        || !function.parameters.is_empty()
+        || !function.locals.is_empty()
+        || !function.guards.is_empty()
+        || function.return_expression.is_some()
+    {
+        return None;
+    }
+    let [Statement::Expression(Expression::Call { name, arguments })] =
+        function.statements.as_slice()
+    else {
+        return None;
+    };
+    arguments.is_empty().then_some(name)
+}
+
 impl Generator {
     pub(crate) fn try_interrupt_vector_copy_loop(
         &mut self,
@@ -401,9 +443,22 @@ impl Generator {
         {
             return Ok(false);
         }
-        let Some(expanded_caller) = self.inline_bodies.expand_calls(function) else {
-            return Ok(false);
-        };
+        let direct = self.inline_bodies.expand_calls(function);
+        let (expanded_caller, registers) =
+            if direct.as_ref().and_then(classify_loop).is_some() {
+                (direct.unwrap(), DIRECT_REGISTERS)
+            } else {
+                let Some(callee) = classify_zero_argument_wrapper(function) else {
+                    return Ok(false);
+                };
+                let Some(definition) = self.inline_bodies.definition_body(callee) else {
+                    return Ok(false);
+                };
+                let Some(expanded) = self.inline_bodies.expand_calls(definition) else {
+                    return Ok(false);
+                };
+                (expanded, WRAPPER_REGISTERS)
+            };
         let Some(shape) = classify_loop(&expanded_caller) else {
             return Ok(false);
         };
@@ -424,15 +479,9 @@ impl Generator {
             return Ok(false);
         }
 
-        const COUNTER: u8 = 27;
-        const OFFSETS: u8 = 28;
-        const DESTINATION: u8 = 29;
-        const STATE: u8 = 30;
-        const MASK: u8 = 31;
-
         self.non_leaf = true;
         self.frame_size = 32;
-        self.callee_saved = vec![MASK, STATE, DESTINATION, OFFSETS, COUNTER];
+        self.callee_saved = vec![31, 30, 29, 28, 27];
         self.output.pre_scheduled = true;
         self.owns_link_register_schedule = true;
 
@@ -469,7 +518,7 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::StoreMultipleWord {
-                s: COUNTER,
+                s: 27,
                 a: 1,
                 offset: 12,
             });
@@ -544,25 +593,25 @@ impl Generator {
             .instructions
             .push(Instruction::load_immediate_shifted(3, 0));
         self.output.instructions.push(Instruction::LoadWord {
-            d: MASK,
+            d: registers.mask,
             a: 5,
             offset: 0,
         });
         self.record_relocation(RelocationKind::Addr16Lo, shape.offsets);
         self.output.instructions.push(Instruction::AddImmediate {
-            d: OFFSETS,
+            d: registers.offsets,
             a: 4,
             immediate: 0,
         });
         self.record_relocation(RelocationKind::Addr16Lo, shape.translation.state);
         self.output.instructions.push(Instruction::AddImmediate {
-            d: STATE,
+            d: registers.state,
             a: 3,
             immediate: 0,
         });
         self.output
             .instructions
-            .push(Instruction::load_immediate(COUNTER, 0));
+            .push(Instruction::load_immediate(registers.counter, 0));
 
         self.bind_label(loop_body);
         self.output
@@ -571,11 +620,11 @@ impl Generator {
         self.output.instructions.push(Instruction::ShiftLeftWord {
             a: 0,
             s: 0,
-            b: COUNTER,
+            b: registers.counter,
         });
         self.output.instructions.push(Instruction::AndRecord {
             a: 0,
-            s: MASK,
+            s: registers.mask,
             b: 0,
         });
         self.emit_branch_conditional_to(12, 2, skip_copy); // beq
@@ -586,7 +635,7 @@ impl Generator {
             .push(Instruction::load_immediate_shifted(3, 0));
         self.output.instructions.push(Instruction::LoadWord {
             d: 6,
-            a: OFFSETS,
+            a: registers.offsets,
             offset: 0,
         });
         self.record_relocation(RelocationKind::Addr16Lo, shape.translation.base);
@@ -615,7 +664,7 @@ impl Generator {
         self.emit_branch_conditional_to(4, 0, copy_fallback); // bge
         self.output.instructions.push(Instruction::LoadWord {
             d: 0,
-            a: STATE,
+            a: registers.state,
             offset: shape.translation.state_offset,
         });
         self.output
@@ -628,7 +677,7 @@ impl Generator {
         self.emit_branch_conditional_to(12, 2, copy_fallback); // beq
         self.output
             .instructions
-            .push(Instruction::move_register(DESTINATION, 6));
+            .push(Instruction::move_register(registers.destination, 6));
         self.emit_branch_to(copy_join);
         self.bind_label(copy_fallback);
         self.output
@@ -641,7 +690,7 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::OrImmediateShifted {
-                a: DESTINATION,
+                a: registers.destination,
                 s: 0,
                 immediate: 0x8000,
             });
@@ -653,7 +702,7 @@ impl Generator {
             .push(Instruction::load_immediate_shifted(4, 0));
         self.output
             .instructions
-            .push(Instruction::move_register(3, DESTINATION));
+            .push(Instruction::move_register(3, registers.destination));
         self.record_relocation(RelocationKind::Addr16Lo, copy.vector_table);
         self.output.instructions.push(Instruction::AddImmediate {
             d: 0,
@@ -672,7 +721,7 @@ impl Generator {
         });
         self.output
             .instructions
-            .push(Instruction::move_register(3, DESTINATION));
+            .push(Instruction::move_register(3, registers.destination));
         self.output
             .instructions
             .push(Instruction::load_immediate(4, copy.byte_count));
@@ -683,19 +732,19 @@ impl Generator {
 
         self.bind_label(skip_copy);
         self.output.instructions.push(Instruction::AddImmediate {
-            d: COUNTER,
-            a: COUNTER,
+            d: registers.counter,
+            a: registers.counter,
             immediate: 1,
         });
         self.output.instructions.push(Instruction::AddImmediate {
-            d: OFFSETS,
-            a: OFFSETS,
+            d: registers.offsets,
+            a: registers.offsets,
             immediate: 4,
         });
         self.output
             .instructions
             .push(Instruction::CompareWordImmediate {
-                a: COUNTER,
+                a: registers.counter,
                 immediate: shape.counter_bound,
             });
         self.emit_branch_conditional_to(4, 1, loop_body); // ble
@@ -703,7 +752,7 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::LoadMultipleWord {
-                d: COUNTER,
+                d: 27,
                 a: 1,
                 offset: 12,
             });

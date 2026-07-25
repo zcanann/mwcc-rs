@@ -28,7 +28,9 @@ use mwcc_machine_code::{
     Instruction, MachineFunction, Relocation, RelocationKind, RelocationTarget,
 };
 use mwcc_syntax_trees::{AsmInstruction, AsmItem, AsmOperand, AsmRelocSuffix, Function};
-use mwcc_versions::{AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, Behavior};
+use mwcc_versions::{
+    AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, Behavior, SymbolTraversalStyle,
+};
 use std::collections::HashMap;
 
 /// Assemble a retained embedded-asm helper directly into an ordinary function.
@@ -360,6 +362,11 @@ pub(crate) fn assemble_asm_function(
         )?;
     }
 
+    let symbol_order = order_asm_symbols(
+        &relocations,
+        symbol_order,
+        behavior.symbol_traversal_style,
+    );
     let mut output = MachineFunction::new(function.name.clone());
     output.instructions = instructions;
     output.is_static = function.is_static;
@@ -371,6 +378,35 @@ pub(crate) fn assemble_asm_function(
     output.relocations = relocations;
     output.symbol_order = symbol_order;
     Ok(output)
+}
+
+fn order_asm_symbols(
+    relocations: &[Relocation],
+    creation_order: Vec<String>,
+    traversal: SymbolTraversalStyle,
+) -> Vec<String> {
+    if traversal != SymbolTraversalStyle::GroupedByKind {
+        return creation_order;
+    }
+    let mut data = Vec::new();
+    let mut calls = Vec::new();
+    for name in creation_order {
+        let is_call = relocations.iter().find_map(|relocation| {
+            let target = match &relocation.target {
+                RelocationTarget::External(target)
+                | RelocationTarget::ExternalWithAddend(target, _) => target,
+                _ => return None,
+            };
+            (target == &name).then_some(relocation.kind == RelocationKind::Rel24)
+        });
+        if is_call == Some(true) {
+            calls.push(name);
+        } else {
+            data.push(name);
+        }
+    }
+    data.extend(calls);
+    data
 }
 
 /// Whether an assembled line contributes a machine word (the register-allocation
@@ -462,5 +498,52 @@ fn relocation_kind(suffix: AsmRelocSuffix) -> RelocationKind {
         AsmRelocSuffix::Hi => RelocationKind::Addr16Hi,
         AsmRelocSuffix::Ha => RelocationKind::Addr16Ha,
         AsmRelocSuffix::Lo => RelocationKind::Addr16Lo,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn relocation(index: usize, kind: RelocationKind, target: &str) -> Relocation {
+        Relocation {
+            instruction_index: index,
+            kind,
+            target: RelocationTarget::External(target.into()),
+        }
+    }
+
+    #[test]
+    fn mainline_asm_symbols_group_data_before_calls() {
+        let relocations = [
+            relocation(0, RelocationKind::Addr16Ha, "state"),
+            relocation(1, RelocationKind::Rel24, "save"),
+            relocation(2, RelocationKind::Addr16Lo, "stack"),
+        ];
+        assert_eq!(
+            order_asm_symbols(
+                &relocations,
+                vec!["state".into(), "save".into(), "stack".into()],
+                SymbolTraversalStyle::GroupedByKind,
+            ),
+            ["state", "stack", "save"]
+        );
+    }
+
+    #[test]
+    fn legacy_asm_symbols_preserve_creation_order_across_kinds() {
+        let relocations = [
+            relocation(0, RelocationKind::Addr16Ha, "state"),
+            relocation(1, RelocationKind::Rel24, "save"),
+            relocation(2, RelocationKind::Addr16Lo, "stack"),
+        ];
+        assert_eq!(
+            order_asm_symbols(
+                &relocations,
+                vec!["state".into(), "save".into(), "stack".into()],
+                SymbolTraversalStyle::LegacyCreationOrder,
+            ),
+            ["state", "save", "stack"]
+        );
     }
 }
