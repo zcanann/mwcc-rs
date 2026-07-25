@@ -45,6 +45,18 @@ impl Generator {
                 }
                 (location.register, 0i16, size, false)
             }
+            Expression::Member {
+                base,
+                offset,
+                member_type: Type::Struct { size, .. },
+                index_stride: None,
+            } => {
+                let source_register = self.member_base_register(base)?;
+                let source_offset = i16::try_from(*offset).map_err(|_| {
+                    Diagnostic::error("frame aggregate member source is out of range")
+                })?;
+                (source_register, source_offset, *size, false)
+            }
             _ => return Ok(false),
         };
         if source_size != target_size || source_size == 0 || source_size % 4 != 0 {
@@ -154,6 +166,42 @@ impl Generator {
                 let target_offset =
                     crate::frame::checked_frame_member_offset(slot.offset, *offset)?;
                 Ok(Some((target_offset, *size)))
+            }
+            Expression::Index { base, index } => {
+                let Expression::Variable(name) = base.as_ref() else {
+                    return Ok(None);
+                };
+                let Some(slot) = self
+                    .frame_slots
+                    .get(name)
+                    .copied()
+                    .filter(|slot| slot.is_array)
+                else {
+                    return Ok(None);
+                };
+                let Type::Struct { size, .. } = slot.value_type else {
+                    return Ok(None);
+                };
+                let Some(index) = constant_value(index) else {
+                    return Ok(None);
+                };
+                let byte_offset = index
+                    .checked_mul(i64::from(size))
+                    .filter(|offset| *offset >= 0)
+                    .and_then(|offset| i16::try_from(offset).ok())
+                    .ok_or_else(|| {
+                        Diagnostic::error("frame aggregate array index is out of range")
+                    })?;
+                let target_offset = slot.offset.checked_add(byte_offset).ok_or_else(|| {
+                    Diagnostic::error("frame aggregate array element is out of range")
+                })?;
+                let element_end = i32::from(byte_offset) + i32::try_from(size).unwrap_or(i32::MAX);
+                if element_end > i32::from(slot.size) {
+                    return Err(Diagnostic::error(
+                        "frame aggregate array element lies outside its slot",
+                    ));
+                }
+                Ok(Some((target_offset, size)))
             }
             _ => Ok(None),
         }

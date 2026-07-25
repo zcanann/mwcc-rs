@@ -7,7 +7,6 @@
 
 #[allow(unused_imports)]
 use super::*;
-use super::structured_locals::body_uses_local;
 
 pub(super) struct StructuredFrameArrays<'a> {
     pub(super) arrays: Vec<&'a LocalDeclaration>,
