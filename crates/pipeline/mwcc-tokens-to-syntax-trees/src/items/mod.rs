@@ -376,89 +376,13 @@ impl Parser {
         Ok((minimum, maximum, enumerators))
     }
 
-    /// Evaluate a constant enumerator expression — integer/char literals, prior
-    /// enumerators, parentheses, and left-to-right `+ - * & | ^ << >>`.
+    /// Evaluate an integer constant expression used by an enumerator or inline
+    /// assembly constant. Reuse the ordinary precedence grammar so casts,
+    /// nested unary operators, comparisons, and shifts have exactly the same
+    /// semantics here as in static initializers.
     pub(crate) fn parse_enum_value(&mut self) -> Compilation<i64> {
-        let mut value = self.parse_enum_primary()?;
-        loop {
-            value = match self.peek() {
-                Token::Plus => {
-                    self.advance();
-                    value + self.parse_enum_primary()?
-                }
-                Token::Minus => {
-                    self.advance();
-                    value - self.parse_enum_primary()?
-                }
-                Token::Star => {
-                    self.advance();
-                    value * self.parse_enum_primary()?
-                }
-                Token::Ampersand => {
-                    self.advance();
-                    value & self.parse_enum_primary()?
-                }
-                Token::Pipe => {
-                    self.advance();
-                    value | self.parse_enum_primary()?
-                }
-                Token::Caret => {
-                    self.advance();
-                    value ^ self.parse_enum_primary()?
-                }
-                Token::ShiftLeft => {
-                    self.advance();
-                    value << self.parse_enum_primary()?
-                }
-                Token::ShiftRight => {
-                    self.advance();
-                    value >> self.parse_enum_primary()?
-                }
-                _ => break,
-            };
-        }
-        Ok(value)
-    }
-
-    pub(crate) fn parse_enum_primary(&mut self) -> Compilation<i64> {
-        let negative = self.eat_keyword(Token::Minus);
-        let value = match self.advance() {
-            Token::IntegerLiteral(value) => value,
-            Token::Identifier(name) => {
-                // C++ enum initializers commonly qualify a previously declared
-                // enumerator (`Namespace::Value`). Enumerator values live in
-                // the flat constant registry today, so retain the complete
-                // spelling for namespaced registries while also resolving the
-                // terminal name used by existing namespace parsing.
-                let mut qualified = name;
-                let mut terminal = qualified.clone();
-                while *self.peek() == Token::Colon && *self.peek_at(1) == Token::Colon {
-                    self.advance();
-                    self.advance();
-                    terminal = self.parse_identifier()?;
-                    qualified.push_str("::");
-                    qualified.push_str(&terminal);
-                }
-                self.enum_constants
-                    .get(&qualified)
-                    .or_else(|| self.enum_constants.get(&terminal))
-                    .copied()
-                    .ok_or_else(|| {
-                        Diagnostic::error(format!("non-constant enumerator value '{qualified}'"))
-                    })?
-            }
-            Token::ParenOpen => {
-                let value = self.parse_enum_value()?;
-                self.expect(Token::ParenClose)?;
-                value
-            }
-            other => {
-                return Err(Diagnostic::error(format!(
-                    "expected an enumerator value, found {other}"
-                )))
-            }
-        };
-        Ok(if negative { -value } else { value })
+        let expression = self.expression()?;
+        crate::expressions::fold_constant_expression(&expression)
     }
 
     /// A constant integer in statement position — a `switch` case label. Parsed as a

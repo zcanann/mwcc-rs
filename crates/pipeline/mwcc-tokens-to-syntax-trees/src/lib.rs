@@ -5933,6 +5933,35 @@ blr\n\
     }
 
     #[test]
+    fn folds_casted_force_enum_size_and_lays_out_named_enum_fields() {
+        let source = r#"
+            typedef signed long RwInt32;
+            typedef unsigned long RwUInt32;
+            enum IntersectType {
+                None = 0,
+                ForceSize = (RwInt32)((~((RwUInt32)0)) >> 1)
+            };
+            struct Intersection {
+                IntersectType type;
+            };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.enumeration_definitions[0].enumerators[1].value,
+            0x7fff_ffff
+        );
+        assert_eq!(unit.aggregate_definitions["Intersection"].byte_size, 4);
+    }
+
+    #[test]
     fn recovers_mixed_layout_from_a_multi_parameter_template() {
         let source = r#"
             typedef unsigned int uint;

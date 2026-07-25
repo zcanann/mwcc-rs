@@ -21,7 +21,29 @@ pub(crate) fn fold_constant_expression(expression: &Expression) -> Compilation<i
             let value = fold_constant_expression(operand)?;
             match operator {
                 UnaryOperator::Negate => value.wrapping_neg(),
-                UnaryOperator::BitNot => !value,
+                UnaryOperator::BitNot => {
+                    let inverted = !value;
+                    // Integer promotions preserve an explicitly cast
+                    // unsigned operand's width. Without re-narrowing here,
+                    // `~(u32)0 >> 1` becomes an arithmetic i64 shift and folds
+                    // to -1 instead of the canonical 0x7fffffff enum sentinel.
+                    match operand.as_ref() {
+                        Expression::Cast { target_type, .. }
+                            if !matches!(
+                                target_type,
+                                Type::Float
+                                    | Type::Double
+                                    | Type::Struct { .. }
+                                    | Type::Void
+                                    | Type::Pointer(_)
+                                    | Type::StructPointer { .. }
+                            ) =>
+                        {
+                            truncate_to_integer(inverted, *target_type)
+                        }
+                        _ => inverted,
+                    }
+                }
                 UnaryOperator::LogicalNot => (value == 0) as i64,
             }
         }
