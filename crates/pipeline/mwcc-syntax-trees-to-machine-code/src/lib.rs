@@ -160,27 +160,70 @@ pub fn lower_function(
     let expanded_constructor = function
         .name
         .starts_with("__ct__")
-        .then(|| inline_bodies.expand_calls(function))
+        .then(|| inline_bodies.expand_calls_with_facts(function))
         .flatten();
-    if let Some(output) = cxx_abi::lower_inlined_constructor_chain(
-        expanded_constructor.as_ref().unwrap_or(function),
+    if std::env::var_os("MWCC_DIAGNOSTIC_SYNTAX_TREE").is_some() {
+        if let Some(expanded) = &expanded_constructor {
+            eprintln!(
+                "constructor-inline-expansion {}: front={}, statement={}, value={}",
+                function.name,
+                inline_expansion_facts.leading_initializer_substitutions,
+                expanded.statement_body_substitutions,
+                expanded.value_body_substitutions,
+            );
+        }
+    }
+    let constructor_inline_ordinal_residue =
+        expanded_constructor.as_ref().map_or(0, |expanded| {
+            let behavior = Behavior::resolve(&config);
+            if let Some(weights) = behavior.cxx_constructor_inline_ordinal_weights {
+                u32::from(weights.base)
+                    + u32::from(weights.leading_initializer)
+                        * inline_expansion_facts.leading_initializer_substitutions as u32
+                    + u32::from(weights.statement_body)
+                        * expanded.statement_body_substitutions as u32
+                    + u32::from(weights.value_body)
+                        * expanded.value_body_substitutions as u32
+            } else {
+                inline_expansion::ordinal_residue(
+                    inline_expansion_facts,
+                    expanded.statement_body_substitutions,
+                    expanded.value_body_substitutions,
+                    behavior.inline_statement_substitution_label_weight,
+                )
+            }
+        });
+    if let Some(mut output) = cxx_abi::lower_inlined_constructor_chain(
+        expanded_constructor
+            .as_ref()
+            .map(|expanded| &expanded.function)
+            .unwrap_or(function),
         source_inline_string_symbols,
         config.clone(),
     ) {
+        output.anonymous_label_bump += constructor_inline_ordinal_residue;
         return Ok(output);
     }
-    if let Some(output) = cxx_abi::lower_composed_constructor(
-        expanded_constructor.as_ref().unwrap_or(function),
+    if let Some(mut output) = cxx_abi::lower_composed_constructor(
+        expanded_constructor
+            .as_ref()
+            .map(|expanded| &expanded.function)
+            .unwrap_or(function),
         globals,
         config.clone(),
     ) {
+        output.anonymous_label_bump += constructor_inline_ordinal_residue;
         return Ok(output);
     }
-    if let Some(output) = cxx_abi::lower_virtual_constructor(
-        expanded_constructor.as_ref().unwrap_or(function),
+    if let Some(mut output) = cxx_abi::lower_virtual_constructor(
+        expanded_constructor
+            .as_ref()
+            .map(|expanded| &expanded.function)
+            .unwrap_or(function),
         globals,
         config.clone(),
     ) {
+        output.anonymous_label_bump += constructor_inline_ordinal_residue;
         return Ok(output);
     }
     if let Some(output) = cxx_abi::lower_optional_destructor(function, config.clone()) {

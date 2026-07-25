@@ -17,7 +17,8 @@ use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
     CallDispatcherStyle, CoefficientTableRelocationStyle, CommaValuePlacementStyle,
     ComputedStoreIssueStyle, ConstantStoreScheduleStyle, DataSectionRelocationStyle,
-    DeferredFunctionEmissionStyle, FieldMergeStyle, FixedAddressConstantStoreStyle,
+    CxxConstructorInlineOrdinalWeights, DeferredFunctionEmissionStyle, FieldMergeStyle,
+    FixedAddressConstantStoreStyle,
     FixedAddressParameterizedRmwStyle,
     FixedAddressPollAddressStyle, FixedAddressRmwStyle, FoldedFloatCompareLinkageStyle,
     ForwardedTraceStringStyle,
@@ -549,6 +550,8 @@ pub struct Behavior {
     pub deferred_cxx_nonvirtual_destructor_label_bump: u8,
     /// Residue per statement-body inline substitution for the active mode.
     pub inline_statement_substitution_label_weight: u8,
+    /// Optional constructor-specific inline-composition transaction.
+    pub cxx_constructor_inline_ordinal_weights: Option<CxxConstructorInlineOrdinalWeights>,
     /// Hidden deferred-inlining labels retained per call-dispatch switch arm.
     /// Zero for ordinary compilation and for unmeasured compiler generations.
     pub deferred_call_dispatcher_labels_per_case: u8,
@@ -903,6 +906,10 @@ impl Behavior {
             } else {
                 2
             },
+            cxx_constructor_inline_ordinal_weights: config
+                .build
+                .profile
+                .cxx_constructor_inline_ordinal_weights(),
             deferred_call_dispatcher_labels_per_case: if config.flags.inline_deferred {
                 config
                     .build
@@ -1754,6 +1761,15 @@ mod tests {
         assert_eq!(behavior.frame_convention, FrameConvention::LinkageFirst);
         assert_eq!(behavior.cxx_inline_control_flow_label_weight, 2);
         assert_eq!(behavior.cxx_virtual_destructor_label_bump, 1);
+        assert_eq!(
+            behavior.cxx_constructor_inline_ordinal_weights,
+            Some(CxxConstructorInlineOrdinalWeights {
+                base: 1,
+                leading_initializer: 1,
+                statement_body: 1,
+                value_body: 3,
+            })
+        );
         assert_eq!(
             behavior.cxx_reference_bound_scalar_temporary_label_bump,
             2

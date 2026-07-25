@@ -69,6 +69,16 @@ pub enum FunctionOrdinalAccountingStyle {
     Gc41Ipa,
 }
 
+/// Anonymous-label transaction left by composing retained inline bodies into a
+/// specialized C++ constructor lowerer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CxxConstructorInlineOrdinalWeights {
+    pub base: u8,
+    pub leading_initializer: u8,
+    pub statement_body: u8,
+    pub value_body: u8,
+}
+
 /// Lowering family for SDK-style 64-bit stopwatch initialization and wait
 /// transactions. These functions exercise paired integer values, volatile
 /// pair spills, and EABI conversion helpers as one inseparable schedule.
@@ -819,6 +829,14 @@ pub trait CodegenProfile: core::fmt::Debug {
     /// deferred analysis (ordinary emission retains two nodes).
     fn deferred_inline_statement_substitution_label_weight(&self) -> u8 {
         1
+    }
+
+    /// Specialized constructor composition normally shares the ordinary inline
+    /// residue model. Older analyzers may retain a distinct transaction.
+    fn cxx_constructor_inline_ordinal_weights(
+        &self,
+    ) -> Option<CxxConstructorInlineOrdinalWeights> {
+        None
     }
 
     /// Whether plain `char` (no `signed`/`unsigned` qualifier) is signed. The one
@@ -1884,6 +1902,17 @@ impl CodegenProfile for Gc233Build163 {
 
     fn cxx_virtual_destructor_label_bump(&self) -> u8 {
         1
+    }
+
+    fn cxx_constructor_inline_ordinal_weights(
+        &self,
+    ) -> Option<CxxConstructorInlineOrdinalWeights> {
+        Some(CxxConstructorInlineOrdinalWeights {
+            base: 1,
+            leading_initializer: 1,
+            statement_body: 1,
+            value_body: 3,
+        })
     }
 
     fn cxx_rtti_virtual_method_label_weight(&self, _whole_file: bool) -> u8 {
