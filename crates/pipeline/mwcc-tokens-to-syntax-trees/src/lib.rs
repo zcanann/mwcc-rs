@@ -4310,6 +4310,67 @@ blr\n\
     }
 
     #[test]
+    fn materializes_overloaded_aggregate_results_before_assignment() {
+        let source = r#"
+            struct Vec {
+                float x;
+                float y;
+                float z;
+                Vec& operator=(const Vec&);
+                Vec operator-(const Vec&) const;
+            };
+            void subtract(Vec* destination, Vec* source) {
+                destination[0] = source[1] - source[0];
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let function = &unit.functions[0];
+        assert!(matches!(
+            function.locals.as_slice(),
+            [mwcc_syntax_trees::LocalDeclaration {
+                declared_type: Type::Struct { size: 12, align: 4 },
+                name,
+                ..
+            }] if name == "__mwcc_aggregate_result_0"
+        ));
+        assert!(matches!(
+            function.statements.as_slice(),
+            [Statement::Expression(Expression::Comma { left, right })]
+                if matches!(
+                    left.as_ref(),
+                    Expression::Assign { target, value }
+                        if matches!(
+                            target.as_ref(),
+                            Expression::Variable(name) if name == "__mwcc_aggregate_result_0"
+                        ) && matches!(
+                            value.as_ref(),
+                            Expression::Call { name, arguments }
+                                if name == "__mi__3VecCFRC3Vec"
+                                    && arguments.len() == 2
+                                    && arguments.iter().all(
+                                        |argument| matches!(argument, Expression::AddressOf { .. })
+                                    )
+                        )
+                ) && matches!(
+                    right.as_ref(),
+                    Expression::Call { name, arguments }
+                        if name == "__as__3VecFRC3Vec"
+                            && arguments.len() == 2
+                            && arguments.iter().all(
+                                |argument| matches!(argument, Expression::AddressOf { .. })
+                            )
+                )
+        ));
+    }
+
+    #[test]
     fn preserves_multidimensional_member_row_stride_in_address_expression() {
         let source = r#"
             typedef unsigned char u8;

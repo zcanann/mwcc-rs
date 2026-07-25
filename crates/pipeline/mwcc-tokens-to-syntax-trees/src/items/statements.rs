@@ -87,7 +87,7 @@ impl Parser {
     fn parse_leaf_statement(
         &mut self,
         local_names: &mut std::collections::HashSet<String>,
-        _block_locals: &mut Vec<LocalDeclaration>,
+        block_locals: &mut Vec<LocalDeclaration>,
     ) -> Compilation<Statement> {
         if matches!(self.peek(), Token::Identifier(word) if word == "delete") {
             return self.parse_delete_statement();
@@ -154,41 +154,16 @@ impl Parser {
                 &first,
                 Expression::Variable(name) if self.cxx_reference_variables.contains(name)
             ) || matches!(&first, Expression::Index { .. }) && first_struct_tag.is_some();
-            // Start with indexed aggregate-to-aggregate assignment: both
-            // operands are addressable lvalues, so overload lowering needs no
-            // temporary-object materialization. Aggregate arithmetic results
-            // require a hidden-result temporary and remain on the existing
-            // backend path until that owner is modeled.
-            let indexed_aggregate_copy =
-                matches!((&first, &value), (Expression::Index { .. }, Expression::Index { .. }));
-            if self.cplusplus && target_is_aggregate_value && indexed_aggregate_copy {
-                if let Some(class) = first_struct_tag.as_deref() {
-                    let saved_expression_tag =
-                        std::mem::replace(&mut self.expression_struct_tag, value_struct_tag.clone());
-                    let assignment = self.resolve_instance_member_call(
-                        class,
-                        "__as",
-                        std::slice::from_ref(&value),
-                    );
-                    let assignment = match assignment {
-                        Ok(assignment) => assignment,
-                        Err(error) => {
-                            self.expression_struct_tag = saved_expression_tag;
-                            return Err(error);
-                        }
-                    };
-                    if assignment.is_some() {
-                        let call = self.lower_cxx_instance_member_call(
-                            class,
-                            "__as",
-                            first,
-                            vec![value],
-                        );
-                        self.expression_struct_tag = saved_expression_tag;
-                        let call = call?;
-                        return Ok(Statement::Expression(call));
-                    }
-                    self.expression_struct_tag = saved_expression_tag;
+            if self.cplusplus && target_is_aggregate_value {
+                if let Some(statement) = self.lower_cxx_overloaded_assignment(
+                    &first,
+                    &value,
+                    first_struct_tag.as_deref(),
+                    value_struct_tag.as_deref(),
+                    local_names,
+                    block_locals,
+                )? {
+                    return Ok(statement);
                 }
             }
             if let Some(copy) = self.lower_typed_aggregate_assignment(
@@ -222,6 +197,154 @@ impl Parser {
             self.expect(Token::Semicolon)?;
             Ok(Statement::Expression(expression))
         }
+    }
+
+    /// Lower an aggregate assignment through the class's declared `operator=`.
+    ///
+    /// Addressable indexed values pass directly by reference. An overloaded
+    /// arithmetic result first receives a typed frame temporary: the producer
+    /// call uses that local as its EABI hidden result, then `operator=` receives
+    /// the local's address. Keeping the temporary explicit lets frame planning
+    /// and call lowering own storage and register placement without teaching a
+    /// scalar `Binary` node to carry an aggregate value.
+    fn lower_cxx_overloaded_assignment(
+        &mut self,
+        target: &Expression,
+        value: &Expression,
+        target_tag: Option<&str>,
+        value_tag: Option<&str>,
+        local_names: &mut std::collections::HashSet<String>,
+        block_locals: &mut Vec<LocalDeclaration>,
+    ) -> Compilation<Option<Statement>> {
+        let Some(target_tag) = target_tag else {
+            return Ok(None);
+        };
+        let direct_indexed_copy = matches!(
+            (target, value),
+            (Expression::Index { .. }, Expression::Index { .. })
+        );
+        if direct_indexed_copy {
+            let saved_expression_tag =
+                std::mem::replace(&mut self.expression_struct_tag, value_tag.map(str::to_owned));
+            let declared = self.resolve_instance_member_call(
+                target_tag,
+                "__as",
+                std::slice::from_ref(value),
+            );
+            let declared = match declared {
+                Ok(declared) => declared,
+                Err(error) => {
+                    self.expression_struct_tag = saved_expression_tag;
+                    return Err(error);
+                }
+            };
+            if declared.is_none() {
+                self.expression_struct_tag = saved_expression_tag;
+                return Ok(None);
+            }
+            let assignment =
+                self.lower_cxx_instance_member_call(target_tag, "__as", target.clone(), vec![
+                    value.clone(),
+                ]);
+            self.expression_struct_tag = saved_expression_tag;
+            return assignment.map(|call| Some(Statement::Expression(call)));
+        }
+
+        let Expression::Binary {
+            operator,
+            left,
+            right,
+        } = value
+        else {
+            return Ok(None);
+        };
+        let Some(operator_name) = crate::cxx::arithmetic_operator_name(*operator) else {
+            return Ok(None);
+        };
+        let Some(result_tag) = value_tag else {
+            return Ok(None);
+        };
+        if !same_cxx_aggregate_identity(target_tag, result_tag) {
+            return Ok(None);
+        }
+        let Some(operand_tag) = self
+            .cxx_expression_struct_tag(left)
+            .map(str::to_owned)
+        else {
+            return Ok(None);
+        };
+        let right_tag = self.cxx_expression_struct_tag(right).map(str::to_owned);
+        let resolved_result = self
+            .resolve_scoped_cxx_class_name(result_tag)
+            .unwrap_or_else(|| result_tag.to_owned());
+        let Some(layout) = self
+            .structs
+            .get(&resolved_result)
+            .or_else(|| self.structs.get(result_tag))
+        else {
+            return Ok(None);
+        };
+        let temporary_type = Type::Struct {
+            size: layout.size,
+            align: layout.align,
+        };
+        let mut temporary_index = block_locals.len();
+        let temporary = loop {
+            let candidate = format!("__mwcc_aggregate_result_{temporary_index}");
+            if !local_names.contains(&candidate) {
+                break candidate;
+            }
+            temporary_index += 1;
+        };
+        local_names.insert(temporary.clone());
+        self.variable_types
+            .insert(temporary.clone(), temporary_type);
+        self.variable_structs
+            .insert(temporary.clone(), resolved_result);
+        block_locals.push(LocalDeclaration {
+            declared_type: temporary_type,
+            name: temporary.clone(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        });
+
+        let saved_expression_tag =
+            std::mem::replace(&mut self.expression_struct_tag, right_tag);
+        let producer = self.lower_cxx_instance_member_call(
+            &operand_tag,
+            operator_name,
+            left.as_ref().clone(),
+            vec![right.as_ref().clone()],
+        );
+        let producer = match producer {
+            Ok(producer) => producer,
+            Err(error) => {
+                self.expression_struct_tag = saved_expression_tag;
+                return Err(error);
+            }
+        };
+        self.expression_struct_tag = Some(result_tag.to_owned());
+        let consumer = self.lower_cxx_instance_member_call(
+            target_tag,
+            "__as",
+            target.clone(),
+            vec![Expression::Variable(temporary.clone())],
+        );
+        self.expression_struct_tag = saved_expression_tag;
+        let consumer = consumer?;
+        Ok(Some(Statement::Expression(Expression::Comma {
+            left: Box::new(Expression::Assign {
+                target: Box::new(Expression::Variable(temporary)),
+                value: Box::new(producer),
+            }),
+            right: Box::new(consumer),
+        })))
     }
 
     /// Complete a top-level comma sequence after its first assignment and the
@@ -1002,4 +1125,8 @@ impl Parser {
         }
         Ok(())
     }
+}
+
+fn same_cxx_aggregate_identity(left: &str, right: &str) -> bool {
+    left == right || left.rsplit("::").next() == right.rsplit("::").next()
 }
