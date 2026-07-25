@@ -1386,6 +1386,9 @@ impl Generator {
         if self.try_global_aggregate_call_initialization(function)? {
             return Ok(());
         }
+        if self.try_global_state_initialization(function)? {
+            return Ok(());
+        }
         if self.try_global_call_result_guard(function)? {
             return Ok(());
         }

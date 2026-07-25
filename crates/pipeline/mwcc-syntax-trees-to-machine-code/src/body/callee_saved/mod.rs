@@ -39,6 +39,7 @@ mod global_call_result_guard;
 mod global_aggregate_initialization;
 mod global_aggregate_pop;
 mod global_aggregate_post;
+mod global_state_initialization;
 mod guarded_display_list_packet;
 mod guarded_initialization;
 mod guarded_member_alias_initialization_schedule;
