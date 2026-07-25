@@ -553,11 +553,16 @@ impl Generator {
             return Operands::ordered(FLOAT_RESULT, FLOAT_SCRATCH);
         }
         if self.is_float_located(left) && self.is_float_located(right) {
-            // The left load goes to a fresh virtual the allocator places (it
-            // coalesces onto a free FPR, or the result register when that is free);
-            // the right to the scratch. No longer needs a non-scratch result, so a
-            // two-float-load sub-expression like `(*p + *q) * z` lowers.
-            let anchor = self.fresh_virtual_float();
+            // The left load can define the operation's result home directly;
+            // the right uses the scratch. Besides expressing the natural
+            // coalescing explicitly, this avoids manufacturing one disposable
+            // virtual for every scalar operation in generated, unrolled math
+            // routines. A scratch-owned parent still needs a distinct lane.
+            let anchor = if destination == FLOAT_SCRATCH {
+                self.fresh_virtual_float()
+            } else {
+                destination
+            };
             self.emit_located_operand(left, anchor)?;
             self.emit_located_operand(right, FLOAT_SCRATCH)?;
             return Operands::ordered(anchor, FLOAT_SCRATCH);
