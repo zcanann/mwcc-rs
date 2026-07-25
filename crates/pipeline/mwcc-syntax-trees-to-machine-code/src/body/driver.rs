@@ -2207,113 +2207,7 @@ impl Generator {
                 }
             }
         }
-        // mwcc's list scheduler INTERLEAVES an independent POINTER store and the return-value
-        // computation to fill latency; our program-order codegen for pointer stores emits the store
-        // fully, then the return. Two measured shapes diverge (byte-exact-or-defer — the real fix is
-        // routing pointer stores through the Phase-E store scheduler, which treats stores as barriers):
-        //   (A) a store followed by a `> 0` / `!= 0` comparison return, whose branchless idiom leads
-        //       with `neg r0,x` — mwcc HOISTS that neg above the store (`stw` between neg and its uses).
-        //       `< 0` / `== 0` / `<= 0` returns lead with srawi/cntlzw and do NOT hoist (stay byte-exact).
-        //   (B) a store whose VALUE needs materialization (a `li` constant, an `lwz` load, or a computed
-        //       value) followed by a computed-arithmetic return — mwcc schedules the return compute into
-        //       the store's materialize→`stw` latency slot. A bare-register store value (`*p = a`) has
-        //       no slot, so `*p=a; return a+1;` stays byte-exact.
-        // Condition (A) fires for ANY store (a `neg`-hoist even over a global store DIFFs — the DAG
-        // emitter does not model a comparison return). Condition (B) is GATED to POINTER/member targets
-        // (`*p`, `p[i]`, `p->x`): a GLOBAL-scalar/aggregate store with a computed-arithmetic return
-        // (`g = a+1; return b+2;`) rides the DAG-emitter scheduler, which reproduces mwcc's interleave
-        // byte-exact (canaries 542_rand, 1015_dag_emitter) — those must NOT defer here.
         if let Some(return_expression) = &function.return_expression {
-            let store_target_is_pointer = |target: &Expression| match target {
-                Expression::Dereference { .. } => true,
-                Expression::Index { base, .. } | Expression::Member { base, .. } => {
-                    matches!(base.as_ref(), Expression::Variable(name)
-                        if !self.globals.contains_key(name.as_str()) && !self.global_array_sizes.contains_key(name.as_str()))
-                }
-                _ => false,
-            };
-            let store_value_needs_materialization = |value: &Expression| {
-                // A direct `stw rN` (a register-resident param/local) needs no leading instruction; a
-                // constant, a load, or a computed value all materialize into a register first.
-                !matches!(value, Expression::Variable(name) if !self.globals.contains_key(name.as_str()))
-            };
-            let mut has_store = false;
-            let mut has_pointer_store = false;
-            let mut has_materialized_pointer_store = false;
-            for statement in &function.statements {
-                if let Statement::Store { target, value } = statement {
-                    has_store = true;
-                    if store_target_is_pointer(target) {
-                        has_pointer_store = true;
-                        has_materialized_pointer_store |= store_value_needs_materialization(value);
-                    }
-                }
-            }
-            // (A) a `> 0` / `!= 0` comparison of a register leaf against zero, whose branchless idiom
-            // leads with `neg r0,x`. mwcc hoists that neg over ANY store (incl. a global — the DAG
-            // emitter does not model these two).
-            let neg_leading_comparison = |condition: &Expression| {
-                matches!(condition,
-                    Expression::Binary { operator: BinaryOperator::Greater | BinaryOperator::NotEqual, left, right }
-                        if matches!(left.as_ref(), Expression::Variable(_)) && is_zero_literal(right))
-            };
-            // (C) the BROADER hoisting comparisons — two-register (`a>b`), vs-nonzero-constant (`a>1`),
-            // and logical-not (`!a`, which leads with a HOISTED `cntlzw` unlike the semantically-equal
-            // Binary `a==0` that lowers cntlzw into the dest). Their leading xor/subf/subfic/cntlzw
-            // hoists ONLY over a POINTER store: a GLOBAL store with these returns rides the DAG emitter
-            // byte-exact (`g=a; return a>b;` MATCHes), so gate (C) to pointer targets.
-            let comparison_hoists = |condition: &Expression| -> bool {
-                match condition {
-                    Expression::Unary {
-                        operator: UnaryOperator::LogicalNot,
-                        operand,
-                    } => {
-                        matches!(operand.as_ref(), Expression::Variable(_))
-                    }
-                    Expression::Binary {
-                        operator,
-                        left,
-                        right,
-                    } if is_comparison(*operator) => {
-                        if !matches!(left.as_ref(), Expression::Variable(_)) {
-                            return false;
-                        }
-                        if is_zero_literal(right) {
-                            matches!(operator, BinaryOperator::Greater | BinaryOperator::NotEqual)
-                        } else {
-                            matches!(right.as_ref(), Expression::Variable(_))
-                                || constant_value(right).is_some()
-                        }
-                    }
-                    _ => false,
-                }
-            };
-            // Either predicate may appear as the return itself or as a single guard's branchless
-            // const-select (`if(cond) return C1; return C2;`).
-            let single_const_guard_condition = if function.guards.len() == 1
-                && constant_value(&function.guards[0].value).is_some()
-                && constant_value(return_expression).is_some()
-            {
-                Some(&function.guards[0].condition)
-            } else {
-                None
-            };
-            let return_hoists_neg_over_store = neg_leading_comparison(return_expression)
-                || single_const_guard_condition.is_some_and(|c| neg_leading_comparison(c));
-            let return_comparison_hoists_over_pointer = comparison_hoists(return_expression)
-                || single_const_guard_condition.is_some_and(|c| comparison_hoists(c));
-            // (B) a computed arithmetic/bitwise/shift or unary return (not a comparison or short-circuit).
-            let return_is_computed_arithmetic = match return_expression {
-                Expression::Binary { operator, .. } => {
-                    !is_comparison(*operator)
-                        && !matches!(
-                            operator,
-                            BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr
-                        )
-                }
-                Expression::Unary { .. } => true,
-                _ => false,
-            };
             // The measured store+product cluster (the __va_arg diamond arm reduced)
             // is handled before this pre-check defers it. See body/conditional.rs.
             if self.try_store_product_return(function)? {
@@ -2331,10 +2225,13 @@ impl Generator {
             if self.try_va_arg_diamond(function)? {
                 return Ok(());
             }
-            if (has_store && return_hoists_neg_over_store)
-                || (has_pointer_store && return_comparison_hoists_over_pointer)
-                || (has_materialized_pointer_store && return_is_computed_arithmetic)
-            {
+            if super::return_store_schedule::has_terminal_store_return_hazard(
+                &function.statements,
+                &function.guards,
+                return_expression,
+                &self.globals,
+                &self.global_array_sizes,
+            ) {
                 return Err(Diagnostic::error("a store scheduled around the return-value computation needs the store scheduler (roadmap)"));
             }
         }

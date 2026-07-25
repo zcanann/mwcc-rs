@@ -17,6 +17,7 @@ mod joystick_count_schedule;
 mod grab_mash_schedule;
 mod mixed_member_zero_reset_schedule;
 mod one_word_aggregate;
+mod return_store_schedule;
 mod canonical_boolean;
 mod symmetric_float_clamp;
 mod symmetric_sum_clamp_schedule;
