@@ -4414,6 +4414,70 @@ blr\n\
     }
 
     #[test]
+    fn materializes_nested_aggregate_operators_in_evaluation_order() {
+        let source = r#"
+            struct Vec {
+                float x;
+                float y;
+                float z;
+                Vec& operator=(const Vec&);
+                Vec operator*(float) const;
+                Vec operator+(const Vec&) const;
+            };
+            void blend(
+                Vec& destination,
+                const Vec& heading,
+                const Vec& center,
+                float numerator,
+                float denominator
+            ) {
+                destination = heading * (-numerator / denominator) + center;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let function = &unit.functions[0];
+        assert_eq!(
+            function
+                .locals
+                .iter()
+                .filter(|local| local.name.starts_with("__mwcc_aggregate_result_"))
+                .count(),
+            2
+        );
+        let [Statement::Expression(expression)] = function.statements.as_slice() else {
+            panic!("expected a sequenced aggregate assignment")
+        };
+        fn collect_calls<'a>(expression: &'a Expression, calls: &mut Vec<&'a str>) {
+            match expression {
+                Expression::Comma { left, right } => {
+                    collect_calls(left, calls);
+                    collect_calls(right, calls);
+                }
+                Expression::Assign { value, .. } => collect_calls(value, calls),
+                Expression::Call { name, .. } => calls.push(name),
+                _ => {}
+            }
+        }
+        let mut calls = Vec::new();
+        collect_calls(expression, &mut calls);
+        assert_eq!(
+            calls,
+            [
+                "__ml__3VecCFf",
+                "__pl__3VecCFRC3Vec",
+                "__as__3VecFRC3Vec",
+            ]
+        );
+    }
+
+    #[test]
     fn passes_retained_inline_aggregate_arguments_by_reference() {
         let source = r#"
             struct Vec {
