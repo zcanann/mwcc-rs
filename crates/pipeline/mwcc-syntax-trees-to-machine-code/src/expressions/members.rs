@@ -1056,6 +1056,44 @@ impl Generator {
         index: &Expression,
         destination: u8,
     ) -> Compilation<()> {
+        // `matrix[row][column]` on a flattened automatic array: the inner
+        // index denotes a row address, so two constant indices fold into one
+        // r1-relative scalar load.
+        if let Expression::Index {
+            base: row_base,
+            index: row,
+        } = base
+        {
+            if let Expression::Variable(name) = row_base.as_ref() {
+                if let (Some(&row_bytes), Some(row), Some(column), Some(slot), Some(element)) = (
+                    self.frame_row_bytes.get(name),
+                    constant_value(row),
+                    constant_value(index),
+                    self.frame_slots.get(name).copied(),
+                    self.frame_row_pointees.get(name).copied(),
+                ) {
+                    let displacement = row
+                        .checked_mul(i64::from(row_bytes))
+                        .and_then(|offset| {
+                            column
+                                .checked_mul(i64::from(element.size()))
+                                .and_then(|column| offset.checked_add(column))
+                        })
+                        .and_then(|offset| offset.checked_add(i64::from(slot.offset)))
+                        .and_then(|offset| i16::try_from(offset).ok())
+                        .ok_or_else(|| {
+                            Diagnostic::error("frame matrix subscript is out of range")
+                        })?;
+                    self.output.instructions.push(displacement_load(
+                        element,
+                        destination,
+                        1,
+                        displacement,
+                    )?);
+                    return Ok(());
+                }
+            }
+        }
         // `g[index]` where `g` is a file-scope array global: its address is
         // materialized by size (SDA21 small / ADDR16 large), then the element load.
         if let Expression::Variable(name) = base {

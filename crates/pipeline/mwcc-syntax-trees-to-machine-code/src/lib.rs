@@ -539,6 +539,16 @@ pub fn lower_function(
             .iter()
             .filter_map(|local| local.row_bytes.map(|row| (local.name.clone(), row)))
             .collect(),
+        frame_row_pointees: function
+            .locals
+            .iter()
+            .filter_map(|local| {
+                local
+                    .row_bytes
+                    .and_then(|_| expressions::pointee_of_type(local.declared_type))
+                    .map(|pointee| (local.name.clone(), pointee))
+            })
+            .collect(),
         descending_allocation_top: None,
         skipped_inline_names: skipped_inline_names.clone(),
         // Allocation operators and the standard block-copy intrinsic are

@@ -557,7 +557,9 @@ impl Generator {
     /// `(pointee, address register)` for a pointer leaf variable.
     pub(crate) fn pointer_leaf(&self, base: &Expression) -> Compilation<(Pointee, u8)> {
         let name = leaf_name(base).ok_or_else(|| {
-            Diagnostic::error("pointer access needs a pointer variable (roadmap)")
+            Diagnostic::error(format!(
+                "pointer leaf access needs a pointer variable (roadmap): {base:?}"
+            ))
         })?;
         let location = self
             .locations
@@ -574,6 +576,38 @@ impl Generator {
     /// nothing; a pointer-typed struct member (`*p->q`) loads the pointer value
     /// into the base's register first, reusing it as mwcc does.
     pub(crate) fn resolve_pointer(&mut self, base: &Expression) -> Compilation<(Pointee, u8)> {
+        // `matrix[row]` on a flattened automatic array is a row pointer. Form
+        // that address from the frame slot and recorded row stride so a
+        // following `[column]` can use the ordinary subscript machinery.
+        if let Expression::Index {
+            base: row_base,
+            index: row,
+        } = base
+        {
+            if let Expression::Variable(name) = row_base.as_ref() {
+                if let (Some(row), Some(slot), Some(&row_bytes), Some(&pointee)) = (
+                    constant_value(row),
+                    self.frame_slots.get(name).copied(),
+                    self.frame_row_bytes.get(name),
+                    self.frame_row_pointees.get(name),
+                ) {
+                    let offset = row
+                        .checked_mul(i64::from(row_bytes))
+                        .and_then(|offset| offset.checked_add(i64::from(slot.offset)))
+                        .and_then(|offset| i16::try_from(offset).ok())
+                        .ok_or_else(|| {
+                            Diagnostic::error("frame matrix row address is out of range")
+                        })?;
+                    let address = self.fresh_virtual_general();
+                    self.output.instructions.push(Instruction::AddImmediate {
+                        d: address,
+                        a: 1,
+                        immediate: offset,
+                    });
+                    return Ok((pointee, address));
+                }
+            }
+        }
         // A spilled pointer variable is an address value stored in the frame,
         // not a ready pointer in its stale incoming register. Reload it before
         // resolving the dereference target.

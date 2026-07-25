@@ -1018,11 +1018,6 @@ impl Generator {
                 );
             }
             for array in frame_arrays {
-                // A source-level padding array reserves bytes but has no value
-                // lane or pointer location when the body never references it.
-                if !body_uses_local(&function.statements, &array.name) {
-                    continue;
-                }
                 let (pointee, stride) = match array.declared_type {
                     Type::Struct { size, .. } => (None, Some(u32::from(size))),
                     value_type => (pointee_of_type(value_type), None),

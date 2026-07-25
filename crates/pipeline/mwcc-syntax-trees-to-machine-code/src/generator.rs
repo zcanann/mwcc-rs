@@ -289,6 +289,10 @@ pub(crate) struct Generator {
     /// Row byte-strides of flattened multi-dimensional FRAME arrays (`float m[3][4]`
     /// -> 16): `m[k]` in value position is the ROW ADDRESS `slot + k*stride`.
     pub(crate) frame_row_bytes: HashMap<String, u16>,
+    /// Scalar element types for those flattened rows. This is available before
+    /// structured frame slots are installed, so liveness/type analysis and
+    /// final emission classify nested subscripts identically.
+    pub(crate) frame_row_pointees: HashMap<String, Pointee>,
     /// PASS-ARC STEP 2: when a whole-body fill emitted its values as virtuals, the
     /// DESCENDING allocation window's top register (r(N+2) for an N-store fill).
     /// `None` keeps the default LinearScan policy.
@@ -1021,8 +1025,20 @@ impl Generator {
         {
             return Ok(*pointee);
         }
+        // The first index of a flattened multidimensional frame array denotes
+        // a row address. Its pointee remains the declared scalar element type;
+        // the recorded row width affects addressing, not classification.
+        if let Expression::Index { base, .. } = pointer {
+            if let Expression::Variable(name) = base.as_ref() {
+                if let Some(&pointee) = self.frame_row_pointees.get(name) {
+                    return Ok(pointee);
+                }
+            }
+        }
         let name = leaf_name(pointer).ok_or_else(|| {
-            Diagnostic::error("pointer access needs a pointer variable (roadmap)")
+            Diagnostic::error(format!(
+                "pointer access needs a pointer variable (roadmap): {pointer:?}"
+            ))
         })?;
         if let Some(pointee) = self
             .locations
