@@ -6,8 +6,11 @@ use mwcc_core::Compilation;
 use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
-/// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const LDX_LDEXP_AST_HASH: u64 = 0xb53bbfc1e01b7bef;
+/// Debug-AST hashes of measured fdlibm `ldexp` source variants.
+const LDX_LDEXP_AST_HASHES: &[u64] = &[
+    0xb53bbfc1e01b7bef,
+    0x0df5a93363b6cadc, // Metroid Prime GC/1.3
+];
 
 impl Generator {
     pub(super) fn try_ldx_ldexp(&mut self, function: &Function) -> Compilation<bool> {
@@ -19,7 +22,7 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
-        if hash != LDX_LDEXP_AST_HASH {
+        if !LDX_LDEXP_AST_HASHES.contains(&hash) {
             eprintln!("ldx_ldexp hash candidate: {hash:#x}");
             return Ok(false);
         }
@@ -31,6 +34,7 @@ impl Generator {
             0x4c0074f426dac8c9 => 35, // strikers s_ldexp
             0x69fdba26e251de6f => 43, // mario kart s_ldexp
             0xacad83bca4c56e87 => 33, // metroid prime s_ldexp
+            0xe25eef9d7a515535 => 33, // metroid prime GC/1.3
             _ => {
                 eprintln!("ldx_ldexp context candidate: {context:#x}");
                 return Ok(false);
