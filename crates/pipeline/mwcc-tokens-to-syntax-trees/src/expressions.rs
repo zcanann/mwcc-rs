@@ -743,10 +743,22 @@ impl Parser {
             Token::Identifier(scope)
                 if *self.peek() == Token::Colon && *self.peek_at(1) == Token::Colon =>
             {
-                self.advance();
-                self.advance();
-                let member = self.parse_identifier()?;
-                if *self.peek() == Token::ParenOpen {
+                let mut scopes = vec![scope];
+                let member = loop {
+                    self.advance();
+                    self.advance();
+                    let component = self.parse_identifier()?;
+                    if *self.peek() == Token::Colon && *self.peek_at(1) == Token::Colon {
+                        scopes.push(component);
+                    } else {
+                        break component;
+                    }
+                };
+                let scope = scopes.join("::");
+                let qualified = format!("{scope}::{member}");
+                if let Some(&value) = self.enum_constants.get(&qualified) {
+                    Expression::IntegerLiteral(value)
+                } else if *self.peek() == Token::ParenOpen {
                     self.advance();
                     let mut arguments = Vec::new();
                     if *self.peek() != Token::ParenClose {

@@ -5614,6 +5614,51 @@ blr\n\
     }
 
     #[test]
+    fn folds_qualified_enumerators_in_global_initializers() {
+        let source = r#"
+            namespace zen {
+                enum ResultFlag { EndFirstDay = 7 };
+            }
+            class EffectMgr {
+            public:
+                enum EffectId { First = 3, Count = 5 };
+            };
+            int flags[] = { zen::EndFirstDay, EffectMgr::Count };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.globals[0].initializer, Some(vec![7, 5]));
+    }
+
+    #[test]
+    fn folds_multiply_qualified_enumerators_in_global_initializers() {
+        let source = r#"
+            namespace audio {
+                class EffectMgr {
+                public:
+                    enum EffectId { Count = 5 };
+                };
+            }
+            int count = audio::EffectMgr::Count;
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.globals[0].initializer, Some(vec![5]));
+    }
+
+    #[test]
     fn retains_boolean_function_return_identity() {
         let unit = parse_translation_unit(
             mwcc_source_to_tokens::tokenize(

@@ -342,6 +342,16 @@ impl Parser {
                 next
             };
             self.enum_constants.insert(name.clone(), value);
+            if self.cplusplus {
+                let lexical_scope = self.current_cxx_layout_scope.clone().or_else(|| {
+                    let namespaces = self.named_namespace_scopes();
+                    (!namespaces.is_empty()).then(|| namespaces.join("::"))
+                });
+                if let Some(scope) = lexical_scope {
+                    self.enum_constants
+                        .insert(format!("{scope}::{name}"), value);
+                }
+            }
             enumerators.push(mwcc_syntax_trees::Enumerator { name, value });
             minimum = minimum.min(value);
             maximum = maximum.max(value);
