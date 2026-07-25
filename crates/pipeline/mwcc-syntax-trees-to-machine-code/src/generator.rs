@@ -651,6 +651,14 @@ impl Generator {
             Expression::Member { member_type, .. } => {
                 matches!(member_type, Type::Float | Type::Double)
             }
+            Expression::Dereference { pointer } => matches!(
+                self.pointee_of(pointer),
+                Ok(Pointee::Float | Pointee::Double)
+            ),
+            Expression::Index { base, .. } => matches!(
+                self.pointee_of(base),
+                Ok(Pointee::Float | Pointee::Double)
+            ),
             Expression::Binary {
                 operator,
                 left,

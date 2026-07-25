@@ -505,6 +505,14 @@ impl Generator {
             if self.try_emit_fixed_address_mask_insert(target, value)? {
                 return Ok(());
             }
+            if let Some((element, offset)) = self.frame_matrix_element(base, index)? {
+                let source = self.place_store_value(value, element)?;
+                self.output
+                    .instructions
+                    .push(displacement_store(element, source, 1, offset)?);
+                self.written_slots.insert(offset);
+                return Ok(());
+            }
             if let Expression::Variable(name) = base.as_ref() {
                 if let Some(slot) = self
                     .frame_slots

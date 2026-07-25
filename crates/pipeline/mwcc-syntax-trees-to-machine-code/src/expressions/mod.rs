@@ -16,6 +16,7 @@ mod constructed_new;
 mod constructor_initializers;
 mod driver;
 mod frame_aggregate_copy;
+mod frame_matrix;
 mod function_address;
 mod global_array_decay;
 mod global_array_index;
