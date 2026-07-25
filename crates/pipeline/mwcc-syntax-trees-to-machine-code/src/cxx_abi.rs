@@ -803,20 +803,30 @@ pub(crate) fn lower_composed_destructor(
     };
 
     // File IPA erases a base destructor whose complete lifetime body contains
-    // no user-visible work. This includes the transient vptr installation in
-    // a trivial virtual destructor: once every base edge disappears, the
-    // derived vptr installation is dead too and only the deleting shell
-    // remains.
-    if config.flags.ipa_file
+    // no user-visible work. The 4.x optimizer performs the same elimination at
+    // O2 and above without file IPA. This includes the transient vptr
+    // installation in a trivial virtual destructor: once every base edge
+    // disappears, the derived vptr installation is dead too and only the
+    // deleting shell remains.
+    let behavior = Behavior::resolve(&config);
+    let later_empty_lifetime_elision = behavior.optimization >= mwcc_versions::Optimization::O2
+        && behavior.cxx_trivial_destructor_style
+            == mwcc_versions::CxxTrivialDestructorStyle::ExplicitTests;
+    if (behavior.whole_file_optimization || later_empty_lifetime_elision)
         && base_calls.iter().all(|(callee, adjustment)| {
             *adjustment == 0 && inline_summaries.ipa_elidable_destructor(callee)
         })
     {
-        return trivial_destructor::lower_matched(
+        let mut output = trivial_destructor::lower_matched(
             function,
-            config,
+            config.clone(),
             delete_callee.clone(),
-        );
+        )?;
+        if later_empty_lifetime_elision && !behavior.whole_file_optimization {
+            output.anonymous_label_bump =
+                u32::from(behavior.cxx_virtual_destructor_label_bump);
+        }
+        return Some(output);
     }
 
     if Behavior::resolve(&config).frame_convention == FrameConvention::Predecrement
