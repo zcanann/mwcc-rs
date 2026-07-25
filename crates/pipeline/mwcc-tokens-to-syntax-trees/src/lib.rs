@@ -4535,6 +4535,73 @@ blr\n\
     }
 
     #[test]
+    fn materializes_only_the_selected_aggregate_initializer_arm() {
+        let source = r#"
+            struct Vec {
+                float x;
+                float y;
+                float z;
+                Vec operator*(float) const;
+                Vec operator+(const Vec&) const;
+            };
+            void touch();
+            Vec select(const Vec& base, const Vec& offset, float scale, int zero) {
+                touch();
+                Vec result = zero ? base : base + offset * scale;
+                return result;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let function = &unit.functions[0];
+        let [Statement::Expression(Expression::Call { name: touch, .. }), Statement::If {
+            then_body,
+            else_body,
+            ..
+        }] = function.statements.as_slice()
+        else {
+            panic!(
+                "expected a lazy aggregate initializer branch: {:#?}",
+                function.statements
+            )
+        };
+        assert_eq!(touch, "touch__Fv");
+        assert!(matches!(
+            then_body.as_slice(),
+            [Statement::Assign {
+                name,
+                value: Expression::Variable(source),
+            }] if name == "result" && source == "base"
+        ));
+        let calls = else_body
+            .iter()
+            .filter_map(|statement| match statement {
+                Statement::Expression(Expression::Assign { value, .. }) => {
+                    match value.as_ref() {
+                        Expression::Call { name, .. } => Some(name.as_str()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(calls, ["__ml__3VecCFf", "__pl__3VecCFRC3Vec"]);
+        assert!(matches!(
+            else_body.last(),
+            Some(Statement::Assign {
+                name,
+                value: Expression::Variable(source),
+            }) if name == "result" && source.starts_with("__mwcc_aggregate_result_")
+        ));
+    }
+
+    #[test]
     fn passes_retained_inline_aggregate_arguments_by_reference() {
         let source = r#"
             struct Vec {

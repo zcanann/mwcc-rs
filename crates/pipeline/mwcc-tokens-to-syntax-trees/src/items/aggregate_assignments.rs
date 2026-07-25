@@ -37,6 +37,53 @@ impl Parser {
         {
             return Ok(None);
         }
+        if let Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+            ..
+        } = value
+        {
+            let saved_expression_tag = self.expression_struct_tag.take();
+            let when_true = self.materialize_cxx_aggregate_value(
+                when_true,
+                Some(value_tag),
+                local_names,
+                block_locals,
+            );
+            let when_false = self.materialize_cxx_aggregate_value(
+                when_false,
+                Some(value_tag),
+                local_names,
+                block_locals,
+            );
+            self.expression_struct_tag = saved_expression_tag;
+            let (Some(when_true), Some(when_false)) = (when_true?, when_false?) else {
+                return Ok(None);
+            };
+            if !same_cxx_aggregate_identity(declared_tag, &when_true.tag)
+                || !same_cxx_aggregate_identity(declared_tag, &when_false.tag)
+            {
+                return Ok(None);
+            }
+            let arm = |materialized: MaterializedAggregate| {
+                let mut statements = materialized
+                    .effects
+                    .into_iter()
+                    .map(Statement::Expression)
+                    .collect::<Vec<_>>();
+                statements.push(Statement::Assign {
+                    name: name.to_owned(),
+                    value: materialized.value,
+                });
+                statements
+            };
+            return Ok(Some(Statement::If {
+                condition: condition.as_ref().clone(),
+                then_body: arm(when_true),
+                else_body: arm(when_false),
+            }));
+        }
         let saved_expression_tag = self.expression_struct_tag.take();
         let materialized = self.materialize_cxx_aggregate_value(
             value,

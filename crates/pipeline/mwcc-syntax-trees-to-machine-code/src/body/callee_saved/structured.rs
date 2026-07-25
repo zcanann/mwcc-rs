@@ -2176,7 +2176,7 @@ impl Generator {
                         self.emit_store(&Expression::Variable(name.clone()), value)
                             .map_err(|mut diagnostic| {
                                 diagnostic.message.push_str(&format!(
-                                    " (in structured frame assignment statement {statement_index})"
+                                    " (in structured frame assignment statement {statement_index}, target '{name}', value {value:?})"
                                 ));
                                 diagnostic
                             })?;

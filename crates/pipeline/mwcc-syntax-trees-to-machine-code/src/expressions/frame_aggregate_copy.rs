@@ -3,6 +3,30 @@
 #[allow(unused_imports)]
 use super::*;
 
+fn frame_aggregate_array_element(slot: FrameSlot, index: i64) -> Compilation<Option<(i16, u32)>> {
+    if !slot.is_array {
+        return Ok(None);
+    }
+    let Type::Struct { size, .. } = slot.value_type else {
+        return Ok(None);
+    };
+    let byte_offset = index
+        .checked_mul(i64::from(size))
+        .filter(|offset| *offset >= 0)
+        .and_then(|offset| i16::try_from(offset).ok())
+        .ok_or_else(|| Diagnostic::error("frame aggregate array index is out of range"))?;
+    let element_end = i32::from(byte_offset) + i32::try_from(size).unwrap_or(i32::MAX);
+    if element_end > i32::from(slot.size) {
+        return Err(Diagnostic::error(
+            "frame aggregate array element lies outside its slot",
+        ));
+    }
+    let offset = slot.offset.checked_add(byte_offset).ok_or_else(|| {
+        Diagnostic::error("frame aggregate array element address is out of range")
+    })?;
+    Ok(Some((offset, size)))
+}
+
 impl Generator {
     /// Copy an aggregate from a frame slot or typed struct-pointer source into
     /// a frame-resident aggregate lvalue. A single word scratch is enough;
@@ -56,6 +80,22 @@ impl Generator {
                     Diagnostic::error("frame aggregate member source is out of range")
                 })?;
                 (source_register, source_offset, *size, false)
+            }
+            Expression::Index { base, index } => {
+                let Expression::Variable(name) = base.as_ref() else {
+                    return Ok(false);
+                };
+                let Some(index) = constant_value(index) else {
+                    return Ok(false);
+                };
+                let Some(slot) = self.frame_slots.get(name).copied() else {
+                    return Ok(false);
+                };
+                let Some((source_offset, size)) = frame_aggregate_array_element(slot, index)?
+                else {
+                    return Ok(false);
+                };
+                (1, source_offset, size, true)
             }
             _ => return Ok(false),
         };
@@ -171,39 +211,38 @@ impl Generator {
                 let Expression::Variable(name) = base.as_ref() else {
                     return Ok(None);
                 };
-                let Some(slot) = self
-                    .frame_slots
-                    .get(name)
-                    .copied()
-                    .filter(|slot| slot.is_array)
-                else {
-                    return Ok(None);
-                };
-                let Type::Struct { size, .. } = slot.value_type else {
+                let Some(slot) = self.frame_slots.get(name).copied() else {
                     return Ok(None);
                 };
                 let Some(index) = constant_value(index) else {
                     return Ok(None);
                 };
-                let byte_offset = index
-                    .checked_mul(i64::from(size))
-                    .filter(|offset| *offset >= 0)
-                    .and_then(|offset| i16::try_from(offset).ok())
-                    .ok_or_else(|| {
-                        Diagnostic::error("frame aggregate array index is out of range")
-                    })?;
-                let target_offset = slot.offset.checked_add(byte_offset).ok_or_else(|| {
-                    Diagnostic::error("frame aggregate array element is out of range")
-                })?;
-                let element_end = i32::from(byte_offset) + i32::try_from(size).unwrap_or(i32::MAX);
-                if element_end > i32::from(slot.size) {
-                    return Err(Diagnostic::error(
-                        "frame aggregate array element lies outside its slot",
-                    ));
-                }
-                Ok(Some((target_offset, size)))
+                frame_aggregate_array_element(slot, index)
             }
             _ => Ok(None),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolves_a_constant_aggregate_frame_array_element() {
+        let slot = FrameSlot {
+            offset: 20,
+            class: ValueClass::General,
+            size: 36,
+            value_type: Type::Struct { size: 12, align: 4 },
+            parameter_register: None,
+            is_array: true,
+        };
+
+        assert_eq!(
+            frame_aggregate_array_element(slot, 2).unwrap(),
+            Some((44, 12))
+        );
+        assert!(frame_aggregate_array_element(slot, 3).is_err());
     }
 }
