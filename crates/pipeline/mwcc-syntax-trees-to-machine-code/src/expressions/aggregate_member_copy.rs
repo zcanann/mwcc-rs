@@ -73,20 +73,15 @@ impl Generator {
             target => target,
         };
 
-        let source_register = self.member_base_register(source_base)?;
-        let source_offset = i16::try_from(*source_offset)
-            .map_err(|_| Diagnostic::error("a Vec3 source offset is out of range"))?;
+        let (source_register, source_offset) =
+            self.vec3_member_storage_base(source_base, *source_offset)?;
         let (target_register, target_offset) = match target {
             Expression::Member {
                 base,
                 offset,
                 member_type: Type::Struct { size: 12, .. },
                 index_stride: None,
-            } => (
-                self.member_base_register(base)?,
-                i16::try_from(*offset)
-                    .map_err(|_| Diagnostic::error("a Vec3 target offset is out of range"))?,
-            ),
+            } => self.vec3_member_storage_base(base, *offset)?,
             Expression::Variable(name) => {
                 let Some(slot) = self.frame_slots.get(name).copied() else {
                     return Ok(false);
@@ -104,6 +99,40 @@ impl Generator {
             target_register,
             target_offset,
         )
+    }
+
+    /// Resolve a 12-byte member's complete storage base. A frame-resident
+    /// aggregate has no pointer register, so fold its slot into the member
+    /// displacement and address through r1; pointer-backed objects retain their
+    /// ordinary register base.
+    fn vec3_member_storage_base(
+        &mut self,
+        base: &Expression,
+        offset: u32,
+    ) -> Compilation<(u8, i16)> {
+        if let Expression::Variable(name) = base {
+            if let Some(slot) = self.frame_slots.get(name).copied() {
+                let Type::Struct { size, .. } = slot.value_type else {
+                    return Err(Diagnostic::error(
+                        "a frame Vec3 member requires aggregate storage",
+                    ));
+                };
+                if offset
+                    .checked_add(12)
+                    .is_none_or(|end| end > u32::from(size))
+                {
+                    return Err(Diagnostic::error(
+                        "a frame Vec3 member lies outside its aggregate",
+                    ));
+                }
+                let displacement =
+                    crate::frame::checked_frame_member_offset(slot.offset, offset)?;
+                return Ok((1, displacement));
+            }
+        }
+        let displacement = i16::try_from(offset)
+            .map_err(|_| Diagnostic::error("a Vec3 member offset is out of range"))?;
+        Ok((self.member_base_register(base)?, displacement))
     }
 
     /// Recover the three scalar assignments produced when inline expansion
