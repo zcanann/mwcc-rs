@@ -1066,6 +1066,32 @@ impl Parser {
         }
     }
 
+    /// Recover the aggregate result type of a member arithmetic operator
+    /// without changing the executable Binary representation. Code generation
+    /// already owns that compact form; expression parsing only needs the
+    /// declared result identity so `(a - b).member()` resolves on the temporary.
+    pub(crate) fn resolve_member_operator_result_tag(
+        &self,
+        class: &str,
+        source_name: &str,
+        right: &Expression,
+    ) -> Compilation<Option<String>> {
+        let Some(call) =
+            self.resolve_member_call_in_class(class, source_name, std::slice::from_ref(right))?
+        else {
+            return Ok(None);
+        };
+        Ok(match call {
+            ImplicitMemberCall::Direct {
+                return_struct_tag, ..
+            }
+            | ImplicitMemberCall::Virtual {
+                return_struct_tag, ..
+            } => return_struct_tag,
+            ImplicitMemberCall::Static { .. } => None,
+        })
+    }
+
     /// Resolve a bare free-function name used as a value (typically a callback
     /// argument). Without an expected function-pointer signature, only a single
     /// recovered overload is unambiguous; overloaded names remain unresolved.
@@ -2243,7 +2269,10 @@ impl Parser {
             // remains a declarator token so ABI-aware type parsing can observe
             // it. Consume it before the member function name.
             self.eat_keyword(Token::Ampersand);
-            let member = self.parse_identifier()?;
+            let mut member = self.parse_identifier()?;
+            if member == "operator" {
+                member = parse_arithmetic_operator_name(self)?;
+            }
             self.expect(Token::ParenOpen)?;
             let mut parameters = Vec::new();
             let mut cxx_parameters = Vec::new();

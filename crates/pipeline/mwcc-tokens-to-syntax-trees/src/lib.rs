@@ -4180,6 +4180,34 @@ blr\n\
     }
 
     #[test]
+    fn preserves_class_identity_for_an_overloaded_binary_temporary() {
+        let source = r#"
+            struct Vec {
+                float x;
+                float y;
+                Vec operator-(const Vec&) const;
+                float length2() const;
+            };
+            float probe() {
+                Vec left, right;
+                return (left - right).length2();
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let Some(Expression::Call { arguments, .. }) = &unit.functions[0].return_expression else {
+            panic!("expected a member call on the binary temporary")
+        };
+        assert!(matches!(arguments.first(), Some(Expression::Binary { .. })));
+    }
+
+    #[test]
     fn preserves_multidimensional_member_row_stride_in_address_expression() {
         let source = r#"
             typedef unsigned char u8;

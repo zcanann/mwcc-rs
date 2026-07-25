@@ -519,6 +519,19 @@ impl Parser {
             } else {
                 None
             };
+            let result_struct_tag = if overload.is_none() {
+                match (
+                    crate::cxx::arithmetic_operator_name(operator),
+                    left_struct_tag.as_deref(),
+                ) {
+                    (Some(source_name), Some(class)) => {
+                        self.resolve_member_operator_result_tag(class, source_name, &right)?
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
             left = if let Some(name) = overload {
                 Expression::Call {
                     name,
@@ -531,6 +544,7 @@ impl Parser {
                     right: Box::new(right),
                 }
             };
+            self.expression_struct_tag = result_struct_tag;
             // Fold ANY constant operation on two integer literals to its value (`li r3,N`) — mwcc
             // folds all constant subexpressions. Arithmetic/bitwise/shift already lowered to the
             // constant; this also covers division/modulo (else a runtime divide) and the comparison
@@ -1275,6 +1289,11 @@ impl Parser {
             // the exact tag while parsing the branches because pointer-to-pointer
             // casts cannot encode it in the compact executable Type model.
             Expression::Conditional { .. } => self.expression_struct_tag.take(),
+            // Executable overloaded arithmetic deliberately stays a Binary so
+            // existing lowering can claim it. Declaration lookup records the
+            // aggregate result tag separately for a member access on the
+            // parenthesized temporary.
+            Expression::Binary { .. } => self.expression_struct_tag.take(),
             _ => None,
         };
         let mut pending_arrow_effect: Option<Expression> = None;
