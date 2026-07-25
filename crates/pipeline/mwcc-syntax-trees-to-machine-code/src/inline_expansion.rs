@@ -270,6 +270,18 @@ impl InlineBodySet {
         self.asm_fragments.get(name).map(Vec::as_slice)
     }
 
+    /// The retained source body for an ordinary automatic-inline candidate.
+    ///
+    /// Whole-transaction lowerers use this read-only view to validate the
+    /// helper semantics they are about to compose. Keeping the body lookup here
+    /// avoids exposing the inliner's storage policy or making those lowerers
+    /// guess from a callee name alone.
+    pub(crate) fn composable_body(&self, name: &str) -> Option<&Function> {
+        self.bodies
+            .get(name)
+            .or_else(|| self.repeatable_bodies.get(name))
+    }
+
     /// Whether this function calls a definition that cannot be materialized as
     /// an ordinary callable symbol. Optional one-call auto-inline candidates
     /// are deliberately excluded: if composition declines, they remain calls.

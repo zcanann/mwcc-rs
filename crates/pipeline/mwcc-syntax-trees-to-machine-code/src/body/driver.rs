@@ -1543,6 +1543,14 @@ impl Generator {
         if self.try_status_indexed_call_loop(function)? {
             return Ok(());
         }
+        // A mask-selected exception-vector walk expands both its copy helper
+        // and the nested address translator. The counter, table cursor, mask,
+        // translated destination, and translator state all cross different
+        // portions of two calls, so one owner must plan their saved homes
+        // together.
+        if self.try_interrupt_vector_copy_loop(function)? {
+            return Ok(());
+        }
         // `return live * local_call(argument) + C;` either preserves the live
         // parameter across an actual call or lets whole-file IPA substitute
         // the same-TU body. This boundary must precede generic inline-body

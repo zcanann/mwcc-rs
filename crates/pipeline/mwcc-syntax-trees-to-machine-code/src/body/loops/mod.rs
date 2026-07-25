@@ -13,6 +13,7 @@ mod fixed_port_zero_fill;
 mod guarded_byte_copy;
 mod indexed_calls;
 mod inlined_byte_append;
+mod interrupt_vector_copy;
 pub(crate) mod policy;
 mod poll_search;
 mod pointer_walk_minimum;
