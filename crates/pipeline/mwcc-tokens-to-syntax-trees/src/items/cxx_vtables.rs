@@ -9,6 +9,12 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::cxx::{encode_qualified_scope, mangle_qualified_member_function, ClassLayout};
 
+pub(super) struct InlineBaseVtableEdge {
+    base_table: String,
+    owner_table: String,
+    owner_key_function: Option<String>,
+}
+
 /// Construct the complete vtable group owned by a C++ key function.
 /// Destructor lowering supplies its deleting entry; ordinary virtual key
 /// functions use the same layout and relocation path without one.
@@ -105,7 +111,7 @@ pub(super) fn add_inline_base_groups(
     classes: &HashMap<String, ClassLayout>,
     class_order: &[String],
     inline_functions: &[Function],
-) -> Compilation<(HashMap<String, Vec<String>>, Vec<(String, String)>)> {
+) -> Compilation<(HashMap<String, Vec<String>>, Vec<InlineBaseVtableEdge>)> {
     let inline_names = inline_functions
         .iter()
         .map(|function| function.name.as_str())
@@ -155,7 +161,11 @@ pub(super) fn add_inline_base_groups(
                 let mut group = global(base_class, table, Some(&destructor));
                 group.is_weak = true;
                 globals.push(group);
-                ordering_edges.push((vtable_name(&base.name)?, vtable_name(&owner)?));
+                ordering_edges.push(InlineBaseVtableEdge {
+                    base_table: vtable_name(&base.name)?,
+                    owner_table: vtable_name(&owner)?,
+                    owner_key_function: class.vtable_key_function.clone(),
+                });
             }
             queue.push_back(base.name.clone());
         }
@@ -166,33 +176,39 @@ pub(super) fn add_inline_base_groups(
 /// Stable dependency ordering for compiler-generated weak base tables owned by
 /// a strong key-function table. Closure discovery happens before all later
 /// inline materializations have appended their unrelated tables, so ordering at
-/// discovery time can move a base too early. A weak owner first materialized by
-/// namespace-scope construction retains creation order instead: owner, then its
-/// newly discovered base dependency.
+/// discovery time can move a base too early. Ordinary virtual key functions
+/// place their weak base dependency immediately before the strong table. A
+/// destructor key function, like a weak owner first materialized by
+/// namespace-scope construction, retains creation order instead: owner, then
+/// its newly discovered base dependency.
 pub(super) fn order_inline_base_groups(
     globals: &mut Vec<GlobalDeclaration>,
-    ordering_edges: &[(String, String)],
+    ordering_edges: &[InlineBaseVtableEdge],
 ) {
-    for (base_table, owner_table) in ordering_edges {
+    for edge in ordering_edges {
         let Some(base_index) = globals
             .iter()
-            .position(|global| global.name == *base_table && global.is_weak)
+            .position(|global| global.name == edge.base_table && global.is_weak)
         else {
             continue;
         };
         let Some(owner_index) = globals
             .iter()
-            .position(|global| global.name == *owner_table)
+            .position(|global| global.name == edge.owner_table)
         else {
             continue;
         };
-        if base_index < owner_index || globals[owner_index].is_weak {
+        let destructor_owned = edge
+            .owner_key_function
+            .as_deref()
+            .is_some_and(|name| name.starts_with("__dt__"));
+        if base_index < owner_index || globals[owner_index].is_weak || destructor_owned {
             continue;
         }
         let base_group = globals.remove(base_index);
         let owner_index = globals
             .iter()
-            .position(|global| global.name == *owner_table)
+            .position(|global| global.name == edge.owner_table)
             .expect("the owner table survives a different removal");
         globals.insert(owner_index, base_group);
     }

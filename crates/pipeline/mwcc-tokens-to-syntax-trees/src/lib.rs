@@ -2621,6 +2621,40 @@ blr\n\
     }
 
     #[test]
+    fn destructor_owned_vtable_precedes_its_inline_base_dependency() {
+        let source = r#"
+            class Base {
+            public:
+                virtual ~Base() {}
+            };
+            class Derived : public Base {
+            public:
+                ~Derived();
+            };
+            Derived::~Derived() {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        let tables = unit
+            .globals
+            .iter()
+            .filter(|global| matches!(global.name.as_str(), "__vt__4Base" | "__vt__7Derived"))
+            .map(|global| (global.name.as_str(), global.is_weak))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            tables,
+            [("__vt__7Derived", false), ("__vt__4Base", true)]
+        );
+    }
+
+    #[test]
     fn class_analysis_exports_destructor_and_delete_declarations() {
         let source = r#"
             typedef unsigned long size_t;
