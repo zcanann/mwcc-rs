@@ -17,6 +17,7 @@ pub fn materialize(
     unit: &mut TranslationUnit,
     orphaned_handle_is_local: bool,
     materialize_inline_primary_base_vtables: bool,
+    owned_closure_schedule: bool,
 ) {
     if materialize_inline_primary_base_vtables {
         synthesize_inline_primary_base_vtables(unit);
@@ -89,6 +90,56 @@ pub fn materialize(
         .filter(|global| !owned_vtables.contains(&global.name))
         .collect();
 
+    let required_direct_bases: HashSet<&str> = unit
+        .cxx_abi_classes
+        .iter()
+        .filter(|class| required.contains(class.source_name.as_str()))
+        .flat_map(|class| class.bases.iter().map(|base| base.name.as_str()))
+        .collect();
+    let roots: Vec<&CxxAbiClass> = unit
+        .cxx_abi_classes
+        .iter()
+        .rev()
+        .filter(|class| {
+            owned_vtables.contains(&vtable_symbol(class))
+                && !required_direct_bases.contains(class.source_name.as_str())
+        })
+        .collect();
+    let mut closure_frontiers = HashMap::<&str, (usize, usize)>::new();
+    let mut physical_class_order = Vec::<&CxxAbiClass>::new();
+    let mut physically_scheduled = HashSet::new();
+    if owned_closure_schedule {
+        for root in &roots {
+            let Some(vtable) = vtables.get(&vtable_symbol(root)) else {
+                continue;
+            };
+            let frontier = if vtable.is_weak {
+                (
+                    vtable
+                        .non_static_functions_before
+                        .saturating_sub(late_non_static_count),
+                    vtable.functions_before.saturating_sub(late_function_count),
+                )
+            } else {
+                (
+                    vtable.non_static_functions_before,
+                    vtable.functions_before,
+                )
+            };
+            for (class, _) in inheritance_entries(root, &classes)
+                .into_iter()
+                .chain(std::iter::once((*root, 0)))
+            {
+                closure_frontiers
+                    .entry(class.source_name.as_str())
+                    .or_insert(frontier);
+                if physically_scheduled.insert(class.source_name.as_str()) {
+                    physical_class_order.push(class);
+                }
+            }
+        }
+    }
+
     let mut generated = Vec::new();
     for class in unit.cxx_abi_classes.iter().rev() {
         if !required.contains(class.source_name.as_str()) {
@@ -121,7 +172,12 @@ pub fn materialize(
             false,
             4,
         );
-        if late_weak_vtable.is_some() {
+        if let Some(&(non_static_functions_before, functions_before)) =
+            closure_frontiers.get(class.source_name.as_str())
+        {
+            name_global.non_static_functions_before = non_static_functions_before;
+            name_global.functions_before = functions_before;
+        } else if late_weak_vtable.is_some() {
             if let Some((non_static_functions_before, functions_before)) = owner_position {
                 name_global.non_static_functions_before =
                     non_static_functions_before.saturating_sub(late_non_static_count);
@@ -149,14 +205,21 @@ pub fn materialize(
                     (index as u32 * 8, rtti_symbol(base), 0)
                 })
                 .collect();
-            generated.push(data_global(
+            let mut hierarchy = data_global(
                 hierarchy_name.clone(),
                 bytes,
                 relocations,
                 true,
                 false,
                 4,
-            ));
+            );
+            if let Some(&(non_static_functions_before, functions_before)) =
+                closure_frontiers.get(class.source_name.as_str())
+            {
+                hierarchy.non_static_functions_before = non_static_functions_before;
+                hierarchy.functions_before = functions_before;
+            }
+            generated.push(hierarchy);
         }
 
         let mut relocations = Vec::new();
@@ -180,7 +243,12 @@ pub fn materialize(
             handle_is_weak,
             4,
         );
-        if let Some((non_static_functions_before, functions_before)) = owner_position {
+        if let Some(&(non_static_functions_before, functions_before)) =
+            closure_frontiers.get(class.source_name.as_str())
+        {
+            handle.non_static_functions_before = non_static_functions_before;
+            handle.functions_before = functions_before;
+        } else if let Some((non_static_functions_before, functions_before)) = owner_position {
             handle.non_static_functions_before =
                 non_static_functions_before.saturating_sub(late_non_static_count);
             handle.functions_before = functions_before.saturating_sub(late_function_count);
@@ -188,9 +256,57 @@ pub fn materialize(
         generated.push(handle);
     }
 
+    if owned_closure_schedule && !physical_class_order.is_empty() {
+        order_owned_closure_helpers(&mut generated, &physical_class_order);
+    }
+
     let insertion = insertion.min(retained.len());
     retained.splice(insertion..insertion, generated);
     unit.globals = retained;
+}
+
+fn order_owned_closure_helpers(
+    generated: &mut [GlobalDeclaration],
+    physical_class_order: &[&CxxAbiClass],
+) {
+    let helper_slots: Vec<usize> = generated
+        .iter()
+        .enumerate()
+        .filter_map(|(index, global)| {
+            (global.name.starts_with(ANONYMOUS_PREFIX) || global.name.starts_with("__RTTI__"))
+                .then_some(index)
+        })
+        .collect();
+    let by_name: HashMap<String, GlobalDeclaration> = helper_slots
+        .iter()
+        .map(|&index| {
+            let global = generated[index].clone();
+            (global.name.clone(), global)
+        })
+        .collect();
+    let mut ordered = Vec::with_capacity(helper_slots.len());
+    let mut seen = HashSet::new();
+    for class in physical_class_order {
+        for name in [
+            anonymous_name(class, "name"),
+            anonymous_name(class, "bases"),
+            rtti_symbol(class),
+        ] {
+            if let Some(global) = by_name.get(&name) {
+                ordered.push(global.clone());
+                seen.insert(name);
+            }
+        }
+    }
+    for &index in &helper_slots {
+        if seen.insert(generated[index].name.clone()) {
+            ordered.push(generated[index].clone());
+        }
+    }
+    debug_assert_eq!(helper_slots.len(), ordered.len());
+    for (slot, global) in helper_slots.into_iter().zip(ordered) {
+        generated[slot] = global;
+    }
 }
 
 fn synthesize_inline_primary_base_vtables(unit: &mut TranslationUnit) {
@@ -467,7 +583,7 @@ fn rtti_symbol(class: &CxxAbiClass) -> String {
 mod tests {
     use super::{
         data_global, inheritance_entries, inline_base_vtable_slots, mangled_member_owner,
-        materialize_vtable_headers, rtti_handle_linkage,
+        materialize_vtable_headers, order_owned_closure_helpers, rtti_handle_linkage,
     };
     use mwcc_syntax_trees::{CxxAbiBase, CxxAbiClass, CxxAbiVtableComponent};
     use std::collections::{HashMap, HashSet};
@@ -512,6 +628,75 @@ mod tests {
         assert_eq!(rtti_handle_linkage(false, false, true), (true, false));
         assert_eq!(rtti_handle_linkage(false, false, false), (false, true));
         assert_eq!(rtti_handle_linkage(true, true, false), (true, false));
+    }
+
+    #[test]
+    fn owned_closure_helpers_schedule_base_first_without_moving_vtables() {
+        let base = class("Base", &[]);
+        let boss = class("Boss", &[("Base", 0)]);
+        let mut generated = vec![
+            data_global(
+                "@@cxx_rtti:4Boss:name".into(),
+                b"Boss\0".to_vec(),
+                vec![],
+                true,
+                false,
+                4,
+            ),
+            data_global("__vt__4Boss".into(), vec![0; 12], vec![], false, true, 4),
+            data_global(
+                "@@cxx_rtti:4Boss:bases".into(),
+                vec![0; 12],
+                vec![],
+                true,
+                false,
+                4,
+            ),
+            data_global(
+                "__RTTI__4Boss".into(),
+                vec![0; 8],
+                vec![],
+                true,
+                false,
+                4,
+            ),
+            data_global(
+                "@@cxx_rtti:4Base:name".into(),
+                b"Base\0".to_vec(),
+                vec![],
+                true,
+                false,
+                4,
+            ),
+            data_global("__vt__4Base".into(), vec![0; 12], vec![], false, true, 4),
+            data_global(
+                "__RTTI__4Base".into(),
+                vec![0; 8],
+                vec![],
+                true,
+                false,
+                4,
+            ),
+        ];
+
+        order_owned_closure_helpers(&mut generated, &[&base, &boss]);
+
+        assert_eq!(generated[1].name, "__vt__4Boss");
+        assert_eq!(generated[5].name, "__vt__4Base");
+        assert_eq!(
+            generated
+                .iter()
+                .filter(|global| !global.name.starts_with("__vt__"))
+                .map(|global| global.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "@@cxx_rtti:4Base:name",
+                "__RTTI__4Base",
+                "@@cxx_rtti:4Boss:name",
+                "@@cxx_rtti:4Boss:bases",
+                "__RTTI__4Boss",
+            ]
+        );
     }
 
     #[test]

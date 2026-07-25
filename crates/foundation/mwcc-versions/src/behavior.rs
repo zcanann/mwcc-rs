@@ -559,6 +559,9 @@ pub struct Behavior {
     pub materialize_inline_primary_base_vtables: bool,
     /// Pool RTTI type names with identical function-owned strings.
     pub cxx_rtti_names_share_function_strings: bool,
+    /// Schedule an owned RTTI closure at its source frontier, base-first in
+    /// section layout but root-first in anonymous ordinal allocation.
+    pub cxx_rtti_owned_closure_schedule: bool,
     /// Hidden deferred-inlining labels retained per call-dispatch switch arm.
     /// Zero for ordinary compilation and for unmeasured compiler generations.
     pub deferred_call_dispatcher_labels_per_case: u8,
@@ -931,6 +934,10 @@ impl Behavior {
                 .build
                 .profile
                 .cxx_rtti_names_share_function_strings(),
+            cxx_rtti_owned_closure_schedule: config
+                .build
+                .profile
+                .cxx_rtti_owned_closure_schedule(),
             deferred_call_dispatcher_labels_per_case: if config.flags.inline_deferred {
                 config
                     .build
@@ -1795,6 +1802,7 @@ mod tests {
         assert!(behavior.orphaned_cxx_rtti_handle_is_local);
         assert!(behavior.materialize_inline_primary_base_vtables);
         assert!(behavior.cxx_rtti_names_share_function_strings);
+        assert!(behavior.cxx_rtti_owned_closure_schedule);
         assert_eq!(
             behavior.cxx_reference_bound_scalar_temporary_label_bump,
             2

@@ -867,6 +867,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         false
     }
 
+    /// Whether RTTI helpers inherit their owned closure's source frontier and
+    /// physically schedule base-first while retaining root-first ordinals.
+    fn cxx_rtti_owned_closure_schedule(&self) -> bool {
+        false
+    }
+
     /// Whether plain `char` (no `signed`/`unsigned` qualifier) is signed. The one
     /// knob distinguishing GC build 53 from 81+; it cascades through read/operand
     /// extension, `>>`/`/`/`%` strength reduction, comparison folding, and the
@@ -1964,6 +1970,10 @@ impl CodegenProfile for Gc233Build163 {
     }
 
     fn cxx_rtti_names_share_function_strings(&self) -> bool {
+        true
+    }
+
+    fn cxx_rtti_owned_closure_schedule(&self) -> bool {
         true
     }
 

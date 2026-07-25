@@ -696,6 +696,7 @@ fn compile(
             &mut unit,
             behavior.orphaned_cxx_rtti_handle_is_local,
             behavior.materialize_inline_primary_base_vtables,
+            behavior.cxx_rtti_owned_closure_schedule,
         );
     }
     let mut disabled_inline_materializations = std::collections::HashSet::new();
@@ -1171,10 +1172,13 @@ fn compile(
         (unit.skipped_inline_functions
             + cxx_inline_facts.inline_definitions
                 * usize::from(behavior.cxx_rtti_inline_definition_label_bump)
-            + cxx_inline_facts.control_flow_labels
-                * usize::from(behavior.cxx_inline_control_flow_label_weight)
-            + cxx_inline_facts.instantiated_template_control_flow_labels
-                * usize::from(behavior.cxx_inline_control_flow_label_weight)
+            + if behavior.cxx_rtti_owned_closure_schedule {
+                0
+            } else {
+                (cxx_inline_facts.control_flow_labels
+                    + cxx_inline_facts.instantiated_template_control_flow_labels)
+                    * usize::from(behavior.cxx_inline_control_flow_label_weight)
+            }
             + mutable_inline_local_declarators
                 * usize::from(behavior.dropped_inline_local_declaration_label_weight)
             + cxx_inline_facts.inline_definition_const_local_declarators
@@ -2248,7 +2252,11 @@ fn compile(
                 &function_string_objects,
             );
         }
-        cxx_rtti_names::resolve(&mut defined_globals, rtti_analysis_counter);
+        cxx_rtti_names::resolve(
+            &mut defined_globals,
+            rtti_analysis_counter,
+            behavior.cxx_rtti_owned_closure_schedule,
+        );
     }
     defined_globals.extend(function_string_objects);
     defined_globals.extend(static_local_globals);

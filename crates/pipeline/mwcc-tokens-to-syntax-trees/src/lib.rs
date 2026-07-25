@@ -2432,7 +2432,7 @@ blr\n\
             .data_relocations
             .iter()
             .any(|(_, target, _)| target == "__dt__7DerivedFv"));
-        materialize_cxx_rtti(&mut unit, false, false);
+        materialize_cxx_rtti(&mut unit, false, false, false);
         assert!(unit
             .globals
             .iter()
@@ -2485,7 +2485,7 @@ blr\n\
             .data_relocations
             .iter()
             .any(|(_, target, _)| target == "sub__5CountFv"));
-        materialize_cxx_rtti(&mut unit, false, false);
+        materialize_cxx_rtti(&mut unit, false, false, false);
         let name_index = unit
             .globals
             .iter()
