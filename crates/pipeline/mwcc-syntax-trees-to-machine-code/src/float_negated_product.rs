@@ -84,7 +84,7 @@ impl Generator {
         else {
             return Ok(false);
         };
-        if destination != FLOAT_SCRATCH || !self.is_float_located(negated) {
+        if !self.is_float_located(negated) {
             return Ok(false);
         }
 
