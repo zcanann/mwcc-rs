@@ -720,6 +720,8 @@ pub struct Behavior {
     pub punned_shift_writeback_style: PunnedShiftWritebackStyle,
     /// Condition-register lifetime for the full punned-double writeback ladder.
     pub punned_ladder_condition_style: PunnedLadderConditionStyle,
+    /// Internal CFG ordinals before a full punned-double ladder's constants.
+    pub punned_ladder_prepool_label_bump: u8,
     /// Linkage and floating-spill schedule for trigonometric dispatchers.
     pub trig_dispatcher_style: TrigDispatcherStyle,
     /// Placement of the zero constant consumed by a dispatcher's small arm.
@@ -1106,6 +1108,10 @@ impl Behavior {
                 .punned_conditional_writeback_style(),
             punned_shift_writeback_style: config.build.profile.punned_shift_writeback_style(),
             punned_ladder_condition_style: config.build.profile.punned_ladder_condition_style(),
+            punned_ladder_prepool_label_bump: config
+                .build
+                .profile
+                .punned_ladder_prepool_label_bump(),
             trig_dispatcher_style: config.build.profile.trig_dispatcher_style(),
             trig_zero_constant_placement: config.build.profile.trig_zero_constant_placement(),
             trig_quadrant_dispatch_style: config
@@ -2223,12 +2229,17 @@ mod tests {
             mainline.punned_ladder_condition_style,
             PunnedLadderConditionStyle::RecompareLateTest
         );
-        for later in [gc41, wii43] {
-            assert_eq!(
-                later.punned_ladder_condition_style,
-                PunnedLadderConditionStyle::PreserveOuterInCr1
-            );
-        }
+        assert_eq!(mainline.punned_ladder_prepool_label_bump, 40);
+        assert_eq!(
+            gc41.punned_ladder_condition_style,
+            PunnedLadderConditionStyle::PreserveOuterInCr1
+        );
+        assert_eq!(gc41.punned_ladder_prepool_label_bump, 45);
+        assert_eq!(
+            wii43.punned_ladder_condition_style,
+            PunnedLadderConditionStyle::PreserveOuterInCr1
+        );
+        assert_eq!(wii43.punned_ladder_prepool_label_bump, 47);
     }
 
     #[test]

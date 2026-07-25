@@ -1186,6 +1186,11 @@ pub trait CodegenProfile: core::fmt::Debug {
         PunnedLadderConditionStyle::RecompareLateTest
     }
 
+    /// Internal CFG ordinals consumed before a full punned ladder's constants.
+    fn punned_ladder_prepool_label_bump(&self) -> u8 {
+        40
+    }
+
     fn trig_dispatcher_style(&self) -> TrigDispatcherStyle {
         TrigDispatcherStyle::LiveParameter
     }
@@ -1477,6 +1482,10 @@ impl CodegenProfile for Gc41Build51213 {
         PunnedLadderConditionStyle::PreserveOuterInCr1
     }
 
+    fn punned_ladder_prepool_label_bump(&self) -> u8 {
+        45
+    }
+
     fn forwarded_trace_string_style(&self) -> ForwardedTraceStringStyle {
         ForwardedTraceStringStyle::PackedLowBeforeInteger
     }
@@ -1649,6 +1658,10 @@ pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
     fn punned_ladder_condition_style(&self) -> PunnedLadderConditionStyle {
         PunnedLadderConditionStyle::PreserveOuterInCr1
+    }
+
+    fn punned_ladder_prepool_label_bump(&self) -> u8 {
+        47
     }
 
     fn forwarded_trace_string_style(&self) -> ForwardedTraceStringStyle {

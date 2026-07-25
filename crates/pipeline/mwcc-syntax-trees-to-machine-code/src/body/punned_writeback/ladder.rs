@@ -1122,7 +1122,8 @@ impl Generator {
         self.output
             .instructions
             .push(Instruction::BranchToLinkRegister);
-        // Pre-pool labels: mainline advances 40; build 163 retains four
+        // Pre-pool labels are a profile decision: mainline advances 40,
+        // GC 4.1 advances 45, Wii 4.3 advances 47, and build 163 retains four
         // additional ladder-edge slots before the shared double constants.
         // Deferred compilation retains another 36 internal CFG labels in every
         // measured generation (builds 163/53/81 and the 2.4.7 mainline) without
@@ -1132,7 +1133,8 @@ impl Generator {
         } else {
             0
         };
-        self.output.anonymous_label_bump += 40
+        self.output.anonymous_label_bump +=
+            u32::from(self.behavior.punned_ladder_prepool_label_bump)
             + legacy_roles
                 .as_ref()
                 .map(|roles| roles.constant_label_bump)
