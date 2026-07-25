@@ -556,6 +556,8 @@ pub struct Behavior {
     pub orphaned_cxx_rtti_handle_is_local: bool,
     /// Materialize vtables owned by weak all-inline primary bases.
     pub materialize_inline_primary_base_vtables: bool,
+    /// Pool RTTI type names with identical function-owned strings.
+    pub cxx_rtti_names_share_function_strings: bool,
     /// Hidden deferred-inlining labels retained per call-dispatch switch arm.
     /// Zero for ordinary compilation and for unmeasured compiler generations.
     pub deferred_call_dispatcher_labels_per_case: u8,
@@ -922,6 +924,10 @@ impl Behavior {
                 .build
                 .profile
                 .materialize_inline_primary_base_vtables(),
+            cxx_rtti_names_share_function_strings: config
+                .build
+                .profile
+                .cxx_rtti_names_share_function_strings(),
             deferred_call_dispatcher_labels_per_case: if config.flags.inline_deferred {
                 config
                     .build
@@ -1784,6 +1790,7 @@ mod tests {
         );
         assert!(behavior.orphaned_cxx_rtti_handle_is_local);
         assert!(behavior.materialize_inline_primary_base_vtables);
+        assert!(behavior.cxx_rtti_names_share_function_strings);
         assert_eq!(
             behavior.cxx_reference_bound_scalar_temporary_label_bump,
             2

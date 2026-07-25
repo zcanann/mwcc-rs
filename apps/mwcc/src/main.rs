@@ -2242,6 +2242,12 @@ fn compile(
         } else {
             ordinary_rtti_analysis_counter
         };
+        if behavior.cxx_rtti_names_share_function_strings {
+            cxx_rtti_names::coalesce_name_strings(
+                &mut defined_globals,
+                &function_string_objects,
+            );
+        }
         cxx_rtti_names::resolve(&mut defined_globals, rtti_analysis_counter);
     }
     defined_globals.extend(function_string_objects);

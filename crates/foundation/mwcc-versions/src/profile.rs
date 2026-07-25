@@ -851,6 +851,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         false
     }
 
+    /// Whether an RTTI type-name object may reuse an identical string already
+    /// materialized by an emitted function.
+    fn cxx_rtti_names_share_function_strings(&self) -> bool {
+        false
+    }
+
     /// Whether plain `char` (no `signed`/`unsigned` qualifier) is signed. The one
     /// knob distinguishing GC build 53 from 81+; it cascades through read/operand
     /// extension, `>>`/`/`/`%` strength reduction, comparison folding, and the
@@ -1932,6 +1938,10 @@ impl CodegenProfile for Gc233Build163 {
     }
 
     fn materialize_inline_primary_base_vtables(&self) -> bool {
+        true
+    }
+
+    fn cxx_rtti_names_share_function_strings(&self) -> bool {
         true
     }
 

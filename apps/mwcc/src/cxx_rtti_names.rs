@@ -65,6 +65,36 @@ pub fn fragmented_debug_counter(
     is_single_fragmented_debug_class(facts).then(|| ordinary_counter.saturating_sub(2))
 }
 
+/// Reuse a function-owned string object when it carries the exact bytes of an
+/// RTTI type name. Build 163 performs this pooling before assigning the
+/// remaining RTTI helper ordinals.
+pub fn coalesce_name_strings(
+    globals: &mut Vec<DefinedGlobal>,
+    function_strings: &[DefinedGlobal],
+) {
+    let replacements: HashMap<String, String> = globals
+        .iter()
+        .filter(|global| global.name.starts_with(PREFIX) && global.name.ends_with(":name"))
+        .filter_map(|global| {
+            function_strings
+                .iter()
+                .find(|string| string.initial_bytes == global.initial_bytes)
+                .map(|string| (global.name.clone(), string.name.clone()))
+        })
+        .collect();
+    if replacements.is_empty() {
+        return;
+    }
+    globals.retain(|global| !replacements.contains_key(&global.name));
+    for global in globals {
+        for relocation in &mut global.relocations {
+            if let Some(replacement) = replacements.get(&relocation.target) {
+                relocation.target = replacement.clone();
+            }
+        }
+    }
+}
+
 pub fn resolve(globals: &mut [DefinedGlobal], mut counter: u32) {
     let analysis_base = counter;
     let mut renames = HashMap::new();
@@ -100,7 +130,10 @@ pub fn resolve(globals: &mut [DefinedGlobal], mut counter: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{analysis_counter, fragmented_debug_counter, AnalysisWeights};
+    use super::{
+        analysis_counter, coalesce_name_strings, fragmented_debug_counter, AnalysisWeights,
+    };
+    use mwcc_machine_code_to_object::{DataRelocation, DefinedGlobal};
     use mwcc_syntax_trees::CxxInlineOrdinalFacts;
 
     fn facts(methods: usize, destructors: usize) -> CxxInlineOrdinalFacts {
@@ -109,6 +142,52 @@ mod tests {
             virtual_destructor_declarations: destructors,
             ..CxxInlineOrdinalFacts::default()
         }
+    }
+
+    fn object(name: &str, bytes: &[u8], target: Option<&str>) -> DefinedGlobal {
+        DefinedGlobal {
+            name: name.into(),
+            size: bytes.len() as u32,
+            alignment: 4,
+            comment_alignment: 4,
+            initial_bytes: Some(bytes.to_vec()),
+            is_const: false,
+            force_full_data_section: false,
+            is_static: true,
+            force_active: false,
+            is_explicit_zero: false,
+            preassigned_anonymous_ordinal: None,
+            preassigned_ordinal_advances_counter: false,
+            relocations: target
+                .map(|target| DataRelocation {
+                    offset: 0,
+                    target: target.into(),
+                    addend: 0,
+                })
+                .into_iter()
+                .collect(),
+            non_static_functions_before: 0,
+            functions_before: 0,
+            is_weak: false,
+            static_local_owner: None,
+            anonymous_adjust: 0,
+            section: None,
+        }
+    }
+
+    #[test]
+    fn rtti_name_reuses_an_identical_function_string() {
+        let name = "@@cxx_rtti:4Node:name";
+        let mut globals = vec![
+            object(name, b"Node\0", None),
+            object("__RTTI__4Node", &[0; 8], Some(name)),
+        ];
+        let strings = vec![object("@388", b"Node\0", None)];
+
+        coalesce_name_strings(&mut globals, &strings);
+
+        assert_eq!(globals.len(), 1);
+        assert_eq!(globals[0].relocations[0].target, "@388");
     }
 
     #[test]
