@@ -1,8 +1,8 @@
 //! Call emission and argument marshaling.
 
 use super::call_argument_types::{
-    aggregate_reference_address, classify_call_argument, outgoing_general_stack_offset,
-    CallArgumentPlacement,
+    aggregate_reference_source, classify_call_argument, outgoing_general_stack_offset,
+    AggregateReferenceSource, CallArgumentPlacement,
 };
 #[allow(unused_imports)]
 use super::*;
@@ -1078,18 +1078,30 @@ impl Generator {
                 }
                 next_float += 1;
             } else {
-                let general_argument = aggregate_reference_address(
+                let aggregate_reference = aggregate_reference_source(
                     argument,
                     parameter_type,
                     |pointer| {
-                        leaf_name(pointer).and_then(|source| {
-                            self.locations
-                                .get(source)
-                                .and_then(|location| location.stride)
-                        })
+                        if let Expression::Cast {
+                            target_type: Type::StructPointer { element_size },
+                            ..
+                        } = pointer
+                        {
+                            (*element_size != 0).then_some(*element_size)
+                        } else {
+                            leaf_name(pointer).and_then(|source| {
+                                self.locations
+                                    .get(source)
+                                    .and_then(|location| location.stride)
+                            })
+                        }
                     },
-                )
-                .unwrap_or(argument);
+                );
+                let general_argument = match aggregate_reference {
+                    Some(AggregateReferenceSource::Address(address)) => address,
+                    Some(AggregateReferenceSource::Lvalue(lvalue)) => lvalue,
+                    None => argument,
+                };
                 if prematerialized_general.is_some_and(|(later, _, _)| later == index) {
                     next_general += 1;
                     continue;
@@ -1240,12 +1252,18 @@ impl Generator {
                             "general argument {index} to '{name}' needs an unreserved outgoing stack slot"
                         )));
                     }
-                    self.evaluate_general(general_argument, next_general)
+                    let evaluated = match aggregate_reference {
+                        Some(AggregateReferenceSource::Lvalue(lvalue)) => {
+                            self.emit_address_of(lvalue, next_general)
+                        }
+                        _ => self.evaluate_general(general_argument, next_general),
+                    };
+                    evaluated
                         .map_err(|mut diagnostic| {
                             diagnostic.message.push_str(&format!(
                                 " (while evaluating general argument {index} to '{name}', \
                                  parameter {parameter_type:?}, aggregate-reference-address={})",
-                                !std::ptr::eq(general_argument, argument),
+                                aggregate_reference.is_some(),
                             ));
                             diagnostic
                         })?;
@@ -1257,12 +1275,18 @@ impl Generator {
                 } else if let Some((source, _, _)) = downward_word_copy {
                     self.emit_integer_materialization_copy(next_general, source);
                 } else {
-                    self.evaluate_general(general_argument, next_general)
+                    let evaluated = match aggregate_reference {
+                        Some(AggregateReferenceSource::Lvalue(lvalue)) => {
+                            self.emit_address_of(lvalue, next_general)
+                        }
+                        _ => self.evaluate_general(general_argument, next_general),
+                    };
+                    evaluated
                         .map_err(|mut diagnostic| {
                             diagnostic.message.push_str(&format!(
                                 " (while evaluating general argument {index} to '{name}', \
                                  parameter {parameter_type:?}, aggregate-reference-address={})",
-                                !std::ptr::eq(general_argument, argument),
+                                aggregate_reference.is_some(),
                             ));
                             diagnostic
                         })?;

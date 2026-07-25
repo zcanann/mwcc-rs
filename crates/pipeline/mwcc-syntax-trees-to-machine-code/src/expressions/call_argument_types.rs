@@ -69,23 +69,37 @@ pub(super) fn classify_call_argument(
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum AggregateReferenceSource<'a> {
+    /// `*p` passed by reference: the address expression is already `p`.
+    Address(&'a Expression),
+    /// A struct-valued lvalue such as `object.member`: form `&lvalue`.
+    Lvalue(&'a Expression),
+}
+
 /// A C++ reference parameter is represented as a struct pointer in the compact
-/// ABI types. When its source expression is `*p`, the caller passes `p` itself;
-/// loading the aggregate value would both be semantically wrong and require a
-/// scalar pointee classification that aggregates deliberately do not have.
-pub(super) fn aggregate_reference_address<'a>(
+/// ABI types. Recover the source address rather than trying to scalar-load the
+/// aggregate value.
+pub(super) fn aggregate_reference_source<'a>(
     argument: &'a Expression,
     parameter_type: Option<Type>,
     source_size: impl FnOnce(&Expression) -> Option<u32>,
-) -> Option<&'a Expression> {
+) -> Option<AggregateReferenceSource<'a>> {
     let Some(Type::StructPointer { element_size }) = parameter_type else {
         return None;
     };
-    let Expression::Dereference { pointer } = argument else {
-        return None;
-    };
-    let source_size = source_size(pointer)?;
-    (element_size == 0 || source_size == element_size).then_some(pointer.as_ref())
+    let compatible = |size| element_size == 0 || size == element_size;
+    match argument {
+        Expression::Dereference { pointer } => {
+            let source_size = source_size(pointer)?;
+            compatible(source_size).then_some(AggregateReferenceSource::Address(pointer))
+        }
+        Expression::Member {
+            member_type: Type::Struct { size, .. },
+            ..
+        } if compatible(*size) => Some(AggregateReferenceSource::Lvalue(argument)),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -140,24 +154,47 @@ mod tests {
         };
 
         assert!(matches!(
-            aggregate_reference_address(
+            aggregate_reference_source(
                 &argument,
                 Some(Type::StructPointer { element_size: 108 }),
                 |_| Some(108),
             ),
-            Some(Expression::Variable(name)) if name == "object"
+            Some(AggregateReferenceSource::Address(Expression::Variable(name)))
+                if name == "object"
         ));
-        assert!(aggregate_reference_address(
+        assert!(aggregate_reference_source(
             &argument,
             Some(Type::StructPointer { element_size: 64 }),
             |_| Some(108),
         )
         .is_none());
-        assert!(aggregate_reference_address(
+        assert!(aggregate_reference_source(
             &argument,
             Some(Type::StructPointer { element_size: 0 }),
             |_| Some(108),
         )
         .is_some());
+    }
+
+    #[test]
+    fn forms_the_address_of_a_struct_member_reference_argument() {
+        let member = Expression::Member {
+            base: Box::new(Expression::Variable("object".into())),
+            offset: 68,
+            member_type: Type::Struct { size: 12, align: 4 },
+            index_stride: None,
+        };
+
+        assert!(matches!(
+            aggregate_reference_source(
+                &member,
+                Some(Type::StructPointer { element_size: 0 }),
+                |_| None,
+            ),
+            Some(AggregateReferenceSource::Lvalue(Expression::Member {
+                offset: 68,
+                ..
+            }))
+        ));
     }
 }
