@@ -946,10 +946,26 @@ impl Parser {
                     } else {
                         self.expression()?
                     };
-                    statements.push(Statement::Assign {
+                    let value_struct_tag = self
+                        .expression_struct_tag
+                        .take()
+                        .or_else(|| self.cxx_expression_struct_tag(&value).map(str::to_owned));
+                    let lowered = if self.cplusplus && matches!(declared_type, Type::Struct { .. }) {
+                        self.lower_cxx_aggregate_local_initialization(
+                            &name,
+                            &value,
+                            struct_tag.as_deref(),
+                            value_struct_tag.as_deref(),
+                            local_names,
+                            block_locals,
+                        )?
+                    } else {
+                        None
+                    };
+                    statements.push(lowered.unwrap_or(Statement::Assign {
                         name: name.clone(),
                         value,
-                    });
+                    }));
                     None
                 } else {
                     None

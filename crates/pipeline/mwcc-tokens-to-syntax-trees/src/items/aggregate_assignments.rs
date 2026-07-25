@@ -15,6 +15,50 @@ struct MaterializedAggregate {
 }
 
 impl Parser {
+    /// Materialize a computed aggregate initializer, then copy the completed
+    /// object into its newly declared local. Initialization deliberately does
+    /// not call `operator=`: MWCC uses the value-producing call's hidden
+    /// temporary followed by an object copy for shapes such as
+    /// `Vec difference = left - right`.
+    pub(super) fn lower_cxx_aggregate_local_initialization(
+        &mut self,
+        name: &str,
+        value: &Expression,
+        declared_tag: Option<&str>,
+        value_tag: Option<&str>,
+        local_names: &mut std::collections::HashSet<String>,
+        block_locals: &mut Vec<LocalDeclaration>,
+    ) -> Compilation<Option<Statement>> {
+        let (Some(declared_tag), Some(value_tag)) = (declared_tag, value_tag) else {
+            return Ok(None);
+        };
+        if !same_cxx_aggregate_identity(declared_tag, value_tag)
+            || is_addressable_aggregate_value(value)
+        {
+            return Ok(None);
+        }
+        let saved_expression_tag = self.expression_struct_tag.take();
+        let materialized = self.materialize_cxx_aggregate_value(
+            value,
+            Some(value_tag),
+            local_names,
+            block_locals,
+        );
+        self.expression_struct_tag = saved_expression_tag;
+        let Some(materialized) = materialized? else {
+            return Ok(None);
+        };
+        if !same_cxx_aggregate_identity(declared_tag, &materialized.tag) {
+            return Ok(None);
+        }
+        let mut effects = materialized.effects;
+        effects.push(Expression::Assign {
+            target: Box::new(Expression::Variable(name.to_owned())),
+            value: Box::new(materialized.value),
+        });
+        Ok(sequence_effects(effects).map(Statement::Expression))
+    }
+
     /// Lower an aggregate assignment through the class's declared `operator=`.
     ///
     /// Addressable values pass directly by reference. Aggregate-valued calls

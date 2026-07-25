@@ -4478,6 +4478,63 @@ blr\n\
     }
 
     #[test]
+    fn materializes_computed_block_aggregate_initializers_without_assignment() {
+        let source = r#"
+            struct Vec {
+                float x;
+                float y;
+                float z;
+                Vec operator-(const Vec&) const;
+            };
+            void difference(const Vec& left, const Vec& right, int enabled) {
+                if (enabled) {
+                    Vec result = left - right;
+                }
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let function = &unit.functions[0];
+        assert!(function
+            .locals
+            .iter()
+            .any(|local| local.name.starts_with("__mwcc_aggregate_result_")));
+        let [Statement::If { then_body, .. }] = function.statements.as_slice() else {
+            panic!("expected the source conditional")
+        };
+        let [Statement::Expression(Expression::Comma { left, right })] = then_body.as_slice()
+        else {
+            panic!("expected a sequenced aggregate initialization")
+        };
+        assert!(matches!(
+            left.as_ref(),
+            Expression::Assign { value, .. }
+                if matches!(
+                    value.as_ref(),
+                    Expression::Call { name, .. } if name == "__mi__3VecCFRC3Vec"
+                )
+        ));
+        assert!(matches!(
+            right.as_ref(),
+            Expression::Assign { target, value }
+                if matches!(
+                    target.as_ref(),
+                    Expression::Variable(name) if name == "result"
+                ) && matches!(
+                    value.as_ref(),
+                    Expression::Variable(name)
+                        if name.starts_with("__mwcc_aggregate_result_")
+                )
+        ));
+    }
+
+    #[test]
     fn passes_retained_inline_aggregate_arguments_by_reference() {
         let source = r#"
             struct Vec {
