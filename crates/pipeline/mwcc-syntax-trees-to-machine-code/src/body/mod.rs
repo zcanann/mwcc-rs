@@ -26,6 +26,7 @@ mod symmetric_float_decay;
 mod symmetric_float_decay_return;
 mod sign_selected_member_store;
 mod aggregate_return_forwarder;
+mod aggregate_local_return;
 mod aggregate_parameter_forwarder;
 mod aggregate_return_temporaries;
 mod ascii_pointer_compare;

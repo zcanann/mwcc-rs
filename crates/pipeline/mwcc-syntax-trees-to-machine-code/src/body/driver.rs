@@ -1151,6 +1151,21 @@ impl Generator {
         // local-pointer aliases are not later mistaken for entry parameters.
         self.known_locals
             .extend(function.locals.iter().map(|local| local.name.clone()));
+        if let Some(lowered) = super::aggregate_local_return::lower_local_aggregate_return(function)
+        {
+            self.locations.insert(
+                super::aggregate_local_return::HIDDEN_RESULT_NAME.into(),
+                Location {
+                    class: ValueClass::General,
+                    register: Eabi::FIRST_GENERAL_ARGUMENT,
+                    signed: false,
+                    width: 32,
+                    pointee: Some(Pointee::UnsignedInt),
+                    stride: None,
+                },
+            );
+            return self.evaluate_body(&lowered);
+        }
         // Scaled matrix packet runs own their conversion frame and assignment-switch
         // dispatch. Claim them before generic frame planning tries to materialize
         // the source array or lower the switch statement independently.
