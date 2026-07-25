@@ -8,11 +8,19 @@ use mwcc_machine_code::{
     Instruction, MachineFunction, Relocation, RelocationKind, RelocationTarget,
 };
 use mwcc_syntax_trees::{Expression, Function, GlobalDeclaration, Statement, Type};
-use mwcc_versions::CompilerConfig;
+use mwcc_versions::{CompilerConfig, Optimization};
 
 enum TailAction {
     StoreImmediate { offset: i16, value: i16 },
     StoreThisGlobal { name: String },
+}
+
+struct ParameterizedDerivedConstructor {
+    base_vtable: String,
+    derived_vtable: String,
+    vptr_offset: i16,
+    member_offset: i16,
+    parameter_register: u8,
 }
 
 /// Lower a polymorphic leaf constructor consisting of its synthesized primary
@@ -40,6 +48,17 @@ pub(crate) fn lower(
         )
     {
         return None;
+    }
+
+    if config.build.version.0 < 4
+        && config.flags.optimization == Optimization::O4
+        && config.flags.scheduler_enabled
+    {
+        if let Some(shape) = recognize_parameterized_derived_constructor(function, globals) {
+            let mut output = emit_parameterized_derived_constructor(function, shape);
+            finish(&mut output, function, &config);
+            return Some(output);
+        }
     }
 
     let (mut vtable, vptr_offset) = parse_vptr_store(&function.statements[0], globals)?;
@@ -138,6 +157,121 @@ pub(crate) fn lower(
     output.instructions.push(Instruction::BranchToLinkRegister);
     finish(&mut output, function, &config);
     Some(output)
+}
+
+/// GC 1.3 through 2.7 schedules the two construction-phase vtable addresses as
+/// one O4 transaction. The base high half fills the derived high half's issue
+/// slot, and the incoming member value remains live in its EABI parameter
+/// register until both vptr stores complete.
+fn recognize_parameterized_derived_constructor(
+    function: &Function,
+    globals: &[GlobalDeclaration],
+) -> Option<ParameterizedDerivedConstructor> {
+    let [base_store, derived_store, member_store] = function.statements.as_slice() else {
+        return None;
+    };
+    let (base_vtable, vptr_offset) = parse_vptr_store(base_store, globals)?;
+    let (derived_vtable, derived_offset) = parse_vptr_store(derived_store, globals)?;
+    if base_vtable == derived_vtable || vptr_offset != derived_offset {
+        return None;
+    }
+    let Statement::Store {
+        target:
+            Expression::Member {
+                base,
+                offset,
+                member_type,
+                ..
+            },
+        value: Expression::Variable(parameter),
+    } = member_store
+    else {
+        return None;
+    };
+    if !matches!(base.as_ref(), Expression::Variable(name) if name == "this")
+        || !is_word_type(*member_type)
+        || *offset == u32::try_from(vptr_offset).ok()?
+    {
+        return None;
+    }
+    let parameter_index = function
+        .parameters
+        .iter()
+        .position(|candidate| candidate.name == *parameter)?;
+    if parameter_index == 0
+        || parameter_index > 7
+        || !is_word_type(function.parameters[parameter_index].parameter_type)
+    {
+        return None;
+    }
+    Some(ParameterizedDerivedConstructor {
+        base_vtable,
+        derived_vtable,
+        vptr_offset,
+        member_offset: i16::try_from(*offset).ok()?,
+        parameter_register: 3 + u8::try_from(parameter_index).ok()?,
+    })
+}
+
+fn emit_parameterized_derived_constructor(
+    function: &Function,
+    shape: ParameterizedDerivedConstructor,
+) -> MachineFunction {
+    let mut output = MachineFunction::new(function.name.clone());
+    output.instructions = vec![
+        Instruction::load_immediate_shifted(6, 0),
+        Instruction::load_immediate_shifted(5, 0),
+        Instruction::AddImmediate {
+            d: 6,
+            a: 6,
+            immediate: 0,
+        },
+        Instruction::StoreWord {
+            s: 6,
+            a: 3,
+            offset: shape.vptr_offset,
+        },
+        Instruction::AddImmediate {
+            d: 0,
+            a: 5,
+            immediate: 0,
+        },
+        Instruction::StoreWord {
+            s: 0,
+            a: 3,
+            offset: shape.vptr_offset,
+        },
+        Instruction::StoreWord {
+            s: shape.parameter_register,
+            a: 3,
+            offset: shape.member_offset,
+        },
+        Instruction::BranchToLinkRegister,
+    ];
+    output.relocations = vec![
+        Relocation {
+            instruction_index: 0,
+            kind: RelocationKind::Addr16Ha,
+            target: RelocationTarget::External(shape.base_vtable.clone()),
+        },
+        Relocation {
+            instruction_index: 1,
+            kind: RelocationKind::Addr16Ha,
+            target: RelocationTarget::External(shape.derived_vtable.clone()),
+        },
+        Relocation {
+            instruction_index: 2,
+            kind: RelocationKind::Addr16Lo,
+            target: RelocationTarget::External(shape.base_vtable.clone()),
+        },
+        Relocation {
+            instruction_index: 4,
+            kind: RelocationKind::Addr16Lo,
+            target: RelocationTarget::External(shape.derived_vtable.clone()),
+        },
+    ];
+    output.symbol_order = vec![shape.base_vtable, shape.derived_vtable];
+    output
 }
 
 fn reused_immediate(actions: &[TailAction], vptr_offset: i16) -> Option<i16> {
