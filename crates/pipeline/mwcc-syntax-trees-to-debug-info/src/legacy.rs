@@ -8,6 +8,7 @@ mod fatal_messaging;
 mod functions;
 mod guarded_global_callbacks;
 mod module_lifecycle;
+mod profile_pointer_tables;
 mod simple_void_functions;
 mod vector_installers;
 
@@ -69,6 +70,9 @@ enum MeasuredShape {
     /// REL constructor/destructor entry points whose external callback arrays
     /// are interleaved with their consuming function DIEs.
     ModuleLifecycle,
+    /// One aggregate-pointer registry and the two lifecycle functions that
+    /// install and clear its externally-owned active-table pointer.
+    ProfilePointerTable,
 }
 
 pub(super) fn lower(
@@ -181,6 +185,12 @@ pub(super) fn lower(
         )?);
     } else if shape == MeasuredShape::ModuleLifecycle {
         line_records.extend(module_lifecycle::line_records(
+            &source_functions,
+            machine_functions,
+            &layout,
+        )?);
+    } else if shape == MeasuredShape::ProfilePointerTable {
+        line_records.extend(profile_pointer_tables::line_records(
             &source_functions,
             machine_functions,
             &layout,
@@ -504,6 +514,21 @@ pub(super) fn lower(
         return finish(line, records, DebugLayout::BeforeDataGrouped);
     }
 
+    if shape == MeasuredShape::ProfilePointerTable {
+        let mut records: Vec<_> = entries.into_iter().map(DebugRecord::Entry).collect();
+        records.extend(profile_pointer_tables::records(
+            unit,
+            &source_functions
+                .iter()
+                .map(|(function, _)| *function)
+                .collect::<Vec<_>>(),
+            &layout,
+            &globals,
+            first_global_id,
+        )?);
+        return finish(line, records, DebugLayout::AfterDataGrouped);
+    }
+
     for (index, global) in globals.iter().enumerate() {
         let next = if index + 1 < globals.len() {
             DebugEntryId(first_global_id.0 + index as u32 + 1)
@@ -645,6 +670,9 @@ pub(super) fn lower(
         }
         MeasuredShape::ModuleLifecycle => {
             unreachable!("module-lifecycle units return before legacy function records")
+        }
+        MeasuredShape::ProfilePointerTable => {
+            unreachable!("profile-pointer-table units return before legacy function records")
         }
     }
     finish(line, records, DebugLayout::BeforeDataGrouped)
@@ -805,6 +833,10 @@ fn classify_shape(
 
     if module_lifecycle::matches(unit, machine_functions, globals, build) {
         return Ok(MeasuredShape::ModuleLifecycle);
+    }
+
+    if profile_pointer_tables::matches(unit, machine_functions, globals, build) {
+        return Ok(MeasuredShape::ProfilePointerTable);
     }
 
     let verbatim_asm_with_data = build.version == (2, 4, 2)
