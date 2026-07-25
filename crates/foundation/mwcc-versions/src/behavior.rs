@@ -554,6 +554,8 @@ pub struct Behavior {
     pub cxx_constructor_inline_ordinal_weights: Option<CxxConstructorInlineOrdinalWeights>,
     /// Inherited RTTI handles without a vtable owner remain local.
     pub orphaned_cxx_rtti_handle_is_local: bool,
+    /// Materialize vtables owned by weak all-inline primary bases.
+    pub materialize_inline_primary_base_vtables: bool,
     /// Hidden deferred-inlining labels retained per call-dispatch switch arm.
     /// Zero for ordinary compilation and for unmeasured compiler generations.
     pub deferred_call_dispatcher_labels_per_case: u8,
@@ -916,6 +918,10 @@ impl Behavior {
                 .build
                 .profile
                 .orphaned_cxx_rtti_handle_is_local(),
+            materialize_inline_primary_base_vtables: config
+                .build
+                .profile
+                .materialize_inline_primary_base_vtables(),
             deferred_call_dispatcher_labels_per_case: if config.flags.inline_deferred {
                 config
                     .build
@@ -1777,6 +1783,7 @@ mod tests {
             })
         );
         assert!(behavior.orphaned_cxx_rtti_handle_is_local);
+        assert!(behavior.materialize_inline_primary_base_vtables);
         assert_eq!(
             behavior.cxx_reference_bound_scalar_temporary_label_bump,
             2

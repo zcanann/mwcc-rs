@@ -845,6 +845,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         false
     }
 
+    /// Whether weak all-inline primary bases acquire vtables from the slot
+    /// closure of an owned most-derived table.
+    fn materialize_inline_primary_base_vtables(&self) -> bool {
+        false
+    }
+
     /// Whether plain `char` (no `signed`/`unsigned` qualifier) is signed. The one
     /// knob distinguishing GC build 53 from 81+; it cascades through read/operand
     /// extension, `>>`/`/`/`%` strength reduction, comparison folding, and the
@@ -1922,6 +1928,10 @@ impl CodegenProfile for Gc233Build163 {
     }
 
     fn orphaned_cxx_rtti_handle_is_local(&self) -> bool {
+        true
+    }
+
+    fn materialize_inline_primary_base_vtables(&self) -> bool {
         true
     }
 

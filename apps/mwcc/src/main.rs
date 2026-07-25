@@ -695,6 +695,7 @@ fn compile(
         mwcc_tokens_to_syntax_trees::materialize_cxx_rtti(
             &mut unit,
             behavior.orphaned_cxx_rtti_handle_is_local,
+            behavior.materialize_inline_primary_base_vtables,
         );
     }
     let mut disabled_inline_materializations = std::collections::HashSet::new();

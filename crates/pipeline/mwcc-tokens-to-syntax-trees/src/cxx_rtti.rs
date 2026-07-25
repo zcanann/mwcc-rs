@@ -13,7 +13,14 @@ const ANONYMOUS_PREFIX: &str = "@@cxx_rtti:";
 /// Add RTTI handles, type-name objects, inheritance tables, and vtable header
 /// fields for the class closure referenced by this translation unit's owned
 /// vtables. Generated classes follow reverse declaration order, as MWCC does.
-pub fn materialize(unit: &mut TranslationUnit, orphaned_handle_is_local: bool) {
+pub fn materialize(
+    unit: &mut TranslationUnit,
+    orphaned_handle_is_local: bool,
+    materialize_inline_primary_base_vtables: bool,
+) {
+    if materialize_inline_primary_base_vtables {
+        synthesize_inline_primary_base_vtables(unit);
+    }
     // RTTI ownership is fixed during the ordinary definition walk, before weak
     // inline bodies are materialized at the end of the translation unit. Keep
     // those late bodies out of the RTTI symbol's source-position count.
@@ -186,6 +193,136 @@ pub fn materialize(unit: &mut TranslationUnit, orphaned_handle_is_local: bool) {
     unit.globals = retained;
 }
 
+fn synthesize_inline_primary_base_vtables(unit: &mut TranslationUnit) {
+    let classes: HashMap<_, _> = unit
+        .cxx_abi_classes
+        .iter()
+        .map(|class| (class.source_name.as_str(), class))
+        .collect();
+    let weak_functions: HashSet<&str> =
+        unit.weak_materialized.iter().map(String::as_str).collect();
+    let mut existing: HashSet<String> = unit
+        .globals
+        .iter()
+        .filter(|global| global.name.starts_with("__vt__"))
+        .map(|global| global.name.clone())
+        .collect();
+    let owned: Vec<_> = unit
+        .globals
+        .iter()
+        .filter(|global| global.is_weak && global.name.starts_with("__vt__"))
+        .cloned()
+        .collect();
+    let mut generated = Vec::new();
+
+    for owner_vtable in owned {
+        let Some(owner) = unit
+            .cxx_abi_classes
+            .iter()
+            .find(|class| vtable_symbol(class) == owner_vtable.name)
+        else {
+            continue;
+        };
+        let Some(chain) = primary_base_chain(owner, &classes) else {
+            continue;
+        };
+        for class in chain.into_iter().take_while(|class| *class != owner) {
+            let symbol = vtable_symbol(class);
+            if existing.contains(&symbol) {
+                continue;
+            }
+            let Some(slots) =
+                inline_base_vtable_slots(class, &classes, &owner_vtable, &weak_functions)
+            else {
+                continue;
+            };
+            let mut vtable = data_global(
+                symbol.clone(),
+                vec![0; 8 + slots.len() * 4],
+                slots
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, target)| (8 + index as u32 * 4, target, 0))
+                    .collect(),
+                false,
+                true,
+                4,
+            );
+            vtable.functions_before = owner_vtable.functions_before;
+            vtable.non_static_functions_before = owner_vtable.non_static_functions_before;
+            existing.insert(symbol);
+            generated.push(vtable);
+        }
+    }
+    unit.globals.extend(generated);
+}
+
+fn primary_base_chain<'a>(
+    class: &'a CxxAbiClass,
+    classes: &HashMap<&str, &'a CxxAbiClass>,
+) -> Option<Vec<&'a CxxAbiClass>> {
+    let mut chain = vec![class];
+    let mut current = class;
+    while let [base] = current.bases.as_slice() {
+        current = classes.get(base.name.as_str()).copied()?;
+        chain.push(current);
+    }
+    if current.bases.is_empty() {
+        chain.reverse();
+        Some(chain)
+    } else {
+        None
+    }
+}
+
+fn inline_base_vtable_slots(
+    class: &CxxAbiClass,
+    classes: &HashMap<&str, &CxxAbiClass>,
+    owner_vtable: &GlobalDeclaration,
+    weak_functions: &HashSet<&str>,
+) -> Option<Vec<String>> {
+    let ancestry: HashSet<&str> = primary_base_chain(class, classes)?
+        .into_iter()
+        .map(|ancestor| ancestor.source_name.as_str())
+        .collect();
+    let mut slots = Vec::new();
+    let mut owns_slot = false;
+    for (offset, target, _) in &owner_vtable.data_relocations {
+        if *offset < 8 {
+            continue;
+        }
+        let Some(target_owner) = mangled_member_owner(target) else {
+            continue;
+        };
+        if target_owner == class.source_name {
+            owns_slot = true;
+            if !weak_functions.contains(target.as_str()) {
+                return None;
+            }
+        }
+        if ancestry.contains(target_owner) {
+            slots.push(target.clone());
+        }
+    }
+    (owns_slot && !slots.is_empty()).then_some(slots)
+}
+
+fn mangled_member_owner(name: &str) -> Option<&str> {
+    for (delimiter, _) in name.match_indices("__") {
+        let suffix = &name[delimiter + 2..];
+        let digits = suffix
+            .bytes()
+            .take_while(|byte| byte.is_ascii_digit())
+            .count();
+        if digits == 0 {
+            continue;
+        }
+        let length = suffix[..digits].parse::<usize>().ok()?;
+        return suffix.get(digits..digits.checked_add(length)?);
+    }
+    None
+}
+
 fn rtti_handle_linkage(
     late_weak_owner: bool,
     has_vtable_owner: bool,
@@ -329,10 +466,11 @@ fn rtti_symbol(class: &CxxAbiClass) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        data_global, inheritance_entries, materialize_vtable_headers, rtti_handle_linkage,
+        data_global, inheritance_entries, inline_base_vtable_slots, mangled_member_owner,
+        materialize_vtable_headers, rtti_handle_linkage,
     };
     use mwcc_syntax_trees::{CxxAbiBase, CxxAbiClass, CxxAbiVtableComponent};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     fn class(name: &str, bases: &[(&str, u32)]) -> CxxAbiClass {
         CxxAbiClass {
@@ -374,6 +512,59 @@ mod tests {
         assert_eq!(rtti_handle_linkage(false, false, true), (true, false));
         assert_eq!(rtti_handle_linkage(false, false, false), (false, true));
         assert_eq!(rtti_handle_linkage(true, true, false), (true, false));
+    }
+
+    #[test]
+    fn member_owner_parsing_distinguishes_inherited_slots() {
+        assert_eq!(
+            mangled_member_owner("read__8CoreNodeFR18RandomAccessStream"),
+            Some("CoreNode")
+        );
+        assert_eq!(mangled_member_owner("__dt__4NodeFv"), Some("Node"));
+    }
+
+    #[test]
+    fn all_inline_primary_bases_recover_their_vtable_prefixes() {
+        let classes = [
+            class("ANode", &[]),
+            class("CoreNode", &[("ANode", 0)]),
+            class("Node", &[("CoreNode", 0)]),
+        ];
+        let by_name: HashMap<_, _> = classes
+            .iter()
+            .map(|class| (class.source_name.as_str(), class))
+            .collect();
+        let vtable = data_global(
+            "__vt__4Node".into(),
+            vec![0; 24],
+            vec![
+                (8, "age__5ANodeFv".into(), 0),
+                (12, "read__8CoreNodeFv".into(), 0),
+                (16, "update__4NodeFv".into(), 0),
+                (20, "concat__4NodeFv".into(), 0),
+            ],
+            false,
+            true,
+            4,
+        );
+        let weak = HashSet::from([
+            "age__5ANodeFv",
+            "read__8CoreNodeFv",
+            "concat__4NodeFv",
+        ]);
+
+        assert_eq!(
+            inline_base_vtable_slots(&classes[0], &by_name, &vtable, &weak),
+            Some(vec!["age__5ANodeFv".into()])
+        );
+        assert_eq!(
+            inline_base_vtable_slots(&classes[1], &by_name, &vtable, &weak),
+            Some(vec!["age__5ANodeFv".into(), "read__8CoreNodeFv".into()])
+        );
+        assert_eq!(
+            inline_base_vtable_slots(&classes[2], &by_name, &vtable, &weak),
+            None
+        );
     }
 
     #[test]
