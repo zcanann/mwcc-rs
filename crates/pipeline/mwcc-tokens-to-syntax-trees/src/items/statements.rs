@@ -219,11 +219,18 @@ impl Parser {
         let Some(target_tag) = target_tag else {
             return Ok(None);
         };
-        let direct_indexed_copy = matches!(
-            (target, value),
-            (Expression::Index { .. }, Expression::Index { .. })
-        );
-        if direct_indexed_copy {
+        let direct_aggregate_copy = value_tag.is_some()
+            && matches!(
+                value,
+                Expression::Variable(_)
+                    | Expression::Member {
+                        member_type: Type::Struct { .. },
+                        ..
+                    }
+                    | Expression::Index { .. }
+                    | Expression::Dereference { .. }
+            );
+        if direct_aggregate_copy {
             let saved_expression_tag =
                 std::mem::replace(&mut self.expression_struct_tag, value_tag.map(str::to_owned));
             let declared = self.resolve_instance_member_call(

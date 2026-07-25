@@ -4310,6 +4310,49 @@ blr\n\
     }
 
     #[test]
+    fn resolves_named_aggregate_copy_from_an_indexed_lvalue() {
+        let source = r#"
+            struct Vec {
+                float x;
+                float y;
+                float z;
+                Vec& operator=(const Vec&);
+            };
+            void copy_one(Vec& destination, Vec* source, int index) {
+                destination = source[index];
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [Statement::Expression(Expression::Call { name, arguments })]
+                if name == "__as__3VecFRC3Vec"
+                    && matches!(
+                        arguments.as_slice(),
+                        [
+                            Expression::Variable(destination),
+                            Expression::AddressOf { operand: source },
+                        ] if destination == "destination"
+                            && matches!(
+                                source.as_ref(),
+                                Expression::Index { base, .. }
+                                    if matches!(
+                                        base.as_ref(),
+                                        Expression::Variable(name) if name == "source"
+                                    )
+                            )
+                    )
+        ));
+    }
+
+    #[test]
     fn materializes_overloaded_aggregate_results_before_assignment() {
         let source = r#"
             struct Vec {
