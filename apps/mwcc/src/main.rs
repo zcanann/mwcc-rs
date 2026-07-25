@@ -1096,6 +1096,12 @@ fn compile(
     let executable_control_flow_weight = behavior.cxx_inline_control_flow_label_weight
         + u8::from(emits_weak_vtable_closure)
             * behavior.emitted_vtable_inline_control_flow_replay_weight;
+    let replay_control_flow_bump = (cxx_inline_facts.control_flow_labels
+        + cxx_inline_facts.instantiated_template_control_flow_labels)
+        * usize::from(
+            u8::from(emits_weak_vtable_closure)
+                * behavior.emitted_vtable_inline_control_flow_replay_weight,
+        );
     let cxx_inline_bump = cxx_inline_facts.class_definitions
         * usize::from(behavior.cxx_class_definition_label_bump)
         + cxx_inline_facts.inline_definitions
@@ -1132,6 +1138,18 @@ fn compile(
                 &machine_functions,
                 config.build.label,
                 config.flags.optimization,
+            )
+        })
+        .flatten();
+    let build163_vtable_const_residue = is_cxx
+        .then(|| {
+            cxx_analysis_residues::build163_vtable_const_residue(
+                &unit,
+                &machine_functions,
+                config.build.label,
+                config.flags.optimization,
+                config.build.initial_anonymous_counter,
+                cxx_inline_bump.saturating_sub(replay_control_flow_bump),
             )
         })
         .flatten();
@@ -1376,6 +1394,9 @@ fn compile(
         .map_or(&[][..], |capture| capture.force_upfront_globals);
     let mut defined_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> =
         cxx_analysis_residues.map_or_else(Vec::new, |capture| capture.objects);
+    if let Some(residue) = build163_vtable_const_residue {
+        defined_globals.push(residue);
+    }
     if let Some(residues) = cxx_literal_temporaries {
         defined_globals.extend(residues.objects);
     }

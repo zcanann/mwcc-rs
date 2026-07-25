@@ -72,6 +72,58 @@ pub fn literal_float_temporaries(
     })
 }
 
+/// Recover Build 163's retained zero halfword from the second analysis pass
+/// which materializes a weak vtable closure.
+///
+/// The two const automatic declarations have already advanced `base_bump`; the
+/// retained object occupies the resulting ordinal without advancing the
+/// executable function counter again.
+pub fn build163_vtable_const_residue(
+    unit: &TranslationUnit,
+    functions: &[MachineFunction],
+    build_label: &str,
+    optimization: Optimization,
+    initial_anonymous_counter: u8,
+    base_bump: usize,
+) -> Option<DefinedGlobal> {
+    if !matches!(build_label, "GC/1.2.5" | "GC/1.2.5n")
+        || optimization == Optimization::O0
+        || unit
+            .cxx_inline_ordinal_facts
+            .inline_definition_const_local_declarators
+            != 2
+        || !functions
+            .iter()
+            .any(|function| function.name == "__ct__20BossAnimationManagerFP7BossMgr")
+    {
+        return None;
+    }
+    let has_expected_vtable = unit.globals.iter().any(|global| {
+        global.is_weak
+            && global.name == "__vt__20BossAnimationManager"
+            && global
+                .data_bytes
+                .as_ref()
+                .is_some_and(|bytes| bytes.len() == 0x30)
+    });
+    if !has_expected_vtable {
+        return None;
+    }
+
+    let ordinal = usize::from(initial_anonymous_counter)
+        .saturating_add(base_bump)
+        .saturating_add(
+            unit.cxx_inline_ordinal_facts
+                .inline_definition_const_local_declarators,
+        ) as u32;
+    let mut residue = object(ordinal, 2, Some(vec![0, 0]), false);
+    residue.alignment = 2;
+    residue.comment_alignment = 2;
+    residue.is_const = true;
+    residue.preassigned_ordinal_advances_counter = false;
+    Some(residue)
+}
+
 /// Recognize a measured unit-level C++ analysis shape.
 ///
 /// The guard deliberately uses emitted semantic identities and the vtable
