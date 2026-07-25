@@ -436,6 +436,9 @@ pub(crate) struct Generator {
     /// (r31,r30), runs the calls, then `lwz r0,20; lwz r31,12; lwz r30,8; mtlr`. Distinct from
     /// `epilogue_lr_first`, whose two-GPR form interleaves the LR reload between the GPRs.
     pub(crate) epilogue_lr_before_gprs: bool,
+    /// A whole-body owner emitted the measured LR save/reload placement itself.
+    /// The generic latency passes must leave both ends of its frame untouched.
+    pub(crate) owns_link_register_schedule: bool,
     /// Set while evaluating a narrow-return expression whose result is truncated, so a
     /// narrow leaf operand is read raw (no leading sign/zero extension) — the final
     /// truncation makes the extension redundant. Only enabled for truncation-safe

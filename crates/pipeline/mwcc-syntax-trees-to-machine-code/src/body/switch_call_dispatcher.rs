@@ -143,6 +143,7 @@ impl Generator {
         self.non_leaf = true;
         self.frame_size = 16;
         self.callee_saved = vec![31, 30];
+        self.owns_link_register_schedule = true;
         self.output.pre_scheduled = true;
         self.output.packed_string_literals = packed_strings;
         if style == CallDispatcherStyle::Legacy24x {

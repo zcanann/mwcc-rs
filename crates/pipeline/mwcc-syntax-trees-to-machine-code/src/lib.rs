@@ -487,6 +487,7 @@ pub fn lower_function(
         inline_expansion_facts,
         epilogue_lr_first: false,
         epilogue_lr_before_gprs: false,
+        owns_link_register_schedule: false,
         narrow_truncation_context: false,
         known_locals: std::collections::HashSet::new(),
         one_word_aggregate_locals: std::collections::HashSet::new(),
@@ -940,7 +941,7 @@ fn schedule_instructions(generator: &mut Generator) {
 /// Move the epilogue's saved-LR reload up to right after the last call, remapping
 /// relocation indices through the resulting permutation.
 fn hoist_link_register_reload(generator: &mut Generator) {
-    if !generator.behavior.schedule_latency_slots {
+    if generator.owns_link_register_schedule || !generator.behavior.schedule_latency_slots {
         return;
     }
     // GC/1.1p1 deliberately restores the caller stack pointer before loading LR through
@@ -971,7 +972,7 @@ fn hoist_link_register_reload(generator: &mut Generator) {
 }
 
 fn schedule_link_register_save(generator: &mut Generator) {
-    if !generator.behavior.schedule_latency_slots {
+    if generator.owns_link_register_schedule || !generator.behavior.schedule_latency_slots {
         return;
     }
     let permutation = mwcc_vreg::schedule_link_register_save(&mut generator.output.instructions);
