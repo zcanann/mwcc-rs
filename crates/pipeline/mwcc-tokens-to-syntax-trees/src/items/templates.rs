@@ -41,18 +41,9 @@ fn capture_template_pointer_conversion(
 ) -> Option<Option<IteratorArrowAssertion>> {
     let mut cursor = 0usize;
     while cursor + 10 <= tokens.len() {
-        let Some([
-            Token::Identifier(storage),
-            Token::Identifier(returned),
-            Token::Star,
-            Token::Identifier(helper),
-            Token::ParenOpen,
-            Token::Identifier(node),
-            Token::Star,
-            Token::Identifier(parameter),
-            Token::ParenClose,
-            Token::BraceOpen,
-        ]) = tokens.get(cursor..cursor + 10)
+        let Some(
+            [Token::Identifier(storage), Token::Identifier(returned), Token::Star, Token::Identifier(helper), Token::ParenOpen, Token::Identifier(node), Token::Star, Token::Identifier(parameter), Token::ParenClose, Token::BraceOpen],
+        ) = tokens.get(cursor..cursor + 10)
         else {
             cursor += 1;
             continue;
@@ -124,21 +115,9 @@ fn capture_pointer_assertion(
             }
             function_index += 1;
         }
-        let Some([
-            Token::Identifier(function),
-            Token::ParenOpen,
-            Token::StringLiteral(file),
-            Token::Comma,
-            Token::IntegerLiteral(line),
-            Token::Comma,
-            Token::StringLiteral(message),
-            Token::ParenClose,
-            Token::Comma,
-            Token::IntegerLiteral(0),
-            Token::ParenClose,
-            Token::ParenClose,
-            Token::Semicolon,
-        ]) = tokens.get(function_index..function_index + 13)
+        let Some(
+            [Token::Identifier(function), Token::ParenOpen, Token::StringLiteral(file), Token::Comma, Token::IntegerLiteral(line), Token::Comma, Token::StringLiteral(message), Token::ParenClose, Token::Comma, Token::IntegerLiteral(0), Token::ParenClose, Token::ParenClose, Token::Semicolon],
+        ) = tokens.get(function_index..function_index + 13)
         else {
             continue;
         };
@@ -458,10 +437,7 @@ impl Parser {
         let owner_namespace = self
             .resolve_scoped_cxx_namespace_name(&summary.owner_scopes.join("::"))
             .unwrap_or_else(|| summary.owner_scopes.join("::"));
-        let owner_scopes: Vec<String> = owner_namespace
-            .split("::")
-            .map(str::to_owned)
-            .collect();
+        let owner_scopes: Vec<String> = owner_namespace.split("::").map(str::to_owned).collect();
         let assertion = summary.assertion.and_then(|mut assertion| {
             let arguments = arguments
                 .iter()
@@ -478,23 +454,25 @@ impl Parser {
                                 .unwrap_or_else(|| tag.to_owned());
                             crate::cxx::encode_qualified_type_name(&qualified).ok()
                         })
-                        .or_else(|| argument.identity.clone().filter(|identity| identity != "..."))
+                        .or_else(|| {
+                            argument
+                                .identity
+                                .clone()
+                                .filter(|identity| identity != "...")
+                        })
                 })
                 .collect::<Option<Vec<_>>>()?;
             let owner_class = format!("{template_name}<{}>", arguments.join(","));
-            let mut owner_scopes: Vec<&str> =
-                owner_scopes.iter().map(String::as_str).collect();
+            let mut owner_scopes: Vec<&str> = owner_scopes.iter().map(String::as_str).collect();
             owner_scopes.push(&owner_class);
-            let mut parameter_scopes: Vec<&str> =
-                owner_scopes[..owner_scopes.len() - 1].to_vec();
+            let mut parameter_scopes: Vec<&str> = owner_scopes[..owner_scopes.len() - 1].to_vec();
             parameter_scopes.push(&assertion.owner_parameter);
-            assertion.owner_symbol =
-                crate::cxx::mangle_qualified_member_with_qualified_pointer(
-                    &owner_scopes,
-                    &assertion.owner_member,
-                    &parameter_scopes,
-                )
-                .ok();
+            assertion.owner_symbol = crate::cxx::mangle_qualified_member_with_qualified_pointer(
+                &owner_scopes,
+                &assertion.owner_member,
+                &parameter_scopes,
+            )
+            .ok();
             Some(assertion)
         });
         self.concrete_template_iterator_arrows.insert(
@@ -601,9 +579,10 @@ impl Parser {
         if layout.size != 4 {
             return None;
         }
-        let mut fields = layout.fields.values().filter(|field| {
-            field.array_bytes.is_none() && field.bit_field.is_none()
-        });
+        let mut fields = layout
+            .fields
+            .values()
+            .filter(|field| field.array_bytes.is_none() && field.bit_field.is_none());
         let field = fields.next()?;
         if fields.next().is_some() {
             return None;
@@ -697,9 +676,9 @@ impl Parser {
             let literal = match self.tokens.get(cursor) {
                 Some(Token::IntegerLiteral(value))
                     if matches!(
-                    self.tokens.get(cursor + 1),
-                    Some(Token::Comma | Token::Greater)
-                ) =>
+                        self.tokens.get(cursor + 1),
+                        Some(Token::Comma | Token::Greater)
+                    ) =>
                 {
                     Some(*value)
                 }
@@ -719,20 +698,17 @@ impl Parser {
                 cursor += 1;
             } else {
                 let argument_start = cursor;
-                let parsed_type = self.template_argument_at(cursor).and_then(
-                    |(declared, identity, mut end)| {
-                        if self.tokens.get(argument_start) == Some(&Token::KeywordUnsigned)
-                            && self.tokens.get(end) == Some(&Token::KeywordInt)
-                        {
-                            end += 1;
-                        }
-                        matches!(
-                            self.tokens.get(end),
-                            Some(Token::Comma | Token::Greater)
-                        )
-                        .then_some((declared, identity, end))
-                    },
-                );
+                let parsed_type =
+                    self.template_argument_at(cursor)
+                        .and_then(|(declared, identity, mut end)| {
+                            if self.tokens.get(argument_start) == Some(&Token::KeywordUnsigned)
+                                && self.tokens.get(end) == Some(&Token::KeywordInt)
+                            {
+                                end += 1;
+                            }
+                            matches!(self.tokens.get(end), Some(Token::Comma | Token::Greater))
+                                .then_some((declared, identity, end))
+                        });
                 if let Some((declared, identity, end)) = parsed_type {
                     let known = declared.is_some();
                     let tag = self.template_argument_struct_tag_at(argument_start, end);
@@ -864,11 +840,7 @@ impl Parser {
                 .and_then(|tag| tag.split_once('<'))
                 .map(|(_, argument)| argument.to_owned());
             let instance = self
-                .instantiate_struct_template_layout_with_identity(
-                    template_name,
-                    argument,
-                    identity,
-                )
+                .instantiate_struct_template_layout_with_identity(template_name, argument, identity)
                 .map(|layout| Type::Struct {
                     size: layout.size,
                     align: layout.align,
@@ -911,16 +883,14 @@ impl Parser {
                 Token::Identifier(name) if self.cplusplus && name == "wchar_t" => {
                     Some("w".to_owned())
                 }
-                Token::Identifier(name) if self.cplusplus && name == "bool" => {
-                    Some("b".to_owned())
-                }
+                Token::Identifier(name) if self.cplusplus && name == "bool" => Some("b".to_owned()),
                 _ => None,
             }
             .or_else(|| declared.and_then(crate::cxx::encode_template_argument_type))
-                .or_else(|| match token {
-                    Token::Identifier(name) => crate::cxx::encode_qualified_type_name(name).ok(),
-                    _ => None,
-                });
+            .or_else(|| match token {
+                Token::Identifier(name) => crate::cxx::encode_qualified_type_name(name).ok(),
+                _ => None,
+            });
             Some(self.finish_template_argument_pointer_shape(declared, identity, start + 1))
         } else {
             None
@@ -1085,10 +1055,11 @@ impl Parser {
         arguments: &[ResolvedTemplateType],
     ) -> (u32, Option<String>) {
         match pattern {
-            TemplateTypePattern::Parameter(index) => arguments.get(*index).map_or(
-                (0, None),
-                |argument| (type_size(argument.declared), argument.tag.clone()),
-            ),
+            TemplateTypePattern::Parameter(index) => {
+                arguments.get(*index).map_or((0, None), |argument| {
+                    (type_size(argument.declared), argument.tag.clone())
+                })
+            }
             TemplateTypePattern::Concrete(declared) => (type_size(*declared), None),
             TemplateTypePattern::Named(name) => (
                 self.structs.get(name).map_or(0, |layout| layout.size),
@@ -1167,54 +1138,50 @@ impl Parser {
             .fields
             .iter()
             .map(|field| {
-                let (field_type, field_size, natural_alignment, struct_tag) = match &field.field_type {
-                TemplateFieldType::Parameter(index) => {
-                    let resolved = arguments.get(*index)?;
-                    if !resolved.known {
-                        return None;
-                    }
-                    let field_type = resolved.declared;
-                    (
-                        field_type,
-                        type_size(field_type),
-                        type_alignment(field_type),
-                        resolved.tag.clone(),
-                    )
-                }
-                TemplateFieldType::ParameterByteArray(index) => {
-                    let resolved = arguments.get(*index)?;
-                    if !resolved.known {
-                        return None;
-                    }
-                    (Type::UnsignedChar, type_size(resolved.declared), 1, None)
-                }
-                TemplateFieldType::TemplateValue(pattern) => {
-                    let resolved = self.resolve_template_pattern(pattern, arguments)?;
-                    let field_type = resolved.declared;
-                    (
-                        field_type,
-                        type_size(field_type),
-                        type_alignment(field_type),
-                        resolved.tag,
-                    )
-                }
-                TemplateFieldType::TemplatePointer(pattern) => {
-                    let (element_size, tag) =
-                        self.template_pattern_pointer_identity(pattern, arguments);
-                    (
-                        Type::StructPointer { element_size },
-                        4,
-                        4,
-                        tag,
-                    )
-                }
-                TemplateFieldType::Concrete(field_type) => (
-                    *field_type,
-                    type_size(*field_type),
-                    type_alignment(*field_type),
-                    None,
-                ),
-                };
+                let (field_type, field_size, natural_alignment, struct_tag) =
+                    match &field.field_type {
+                        TemplateFieldType::Parameter(index) => {
+                            let resolved = arguments.get(*index)?;
+                            if !resolved.known {
+                                return None;
+                            }
+                            let field_type = resolved.declared;
+                            (
+                                field_type,
+                                type_size(field_type),
+                                type_alignment(field_type),
+                                resolved.tag.clone(),
+                            )
+                        }
+                        TemplateFieldType::ParameterByteArray(index) => {
+                            let resolved = arguments.get(*index)?;
+                            if !resolved.known {
+                                return None;
+                            }
+                            (Type::UnsignedChar, type_size(resolved.declared), 1, None)
+                        }
+                        TemplateFieldType::TemplateValue(pattern) => {
+                            let resolved = self.resolve_template_pattern(pattern, arguments)?;
+                            let field_type = resolved.declared;
+                            (
+                                field_type,
+                                type_size(field_type),
+                                type_alignment(field_type),
+                                resolved.tag,
+                            )
+                        }
+                        TemplateFieldType::TemplatePointer(pattern) => {
+                            let (element_size, tag) =
+                                self.template_pattern_pointer_identity(pattern, arguments);
+                            (Type::StructPointer { element_size }, 4, 4, tag)
+                        }
+                        TemplateFieldType::Concrete(field_type) => (
+                            *field_type,
+                            type_size(*field_type),
+                            type_alignment(*field_type),
+                            None,
+                        ),
+                    };
                 let (field_size, array_bytes, array_stride) =
                     if let Some(index) = field.array_extent_parameter {
                         let extent = arguments.get(index)?.constant?;
@@ -1253,15 +1220,7 @@ impl Parser {
             offset = offset.div_ceil(alignment) * alignment;
             let run_offset = offset;
             let mut run_size = 0u32;
-            for (
-                field,
-                field_type,
-                field_size,
-                _,
-                struct_tag,
-                array_bytes,
-                array_stride,
-            ) in
+            for (field, field_type, field_size, _, struct_tag, array_bytes, array_stride) in
                 &resolved_fields[field_index..run_end]
             {
                 fields.insert(
@@ -1492,13 +1451,14 @@ impl Parser {
                 Some(Token::Greater | Token::BracketClose) if nested > 0 => nested -= 1,
                 Some(Token::ParenClose) if nested > 0 => nested -= 1,
                 Some(Token::Comma | Token::ParenClose) if nested == 0 => {
-                    let name = self.tokens[parameter_start..cursor]
-                        .iter()
-                        .rev()
-                        .find_map(|token| match token {
-                            Token::Identifier(name) => Some(name.clone()),
-                            _ => None,
-                        });
+                    let name =
+                        self.tokens[parameter_start..cursor]
+                            .iter()
+                            .rev()
+                            .find_map(|token| match token {
+                                Token::Identifier(name) => Some(name.clone()),
+                                _ => None,
+                            });
                     if parameter_start != cursor {
                         let Some(name) = name else { return };
                         parameter_names.push(name);
@@ -1649,8 +1609,7 @@ impl Parser {
                         let parameter_end = scan - 1;
                         let empty = parameter_start == parameter_end
                             || (parameter_end == parameter_start + 1
-                                && probe.tokens.get(parameter_start)
-                                    == Some(&Token::KeywordVoid));
+                                && probe.tokens.get(parameter_start) == Some(&Token::KeywordVoid));
                         Some((member, return_type, if empty { 0 } else { commas + 1 }))
                     })();
                     if let Some((member, return_type, argument_count)) = recovered {
@@ -1661,10 +1620,11 @@ impl Parser {
                             variadic: false,
                         };
                         let qualified = self.qualify_cxx_class_name(&class_name);
-                        for owner in std::iter::once(class_name.clone()).chain(
-                            (qualified != class_name).then_some(qualified),
-                        ) {
-                            let methods = self.cxx_template_virtual_methods
+                        for owner in std::iter::once(class_name.clone())
+                            .chain((qualified != class_name).then_some(qualified))
+                        {
+                            let methods = self
+                                .cxx_template_virtual_methods
                                 .entry((owner, member.clone()))
                                 .or_default();
                             if !methods.iter().any(|(arity, existing)| {
@@ -1835,11 +1795,7 @@ impl Parser {
                     if let Some(next) = self.skip_template_nonstorage_declaration_at(cursor) {
                         cursor = next;
                     } else if let Some((mut declaration, next)) = self
-                        .capture_template_anonymous_union(
-                            cursor,
-                            &parameters,
-                            next_overlap_group,
-                        )
+                        .capture_template_anonymous_union(cursor, &parameters, next_overlap_group)
                     {
                         fields.append(&mut declaration);
                         next_overlap_group += 1;
@@ -1856,12 +1812,7 @@ impl Parser {
                 _ => cursor += 1,
             }
         }
-        self.capture_template_iterator_arrow_summary(
-            body_open + 1,
-            cursor - 1,
-            &name,
-            &parameters,
-        );
+        self.capture_template_iterator_arrow_summary(body_open + 1, cursor - 1, &name, &parameters);
         if !fields.is_empty() || base.is_some() {
             let default_constructor_zero_fields =
                 capture_default_constructor_zero_fields(&self.tokens, body_open, cursor - 1, &name);
@@ -1890,27 +1841,28 @@ impl Parser {
         }
         let element = &parameters[0];
         let offset = &parameters[1];
-        let Some(assertion) =
-            capture_template_pointer_conversion(&self.tokens[body_start..body_end], element, offset)
-        else {
+        let Some(assertion) = capture_template_pointer_conversion(
+            &self.tokens[body_start..body_end],
+            element,
+            offset,
+        ) else {
             return;
         };
         let mut cursor = body_start;
         while cursor + 3 < body_end {
-            let nested = match self.tokens.get(cursor..cursor + 3) {
-                Some([
-                    Token::Identifier(class),
-                    Token::Identifier(nested),
-                    Token::BraceOpen,
-                ]) if class == "class" => nested.clone(),
-                Some([Token::KeywordStruct, Token::Identifier(nested), Token::BraceOpen]) => {
-                    nested.clone()
-                }
-                _ => {
-                    cursor += 1;
-                    continue;
-                }
-            };
+            let nested =
+                match self.tokens.get(cursor..cursor + 3) {
+                    Some(
+                        [Token::Identifier(class), Token::Identifier(nested), Token::BraceOpen],
+                    ) if class == "class" => nested.clone(),
+                    Some([Token::KeywordStruct, Token::Identifier(nested), Token::BraceOpen]) => {
+                        nested.clone()
+                    }
+                    _ => {
+                        cursor += 1;
+                        continue;
+                    }
+                };
             let mut close = cursor + 3;
             let mut depth = 1usize;
             while close < body_end && depth > 0 {
@@ -1956,7 +1908,9 @@ impl Parser {
         &self,
         iterator: &str,
     ) -> Option<ConcreteIteratorArrow> {
-        self.concrete_template_iterator_arrows.get(iterator).cloned()
+        self.concrete_template_iterator_arrows
+            .get(iterator)
+            .cloned()
     }
 
     /// Recover argument-independent nested classes from a primary template.
@@ -1988,10 +1942,8 @@ impl Parser {
                     self.parse_class_definition_in_scope(Some(&owner), false)
                 {
                     let qualified = format!("{owner}::{nested}");
-                    self.struct_typedefs.insert(
-                        format!("{template_name}::{nested}"),
-                        qualified.clone(),
-                    );
+                    self.struct_typedefs
+                        .insert(format!("{template_name}::{nested}"), qualified.clone());
                     self.struct_typedefs
                         .insert(nested.clone(), qualified.clone());
                     self.structs.insert(qualified.clone(), layout);
@@ -2012,7 +1964,10 @@ impl Parser {
                             summaries.push(nested.clone());
                         }
                     }
-                    if self.source_iterator_equality_fields.contains_key(&qualified) {
+                    if self
+                        .source_iterator_equality_fields
+                        .contains_key(&qualified)
+                    {
                         let summaries = self
                             .template_iterator_comparison_summaries
                             .entry(template_name.to_owned())
@@ -2159,7 +2114,8 @@ impl Parser {
                 (TemplateFieldType::Concrete(Type::Int), 2)
             }
             token if self.template_argument_type(token).is_some() => (
-                TemplateFieldType::Concrete(self.template_argument_type(token)?), 1
+                TemplateFieldType::Concrete(self.template_argument_type(token)?),
+                1,
             ),
             Token::Identifier(_) => {
                 let (pattern, next) = self.template_type_pattern_at(cursor, parameters)?;
@@ -2414,8 +2370,7 @@ impl Parser {
                     let parameter_open = if call_operator {
                         Some(index + 3)
                     } else {
-                        (self.tokens.get(index + 1) == Some(&Token::ParenOpen))
-                            .then_some(index + 1)
+                        (self.tokens.get(index + 1) == Some(&Token::ParenOpen)).then_some(index + 1)
                     };
                     if let Some(parameter_open) = parameter_open {
                         let member_is_destructor = index > class_body_start
@@ -2469,9 +2424,7 @@ impl Parser {
                             .any(|token| {
                                 matches!(token, Token::Identifier(word) if word == "inline" || word == "__inline")
                             });
-                        if explicitly_inline
-                            || self.tokens.get(cursor) == Some(&Token::BraceOpen)
-                        {
+                        if explicitly_inline || self.tokens.get(cursor) == Some(&Token::BraceOpen) {
                             self.inline_template_members
                                 .insert((class_name.clone(), member_name.clone()));
                         }
@@ -2504,26 +2457,14 @@ impl Parser {
                                     field.clone(),
                                 );
                             }
-                            let return_wrapper = index.checked_sub(1).and_then(
-                                |return_type| match self.tokens.get(return_type) {
+                            let return_wrapper = index.checked_sub(1).and_then(|return_type| {
+                                match self.tokens.get(return_type) {
                                     Some(Token::Identifier(name)) => Some(name.clone()),
                                     _ => None,
-                                },
-                            );
+                                }
+                            });
                             if let Some(
-                                [
-                                    Token::KeywordReturn,
-                                    Token::Identifier(wrapper),
-                                    Token::ParenOpen,
-                                    Token::Identifier(base),
-                                    Token::Colon,
-                                    Token::Colon,
-                                    Token::Identifier(base_member),
-                                    Token::ParenOpen,
-                                    Token::ParenClose,
-                                    Token::ParenClose,
-                                    Token::Semicolon,
-                                ],
+                                [Token::KeywordReturn, Token::Identifier(wrapper), Token::ParenOpen, Token::Identifier(base), Token::Colon, Token::Colon, Token::Identifier(base_member), Token::ParenOpen, Token::ParenClose, Token::ParenClose, Token::Semicolon],
                             ) = self.tokens.get(body_open + 1..body_close)
                             {
                                 if return_wrapper.as_ref() == Some(wrapper) {
@@ -2604,10 +2545,7 @@ impl Parser {
     /// inline methods may be discarded before ordinary expression lowering.
     /// This pass intentionally records only calls with a syntactically proven
     /// template-typed object or a qualified template alias.
-    pub(crate) fn record_dropped_inline_template_instantiations(
-        &mut self,
-        class_body: &[Token],
-    ) {
+    pub(crate) fn record_dropped_inline_template_instantiations(&mut self, class_body: &[Token]) {
         let known_primaries = self
             .inline_template_member_control_flow_labels
             .keys()
@@ -2624,11 +2562,9 @@ impl Parser {
                 index += 1;
                 continue;
             };
-            let (concrete, mut declarator) = if class_body.get(index + 1)
-                == Some(&Token::Less)
+            let (concrete, mut declarator) = if class_body.get(index + 1) == Some(&Token::Less)
                 && (known_primaries.contains(type_name)
-                    || known_primaries
-                        .contains(&self.qualify_cxx_class_name(type_name)))
+                    || known_primaries.contains(&self.qualify_cxx_class_name(type_name)))
             {
                 let mut angle_depth = 1i32;
                 let mut close = index + 2;
@@ -2726,9 +2662,9 @@ impl Parser {
             return None;
         }
         let primary = instance.split('<').next().unwrap_or(instance);
-        let field = self
-            .inline_template_accessors
-            .get(&(primary.to_owned(), member.to_owned(), arity))?;
+        let field =
+            self.inline_template_accessors
+                .get(&(primary.to_owned(), member.to_owned(), arity))?;
         self.structs.get(instance)?.fields.get(field).cloned()
     }
 
@@ -2933,13 +2869,12 @@ fn capture_default_constructor_zero_fields(
                     if tokens.get(initializer + 1) != Some(&Token::ParenOpen) {
                         break;
                     }
-                    let is_zero = matches!(
-                        tokens.get(initializer + 2),
-                        Some(Token::IntegerLiteral(0))
-                    ) || matches!(
-                        tokens.get(initializer + 2),
-                        Some(Token::Identifier(value)) if value == "false"
-                    );
+                    let is_zero =
+                        matches!(tokens.get(initializer + 2), Some(Token::IntegerLiteral(0)))
+                            || matches!(
+                                tokens.get(initializer + 2),
+                                Some(Token::Identifier(value)) if value == "false"
+                            );
                     if tokens.get(initializer + 3) != Some(&Token::ParenClose) {
                         break;
                     }

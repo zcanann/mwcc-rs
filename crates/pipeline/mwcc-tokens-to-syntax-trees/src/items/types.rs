@@ -2,8 +2,8 @@
 //! grammar — qualifiers, pointers, typedef names, enum/struct/union references) and
 //! the struct/union field-layout builders. Part of the `items` module.
 
-use super::*;
 use super::bit_fields::{close_bit_field_unit, place_bit_field, BitFieldUnit};
+use super::*;
 use crate::parser::{Parser, StructField, StructLayout};
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_syntax_trees::{
@@ -123,9 +123,9 @@ impl Parser {
             })
         };
         let total_elements = multiply_dimensions(&dimensions)?;
-        let total_bytes = total_elements.checked_mul(element_size).ok_or_else(|| {
-            Diagnostic::error("array extent exceeds the 32-bit address space")
-        })?;
+        let total_bytes = total_elements
+            .checked_mul(element_size)
+            .ok_or_else(|| Diagnostic::error("array extent exceeds the 32-bit address space"))?;
         let first_index_stride = if dimensions.len() > 1 {
             Some(
                 multiply_dimensions(&dimensions[1..])?
@@ -211,14 +211,13 @@ impl Parser {
                     .clone()
                     .unwrap_or_else(|| format!("@enum:{definition_position}"));
                 self.enum_types.insert(identity.clone(), storage);
-                self.enumeration_definitions.push(
-                    mwcc_syntax_trees::EnumerationDefinition {
+                self.enumeration_definitions
+                    .push(mwcc_syntax_trees::EnumerationDefinition {
                         name: identity.clone(),
                         source_name: tag.clone(),
                         byte_size: storage.width().div_ceil(8),
                         enumerators,
-                    },
-                );
+                    });
                 self.last_enum_tag = Some(identity);
                 storage
             } else {
@@ -299,10 +298,8 @@ impl Parser {
                 // when only a forward declaration survived preprocessing. Its
                 // pointee may remain opaque (size zero); retaining the name is
                 // enough for ABI mangling and later member declaration parsing.
-                let opaque_indirection = matches!(
-                    self.tokens.get(scan),
-                    Some(Token::Star | Token::Ampersand)
-                );
+                let opaque_indirection =
+                    matches!(self.tokens.get(scan), Some(Token::Star | Token::Ampersand));
                 if known || opaque_indirection {
                     self.position = scan;
                     self.struct_typedefs
@@ -926,11 +923,7 @@ impl Parser {
                     || self.tokens.get(self.position + 2) == Some(&Token::BraceOpen))
             {
                 close_bit_field_unit(&mut bit_unit, &mut offset);
-                self.parse_and_place_inline_struct(
-                    &mut layout,
-                    &mut offset,
-                    &mut alignment_max,
-                )?;
+                self.parse_and_place_inline_struct(&mut layout, &mut offset, &mut alignment_max)?;
                 continue;
             }
             // An inline union member `union [Tag] { … } [name];`. An ANONYMOUS one
@@ -943,11 +936,7 @@ impl Parser {
                     || self.tokens.get(self.position + 2) == Some(&Token::BraceOpen))
             {
                 close_bit_field_unit(&mut bit_unit, &mut offset);
-                self.parse_and_place_inline_union(
-                    &mut layout,
-                    &mut offset,
-                    &mut alignment_max,
-                )?;
+                self.parse_and_place_inline_union(&mut layout, &mut offset, &mut alignment_max)?;
                 continue;
             }
             // An array-typedef member (`Mtx unk_F0;` where `Mtx` is `typedef float
@@ -1308,15 +1297,13 @@ impl Parser {
         offset: &mut u32,
         alignment_max: &mut u32,
     ) -> Compilation<Vec<String>> {
-        let (tag, inner, pointer_depth, member_name) =
-            self.parse_inline_union_declarator()?;
+        let (tag, inner, pointer_depth, member_name) = self.parse_inline_union_declarator()?;
         self.expect(Token::Semicolon)?;
         let inner_size = inner.size;
         let inner_align = u32::from(inner.align).max(1);
         match (tag, pointer_depth, member_name) {
             (tag, depth, Some(name)) => {
-                let variant_tag =
-                    tag.unwrap_or_else(|| format!("@anon{}", self.structs.len()));
+                let variant_tag = tag.unwrap_or_else(|| format!("@anon{}", self.structs.len()));
                 self.structs.insert(variant_tag.clone(), inner);
                 let (member_type, member_align, member_size, struct_tag) = if depth > 0 {
                     (
@@ -1585,8 +1572,7 @@ impl Parser {
                 let inner_size = inner.size;
                 let inner_align = (inner.align as u32).max(1);
                 self.expect(Token::Semicolon)?;
-                let variant_tag =
-                    tag.unwrap_or_else(|| format!("@anon{}", self.structs.len()));
+                let variant_tag = tag.unwrap_or_else(|| format!("@anon{}", self.structs.len()));
                 self.structs.insert(variant_tag.clone(), inner.clone());
                 match (pointer_depth, member_name) {
                     (depth, Some(name)) if depth > 0 => {

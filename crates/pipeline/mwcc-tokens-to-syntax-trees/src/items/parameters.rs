@@ -53,7 +53,9 @@ impl Parser {
             let stride = columns
                 .checked_mul(element_bytes)
                 .filter(|stride| *stride <= u64::from(u16::MAX))
-                .ok_or_else(|| Diagnostic::error("an array parameter row stride is out of range"))?;
+                .ok_or_else(|| {
+                    Diagnostic::error("an array parameter row stride is out of range")
+                })?;
             if !name.is_empty() {
                 self.decayed_row_pointers
                     .insert(name.to_owned(), (element_type, stride as u16));

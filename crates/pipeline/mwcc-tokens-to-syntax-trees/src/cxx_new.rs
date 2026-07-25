@@ -206,9 +206,11 @@ impl Parser {
         {
             return true;
         }
-        let Some(layout) = self.cxx_classes.get(class).or_else(|| {
-            self.cxx_classes.get(local)
-        }) else {
+        let Some(layout) = self
+            .cxx_classes
+            .get(class)
+            .or_else(|| self.cxx_classes.get(local))
+        else {
             return false;
         };
         layout

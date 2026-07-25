@@ -179,9 +179,7 @@ impl Parser {
                     "a pointer initializer with an offset is not supported yet (roadmap)",
                 ));
             }
-            let symbol = self
-                .resolve_cxx_initializer_address(&name)
-                .unwrap_or(name);
+            let symbol = self.resolve_cxx_initializer_address(&name).unwrap_or(name);
             return Ok(PointerElement::Symbol(symbol));
         }
         if matches!(self.peek(), Token::IntegerLiteral(0)) {
@@ -214,9 +212,7 @@ impl Parser {
         if let Token::Identifier(name) = self.peek() {
             let name = name.clone();
             self.advance();
-            let symbol = self
-                .resolve_cxx_initializer_address(&name)
-                .unwrap_or(name);
+            let symbol = self.resolve_cxx_initializer_address(&name).unwrap_or(name);
             return Ok(PointerElement::Symbol(symbol));
         }
         Err(Diagnostic::error(
@@ -577,10 +573,7 @@ impl Parser {
                     let encoded = (value as u64).to_be_bytes();
                     image[field_base..field_base + 4].copy_from_slice(&encoded[4..]);
                 }
-            } else if matches!(
-                member_type,
-                Type::Int | Type::UnsignedInt
-            ) {
+            } else if matches!(member_type, Type::Int | Type::UnsignedInt) {
                 // Some ABI records deliberately store an address in a word-sized
                 // integer field (`(u32)symbol`). It is still link-time address data,
                 // so retain an ADDR32 relocation just like a pointer-typed field.
@@ -663,9 +656,7 @@ impl Parser {
             if !self.enum_constants.contains_key(name) {
                 let name = name.clone();
                 self.advance();
-                let symbol = self
-                    .resolve_cxx_initializer_address(&name)
-                    .unwrap_or(name);
+                let symbol = self.resolve_cxx_initializer_address(&name).unwrap_or(name);
                 return Ok(Some((symbol, 0)));
             }
         }
@@ -698,9 +689,7 @@ impl Parser {
                 ) {
                     let name = name.clone();
                     self.position += 2;
-                    let symbol = self
-                        .resolve_cxx_initializer_address(&name)
-                        .unwrap_or(name);
+                    let symbol = self.resolve_cxx_initializer_address(&name).unwrap_or(name);
                     return Ok(Some((symbol, 0)));
                 }
             }

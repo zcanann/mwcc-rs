@@ -37,14 +37,8 @@ pub(crate) struct IteratorEndpoint {
 
 #[derive(Clone, Debug, PartialEq)]
 enum IteratorEndpointValue {
-    LoadMember {
-        offset: u32,
-        member_type: Type,
-    },
-    AddressMember {
-        offset: u32,
-        member_type: Type,
-    },
+    LoadMember { offset: u32, member_type: Type },
+    AddressMember { offset: u32, member_type: Type },
 }
 
 impl IteratorEndpoint {
@@ -115,29 +109,14 @@ impl Parser {
                 zero_argument_method_return_wrapper(method.declaration),
             ) {
                 let endpoint = match method.body {
-                    [
-                        Token::KeywordReturn,
-                        Token::Identifier(wrapper),
-                        Token::ParenOpen,
-                        Token::Identifier(field),
-                        Token::Dot,
-                        Token::Identifier(accessor),
-                        Token::ParenOpen,
-                        Token::ParenClose,
-                        Token::ParenClose,
-                        Token::Semicolon,
-                    ] if wrapper == return_wrapper => {
+                    [Token::KeywordReturn, Token::Identifier(wrapper), Token::ParenOpen, Token::Identifier(field), Token::Dot, Token::Identifier(accessor), Token::ParenOpen, Token::ParenClose, Token::ParenClose, Token::Semicolon]
+                        if wrapper == return_wrapper =>
+                    {
                         self.capture_begin_endpoint(layout, field, accessor, wrapper)
                     }
-                    [
-                        Token::KeywordReturn,
-                        Token::Identifier(wrapper),
-                        Token::ParenOpen,
-                        Token::Ampersand,
-                        Token::Identifier(field),
-                        Token::ParenClose,
-                        Token::Semicolon,
-                    ] if wrapper == return_wrapper => {
+                    [Token::KeywordReturn, Token::Identifier(wrapper), Token::ParenOpen, Token::Ampersand, Token::Identifier(field), Token::ParenClose, Token::Semicolon]
+                        if wrapper == return_wrapper =>
+                    {
                         self.capture_end_endpoint(layout, field, wrapper)
                     }
                     _ => None,
@@ -150,20 +129,9 @@ impl Parser {
 
             if is_prefix_increment_declaration(method.declaration) {
                 match method.body {
-                    [
-                        Token::Identifier(target),
-                        Token::Equals,
-                        Token::Identifier(source),
-                        Token::Arrow,
-                        Token::Identifier(accessor),
-                        Token::ParenOpen,
-                        Token::ParenClose,
-                        Token::Semicolon,
-                        Token::KeywordReturn,
-                        Token::Star,
-                        Token::Identifier(this),
-                        Token::Semicolon,
-                    ] if target == source && this == "this" => {
+                    [Token::Identifier(target), Token::Equals, Token::Identifier(source), Token::Arrow, Token::Identifier(accessor), Token::ParenOpen, Token::ParenClose, Token::Semicolon, Token::KeywordReturn, Token::Star, Token::Identifier(this), Token::Semicolon]
+                        if target == source && this == "this" =>
+                    {
                         let Some(storage) = layout.fields.get(target) else {
                             continue;
                         };
@@ -186,15 +154,9 @@ impl Parser {
                         self.source_iterator_pointer_steps
                             .insert(class.to_owned(), (storage.offset, next_offset));
                     }
-                    [
-                        Token::PlusPlus,
-                        Token::Identifier(field),
-                        Token::Semicolon,
-                        Token::KeywordReturn,
-                        Token::Star,
-                        Token::Identifier(this),
-                        Token::Semicolon,
-                    ] if this == "this" => {
+                    [Token::PlusPlus, Token::Identifier(field), Token::Semicolon, Token::KeywordReturn, Token::Star, Token::Identifier(this), Token::Semicolon]
+                        if this == "this" =>
+                    {
                         let Some(field) = layout.fields.get(field) else {
                             continue;
                         };
@@ -210,17 +172,8 @@ impl Parser {
             }
 
             if is_equality_declaration(method.declaration) {
-                if let [
-                    Token::KeywordReturn,
-                    Token::Identifier(left),
-                    Token::Dot,
-                    Token::Identifier(left_field),
-                    Token::EqualEqual,
-                    Token::Identifier(right),
-                    Token::Dot,
-                    Token::Identifier(right_field),
-                    Token::Semicolon,
-                ] = method.body
+                if let [Token::KeywordReturn, Token::Identifier(left), Token::Dot, Token::Identifier(left_field), Token::EqualEqual, Token::Identifier(right), Token::Dot, Token::Identifier(right_field), Token::Semicolon] =
+                    method.body
                 {
                     if left != right && left_field == right_field {
                         if let Some(field) = layout.fields.get(left_field) {
@@ -299,10 +252,7 @@ impl Parser {
         let nested = self.resolve_iterator_semantic_identity(nested)?;
         let (storage_offset, next_offset) =
             self.resolve_source_iterator_pointer_step_inner(&nested, visiting)?;
-        Some((
-            wrapper_offset.checked_add(storage_offset)?,
-            next_offset,
-        ))
+        Some((wrapper_offset.checked_add(storage_offset)?, next_offset))
     }
 
     pub(crate) fn resolve_concrete_template_iterator_step(
@@ -334,13 +284,10 @@ impl Parser {
         if comparison.storage_offset != 0 {
             return None;
         }
-        let layout = self
-            .structs
-            .get(&concrete)
-            .or_else(|| {
-                self.resolve_nested_template_alias_layout(&concrete)
-                    .and_then(|(generic, _)| self.structs.get(&generic))
-            })?;
+        let layout = self.structs.get(&concrete).or_else(|| {
+            self.resolve_nested_template_alias_layout(&concrete)
+                .and_then(|(generic, _)| self.structs.get(&generic))
+        })?;
         if layout.size != 4 {
             return None;
         }
@@ -366,12 +313,12 @@ impl Parser {
             return Some(endpoint.clone());
         }
         let terminal = class.rsplit("::").next().unwrap_or(class);
-        let mut matches = self
-            .source_iterator_endpoints
-            .iter()
-            .filter(|((owner, candidate), _)| {
-                candidate == member && owner.rsplit("::").next() == Some(terminal)
-            });
+        let mut matches =
+            self.source_iterator_endpoints
+                .iter()
+                .filter(|((owner, candidate), _)| {
+                    candidate == member && owner.rsplit("::").next() == Some(terminal)
+                });
         let (_, endpoint) = matches.next()?;
         if matches.next().is_some() {
             return None;
@@ -448,8 +395,7 @@ impl Parser {
             .get(iterator)
             .cloned()
             .or_else(|| {
-                let (generic, concrete) =
-                    self.resolve_nested_template_alias_layout(iterator)?;
+                let (generic, concrete) = self.resolve_nested_template_alias_layout(iterator)?;
                 self.concrete_template_iterator_comparisons
                     .get(&concrete)
                     .cloned()
@@ -482,9 +428,7 @@ impl Parser {
             return None;
         }
         let mut fields = layout.fields.values().filter(|field| {
-            field.array_bytes.is_none()
-                && field.bit_field.is_none()
-                && field.offset == field_offset
+            field.array_bytes.is_none() && field.bit_field.is_none() && field.offset == field_offset
         });
         let field = fields.next()?;
         if fields.next().is_some() {
@@ -492,19 +436,17 @@ impl Parser {
         }
         let supports_inequality = self.source_iterator_inequalities.contains(iterator);
         match field.member_type {
-            Type::Pointer(_) | Type::StructPointer { .. } => {
-                Some(IteratorComparison {
-                    storage_offset: field_offset,
-                    supports_inequality,
-                    terminal_type: field.member_type,
-                    terminal_tag: field.struct_tag.clone(),
-                })
-            }
+            Type::Pointer(_) | Type::StructPointer { .. } => Some(IteratorComparison {
+                storage_offset: field_offset,
+                supports_inequality,
+                terminal_type: field.member_type,
+                terminal_tag: field.struct_tag.clone(),
+            }),
             Type::Struct { size: 4, .. } => {
                 let nested = field.struct_tag.as_deref()?;
                 let nested = self.resolve_iterator_semantic_identity(nested)?;
-                let nested = self
-                    .resolve_source_iterator_pointer_comparison_inner(&nested, visiting)?;
+                let nested =
+                    self.resolve_source_iterator_pointer_comparison_inner(&nested, visiting)?;
                 Some(IteratorComparison {
                     storage_offset: field_offset.checked_add(nested.storage_offset)?,
                     supports_inequality,
@@ -607,9 +549,7 @@ fn matching_brace(tokens: &[Token], open: usize) -> Option<usize> {
 
 fn ordinary_zero_argument_method_name(tokens: &[Token]) -> Option<&str> {
     tokens.windows(3).rev().find_map(|window| match window {
-        [Token::Identifier(name), Token::ParenOpen, Token::ParenClose]
-            if name != "operator" =>
-        {
+        [Token::Identifier(name), Token::ParenOpen, Token::ParenClose] if name != "operator" => {
             Some(name.as_str())
         }
         _ => None,
@@ -618,12 +558,11 @@ fn ordinary_zero_argument_method_name(tokens: &[Token]) -> Option<&str> {
 
 fn zero_argument_method_return_wrapper(tokens: &[Token]) -> Option<&str> {
     tokens.windows(4).rev().find_map(|window| match window {
-        [
-            Token::Identifier(wrapper),
-            Token::Identifier(name),
-            Token::ParenOpen,
-            Token::ParenClose,
-        ] if name != "operator" => Some(wrapper.as_str()),
+        [Token::Identifier(wrapper), Token::Identifier(name), Token::ParenOpen, Token::ParenClose]
+            if name != "operator" =>
+        {
+            Some(wrapper.as_str())
+        }
         _ => None,
     })
 }

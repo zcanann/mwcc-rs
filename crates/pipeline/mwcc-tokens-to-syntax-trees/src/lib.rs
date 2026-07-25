@@ -15,10 +15,10 @@ mod cxx_analysis_facts;
 mod cxx_new;
 mod cxx_rtti;
 mod cxx_static_data;
-mod expressions;
 mod explicit_instantiations;
-mod items;
+mod expressions;
 mod inline_body_analysis;
+mod items;
 mod iterator_semantics;
 mod lvalues;
 mod parameter_names;
@@ -152,8 +152,7 @@ pub fn parse_located_translation_unit_with_behavior(
         if qualifier.is_some() && tokens[index + 1].token == Token::Star {
             if cplusplus && qualifier == Some(true) {
                 tokens.swap(index, index + 1);
-                tokens[index + 1].token =
-                    Token::Identifier(CXX_POINTEE_CONST_MARKER.to_string());
+                tokens[index + 1].token = Token::Identifier(CXX_POINTEE_CONST_MARKER.to_string());
                 index += 2;
             } else {
                 tokens.remove(index);
@@ -223,8 +222,7 @@ pub fn parse_located_translation_unit_with_behavior(
         section_functions: std::collections::HashMap::new(),
         section_prototype_order: Vec::new(),
         plain_function_prototypes: std::collections::HashSet::new(),
-        section_prototypes_with_prior_plain_declaration:
-            std::collections::HashSet::new(),
+        section_prototypes_with_prior_plain_declaration: std::collections::HashSet::new(),
         skipped_inline_names: std::collections::HashSet::new(),
         skipped_inline_definitions: std::sync::Arc::new(Vec::new()),
         skipped_inline_signatures: Vec::new(),
@@ -726,8 +724,7 @@ mod tests {
         )
         .unwrap();
 
-        let [mwcc_syntax_trees::Statement::Assign { name, value },
-            mwcc_syntax_trees::Statement::Store { target, .. }] =
+        let [mwcc_syntax_trees::Statement::Assign { name, value }, mwcc_syntax_trees::Statement::Store { target, .. }] =
             unit.functions[0].statements.as_slice()
         else {
             panic!("expected a local assignment followed by an updated-pointer store");
@@ -930,16 +927,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(unit.aggregate_definitions["Drive"].byte_size, 24);
-        assert_eq!(
-            unit.aggregate_definitions["Drive::tri_data"].byte_size,
-            16
-        );
+        assert_eq!(unit.aggregate_definitions["Drive::tri_data"].byte_size, 16);
         assert!(matches!(
             unit.functions[0].return_expression.as_ref(),
-            Some(mwcc_syntax_trees::Expression::Member {
-                offset: 20,
-                ..
-            })
+            Some(mwcc_syntax_trees::Expression::Member { offset: 20, .. })
         ));
         assert!(matches!(
             unit.functions[1].statements.as_slice(),
@@ -979,12 +970,10 @@ mod tests {
             .map(|(_, definition)| definition)
             .expect("the derived typedef layout should be retained");
         assert_eq!(color.byte_size, 4);
-        assert!(unit.prototypes.iter().any(
-            |(_, _, parameters)| matches!(parameters.as_slice(), [Type::Struct {
-                size: 4,
-                align: 1
-            }])
-        ));
+        assert!(unit.prototypes.iter().any(|(_, _, parameters)| matches!(
+            parameters.as_slice(),
+            [Type::Struct { size: 4, align: 1 }]
+        )));
     }
 
     #[test]
@@ -2578,11 +2567,7 @@ blr\n\
             .iter()
             .find(|global| global.name == "__vt__4Leaf")
             .expect("the out-of-line constructor owns the derived vtable");
-        for target in [
-            "root__4RootFv",
-            "middle__6MiddleFv",
-            "external__6MiddleFv",
-        ] {
+        for target in ["root__4RootFv", "middle__6MiddleFv", "external__6MiddleFv"] {
             assert!(
                 vtable
                     .data_relocations
@@ -2678,10 +2663,7 @@ blr\n\
             .filter(|global| matches!(global.name.as_str(), "__vt__4Base" | "__vt__7Derived"))
             .map(|global| (global.name.as_str(), global.is_weak))
             .collect::<Vec<_>>();
-        assert_eq!(
-            tables,
-            [("__vt__7Derived", false), ("__vt__4Base", true)]
-        );
+        assert_eq!(tables, [("__vt__7Derived", false), ("__vt__4Base", true)]);
     }
 
     #[test]
@@ -2703,9 +2685,7 @@ blr\n\
         )
         .unwrap();
 
-        assert!(unit
-            .cxx_declared_function_names
-            .contains("__dt__4ItemFv"));
+        assert!(unit.cxx_declared_function_names.contains("__dt__4ItemFv"));
         assert!(unit
             .cxx_declared_function_names
             .iter()
@@ -2890,10 +2870,7 @@ blr\n\
         assert!(matches!(
             unit.functions[0].statements.as_slice(),
             [mwcc_syntax_trees::Statement::Store {
-                target: mwcc_syntax_trees::Expression::Member {
-                    offset: 8,
-                    ..
-                },
+                target: mwcc_syntax_trees::Expression::Member { offset: 8, .. },
                 ..
             }]
         ));
@@ -3423,7 +3400,11 @@ blr\n\
             }
         "#;
         let unit = parse_translation_unit(
-            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
         )
         .unwrap();
 
@@ -3574,15 +3555,15 @@ blr\n\
         .unwrap();
 
         let destructor = &unit.functions[0];
-        let [mwcc_syntax_trees::Statement::If { then_body, .. }] =
-            destructor.statements.as_slice()
+        let [mwcc_syntax_trees::Statement::If { then_body, .. }] = destructor.statements.as_slice()
         else {
             panic!("expected the complete-object guard");
         };
         let member_offset = |statement: &mwcc_syntax_trees::Statement| {
-            let mwcc_syntax_trees::Statement::Expression(
-                mwcc_syntax_trees::Expression::Call { name, arguments },
-            ) = statement
+            let mwcc_syntax_trees::Statement::Expression(mwcc_syntax_trees::Expression::Call {
+                name,
+                arguments,
+            }) = statement
             else {
                 panic!("expected a member destructor call");
             };
@@ -3627,8 +3608,7 @@ blr\n\
         .unwrap();
 
         let destructor = &unit.functions[0];
-        let [mwcc_syntax_trees::Statement::If { then_body, .. }] =
-            destructor.statements.as_slice()
+        let [mwcc_syntax_trees::Statement::If { then_body, .. }] = destructor.statements.as_slice()
         else {
             panic!("expected the complete-object guard");
         };
@@ -3696,7 +3676,10 @@ blr\n\
         };
         let rendered = format!("{then_body:#?}");
         assert!(rendered.contains("__dt__4LeafFv"));
-        assert!(rendered.contains("offset: 8"), "the validity flag follows Leaf storage");
+        assert!(
+            rendered.contains("offset: 8"),
+            "the validity flag follows Leaf storage"
+        );
         assert_eq!(rendered.matches("MemberAddress").count(), 4);
     }
 
@@ -4287,8 +4270,13 @@ blr\n\
             void Check::Set(Point const* start, Point const* end, unsigned int id) { Set2(start, end, id); }
         "#;
         let unit = parse_translation_unit(
-            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
-        ).unwrap();
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
         assert!(matches!(unit.functions[0].statements.as_slice(),
             [mwcc_syntax_trees::Statement::Expression(
                 mwcc_syntax_trees::Expression::Call { name, arguments }
@@ -4310,8 +4298,13 @@ blr\n\
             void Derived::run() { inspect(); }
         "#;
         let unit = parse_translation_unit(
-            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
-        ).unwrap();
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
         assert!(matches!(unit.functions[0].statements.as_slice(),
             [mwcc_syntax_trees::Statement::Expression(
                 mwcc_syntax_trees::Expression::Call { name, arguments }
@@ -4330,7 +4323,11 @@ blr\n\
             void halt(Worker* worker) { worker->stop(); }
         "#;
         let unit = parse_translation_unit(
-            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
         )
         .unwrap();
         assert!(matches!(unit.functions[0].statements.as_slice(),
@@ -4351,8 +4348,13 @@ blr\n\
             Derived::Derived() {}
         "#;
         let unit = parse_translation_unit(
-            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
-        ).unwrap();
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
         let function = &unit.functions[0];
         assert_eq!(function.name, "__ct__7DerivedFv");
         assert!(matches!(function.statements.as_slice(), [
@@ -4382,7 +4384,11 @@ blr\n\
             Most most;
         "#;
         let unit = parse_translation_unit(
-            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
         )
         .unwrap();
         assert!(matches!(
@@ -4498,8 +4504,13 @@ blr\n\
             Derived::~Derived() {}
         "#;
         let unit = parse_translation_unit(
-            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
-        ).unwrap();
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
         assert_eq!(
             unit.cxx_class_declaration_order,
             ["Primary", "Secondary", "Derived"]
@@ -4531,13 +4542,19 @@ blr\n\
             && matches!(base.as_ref(), mwcc_syntax_trees::Expression::AddressOf { operand }
                 if matches!(operand.as_ref(), mwcc_syntax_trees::Expression::Variable(vtable)
                     if vtable == "__vt__7Derived"))));
-        let vtable = unit.globals.iter().find(|global| global.name == "__vt__7Derived")
+        let vtable = unit
+            .globals
+            .iter()
+            .find(|global| global.name == "__vt__7Derived")
             .expect("the derived destructor owns the complete vtable group");
         assert_eq!(vtable.data_bytes.as_ref().map(Vec::len), Some(24));
-        assert_eq!(vtable.data_relocations, vec![
-            (8, "__dt__7DerivedFv".to_string(), 0),
-            (20, "@8@__dt__7DerivedFv".to_string(), 0),
-        ]);
+        assert_eq!(
+            vtable.data_relocations,
+            vec![
+                (8, "__dt__7DerivedFv".to_string(), 0),
+                (20, "@8@__dt__7DerivedFv".to_string(), 0),
+            ]
+        );
         assert!(matches!(unit.functions[1].statements.as_slice(), [
             mwcc_syntax_trees::Statement::If { then_body, .. }
         ] if matches!(then_body.as_slice(), [
@@ -4698,12 +4715,15 @@ blr\n\
         .unwrap();
         assert!(matches!(
             unit.functions[0].parameters.as_slice(),
-            [_, mwcc_syntax_trees::Parameter {
-                parameter_type: mwcc_syntax_trees::Type::Pointer(
-                    mwcc_syntax_trees::Pointee::Int
-                ),
-                ..
-            }]
+            [
+                _,
+                mwcc_syntax_trees::Parameter {
+                    parameter_type: mwcc_syntax_trees::Type::Pointer(
+                        mwcc_syntax_trees::Pointee::Int
+                    ),
+                    ..
+                }
+            ]
         ));
     }
 
@@ -5148,21 +5168,25 @@ blr\n\
             panic!("expected one local");
         };
         assert!(local.is_static);
-        assert!(matches!(
-            local.initializer.as_ref(),
-            Some(Expression::Call { name, arguments })
-                if name == "__ct__Q22fx5PixelFUi"
-                    && matches!(
-                        arguments.as_slice(),
-                        [
-                            Expression::AddressOf { operand },
-                            Expression::IntegerLiteral(3)
-                        ] if matches!(
-                            operand.as_ref(),
-                            Expression::Variable(variable) if variable == "pixel"
+        assert!(
+            matches!(
+                local.initializer.as_ref(),
+                Some(Expression::Call { name, arguments })
+                    if name == "__ct__Q22fx5PixelFUi"
+                        && matches!(
+                            arguments.as_slice(),
+                            [
+                                Expression::AddressOf { operand },
+                                Expression::IntegerLiteral(3)
+                            ] if matches!(
+                                operand.as_ref(),
+                                Expression::Variable(variable) if variable == "pixel"
+                            )
                         )
-                    )
-        ), "{:?}", local.initializer);
+            ),
+            "{:?}",
+            local.initializer
+        );
     }
 
     #[test]
@@ -5225,29 +5249,34 @@ blr\n\
             .find(|function| function.name == "__ct__Q23efx3ArgFRC3Vec")
             .expect("the constructor initializer should be retained");
         assert_eq!(
-            constructor.parameters.first().map(|parameter| parameter.parameter_type),
+            constructor
+                .parameters
+                .first()
+                .map(|parameter| parameter.parameter_type),
             Some(constructor.return_type)
         );
         assert!(constructor.statements.windows(3).any(|statements| {
-            statements.iter().enumerate().all(|(index, statement)| matches!(
-                statement,
-                Statement::Store {
-                    target: Expression::Member {
-                        offset,
-                        member_type: Type::Float,
-                        ..
-                    },
-                    value: Expression::Member {
-                        base,
-                        offset: source_offset,
-                        member_type: Type::Float,
-                        ..
-                    },
-                } if *offset == 4 + index as u32 * 4
-                    && *source_offset == index as u32 * 4
-                    && matches!(base.as_ref(), Expression::Variable(position)
-                        if position == "position")
-            ))
+            statements.iter().enumerate().all(|(index, statement)| {
+                matches!(
+                    statement,
+                    Statement::Store {
+                        target: Expression::Member {
+                            offset,
+                            member_type: Type::Float,
+                            ..
+                        },
+                        value: Expression::Member {
+                            base,
+                            offset: source_offset,
+                            member_type: Type::Float,
+                            ..
+                        },
+                    } if *offset == 4 + index as u32 * 4
+                        && *source_offset == index as u32 * 4
+                        && matches!(base.as_ref(), Expression::Variable(position)
+                            if position == "position")
+                )
+            })
         }));
         assert!(constructor.statements.iter().any(|statement| matches!(
             statement,
@@ -5389,13 +5418,7 @@ blr\n\
         assert!(unit.globals.iter().any(|global| {
             global.name == "@@global_destructor_record0"
                 && global.is_static
-                && matches!(
-                    global.declared_type,
-                    Type::Struct {
-                        size: 12,
-                        align: 4
-                    }
-                )
+                && matches!(global.declared_type, Type::Struct { size: 12, align: 4 })
         }));
     }
 
@@ -5950,7 +5973,11 @@ blr\n\
             }
         "#;
         let unit = parse_translation_unit(
-            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
         )
         .unwrap();
         assert!(matches!(
@@ -6025,7 +6052,11 @@ blr\n\
             }
         "#;
         let unit = parse_translation_unit(
-            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
         )
         .unwrap();
         assert!(unit
@@ -6044,7 +6075,11 @@ blr\n\
             Holder value;
         "#;
         let unit = parse_translation_unit(
-            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
         )
         .unwrap();
         assert!(matches!(
@@ -6078,7 +6113,11 @@ blr\n\
             Holder holder;
         "#;
         let unit = parse_translation_unit(
-            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
         )
         .unwrap();
         assert!(matches!(
@@ -6102,7 +6141,11 @@ blr\n\
             float read(Holder* holder) { return holder->speed(); }
         "#;
         let unit = parse_translation_unit(
-            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
         )
         .unwrap();
         assert!(matches!(
@@ -6133,7 +6176,11 @@ blr\n\
             void clear(Holder* holder) { holder->position = Vec3f(0.0f); }
         "#;
         let unit = parse_translation_unit(
-            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
         )
         .unwrap();
         assert!(matches!(
@@ -6165,7 +6212,11 @@ blr\n\
             Holder holder;
         "#;
         let unit = parse_translation_unit(
-            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
         )
         .unwrap();
         assert!(matches!(
@@ -6979,10 +7030,7 @@ blr\n\
         .unwrap();
         assert!(matches!(
             unit.functions[0].return_expression,
-            Some(mwcc_syntax_trees::Expression::Member {
-                offset: 4,
-                ..
-            })
+            Some(mwcc_syntax_trees::Expression::Member { offset: 4, .. })
         ));
     }
 
@@ -7344,9 +7392,7 @@ blr\n\
                 ("adler", mwcc_syntax_trees::Type::UnsignedInt),
                 (
                     "buf",
-                    mwcc_syntax_trees::Type::Pointer(
-                        mwcc_syntax_trees::Pointee::UnsignedChar
-                    )
+                    mwcc_syntax_trees::Type::Pointer(mwcc_syntax_trees::Pointee::UnsignedChar)
                 ),
                 ("len", mwcc_syntax_trees::Type::UnsignedInt),
             ]
@@ -7693,7 +7739,11 @@ blr\n\
             }
         "#;
         let unit = parse_translation_unit(
-            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
         )
         .unwrap();
         assert!(matches!(
@@ -7849,20 +7899,17 @@ blr\n\
             unit.globals[1].declared_type,
             mwcc_syntax_trees::Type::Struct { size: 4, align: 4 }
         );
-        assert!(unit.skipped_inline_signatures.iter().any(
-            |(name, return_type, parameters)| {
+        assert!(unit
+            .skipped_inline_signatures
+            .iter()
+            .any(|(name, return_type, parameters)| {
                 name.contains("GetBeginIter")
-                    && *return_type
-                        == (mwcc_syntax_trees::Type::Struct {
-                            size: 4,
-                            align: 4,
-                        })
+                    && *return_type == (mwcc_syntax_trees::Type::Struct { size: 4, align: 4 })
                     && matches!(
                         parameters.first(),
                         Some(mwcc_syntax_trees::Type::StructPointer { .. })
                     )
-            }
-        ));
+            }));
         assert!(matches!(
             unit.functions[0].return_expression.as_ref(),
             Some(mwcc_syntax_trees::Expression::Comma { left, right })
@@ -7913,9 +7960,11 @@ blr\n\
             .function_inline_string_symbols
             .get(&unit.functions[0].name)
             .expect("iterator assertion strings retain their inline owner");
-        let owner =
-            "@STRING@GetPointer__Q23api23List<Q26client5Entry,0>FPQ23api4Node";
-        assert_eq!(inline_strings.get(b"List.h".as_slice()).map(String::as_str), Some(owner));
+        let owner = "@STRING@GetPointer__Q23api23List<Q26client5Entry,0>FPQ23api4Node";
+        assert_eq!(
+            inline_strings.get(b"List.h".as_slice()).map(String::as_str),
+            Some(owner)
+        );
         let second = format!("{owner}@0");
         assert_eq!(
             inline_strings
@@ -8940,7 +8989,11 @@ blr\n\
             }
         "#;
         let unit = parse_translation_unit(
-            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
         )
         .unwrap();
         assert!(matches!(
@@ -9369,7 +9422,10 @@ blr\n\
             mwcc_syntax_trees::ArmBody::Statements(statements)
                 if matches!(statements.last(), Some(Statement::Return(Some(_))))
         ));
-        assert!(matches!(default, Some(mwcc_syntax_trees::ArmBody::Return(_))));
+        assert!(matches!(
+            default,
+            Some(mwcc_syntax_trees::ArmBody::Return(_))
+        ));
     }
 
     #[test]

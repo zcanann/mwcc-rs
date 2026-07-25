@@ -30,12 +30,13 @@ impl Parser {
         // expanding fields; otherwise `member_ptr = parameter_ptr` would be
         // miscompiled as `*member_ptr = *parameter_ptr`.
         let is_aggregate_value = |expression: &Expression| {
-            matches!(self.cxx_expression_type(expression), Some(Type::Struct { .. }))
-                || matches!(expression, Expression::Variable(name)
+            matches!(
+                self.cxx_expression_type(expression),
+                Some(Type::Struct { .. })
+            ) || matches!(expression, Expression::Variable(name)
                     if self.cxx_reference_variables.contains(name))
         };
-        if !is_aggregate_value(target) || !is_aggregate_value(value)
-        {
+        if !is_aggregate_value(target) || !is_aggregate_value(value) {
             return None;
         }
         let target_tag = target_tag?;

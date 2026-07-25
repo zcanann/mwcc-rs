@@ -30,7 +30,10 @@ impl BinaryOperator {
             BinaryOperator::Multiply | BinaryOperator::Divide | BinaryOperator::Modulo => 10,
             BinaryOperator::Add | BinaryOperator::Subtract => 9,
             BinaryOperator::ShiftLeft | BinaryOperator::ShiftRight => 8,
-            BinaryOperator::Less | BinaryOperator::Greater | BinaryOperator::LessEqual | BinaryOperator::GreaterEqual => 7,
+            BinaryOperator::Less
+            | BinaryOperator::Greater
+            | BinaryOperator::LessEqual
+            | BinaryOperator::GreaterEqual => 7,
             BinaryOperator::Equal | BinaryOperator::NotEqual => 6,
             BinaryOperator::BitAnd => 5,
             BinaryOperator::BitXor => 4,

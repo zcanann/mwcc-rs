@@ -24,10 +24,7 @@ struct OptionalDestructor {
 /// Queue one weak out-of-line destructor for an instantiated optional-storage
 /// type. Requests retain first field-declaration order; deferred emission later
 /// reverses the generated-weak stream exactly once.
-pub(crate) fn request_optional_destructor(
-    parser: &mut Parser,
-    concrete: &str,
-) -> Compilation<()> {
+pub(crate) fn request_optional_destructor(parser: &mut Parser, concrete: &str) -> Compilation<()> {
     let Some(specification) = inspect_optional_destructor(parser, concrete)? else {
         return Ok(());
     };
@@ -83,17 +80,9 @@ pub(crate) fn request_optional_destructor(
         force_active: false,
     };
     let delete = cxx_destructors::delete_call(parser, concrete, object_size);
-    cxx_destructors::wrap_written(
-        &mut function,
-        object_size,
-        Vec::new(),
-        Vec::new(),
-        delete,
-    );
+    cxx_destructors::wrap_written(&mut function, object_size, Vec::new(), Vec::new(), delete);
     parser.cxx_inline_materializations.push(function);
-    parser
-        .cxx_deferred_weak_materialization_requests
-        .push(name);
+    parser.cxx_deferred_weak_materialization_requests.push(name);
     Ok(())
 }
 
@@ -126,14 +115,18 @@ fn inspect_optional_destructor(
     {
         return Ok(None);
     }
-    let Some(storage) = template.fields.iter().find(|field| {
-        matches!(field.field_type, TemplateFieldType::ParameterByteArray(0))
-    }) else {
+    let Some(storage) = template
+        .fields
+        .iter()
+        .find(|field| matches!(field.field_type, TemplateFieldType::ParameterByteArray(0)))
+    else {
         return Ok(None);
     };
     let Some(valid) = template.fields.iter().find(|field| {
-        matches!(field.field_type, TemplateFieldType::Concrete(Type::UnsignedChar))
-            && field.alignment >= 4
+        matches!(
+            field.field_type,
+            TemplateFieldType::Concrete(Type::UnsignedChar)
+        ) && field.alignment >= 4
     }) else {
         return Ok(None);
     };
@@ -146,16 +139,13 @@ fn inspect_optional_destructor(
     let Some(valid_field) = layout.fields.get(&valid.name) else {
         return Ok(None);
     };
-    let argument = encoded_argument
-        .trim_start_matches(|character: char| character.is_ascii_digit());
+    let argument =
+        encoded_argument.trim_start_matches(|character: char| character.is_ascii_digit());
     let Some((leaf_class, wrapper_depth)) = template_destructor_leaf(parser, argument) else {
         return Ok(None);
     };
-    let leaf_destructor = parser.mangle_typed_member_in_current_namespace(
-        &leaf_class,
-        "__dt",
-        &[],
-    )?;
+    let leaf_destructor =
+        parser.mangle_typed_member_in_current_namespace(&leaf_class, "__dt", &[])?;
     Ok(Some(OptionalDestructor {
         object_size: layout.size,
         storage_offset: storage_field.offset,
@@ -165,10 +155,7 @@ fn inspect_optional_destructor(
     }))
 }
 
-fn lifetime_statements(
-    specification: &OptionalDestructor,
-    object_offset: u32,
-) -> Vec<Statement> {
+fn lifetime_statements(specification: &OptionalDestructor, object_offset: u32) -> Vec<Statement> {
     let object = || adjusted_this(object_offset + specification.storage_offset);
     let mut destruction = Statement::Expression(Expression::Call {
         name: specification.leaf_destructor.clone(),

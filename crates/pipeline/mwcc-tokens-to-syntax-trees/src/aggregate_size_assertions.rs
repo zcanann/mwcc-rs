@@ -94,9 +94,7 @@ fn parse_size_equality(tokens: &[Token], sizeof_index: usize, end: usize) -> Opt
     };
     let mut components = vec![first.clone()];
     index += 1;
-    while tokens.get(index) == Some(&Token::Colon)
-        && tokens.get(index + 1) == Some(&Token::Colon)
-    {
+    while tokens.get(index) == Some(&Token::Colon) && tokens.get(index + 1) == Some(&Token::Colon) {
         let Token::Identifier(component) = tokens.get(index + 2)? else {
             return None;
         };

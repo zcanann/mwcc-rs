@@ -22,9 +22,7 @@ impl Parser {
             match self.tokens.get(index) {
                 Some(Token::BraceOpen) => brace_depth += 1,
                 Some(Token::BraceClose) => brace_depth -= 1,
-                Some(Token::Identifier(storage))
-                    if brace_depth == 1 && storage == "static" =>
-                {
+                Some(Token::Identifier(storage)) if brace_depth == 1 && storage == "static" => {
                     let declaration_start = index + 1;
                     let mut end = declaration_start;
                     let mut parentheses = 0i32;
@@ -35,14 +33,10 @@ impl Parser {
                             Some(Token::ParenClose) => parentheses -= 1,
                             Some(Token::BracketOpen) => brackets += 1,
                             Some(Token::BracketClose) => brackets -= 1,
-                            Some(Token::BraceOpen)
-                                if parentheses == 0 && brackets == 0 =>
-                            {
+                            Some(Token::BraceOpen) if parentheses == 0 && brackets == 0 => {
                                 break;
                             }
-                            Some(Token::Semicolon)
-                                if parentheses == 0 && brackets == 0 =>
-                            {
+                            Some(Token::Semicolon) if parentheses == 0 && brackets == 0 => {
                                 break;
                             }
                             Some(Token::EndOfFile) | None => break,
@@ -53,15 +47,9 @@ impl Parser {
                     if self.tokens.get(end) == Some(&Token::Semicolon)
                         && !self.tokens[declaration_start..end]
                             .iter()
-                            .any(|token| {
-                                matches!(token, Token::ParenOpen | Token::BracketOpen)
-                            })
+                            .any(|token| matches!(token, Token::ParenOpen | Token::BracketOpen))
                     {
-                        self.record_scalar_static_declarators(
-                            declaration_start,
-                            end,
-                            class,
-                        );
+                        self.record_scalar_static_declarators(declaration_start, end, class);
                     }
                 }
                 Some(Token::EndOfFile) | None => break,
@@ -83,9 +71,9 @@ impl Parser {
             return;
         };
         let mut declarator_start = declaration_start;
-        for declarator_end in (declaration_start..=end).filter(|&cursor| {
-            cursor == end || self.tokens.get(cursor) == Some(&Token::Comma)
-        }) {
+        for declarator_end in (declaration_start..=end)
+            .filter(|&cursor| cursor == end || self.tokens.get(cursor) == Some(&Token::Comma))
+        {
             let name_end = (declarator_start..declarator_end)
                 .find(|&cursor| {
                     matches!(
@@ -108,12 +96,13 @@ impl Parser {
             {
                 self.cxx_static_data_members
                     .insert((class.to_owned(), name.clone()), declaration_type);
-                if let Ok(mangled) = mangle_qualified_data_member(
-                    &class.split("::").collect::<Vec<_>>(),
-                    &name,
-                ) {
+                if let Ok(mangled) =
+                    mangle_qualified_data_member(&class.split("::").collect::<Vec<_>>(), &name)
+                {
                     let size = type_size(declaration_type);
-                    self.global_sizes.entry(mangled.clone()).or_insert((size, None));
+                    self.global_sizes
+                        .entry(mangled.clone())
+                        .or_insert((size, None));
                     self.global_types
                         .entry(mangled.clone())
                         .or_insert(declaration_type);
@@ -140,9 +129,7 @@ impl Parser {
             probe.position += 1;
             declared_type = match declared_type {
                 Type::Struct { size, .. } => Type::StructPointer { element_size: size },
-                Type::Pointer(_) | Type::StructPointer { .. } => {
-                    Type::Pointer(Pointee::Pointer)
-                }
+                Type::Pointer(_) | Type::StructPointer { .. } => Type::Pointer(Pointee::Pointer),
                 scalar => Type::Pointer(pointee_of(scalar).ok()?),
             };
         }

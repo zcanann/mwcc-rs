@@ -16,11 +16,7 @@ pub(crate) fn default_zero_initialization(
     concrete: &str,
     object_offset: u32,
 ) -> Option<Vec<Statement>> {
-    let primary = concrete
-        .split('<')
-        .next()?
-        .rsplit("::")
-        .next()?;
+    let primary = concrete.split('<').next()?.rsplit("::").next()?;
     let template = parser.struct_templates.get(primary)?;
     if template.default_constructor_zero_fields.is_empty() {
         return None;

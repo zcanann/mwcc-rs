@@ -84,10 +84,7 @@ pub(super) fn global(
 
 /// Compiler-generated vtable groups are emitted after the translation unit's
 /// ordinary function stream, regardless of which key function owns them.
-pub(super) fn position_after_functions(
-    globals: &mut [GlobalDeclaration],
-    functions: &[Function],
-) {
+pub(super) fn position_after_functions(globals: &mut [GlobalDeclaration], functions: &[Function]) {
     let non_static_functions = functions
         .iter()
         .filter(|function| !function.is_static)
@@ -124,7 +121,10 @@ pub(super) fn add_inline_base_groups(
         .rev()
         .filter_map(|name| {
             let table = vtable_name(name).ok()?;
-            globals.iter().any(|global| global.name == table).then_some(name.clone())
+            globals
+                .iter()
+                .any(|global| global.name == table)
+                .then_some(name.clone())
         })
         .collect::<VecDeque<_>>();
     let mut visited = HashSet::new();
@@ -150,7 +150,9 @@ pub(super) fn add_inline_base_groups(
             if !inline_names.contains(destructor.as_str()) {
                 continue;
             }
-            let owners = dependency_destructors.entry(destructor.clone()).or_default();
+            let owners = dependency_destructors
+                .entry(destructor.clone())
+                .or_default();
             if let Some(key_function) = &class.vtable_key_function {
                 if !owners.contains(key_function) {
                     owners.push(key_function.clone());

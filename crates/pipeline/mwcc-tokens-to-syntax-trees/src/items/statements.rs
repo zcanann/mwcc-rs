@@ -562,7 +562,7 @@ impl Parser {
                 "static" => is_static = true,
                 "const" => declaration_const = true,
                 "volatile" => declaration_volatile = true,
-                "register" | "auto" => {},
+                "register" | "auto" => {}
                 _ => break,
             }
             self.advance();
@@ -849,12 +849,9 @@ impl Parser {
                             0,
                             &mut data_relocations,
                         )?);
-                    } else if matches!(
-                        declared_type,
-                        Type::Pointer(_) | Type::StructPointer { .. }
-                    ) {
-                        let (bytes, relocations) =
-                            self.parse_static_local_pointer_initializer()?;
+                    } else if matches!(declared_type, Type::Pointer(_) | Type::StructPointer { .. })
+                    {
+                        let (bytes, relocations) = self.parse_static_local_pointer_initializer()?;
                         data_bytes = Some(bytes);
                         data_relocations = relocations;
                     } else if matches!(

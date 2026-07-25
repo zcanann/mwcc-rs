@@ -73,10 +73,7 @@ pub(super) fn prepare_required(
 
 /// Ensure one inline or implicit destructor requested by a virtual delete is
 /// available for immediate weak emission after its caller.
-pub(super) fn prepare_requested(
-    parser: &mut Parser,
-    scope: &str,
-) -> Compilation<Option<String>> {
+pub(super) fn prepare_requested(parser: &mut Parser, scope: &str) -> Compilation<Option<String>> {
     let scopes = scope.split("::").collect::<Vec<_>>();
     let destructor = mangle_qualified_member_function(&scopes, "__dt", &[])?;
     if let Some(index) = parser

@@ -36,8 +36,7 @@ pub(crate) fn local_aggregate_definitions(tokens: &[Token], body_open: usize) ->
                     break;
                 }
             }
-            Token::KeywordStruct
-            | Token::Identifier(_)
+            Token::KeywordStruct | Token::Identifier(_)
                 if is_aggregate_definition_at(tokens, index) =>
             {
                 count += 1;

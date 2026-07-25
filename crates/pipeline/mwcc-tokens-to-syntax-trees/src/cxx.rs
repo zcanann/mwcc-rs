@@ -648,10 +648,14 @@ pub(crate) fn normalize_constructor_declarators(
         let constructor = at_declaration_scope
             && names.len() >= 2
             && names[names.len() - 2] == names[names.len() - 1]
-            && tokens.get(cursor).is_some_and(|token| token.token == Token::ParenOpen);
+            && tokens
+                .get(cursor)
+                .is_some_and(|token| token.token == Token::ParenOpen);
         let destructor = at_declaration_scope
             && !names.is_empty()
-            && tokens.get(cursor).is_some_and(|token| token.token == Token::Colon)
+            && tokens
+                .get(cursor)
+                .is_some_and(|token| token.token == Token::Colon)
             && tokens
                 .get(cursor + 1)
                 .is_some_and(|token| token.token == Token::Colon)
@@ -1043,13 +1047,12 @@ impl Parser {
                     ) {
                         (Some(expected), Some(actual)) => {
                             expected == actual
-                                || expected.rsplit("::").next()
-                                    == actual.rsplit("::").next()
+                                || expected.rsplit("::").next() == actual.rsplit("::").next()
                         }
                         (Some(_), None) | (None, Some(_)) => false,
-                        (None, None) => self.cxx_expression_type(argument).is_none_or(
-                            |actual| method.parameters.get(index) == Some(&actual),
-                        ),
+                        (None, None) => self
+                            .cxx_expression_type(argument)
+                            .is_none_or(|actual| method.parameters.get(index) == Some(&actual)),
                     }
                 })
             })
@@ -1210,10 +1213,12 @@ impl Parser {
                 return variadic;
             };
             if let Some(expected) = parameter.qualified_name.as_deref() {
-                return self.cxx_expression_struct_tag(argument).is_some_and(|actual| {
-                    expected == actual
-                        || expected.rsplit("::").next() == actual.rsplit("::").next()
-                });
+                return self
+                    .cxx_expression_struct_tag(argument)
+                    .is_some_and(|actual| {
+                        expected == actual
+                            || expected.rsplit("::").next() == actual.rsplit("::").next()
+                    });
             }
             if self.cxx_expression_struct_tag(argument).is_some() {
                 return false;
@@ -1370,10 +1375,8 @@ impl Parser {
             // declaration or a parenthesized cast type-id.
             return false;
         }
-        let opaque_indirection = matches!(
-            self.tokens.get(scan),
-            Some(Token::Star | Token::Ampersand)
-        );
+        let opaque_indirection =
+            matches!(self.tokens.get(scan), Some(Token::Star | Token::Ampersand));
         let qualified = components.join("::");
         self.resolve_scoped_cxx_class_name(&qualified).is_some()
             || self.enum_types.contains_key(&qualified)
@@ -1452,9 +1455,9 @@ impl Parser {
         if let Some(colon) = header.iter().position(|token| *token == Token::Colon) {
             let inheritance = &header[colon + 1..];
             let multiple = inheritance.iter().any(|token| token == &Token::Comma);
-            let virtual_base = inheritance.iter().any(
-                |token| matches!(token, Token::Identifier(word) if word == "virtual"),
-            );
+            let virtual_base = inheritance
+                .iter()
+                .any(|token| matches!(token, Token::Identifier(word) if word == "virtual"));
             let base = inheritance.iter().find_map(|token| match token {
                 Token::Identifier(word)
                     if !matches!(word.as_str(), "public" | "private" | "protected") =>
@@ -1551,9 +1554,10 @@ impl Parser {
                             Token::Identifier(name) => Some(canonical_inline_member_name(
                                 &class,
                                 name,
-                                index.checked_sub(2).and_then(|before_name| {
-                                    self.tokens.get(before_name)
-                                }) == Some(&Token::Tilde),
+                                index
+                                    .checked_sub(2)
+                                    .and_then(|before_name| self.tokens.get(before_name))
+                                    == Some(&Token::Tilde),
                             )),
                             _ => None,
                         });
@@ -1575,8 +1579,8 @@ impl Parser {
                     if let Some((explicitly_virtual, is_destructor)) =
                         function_declaration_virtuality(&self.tokens, index)
                     {
-                        let is_virtual = explicitly_virtual
-                            || (is_destructor && inherits_virtual_destructor);
+                        let is_virtual =
+                            explicitly_virtual || (is_destructor && inherits_virtual_destructor);
                         if is_virtual {
                             if is_destructor {
                                 self.cxx_inline_ordinal_facts
@@ -1585,11 +1589,9 @@ impl Parser {
                                     self.cxx_inline_ordinal_facts
                                         .inherited_virtual_destructor_declarations += 1;
                                 }
-                                self.cxx_virtual_destructor_classes
-                                    .insert(class.clone());
+                                self.cxx_virtual_destructor_classes.insert(class.clone());
                             } else {
-                                self.cxx_inline_ordinal_facts
-                                    .virtual_method_declarations += 1;
+                                self.cxx_inline_ordinal_facts.virtual_method_declarations += 1;
                             }
                         }
                     }
@@ -1679,18 +1681,16 @@ impl Parser {
                                         Token::Identifier(target)
                                             if tokens[1] == Token::ParenOpen
                                                 && (target == &source_class
-                                                    || self.struct_typedefs.contains_key(target)) =>
+                                                    || self
+                                                        .struct_typedefs
+                                                        .contains_key(target)) =>
                                         {
                                             Some(target.clone())
                                         }
                                         _ => None,
                                     }),
                             );
-                            self.capture_cxx_inline_definition(
-                                declaration_start,
-                                index,
-                                &class,
-                            );
+                            self.capture_cxx_inline_definition(declaration_start, index, &class);
                         }
                         explicitly_inline = false;
                         member_name = None;
@@ -1738,9 +1738,7 @@ impl Parser {
                             .take_while(|token| {
                                 !matches!(
                                     token,
-                                    Token::Semicolon
-                                        | Token::BraceOpen
-                                        | Token::EndOfFile
+                                    Token::Semicolon | Token::BraceOpen | Token::EndOfFile
                                 )
                             })
                             .any(|token| *token == Token::Tilde);
@@ -1820,11 +1818,9 @@ impl Parser {
         };
         self.merge_named_parameter_positions_from(&probe);
         let scopes: Vec<&str> = class.split("::").collect();
-        let Ok(mangled) = mangle_qualified_member_function_typed(
-            &scopes,
-            "__ct",
-            &signature.cxx_parameters,
-        ) else {
+        let Ok(mangled) =
+            mangle_qualified_member_function_typed(&scopes, "__ct", &signature.cxx_parameters)
+        else {
             return;
         };
         let method = RecoveredCxxMethod {
@@ -1861,9 +1857,9 @@ impl Parser {
             .cloned()
             .zip(self.locations[declaration_start..=body_end].iter().copied())
             .collect();
-        let explicitly_virtual = source.iter().any(
-            |(token, _)| matches!(token, Token::Identifier(word) if word == "virtual"),
-        );
+        let explicitly_virtual = source
+            .iter()
+            .any(|(token, _)| matches!(token, Token::Identifier(word) if word == "virtual"));
         while matches!(source.first(), Some((Token::Identifier(word), _)) if matches!(word.as_str(), "virtual" | "explicit" | "inline"))
         {
             source.remove(0);
@@ -1888,7 +1884,9 @@ impl Parser {
                 .and_then(|table| table.methods.get(&member_name))
                 .is_some_and(|methods| !methods.is_empty());
         let destructor = member_index > 0
-            && source.get(member_index - 1).is_some_and(|(token, _)| *token == Token::Tilde);
+            && source
+                .get(member_index - 1)
+                .is_some_and(|(token, _)| *token == Token::Tilde);
         let constructor = !destructor
             && member_index == 0
             && class
@@ -2015,8 +2013,7 @@ impl Parser {
                 continue;
             }
             self.skipped_inline_names.insert(function.name.clone());
-            std::sync::Arc::make_mut(&mut self.skipped_inline_definitions)
-                .push(function.clone());
+            std::sync::Arc::make_mut(&mut self.skipped_inline_definitions).push(function.clone());
         }
     }
 
@@ -2054,11 +2051,9 @@ impl Parser {
                     .or_insert_with(|| qualified.to_owned());
                 self.structs.insert(qualified.to_owned(), layout);
                 if !self.cxx_classes.contains_key(qualified) {
-                    self.cxx_class_declaration_order
-                        .push(qualified.to_owned());
+                    self.cxx_class_declaration_order.push(qualified.to_owned());
                 }
-                std::sync::Arc::make_mut(&mut self.cxx_classes)
-                    .insert(qualified.to_owned(), class);
+                std::sync::Arc::make_mut(&mut self.cxx_classes).insert(qualified.to_owned(), class);
             }
             Err(error) if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() => {
                 let start = self.position.saturating_sub(24);
@@ -2760,8 +2755,7 @@ impl Parser {
             .cxx_instance_methods
             .keys()
             .filter(|(owner, candidate_member)| {
-                candidate_member == member
-                    && owner.rsplit("::").next() == Some(terminal)
+                candidate_member == member && owner.rsplit("::").next() == Some(terminal)
             })
             .collect::<Vec<_>>();
         let methods = direct_methods.or_else(|| {
@@ -2783,10 +2777,7 @@ impl Parser {
                 return Ok(Some(ImplicitMemberCall::Direct {
                     name: method.mangled.clone(),
                     is_inline: self.skipped_inline_names.contains(&method.mangled),
-                    return_struct_tag: self
-                        .function_return_structs
-                        .get(&method.mangled)
-                        .cloned(),
+                    return_struct_tag: self.function_return_structs.get(&method.mangled).cloned(),
                     this_adjustment: 0,
                     parameters: method.parameters.clone(),
                 }));
@@ -2919,8 +2910,7 @@ impl Parser {
             .filter(|method| {
                 unknown_from.map_or(true, |frontier| method.slot_offset < frontier)
                     && (method.fixed_parameter_count == argument_count
-                    || (method.variadic && argument_count >= method.fixed_parameter_count)
-                    )
+                        || (method.variadic && argument_count >= method.fixed_parameter_count))
             })
             .collect();
         if candidates.is_empty() {
@@ -3063,10 +3053,7 @@ impl Parser {
 
     /// Register one namespace-scope data object and return its ABI symbol.
     /// Anonymous namespaces have no scope spelling in this compiler family.
-    pub(crate) fn register_cxx_data_object(
-        &mut self,
-        source_name: &str,
-    ) -> Compilation<String> {
+    pub(crate) fn register_cxx_data_object(&mut self, source_name: &str) -> Compilation<String> {
         let scopes = self.named_namespace_scopes();
         if scopes.is_empty() {
             return Ok(source_name.to_owned());
@@ -3189,9 +3176,7 @@ impl Parser {
                     dispatch,
                     return_struct_tag: method.return_struct_tag.clone(),
                     this_adjustment: 0,
-                    direct_name: Some(mangle_layout_member_method(
-                        class_name, function, method,
-                    )?),
+                    direct_name: Some(mangle_layout_member_method(class_name, function, method)?),
                     direct_is_inline: method.is_inline,
                     parameters: method.parameters.clone(),
                 }));
@@ -3255,9 +3240,9 @@ impl Parser {
                 continue;
             }
             for base in class.bases.iter().rev().filter(|base| !base.is_virtual) {
-                let adjustment = this_adjustment.checked_add(base.offset).ok_or_else(|| {
-                    Diagnostic::error("C++ base-subobject adjustment overflow")
-                })?;
+                let adjustment = this_adjustment
+                    .checked_add(base.offset)
+                    .ok_or_else(|| Diagnostic::error("C++ base-subobject adjustment overflow"))?;
                 pending.push((base.name.clone(), adjustment));
             }
         }
@@ -3272,9 +3257,7 @@ impl Parser {
                     dispatch,
                     return_struct_tag: method.return_struct_tag.clone(),
                     this_adjustment,
-                    direct_name: Some(mangle_layout_member_method(
-                        &owner, function, &method,
-                    )?),
+                    direct_name: Some(mangle_layout_member_method(&owner, function, &method)?),
                     direct_is_inline: method.is_inline,
                     parameters: method.parameters.clone(),
                 }));
@@ -3305,16 +3288,18 @@ impl Parser {
                 })
                 .collect();
             match candidates.as_slice() {
-                [method] => return Ok(Some(ImplicitMemberCall::Direct {
-                    name: method.mangled.clone(),
-                    is_inline: self.skipped_inline_names.contains(&method.mangled),
-                    return_struct_tag: self
-                        .function_return_structs
-                        .get(&method.mangled)
-                        .cloned(),
-                    this_adjustment: 0,
-                    parameters: method.parameters.clone(),
-                })),
+                [method] => {
+                    return Ok(Some(ImplicitMemberCall::Direct {
+                        name: method.mangled.clone(),
+                        is_inline: self.skipped_inline_names.contains(&method.mangled),
+                        return_struct_tag: self
+                            .function_return_structs
+                            .get(&method.mangled)
+                            .cloned(),
+                        this_adjustment: 0,
+                        parameters: method.parameters.clone(),
+                    }))
+                }
                 [] => {}
                 _ => {
                     let exact = candidates
@@ -3402,8 +3387,7 @@ impl Parser {
             .current_cxx_layout_scope
             .replace(qualified_name.clone());
         let previous_layout_constants = self.cxx_layout_constants.clone();
-        let result =
-            self.parse_class_definition_body(name, qualified_name, trailing_typedef_alias);
+        let result = self.parse_class_definition_body(name, qualified_name, trailing_typedef_alias);
         self.cxx_layout_constants = previous_layout_constants;
         self.current_cxx_layout_scope = previous_layout_scope;
         result
@@ -3536,9 +3520,8 @@ impl Parser {
                     .or_else(|| self.struct_typedefs.get(&source_base_name).cloned())
                     .unwrap_or(source_base_name);
                 let base_class = self.cxx_classes.get(&base_name).cloned();
-                let (base_is_polymorphic, base_vptr_offset, base_virtual_slots) = base_class
-                    .as_ref()
-                    .map_or((false, None, 0), |base| {
+                let (base_is_polymorphic, base_vptr_offset, base_virtual_slots) =
+                    base_class.as_ref().map_or((false, None, 0), |base| {
                         (base.is_polymorphic, base.vptr_offset, base.virtual_slots)
                     });
                 let base = self
@@ -3547,10 +3530,10 @@ impl Parser {
                     .cloned()
                     .or_else(|| self.asserted_aggregate_layout(&base_name))
                     .ok_or_else(|| {
-                    Diagnostic::error(format!(
-                        "base class '{base_name}' must be defined before '{name}'"
-                    ))
-                })?;
+                        Diagnostic::error(format!(
+                            "base class '{base_name}' must be defined before '{name}'"
+                        ))
+                    })?;
                 let inherited_virtual_bases = base_class
                     .as_ref()
                     .map(|base| base.virtual_bases.clone())
@@ -3561,7 +3544,9 @@ impl Parser {
                     // materialized after the most-derived class's own fields.
                     offset = offset.div_ceil(4) * 4;
                     offset = offset.checked_add(4).ok_or_else(|| {
-                        Diagnostic::error("C++ virtual-base layout exceeds the 32-bit address space")
+                        Diagnostic::error(
+                            "C++ virtual-base layout exceeds the 32-bit address space",
+                        )
                     })?;
                     max_align = max_align.max(4);
                     if !class.virtual_bases.contains(&base_name) {
@@ -3594,8 +3579,7 @@ impl Parser {
                         !base.is_polymorphic
                             && base.fields.is_empty()
                             && base.virtual_bases.is_empty()
-                    })
-                {
+                    }) {
                     0
                 } else {
                     base_nonvirtual_size
@@ -3650,8 +3634,7 @@ impl Parser {
                         class.virtual_definitions = base_class.virtual_definitions.clone();
                         class.has_virtual_destructor = base_class.has_virtual_destructor;
                         class.virtual_destructor_slot = base_class.virtual_destructor_slot;
-                        class.virtual_destructor_is_pure =
-                            base_class.virtual_destructor_is_pure;
+                        class.virtual_destructor_is_pure = base_class.virtual_destructor_is_pure;
                     }
                 }
                 if let Some(base_class) = base_class {
@@ -3661,11 +3644,11 @@ impl Parser {
                             .into_iter()
                             .filter(|component| component.object_offset < base_nonvirtual_size)
                             .map(|component| VtableComponent {
-                            object_offset: base_offset + component.object_offset,
-                            vptr_offset: base_offset + component.vptr_offset,
-                            virtual_slots: component.virtual_slots,
-                            virtual_destructor_slot: component.virtual_destructor_slot,
-                            virtual_destructor_is_pure: component.virtual_destructor_is_pure,
+                                object_offset: base_offset + component.object_offset,
+                                vptr_offset: base_offset + component.vptr_offset,
+                                virtual_slots: component.virtual_slots,
+                                virtual_destructor_slot: component.virtual_destructor_slot,
+                                virtual_destructor_is_pure: component.virtual_destructor_is_pure,
                             }),
                     );
                 }
@@ -3706,12 +3689,11 @@ impl Parser {
                 self.advance();
                 continue;
             }
-            let nested_typedef_definition =
-                matches!(self.peek(), Token::Identifier(word) if word == "typedef")
-                    && (matches!(self.peek_at(1), Token::KeywordStruct)
-                        || matches!(self.peek_at(1), Token::Identifier(word) if word == "class"))
-                    && matches!(self.peek_at(2), Token::Identifier(_))
-                    && matches!(self.peek_at(3), Token::BraceOpen | Token::Colon);
+            let nested_typedef_definition = matches!(self.peek(), Token::Identifier(word) if word == "typedef")
+                && (matches!(self.peek_at(1), Token::KeywordStruct)
+                    || matches!(self.peek_at(1), Token::Identifier(word) if word == "class"))
+                && matches!(self.peek_at(2), Token::Identifier(_))
+                && matches!(self.peek_at(3), Token::BraceOpen | Token::Colon);
             let nested_definition = (matches!(self.peek(), Token::KeywordStruct)
                 || matches!(self.peek(), Token::Identifier(word) if word == "class"))
                 && matches!(self.peek_at(1), Token::Identifier(_))
@@ -3720,20 +3702,17 @@ impl Parser {
                 if nested_typedef_definition {
                     self.advance();
                 }
-                let (nested_name, nested_layout, nested_class) =
-                    self.parse_class_definition_in_scope(
+                let (nested_name, nested_layout, nested_class) = self
+                    .parse_class_definition_in_scope(
                         Some(&qualified_name),
                         nested_typedef_definition,
                     )?;
                 let nested_qualified = format!("{qualified_name}::{nested_name}");
                 self.struct_typedefs
                     .insert(nested_name.clone(), nested_qualified.clone());
-                self.struct_typedefs.insert(
-                    format!("{name}::{nested_name}"),
-                    nested_qualified.clone(),
-                );
-                self.structs
-                    .insert(nested_qualified.clone(), nested_layout);
+                self.struct_typedefs
+                    .insert(format!("{name}::{nested_name}"), nested_qualified.clone());
+                self.structs.insert(nested_qualified.clone(), nested_layout);
                 if !self.cxx_classes.contains_key(&nested_qualified) {
                     self.cxx_class_declaration_order
                         .push(nested_qualified.clone());
@@ -3916,16 +3895,24 @@ impl Parser {
                         class.vtable_key_function = Some(destructor);
                     }
                     if class.virtual_destructor_slot.is_none() {
-                        class.virtual_destructor_slot = Some(u16::try_from(
-                            8usize
-                                .checked_add(class.virtual_slots.checked_mul(4).ok_or_else(|| {
-                                    Diagnostic::error("C++ virtual destructor slot overflow")
-                                })?)
-                                .ok_or_else(|| {
-                                    Diagnostic::error("C++ virtual destructor slot overflow")
-                                })?,
-                        )
-                        .map_err(|_| Diagnostic::error("C++ virtual destructor slot overflow"))?);
+                        class.virtual_destructor_slot = Some(
+                            u16::try_from(
+                                8usize
+                                    .checked_add(class.virtual_slots.checked_mul(4).ok_or_else(
+                                        || {
+                                            Diagnostic::error(
+                                                "C++ virtual destructor slot overflow",
+                                            )
+                                        },
+                                    )?)
+                                    .ok_or_else(|| {
+                                        Diagnostic::error("C++ virtual destructor slot overflow")
+                                    })?,
+                            )
+                            .map_err(|_| {
+                                Diagnostic::error("C++ virtual destructor slot overflow")
+                            })?,
+                        );
                         class.virtual_slots += 1;
                     }
                     class.has_virtual_destructor = true;
@@ -4024,8 +4011,8 @@ impl Parser {
                 self.skip_class_member()?;
                 continue;
             }
-            if let Some((field_name, _, callback_type)) = self
-                .try_cxx_function_pointer_declarator(CxxParameterType::plain(field_type))?
+            if let Some((field_name, _, callback_type)) =
+                self.try_cxx_function_pointer_declarator(CxxParameterType::plain(field_type))?
             {
                 if *self.peek() != Token::Semicolon {
                     return Err(Diagnostic::error(
@@ -4198,12 +4185,7 @@ impl Parser {
                         } else {
                             Some(pointee_of(field_type)?)
                         };
-                        (
-                            total_bytes,
-                            element,
-                            Some(total_bytes),
-                            first_index_stride,
-                        )
+                        (total_bytes, element, Some(total_bytes), first_index_stride)
                     } else {
                         (element_size, None, None, row_pointer_stride)
                     };
@@ -4292,10 +4274,10 @@ impl Parser {
                 .cloned()
                 .or_else(|| self.asserted_aggregate_layout(&virtual_base))
                 .ok_or_else(|| {
-                Diagnostic::error(format!(
-                    "virtual base class '{virtual_base}' must be defined before '{name}'"
-                ))
-            })?;
+                    Diagnostic::error(format!(
+                        "virtual base class '{virtual_base}' must be defined before '{name}'"
+                    ))
+                })?;
             let base_align = u32::from(base.align).max(1);
             offset = offset.div_ceil(base_align) * base_align;
             let base_offset = offset;
@@ -4336,15 +4318,20 @@ impl Parser {
             virtual_base_index += 1;
             if let Some(base_class) = self.cxx_classes.get(&virtual_base) {
                 class.is_polymorphic |= base_class.is_polymorphic;
-                class.vtable_components.extend(base_class.vtable_components.iter().map(
-                    |component| VtableComponent {
-                        object_offset: base_offset + component.object_offset,
-                        vptr_offset: base_offset + component.vptr_offset,
-                        virtual_slots: component.virtual_slots,
-                        virtual_destructor_slot: component.virtual_destructor_slot,
-                        virtual_destructor_is_pure: component.virtual_destructor_is_pure,
-                    },
-                ));
+                class
+                    .vtable_components
+                    .extend(
+                        base_class
+                            .vtable_components
+                            .iter()
+                            .map(|component| VtableComponent {
+                                object_offset: base_offset + component.object_offset,
+                                vptr_offset: base_offset + component.vptr_offset,
+                                virtual_slots: component.virtual_slots,
+                                virtual_destructor_slot: component.virtual_destructor_slot,
+                                virtual_destructor_is_pure: component.virtual_destructor_is_pure,
+                            }),
+                    );
             }
             offset = offset.checked_add(base.size).ok_or_else(|| {
                 Diagnostic::error("C++ virtual-base layout exceeds the 32-bit address space")
@@ -4389,7 +4376,9 @@ impl Parser {
         class_name: &str,
     ) -> Compilation<VirtualDispatch> {
         let class = self.cxx_classes.get(class_name).ok_or_else(|| {
-            Diagnostic::error(format!("class layout for delete target '{class_name}' was not recovered"))
+            Diagnostic::error(format!(
+                "class layout for delete target '{class_name}' was not recovered"
+            ))
         })?;
         let slot_offset = class.virtual_destructor_slot.ok_or_else(|| {
             Diagnostic::error(format!(
@@ -4441,8 +4430,7 @@ impl Parser {
             .unwrap_or_else(|| class_name.to_owned());
         if arguments.is_empty() {
             let scopes = resolved_class.split("::").collect::<Vec<_>>();
-            let default_constructor =
-                mangle_qualified_member_function_typed(&scopes, "__ct", &[])?;
+            let default_constructor = mangle_qualified_member_function_typed(&scopes, "__ct", &[])?;
             if self.skipped_inline_names.contains(&default_constructor) {
                 return Ok(default_constructor);
             }
@@ -4729,7 +4717,10 @@ impl Parser {
             .enumerate()
             .map(|(index, argument)| {
                 if matches!(parameters.get(index), Some(Type::StructPointer { .. }))
-                    && matches!(self.cxx_expression_type(&argument), Some(Type::Struct { .. }))
+                    && matches!(
+                        self.cxx_expression_type(&argument),
+                        Some(Type::Struct { .. })
+                    )
                 {
                     Expression::AddressOf {
                         operand: Box::new(argument),
@@ -4815,19 +4806,17 @@ impl Parser {
         mangle_qualified_member_function_typed(&scopes, "__ct", &[])
             .ok()
             .is_some_and(|constructor| self.skipped_inline_names.contains(&constructor))
-            || self.cxx_classes
-            .get(&resolved_class)
-            .or_else(|| self.cxx_classes.get(class_name))
-            .or_else(|| self.cxx_classes.get(local_class))
-            .is_some_and(|class| {
-                class
-                    .constructors
-                    .iter()
-                    .any(|signature| {
+            || self
+                .cxx_classes
+                .get(&resolved_class)
+                .or_else(|| self.cxx_classes.get(class_name))
+                .or_else(|| self.cxx_classes.get(local_class))
+                .is_some_and(|class| {
+                    class.constructors.iter().any(|signature| {
                         signature.required_parameter_count == 0
                             && signature.default_arguments.iter().all(Option::is_some)
                     })
-            })
+                })
             || self
                 .cxx_constructors
                 .get(resolved_class.as_str())
@@ -4858,8 +4847,8 @@ impl Parser {
                 if is_reference {
                     parameter_type = Type::StructPointer { element_size: 0 };
                 }
-                if let Some((_, name_position, callback_type)) = self
-                    .try_cxx_function_pointer_declarator(source_identity.clone())?
+                if let Some((_, name_position, callback_type)) =
+                    self.try_cxx_function_pointer_declarator(source_identity.clone())?
                 {
                     if let Some(name_position) = name_position {
                         self.record_named_parameter_at(name_position);
@@ -5143,10 +5132,7 @@ impl Parser {
             if candidates.is_empty() && arguments.is_empty() {
                 if !base.is_virtual && !base_class.vtable_components.is_empty() {
                     let scopes: Vec<&str> = base.name.split("::").collect();
-                    let vtable = format!(
-                        "__vt__{}",
-                        crate::cxx::encode_qualified_scope(&scopes)?
-                    );
+                    let vtable = format!("__vt__{}", crate::cxx::encode_qualified_scope(&scopes)?);
                     let mut table_offset = 0u32;
                     for component in &base_class.vtable_components {
                         let address = Expression::AddressOf {
@@ -5319,14 +5305,16 @@ impl Parser {
                 Type::Struct { size: 12, .. },
                 Some(struct_tag),
                 [Expression::Variable(source)],
-            ) = (field.member_type, field.struct_tag.as_ref(), arguments.as_slice())
-            {
+            ) = (
+                field.member_type,
+                field.struct_tag.as_ref(),
+                arguments.as_slice(),
+            ) {
                 let source_matches = parameters.iter().any(|parameter| {
                     parameter.name == *source
                         && matches!(
                             parameter.parameter_type,
-                            Type::Struct { size: 12, .. }
-                                | Type::StructPointer { .. }
+                            Type::Struct { size: 12, .. } | Type::StructPointer { .. }
                         )
                 });
                 let components = self.structs.get(struct_tag).map(|layout| {
@@ -5450,11 +5438,8 @@ impl Parser {
             if !has_destructor {
                 continue;
             }
-            let destructor = self.mangle_typed_member_in_current_namespace(
-                field_class,
-                "__dt",
-                &[],
-            )?;
+            let destructor =
+                self.mangle_typed_member_in_current_namespace(field_class, "__dt", &[])?;
             if let Some(array_bytes) = field.array_bytes {
                 let Type::Struct { size, .. } = field.member_type else {
                     unreachable!("class-valued array membership was checked above")
@@ -5479,10 +5464,7 @@ impl Parser {
             }
             statements.push(Statement::Expression(Expression::Call {
                 name: destructor,
-                arguments: vec![
-                    adjusted_this(field.offset),
-                    Expression::IntegerLiteral(0),
-                ],
+                arguments: vec![adjusted_this(field.offset), Expression::IntegerLiteral(0)],
             }));
         }
         for base in class.bases.iter().rev() {
@@ -5493,11 +5475,7 @@ impl Parser {
                 continue;
             }
             statements.push(Statement::Expression(Expression::Call {
-                name: self.mangle_typed_member_in_current_namespace(
-                    &base.name,
-                    "__dt",
-                    &[],
-                )?,
+                name: self.mangle_typed_member_in_current_namespace(&base.name, "__dt", &[])?,
                 arguments: vec![adjusted_this(base.offset), Expression::IntegerLiteral(0)],
             }));
         }

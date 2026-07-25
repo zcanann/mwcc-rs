@@ -8,9 +8,7 @@ pub(crate) fn translation_unit_positions(tokens: &[Token]) -> HashSet<usize> {
     let mut names = HashSet::new();
     let mut index = 0usize;
     while index < tokens.len() {
-        if tokens.get(index) == Some(&Token::ParenOpen)
-            && could_be_parameter_list(tokens, index)
-        {
+        if tokens.get(index) == Some(&Token::ParenOpen) && could_be_parameter_list(tokens, index) {
             if let Some((_, positions)) = positions(tokens, index) {
                 names.extend(positions);
             }
@@ -37,12 +35,7 @@ pub(crate) fn could_be_parameter_list(tokens: &[Token], open: usize) -> bool {
     match previous {
         Token::Identifier(word) => !matches!(
             word.as_str(),
-            "sizeof"
-                | "alignof"
-                | "__alignof__"
-                | "decltype"
-                | "__decltype__"
-                | "typeid"
+            "sizeof" | "alignof" | "__alignof__" | "decltype" | "__decltype__" | "typeid"
         ),
         Token::Equals
         | Token::Plus
@@ -71,7 +64,12 @@ pub(crate) fn could_be_parameter_list(tokens: &[Token], open: usize) -> bool {
 fn declaration_contains_operator(tokens: &[Token], open: usize) -> bool {
     let start = tokens[..open]
         .iter()
-        .rposition(|token| matches!(token, Token::Semicolon | Token::BraceOpen | Token::BraceClose))
+        .rposition(|token| {
+            matches!(
+                token,
+                Token::Semicolon | Token::BraceOpen | Token::BraceClose
+            )
+        })
         .map_or(0, |position| position + 1);
     tokens[start..open]
         .iter()

@@ -60,8 +60,7 @@ pub(crate) struct StructLayout {
     /// Complete source signatures for callable fields when declaration parsing
     /// retained them. Kept separately from layout so codegen can continue to
     /// use the compact callable-field set.
-    pub(crate) function_pointer_types:
-        HashMap<String, crate::cxx::CxxFunctionType>,
+    pub(crate) function_pointer_types: HashMap<String, crate::cxx::CxxFunctionType>,
     /// The struct's total size in bytes (members plus trailing padding to the
     /// struct's alignment) — the stride for an array/pointer of this struct.
     pub(crate) size: u32,
@@ -271,12 +270,10 @@ pub(crate) struct Parser {
     pub(crate) inline_template_members: std::collections::HashSet<(String, String)>,
     /// Native anonymous-label cost of each inline primary-template member body,
     /// keyed by `(primary template, ABI member name)`.
-    pub(crate) inline_template_member_control_flow_labels:
-        HashMap<(String, String), usize>,
+    pub(crate) inline_template_member_control_flow_labels: HashMap<(String, String), usize>,
     /// Concrete `(specialization, member)` instantiations already charged to
     /// the frontend analysis stream.
-    pub(crate) instantiated_inline_template_members:
-        std::collections::HashSet<(String, String)>,
+    pub(crate) instantiated_inline_template_members: std::collections::HashSet<(String, String)>,
     /// Single-return field accessors recovered from primary-template bodies,
     /// keyed by `(template, ABI member name, explicit arity)`. These summaries
     /// let callable objects and ordinary trivial accessors inline after a
@@ -292,8 +289,7 @@ pub(crate) struct Parser {
     /// Primary templates whose nested iterator has a source-proven
     /// `operator->` that subtracts one non-type offset argument from its node
     /// pointer. Value: `(nested iterator name, element arg, offset arg)`.
-    pub(crate) template_iterator_arrow_summaries:
-        HashMap<String, TemplateIteratorArrowSummary>,
+    pub(crate) template_iterator_arrow_summaries: HashMap<String, TemplateIteratorArrowSummary>,
     /// Concrete iterator identity -> `(element aggregate, node offset,
     /// pointer-storage offset)`.
     pub(crate) concrete_template_iterator_arrows: HashMap<String, ConcreteIteratorArrow>,
@@ -331,8 +327,7 @@ pub(crate) struct Parser {
     /// entry maps a concrete field to the constructor argument copied into it;
     /// value construction is admitted only when the summary covers the entire
     /// instantiated aggregate.
-    pub(crate) template_value_constructors:
-        HashMap<(String, usize), Vec<(String, usize)>>,
+    pub(crate) template_value_constructors: HashMap<(String, usize), Vec<(String, usize)>>,
     /// Empty classes declared directly inside a primary class template. Their
     /// value construction has no runtime payload, but remains semantically
     /// distinct from a static member call during expression parsing.
@@ -376,13 +371,11 @@ pub(crate) struct Parser {
     /// Constructor overloads recovered independently of object layout. Large
     /// headers may contain unsupported unrelated methods while their constructor
     /// signatures and inline bodies remain fully usable.
-    pub(crate) cxx_constructors:
-        Arc<HashMap<String, Vec<crate::cxx::RecoveredCxxMethod>>>,
+    pub(crate) cxx_constructors: Arc<HashMap<String, Vec<crate::cxx::RecoveredCxxMethod>>>,
     /// Free C++ function overloads recovered from prototypes/definitions,
     /// keyed by their unqualified source name. Calls resolve by arity only when
     /// that selects one ABI symbol unambiguously.
-    pub(crate) cxx_free_functions:
-        Arc<HashMap<String, Vec<crate::cxx::RecoveredCxxMethod>>>,
+    pub(crate) cxx_free_functions: Arc<HashMap<String, Vec<crate::cxx::RecoveredCxxMethod>>>,
     /// Non-virtual, non-inline instance methods recovered from skipped class
     /// bodies. These support direct `object->member(args)` calls without layout.
     pub(crate) cxx_instance_methods:
@@ -460,8 +453,7 @@ pub(crate) struct Parser {
     /// so `&__files._stdout` in an initializer resolves its member offset.
     pub(crate) global_structs: HashMap<String, String>,
     /// Declaration-only signatures for file-scope function-pointer objects.
-    pub(crate) global_function_types:
-        HashMap<String, mwcc_syntax_trees::SourceFunctionType>,
+    pub(crate) global_function_types: HashMap<String, mwcc_syntax_trees::SourceFunctionType>,
     /// Function/parameter source aggregate identities retained for debug-info
     /// lowering after the executable type has collapsed to a sized pointer.
     pub(crate) function_parameter_structs: HashMap<(String, String), String>,
@@ -660,8 +652,7 @@ pub(crate) struct Parser {
     /// ordering when a later section-attributed redeclaration is parsed.
     pub(crate) plain_function_prototypes: std::collections::HashSet<String>,
     /// Section prototypes preceded by a plain declaration of the same name.
-    pub(crate) section_prototypes_with_prior_plain_declaration:
-        std::collections::HashSet<String>,
+    pub(crate) section_prototypes_with_prior_plain_declaration: std::collections::HashSet<String>,
     /// Names of SKIPPED inline definitions — a call to one defers the unit.
     pub(crate) skipped_inline_names: std::collections::HashSet<String>,
     /// Fully parsed bodies of skipped inline definitions. These are never
@@ -685,8 +676,7 @@ pub(crate) struct Parser {
     /// File-scope `#pragma exceptions on/off/reset` override. `None` inherits
     /// the command-line mode; parsed functions snapshot explicit overrides.
     pub(crate) cpp_exceptions_override: Option<bool>,
-    pub(crate) function_cpp_exception_overrides:
-        std::collections::HashMap<String, bool>,
+    pub(crate) function_cpp_exception_overrides: std::collections::HashMap<String, bool>,
     pub(crate) pragma_stack: Vec<PragmaState>,
     /// Default code section selected by `#pragma section code_type "…"`.
     /// An explicit declaration attribute still takes precedence.
@@ -706,8 +696,7 @@ pub(crate) struct Parser {
     /// Static data members declared by each class body. Declaration recovery
     /// records the complete class before parsing any in-class inline body, so
     /// an accessor may name a member declared later in the class.
-    pub(crate) cxx_static_data_members:
-        std::collections::HashMap<(String, String), Type>,
+    pub(crate) cxx_static_data_members: std::collections::HashMap<(String, String), Type>,
     /// Lexical class scope used only while recovering one object layout.
     /// Unqualified nested value types must resolve against their containing
     /// class before namespace/global names with the same terminal spelling.
@@ -736,8 +725,7 @@ pub(crate) struct Parser {
     /// parsed by source-proven inline semantics.
     pub(crate) current_inline_string_symbols: HashMap<Vec<u8>, String>,
     /// Completed per-function inline literal identities.
-    pub(crate) function_inline_string_symbols:
-        HashMap<String, HashMap<Vec<u8>, String>>,
+    pub(crate) function_inline_string_symbols: HashMap<String, HashMap<Vec<u8>, String>>,
     /// Direct callee of a translation-unit inline scalar `operator delete`
     /// wrapper. Compiler-generated deleting destructors inline this body.
     pub(crate) cxx_delete_forwarder: Option<String>,

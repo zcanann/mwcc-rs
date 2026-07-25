@@ -311,10 +311,7 @@ impl Parser {
     /// so stores retain their specialized lowering while discarded ternaries
     /// and other value expressions still receive the ordinary precedence
     /// grammar.
-    pub(crate) fn expression_from(
-        &mut self,
-        first: Expression,
-    ) -> Compilation<Expression> {
+    pub(crate) fn expression_from(&mut self, first: Expression) -> Compilation<Expression> {
         // A compound assignment is valid in expression position too —
         // `(c -= '0') >= base` (strtoul's digit fold). Handled here so every
         // expression() caller (parens, conditions) accepts it.
@@ -444,14 +441,9 @@ impl Parser {
                                 &right_comparison,
                             )
                         {
-                            left = iterator_pointer_storage(
-                                left,
-                                left_comparison.storage_offset,
-                            );
-                            right = iterator_pointer_storage(
-                                right,
-                                right_comparison.storage_offset,
-                            );
+                            left = iterator_pointer_storage(left, left_comparison.storage_offset);
+                            right =
+                                iterator_pointer_storage(right, right_comparison.storage_offset);
                         }
                     }
                 }
@@ -635,43 +627,42 @@ impl Parser {
         // known. Normalize all three spellings here instead of leaking source syntax
         // into semantic lowering and code generation.
         let mut explicit_cast_struct_tag = None;
-        let explicit_cast_expression = if self.cplusplus
-            && token_starts_cxx_fundamental_conversion(self.peek())
-        {
-            let target_type = self.parse_type()?;
-            self.expect(Token::ParenOpen)?;
-            // `T()` value-initializes a scalar. Represent it as the ordinary conversion
-            // of integer zero so the existing cast lowering chooses the target lane.
-            let operand = if *self.peek() == Token::ParenClose {
-                Expression::IntegerLiteral(0)
+        let explicit_cast_expression =
+            if self.cplusplus && token_starts_cxx_fundamental_conversion(self.peek()) {
+                let target_type = self.parse_type()?;
+                self.expect(Token::ParenOpen)?;
+                // `T()` value-initializes a scalar. Represent it as the ordinary conversion
+                // of integer zero so the existing cast lowering chooses the target lane.
+                let operand = if *self.peek() == Token::ParenClose {
+                    Expression::IntegerLiteral(0)
+                } else {
+                    self.expression()?
+                };
+                self.expect(Token::ParenClose)?;
+                Some(Expression::Cast {
+                    target_type,
+                    operand: Box::new(operand),
+                })
+            } else if self.cplusplus
+                && matches!(self.peek(), Token::Identifier(name) if name == "static_cast")
+            {
+                self.advance();
+                self.expect(Token::Less)?;
+                let target_type = self.parse_type()?;
+                if matches!(target_type, Type::StructPointer { .. }) {
+                    explicit_cast_struct_tag = self.last_struct_tag.take();
+                }
+                self.expect(Token::Greater)?;
+                self.expect(Token::ParenOpen)?;
+                let operand = self.expression()?;
+                self.expect(Token::ParenClose)?;
+                Some(Expression::Cast {
+                    target_type,
+                    operand: Box::new(operand),
+                })
             } else {
-                self.expression()?
+                None
             };
-            self.expect(Token::ParenClose)?;
-            Some(Expression::Cast {
-                target_type,
-                operand: Box::new(operand),
-            })
-        } else if self.cplusplus
-            && matches!(self.peek(), Token::Identifier(name) if name == "static_cast")
-        {
-            self.advance();
-            self.expect(Token::Less)?;
-            let target_type = self.parse_type()?;
-            if matches!(target_type, Type::StructPointer { .. }) {
-                explicit_cast_struct_tag = self.last_struct_tag.take();
-            }
-            self.expect(Token::Greater)?;
-            self.expect(Token::ParenOpen)?;
-            let operand = self.expression()?;
-            self.expect(Token::ParenClose)?;
-            Some(Expression::Cast {
-                target_type,
-                operand: Box::new(operand),
-            })
-        } else {
-            None
-        };
 
         // `_var_arg_typeof(type)` is an mwcc intrinsic: the EABI vararg class
         // code fed to `__va_arg` (measured GC/2.6: aggregate -> 0, gpr scalar/
@@ -748,55 +739,112 @@ impl Parser {
             expression
         } else {
             match self.advance() {
-            Token::IntegerLiteral(value) => Expression::IntegerLiteral(value),
-            Token::FloatLiteral(value) => Expression::FloatLiteral(value),
-            Token::DoubleLiteral(value) => Expression::Cast {
-                target_type: Type::Double,
-                operand: Box::new(Expression::FloatLiteral(value)),
-            },
-            // A string literal (the raw bytes) — pooled and loaded by address.
-            Token::StringLiteral(bytes) => Expression::StringLiteral(bytes),
-            Token::WideStringLiteral(_) => {
-                return Err(Diagnostic::error(
+                Token::IntegerLiteral(value) => Expression::IntegerLiteral(value),
+                Token::FloatLiteral(value) => Expression::FloatLiteral(value),
+                Token::DoubleLiteral(value) => Expression::Cast {
+                    target_type: Type::Double,
+                    operand: Box::new(Expression::FloatLiteral(value)),
+                },
+                // A string literal (the raw bytes) — pooled and loaded by address.
+                Token::StringLiteral(bytes) => Expression::StringLiteral(bytes),
+                Token::WideStringLiteral(_) => return Err(Diagnostic::error(
                     "a wide string literal in expression position is not supported yet (roadmap)",
-                ))
-            }
-            // C++ boolean literals are integral constant expressions with the
-            // normalized values one and zero. The lexer deliberately keeps
-            // them as identifiers so C mode may still use either spelling as
-            // an ordinary name.
-            Token::Identifier(name) if self.cplusplus && name == "true" => {
-                Expression::IntegerLiteral(1)
-            }
-            Token::Identifier(name) if self.cplusplus && name == "false" => {
-                Expression::IntegerLiteral(0)
-            }
-            Token::Identifier(name) if self.cplusplus && name == "new" => {
-                self.parse_cxx_new_expression()?
-            }
-            // A qualified static member has no implicit `this`. A following
-            // argument list is a call whose declaration supplies overload
-            // information; a bare member is a data object and uses the same
-            // class/namespace encoding without a function suffix.
-            Token::Identifier(scope)
-                if *self.peek() == Token::Colon && *self.peek_at(1) == Token::Colon =>
-            {
-                let mut scopes = vec![scope];
-                let member = loop {
-                    self.advance();
-                    self.advance();
-                    let component = self.parse_identifier()?;
-                    if *self.peek() == Token::Colon && *self.peek_at(1) == Token::Colon {
-                        scopes.push(component);
+                )),
+                // C++ boolean literals are integral constant expressions with the
+                // normalized values one and zero. The lexer deliberately keeps
+                // them as identifiers so C mode may still use either spelling as
+                // an ordinary name.
+                Token::Identifier(name) if self.cplusplus && name == "true" => {
+                    Expression::IntegerLiteral(1)
+                }
+                Token::Identifier(name) if self.cplusplus && name == "false" => {
+                    Expression::IntegerLiteral(0)
+                }
+                Token::Identifier(name) if self.cplusplus && name == "new" => {
+                    self.parse_cxx_new_expression()?
+                }
+                // A qualified static member has no implicit `this`. A following
+                // argument list is a call whose declaration supplies overload
+                // information; a bare member is a data object and uses the same
+                // class/namespace encoding without a function suffix.
+                Token::Identifier(scope)
+                    if *self.peek() == Token::Colon && *self.peek_at(1) == Token::Colon =>
+                {
+                    let mut scopes = vec![scope];
+                    let member = loop {
+                        self.advance();
+                        self.advance();
+                        let component = self.parse_identifier()?;
+                        if *self.peek() == Token::Colon && *self.peek_at(1) == Token::Colon {
+                            scopes.push(component);
+                        } else {
+                            break component;
+                        }
+                    };
+                    let scope = scopes.join("::");
+                    let qualified = format!("{scope}::{member}");
+                    if let Some(&value) = self.enum_constants.get(&qualified) {
+                        Expression::IntegerLiteral(value)
+                    } else if *self.peek() == Token::ParenOpen {
+                        self.advance();
+                        let mut arguments = Vec::new();
+                        if *self.peek() != Token::ParenClose {
+                            loop {
+                                arguments.push(self.expression()?);
+                                if *self.peek() == Token::Comma {
+                                    self.advance();
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                        self.expect(Token::ParenClose)?;
+                        if arguments.is_empty()
+                            && (self.is_empty_nested_type_constructor(&scope, &member)
+                                || self.is_empty_qualified_type_constructor(&scope, &member))
+                        {
+                            Expression::AggregateLiteral(Vec::new())
+                        } else {
+                            let name = if let Some(namespace) =
+                                self.resolve_scoped_cxx_namespace_name(&scope)
+                            {
+                                self.resolve_qualified_free_cxx_call(
+                                &namespace,
+                                &member,
+                                &arguments,
+                            )?
+                            .ok_or_else(|| {
+                                Diagnostic::error(format!(
+                                    "C++ namespace function call '{namespace}::{member}' is unavailable (roadmap)"
+                                ))
+                            })?
+                            } else if let Some(name) = self.resolve_explicit_instance_member_call(
+                                &scope,
+                                &member,
+                                arguments.len(),
+                            )? {
+                                self.record_inline_template_member_instantiation(&scope, &member);
+                                arguments.insert(0, Expression::Variable("this".to_owned()));
+                                name
+                            } else {
+                                let name = self.resolve_static_member_call(
+                                    &scope,
+                                    &member,
+                                    arguments.len(),
+                                )?;
+                                self.record_inline_template_member_instantiation(&scope, &member);
+                                name
+                            };
+                            Expression::Call { name, arguments }
+                        }
                     } else {
-                        break component;
+                        Expression::Variable(
+                            self.mangle_data_member_in_current_namespace(&scope, &member)?,
+                        )
                     }
-                };
-                let scope = scopes.join("::");
-                let qualified = format!("{scope}::{member}");
-                if let Some(&value) = self.enum_constants.get(&qualified) {
-                    Expression::IntegerLiteral(value)
-                } else if *self.peek() == Token::ParenOpen {
+                }
+                // `name(args)` is a call; a bare `name` is a variable.
+                Token::Identifier(name) if *self.peek() == Token::ParenOpen => {
                     self.advance();
                     let mut arguments = Vec::new();
                     if *self.peek() != Token::ParenClose {
@@ -810,367 +858,308 @@ impl Parser {
                         }
                     }
                     self.expect(Token::ParenClose)?;
-                    if arguments.is_empty()
-                        && (self.is_empty_nested_type_constructor(&scope, &member)
-                            || self.is_empty_qualified_type_constructor(&scope, &member))
+                    // A functional class construction inside an analysis-only
+                    // recovered inline (`return Vector3f(x, y, z)`) needs its
+                    // resolved constructor identity so later semantic passes can
+                    // observe reference-bound temporaries. Executable lowering
+                    // still owns temporary storage and the aggregate-return ABI;
+                    // this Call shape is deliberately confined to the discarded
+                    // inline probe.
+                    let analysis_constructor = if self.recover_skipped_inline_definition
+                        && self.resolve_scoped_cxx_class_name(&name).is_some()
                     {
-                        Expression::AggregateLiteral(Vec::new())
+                        Some(self.resolve_placement_constructor(&name, &arguments)?)
                     } else {
-                        let name = if let Some(namespace) =
-                            self.resolve_scoped_cxx_namespace_name(&scope)
-                        {
-                            self.resolve_qualified_free_cxx_call(
-                                &namespace,
-                                &member,
-                                &arguments,
-                            )?
-                            .ok_or_else(|| {
-                                Diagnostic::error(format!(
-                                    "C++ namespace function call '{namespace}::{member}' is unavailable (roadmap)"
-                                ))
-                            })?
-                        } else if let Some(name) = self
-                            .resolve_explicit_instance_member_call(
-                                &scope,
-                                &member,
-                                arguments.len(),
-                            )?
-                        {
-                            self.record_inline_template_member_instantiation(&scope, &member);
-                            arguments.insert(0, Expression::Variable("this".to_owned()));
-                            name
-                        } else {
-                            let name = self.resolve_static_member_call(
-                                &scope,
-                                &member,
-                                arguments.len(),
-                            )?;
-                            self.record_inline_template_member_instantiation(&scope, &member);
-                            name
-                        };
-                        Expression::Call { name, arguments }
-                    }
-                } else {
-                    Expression::Variable(
-                        self.mangle_data_member_in_current_namespace(&scope, &member)?,
-                    )
-                }
-            }
-            // `name(args)` is a call; a bare `name` is a variable.
-            Token::Identifier(name) if *self.peek() == Token::ParenOpen => {
-                self.advance();
-                let mut arguments = Vec::new();
-                if *self.peek() != Token::ParenClose {
-                    loop {
-                        arguments.push(self.expression()?);
-                        if *self.peek() == Token::Comma {
-                            self.advance();
-                        } else {
-                            break;
-                        }
-                    }
-                }
-                self.expect(Token::ParenClose)?;
-                // A functional class construction inside an analysis-only
-                // recovered inline (`return Vector3f(x, y, z)`) needs its
-                // resolved constructor identity so later semantic passes can
-                // observe reference-bound temporaries. Executable lowering
-                // still owns temporary storage and the aggregate-return ABI;
-                // this Call shape is deliberately confined to the discarded
-                // inline probe.
-                let analysis_constructor = if self.recover_skipped_inline_definition
-                    && self.resolve_scoped_cxx_class_name(&name).is_some()
-                {
-                    Some(self.resolve_placement_constructor(&name, &arguments)?)
-                } else {
-                    None
-                };
-                if let Some(constructor) = analysis_constructor {
-                    Expression::Call {
-                        name: constructor,
-                        arguments,
-                    }
-                } else if let Some(elements) =
-                    self.resolve_template_value_construction(&name, &arguments)
-                {
-                    Expression::AggregateLiteral(elements)
-                } else if let Some(member_call) =
-                    self.resolve_implicit_member_call(&name, &arguments)?
-                {
-                    if !matches!(
-                        &member_call,
-                        crate::cxx::ImplicitMemberCall::Direct {
-                            is_inline: true,
-                            ..
-                        }
-                    ) {
-                        arguments = self.lower_cxx_aggregate_reference_arguments(
-                            member_call.parameters(),
+                        None
+                    };
+                    if let Some(constructor) = analysis_constructor {
+                        Expression::Call {
+                            name: constructor,
                             arguments,
-                        );
-                    }
-                    match member_call {
-                        crate::cxx::ImplicitMemberCall::Static {
-                            name: mangled,
-                            parameters: _,
-                        } => Expression::Call {
-                            name: mangled,
-                            arguments,
-                        },
-                        crate::cxx::ImplicitMemberCall::Direct {
-                            name: mangled,
-                            is_inline,
-                            return_struct_tag,
-                            this_adjustment,
-                            parameters: _,
-                        } => {
-                            self.expression_struct_tag = return_struct_tag;
-                            if is_inline {
-                                // The declaration pass records in-class bodies as
-                                // analysis-only skipped definitions. Keep a real
-                                // call node here so the semantic inliner can claim
-                                // it; codegen still rejects any unexpanded call to
-                                // this non-emitted symbol.
-                                self.skipped_inline_names.insert(mangled.clone());
+                        }
+                    } else if let Some(elements) =
+                        self.resolve_template_value_construction(&name, &arguments)
+                    {
+                        Expression::AggregateLiteral(elements)
+                    } else if let Some(member_call) =
+                        self.resolve_implicit_member_call(&name, &arguments)?
+                    {
+                        if !matches!(
+                            &member_call,
+                            crate::cxx::ImplicitMemberCall::Direct {
+                                is_inline: true,
+                                ..
                             }
-                            let this = adjust_cxx_object(
-                                Expression::Variable("this".to_string()),
-                                this_adjustment,
+                        ) {
+                            arguments = self.lower_cxx_aggregate_reference_arguments(
+                                member_call.parameters(),
+                                arguments,
                             );
-                            arguments.insert(0, this);
-                            Expression::Call {
+                        }
+                        match member_call {
+                            crate::cxx::ImplicitMemberCall::Static {
+                                name: mangled,
+                                parameters: _,
+                            } => Expression::Call {
                                 name: mangled,
                                 arguments,
+                            },
+                            crate::cxx::ImplicitMemberCall::Direct {
+                                name: mangled,
+                                is_inline,
+                                return_struct_tag,
+                                this_adjustment,
+                                parameters: _,
+                            } => {
+                                self.expression_struct_tag = return_struct_tag;
+                                if is_inline {
+                                    // The declaration pass records in-class bodies as
+                                    // analysis-only skipped definitions. Keep a real
+                                    // call node here so the semantic inliner can claim
+                                    // it; codegen still rejects any unexpanded call to
+                                    // this non-emitted symbol.
+                                    self.skipped_inline_names.insert(mangled.clone());
+                                }
+                                let this = adjust_cxx_object(
+                                    Expression::Variable("this".to_string()),
+                                    this_adjustment,
+                                );
+                                arguments.insert(0, this);
+                                Expression::Call {
+                                    name: mangled,
+                                    arguments,
+                                }
                             }
-                        }
-                        crate::cxx::ImplicitMemberCall::Virtual {
-                            dispatch,
-                            return_struct_tag,
-                            this_adjustment,
-                            direct_name,
-                            direct_is_inline,
-                            parameters: _,
-                        } => {
-                            self.expression_struct_tag = return_struct_tag;
-                            if direct_is_inline {
-                                if let Some(name) = direct_name {
-                                    if !self.cxx_inline_materialization_requests.contains(&name) {
-                                        self.cxx_inline_materialization_requests.push(name);
+                            crate::cxx::ImplicitMemberCall::Virtual {
+                                dispatch,
+                                return_struct_tag,
+                                this_adjustment,
+                                direct_name,
+                                direct_is_inline,
+                                parameters: _,
+                            } => {
+                                self.expression_struct_tag = return_struct_tag;
+                                if direct_is_inline {
+                                    if let Some(name) = direct_name {
+                                        if !self.cxx_inline_materialization_requests.contains(&name)
+                                        {
+                                            self.cxx_inline_materialization_requests.push(name);
+                                        }
                                     }
                                 }
-                            }
-                            let object = adjust_cxx_object(
-                                Expression::Variable("this".to_string()),
-                                this_adjustment,
-                            );
-                            Expression::VirtualCall {
-                                object: Box::new(object),
-                                vptr_offset: dispatch.vptr_offset,
-                                slot_offset: dispatch.slot_offset,
-                                return_type: dispatch.return_type,
-                                variadic: dispatch.variadic,
-                                arguments,
-                            }
-                        }
-                    }
-                } else {
-                    // A call to a PARSED single-return inline definition substitutes
-                    // the body (mwcc -inline auto inlines it; a bl would be wrong
-                    // bytes). Stable values may be repeated. A read expression may
-                    // also substitute when the body evaluates that parameter exactly
-                    // once and unconditionally; this covers pointer accessors such as
-                    // `get_user_data(fp->victim)` without duplicating or dropping a
-                    // memory read. Everything else stays a Call so the skipped-inline
-                    // check can defer the unit safely.
-                    match self.inline_bodies.get(&name) {
-                        Some((parameters, body))
-                            if parameters.len() == arguments.len()
-                                && inline_arguments_are_safe(parameters, body, &arguments) =>
-                        {
-                            let map: std::collections::HashMap<&str, &Expression> = parameters
-                                .iter()
-                                .map(String::as_str)
-                                .zip(arguments.iter())
-                                .collect();
-                            self.inline_substitution_count += 1;
-                            let substituted = substitute_variables(body, &map);
-                            self.expression_struct_tag =
-                                self.function_return_structs.get(&name).cloned();
-                            substituted
-                        }
-                        _ => {
-                            let name = if self.cplusplus {
-                                match self.resolve_cxx_data_object(&name) {
-                                    Some(data_object) => data_object,
-                                    None => self
-                                        .resolve_free_cxx_call(&name, &arguments)?
-                                        .unwrap_or(name),
+                                let object = adjust_cxx_object(
+                                    Expression::Variable("this".to_string()),
+                                    this_adjustment,
+                                );
+                                Expression::VirtualCall {
+                                    object: Box::new(object),
+                                    vptr_offset: dispatch.vptr_offset,
+                                    slot_offset: dispatch.slot_offset,
+                                    return_type: dispatch.return_type,
+                                    variadic: dispatch.variadic,
+                                    arguments,
                                 }
-                            } else {
-                                name
-                            };
-                            Expression::Call { name, arguments }
+                            }
+                        }
+                    } else {
+                        // A call to a PARSED single-return inline definition substitutes
+                        // the body (mwcc -inline auto inlines it; a bl would be wrong
+                        // bytes). Stable values may be repeated. A read expression may
+                        // also substitute when the body evaluates that parameter exactly
+                        // once and unconditionally; this covers pointer accessors such as
+                        // `get_user_data(fp->victim)` without duplicating or dropping a
+                        // memory read. Everything else stays a Call so the skipped-inline
+                        // check can defer the unit safely.
+                        match self.inline_bodies.get(&name) {
+                            Some((parameters, body))
+                                if parameters.len() == arguments.len()
+                                    && inline_arguments_are_safe(parameters, body, &arguments) =>
+                            {
+                                let map: std::collections::HashMap<&str, &Expression> = parameters
+                                    .iter()
+                                    .map(String::as_str)
+                                    .zip(arguments.iter())
+                                    .collect();
+                                self.inline_substitution_count += 1;
+                                let substituted = substitute_variables(body, &map);
+                                self.expression_struct_tag =
+                                    self.function_return_structs.get(&name).cloned();
+                                substituted
+                            }
+                            _ => {
+                                let name = if self.cplusplus {
+                                    match self.resolve_cxx_data_object(&name) {
+                                        Some(data_object) => data_object,
+                                        None => self
+                                            .resolve_free_cxx_call(&name, &arguments)?
+                                            .unwrap_or(name),
+                                    }
+                                } else {
+                                    name
+                                };
+                                Expression::Call { name, arguments }
+                            }
                         }
                     }
                 }
-            }
-            // A FIXED-ADDRESS global (`AT_ADDRESS`) aliases a const-address deref `*(Type *)addr`;
-            // desugar so a following `.member` resolves via the const-address path (byte-exact).
-            // `expression_struct_tag` carries the pointee's tag for the postfix member resolver.
-            Token::Identifier(name) if self.fixed_address_globals.contains_key(&name) => {
-                let (address, cast_target, tag) =
-                    self.fixed_address_globals.get(&name).cloned().unwrap();
-                self.expression_struct_tag = tag;
-                Expression::Dereference {
-                    pointer: Box::new(Expression::Cast {
-                        target_type: cast_target,
-                        operand: Box::new(Expression::IntegerLiteral(address)),
-                    }),
-                }
-            }
-            // A bare name is an enumerator (its integer value) if known, else a
-            // variable — resolved through any active block-scope shadow renames.
-            Token::Identifier(name) => {
-                let resolved = self.resolve_block_rename(name.clone());
-                if self.variable_types.contains_key(&resolved) || resolved != name {
-                    Expression::Variable(resolved)
-                } else if let Some(member) = self
-                    .current_member_scope
-                    .as_deref()
-                    .and_then(|scope| self.structs.get(scope))
-                    .and_then(|layout| layout.fields.get(&name))
-                {
-                    // An unqualified data member is rooted at `this`, but its
-                    // own aggregate identity—not a stale tag from an earlier
-                    // expression—must seed a following `.field`/`->field`.
-                    self.expression_struct_tag = member.struct_tag.clone();
-                    Expression::Member {
-                        base: Box::new(Expression::Variable("this".to_string())),
-                        offset: member.offset,
-                        member_type: member.member_type,
-                        index_stride: None,
+                // A FIXED-ADDRESS global (`AT_ADDRESS`) aliases a const-address deref `*(Type *)addr`;
+                // desugar so a following `.member` resolves via the const-address path (byte-exact).
+                // `expression_struct_tag` carries the pointee's tag for the postfix member resolver.
+                Token::Identifier(name) if self.fixed_address_globals.contains_key(&name) => {
+                    let (address, cast_target, tag) =
+                        self.fixed_address_globals.get(&name).cloned().unwrap();
+                    self.expression_struct_tag = tag;
+                    Expression::Dereference {
+                        pointer: Box::new(Expression::Cast {
+                            target_type: cast_target,
+                            operand: Box::new(Expression::IntegerLiteral(address)),
+                        }),
                     }
-                } else if let Some(mangled) = self.resolve_implicit_static_data_member(&name)? {
-                    Expression::Variable(mangled)
-                } else if let Some(&value) = self
-                    .cxx_layout_constants
-                    .get(&name)
-                    .or_else(|| self.enum_constants.get(&name))
-                {
-                    Expression::IntegerLiteral(value)
-                } else if self.cplusplus {
-                    Expression::Variable(
-                        self.resolve_cxx_data_object(&name)
-                            .or_else(|| self.resolve_free_cxx_function_address(&name))
-                            .unwrap_or(resolved),
-                    )
-                } else {
-                    Expression::Variable(resolved)
                 }
-            }
-            Token::ParenOpen => {
-                // `(type) expr` is a cast; otherwise a parenthesised expression.
-                if self.peek_is_type() {
-                    let mut target_type = self.parse_type()?;
-                    // A function-pointer cast `(RET (*)(params))` targets a pointer.
-                    if *self.peek() == Token::ParenOpen
-                        && self.tokens.get(self.position + 1) == Some(&Token::Star)
+                // A bare name is an enumerator (its integer value) if known, else a
+                // variable — resolved through any active block-scope shadow renames.
+                Token::Identifier(name) => {
+                    let resolved = self.resolve_block_rename(name.clone());
+                    if self.variable_types.contains_key(&resolved) || resolved != name {
+                        Expression::Variable(resolved)
+                    } else if let Some(member) = self
+                        .current_member_scope
+                        .as_deref()
+                        .and_then(|scope| self.structs.get(scope))
+                        .and_then(|layout| layout.fields.get(&name))
                     {
-                        self.advance(); // `(`
-                        self.advance(); // `*`
-                        self.expect(Token::ParenClose)?;
-                        self.expect(Token::ParenOpen)?;
-                        let mut depth = 1;
-                        while depth > 0 {
-                            match self.advance() {
-                                Token::ParenOpen => depth += 1,
-                                Token::ParenClose => depth -= 1,
-                                Token::EndOfFile => {
-                                    return Err(Diagnostic::error(
-                                        "unterminated function-pointer cast",
-                                    ))
-                                }
-                                _ => {}
-                            }
+                        // An unqualified data member is rooted at `this`, but its
+                        // own aggregate identity—not a stale tag from an earlier
+                        // expression—must seed a following `.field`/`->field`.
+                        self.expression_struct_tag = member.struct_tag.clone();
+                        Expression::Member {
+                            base: Box::new(Expression::Variable("this".to_string())),
+                            offset: member.offset,
+                            member_type: member.member_type,
+                            index_stride: None,
                         }
-                        target_type =
-                            mwcc_syntax_trees::Type::Pointer(mwcc_syntax_trees::Pointee::Int);
+                    } else if let Some(mangled) = self.resolve_implicit_static_data_member(&name)? {
+                        Expression::Variable(mangled)
+                    } else if let Some(&value) = self
+                        .cxx_layout_constants
+                        .get(&name)
+                        .or_else(|| self.enum_constants.get(&name))
+                    {
+                        Expression::IntegerLiteral(value)
+                    } else if self.cplusplus {
+                        Expression::Variable(
+                            self.resolve_cxx_data_object(&name)
+                                .or_else(|| self.resolve_free_cxx_function_address(&name))
+                                .unwrap_or(resolved),
+                        )
+                    } else {
+                        Expression::Variable(resolved)
                     }
-                    // Extra stars past parse_type's one (`(wchar_t**)` — printf's
-                    // %ls arm): a pointer-to-pointer cast is a word pointer.
-                    while self.eat_keyword(Token::Star) {
-                        target_type =
-                            mwcc_syntax_trees::Type::Pointer(mwcc_syntax_trees::Pointee::Pointer);
-                    }
-                    self.expect(Token::ParenClose)?;
-                    // A COMPOUND LITERAL `(GXColor){ 0, 0, 0xE2, 0x58 }` — a brace
-                    // list after a struct-typed cast: serialize the constant image at
-                    // parse time (the layout lives here). A relocated element defers.
-                    if *self.peek() == Token::BraceOpen {
-                        if let (mwcc_syntax_trees::Type::Struct { .. }, Some(tag)) =
-                            (target_type, self.last_struct_tag.clone())
+                }
+                Token::ParenOpen => {
+                    // `(type) expr` is a cast; otherwise a parenthesised expression.
+                    if self.peek_is_type() {
+                        let mut target_type = self.parse_type()?;
+                        // A function-pointer cast `(RET (*)(params))` targets a pointer.
+                        if *self.peek() == Token::ParenOpen
+                            && self.tokens.get(self.position + 1) == Some(&Token::Star)
                         {
-                            let mut relocations = Vec::new();
-                            let bytes =
-                                self.parse_one_struct_relocated(&tag, 0, &mut relocations)?;
-                            if !relocations.is_empty() {
-                                return Err(Diagnostic::error(
+                            self.advance(); // `(`
+                            self.advance(); // `*`
+                            self.expect(Token::ParenClose)?;
+                            self.expect(Token::ParenOpen)?;
+                            let mut depth = 1;
+                            while depth > 0 {
+                                match self.advance() {
+                                    Token::ParenOpen => depth += 1,
+                                    Token::ParenClose => depth -= 1,
+                                    Token::EndOfFile => {
+                                        return Err(Diagnostic::error(
+                                            "unterminated function-pointer cast",
+                                        ))
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            target_type =
+                                mwcc_syntax_trees::Type::Pointer(mwcc_syntax_trees::Pointee::Int);
+                        }
+                        // Extra stars past parse_type's one (`(wchar_t**)` — printf's
+                        // %ls arm): a pointer-to-pointer cast is a word pointer.
+                        while self.eat_keyword(Token::Star) {
+                            target_type = mwcc_syntax_trees::Type::Pointer(
+                                mwcc_syntax_trees::Pointee::Pointer,
+                            );
+                        }
+                        self.expect(Token::ParenClose)?;
+                        // A COMPOUND LITERAL `(GXColor){ 0, 0, 0xE2, 0x58 }` — a brace
+                        // list after a struct-typed cast: serialize the constant image at
+                        // parse time (the layout lives here). A relocated element defers.
+                        if *self.peek() == Token::BraceOpen {
+                            if let (mwcc_syntax_trees::Type::Struct { .. }, Some(tag)) =
+                                (target_type, self.last_struct_tag.clone())
+                            {
+                                let mut relocations = Vec::new();
+                                let bytes =
+                                    self.parse_one_struct_relocated(&tag, 0, &mut relocations)?;
+                                if !relocations.is_empty() {
+                                    return Err(Diagnostic::error(
                                     "a relocated compound literal is not supported yet (roadmap)",
                                 ));
+                                }
+                                self.last_struct_tag = None;
+                                return Ok(Expression::CompoundLiteral {
+                                    struct_tag: tag,
+                                    bytes,
+                                });
                             }
-                            self.last_struct_tag = None;
-                            return Ok(Expression::CompoundLiteral {
-                                struct_tag: tag,
-                                bytes,
-                            });
+                            return Err(Diagnostic::error(
+                                "a non-struct compound literal is not supported yet (roadmap)",
+                            ));
                         }
-                        return Err(Diagnostic::error(
-                            "a non-struct compound literal is not supported yet (roadmap)",
-                        ));
+                        // Capture the cast's struct tag before parsing the operand (which may
+                        // itself run `parse_type` and overwrite `last_struct_tag`).
+                        if matches!(target_type, mwcc_syntax_trees::Type::StructPointer { .. }) {
+                            cast_struct_tag = self.last_struct_tag.take();
+                        }
+                        let operand = self.factor()?;
+                        Expression::Cast {
+                            target_type,
+                            operand: Box::new(operand),
+                        }
+                    } else {
+                        // A parenthesized expression may be a comma operator `(a, b, …)`:
+                        // each left operand is evaluated for side effects, the last yields
+                        // the value. (Call arguments and declarators split on commas at a
+                        // lower level, so this only applies inside grouping parens.)
+                        let mut inner = self.expression()?;
+                        while *self.peek() == Token::Comma {
+                            self.advance();
+                            let right = self.expression()?;
+                            inner = Expression::Comma {
+                                left: Box::new(inner),
+                                right: Box::new(right),
+                            };
+                        }
+                        self.expect(Token::ParenClose)?;
+                        inner
                     }
-                    // Capture the cast's struct tag before parsing the operand (which may
-                    // itself run `parse_type` and overwrite `last_struct_tag`).
-                    if matches!(target_type, mwcc_syntax_trees::Type::StructPointer { .. }) {
-                        cast_struct_tag = self.last_struct_tag.take();
-                    }
-                    let operand = self.factor()?;
-                    Expression::Cast {
-                        target_type,
-                        operand: Box::new(operand),
-                    }
-                } else {
-                    // A parenthesized expression may be a comma operator `(a, b, …)`:
-                    // each left operand is evaluated for side effects, the last yields
-                    // the value. (Call arguments and declarators split on commas at a
-                    // lower level, so this only applies inside grouping parens.)
-                    let mut inner = self.expression()?;
-                    while *self.peek() == Token::Comma {
-                        self.advance();
-                        let right = self.expression()?;
-                        inner = Expression::Comma {
-                            left: Box::new(inner),
-                            right: Box::new(right),
-                        };
-                    }
-                    self.expect(Token::ParenClose)?;
-                    inner
                 }
-            }
-            other => {
-                let token_index = self.position.saturating_sub(1);
-                if std::env::var_os("MWCC_PARSE_DEBUG").is_some() {
-                    let start = token_index.saturating_sub(8);
-                    let end = (token_index + 9).min(self.tokens.len());
-                    eprintln!(
-                        "parse context at token {token_index}: {:?}",
-                        &self.tokens[start..end]
-                    );
+                other => {
+                    let token_index = self.position.saturating_sub(1);
+                    if std::env::var_os("MWCC_PARSE_DEBUG").is_some() {
+                        let start = token_index.saturating_sub(8);
+                        let end = (token_index + 9).min(self.tokens.len());
+                        eprintln!(
+                            "parse context at token {token_index}: {:?}",
+                            &self.tokens[start..end]
+                        );
+                    }
+                    return Err(Diagnostic::error(format!(
+                        "expected an expression, found {other} at {}",
+                        self.diagnostic_position(token_index)
+                    )));
                 }
-                return Err(Diagnostic::error(format!(
-                    "expected an expression, found {other} at {}",
-                    self.diagnostic_position(token_index)
-                )));
-            }
             }
         };
         // postfix subscript `base[index]` and member access `base->field` /
@@ -1280,12 +1269,8 @@ impl Parser {
                         struct_tag = field.struct_tag;
                     } else {
                         self.expression_struct_tag = None;
-                        expression = self.lower_cxx_instance_member_call(
-                            &tag,
-                            "__cl",
-                            expression,
-                            arguments,
-                        )?;
+                        expression = self
+                            .lower_cxx_instance_member_call(&tag, "__cl", expression, arguments)?;
                         struct_tag = self.expression_struct_tag.take();
                     }
                 }
@@ -1408,11 +1393,12 @@ impl Parser {
                     let field = self.parse_identifier()?;
                     if is_arrow {
                         if let Some(tag) = struct_tag.as_deref() {
-                            if let Some(arrow) =
-                                self.resolve_concrete_template_iterator_arrow(tag)
+                            if let Some(arrow) = self.resolve_concrete_template_iterator_arrow(tag)
                             {
-                                let element_size =
-                                    self.structs.get(&arrow.element).map_or(0, |layout| layout.size);
+                                let element_size = self
+                                    .structs
+                                    .get(&arrow.element)
+                                    .map_or(0, |layout| layout.size);
                                 expression =
                                     iterator_pointer_storage(expression, arrow.storage_offset);
                                 if let Some(assertion) = arrow.assertion {
@@ -1502,10 +1488,10 @@ impl Parser {
                         .take()
                         .or_else(|| self.structural_aggregate_tag_for_field(&expression, &field))
                         .ok_or_else(|| {
-                        Diagnostic::error(format!(
-                            "member '{field}' on a non-struct-pointer base: {expression:?}"
-                        ))
-                    })?;
+                            Diagnostic::error(format!(
+                                "member '{field}' on a non-struct-pointer base: {expression:?}"
+                            ))
+                        })?;
                     let is_function_pointer_field = self
                         .structs
                         .get(&tag)
@@ -1542,7 +1528,8 @@ impl Parser {
                                 &field,
                                 template_argument,
                                 arguments.len(),
-                            )? else {
+                            )?
+                            else {
                                 return Err(Diagnostic::error(format!(
                                     "C++ member-template call '{tag}::{field}' is inline or unavailable (roadmap)"
                                 )));
@@ -1552,10 +1539,7 @@ impl Parser {
                         } else {
                             self.expression_struct_tag = None;
                             expression = self.lower_cxx_instance_member_call(
-                                &tag,
-                                &field,
-                                expression,
-                                arguments,
+                                &tag, &field, expression, arguments,
                             )?;
                             struct_tag = self.expression_struct_tag.take();
                         }
@@ -1787,13 +1771,11 @@ impl Parser {
                 });
             }
         }
-        let Some(member_call) = self.resolve_instance_member_call(class, member, &arguments)? else {
-            if let Some(copy) = self.lower_three_component_copy_setter(
-                class,
-                member,
-                object.clone(),
-                &arguments,
-            ) {
+        let Some(member_call) = self.resolve_instance_member_call(class, member, &arguments)?
+        else {
+            if let Some(copy) =
+                self.lower_three_component_copy_setter(class, member, object.clone(), &arguments)
+            {
                 return Ok(copy);
             }
             return Err(Diagnostic::error(format!(
@@ -1811,10 +1793,8 @@ impl Parser {
             } => concrete_object && direct_name.is_some() && *direct_is_inline,
         };
         if !retained_inline_call {
-            arguments = self.lower_cxx_aggregate_reference_arguments(
-                member_call.parameters(),
-                arguments,
-            );
+            arguments =
+                self.lower_cxx_aggregate_reference_arguments(member_call.parameters(), arguments);
         }
         Ok(match member_call {
             crate::cxx::ImplicitMemberCall::Static {
@@ -1914,7 +1894,10 @@ impl Parser {
         if source_tag != &resolved && source_tag != class {
             return None;
         }
-        let layout = self.structs.get(&resolved).or_else(|| self.structs.get(class))?;
+        let layout = self
+            .structs
+            .get(&resolved)
+            .or_else(|| self.structs.get(class))?;
         let components = ["x", "y", "z"]
             .into_iter()
             .map(|name| layout.fields.get(name))
@@ -2020,10 +2003,7 @@ fn token_starts_cxx_fundamental_conversion(token: &Token) -> bool {
     }
 }
 
-fn structural_virtual_vector_member(
-    expression: &Expression,
-    field: &str,
-) -> Option<(u32, Type)> {
+fn structural_virtual_vector_member(expression: &Expression, field: &str) -> Option<(u32, Type)> {
     let Expression::VirtualCall {
         return_type: Type::Struct { size: 12, .. },
         ..
@@ -2229,22 +2209,21 @@ fn unconditional_use_count(expression: &Expression, name: &str) -> Option<usize>
         | Expression::Dereference { pointer: operand }
         | Expression::AddressOf { operand }
         | Expression::Member { base: operand, .. }
-        | Expression::MemberAddress { base: operand, .. } => {
-            unconditional_use_count(operand, name)
-        }
+        | Expression::MemberAddress { base: operand, .. } => unconditional_use_count(operand, name),
         Expression::Index { base, index } => {
-            Some(
-                unconditional_use_count(base, name)?
-                    + unconditional_use_count(index, name)?,
-            )
+            Some(unconditional_use_count(base, name)? + unconditional_use_count(index, name)?)
         }
         Expression::Binary {
             operator,
             left,
             right,
-        } if !matches!(operator, BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr) => Some(
-            unconditional_use_count(left, name)? + unconditional_use_count(right, name)?,
-        ),
+        } if !matches!(
+            operator,
+            BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr
+        ) =>
+        {
+            Some(unconditional_use_count(left, name)? + unconditional_use_count(right, name)?)
+        }
         // Calls, assignments, short-circuit/conditional forms, and expression
         // kinds whose value can carry hidden storage are not parser-level inline
         // substitution candidates.
