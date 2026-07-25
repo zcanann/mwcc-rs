@@ -791,17 +791,20 @@ impl Generator {
         // `lwz r3,…; neg r0,r3; or; srawi r3; addi`). A load is taken only after the
         // arms are confirmed (so a non-matching shape emits nothing).
         let leaf_register = leaf_name(condition).and_then(|name| self.lookup_general(name));
-        let loadable = leaf_register.is_none()
-            && destination != GENERAL_SCRATCH
-            && self.is_word_load(condition);
+        let loadable = leaf_register.is_none() && self.is_word_load(condition);
         if leaf_register.is_none() && !loadable {
             return Ok(false);
         }
         let cond_register = match leaf_register {
             Some(register) => register,
             None => {
-                self.evaluate_general(condition, destination)?;
-                destination
+                let register = if destination == GENERAL_SCRATCH {
+                    self.fresh_virtual_general()
+                } else {
+                    destination
+                };
+                self.evaluate_general(condition, register)?;
+                register
             }
         };
         // The `neg`/`or` use r0; when the destination *is* r0 (a value/store
