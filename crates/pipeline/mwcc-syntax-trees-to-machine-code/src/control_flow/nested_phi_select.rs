@@ -15,8 +15,7 @@ impl Generator {
         tail: bool,
         origin: ConditionalOrigin,
     ) -> Compilation<bool> {
-        if self.behavior.integer_select_style
-            != mwcc_versions::IntegerSelectStyle::BranchPreserving
+        if self.behavior.integer_select_style != mwcc_versions::IntegerSelectStyle::BranchPreserving
             || !tail
             || origin != ConditionalOrigin::Ternary
             || !matches!(when_false, Expression::Conditional { .. })

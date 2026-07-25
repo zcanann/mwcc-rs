@@ -115,7 +115,8 @@ impl Generator {
         else {
             return Ok(false);
         };
-        let Some(insert_shift) = constant_value(insert_shift).and_then(|value| u8::try_from(value).ok())
+        let Some(insert_shift) =
+            constant_value(insert_shift).and_then(|value| u8::try_from(value).ok())
         else {
             return Ok(false);
         };
@@ -132,7 +133,8 @@ impl Generator {
         let Some((port, Type::UnsignedChar, command_a_value)) = fixed_port_store(command_a) else {
             return Ok(false);
         };
-        let Some(command) = constant_value(command_a_value).and_then(|value| i16::try_from(value).ok())
+        let Some(command) =
+            constant_value(command_a_value).and_then(|value| i16::try_from(value).ok())
         else {
             return Ok(false);
         };
@@ -151,7 +153,8 @@ impl Generator {
         else {
             return Ok(false);
         };
-        let Some((state_port, Type::UnsignedInt, state_value)) = fixed_port_store(state_store) else {
+        let Some((state_port, Type::UnsignedInt, state_value)) = fixed_port_store(state_store)
+        else {
             return Ok(false);
         };
         if constant_port != port

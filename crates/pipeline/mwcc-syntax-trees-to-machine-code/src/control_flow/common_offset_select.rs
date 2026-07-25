@@ -66,9 +66,7 @@ impl Generator {
                 self.patch_forward(false_branch, false_arm);
                 self.place_select_value(when_false, destination)?;
                 let join = self.output.instructions.len();
-                if let Instruction::Branch { target } =
-                    &mut self.output.instructions[join_branch]
-                {
+                if let Instruction::Branch { target } = &mut self.output.instructions[join_branch] {
                     *target = join;
                 }
             }

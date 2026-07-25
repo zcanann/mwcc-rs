@@ -168,9 +168,7 @@ impl Generator {
         let (Some(first), Some(second)) = (first, second) else {
             return Ok(false);
         };
-        if first.parameter != first_parameter.name
-            || second.parameter != second_parameter.name
-        {
+        if first.parameter != first_parameter.name || second.parameter != second_parameter.name {
             return Ok(false);
         }
         let Some((first_begin, first_end)) = rlwinm_mask(first.preserve_mask as i64) else {
@@ -185,12 +183,12 @@ impl Generator {
             return Ok(false);
         };
 
-        let Some((port, Type::UnsignedChar, command_value)) =
-            fixed_port_store(command_statement)
+        let Some((port, Type::UnsignedChar, command_value)) = fixed_port_store(command_statement)
         else {
             return Ok(false);
         };
-        let Some(command) = constant_value(command_value).and_then(|value| i16::try_from(value).ok())
+        let Some(command) =
+            constant_value(command_value).and_then(|value| i16::try_from(value).ok())
         else {
             return Ok(false);
         };
@@ -233,11 +231,13 @@ impl Generator {
         let port_low = port as u16 as i16;
         self.output.pre_scheduled = true;
         self.evaluate(&Expression::Variable(global.clone()), global_type, 7)?;
-        self.output.instructions.push(Instruction::ShiftLeftImmediate {
-            a: 6,
-            s: 4,
-            shift: second.shift,
-        });
+        self.output
+            .instructions
+            .push(Instruction::ShiftLeftImmediate {
+                a: 6,
+                s: 4,
+                shift: second.shift,
+            });
         self.output.instructions.push(Instruction::AddImmediate {
             d: 5,
             a: 0,

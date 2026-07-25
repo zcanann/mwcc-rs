@@ -2,10 +2,10 @@
 //!
 //! Split by family (fire 525); behavior-identical to the former single body.rs.
 
-mod call_prologue;
 mod ascii_pointer_compare;
 mod assertion_expression;
 mod bounded_member_cursor;
+mod call_prologue;
 mod callee_saved;
 mod comma_operator;
 mod condition_linkage;
@@ -15,15 +15,15 @@ mod conditional_member_select_tail;
 mod control_block_unique_copy;
 mod dispatchers;
 mod driver;
-mod enum_remap_member_update;
 mod endian_stack_pack;
 mod endian_stack_unpack;
+mod enum_remap_member_update;
 mod expression_statement;
-mod float_store_fill;
 mod fixed_address_object_flush;
 mod fixed_port_bitfield;
 mod fixed_port_indexed_bitfield;
 mod fixed_port_replay_update;
+mod float_store_fill;
 mod guards_ifs;
 mod global_struct_member_search;
 mod guarded_aggregate_update;
@@ -32,18 +32,18 @@ mod indirect_call;
 mod inlined_guarded_aggregate_update;
 mod inlined_local_select;
 mod ladders;
-mod legacy_constant_store;
 mod leading_store_guard;
 mod leading_store_guarded_call;
+mod legacy_constant_store;
 mod local_select;
 mod long_long_initialize;
 mod long_long_serial_fold;
 mod long_long_support;
 mod long_long_wait;
 mod loops;
-mod member_store_fill;
-mod member_initialization;
 mod member_copy_call;
+mod member_initialization;
+mod member_store_fill;
 mod nested_global_indirect_call;
 mod passes;
 mod punned_ladder_policy;
@@ -88,8 +88,8 @@ pub(crate) use mwcc_syntax_trees::{
 pub(crate) use mwcc_target::Eabi;
 pub(crate) use mwcc_versions::{
     CallDispatcherStyle, FixedAddressConstantStoreStyle, FrameConvention, GlobalAddressing,
-    GuardedMemberInitializationStyle,
-    IntegerComparisonValueStyle, LongLongTimerStyle, NarrowComputedReturnStyle,
-    NestedGlobalDispatchSchedule, PlainLinkageEpilogueStyle, PointerCallStoreEpilogueStyle,
-    PointerWalkerScheduleStyle, RaiseFamilyStyle, WideConstantAddSchedule,
+    GuardedMemberInitializationStyle, IntegerComparisonValueStyle, LongLongTimerStyle,
+    NarrowComputedReturnStyle, NestedGlobalDispatchSchedule, PlainLinkageEpilogueStyle,
+    PointerCallStoreEpilogueStyle, PointerWalkerScheduleStyle, RaiseFamilyStyle,
+    WideConstantAddSchedule,
 };

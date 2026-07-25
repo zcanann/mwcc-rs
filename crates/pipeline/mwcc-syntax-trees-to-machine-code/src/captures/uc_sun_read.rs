@@ -1,8 +1,6 @@
 //! Sunshine's linkage-first member of the MSL UART console-read family.
 
-use super::uart_read_family::{
-    UartReadBoolean, UartReadConvention, UartReadInitialization,
-};
+use super::uart_read_family::{UartReadBoolean, UartReadConvention, UartReadInitialization};
 use crate::generator::Generator;
 use mwcc_core::Compilation;
 use mwcc_syntax_trees::{Function, Type};
@@ -17,8 +15,7 @@ impl Generator {
             || !self.frame_slots.is_empty()
             || !self.behavior.deferred_inlining
             || super::ast_hash(function) != UC_SUN_READ_AST_HASH
-            || super::skipped_context_fingerprint(&self.skipped_inline_names)
-                != 0xbd60acb658c79e45
+            || super::skipped_context_fingerprint(&self.skipped_inline_names) != 0xbd60acb658c79e45
         {
             return Ok(false);
         }

@@ -62,7 +62,11 @@ const COMPILE_FLAG_GROUPS: &[&[&str]] = &[
 ];
 
 fn option_family(option: &str) -> &str {
-    if option.starts_with("-O") { "-O" } else { option }
+    if option.starts_with("-O") {
+        "-O"
+    } else {
+        option
+    }
 }
 
 /// Baseline flags not superseded by a canary directive.
@@ -353,7 +357,11 @@ mod tests {
 
     #[test]
     fn explicit_options_replace_their_baseline_family() {
-        let extra = ["-O3".to_string(), "-inline".to_string(), "deferred".to_string()];
+        let extra = [
+            "-O3".to_string(),
+            "-inline".to_string(),
+            "deferred".to_string(),
+        ];
         let baseline = baseline_flags(&extra);
         assert!(!baseline.contains(&"-O4,p"));
         assert!(!baseline.contains(&"-inline"));

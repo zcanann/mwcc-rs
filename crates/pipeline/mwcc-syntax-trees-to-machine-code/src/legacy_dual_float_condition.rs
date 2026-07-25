@@ -11,8 +11,7 @@ impl Generator {
     /// selection; ordinary frames retain the historical r1+8 scratch image.
     pub(crate) fn reserve_condition_conversion_scratch(&mut self, lanes: i16) -> i16 {
         if self.behavior.legacy_float_cast_schedule && !self.callee_saved.is_empty() {
-            self.callee_saved_conversion_bytes =
-                self.callee_saved_conversion_bytes.max(lanes * 8);
+            self.callee_saved_conversion_bytes = self.callee_saved_conversion_bytes.max(lanes * 8);
             self.frame_size
         } else {
             8
@@ -92,9 +91,7 @@ impl Generator {
         // signed-word bias even though its scheduler issues the signed bias
         // load first. Keep pool creation and instruction issue as separate
         // responsibilities so both the `.sdata2` layout and `.text` agree.
-        let narrow_bias_index = self
-            .output
-            .intern_constant(0x4330_0000_0000_0000, 8);
+        let narrow_bias_index = self.output.intern_constant(0x4330_0000_0000_0000, 8);
         let integer_bias_index = self.output.intern_constant(integer_bias, 8);
         for index in [narrow_bias_index, integer_bias_index] {
             if !self

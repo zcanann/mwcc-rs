@@ -60,7 +60,9 @@ impl Generator {
             };
             if constant_value(first).is_none()
                 || constant_value(second) != Some(shape.fixed_argument)
-                || constant_value(&guard.value).and_then(|value| i16::try_from(value).ok()).is_none()
+                || constant_value(&guard.value)
+                    .and_then(|value| i16::try_from(value).ok())
+                    .is_none()
             {
                 return Ok(false);
             }
@@ -287,7 +289,10 @@ impl Generator {
     }
 }
 
-fn recognize_table_search<'a>(function: &'a Function, generator: &Generator) -> Option<TableSearch<'a>> {
+fn recognize_table_search<'a>(
+    function: &'a Function,
+    generator: &Generator,
+) -> Option<TableSearch<'a>> {
     let [pointer, counter] = function.locals.as_slice() else {
         return None;
     };
@@ -387,7 +392,11 @@ fn recognize_table_search<'a>(function: &'a Function, generator: &Generator) -> 
     if constant_value(zero) != Some(0) {
         return None;
     }
-    let Expression::Call { name: callee, arguments } = call.as_ref() else {
+    let Expression::Call {
+        name: callee,
+        arguments,
+    } = call.as_ref()
+    else {
         return None;
     };
     let [Expression::Index { base, index }, fixed] = arguments.as_slice() else {
@@ -398,7 +407,10 @@ fn recognize_table_search<'a>(function: &'a Function, generator: &Generator) -> 
     };
     if table != pointer_table
         || !matches!(index.as_ref(), Expression::Variable(name) if name == &counter.name)
-        || !matches!(generator.globals.get(table.as_str()), Some(Type::UnsignedChar))
+        || !matches!(
+            generator.globals.get(table.as_str()),
+            Some(Type::UnsignedChar)
+        )
         || generator.global_array_sizes.get(table.as_str()).copied()? < bound as u32
     {
         return None;

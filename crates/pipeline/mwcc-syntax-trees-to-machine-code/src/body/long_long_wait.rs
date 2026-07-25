@@ -165,9 +165,9 @@ impl Generator {
         }
         if self.behavior.long_long_timer_style != LongLongTimerStyle::MainlinePair
             || !self.supports_unsigned_word_clock(plan.clock)
-            {
-                return Ok(false);
-            }
+        {
+            return Ok(false);
+        }
 
         self.output.pre_scheduled = true;
         self.output.has_conversion = true;

@@ -244,12 +244,15 @@ impl Parser {
                     peephole_disabled: self.peephole_disabled,
                 }),
                 "pop" => {
-                    let state = self.pragma_stack.pop().unwrap_or(crate::parser::PragmaState {
-                        cplusplus: self.default_cplusplus,
-                        defer_codegen: false,
-                        force_active: false,
-                        peephole_disabled: false,
-                    });
+                    let state = self
+                        .pragma_stack
+                        .pop()
+                        .unwrap_or(crate::parser::PragmaState {
+                            cplusplus: self.default_cplusplus,
+                            defer_codegen: false,
+                            force_active: false,
+                            peephole_disabled: false,
+                        });
                     self.cplusplus = state.cplusplus;
                     self.defer_codegen = state.defer_codegen;
                     self.force_active = state.force_active;
@@ -733,7 +736,9 @@ impl Parser {
                 }
                 // A skipped `static inline` function with an inline `asm {}` body
                 // still contributes a local undefined symbol (mwcc cannot inline it).
-                if error.message == "an inline function definition is skipped (inlined at call sites)" {
+                if error.message
+                    == "an inline function definition is skipped (inlined at call sites)"
+                {
                     self.try_recover_skipped_inline_definition();
                 }
                 if let Some((name, is_static)) = self.inline_asm_function_name() {
@@ -950,9 +955,8 @@ impl Parser {
             .iter()
             .filter_map(|name| self.cxx_classes.get(name).map(|class| (name, class)))
             .map(|(name, class)| {
-                let encoded_name = crate::cxx::encode_qualified_scope(
-                    &name.split("::").collect::<Vec<_>>(),
-                )?;
+                let encoded_name =
+                    crate::cxx::encode_qualified_scope(&name.split("::").collect::<Vec<_>>())?;
                 let mut table_offset = 0u32;
                 let vtable_components = class
                     .vtable_components
@@ -985,9 +989,7 @@ impl Parser {
             globals,
             functions,
             cxx_abi_classes,
-            cxx_class_declaration_order: std::mem::take(
-                &mut self.cxx_class_declaration_order,
-            ),
+            cxx_class_declaration_order: std::mem::take(&mut self.cxx_class_declaration_order),
             aggregate_definitions,
             global_aggregate_tags: std::mem::take(&mut self.global_structs),
             function_parameter_aggregate_tags: std::mem::take(&mut self.function_parameter_structs),
@@ -1007,9 +1009,7 @@ impl Parser {
             weak_materialized: std::mem::take(&mut self.weak_materialized),
             section_prototypes: std::mem::take(&mut self.section_prototype_order),
             skipped_inline_names: std::mem::take(&mut self.skipped_inline_names),
-            skipped_inline_definitions: std::mem::take(
-                &mut self.skipped_inline_definitions,
-            ),
+            skipped_inline_definitions: std::mem::take(&mut self.skipped_inline_definitions),
             deferred_function_names: std::mem::take(&mut self.deferred_function_names),
             variadic_definitions: std::mem::take(&mut self.variadic_definitions),
             fixed_address_arrays: std::mem::take(&mut self.fixed_address_arrays),
@@ -2648,8 +2648,8 @@ impl Parser {
                     .with_function_type(cxx_function_type.clone());
                     // A function-pointer parameter `RET (*name)(params)` is a 4-byte
                     // opaque pointer; consume its declarator and signature.
-                    if let Some((name, callback_type)) = self
-                        .try_cxx_function_pointer_declarator(callback_return_type)?
+                    if let Some((name, callback_type)) =
+                        self.try_cxx_function_pointer_declarator(callback_return_type)?
                     {
                         parameters.push(Parameter {
                             parameter_type: Type::StructPointer { element_size: 0 },
@@ -3085,8 +3085,7 @@ impl Parser {
                                     },
                                     value,
                                 };
-                                table_offset +=
-                                    8 + component.virtual_slots.max(1) as u32 * 4;
+                                table_offset += 8 + component.virtual_slots.max(1) as u32 * 4;
                                 store
                             })
                             .collect();
@@ -3107,9 +3106,7 @@ impl Parser {
                             destructor_body.push(Statement::If {
                                 condition: Expression::Binary {
                                     operator: mwcc_syntax_trees::BinaryOperator::Greater,
-                                    left: Box::new(Expression::Variable(
-                                        "__destroy".to_string(),
-                                    )),
+                                    left: Box::new(Expression::Variable("__destroy".to_string())),
                                     right: Box::new(Expression::IntegerLiteral(0)),
                                 },
                                 then_body: vec![Statement::Expression(Expression::Call {
@@ -3161,11 +3158,8 @@ impl Parser {
                                     .iter()
                                     .any(|candidate| candidate.name == destructor)
                                 {
-                                    let mut table = cxx_vtables::global(
-                                        class,
-                                        vtable,
-                                        Some(&destructor),
-                                    );
+                                    let mut table =
+                                        cxx_vtables::global(class, vtable, Some(&destructor));
                                     table.is_weak = true;
                                     globals.push(table);
                                 }
@@ -3186,18 +3180,10 @@ impl Parser {
                         let destructor = class
                             .has_virtual_destructor
                             .then(|| {
-                                crate::cxx::mangle_qualified_member_function(
-                                    &scopes,
-                                    "__dt",
-                                    &[],
-                                )
+                                crate::cxx::mangle_qualified_member_function(&scopes, "__dt", &[])
                             })
                             .transpose()?;
-                        globals.push(cxx_vtables::global(
-                            class,
-                            vtable,
-                            destructor.as_deref(),
-                        ));
+                        globals.push(cxx_vtables::global(class, vtable, destructor.as_deref()));
                     }
                 }
             }
@@ -3761,8 +3747,7 @@ impl Parser {
                     let (alias, declared_type, struct_tag) =
                         self.parse_local_typeof_member_typedef()?;
                     let previous_type = self.typedefs.insert(alias.clone(), declared_type);
-                    let previous_function_type =
-                        self.function_pointer_typedefs.remove(&alias);
+                    let previous_function_type = self.function_pointer_typedefs.remove(&alias);
                     local_function_pointer_typedefs.push((
                         alias.clone(),
                         previous_type,
@@ -4540,9 +4525,7 @@ impl Parser {
     /// element type: `typedef __typeof__(((struct S){0}).field[0]) Alias;`.
     /// This is declaration introspection only; the compound literal is never
     /// evaluated, and the selected type comes from the recovered aggregate.
-    fn parse_local_typeof_member_typedef(
-        &mut self,
-    ) -> Compilation<(String, Type, Option<String>)> {
+    fn parse_local_typeof_member_typedef(&mut self) -> Compilation<(String, Type, Option<String>)> {
         if !self.eat_word("typedef") || !self.eat_word("__typeof__") {
             return Err(Diagnostic::error("expected a local __typeof__ typedef"));
         }
@@ -4578,7 +4561,9 @@ impl Parser {
             self.position += 1;
         }
         if braces != 0 || brackets != 0 {
-            return Err(Diagnostic::error("unbalanced local __typeof__ member expression"));
+            return Err(Diagnostic::error(
+                "unbalanced local __typeof__ member expression",
+            ));
         }
         let aggregate = struct_name
             .ok_or_else(|| Diagnostic::error("__typeof__ member expression has no struct type"))?;

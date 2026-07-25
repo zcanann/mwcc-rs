@@ -14,10 +14,7 @@ impl Generator {
     /// build 163 schedules those independent instructions in the opposite order.
     pub(crate) fn emit_non_leaf_constant_join_epilogue(&mut self, constant: i64) {
         let emit_return = |generator: &mut Self| {
-            generator.load_integer_constant(
-                mwcc_target::Eabi::general_result().number,
-                constant,
-            );
+            generator.load_integer_constant(mwcc_target::Eabi::general_result().number, constant);
         };
         let emit_lr_reload = |generator: &mut Self| {
             generator.output.instructions.push(Instruction::LoadWord {

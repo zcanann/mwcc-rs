@@ -19,11 +19,7 @@ impl Generator {
             return false;
         }
         let Statement::Store {
-            target:
-                Expression::Member {
-                    member_type,
-                    ..
-                },
+            target: Expression::Member { member_type, .. },
             value: Expression::Call { name, .. },
         } = statement
         else {

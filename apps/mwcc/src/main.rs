@@ -799,8 +799,7 @@ fn compile(
                 * usize::from(behavior.cxx_inline_control_flow_label_weight)
             + cxx_inline_facts.virtual_destructors
                 * usize::from(behavior.cxx_virtual_destructor_label_bump)
-            + cxx_inline_facts.direct_calls
-                * usize::from(behavior.cxx_inline_ipa_call_label_bump)
+            + cxx_inline_facts.direct_calls * usize::from(behavior.cxx_inline_ipa_call_label_bump)
             + prototype_name_bump
     };
     // Static-local positional samples currently track skipped-inline cost.
@@ -2031,12 +2030,8 @@ mod tests {
         let enabled = parse_invocation(&["-RTTI".into(), "on".into()]);
         assert!(enabled.flags.rtti);
 
-        let disabled = parse_invocation(&[
-            "-RTTI".into(),
-            "on".into(),
-            "-RTTI".into(),
-            "off".into(),
-        ]);
+        let disabled =
+            parse_invocation(&["-RTTI".into(), "on".into(), "-RTTI".into(), "off".into()]);
         assert!(!disabled.flags.rtti);
     }
 

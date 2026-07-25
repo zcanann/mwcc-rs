@@ -333,8 +333,7 @@ impl Generator {
                         let mut aliases = HashMap::new();
                         aliases.insert(local.name.clone(), local.initializer.clone().unwrap());
                         for statement in &function.statements {
-                            let statement =
-                                crate::body::substitute_statement(statement, &aliases);
+                            let statement = crate::body::substitute_statement(statement, &aliases);
                             self.emit_statement(&statement)?;
                         }
                         self.emit_epilogue_and_return();

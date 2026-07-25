@@ -19,7 +19,10 @@ pub struct CompilerConfig {
 impl CompilerConfig {
     /// A config for `build` with the default (canary-corpus) flags.
     pub fn new(build: CompilerBuild) -> Self {
-        CompilerConfig { build, flags: Flags::default() }
+        CompilerConfig {
+            build,
+            flags: Flags::default(),
+        }
     }
 
     /// Whether plain `char` is signed for this configuration: the build default,

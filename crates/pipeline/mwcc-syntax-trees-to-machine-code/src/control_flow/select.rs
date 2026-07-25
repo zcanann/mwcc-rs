@@ -9,15 +9,13 @@ impl Generator {
     /// mwcc reclaims that lane as the persistent short-circuit 0/1 accumulator.
     /// This is required when the right comparison also loads through r0: using r0
     /// as the accumulator would return the loaded field rather than normalized 1.
-    fn legacy_short_circuit_accumulator(
-        &self,
-        condition: &Expression,
-    ) -> Compilation<Option<u8>> {
+    fn legacy_short_circuit_accumulator(&self, condition: &Expression) -> Compilation<Option<u8>> {
         let Expression::Binary { left, right, .. } = condition else {
             return Ok(None);
         };
-        let indexed_member = [left.as_ref(), right.as_ref()].into_iter().find_map(
-            |operand| match operand {
+        let indexed_member = [left.as_ref(), right.as_ref()]
+            .into_iter()
+            .find_map(|operand| match operand {
                 Expression::Member {
                     base: member_base,
                     offset,
@@ -25,8 +23,7 @@ impl Generator {
                     ..
                 } => Some((member_base.as_ref(), *offset, *stride)),
                 _ => None,
-            },
-        );
+            });
         let Some((Expression::Index { base, index }, offset, stride)) = indexed_member else {
             return Ok(None);
         };
@@ -39,7 +36,10 @@ impl Generator {
         let Some(index_name) = leaf_name(index) else {
             return Ok(None);
         };
-        let Some(index_register) = self.locations.get(index_name).map(|location| location.register)
+        let Some(index_register) = self
+            .locations
+            .get(index_name)
+            .map(|location| location.register)
         else {
             return Ok(None);
         };
@@ -53,9 +53,7 @@ impl Generator {
             return Ok(None);
         }
         let high = self.free_general_excluding(index_register)?;
-        Ok(Some(
-            self.free_general_excluding_two(index_register, high)?,
-        ))
+        Ok(Some(self.free_general_excluding_two(index_register, high)?))
     }
 
     /// Insert a value preload into the final load/compare latency slot emitted by
@@ -932,27 +930,24 @@ impl Generator {
         // the integer-value form has a separate branchless materialization.
         if operator == BinaryOperator::LogicalOr
             && terms.len() == 2
-            && self.behavior.logical_or_value_style
-                == mwcc_versions::LogicalOrValueStyle::TrueFirst
+            && self.behavior.logical_or_value_style == mwcc_versions::LogicalOrValueStyle::TrueFirst
         {
             if let Some((name, minimum)) = consecutive_equality_or(terms[0], terms[1]) {
                 let immediate = minimum
                     .checked_neg()
                     .and_then(|value| i16::try_from(value).ok());
-                if let (Some(register), Some(immediate)) =
-                    (self.lookup_general(name), immediate)
-                {
+                if let (Some(register), Some(immediate)) = (self.lookup_general(name), immediate) {
                     self.output.instructions.push(Instruction::AddImmediate {
                         d: GENERAL_SCRATCH,
                         a: register,
                         immediate,
                     });
-                    self.output.instructions.push(
-                        Instruction::CompareLogicalWordImmediate {
+                    self.output
+                        .instructions
+                        .push(Instruction::CompareLogicalWordImmediate {
                             a: GENERAL_SCRATCH,
                             immediate: 1,
-                        },
-                    );
+                        });
                     let fall_branch = self.output.instructions.len();
                     self.output
                         .instructions

@@ -88,8 +88,7 @@ impl Generator {
             &when_true,
             &when_false,
             mwcc_syntax_trees::ConditionalOrigin::IfAssignments,
-            self.behavior.integer_select_style
-                == mwcc_versions::IntegerSelectStyle::Branchless,
+            self.behavior.integer_select_style == mwcc_versions::IntegerSelectStyle::Branchless,
         );
         self.evaluate_tail(&select, function.return_type, result)?;
         self.output
@@ -335,8 +334,8 @@ impl Generator {
         addr_home: u8,
     ) {
         self.load_integer_constant(store_register, i64::from(arm.store_constant));
-        let serial_scratch = self.behavior.va_arg_schedule_style
-            == mwcc_versions::VaArgScheduleStyle::SerialScratch;
+        let serial_scratch =
+            self.behavior.va_arg_schedule_style == mwcc_versions::VaArgScheduleStyle::SerialScratch;
         if serial_scratch {
             self.output.instructions.push(Instruction::StoreByte {
                 s: store_register,
@@ -810,8 +809,8 @@ impl Generator {
             a: arm.list_register,
             offset: *then_offset as i16,
         });
-        let serial_scratch = self.behavior.va_arg_schedule_style
-            == mwcc_versions::VaArgScheduleStyle::SerialScratch;
+        let serial_scratch =
+            self.behavior.va_arg_schedule_style == mwcc_versions::VaArgScheduleStyle::SerialScratch;
         if serial_scratch {
             self.output.instructions.push(Instruction::AddImmediate {
                 d: arm.list_register,
@@ -871,12 +870,7 @@ impl Generator {
         } else {
             g_register
         };
-        self.emit_align_store_arm(
-            &arm,
-            store_register,
-            g_register,
-            arm.reg_register,
-        );
+        self.emit_align_store_arm(&arm, store_register, g_register, arm.reg_register);
         let join = self.output.instructions.len();
         if let Instruction::Branch { target } = &mut self.output.instructions[skip_index] {
             *target = join;
@@ -3049,8 +3043,7 @@ impl Generator {
         // Build 163 preserves the source if/else diamond here. When the returned
         // parameter already occupies r3, each arm exits directly; otherwise the
         // arms join at one final move from the parameter's home register.
-        if self.behavior.integer_select_style
-            == mwcc_versions::IntegerSelectStyle::BranchPreserving
+        if self.behavior.integer_select_style == mwcc_versions::IntegerSelectStyle::BranchPreserving
         {
             let (options, condition_bit) = self.emit_condition_test(condition)?;
             let else_label = self.fresh_label();
@@ -3197,8 +3190,7 @@ impl Generator {
             return Ok(false);
         };
         let result = Eabi::general_result().number;
-        if self.behavior.integer_select_style
-            == mwcc_versions::IntegerSelectStyle::BranchPreserving
+        if self.behavior.integer_select_style == mwcc_versions::IntegerSelectStyle::BranchPreserving
         {
             self.emit_legacy_select_diamond(condition, &then_arm, &else_arm, result)?;
             return Ok(true);
@@ -3292,9 +3284,7 @@ impl Generator {
     ) -> Compilation<()> {
         let (options, condition_bit) = self.emit_condition_test(condition)?;
 
-        if let (SelectArm::Copy(then_phi), SelectArm::Copy(else_source)) =
-            (then_arm, else_arm)
-        {
+        if let (SelectArm::Copy(then_phi), SelectArm::Copy(else_source)) = (then_arm, else_arm) {
             let false_arm = self.fresh_label();
             let join = self.fresh_label();
             self.emit_branch_conditional_to(options, condition_bit, false_arm);

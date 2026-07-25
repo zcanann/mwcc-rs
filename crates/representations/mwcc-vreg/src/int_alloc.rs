@@ -53,8 +53,9 @@ pub fn model_order(values: &[Value]) -> Vec<usize> {
     });
     let mut order: Vec<usize> = Vec::new();
     let mut push_class = |order: &mut Vec<usize>, class: Class, descending: bool| {
-        let mut members: Vec<usize> =
-            (0..values.len()).filter(|&i| values[i].class == class).collect();
+        let mut members: Vec<usize> = (0..values.len())
+            .filter(|&i| values[i].class == class)
+            .collect();
         members.sort_by_key(|&i| {
             let def = values[i].def as i64;
             if descending {
@@ -77,7 +78,10 @@ pub fn model_order(values: &[Value]) -> Vec<usize> {
     {
         let mut members: Vec<usize> = (0..values.len())
             .filter(|&i| {
-                matches!(values[i].class, Class::Computed | Class::Mask | Class::ArmShift)
+                matches!(
+                    values[i].class,
+                    Class::Computed | Class::Mask | Class::ArmShift
+                )
             })
             .collect();
         members.sort_by_key(|&i| values[i].last);

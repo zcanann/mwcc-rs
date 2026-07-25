@@ -195,12 +195,12 @@ impl Generator {
             return Ok(false);
         };
 
-        let Some((port, Type::UnsignedChar, command_value)) =
-            fixed_port_store(command_statement)
+        let Some((port, Type::UnsignedChar, command_value)) = fixed_port_store(command_statement)
         else {
             return Ok(false);
         };
-        let Some(command) = constant_value(command_value).and_then(|value| i16::try_from(value).ok())
+        let Some(command) =
+            constant_value(command_value).and_then(|value| i16::try_from(value).ok())
         else {
             return Ok(false);
         };
@@ -244,7 +244,11 @@ impl Generator {
         self.evaluate(&Expression::Variable(global.clone()), global_type, 6)?;
         self.output
             .instructions
-            .push(Instruction::ShiftLeftImmediate { a: 3, s: 3, shift: 2 });
+            .push(Instruction::ShiftLeftImmediate {
+                a: 3,
+                s: 3,
+                shift: 2,
+            });
         self.output
             .instructions
             .push(Instruction::Add { d: 7, a: 6, b: 3 });

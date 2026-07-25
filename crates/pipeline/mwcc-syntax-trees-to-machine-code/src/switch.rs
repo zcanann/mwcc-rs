@@ -46,7 +46,9 @@ impl Generator {
         result_register: u8,
     ) -> Compilation<()> {
         if arms.is_empty() {
-            return Err(Diagnostic::error("an empty call dispatcher is not supported"));
+            return Err(Diagnostic::error(
+                "an empty call dispatcher is not supported",
+            ));
         }
         let mut by_value = std::collections::HashMap::new();
         let mut min = i64::MAX;
@@ -147,7 +149,9 @@ impl Generator {
                 .push(Instruction::move_register(result_register, 3));
             if source_index + 1 != arms.len() {
                 let branch = self.output.instructions.len();
-                self.output.instructions.push(Instruction::Branch { target: 0 });
+                self.output
+                    .instructions
+                    .push(Instruction::Branch { target: 0 });
                 joins.push(branch);
             }
         }
@@ -488,9 +492,9 @@ impl Generator {
                     .any(|&(i, t)| i == n - 1 && matches!(t, Target::Default))
                 && matches!(self.output.instructions[n - 1], Instruction::Branch { .. });
             let prev_first_body = n >= 2
-                && patches
-                    .iter()
-                    .any(|&(i, t)| i == n - 2 && matches!(t, Target::Body(body) if body == first_source_body))
+                && patches.iter().any(|&(i, t)| {
+                    i == n - 2 && matches!(t, Target::Body(body) if body == first_source_body)
+                })
                 && matches!(
                     self.output.instructions[n - 2],
                     Instruction::BranchConditionalForward { .. }

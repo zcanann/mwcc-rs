@@ -14,8 +14,7 @@ impl Generator {
             || !self.frame_slots.is_empty()
             || !self.behavior.deferred_inlining
             || super::ast_hash(function) != UC_SUN_WRITE_AST_HASH
-            || super::skipped_context_fingerprint(&self.skipped_inline_names)
-                != 0xbd60acb658c79e45
+            || super::skipped_context_fingerprint(&self.skipped_inline_names) != 0xbd60acb658c79e45
         {
             return Ok(false);
         }

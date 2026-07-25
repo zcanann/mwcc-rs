@@ -134,8 +134,7 @@ fn shared_member_mask_conjunction(expression: &Expression) -> Option<(&Expressio
     };
     let (first_member, first_mask) = member_mask(first)?;
     let (second_member, second_mask) = member_mask(right)?;
-    same_member(first_member, second_member)
-        .then_some((first_member, first_mask, second_mask))
+    same_member(first_member, second_member).then_some((first_member, first_mask, second_mask))
 }
 
 fn member_mask(expression: &Expression) -> Option<(&Expression, u32)> {

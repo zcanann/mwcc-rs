@@ -146,7 +146,8 @@ impl Generator {
         let Some((preserve_begin, preserve_end)) = rlwinm_mask(preserve_mask) else {
             return Ok(false);
         };
-        let Some(field_shift) = constant_value(field_shift).and_then(|value| u8::try_from(value).ok())
+        let Some(field_shift) =
+            constant_value(field_shift).and_then(|value| u8::try_from(value).ok())
         else {
             return Ok(false);
         };
@@ -198,7 +199,11 @@ impl Generator {
         self.evaluate(&Expression::Variable(global.clone()), global_type, 4)?;
         self.output
             .instructions
-            .push(Instruction::ShiftLeftImmediate { a: 6, s: 3, shift: 1 });
+            .push(Instruction::ShiftLeftImmediate {
+                a: 6,
+                s: 3,
+                shift: 1,
+            });
         self.output
             .instructions
             .push(Instruction::RotateAndMaskInsert {
@@ -220,11 +225,13 @@ impl Generator {
             begin: preserve_begin,
             end: preserve_end,
         });
-        self.output.instructions.push(Instruction::ShiftLeftImmediate {
-            a: 0,
-            s: 6,
-            shift: field_shift,
-        });
+        self.output
+            .instructions
+            .push(Instruction::ShiftLeftImmediate {
+                a: 0,
+                s: 6,
+                shift: field_shift,
+            });
         self.output
             .instructions
             .push(Instruction::Or { a: 0, s: 3, b: 0 });

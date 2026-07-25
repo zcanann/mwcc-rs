@@ -20,9 +20,10 @@ impl Generator {
             || function.return_expression.is_some()
             || function_makes_call(function)
             || self.behavior.global_addressing != GlobalAddressing::SmallData
-            || !function.parameters.iter().all(|parameter| {
-                matches!(parameter.parameter_type, Type::Int | Type::UnsignedInt)
-            })
+            || !function
+                .parameters
+                .iter()
+                .all(|parameter| matches!(parameter.parameter_type, Type::Int | Type::UnsignedInt))
         {
             return Ok(false);
         }
@@ -202,11 +203,13 @@ impl Generator {
             }
             BinaryOperator::Multiply => {
                 self.load_comma_home(name, GENERAL_SCRATCH)?;
-                self.output.instructions.push(Instruction::MultiplyImmediate {
-                    d: GENERAL_SCRATCH,
-                    a: GENERAL_SCRATCH,
-                    immediate,
-                });
+                self.output
+                    .instructions
+                    .push(Instruction::MultiplyImmediate {
+                        d: GENERAL_SCRATCH,
+                        a: GENERAL_SCRATCH,
+                        immediate,
+                    });
             }
             _ => {
                 return Err(Diagnostic::error(
@@ -268,9 +271,7 @@ fn has_nested_pure_comma_lane(expression: &Expression) -> bool {
                 left.as_ref(),
                 Expression::Comma { right, .. } if !expression_has_side_effect(right)
             );
-            nested_lane
-                || has_nested_pure_comma_lane(left)
-                || has_nested_pure_comma_lane(right)
+            nested_lane || has_nested_pure_comma_lane(left) || has_nested_pure_comma_lane(right)
         }
         Expression::Binary { left, right, .. } => {
             has_nested_pure_comma_lane(left) || has_nested_pure_comma_lane(right)

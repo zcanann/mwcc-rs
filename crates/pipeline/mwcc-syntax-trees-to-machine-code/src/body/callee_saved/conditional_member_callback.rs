@@ -120,7 +120,10 @@ fn recognize(function: &Function) -> Option<ConditionalMemberCallback<'_>> {
     let [object, ..] = function.parameters.as_slice() else {
         return None;
     };
-    if !matches!(object.parameter_type, Type::Pointer(_) | Type::StructPointer { .. }) {
+    if !matches!(
+        object.parameter_type,
+        Type::Pointer(_) | Type::StructPointer { .. }
+    ) {
         return None;
     }
     let [alias] = function.locals.as_slice() else {

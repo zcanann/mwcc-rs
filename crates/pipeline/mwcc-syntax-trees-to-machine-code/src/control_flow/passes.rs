@@ -18,13 +18,11 @@ pub(crate) fn consecutive_equality_or<'e>(
         else {
             return None;
         };
-        if let (Expression::Variable(name), Some(constant)) =
-            (left.as_ref(), constant_value(right))
+        if let (Expression::Variable(name), Some(constant)) = (left.as_ref(), constant_value(right))
         {
             return Some((name.as_str(), constant));
         }
-        if let (Some(constant), Expression::Variable(name)) =
-            (constant_value(left), right.as_ref())
+        if let (Some(constant), Expression::Variable(name)) = (constant_value(left), right.as_ref())
         {
             return Some((name.as_str(), constant));
         }

@@ -1,8 +1,8 @@
 //! Entry-register aliases that remain valid through a structured body's first call.
 
+use super::structured::logical_and_terms;
 #[allow(unused_imports)]
 use super::*;
-use super::structured::logical_and_terms;
 
 #[derive(Clone)]
 pub(super) struct EntryParameterAlias {
@@ -82,8 +82,7 @@ pub(super) fn fold_entry_alias_zero_test(
     };
     let _ = prefix;
     let incoming = match copy {
-        Instruction::Or { a, s, b }
-            if *a == alias.home && *s == *b => *s,
+        Instruction::Or { a, s, b } if *a == alias.home && *s == *b => *s,
         _ => return false,
     };
     let compares_incoming_to_zero = matches!(

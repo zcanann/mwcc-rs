@@ -558,8 +558,8 @@ impl Generator {
         self.frame_size = 32;
         let legacy_reloading = self.behavior.trig_dispatcher_style
             == mwcc_versions::TrigDispatcherStyle::LegacyReloading;
-        let eager_zero_constant = self.behavior.trig_zero_constant_placement
-            == TrigZeroConstantPlacement::Prologue;
+        let eager_zero_constant =
+            self.behavior.trig_zero_constant_placement == TrigZeroConstantPlacement::Prologue;
         if legacy_reloading {
             self.output
                 .instructions
@@ -916,8 +916,7 @@ impl Generator {
         } else {
             0_u32
         };
-        self.output.anonymous_label_bump +=
-            base_label_bump + hidden_label_bump + ipa_label_bump;
+        self.output.anonymous_label_bump += base_label_bump + hidden_label_bump + ipa_label_bump;
         Ok(true)
     }
 
@@ -1157,7 +1156,11 @@ impl Generator {
         // Pre-pool labels: ordinary compilation retains 12 around this CFG;
         // `-inline auto,deferred` retains three more. This is independent of
         // compiler generation (the build's initial counter still differs).
-        let deferred_bump = if self.behavior.deferred_inlining { 3 } else { 0 };
+        let deferred_bump = if self.behavior.deferred_inlining {
+            3
+        } else {
+            0
+        };
         self.output.anonymous_label_bump += 12 + deferred_bump;
         Ok(true)
     }

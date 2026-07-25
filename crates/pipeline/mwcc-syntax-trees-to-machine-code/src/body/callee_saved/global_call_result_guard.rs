@@ -72,7 +72,10 @@ impl Generator {
             return Ok(false);
         };
         if !matches!(self.globals.get(global.as_str()), Some(Type::Struct { size, .. }) if *size > 8)
-            || member(condition, global) != u16::try_from(*status_offset).ok().map(|offset| (offset, Type::Int))
+            || member(condition, global)
+                != u16::try_from(*status_offset)
+                    .ok()
+                    .map(|offset| (offset, Type::Int))
             || !else_body.is_empty()
         {
             return Ok(false);
@@ -124,13 +127,11 @@ impl Generator {
         {
             return Ok(false);
         }
-        let (status_offset, offset_field) = match (
-            i16::try_from(*status_offset),
-            i16::try_from(offset_field),
-        ) {
-            (Ok(status), Ok(offset)) => (status, offset),
-            _ => return Ok(false),
-        };
+        let (status_offset, offset_field) =
+            match (i16::try_from(*status_offset), i16::try_from(offset_field)) {
+                (Ok(status), Ok(offset)) => (status, offset),
+                _ => return Ok(false),
+            };
 
         self.non_leaf = true;
         self.callee_saved = vec![31, 30];
@@ -212,9 +213,11 @@ impl Generator {
             .push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
         let done = self.fresh_label();
         self.emit_branch_conditional_to(12, 2, done);
-        self.output
-            .instructions
-            .push(Instruction::AddImmediate { d: 0, a: 0, immediate: limit });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 0,
+            a: 0,
+            immediate: limit,
+        });
         self.output.instructions.push(Instruction::StoreWord {
             s: 0,
             a: 30,
@@ -236,9 +239,11 @@ impl Generator {
             a: 1,
             offset: 16,
         });
-        self.output
-            .instructions
-            .push(Instruction::AddImmediate { d: 1, a: 1, immediate: 24 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 24,
+        });
         self.output
             .instructions
             .push(Instruction::MoveToLinkRegister { s: 0 });

@@ -318,7 +318,11 @@ pub fn lower_function(
         entry_parameter_words: function
             .parameters
             .iter()
-            .map(|parameter| usize::from(parameter.parameter_type.width()).div_ceil(32).max(1))
+            .map(|parameter| {
+                usize::from(parameter.parameter_type.width())
+                    .div_ceil(32)
+                    .max(1)
+            })
             .sum(),
         legacy_callee_saved_frame_layout:
             generator::LegacyCalleeSavedFrameLayout::InferFromValueOrigin,
@@ -370,13 +374,15 @@ pub fn lower_function(
         inline_summaries: inline_summaries.clone(),
     };
     generator.assign_parameters(function)?;
-    generator.evaluate_body(function).map_err(|mut diagnostic| {
-        let context = format!("function '{}'", function.name);
-        if !diagnostic.message.contains(&context) {
-            diagnostic.message.push_str(&format!(" (in {context})"));
-        }
-        diagnostic
-    })?;
+    generator
+        .evaluate_body(function)
+        .map_err(|mut diagnostic| {
+            let context = format!("function '{}'", function.name);
+            if !diagnostic.message.contains(&context) {
+                diagnostic.message.push_str(&format!(" (in {context})"));
+            }
+            diagnostic
+        })?;
     // Resolve label-addressed branch targets now that emission is complete (and
     // before any stream-shortening pass could shift instruction indices).
     if generator
@@ -408,12 +414,10 @@ pub fn lower_function(
             // call site, not after every name visible in the caller's original
             // AST. Reconstruct the same expanded tree used by body lowering so
             // declaration-order symbols preserve that source position.
-            let expanded_symbol_source = body::function_calls_any(
-                function,
-                &generator.skipped_inline_names,
-            )
-            .then(|| generator.inline_bodies.expand_calls(function))
-            .flatten();
+            let expanded_symbol_source =
+                body::function_calls_any(function, &generator.skipped_inline_names)
+                    .then(|| generator.inline_bodies.expand_calls(function))
+                    .flatten();
             generator.output.symbol_order = symbol_order::referenced_names(
                 expanded_symbol_source.as_ref().unwrap_or(function),
                 &generator.call_return_types,
@@ -447,7 +451,8 @@ pub fn lower_function(
                 // unprototyped callee is still implicit (mwcc creates its
                 // symbol at the call site; measured: AC file_io's fclose ->
                 // fflush keeps plain [fclose, fflush] order, no hoist).
-                if !generator.prototyped_names.contains(name.as_str()) && seen.insert(name.clone()) {
+                if !generator.prototyped_names.contains(name.as_str()) && seen.insert(name.clone())
+                {
                     generator
                         .output
                         .implicit_external_callees
@@ -644,15 +649,29 @@ fn hoist_link_register_reload(generator: &mut Generator) {
         && generator.behavior.plain_linkage_epilogue_style
             == mwcc_versions::PlainLinkageEpilogueStyle::StackRestoreBeforeReload
     {
-        let stack_restore = generator.output.instructions.iter().position(|instruction| {
-            matches!(instruction, Instruction::AddImmediate { d: 1, a: 1, immediate }
+        let stack_restore = generator
+            .output
+            .instructions
+            .iter()
+            .position(|instruction| {
+                matches!(instruction, Instruction::AddImmediate { d: 1, a: 1, immediate }
                 if *immediate == generator.frame_size)
-        });
-        let restored_stack_link_load = generator.output.instructions.iter().position(
-            |instruction| {
-                matches!(instruction, Instruction::LoadWord { d: 0, a: 1, offset: 4 })
-            },
-        );
+            });
+        let restored_stack_link_load =
+            generator
+                .output
+                .instructions
+                .iter()
+                .position(|instruction| {
+                    matches!(
+                        instruction,
+                        Instruction::LoadWord {
+                            d: 0,
+                            a: 1,
+                            offset: 4
+                        }
+                    )
+                });
         if matches!((stack_restore, restored_stack_link_load), (Some(restore), Some(load)) if restore < load)
         {
             return;

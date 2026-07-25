@@ -30,7 +30,11 @@ impl Generator {
         let return_constant = match (&function.return_type, &function.return_expression) {
             (Type::Void, None) => None,
             (
-                Type::Int | Type::UnsignedInt | Type::Short | Type::UnsignedShort | Type::Char
+                Type::Int
+                | Type::UnsignedInt
+                | Type::Short
+                | Type::UnsignedShort
+                | Type::Char
                 | Type::UnsignedChar,
                 Some(expression),
             ) => constant_value(expression).and_then(|value| i16::try_from(value).ok()),
@@ -53,11 +57,13 @@ impl Generator {
         // floating arguments occupy f1..f8.
         self.emit_branch_conditional_to(4, 6, skip_float_saves);
         for register in 1..=8 {
-            self.output.instructions.push(Instruction::StoreFloatDouble {
-                s: register,
-                a: 1,
-                offset: 32 + i16::from(register) * 8,
-            });
+            self.output
+                .instructions
+                .push(Instruction::StoreFloatDouble {
+                    s: register,
+                    a: 1,
+                    offset: 32 + i16::from(register) * 8,
+                });
         }
         self.bind_label(skip_float_saves);
         for register in 3..=10 {

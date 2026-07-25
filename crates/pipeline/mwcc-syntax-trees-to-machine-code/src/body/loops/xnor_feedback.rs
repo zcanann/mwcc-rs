@@ -108,9 +108,11 @@ impl Generator {
                         s: data,
                         shift: 15,
                     });
-                self.output
-                    .instructions
-                    .push(Instruction::Xor { a: 0, s: data, b: 0 });
+                self.output.instructions.push(Instruction::Xor {
+                    a: 0,
+                    s: data,
+                    b: 0,
+                });
                 self.output
                     .instructions
                     .push(Instruction::ShiftRightLogicalImmediate {
@@ -149,9 +151,11 @@ impl Generator {
                         s: data,
                         shift: 15,
                     });
-                self.output
-                    .instructions
-                    .push(Instruction::Xor { a: 0, s: data, b: 0 });
+                self.output.instructions.push(Instruction::Xor {
+                    a: 0,
+                    s: data,
+                    b: 0,
+                });
                 self.output
                     .instructions
                     .push(Instruction::ShiftLeftImmediate {
@@ -201,9 +205,11 @@ impl Generator {
             begin: bit,
             end: bit,
         });
-        self.output
-            .instructions
-            .push(Instruction::Or { a: data, s: data, b: 0 });
+        self.output.instructions.push(Instruction::Or {
+            a: data,
+            s: data,
+            b: 0,
+        });
     }
 }
 

@@ -768,16 +768,15 @@ impl Parser {
                 if let Some(tag) = &struct_tag {
                     self.variable_structs.insert(name.clone(), tag.clone());
                 }
-                let constructor_call = if !is_static
-                    && struct_tag.is_some()
-                    && self.eat_keyword(Token::ParenOpen)
-                {
-                    let mut arguments = Vec::new();
-                    if *self.peek() != Token::ParenClose {
-                        loop {
-                            arguments.push(self.expression()?);
-                            if !self.eat_keyword(Token::Comma) {
-                                break;
+                let constructor_call =
+                    if !is_static && struct_tag.is_some() && self.eat_keyword(Token::ParenOpen) {
+                        let mut arguments = Vec::new();
+                        if *self.peek() != Token::ParenClose {
+                            loop {
+                                arguments.push(self.expression()?);
+                                if !self.eat_keyword(Token::Comma) {
+                                    break;
+                                }
                             }
                         }
                     }

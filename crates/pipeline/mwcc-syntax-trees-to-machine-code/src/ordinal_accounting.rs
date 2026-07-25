@@ -6,9 +6,7 @@
 //! ordinal block here.
 
 use mwcc_machine_code::MachineFunction;
-use mwcc_syntax_trees::{
-    BinaryOperator, Expression, Function, Statement, Type, UnaryOperator,
-};
+use mwcc_syntax_trees::{BinaryOperator, Expression, Function, Statement, Type, UnaryOperator};
 use mwcc_versions::FunctionOrdinalAccountingStyle;
 
 pub(crate) fn apply(

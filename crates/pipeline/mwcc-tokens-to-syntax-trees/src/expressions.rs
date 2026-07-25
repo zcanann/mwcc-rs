@@ -671,13 +671,11 @@ impl Parser {
                                     "C++ namespace function call '{scope}::{member}' is unavailable (roadmap)"
                                 ))
                             })?
-                        } else if let Some(name) = self
-                            .resolve_explicit_instance_member_call(
-                                &scope,
-                                &member,
-                                arguments.len(),
-                            )?
-                        {
+                        } else if let Some(name) = self.resolve_explicit_instance_member_call(
+                            &scope,
+                            &member,
+                            arguments.len(),
+                        )? {
                             arguments.insert(0, Expression::Variable("this".to_owned()));
                             name
                         } else {
@@ -1539,22 +1537,21 @@ fn unconditional_use_count(expression: &Expression, name: &str) -> Option<usize>
         | Expression::Dereference { pointer: operand }
         | Expression::AddressOf { operand }
         | Expression::Member { base: operand, .. }
-        | Expression::MemberAddress { base: operand, .. } => {
-            unconditional_use_count(operand, name)
-        }
+        | Expression::MemberAddress { base: operand, .. } => unconditional_use_count(operand, name),
         Expression::Index { base, index } => {
-            Some(
-                unconditional_use_count(base, name)?
-                    + unconditional_use_count(index, name)?,
-            )
+            Some(unconditional_use_count(base, name)? + unconditional_use_count(index, name)?)
         }
         Expression::Binary {
             operator,
             left,
             right,
-        } if !matches!(operator, BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr) => Some(
-            unconditional_use_count(left, name)? + unconditional_use_count(right, name)?,
-        ),
+        } if !matches!(
+            operator,
+            BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr
+        ) =>
+        {
+            Some(unconditional_use_count(left, name)? + unconditional_use_count(right, name)?)
+        }
         // Calls, assignments, short-circuit/conditional forms, and expression
         // kinds whose value can carry hidden storage are not parser-level inline
         // substitution candidates.

@@ -19,7 +19,10 @@ impl Generator {
         let [parameter] = function.parameters.as_slice() else {
             return Ok(false);
         };
-        if !matches!(parameter.parameter_type, Type::StructPointer { .. } | Type::Pointer(_)) {
+        if !matches!(
+            parameter.parameter_type,
+            Type::StructPointer { .. } | Type::Pointer(_)
+        ) {
             return Ok(false);
         }
         let [local] = function.locals.as_slice() else {
@@ -36,29 +39,23 @@ impl Generator {
         {
             return Ok(false);
         }
-        let [
-            Statement::Assign {
-                name: initialized,
-                value: Expression::IntegerLiteral(initial_value),
-            },
-            Statement::Expression(Expression::Call {
-                name: setup_callee,
-                arguments: setup_arguments,
-            }),
-            Statement::Expression(Expression::Call {
-                name: trace_callee,
-                arguments: first_trace_arguments,
-            }),
-            Statement::Switch {
-                scrutinee,
-                arms,
-                default: None,
-            },
-            Statement::Expression(Expression::Call {
-                name: final_trace_callee,
-                arguments: final_trace_arguments,
-            }),
-        ] = function.statements.as_slice()
+        let [Statement::Assign {
+            name: initialized,
+            value: Expression::IntegerLiteral(initial_value),
+        }, Statement::Expression(Expression::Call {
+            name: setup_callee,
+            arguments: setup_arguments,
+        }), Statement::Expression(Expression::Call {
+            name: trace_callee,
+            arguments: first_trace_arguments,
+        }), Statement::Switch {
+            scrutinee,
+            arms,
+            default: None,
+        }, Statement::Expression(Expression::Call {
+            name: final_trace_callee,
+            arguments: final_trace_arguments,
+        })] = function.statements.as_slice()
         else {
             return Ok(false);
         };
@@ -69,19 +66,13 @@ impl Generator {
         {
             return Ok(false);
         }
-        let [
-            Expression::IntegerLiteral(trace_level),
-            Expression::StringLiteral(first_string),
-            first_member,
-        ] = first_trace_arguments.as_slice()
+        let [Expression::IntegerLiteral(trace_level), Expression::StringLiteral(first_string), first_member] =
+            first_trace_arguments.as_slice()
         else {
             return Ok(false);
         };
-        let [
-            Expression::IntegerLiteral(final_trace_level),
-            Expression::StringLiteral(final_string),
-            Expression::Variable(final_value),
-        ] = final_trace_arguments.as_slice()
+        let [Expression::IntegerLiteral(final_trace_level), Expression::StringLiteral(final_string), Expression::Variable(final_value)] =
+            final_trace_arguments.as_slice()
         else {
             return Ok(false);
         };
@@ -131,8 +122,7 @@ impl Generator {
         let packed_strings = style == CallDispatcherStyle::Packed41;
         let first_string_index = self.intern_string_literal(first_string);
         let final_string_index = self.intern_string_literal(final_string);
-        let final_string_offset: usize = self.output.string_literals
-            [..final_string_index]
+        let final_string_offset: usize = self.output.string_literals[..final_string_index]
             .iter()
             .map(|bytes| bytes.len() + 1)
             .sum();

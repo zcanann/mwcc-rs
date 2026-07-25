@@ -14,10 +14,10 @@
 //! keeping every build byte-exact — is described in `docs/register-allocator.md`.
 
 mod allocator;
-pub mod int_alloc;
 mod constraints;
-mod frame;
 mod description;
+mod frame;
+pub mod int_alloc;
 mod labels;
 mod linearize;
 mod liveness;
@@ -26,8 +26,8 @@ mod schedule;
 
 pub use allocator::*;
 pub use constraints::*;
-pub use frame::*;
 pub use description::*;
+pub use frame::*;
 pub use labels::*;
 pub use linearize::*;
 pub use liveness::*;

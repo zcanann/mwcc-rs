@@ -70,8 +70,7 @@ impl Generator {
         else {
             return Ok(false);
         };
-        let [index_parameter, narrow_parameter, pointer_parameter] =
-            function.parameters.as_slice()
+        let [index_parameter, narrow_parameter, pointer_parameter] = function.parameters.as_slice()
         else {
             return Ok(false);
         };
@@ -79,9 +78,18 @@ impl Generator {
             || index_parameter.name != *index_name
             || narrow_parameter.name != *narrow_name
             || pointer_parameter.name != *pointer_name
-            || !matches!(index_parameter.parameter_type, Type::Int | Type::UnsignedInt)
-            || !matches!(narrow_parameter.parameter_type, Type::Short | Type::UnsignedShort)
-            || !matches!(pointer_parameter.parameter_type, Type::Pointer(_) | Type::StructPointer { .. })
+            || !matches!(
+                index_parameter.parameter_type,
+                Type::Int | Type::UnsignedInt
+            )
+            || !matches!(
+                narrow_parameter.parameter_type,
+                Type::Short | Type::UnsignedShort
+            )
+            || !matches!(
+                pointer_parameter.parameter_type,
+                Type::Pointer(_) | Type::StructPointer { .. }
+            )
             || !is_zero_literal(third)
             || !is_zero_literal(fourth)
         {

@@ -54,7 +54,8 @@ impl Generator {
         else {
             return Ok(false);
         };
-        let Some(command) = constant_value(command_value).and_then(|value| i16::try_from(value).ok())
+        let Some(command) =
+            constant_value(command_value).and_then(|value| i16::try_from(value).ok())
         else {
             return Ok(false);
         };

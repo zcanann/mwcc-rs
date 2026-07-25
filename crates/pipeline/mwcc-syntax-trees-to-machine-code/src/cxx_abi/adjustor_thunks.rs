@@ -26,9 +26,7 @@ pub(crate) fn lower_vtable_adjustor_thunks(
             if !seen.insert(symbol.clone()) {
                 continue;
             }
-            if let Some((_, _, thunks)) = groups
-                .iter_mut()
-                .find(|(_, name, _)| name == destructor)
+            if let Some((_, _, thunks)) = groups.iter_mut().find(|(_, name, _)| name == destructor)
             {
                 thunks.push((symbol.clone(), offset));
             } else {

@@ -19,10 +19,16 @@ pub struct Register {
 
 impl Register {
     pub const fn general(number: u8) -> Self {
-        Register { class: RegisterClass::General, number }
+        Register {
+            class: RegisterClass::General,
+            number,
+        }
     }
     pub const fn float(number: u8) -> Self {
-        Register { class: RegisterClass::Float, number }
+        Register {
+            class: RegisterClass::Float,
+            number,
+        }
     }
 }
 

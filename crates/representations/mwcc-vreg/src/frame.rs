@@ -44,12 +44,24 @@ impl FramePlan {
     /// slot order, no interleaves).
     pub fn prologue(&self) -> Vec<Instruction> {
         let mut instructions = vec![
-            Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -self.frame_size },
+            Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -self.frame_size,
+            },
             Instruction::MoveFromLinkRegister { d: 0 },
-            Instruction::StoreWord { s: 0, a: 1, offset: self.frame_size + 4 },
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: self.frame_size + 4,
+            },
         ];
         for (slot, &register) in self.saved.iter().enumerate() {
-            instructions.push(Instruction::StoreWord { s: register, a: 1, offset: self.frame_size - 4 * (slot as i16 + 1) });
+            instructions.push(Instruction::StoreWord {
+                s: register,
+                a: 1,
+                offset: self.frame_size - 4 * (slot as i16 + 1),
+            });
         }
         instructions
     }
@@ -60,13 +72,29 @@ impl FramePlan {
     /// across calls. `incoming[k]` pairs with `saved[k]`.
     pub fn prologue_interleaved(&self, incoming: &[u8]) -> Vec<Instruction> {
         let mut instructions = vec![
-            Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -self.frame_size },
+            Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -self.frame_size,
+            },
             Instruction::MoveFromLinkRegister { d: 0 },
-            Instruction::StoreWord { s: 0, a: 1, offset: self.frame_size + 4 },
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: self.frame_size + 4,
+            },
         ];
         for (slot, (&register, &source)) in self.saved.iter().zip(incoming).enumerate() {
-            instructions.push(Instruction::StoreWord { s: register, a: 1, offset: self.frame_size - 4 * (slot as i16 + 1) });
-            instructions.push(Instruction::Or { a: register, s: source, b: source });
+            instructions.push(Instruction::StoreWord {
+                s: register,
+                a: 1,
+                offset: self.frame_size - 4 * (slot as i16 + 1),
+            });
+            instructions.push(Instruction::Or {
+                a: register,
+                s: source,
+                b: source,
+            });
         }
         instructions
     }
@@ -78,13 +106,25 @@ impl FramePlan {
     /// which has no dependency on the saved LR/GPRs. `head` is emitted in order.
     pub fn prologue_with_setup(&self, head: Vec<Instruction>) -> Vec<Instruction> {
         let mut instructions = vec![
-            Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -self.frame_size },
+            Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -self.frame_size,
+            },
             Instruction::MoveFromLinkRegister { d: 0 },
         ];
         instructions.extend(head);
-        instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: self.frame_size + 4 });
+        instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: self.frame_size + 4,
+        });
         for (slot, &register) in self.saved.iter().enumerate() {
-            instructions.push(Instruction::StoreWord { s: register, a: 1, offset: self.frame_size - 4 * (slot as i16 + 1) });
+            instructions.push(Instruction::StoreWord {
+                s: register,
+                a: 1,
+                offset: self.frame_size - 4 * (slot as i16 + 1),
+            });
         }
         instructions
     }
@@ -92,12 +132,24 @@ impl FramePlan {
     /// The canonical epilogue: `lwz r0; lwz rS…; mtlr; addi; blr` (restores in
     /// slot order after the LR reload).
     pub fn epilogue(&self) -> Vec<Instruction> {
-        let mut instructions = vec![Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 }];
+        let mut instructions = vec![Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: self.frame_size + 4,
+        }];
         for (slot, &register) in self.saved.iter().enumerate() {
-            instructions.push(Instruction::LoadWord { d: register, a: 1, offset: self.frame_size - 4 * (slot as i16 + 1) });
+            instructions.push(Instruction::LoadWord {
+                d: register,
+                a: 1,
+                offset: self.frame_size - 4 * (slot as i16 + 1),
+            });
         }
         instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
+        instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: self.frame_size,
+        });
         instructions.push(Instruction::BranchToLinkRegister);
         instructions
     }
@@ -114,17 +166,33 @@ mod tests {
         assert_eq!(
             plan.prologue(),
             vec![
-                Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 },
+                Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -16
+                },
                 Instruction::MoveFromLinkRegister { d: 0 },
-                Instruction::StoreWord { s: 0, a: 1, offset: 20 },
+                Instruction::StoreWord {
+                    s: 0,
+                    a: 1,
+                    offset: 20
+                },
             ]
         );
         assert_eq!(
             plan.epilogue(),
             vec![
-                Instruction::LoadWord { d: 0, a: 1, offset: 20 },
+                Instruction::LoadWord {
+                    d: 0,
+                    a: 1,
+                    offset: 20
+                },
                 Instruction::MoveToLinkRegister { s: 0 },
-                Instruction::AddImmediate { d: 1, a: 1, immediate: 16 },
+                Instruction::AddImmediate {
+                    d: 1,
+                    a: 1,
+                    immediate: 16
+                },
                 Instruction::BranchToLinkRegister,
             ]
         );
@@ -148,9 +216,23 @@ mod tests {
     fn the_interleaved_prologue_pairs_each_save_with_its_move() {
         let plan = FramePlan::sized_for(vec![31, 30]);
         let prologue = plan.prologue_interleaved(&[4, 3]);
-        assert_eq!(prologue[3], Instruction::StoreWord { s: 31, a: 1, offset: 12 });
+        assert_eq!(
+            prologue[3],
+            Instruction::StoreWord {
+                s: 31,
+                a: 1,
+                offset: 12
+            }
+        );
         assert_eq!(prologue[4], Instruction::Or { a: 31, s: 4, b: 4 });
-        assert_eq!(prologue[5], Instruction::StoreWord { s: 30, a: 1, offset: 8 });
+        assert_eq!(
+            prologue[5],
+            Instruction::StoreWord {
+                s: 30,
+                a: 1,
+                offset: 8
+            }
+        );
         assert_eq!(prologue[6], Instruction::Or { a: 30, s: 3, b: 3 });
     }
 
@@ -159,25 +241,96 @@ mod tests {
         let plan = FramePlan::sized_for(vec![31]);
         // Two constant-argument materializations (li r3,2 / li r4,3) as the head.
         let head = vec![
-            Instruction::AddImmediate { d: 3, a: 0, immediate: 2 },
-            Instruction::AddImmediate { d: 4, a: 0, immediate: 3 },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 0,
+                immediate: 2,
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 0,
+                immediate: 3,
+            },
         ];
         let prologue = plan.prologue_with_setup(head);
-        assert_eq!(prologue[0], Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -16 });
+        assert_eq!(
+            prologue[0],
+            Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16
+            }
+        );
         assert_eq!(prologue[1], Instruction::MoveFromLinkRegister { d: 0 });
-        assert_eq!(prologue[2], Instruction::AddImmediate { d: 3, a: 0, immediate: 2 });
-        assert_eq!(prologue[3], Instruction::AddImmediate { d: 4, a: 0, immediate: 3 });
-        assert_eq!(prologue[4], Instruction::StoreWord { s: 0, a: 1, offset: 20 });
-        assert_eq!(prologue[5], Instruction::StoreWord { s: 31, a: 1, offset: 12 });
+        assert_eq!(
+            prologue[2],
+            Instruction::AddImmediate {
+                d: 3,
+                a: 0,
+                immediate: 2
+            }
+        );
+        assert_eq!(
+            prologue[3],
+            Instruction::AddImmediate {
+                d: 4,
+                a: 0,
+                immediate: 3
+            }
+        );
+        assert_eq!(
+            prologue[4],
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 20
+            }
+        );
+        assert_eq!(
+            prologue[5],
+            Instruction::StoreWord {
+                s: 31,
+                a: 1,
+                offset: 12
+            }
+        );
     }
 
     #[test]
     fn saves_take_descending_slots_and_the_size_rounds_to_sixteen() {
         let plan = FramePlan::sized_for(vec![31, 30, 29]);
         assert_eq!(plan.frame_size, 32); // 8 + 12 -> 32
-        assert_eq!(plan.prologue()[3], Instruction::StoreWord { s: 31, a: 1, offset: 28 });
-        assert_eq!(plan.prologue()[4], Instruction::StoreWord { s: 30, a: 1, offset: 24 });
-        assert_eq!(plan.prologue()[5], Instruction::StoreWord { s: 29, a: 1, offset: 20 });
-        assert_eq!(plan.epilogue()[1], Instruction::LoadWord { d: 31, a: 1, offset: 28 });
+        assert_eq!(
+            plan.prologue()[3],
+            Instruction::StoreWord {
+                s: 31,
+                a: 1,
+                offset: 28
+            }
+        );
+        assert_eq!(
+            plan.prologue()[4],
+            Instruction::StoreWord {
+                s: 30,
+                a: 1,
+                offset: 24
+            }
+        );
+        assert_eq!(
+            plan.prologue()[5],
+            Instruction::StoreWord {
+                s: 29,
+                a: 1,
+                offset: 20
+            }
+        );
+        assert_eq!(
+            plan.epilogue()[1],
+            Instruction::LoadWord {
+                d: 31,
+                a: 1,
+                offset: 28
+            }
+        );
     }
 }

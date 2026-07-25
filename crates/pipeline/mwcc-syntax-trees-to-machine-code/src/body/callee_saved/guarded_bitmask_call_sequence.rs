@@ -323,9 +323,11 @@ impl Generator {
         *target = after_dirty;
 
         self.evaluate(&Expression::Variable(global.clone()), global_type, 3)?;
-        self.output
-            .instructions
-            .push(Instruction::LoadWord { d: 0, a: 3, offset: 0 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 3,
+            offset: 0,
+        });
         self.output
             .instructions
             .push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 });

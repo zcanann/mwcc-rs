@@ -1190,10 +1190,8 @@ impl Generator {
                 // the right value r0 (`lbz r3; lwz r0; cmpw r3,r0`). Narrow
                 // integer members undergo the C integer promotions here: every
                 // char/short variant fits in `int` on this target.
-                if let (
-                    Some((_, _, left_type)),
-                    Some((_, _, right_type)),
-                ) = (as_member(left), as_member(right))
+                if let (Some((_, _, left_type)), Some((_, _, right_type))) =
+                    (as_member(left), as_member(right))
                 {
                     let operand_registers: std::collections::HashSet<u8> = self
                         .registers_used_by(left)
@@ -1227,19 +1225,20 @@ impl Generator {
                             s: GENERAL_SCRATCH,
                         });
                     }
-                    let promoted_signed = |value_type: Type| {
-                        value_type.width() < 32 || self.signed_of(value_type)
-                    };
+                    let promoted_signed =
+                        |value_type: Type| value_type.width() < 32 || self.signed_of(value_type);
                     if promoted_signed(left_type) && promoted_signed(right_type) {
                         self.output.instructions.push(Instruction::CompareWord {
                             a: left_register,
                             b: GENERAL_SCRATCH,
                         });
                     } else {
-                        self.output.instructions.push(Instruction::CompareLogicalWord {
-                            a: left_register,
-                            b: GENERAL_SCRATCH,
-                        });
+                        self.output
+                            .instructions
+                            .push(Instruction::CompareLogicalWord {
+                                a: left_register,
+                                b: GENERAL_SCRATCH,
+                            });
                     }
                     return Ok(false_branch_bo_bi(*operator)
                         .expect("is_comparison restricts the operator"));
@@ -1319,9 +1318,7 @@ impl Generator {
                                             | mwcc_syntax_trees::Type::Double
                                     )
                             })
-                            .map(|return_type| {
-                                (return_type.width(), self.signed_of(*return_type))
-                            }),
+                            .map(|return_type| (return_type.width(), self.signed_of(*return_type))),
                         Expression::VirtualCall { return_type, .. }
                             if return_type.width() < 32
                                 && !matches!(
@@ -1529,8 +1526,7 @@ impl Generator {
                         return_type.width() < 32
                             && !matches!(
                                 return_type,
-                                mwcc_syntax_trees::Type::Float
-                                    | mwcc_syntax_trees::Type::Double
+                                mwcc_syntax_trees::Type::Float | mwcc_syntax_trees::Type::Double
                             )
                     })
                     .map(|return_type| {
@@ -1552,12 +1548,12 @@ impl Generator {
                             immediate: 0,
                         });
                 } else {
-                    self.output.instructions.push(
-                        Instruction::CompareLogicalWordImmediate {
+                    self.output
+                        .instructions
+                        .push(Instruction::CompareLogicalWordImmediate {
                             a: GENERAL_SCRATCH,
                             immediate: 0,
-                        },
-                    );
+                        });
                 }
             } else {
                 self.emit_widen_record(GENERAL_SCRATCH, register, width, narrow_signed);

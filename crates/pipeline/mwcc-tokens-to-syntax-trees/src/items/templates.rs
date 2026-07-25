@@ -510,10 +510,11 @@ impl Parser {
         arguments: &[ResolvedTemplateType],
     ) -> (u32, Option<String>) {
         match pattern {
-            TemplateTypePattern::Parameter(index) => arguments.get(*index).map_or(
-                (0, None),
-                |argument| (type_size(argument.declared), argument.tag.clone()),
-            ),
+            TemplateTypePattern::Parameter(index) => {
+                arguments.get(*index).map_or((0, None), |argument| {
+                    (type_size(argument.declared), argument.tag.clone())
+                })
+            }
             TemplateTypePattern::Named(name) => (
                 self.structs.get(name).map_or(0, |layout| layout.size),
                 Some(name.clone()),
@@ -622,12 +623,7 @@ impl Parser {
                 TemplateFieldType::TemplatePointer(pattern) => {
                     let (element_size, tag) =
                         self.template_pattern_pointer_identity(pattern, arguments);
-                    (
-                        Type::StructPointer { element_size },
-                        4,
-                        4,
-                        tag,
-                    )
+                    (Type::StructPointer { element_size }, 4, 4, tag)
                 }
                 TemplateFieldType::Concrete(field_type) => (
                     *field_type,
@@ -937,8 +933,7 @@ impl Parser {
                         let parameter_end = scan - 1;
                         let empty = parameter_start == parameter_end
                             || (parameter_end == parameter_start + 1
-                                && probe.tokens.get(parameter_start)
-                                    == Some(&Token::KeywordVoid));
+                                && probe.tokens.get(parameter_start) == Some(&Token::KeywordVoid));
                         Some((member, return_type, if empty { 0 } else { commas + 1 }))
                     })();
                     if let Some((member, return_type, argument_count)) = recovered {
@@ -949,10 +944,11 @@ impl Parser {
                             variadic: false,
                         };
                         let qualified = self.qualify_cxx_class_name(&class_name);
-                        for owner in std::iter::once(class_name.clone()).chain(
-                            (qualified != class_name).then_some(qualified),
-                        ) {
-                            let methods = self.cxx_template_virtual_methods
+                        for owner in std::iter::once(class_name.clone())
+                            .chain((qualified != class_name).then_some(qualified))
+                        {
+                            let methods = self
+                                .cxx_template_virtual_methods
                                 .entry((owner, member.clone()))
                                 .or_default();
                             if !methods.iter().any(|(arity, existing)| {
@@ -1199,7 +1195,8 @@ impl Parser {
                 (TemplateFieldType::Concrete(Type::UnsignedChar), 2)
             }
             token if self.template_argument_type(token).is_some() => (
-                TemplateFieldType::Concrete(self.template_argument_type(token)?), 1
+                TemplateFieldType::Concrete(self.template_argument_type(token)?),
+                1,
             ),
             Token::Identifier(_) => {
                 let (pattern, next) = self.template_type_pattern_at(cursor, parameters)?;

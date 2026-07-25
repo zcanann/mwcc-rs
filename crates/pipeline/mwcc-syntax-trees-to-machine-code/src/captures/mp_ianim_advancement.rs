@@ -10,10 +10,7 @@ const MP_IANIM_ADVANCEMENT_AST_HASH: u64 = 0x4bfd_9ac0_85c0_03c1;
 const MP_IANIM_CONTEXT: u64 = 0xea05_63cc_f607_b64d;
 
 impl Generator {
-    pub(super) fn try_mp_ianim_advancement(
-        &mut self,
-        function: &Function,
-    ) -> Compilation<bool> {
+    pub(super) fn try_mp_ianim_advancement(&mut self, function: &Function) -> Compilation<bool> {
         if function.name
             != "VGetAdvancementResults__11IAnimReaderCFRC13CCharAnimTimeRC13CCharAnimTime"
             || !self.frame_slots.is_empty()
@@ -27,13 +24,11 @@ impl Generator {
         }
 
         self.output.pre_scheduled = true;
-        self.output
-            .instructions
-            .push(Instruction::LoadFloatSingle {
-                d: 0,
-                a: 5,
-                offset: 0,
-            });
+        self.output.instructions.push(Instruction::LoadFloatSingle {
+            d: 0,
+            a: 5,
+            offset: 0,
+        });
         self.record_relocation(RelocationKind::Addr16Ha, "sZeroVector__9CVector3f");
         self.output
             .instructions
@@ -49,9 +44,11 @@ impl Generator {
                 a: 3,
                 offset: 0,
             });
-        self.output
-            .instructions
-            .push(Instruction::LoadWord { d: 0, a: 5, offset: 4 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 5,
+            offset: 4,
+        });
         self.output.instructions.push(Instruction::StoreWord {
             s: 0,
             a: 3,
@@ -67,13 +64,11 @@ impl Generator {
             });
         for (source, destination) in [(0, 8), (4, 12), (8, 16)] {
             if source != 0 {
-                self.output
-                    .instructions
-                    .push(Instruction::LoadFloatSingle {
-                        d: 0,
-                        a: 6,
-                        offset: source,
-                    });
+                self.output.instructions.push(Instruction::LoadFloatSingle {
+                    d: 0,
+                    a: 6,
+                    offset: source,
+                });
             }
             self.output
                 .instructions
@@ -93,13 +88,11 @@ impl Generator {
             });
         for (source, destination) in [(0, 20), (4, 24), (8, 28), (12, 32)] {
             if source != 0 {
-                self.output
-                    .instructions
-                    .push(Instruction::LoadFloatSingle {
-                        d: 0,
-                        a: 4,
-                        offset: source,
-                    });
+                self.output.instructions.push(Instruction::LoadFloatSingle {
+                    d: 0,
+                    a: 4,
+                    offset: source,
+                });
             }
             self.output
                 .instructions

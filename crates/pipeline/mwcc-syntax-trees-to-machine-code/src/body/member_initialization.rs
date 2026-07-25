@@ -59,7 +59,9 @@ fn immediate(expression: &Expression) -> Option<i16> {
             operand,
         } => match operand.as_ref() {
             Expression::FloatLiteral(value)
-                if value.is_finite() && value.fract() == 0.0 && *value >= i16::MIN as f64
+                if value.is_finite()
+                    && value.fract() == 0.0
+                    && *value >= i16::MIN as f64
                     && *value <= i16::MAX as f64 =>
             {
                 Some(*value as i16)
@@ -86,27 +88,24 @@ impl Generator {
         {
             return Ok(false);
         }
-        let [
-            Statement::Store {
-                target: computed_target,
-                value:
-                    Expression::Binary {
-                        operator: BinaryOperator::Add,
-                        left,
-                        right,
-                    },
-            },
-            Statement::Store {
-                target:
-                    Expression::Member {
-                        base: constant_base,
-                        offset: constant_offset,
-                        member_type: Type::Short | Type::UnsignedShort,
-                        index_stride: None,
-                    },
-                value: Expression::IntegerLiteral(constant),
-            },
-        ] = function.statements.as_slice()
+        let [Statement::Store {
+            target: computed_target,
+            value:
+                Expression::Binary {
+                    operator: BinaryOperator::Add,
+                    left,
+                    right,
+                },
+        }, Statement::Store {
+            target:
+                Expression::Member {
+                    base: constant_base,
+                    offset: constant_offset,
+                    member_type: Type::Short | Type::UnsignedShort,
+                    index_stride: None,
+                },
+            value: Expression::IntegerLiteral(constant),
+        }] = function.statements.as_slice()
         else {
             return Ok(false);
         };

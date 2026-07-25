@@ -547,15 +547,11 @@ pub(super) fn lower_class_unit(
                 // boundary references name the target DIE's fragment. The
                 // attribute code immediately before the relocation field keeps
                 // this distinction semantic instead of offset-specific.
-                let is_sibling = relocation
-                    .offset
-                    .checked_sub(2)
-                    .and_then(|start| {
-                        sections
-                            .debug
-                            .get(start as usize..relocation.offset as usize)
-                    })
-                    == Some(&[0x00, 0x12][..]);
+                let is_sibling = relocation.offset.checked_sub(2).and_then(|start| {
+                    sections
+                        .debug
+                        .get(start as usize..relocation.offset as usize)
+                }) == Some(&[0x00, 0x12][..]);
                 let exact_target = (!is_sibling).then(|| {
                     boundaries
                         .fragments
@@ -563,11 +559,7 @@ pub(super) fn lower_class_unit(
                         .find(|fragment| fragment.offset == target_offset)
                 });
                 if let Some(fragment) = exact_target.flatten().or_else(|| {
-                    reference_fragment(
-                        &boundaries.fragments,
-                        relocation.offset,
-                        target_offset,
-                    )
+                    reference_fragment(&boundaries.fragments, relocation.offset, target_offset)
                 }) {
                     relocation.target = DebugRelocationTarget::Symbol(fragment.name.clone());
                     relocation.addend -= fragment.offset as i32;
@@ -1197,10 +1189,7 @@ fn function_binding(is_static: bool, is_weak: bool) -> DebugSymbolBinding {
     }
 }
 
-fn function_comment_flags(
-    unit: &TranslationUnit,
-    function: &mwcc_syntax_trees::Function,
-) -> u32 {
+fn function_comment_flags(unit: &TranslationUnit, function: &mwcc_syntax_trees::Function) -> u32 {
     if !function.is_weak {
         0
     } else if unit

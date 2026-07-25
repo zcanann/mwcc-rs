@@ -76,10 +76,7 @@ fn push_u32(bytes: &mut Vec<u8>, value: u32) {
     bytes.extend_from_slice(&value.to_be_bytes());
 }
 
-fn push_relocatable_u32(
-    section: &mut EncodedSection,
-    address: &Address,
-) {
+fn push_relocatable_u32(section: &mut EncodedSection, address: &Address) {
     section.relocations.push(Relocation {
         offset: section.bytes.len() as u32,
         target: address.target.clone(),

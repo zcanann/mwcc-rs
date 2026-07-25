@@ -4,11 +4,11 @@
 mod call_return_chain;
 mod call_short_circuit;
 mod early_return;
+mod global_fallback;
 mod guard_block;
 mod guard_sequence;
 mod guarded_access;
 mod guarded_virtual_forwarder;
-mod global_fallback;
 mod leading;
 mod legacy_tracked_return;
 mod live_across;

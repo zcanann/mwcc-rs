@@ -28,12 +28,7 @@ impl Generator {
         if self.behavior.logical_or_value_style == mwcc_versions::LogicalOrValueStyle::TrueFirst {
             // Build 163 first computes the written logical operator into r0,
             // then applies integer logical-not to that normalized 0/1 value.
-            self.emit_short_circuit_via_scratch(
-                operator,
-                left,
-                right,
-                GENERAL_SCRATCH,
-            )?;
+            self.emit_short_circuit_via_scratch(operator, left, right, GENERAL_SCRATCH)?;
             self.output
                 .instructions
                 .push(Instruction::CountLeadingZeros {

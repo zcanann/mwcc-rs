@@ -525,10 +525,7 @@ impl Parser {
                     let encoded = (value as u64).to_be_bytes();
                     image[field_base..field_base + 4].copy_from_slice(&encoded[4..]);
                 }
-            } else if matches!(
-                member_type,
-                Type::Int | Type::UnsignedInt
-            ) {
+            } else if matches!(member_type, Type::Int | Type::UnsignedInt) {
                 // Some ABI records deliberately store an address in a word-sized
                 // integer field (`(u32)symbol`). It is still link-time address data,
                 // so retain an ADDR32 relocation just like a pointer-typed field.

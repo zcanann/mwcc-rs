@@ -34,8 +34,7 @@ impl Generator {
                     if matches!(value, Expression::Variable(_))
                         || !matches!(condition, Expression::Variable(_)))
         );
-        if self.behavior.integer_select_style
-            == mwcc_versions::IntegerSelectStyle::BranchPreserving
+        if self.behavior.integer_select_style == mwcc_versions::IntegerSelectStyle::BranchPreserving
             && legacy_source_order_guard
         {
             return None;

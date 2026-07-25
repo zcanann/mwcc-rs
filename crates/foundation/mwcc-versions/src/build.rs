@@ -5,8 +5,7 @@
 
 use crate::profile::{
     CodegenProfile, Gc132Build81, Gc13Build53, Gc20Patch1, Gc41Build51213, Mainline,
-    MainlineEarlyAggregateLoads,
-    Wii43Build145, GC233_BUILD159_PATCH1, GC233_BUILD163,
+    MainlineEarlyAggregateLoads, Wii43Build145, GC233_BUILD159_PATCH1, GC233_BUILD163,
 };
 
 /// A specific mwcceppc build we aim to reproduce byte-for-byte.

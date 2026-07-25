@@ -17,11 +17,8 @@ pub fn materialize(unit: &mut TranslationUnit) {
     // RTTI ownership is fixed during the ordinary definition walk, before weak
     // inline bodies are materialized at the end of the translation unit. Keep
     // those late bodies out of the RTTI symbol's source-position count.
-    let weak_materialized: HashSet<&str> = unit
-        .weak_materialized
-        .iter()
-        .map(String::as_str)
-        .collect();
+    let weak_materialized: HashSet<&str> =
+        unit.weak_materialized.iter().map(String::as_str).collect();
     let late_function_count = unit
         .functions
         .iter()
@@ -80,10 +77,7 @@ pub fn materialize(unit: &mut TranslationUnit) {
         let rtti = rtti_symbol(class);
         let mut owner_position = None;
         if let Some(mut vtable) = vtables.remove(&vtable_symbol(class)) {
-            owner_position = Some((
-                vtable.non_static_functions_before,
-                vtable.functions_before,
-            ));
+            owner_position = Some((vtable.non_static_functions_before, vtable.functions_before));
             materialize_vtable_headers(&mut vtable, class, &rtti);
             generated.push(vtable);
         }
@@ -130,14 +124,7 @@ pub fn materialize(unit: &mut TranslationUnit) {
         // order. Store field 1 before field 0 so RTTI handles appear in their
         // measured address order (`name`, then optional base table).
         relocations.push((0, name, 0));
-        let mut handle = data_global(
-            rtti,
-            vec![0; 8],
-            relocations,
-            false,
-            true,
-            4,
-        );
+        let mut handle = data_global(rtti, vec![0; 8], relocations, false, true, 4);
         if let Some((non_static_functions_before, functions_before)) = owner_position {
             handle.non_static_functions_before =
                 non_static_functions_before.saturating_sub(late_non_static_count);
@@ -328,10 +315,22 @@ mod tests {
             encoded_name: "1E".to_string(),
             bases: Vec::new(),
             vtable_components: vec![
-                CxxAbiVtableComponent { table_offset: 0, object_offset: 0 },
-                CxxAbiVtableComponent { table_offset: 12, object_offset: 4 },
-                CxxAbiVtableComponent { table_offset: 24, object_offset: 8 },
-                CxxAbiVtableComponent { table_offset: 36, object_offset: 12 },
+                CxxAbiVtableComponent {
+                    table_offset: 0,
+                    object_offset: 0,
+                },
+                CxxAbiVtableComponent {
+                    table_offset: 12,
+                    object_offset: 4,
+                },
+                CxxAbiVtableComponent {
+                    table_offset: 24,
+                    object_offset: 8,
+                },
+                CxxAbiVtableComponent {
+                    table_offset: 36,
+                    object_offset: 12,
+                },
             ],
         };
         let mut vtable = data_global(

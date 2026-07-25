@@ -88,7 +88,7 @@ impl Generator {
                     .find(|(name, _, _)| name == &parameter.name)
                 else {
                     continue;
-        };
+                };
                 if assertion_parameter.as_deref() == Some(parameter.name.as_str()) {
                     self.output.instructions.push(Instruction::OrRecord {
                         a: *home,

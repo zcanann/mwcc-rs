@@ -6,7 +6,6 @@ use super::*;
 use mwcc_versions::FixedAddressParameterizedRmwStyle;
 
 impl Generator {
-
     /// A direct word-register mask followed by a constant return. The same
     /// semantic leaf uses three observed schedules across 2.3.3, early 2.4.x,
     /// and later compilers.
@@ -78,18 +77,18 @@ impl Generator {
                 self.output
                     .instructions
                     .push(Instruction::load_immediate(3, return_value));
-                self.output.instructions.push(Instruction::AndImmediateRecord {
-                    a: 0,
-                    s: 0,
-                    immediate: mask,
-                });
+                self.output
+                    .instructions
+                    .push(Instruction::AndImmediateRecord {
+                        a: 0,
+                        s: 0,
+                        immediate: mask,
+                    });
                 let offset = i16::try_from(index * 4)
                     .map_err(|_| Diagnostic::error("fixed-address word RMW is out of range"))?;
-                self.output.instructions.push(Instruction::StoreWord {
-                    s: 0,
-                    a: 4,
-                    offset,
-                });
+                self.output
+                    .instructions
+                    .push(Instruction::StoreWord { s: 0, a: 4, offset });
             }
             FixedAddressParameterizedRmwStyle::Early24 => {
                 self.output
@@ -106,11 +105,9 @@ impl Generator {
                 self.output
                     .instructions
                     .push(Instruction::load_immediate(3, return_value));
-                self.output.instructions.push(Instruction::And {
-                    a: 0,
-                    s: 4,
-                    b: 0,
-                });
+                self.output
+                    .instructions
+                    .push(Instruction::And { a: 0, s: 4, b: 0 });
                 self.output.instructions.push(Instruction::StoreWord {
                     s: 0,
                     a: 5,
@@ -130,11 +127,13 @@ impl Generator {
                     a: 4,
                     offset: folded,
                 });
-                self.output.instructions.push(Instruction::AndImmediateRecord {
-                    a: 0,
-                    s: 0,
-                    immediate: mask,
-                });
+                self.output
+                    .instructions
+                    .push(Instruction::AndImmediateRecord {
+                        a: 0,
+                        s: 0,
+                        immediate: mask,
+                    });
                 self.output.instructions.push(Instruction::StoreWord {
                     s: 0,
                     a: 4,
@@ -216,8 +215,7 @@ impl Generator {
         else {
             return Ok(false);
         };
-        if !matches!(masked_left.as_ref(), Expression::Variable(name) if name == &temporary.name)
-        {
+        if !matches!(masked_left.as_ref(), Expression::Variable(name) if name == &temporary.name) {
             return Ok(false);
         }
         let Some(mask) = constant_value(masked_right).and_then(|value| u16::try_from(value).ok())
@@ -267,8 +265,7 @@ impl Generator {
         else {
             return Ok(false);
         };
-        if !matches!(shift_value.as_ref(), Expression::Variable(name) if name == &parameter.name)
-        {
+        if !matches!(shift_value.as_ref(), Expression::Variable(name) if name == &parameter.name) {
             return Ok(false);
         }
         let Some(shift) = constant_value(shift_amount)
@@ -315,11 +312,9 @@ impl Generator {
                 offset: displacement,
             });
         }
-        self.output.instructions.push(Instruction::ShiftLeftImmediate {
-            a: 0,
-            s: 3,
-            shift,
-        });
+        self.output
+            .instructions
+            .push(Instruction::ShiftLeftImmediate { a: 0, s: 3, shift });
         if style != FixedAddressParameterizedRmwStyle::Legacy233 {
             self.output.instructions.push(Instruction::LoadWord {
                 d: loaded,
@@ -340,11 +335,13 @@ impl Generator {
             });
         }
         if style == FixedAddressParameterizedRmwStyle::Legacy233 {
-            self.output.instructions.push(Instruction::AndImmediateRecord {
-                a: loaded,
-                s: loaded,
-                immediate: mask,
-            });
+            self.output
+                .instructions
+                .push(Instruction::AndImmediateRecord {
+                    a: loaded,
+                    s: loaded,
+                    immediate: mask,
+                });
         }
         self.output
             .instructions
@@ -356,11 +353,13 @@ impl Generator {
                 b: 4,
             });
         } else if style != FixedAddressParameterizedRmwStyle::Legacy233 {
-            self.output.instructions.push(Instruction::AndImmediateRecord {
-                a: loaded,
-                s: loaded,
-                immediate: mask,
-            });
+            self.output
+                .instructions
+                .push(Instruction::AndImmediateRecord {
+                    a: loaded,
+                    s: loaded,
+                    immediate: mask,
+                });
         }
         if style == FixedAddressParameterizedRmwStyle::Modern4x {
             self.output.instructions.push(Instruction::OrImmediate {
@@ -382,5 +381,4 @@ impl Generator {
         self.emit_epilogue_and_return();
         Ok(true)
     }
-
 }

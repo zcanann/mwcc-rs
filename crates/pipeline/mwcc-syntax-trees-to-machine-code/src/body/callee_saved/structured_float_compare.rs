@@ -7,9 +7,7 @@
 
 #[allow(unused_imports)]
 use super::*;
-use crate::condition_float_cache::{
-    is_direct_float_memory_load, same_direct_float_memory_load,
-};
+use crate::condition_float_cache::{is_direct_float_memory_load, same_direct_float_memory_load};
 use crate::generator::{
     float_compare_literal_key, FloatCompareLiteralKey, PreloadedFloatCompareLiteral,
     RetainedFloatCompareValue, StructuredFloatHandoff, FLOAT_SCRATCH,
@@ -24,7 +22,10 @@ impl Generator {
         function: &Function,
         ephemeral_locals: &[&LocalDeclaration],
     ) -> u8 {
-        if self.structured_float_handoff_local(function, ephemeral_locals).is_some() {
+        if self
+            .structured_float_handoff_local(function, ephemeral_locals)
+            .is_some()
+        {
             2
         } else {
             1
@@ -102,14 +103,13 @@ impl Generator {
         handoff.emitted = true;
     }
 
-    pub(crate) fn retained_float_compare_register(
-        &self,
-        operand: &Expression,
-    ) -> Option<u8> {
-        self.retained_float_compare_value.as_ref().and_then(|retained| {
-            same_direct_float_memory_load(&retained.expression, operand)
-                .then_some(retained.register)
-        })
+    pub(crate) fn retained_float_compare_register(&self, operand: &Expression) -> Option<u8> {
+        self.retained_float_compare_value
+            .as_ref()
+            .and_then(|retained| {
+                same_direct_float_memory_load(&retained.expression, operand)
+                    .then_some(retained.register)
+            })
     }
 
     pub(super) fn commit_structured_float_handoff(&mut self) {
@@ -192,7 +192,10 @@ impl Generator {
                     && matches!(
                         literal,
                         Expression::FloatLiteral(_) | Expression::IntegerLiteral(_)
-                    ) => literal,
+                    ) =>
+            {
+                literal
+            }
             _ => return Ok(()),
         };
         let double = local.declared_type == Type::Double;
@@ -241,7 +244,10 @@ fn expression_has_loaded_float_literal_compare(expression: &Expression) -> bool 
     else {
         return false;
     };
-    if matches!(operator, BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr) {
+    if matches!(
+        operator,
+        BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr
+    ) {
         return expression_has_loaded_float_literal_compare(left)
             || expression_has_loaded_float_literal_compare(right);
     }

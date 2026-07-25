@@ -15,7 +15,10 @@ impl Generator {
             || !self.frame_slots.is_empty()
             || !function.locals.is_empty()
             || !function.statements.is_empty()
-            || matches!(function.return_type, Type::Void | Type::Float | Type::Double)
+            || matches!(
+                function.return_type,
+                Type::Void | Type::Float | Type::Double
+            )
         {
             return Ok(false);
         }
@@ -57,9 +60,7 @@ impl Generator {
         let Some((right_name, right_arguments)) = negated_call(right) else {
             return Ok(false);
         };
-        let argument_is_parameter = |arguments: &[Expression]| {
-            matches!(arguments, [Expression::Variable(name)] if name == &parameter.name)
-        };
+        let argument_is_parameter = |arguments: &[Expression]| matches!(arguments, [Expression::Variable(name)] if name == &parameter.name);
         if !argument_is_parameter(left_arguments)
             || !argument_is_parameter(right_arguments)
             || self.locations.contains_key(left_name)
@@ -162,13 +163,11 @@ impl Generator {
             a: 1,
             offset: 20,
         });
-        self.output
-            .instructions
-            .push(Instruction::LoadFloatDouble {
-                d: 31,
-                a: 1,
-                offset: 8,
-            });
+        self.output.instructions.push(Instruction::LoadFloatDouble {
+            d: 31,
+            a: 1,
+            offset: 8,
+        });
         self.output
             .instructions
             .push(Instruction::MoveToLinkRegister { s: 0 });

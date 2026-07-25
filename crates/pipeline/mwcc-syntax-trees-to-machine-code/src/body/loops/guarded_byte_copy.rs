@@ -130,11 +130,8 @@ fn recognize(function: &Function) -> Option<GuardedByteCopy<'_>> {
                 value: Expression::Dereference { pointer: load_pointer },
             }] if is_post_increment(store_pointer, &cursor.name)
                 && is_post_increment(load_pointer, &source.name));
-        if is_early_return_guard(
-            destination_guard,
-            &destination.name,
-            &destination.name,
-        ) && is_early_return_guard(count_guard, &count.name, &destination.name)
+        if is_early_return_guard(destination_guard, &destination.name, &destination.name)
+            && is_early_return_guard(count_guard, &count.name, &destination.name)
             && cursor_assignment == &cursor.name
             && is_alias_of(cursor_value, &destination.name)
             && is_decrement_assignment(loop_condition, &count.name)
@@ -256,12 +253,10 @@ impl Generator {
         let style = self.behavior.guarded_byte_copy_style;
         for register in [destination, count] {
             self.output.instructions.push(match style {
-                GuardedByteCopyStyle::LogicalCompare => {
-                    Instruction::CompareLogicalWordImmediate {
-                        a: register,
-                        immediate: 0,
-                    }
-                }
+                GuardedByteCopyStyle::LogicalCompare => Instruction::CompareLogicalWordImmediate {
+                    a: register,
+                    immediate: 0,
+                },
                 GuardedByteCopyStyle::SignedCompare
                 | GuardedByteCopyStyle::SignedCompareWithAlignedStore => {
                     Instruction::CompareWordImmediate {

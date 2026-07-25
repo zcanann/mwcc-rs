@@ -1,8 +1,6 @@
 //! Pikmin's inlined-initializer UART console read.
 
-use super::uart_read_family::{
-    UartReadBoolean, UartReadConvention, UartReadInitialization,
-};
+use super::uart_read_family::{UartReadBoolean, UartReadConvention, UartReadInitialization};
 use crate::generator::Generator;
 use mwcc_core::Compilation;
 use mwcc_syntax_trees::{Function, Type};
@@ -16,8 +14,7 @@ impl Generator {
             || function.parameters.len() != 4
             || !self.frame_slots.is_empty()
             || super::ast_hash(function) != UC1_READ_AST_HASH
-            || super::skipped_context_fingerprint(&self.skipped_inline_names)
-                != 0x38824b31e8176c4d
+            || super::skipped_context_fingerprint(&self.skipped_inline_names) != 0x38824b31e8176c4d
         {
             return Ok(false);
         }

@@ -91,7 +91,11 @@ impl Reg {
             Reg::Physical(number) => number,
             Reg::Virtual(register) => {
                 let encoded = VIRTUAL_BASE as u32 + register.id;
-                assert!(encoded <= u8::MAX as u32, "virtual register id {} exceeds the u8 field ceiling", register.id);
+                assert!(
+                    encoded <= u8::MAX as u32,
+                    "virtual register id {} exceeds the u8 field ceiling",
+                    register.id
+                );
                 encoded as u8
             }
         }
@@ -110,7 +114,10 @@ mod tests {
     #[test]
     fn a_virtual_reference_exposes_its_register_not_a_physical_one() {
         let reg = Reg::general(7);
-        assert_eq!(reg.virtual_register(), Some(VirtualRegister::new(7, Class::General)));
+        assert_eq!(
+            reg.virtual_register(),
+            Some(VirtualRegister::new(7, Class::General))
+        );
         assert_eq!(reg.physical(), None);
     }
 

@@ -2,10 +2,7 @@
 
 use mwcc_dwarf1::{Address, Block, BlockRelocation, DebugEntryId, FundamentalType};
 
-pub(super) fn fundamental_subscript_data(
-    length: u16,
-    fundamental: FundamentalType,
-) -> Vec<u8> {
+pub(super) fn fundamental_subscript_data(length: u16, fundamental: FundamentalType) -> Vec<u8> {
     let mut bytes = bounds(length);
     bytes.extend_from_slice(&[8, 0, 0x55]);
     bytes.extend_from_slice(&(fundamental as u16).to_be_bytes());

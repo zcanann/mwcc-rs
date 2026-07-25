@@ -163,20 +163,44 @@ pub enum Instruction {
     /// `rlwinm rA, rS, shift, begin, end` — rotate left by `shift`, keep bits
     /// `[begin, end]`. The general form; mwcc fuses a narrow unsigned shift and
     /// its width mask into one of these.
-    RotateAndMask { a: u8, s: u8, shift: u8, begin: u8, end: u8 },
+    RotateAndMask {
+        a: u8,
+        s: u8,
+        shift: u8,
+        begin: u8,
+        end: u8,
+    },
     /// `rlwinm. rA, rS, shift, begin, end` — the general rotate-and-mask,
     /// record form (sets CR0).
-    RotateAndMaskRecord { a: u8, s: u8, shift: u8, begin: u8, end: u8 },
+    RotateAndMaskRecord {
+        a: u8,
+        s: u8,
+        shift: u8,
+        begin: u8,
+        end: u8,
+    },
     /// `rlwnm rA, rS, rB, begin, end` — like `rlwinm` but the rotate amount is the
     /// low five bits of `rB` (a register) rather than an immediate. mwcc uses it for
     /// the `x <= 0` idiom: rotating a `1` left by `cntlzw(x)` lands in the low bit
     /// only when the leading-zero count is 0 or 32 (i.e. `x < 0` or `x == 0`).
-    RotateAndMaskVariable { a: u8, s: u8, b: u8, begin: u8, end: u8 },
+    RotateAndMaskVariable {
+        a: u8,
+        s: u8,
+        b: u8,
+        begin: u8,
+        end: u8,
+    },
     /// `rlwimi rA, rS, shift, begin, end` — rotate `rS` left by `shift` and insert
     /// bits `[begin, end]` into `rA`, leaving `rA`'s other bits intact. mwcc uses
     /// it to merge two disjoint bit fields (e.g. an OR of two shifts, or a masked
     /// sign/magnitude merge) into one instruction.
-    RotateAndMaskInsert { a: u8, s: u8, shift: u8, begin: u8, end: u8 },
+    RotateAndMaskInsert {
+        a: u8,
+        s: u8,
+        shift: u8,
+        begin: u8,
+        end: u8,
+    },
     /// `rlwinm. rA, rS, 0, begin, end` — keep the bit run `[begin, end]` of `rS`
     /// and set cr0 from the result. Used to test `(x & mask)` in a condition.
     AndMaskRecord { a: u8, s: u8, begin: u8, end: u8 },
@@ -225,9 +249,21 @@ pub enum Instruction {
     ConvertToIntegerWordZero { d: u8, b: u8 },
     /// `psq_l frD, offset(rA), W, I` — Gekko paired-single quantized load
     /// (the callee-saved FPR restore's second half under -proc gekko).
-    PairedSingleQuantizedLoad { d: u8, a: u8, offset: i16, w: u8, i: u8 },
+    PairedSingleQuantizedLoad {
+        d: u8,
+        a: u8,
+        offset: i16,
+        w: u8,
+        i: u8,
+    },
     /// `psq_st frS, offset(rA), W, I` — Gekko paired-single quantized store.
-    PairedSingleQuantizedStore { s: u8, a: u8, offset: i16, w: u8, i: u8 },
+    PairedSingleQuantizedStore {
+        s: u8,
+        a: u8,
+        offset: i16,
+        w: u8,
+        i: u8,
+    },
     /// `stwu rS, offset(rA)` — store word with base update (stack frame push).
     StoreWordWithUpdate { s: u8, a: u8, offset: i16 },
     /// `lwz rD, offset(rA)` — load word.
@@ -302,7 +338,11 @@ pub enum Instruction {
     /// A forward conditional branch to another instruction (by index). `options`
     /// is the PowerPC BO field, `condition_bit` the BI field (cr0: 0=LT,1=GT,2=EQ).
     /// The byte offset is resolved at encode time from the instruction positions.
-    BranchConditionalForward { options: u8, condition_bit: u8, target: usize },
+    BranchConditionalForward {
+        options: u8,
+        condition_bit: u8,
+        target: usize,
+    },
     /// An unconditional branch to another instruction (by index). `b target`; the
     /// byte displacement is resolved at encode time from the instruction positions.
     /// Used by the `switch` dispatch to jump to a case body or the default.
@@ -445,9 +485,7 @@ impl Instruction {
         self.is_single_precision_arithmetic()
             || matches!(
                 self,
-                LoadFloatSingle { .. }
-                    | LoadFloatSingleIndexed { .. }
-                    | RoundToSingle { .. }
+                LoadFloatSingle { .. } | LoadFloatSingleIndexed { .. } | RoundToSingle { .. }
             )
     }
 }

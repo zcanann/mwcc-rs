@@ -33,24 +33,19 @@ impl Generator {
         {
             return Ok(false);
         }
-        let [
-            Statement::Assign {
-                name: loaded_name,
-                value: loaded_value,
-            },
-            Statement::Assign {
-                name: set_name,
-                value: set_value,
-            },
-            Statement::Assign {
-                name: masked_name,
-                value: masked_value,
-            },
-            Statement::Store {
-                target,
-                value: stored_value,
-            },
-        ] = function.statements.as_slice()
+        let [Statement::Assign {
+            name: loaded_name,
+            value: loaded_value,
+        }, Statement::Assign {
+            name: set_name,
+            value: set_value,
+        }, Statement::Assign {
+            name: masked_name,
+            value: masked_value,
+        }, Statement::Store {
+            target,
+            value: stored_value,
+        }] = function.statements.as_slice()
         else {
             return Ok(false);
         };
@@ -73,28 +68,27 @@ impl Generator {
         let Some(&(base_address, Type::UnsignedInt)) = self.fixed_address_arrays.get(bank) else {
             return Ok(false);
         };
-        let immediate_update =
-            |expression: &Expression, operator: BinaryOperator| -> Option<i64> {
-                let Expression::Binary {
-                    operator: actual,
-                    left,
-                    right,
-                } = peel_casts(expression)
-                else {
-                    return None;
-                };
-                if *actual != operator {
-                    return None;
-                }
-                if matches!(left.as_ref(), Expression::Variable(name) if name == &temporary.name) {
-                    constant_value(right)
-                } else if matches!(right.as_ref(), Expression::Variable(name) if name == &temporary.name)
-                {
-                    constant_value(left)
-                } else {
-                    None
-                }
+        let immediate_update = |expression: &Expression, operator: BinaryOperator| -> Option<i64> {
+            let Expression::Binary {
+                operator: actual,
+                left,
+                right,
+            } = peel_casts(expression)
+            else {
+                return None;
             };
+            if *actual != operator {
+                return None;
+            }
+            if matches!(left.as_ref(), Expression::Variable(name) if name == &temporary.name) {
+                constant_value(right)
+            } else if matches!(right.as_ref(), Expression::Variable(name) if name == &temporary.name)
+            {
+                constant_value(left)
+            } else {
+                None
+            }
+        };
         let Some(set_bits) = immediate_update(set_value, BinaryOperator::BitOr) else {
             return Ok(false);
         };

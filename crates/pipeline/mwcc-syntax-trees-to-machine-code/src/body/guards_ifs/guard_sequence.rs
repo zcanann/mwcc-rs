@@ -7,13 +7,8 @@ impl Generator {
     /// Whether build 163 can let `current` branch from the CR0 value produced by
     /// `previous`.  The false path of an early-return guard reaches the next
     /// guard without executing an instruction that changes CR0.
-    fn guard_reuses_previous_cr0(
-        &self,
-        previous: &Expression,
-        current: &Expression,
-    ) -> bool {
-        self.behavior.integer_select_style
-            == mwcc_versions::IntegerSelectStyle::BranchPreserving
+    fn guard_reuses_previous_cr0(&self, previous: &Expression, current: &Expression) -> bool {
+        self.behavior.integer_select_style == mwcc_versions::IntegerSelectStyle::BranchPreserving
             && shares_condition_register(previous, current)
             && self.comparison_operands_signed(previous)
     }
@@ -56,10 +51,7 @@ impl Generator {
                 guard_comparison_key(&pair[1].condition),
             ) {
                 if first == second {
-                    if self.guard_reuses_previous_cr0(
-                        &pair[0].condition,
-                        &pair[1].condition,
-                    ) {
+                    if self.guard_reuses_previous_cr0(&pair[0].condition, &pair[1].condition) {
                         continue;
                     }
                     // When the SECOND guard of the pair is the LAST guard, it folds with the final
@@ -107,10 +99,7 @@ impl Generator {
         for (index, guard) in guards.iter().enumerate() {
             let is_last = index + 1 == guards.len();
             let reuse_cr0 = index > 0
-                && self.guard_reuses_previous_cr0(
-                    &guards[index - 1].condition,
-                    &guard.condition,
-                );
+                && self.guard_reuses_previous_cr0(&guards[index - 1].condition, &guard.condition);
 
             // A null-guarded dereference `if (!p) return CONST; return *p;` cannot fold branchless
             // (dereferencing null is unsafe); mwcc emits a real branch with the deref in the

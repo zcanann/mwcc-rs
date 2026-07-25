@@ -971,26 +971,14 @@ mod tests {
     #[test]
     fn assembles_segment_register_moves() {
         assert_eq!(
-            assemble(
-                "mfsr",
-                vec![AsmOperand::Gpr(16), AsmOperand::Immediate(0)]
-            )
-            .unwrap(),
+            assemble("mfsr", vec![AsmOperand::Gpr(16), AsmOperand::Immediate(0)]).unwrap(),
             Instruction::MoveFromSegmentRegister { d: 16, segment: 0 }
         );
         assert_eq!(
-            assemble(
-                "mtsr",
-                vec![AsmOperand::Immediate(15), AsmOperand::Gpr(31)]
-            )
-            .unwrap(),
+            assemble("mtsr", vec![AsmOperand::Immediate(15), AsmOperand::Gpr(31)]).unwrap(),
             Instruction::MoveToSegmentRegister { segment: 15, s: 31 }
         );
-        assert!(assemble(
-            "mfsr",
-            vec![AsmOperand::Gpr(3), AsmOperand::Immediate(16)]
-        )
-        .is_err());
+        assert!(assemble("mfsr", vec![AsmOperand::Gpr(3), AsmOperand::Immediate(16)]).is_err());
     }
 
     #[test]

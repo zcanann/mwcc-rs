@@ -2,47 +2,48 @@
 //!
 //! Split by family (fire 547); behavior-identical.
 
-mod combine;
 mod async_state_callback;
 mod bitmask_call_chain;
 mod bounded_buffer_append;
 mod bounded_buffer_read;
 mod call_condition_live_in_branches;
 mod call_live_counter_loop;
+mod combine;
 mod computed_between_calls;
-mod counted_resource_search;
 mod conditional;
 mod conditional_member_callback;
 mod context_callback_handler;
+mod counted_resource_search;
 mod critical_globals;
 mod fixed_address_copy_barrier;
 mod fixed_read;
 mod fixed_rmw;
 mod fixed_rmw_inline_tail;
 mod fixed_rmw_leaf;
-mod fixed_rmw_split_word;
-mod fixed_rmw_word;
 mod fixed_rmw_legacy;
 mod fixed_rmw_recognize;
+mod fixed_rmw_split_word;
+mod fixed_rmw_word;
 mod frame_call_then_branch;
 mod frame_convention;
-mod later_call_arguments;
-mod linkage_first_arguments;
-mod global_swap;
-mod guarded_indexed_call_sequence;
-mod global_call_result_guard;
 mod global_aggregate_initialization;
 mod global_aggregate_pop;
 mod global_aggregate_post;
-mod guarded_display_list_packet;
-mod guarded_initialization;
-mod guarded_pointer_pair_initialization;
-mod guarded_computed_survivor;
+mod global_call_result_guard;
+mod global_swap;
 mod guarded_bitmask_call_sequence;
+mod guarded_display_list_packet;
+mod guarded_indexed_call_sequence;
+mod guarded_initialization;
+mod guarded_computed_survivor;
 mod guarded_computed_survivor_frame;
 mod guarded_pointer_call;
-mod indirect_call_schedule;
+mod guarded_pointer_pair_initialization;
 mod indexed_call_store_return;
+mod indirect_call_schedule;
+mod later_call_arguments;
+mod linkage_first_arguments;
+mod pointer_state_call_loop;
 mod queue_initialization;
 mod queue_interrupt;
 mod queue_post;
@@ -54,14 +55,15 @@ mod structured_call_schedule;
 mod structured_call_accumulator;
 mod structured_entry_alias;
 mod structured_float_compare;
+mod structured_frame_entry;
 mod structured_frame_assignment;
 mod structured_frame_bitfield_stores;
 mod structured_frame_call_schedule;
 mod structured_frame_entry;
 mod structured_home_layout;
 mod structured_if_else;
-mod structured_inline_residue;
 mod structured_inline_assertion;
+mod structured_inline_residue;
 mod structured_locals;
 mod structured_liveness;
 mod structured_parameter_home_reuse;
@@ -378,10 +380,13 @@ impl Generator {
                     if live.iter().all(|name|
                         expression_reads_name(target, name) || expression_reads_name(value, name))
             );
-        let return_reads_live = function.return_expression.as_ref().is_some_and(|expression| {
-            live.iter()
-                .any(|name| expression_reads_name(expression, name))
-        });
+        let return_reads_live = function
+            .return_expression
+            .as_ref()
+            .is_some_and(|expression| {
+                live.iter()
+                    .any(|name| expression_reads_name(expression, name))
+            });
         let later_call_argument_survivors = passed_to_call
             && !first_call_reads_live
             && !has_store
@@ -396,10 +401,7 @@ impl Generator {
                 Some(Statement::Expression(Expression::Call { arguments, .. }))
                     if matches!(arguments.get(1), Some(Expression::IntegerLiteral(_) | Expression::StringLiteral(_)))
             );
-        if passed_to_call
-            && !single_store_consumes_both
-            && !later_call_argument_survivors
-        {
+        if passed_to_call && !single_store_consumes_both && !later_call_argument_survivors {
             return Ok(false);
         }
         if has_store

@@ -340,13 +340,13 @@ impl Generator {
         if matches!(pointee, Pointee::Float | Pointee::Double) {
             return Ok(false);
         }
-        let Some(guard_constant) = constant_value(guard_value)
-            .and_then(|value| i16::try_from(value).ok())
+        let Some(guard_constant) =
+            constant_value(guard_value).and_then(|value| i16::try_from(value).ok())
         else {
             return Ok(false);
         };
-        let Some(store_constant) = constant_value(stored)
-            .and_then(|value| i16::try_from(value).ok())
+        let Some(store_constant) =
+            constant_value(stored).and_then(|value| i16::try_from(value).ok())
         else {
             return Ok(false);
         };
@@ -369,13 +369,11 @@ impl Generator {
                 condition_bit,
                 target: 0,
             });
-        self.output
-            .instructions
-            .push(Instruction::AddImmediate {
-                d: Eabi::general_result().number,
-                a: 0,
-                immediate: guard_constant,
-            });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: Eabi::general_result().number,
+            a: 0,
+            immediate: guard_constant,
+        });
         self.output
             .instructions
             .push(Instruction::BranchToLinkRegister);
@@ -386,13 +384,11 @@ impl Generator {
             *target = continuation;
         }
 
-        self.output
-            .instructions
-            .push(Instruction::AddImmediate {
-                d: GENERAL_SCRATCH,
-                a: 0,
-                immediate: store_constant,
-            });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: GENERAL_SCRATCH,
+            a: 0,
+            immediate: store_constant,
+        });
         let return_instruction = Instruction::AddImmediate {
             d: Eabi::general_result().number,
             a: 0,

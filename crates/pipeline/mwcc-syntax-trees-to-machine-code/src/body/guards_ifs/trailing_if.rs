@@ -80,8 +80,7 @@ impl Generator {
             }],
         ) = (then_body, else_body)
         {
-            if self.behavior.integer_select_style
-                == mwcc_versions::IntegerSelectStyle::Branchless
+            if self.behavior.integer_select_style == mwcc_versions::IntegerSelectStyle::Branchless
                 && !nested
                 && same_operand(then_target, else_target)
                 && matches!(then_target, Expression::Variable(name) if self.globals.contains_key(name.as_str()))

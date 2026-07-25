@@ -10,10 +10,7 @@ const MP_IANIM_VSIMPLIFIED_AST_HASH: u64 = 0x3063_f6bb_2f72_9038;
 const MP_IANIM_CONTEXT: u64 = 0xea05_63cc_f607_b64d;
 
 impl Generator {
-    pub(super) fn try_mp_ianim_vsimplified(
-        &mut self,
-        function: &Function,
-    ) -> Compilation<bool> {
+    pub(super) fn try_mp_ianim_vsimplified(&mut self, function: &Function) -> Compilation<bool> {
         if function.name != "VSimplified__11IAnimReaderFv" || !self.frame_slots.is_empty() {
             return Ok(false);
         }

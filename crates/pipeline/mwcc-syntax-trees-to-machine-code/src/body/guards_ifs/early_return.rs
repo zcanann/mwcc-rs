@@ -594,12 +594,8 @@ impl Generator {
                     // CASE B — materialize the value in r0. Mainline schedules the return
                     // between production and the store; build 163 completes the store first.
                     self.evaluate_general(stored, GENERAL_SCRATCH)?;
-                    let store = displacement_store(
-                        pointee,
-                        GENERAL_SCRATCH,
-                        pointer_register,
-                        offset,
-                    )?;
+                    let store =
+                        displacement_store(pointee, GENERAL_SCRATCH, pointer_register, offset)?;
                     if self.behavior.guard_store_precedes_return_value {
                         self.output.instructions.push(store);
                         emit_return_value(self);
@@ -660,21 +656,16 @@ impl Generator {
         // guarded value is already in r3 this is a conditional return
         // (`b<true>lr`); otherwise it is the literal source diamond followed by
         // the independently compiled value-tracked tail.
-        if self.behavior.integer_select_style
-            == mwcc_versions::IntegerSelectStyle::BranchPreserving
+        if self.behavior.integer_select_style == mwcc_versions::IntegerSelectStyle::BranchPreserving
         {
-            self.emit_ordered_early_return_with_tracked_tail(
-                function, condition, value, rest,
-            )?;
+            self.emit_ordered_early_return_with_tracked_tail(function, condition, value, rest)?;
             return Ok(true);
         }
 
         // The branch form is mwcc's shape for a tail reading TWO-plus distinct parameters
         // (`add r3,r4,r5` after the branch), with a condition reading no reassigned name.
         if distinct_parameter_reads >= 2 && !reads_written(condition) {
-            self.emit_ordered_early_return_with_tracked_tail(
-                function, condition, value, rest,
-            )?;
+            self.emit_ordered_early_return_with_tracked_tail(function, condition, value, rest)?;
             return Ok(true);
         }
 

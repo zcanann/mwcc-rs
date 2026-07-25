@@ -97,7 +97,22 @@ impl DagNode {
             2 => OpKind::Load,
             _ => OpKind::Alu,
         };
-        DagNode { label, kind, latency, gate_latency: latency, reads: Vec::new(), writes: Vec::new(), alias_group: None, extra_deps: Vec::new(), hazard: None, forbid_r0: false, extension: false, local_home: false, emission_ordered: false, r3_chain_store: false }
+        DagNode {
+            label,
+            kind,
+            latency,
+            gate_latency: latency,
+            reads: Vec::new(),
+            writes: Vec::new(),
+            alias_group: None,
+            extra_deps: Vec::new(),
+            hazard: None,
+            forbid_r0: false,
+            extension: false,
+            local_home: false,
+            emission_ordered: false,
+            r3_chain_store: false,
+        }
     }
     pub fn local_home(mut self) -> DagNode {
         self.local_home = true;
@@ -178,7 +193,10 @@ pub struct Model {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Strategy {
     GlobalKey,
-    ChainRobin { lead: LeadRule, offer_non_load_first: bool },
+    ChainRobin {
+        lead: LeadRule,
+        offer_non_load_first: bool,
+    },
 }
 
 /// Which chain leads a round-robin step.
@@ -236,7 +254,10 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
             }
         }
         if let Some(group) = node.alias_group {
-            if let Some(previous) = (0..index).rev().find(|&p| nodes[p].alias_group == Some(group)) {
+            if let Some(previous) = (0..index)
+                .rev()
+                .find(|&p| nodes[p].alias_group == Some(group))
+            {
                 deps[index].push(previous);
             }
         }
@@ -311,7 +332,9 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                             && !reaches[node][side]
                             && ((nodes[side].kind == OpKind::Load)
                                 || (0..count).any(|load| {
-                                    nodes[load].kind == OpKind::Load && load != node && reaches[load][side]
+                                    nodes[load].kind == OpKind::Load
+                                        && load != node
+                                        && reaches[load][side]
                                 }))
                     })
             })
@@ -321,16 +344,31 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
     // Chain id = the sink each node ultimately feeds (self for sinks); chain
     // weight = the heaviest path within it; chain has_load per member kinds.
     let chain: Vec<usize> = (0..count)
-        .map(|node| (node..count).find(|&sink| (node == sink || reaches[node][sink]) && (sink + 1..count).all(|later| !reaches[sink][later])).unwrap_or(node))
+        .map(|node| {
+            (node..count)
+                .find(|&sink| {
+                    (node == sink || reaches[node][sink])
+                        && (sink + 1..count).all(|later| !reaches[sink][later])
+                })
+                .unwrap_or(node)
+        })
         .collect();
-    let chain_weight: Vec<u32> = (0..count).map(|node| {
-        let id = chain[node];
-        (0..count).filter(|&other| chain[other] == id).map(|other| weight[other]).max().unwrap_or(0)
-    }).collect();
-    let chain_has_load: Vec<bool> = (0..count).map(|node| {
-        let id = chain[node];
-        (0..count).any(|other| chain[other] == id && nodes[other].kind == OpKind::Load)
-    }).collect();
+    let chain_weight: Vec<u32> = (0..count)
+        .map(|node| {
+            let id = chain[node];
+            (0..count)
+                .filter(|&other| chain[other] == id)
+                .map(|other| weight[other])
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    let chain_has_load: Vec<bool> = (0..count)
+        .map(|node| {
+            let id = chain[node];
+            (0..count).any(|other| chain[other] == id && nodes[other].kind == OpKind::Load)
+        })
+        .collect();
 
     // The WAR constraint: the RETURN FINAL's r3 write emits after the
     // r3-rooted chain's store — but only when that store's ANALYTIC earliest
@@ -361,7 +399,9 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
             && !nodes[node].writes.is_empty()
             && !nodes[node].forbid_r0
     });
-    let last_store_index: Option<usize> = (0..count).rev().find(|&node| nodes[node].kind == OpKind::Store);
+    let last_store_index: Option<usize> = (0..count)
+        .rev()
+        .find(|&node| nodes[node].kind == OpKind::Store);
     let war_stores: Vec<usize> = return_sink
         .map(|sink| {
             (0..count)
@@ -424,7 +464,9 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
             }
             deps[candidate]
                 .iter()
-                .filter_map(|&dependency| issued_at[dependency].map(|at| at + edge_gate(dependency, candidate)))
+                .filter_map(|&dependency| {
+                    issued_at[dependency].map(|at| at + edge_gate(dependency, candidate))
+                })
                 .max()
                 .is_some_and(|completed| completed == time)
         };
@@ -449,7 +491,11 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
             })
             .count();
         let rank = |candidate: usize| -> (u8, u8, u8, u32, u32, usize) {
-            let gate = if model.gated_last && gated[candidate] { 1 } else { 0 };
+            let gate = if model.gated_last && gated[candidate] {
+                1
+            } else {
+                0
+            };
             // A store released by a LONG-latency producer (gate >= 2) issues
             // the moment the gate opens — ahead of everything (measured: the
             // mulli store beats the fresh return op).
@@ -457,7 +503,9 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                 !return_mode || (store_count > 1 && long_store_count == 1);
             let affinity = if (return_mode || model.port_aware)
                 && nodes[candidate].kind == OpKind::Store
-                && deps[candidate].iter().any(|&dependency| nodes[dependency].gate_latency >= 2)
+                && deps[candidate]
+                    .iter()
+                    .any(|&dependency| nodes[dependency].gate_latency >= 2)
                 && (fresh(candidate) || model.port_aware)
                 && (!model.port_aware || legacy_long_store_affinity)
             {
@@ -543,69 +591,77 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                 // chain's first fmadd) yields exactly ONE cycle — it defers
                 // while FRESH and issues aged (ksin_tail: m1 issues at c5
                 // over two still-pending coefficient lifts).
-                let arith_defers = |candidate: usize, issued_at: &Vec<Option<u32>>, picked: &[usize]| -> bool {
-                    if nodes[candidate].kind == OpKind::Load {
-                        return false;
-                    }
-                    // A lift already PICKED this cycle no longer defers
-                    // anyone (measured: ksin_tail's v dual-issues with the
-                    // final coefficient lift; z4's m1 follows its lift in the
-                    // same cycle). And a lift whose blockage is SELF-CAUSED —
-                    // every consumer's unissued non-load blocker is the
-                    // candidate or one of its transitive dependents — does
-                    // not hold the candidate back (measured: the s_atan w
-                    // issues over loads that only wait on w's own chains,
-                    // while k_sin's v still defers to lifts blocked by the
-                    // independent chain1).
-                    let depends_on_candidate = |node: usize, candidate: usize| -> bool {
-                        let mut stack = vec![node];
-                        let mut seen = vec![false; count];
-                        while let Some(current) = stack.pop() {
-                            if current == candidate {
-                                return true;
-                            }
-                            if seen[current] {
-                                continue;
-                            }
-                            seen[current] = true;
-                            stack.extend(deps[current].iter().copied());
+                let arith_defers =
+                    |candidate: usize, issued_at: &Vec<Option<u32>>, picked: &[usize]| -> bool {
+                        if nodes[candidate].kind == OpKind::Load {
+                            return false;
                         }
-                        false
-                    };
-                    let lift_pending = ready.iter().any(|&other| {
-                        other != candidate && !picked.contains(&other) && load_blocked(other, issued_at)
-                    });
-                    if !lift_pending {
-                        return false;
-                    }
-                    // A local depending only on params/LOADS (z = x*x, or
-                    // z over the frame reload) leads the schedule and never
-                    // defers; a local depending on ARITH (v = z*x) yields —
-                    // but ONLY to lifts blocked by something INDEPENDENT of
-                    // the local itself (k_sin's v yields to chain1-blocked
-                    // coefficient loads; the s_atan w issues straight over
-                    // loads that wait only on w's own chains). The one-cycle
-                    // fresh-arith deference below keeps self-caused lifts.
-                    if nodes[candidate].local_home {
-                        let independent_lift = ready.iter().any(|&other| {
-                            if other == candidate || picked.contains(&other) || !load_blocked(other, issued_at) {
-                                return false;
+                        // A lift already PICKED this cycle no longer defers
+                        // anyone (measured: ksin_tail's v dual-issues with the
+                        // final coefficient lift; z4's m1 follows its lift in the
+                        // same cycle). And a lift whose blockage is SELF-CAUSED —
+                        // every consumer's unissued non-load blocker is the
+                        // candidate or one of its transitive dependents — does
+                        // not hold the candidate back (measured: the s_atan w
+                        // issues over loads that only wait on w's own chains,
+                        // while k_sin's v still defers to lifts blocked by the
+                        // independent chain1).
+                        let depends_on_candidate = |node: usize, candidate: usize| -> bool {
+                            let mut stack = vec![node];
+                            let mut seen = vec![false; count];
+                            while let Some(current) = stack.pop() {
+                                if current == candidate {
+                                    return true;
+                                }
+                                if seen[current] {
+                                    continue;
+                                }
+                                seen[current] = true;
+                                stack.extend(deps[current].iter().copied());
                             }
-                            (0..count).any(|consumer| {
-                                deps[consumer].contains(&other)
-                                    && deps[consumer].iter().any(|&dependency| {
-                                        issued_at[dependency].is_none()
-                                            && nodes[dependency].kind != OpKind::Load
-                                            && dependency != candidate
-                                            && !depends_on_candidate(dependency, candidate)
-                                    })
-                            })
+                            false
+                        };
+                        let lift_pending = ready.iter().any(|&other| {
+                            other != candidate
+                                && !picked.contains(&other)
+                                && load_blocked(other, issued_at)
                         });
-                        return independent_lift
-                            && deps[candidate].iter().any(|&dep| nodes[dep].kind != OpKind::Load);
-                    }
-                    deps[candidate].iter().any(|&dep| nodes[dep].local_home) && fresh(candidate)
-                };
+                        if !lift_pending {
+                            return false;
+                        }
+                        // A local depending only on params/LOADS (z = x*x, or
+                        // z over the frame reload) leads the schedule and never
+                        // defers; a local depending on ARITH (v = z*x) yields —
+                        // but ONLY to lifts blocked by something INDEPENDENT of
+                        // the local itself (k_sin's v yields to chain1-blocked
+                        // coefficient loads; the s_atan w issues straight over
+                        // loads that wait only on w's own chains). The one-cycle
+                        // fresh-arith deference below keeps self-caused lifts.
+                        if nodes[candidate].local_home {
+                            let independent_lift = ready.iter().any(|&other| {
+                                if other == candidate
+                                    || picked.contains(&other)
+                                    || !load_blocked(other, issued_at)
+                                {
+                                    return false;
+                                }
+                                (0..count).any(|consumer| {
+                                    deps[consumer].contains(&other)
+                                        && deps[consumer].iter().any(|&dependency| {
+                                            issued_at[dependency].is_none()
+                                                && nodes[dependency].kind != OpKind::Load
+                                                && dependency != candidate
+                                                && !depends_on_candidate(dependency, candidate)
+                                        })
+                                })
+                            });
+                            return independent_lift
+                                && deps[candidate]
+                                    .iter()
+                                    .any(|&dep| nodes[dep].kind != OpKind::Load);
+                        }
+                        deps[candidate].iter().any(|&dep| nodes[dep].local_home) && fresh(candidate)
+                    };
                 'fill: while picked.len() < model.issue_width {
                     for &candidate in &ready {
                         if picked.contains(&candidate) {
@@ -641,7 +697,9 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                         // single load/store unit; measured: horner coefficient
                         // loads and the s1_s2 front serialize one per cycle).
                         if nodes[candidate].kind == OpKind::Load
-                            && picked.iter().any(|&taken| nodes[taken].kind == OpKind::Load)
+                            && picked
+                                .iter()
+                                .any(|&taken| nodes[taken].kind == OpKind::Load)
                         {
                             continue;
                         }
@@ -662,9 +720,9 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                         // The WAR constraint: the return final waits for (or
                         // follows, within this window) the bound r3-chain stores.
                         if Some(candidate) == return_sink
-                            && war_stores
-                                .iter()
-                                .any(|&store| issued_at[store].is_none() && !picked.contains(&store))
+                            && war_stores.iter().any(|&store| {
+                                issued_at[store].is_none() && !picked.contains(&store)
+                            })
                         {
                             continue;
                         }
@@ -674,7 +732,9 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                         // void dataset never discriminated it.
                         if return_mode
                             && nodes[candidate].kind == OpKind::Store
-                            && picked.iter().any(|&taken| nodes[taken].kind == OpKind::Store)
+                            && picked
+                                .iter()
+                                .any(|&taken| nodes[taken].kind == OpKind::Store)
                         {
                             continue;
                         }
@@ -691,13 +751,20 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                 }
                 ready = picked;
             }
-            Strategy::ChainRobin { lead, offer_non_load_first } => {
+            Strategy::ChainRobin {
+                lead,
+                offer_non_load_first,
+            } => {
                 // Each chain offers ONE ready op; the lead chain's offer goes first.
                 let mut offers: Vec<usize> = Vec::new();
                 let mut seen_chains: Vec<usize> = Vec::new();
                 let mut by_chain = ready.clone();
                 by_chain.sort_by_key(|&candidate| {
-                    let load = if offer_non_load_first && nodes[candidate].kind == OpKind::Load { 1u8 } else { 0 };
+                    let load = if offer_non_load_first && nodes[candidate].kind == OpKind::Load {
+                        1u8
+                    } else {
+                        0
+                    };
                     (chain[candidate], load, candidate)
                 });
                 for &candidate in &by_chain {
@@ -709,10 +776,16 @@ pub fn linearize_with(nodes: &[DagNode], model: Model) -> Vec<usize> {
                 let lead_key = |candidate: &usize| -> (u8, std::cmp::Reverse<u32>, usize) {
                     let load_penalty = if chain_has_load[*candidate] { 1u8 } else { 0 };
                     match lead {
-                        LeadRule::Heaviest => (0, std::cmp::Reverse(chain_weight[*candidate]), chain[*candidate]),
-                        LeadRule::LoadFreeFirst | LeadRule::Alternating => {
-                            (load_penalty, std::cmp::Reverse(chain_weight[*candidate]), chain[*candidate])
-                        }
+                        LeadRule::Heaviest => (
+                            0,
+                            std::cmp::Reverse(chain_weight[*candidate]),
+                            chain[*candidate],
+                        ),
+                        LeadRule::LoadFreeFirst | LeadRule::Alternating => (
+                            load_penalty,
+                            std::cmp::Reverse(chain_weight[*candidate]),
+                            chain[*candidate],
+                        ),
                     }
                 };
                 offers.sort_by_key(lead_key);
@@ -810,11 +883,18 @@ pub fn assign_registers(
             }
         }
     };
-    let last_sink = (0..count).rev().find(|&node| consumer_of[node].is_empty()).unwrap_or(count - 1);
+    let last_sink = (0..count)
+        .rev()
+        .find(|&node| consumer_of[node].is_empty())
+        .unwrap_or(count - 1);
     // Ops on the last chain, and each op's position: final = feeds the sink store.
     let on_last_chain: Vec<bool> = (0..count).map(|node| chain_of(node) == last_sink).collect();
-    let feeds_sink: Vec<bool> = (0..count).map(|node| consumer_of[node].first() == Some(&last_sink)).collect();
-    let last_chain_ops = (0..count).filter(|&node| on_last_chain[node] && nodes[node].kind != OpKind::Store).count();
+    let feeds_sink: Vec<bool> = (0..count)
+        .map(|node| consumer_of[node].first() == Some(&last_sink))
+        .collect();
+    let last_chain_ops = (0..count)
+        .filter(|&node| on_last_chain[node] && nodes[node].kind != OpKind::Store)
+        .count();
 
     // The death slot of each VALUE (last read position in the order).
     let position: Vec<usize> = {
@@ -852,20 +932,29 @@ pub fn assign_registers(
             result[node] = Some(0);
             continue;
         }
-        let death = consumer_of[node].iter().map(|&reader| position[reader]).max().unwrap_or(slot);
+        let death = consumer_of[node]
+            .iter()
+            .map(|&reader| position[reader])
+            .max()
+            .unwrap_or(slot);
         let own_dying: Option<u8> = nodes[node].reads.iter().find_map(|read| {
-            params.iter().find(|&&(value, _)| value == *read).and_then(|&(value, register)| {
-                let value_death = (0..count)
-                    .filter(|&reader| nodes[reader].reads.contains(&value))
-                    .map(|reader| position[reader])
-                    .max()
-                    .unwrap_or(0);
-                (value_death == slot).then_some(register)
-            })
+            params
+                .iter()
+                .find(|&&(value, _)| value == *read)
+                .and_then(|&(value, register)| {
+                    let value_death = (0..count)
+                        .filter(|&reader| nodes[reader].reads.contains(&value))
+                        .map(|reader| position[reader])
+                        .max()
+                        .unwrap_or(0);
+                    (value_death == slot).then_some(register)
+                })
         });
         let is_free = |register: u8, live: &[(u8, usize)], include_same_cycle: bool| -> bool {
             live.iter().all(|&(taken, taken_death)| {
-                taken != register || taken_death < slot || (include_same_cycle && taken_death == slot)
+                taken != register
+                    || taken_death < slot
+                    || (include_same_cycle && taken_death == slot)
             })
         };
         let pick = match policy.reuse {
@@ -894,7 +983,11 @@ pub fn assign_registers(
 /// Assignment processes values in ISSUE order but checks conflicts against
 /// EVERY other value's interval, including future ones (interval allocation,
 /// not greedy-at-issue).
-pub fn assign_registers_v2(nodes: &[DagNode], order: &[usize], params: &[(u32, u8)]) -> Vec<Option<u8>> {
+pub fn assign_registers_v2(
+    nodes: &[DagNode],
+    order: &[usize],
+    params: &[(u32, u8)],
+) -> Vec<Option<u8>> {
     let count = nodes.len();
     let mut consumer_of: Vec<Vec<usize>> = vec![Vec::new(); count];
     for (index, node) in nodes.iter().enumerate() {
@@ -919,7 +1012,10 @@ pub fn assign_registers_v2(nodes: &[DagNode], order: &[usize], params: &[(u32, u
             }
         }
     };
-    let last_sink = (0..count).rev().find(|&node| consumer_of[node].is_empty()).unwrap_or(count - 1);
+    let last_sink = (0..count)
+        .rev()
+        .find(|&node| consumer_of[node].is_empty())
+        .unwrap_or(count - 1);
     // Intervals: params [0, last read]; values [def slot, last read slot].
     struct Interval {
         register: Option<u8>,
@@ -935,17 +1031,29 @@ pub fn assign_registers_v2(nodes: &[DagNode], order: &[usize], params: &[(u32, u
             .unwrap_or(0)
     };
     for &(value, register) in params {
-        intervals.push(Interval { register: Some(register), start: 0, end: param_end(value) });
+        intervals.push(Interval {
+            register: Some(register),
+            start: 0,
+            end: param_end(value),
+        });
     }
     let value_interval = |node: usize| -> (usize, usize) {
-        let end = consumer_of[node].iter().map(|&reader| position[reader]).max().unwrap_or(position[node]);
+        let end = consumer_of[node]
+            .iter()
+            .map(|&reader| position[reader])
+            .max()
+            .unwrap_or(position[node]);
         (position[node], end)
     };
     // Process in issue order; assignment sees all existing intervals AND we
     // re-check against them after each placement (future values conflict via
     // their later placement — the in-place preference is what needs care).
     let mut result: Vec<Option<u8>> = vec![None; count];
-    let ordered_values: Vec<usize> = order.iter().copied().filter(|&node| !nodes[node].writes.is_empty() && nodes[node].kind != OpKind::Store).collect();
+    let ordered_values: Vec<usize> = order
+        .iter()
+        .copied()
+        .filter(|&node| !nodes[node].writes.is_empty() && nodes[node].kind != OpKind::Store)
+        .collect();
     for &node in &ordered_values {
         let (start, end) = value_interval(node);
         let free_over = |register: u8, intervals: &[Interval], open_start: bool| -> bool {
@@ -972,12 +1080,15 @@ pub fn assign_registers_v2(nodes: &[DagNode], order: &[usize], params: &[(u32, u
                     })
                     .or_else(|| {
                         // An internal source: its writer's assigned register.
-                        (0..count).rev().find(|&w| nodes[w].writes.contains(read)).and_then(|writer| {
-                            result[writer].map(|register| {
-                                let (_, writer_end) = value_interval(writer);
-                                (register, writer_end == start)
+                        (0..count)
+                            .rev()
+                            .find(|&w| nodes[w].writes.contains(read))
+                            .and_then(|writer| {
+                                result[writer].map(|register| {
+                                    let (_, writer_end) = value_interval(writer);
+                                    (register, writer_end == start)
+                                })
                             })
-                        })
                     })
             })
             .filter(|&(_, dies_here)| dies_here)
@@ -986,14 +1097,20 @@ pub fn assign_registers_v2(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         let on_last_chain = chain_of(node) == last_sink;
         let pick = if on_last_chain && free_over(0, &intervals, true) {
             Some(0)
-        } else if let Some(register) = in_place.filter(|&register| free_over(register, &intervals, true)) {
+        } else if let Some(register) =
+            in_place.filter(|&register| free_over(register, &intervals, true))
+        {
             Some(register)
         } else {
             (3..=12).find(|&register| free_over(register, &intervals, false))
         };
         let register = pick.unwrap_or(0);
         result[node] = Some(register);
-        intervals.push(Interval { register: Some(register), start, end });
+        intervals.push(Interval {
+            register: Some(register),
+            start,
+            end,
+        });
     }
     result
 }
@@ -1006,7 +1123,11 @@ pub fn assign_registers_v2(nodes: &[DagNode], order: &[usize], params: &[(u32, u
 ///   use r0 only when their whole interval PRECEDES the last chain's first def;
 /// - a FINAL op (feeding a store) may reuse its own dying source's register
 ///   (an open-interval exception); last-chain finals still prefer r0.
-pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u8)]) -> Vec<Option<u8>> {
+pub fn assign_registers_v3(
+    nodes: &[DagNode],
+    order: &[usize],
+    params: &[(u32, u8)],
+) -> Vec<Option<u8>> {
     let count = nodes.len();
     let mut consumer_of: Vec<Vec<usize>> = vec![Vec::new(); count];
     for (index, node) in nodes.iter().enumerate() {
@@ -1031,13 +1152,18 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
             }
         }
     };
-    let last_sink = (0..count).rev().find(|&node| consumer_of[node].is_empty()).unwrap_or(count - 1);
+    let last_sink = (0..count)
+        .rev()
+        .find(|&node| consumer_of[node].is_empty())
+        .unwrap_or(count - 1);
     // RETURN MODE: a consumerless non-store node is the returned value — its
     // register is FORCED to r3 (pre-claimed so in-place checks see it), store
     // chains become r0-eligible, and the parity gate lifts (measured, the
     // five return captures).
     let return_node: Option<usize> = (0..count).find(|&node| {
-        consumer_of[node].is_empty() && nodes[node].kind != OpKind::Store && !nodes[node].writes.is_empty()
+        consumer_of[node].is_empty()
+            && nodes[node].kind != OpKind::Store
+            && !nodes[node].writes.is_empty()
     });
     let return_mode = return_node.is_some();
     let last_chain_first_def = (0..count)
@@ -1053,7 +1179,11 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
             .unwrap_or(0)
     };
     let value_end = |node: usize| -> usize {
-        consumer_of[node].iter().map(|&reader| position[reader]).max().unwrap_or(position[node])
+        consumer_of[node]
+            .iter()
+            .map(|&reader| position[reader])
+            .max()
+            .unwrap_or(position[node])
     };
     // Occupancies as (register, start, end) with CLOSED ends.
     let mut occupied: Vec<(u8, usize, usize)> = params
@@ -1127,7 +1257,10 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
                 taken != register
                     || taken_end < start
                     || taken_start > end
-                    || (feeds_return && register == 3 && Some(taken_start) == return_claim_start && taken_start == end)
+                    || (feeds_return
+                        && register == 3
+                        && Some(taken_start) == return_claim_start
+                        && taken_start == end)
             })
         };
         // The own dying source (for the in-place exception), split by origin:
@@ -1137,7 +1270,9 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         // (measured across the whole dataset).
         let chain_count = {
             let mut sinks: Vec<usize> = (0..count)
-                .filter(|&candidate| consumer_of[candidate].is_empty() || nodes[candidate].kind == OpKind::Store)
+                .filter(|&candidate| {
+                    consumer_of[candidate].is_empty() || nodes[candidate].kind == OpKind::Store
+                })
                 .map(|_| 0)
                 .collect();
             sinks.clear();
@@ -1155,12 +1290,15 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         // second dual-issue slot (odd positions) — a first-of-pair intermediate
         // takes a closed-pool register (equal-pair's r5) while the same op
         // second-of-pair reuses (mult_vs_shift's r3). Loads are exempt.
-        let node_is_final = consumer_of[node].len() == 1 && nodes[consumer_of[node][0]].kind == OpKind::Store;
+        let node_is_final =
+            consumer_of[node].len() == 1 && nodes[consumer_of[node][0]].kind == OpKind::Store;
         // The mulli exclusion is per-CHAIN (a chain containing a multiply keeps
         // its params closed — cap3 vs cap2); the parity gate applies only in
         // store-only mode (the return captures reuse at even slots).
         let own_chain_has_multiply = (0..count).any(|member| {
-            chain_of(member) == chain_of(node) && nodes[member].kind != OpKind::Store && nodes[member].latency >= 3
+            chain_of(member) == chain_of(node)
+                && nodes[member].kind != OpKind::Store
+                && nodes[member].latency >= 3
         });
         // The multiply exclusion is a STORE-ONLY-mode rule: in return mode a
         // contended store-chain mulli reuses its dying param in place
@@ -1186,7 +1324,9 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
                 let from_internal = (0..count)
                     .rev()
                     .find(|&w| nodes[w].writes.contains(read))
-                    .and_then(|writer| result[writer].map(|register| (register, value_end(writer), true)));
+                    .and_then(|writer| {
+                        result[writer].map(|register| (register, value_end(writer), true))
+                    });
                 from_param.or(from_internal)
             })
             .filter(|&(_, death, internal)| death == start && (internal || relaxed))
@@ -1198,7 +1338,8 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
             })
         };
         let on_last_chain = chain_of(node) == last_sink;
-        let is_final = consumer_of[node].len() == 1 && nodes[consumer_of[node][0]].kind == OpKind::Store;
+        let is_final =
+            consumer_of[node].len() == 1 && nodes[consumer_of[node][0]].kind == OpKind::Store;
         // The pool, in mwcc's preference order (measured, 10/10 dataset shapes):
         // the LAST chain's FINAL is forced to r0 (the store staging register);
         // last-chain intermediates and values wholly preceding the last chain
@@ -1206,7 +1347,8 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         // register is candidate when closed-free — or open-free for the op's
         // own dying source (internal sources always; params in the relaxed
         // regime only). First candidate in pool order wins.
-        let r0_eligible = (return_mode || on_last_chain || end < last_chain_first_def) && !nodes[node].forbid_r0;
+        let r0_eligible =
+            (return_mode || on_last_chain || end < last_chain_first_def) && !nodes[node].forbid_r0;
         let pool: Vec<u8> = if !return_mode && on_last_chain && is_final && !nodes[node].forbid_r0 {
             vec![0]
         } else if return_mode
@@ -1231,16 +1373,13 @@ pub fn assign_registers_v3(nodes: &[DagNode], order: &[usize], params: &[(u32, u
         } else {
             (3..=12).collect()
         };
-        let pick = pool
-            .iter()
-            .copied()
-            .find(|&register| {
-                if own_dying == Some(register) {
-                    open_free(register, &occupied)
-                } else {
-                    closed_free(register, &occupied)
-                }
-            });
+        let pick = pool.iter().copied().find(|&register| {
+            if own_dying == Some(register) {
+                open_free(register, &occupied)
+            } else {
+                closed_free(register, &occupied)
+            }
+        });
         let register = pick.unwrap_or(0);
         result[node] = Some(register);
         occupied.push((register, start, end));
@@ -1291,7 +1430,11 @@ pub fn assign_registers_sequenced(
             .unwrap_or(0)
     };
     let value_end = |node: usize| -> usize {
-        consumer_of[node].iter().map(|&reader| position[reader]).max().unwrap_or(position[node])
+        consumer_of[node]
+            .iter()
+            .map(|&reader| position[reader])
+            .max()
+            .unwrap_or(position[node])
     };
     let return_sink: Option<usize> = chain_sequence
         .iter()
@@ -1303,8 +1446,10 @@ pub fn assign_registers_sequenced(
         .copied()
         .filter(|&sink| nodes[sink].kind == OpKind::Store)
         .max();
-    let mut occupied: Vec<(u8, usize, usize)> =
-        params.iter().map(|&(value, register)| (register, 0, param_end(value))).collect();
+    let mut occupied: Vec<(u8, usize, usize)> = params
+        .iter()
+        .map(|&(value, register)| (register, 0, param_end(value)))
+        .collect();
     let mut result: Vec<Option<u8>> = vec![None; count];
     // Pre-claim forced positions: the return VALUE's r3; store-only, the last
     // chain's final r0.
@@ -1328,7 +1473,9 @@ pub fn assign_registers_sequenced(
     for &sink in chain_sequence {
         let mut members: Vec<usize> = (0..count)
             .filter(|&node| {
-                chain_of(node) == sink && nodes[node].kind != OpKind::Store && result[node].is_none()
+                chain_of(node) == sink
+                    && nodes[node].kind != OpKind::Store
+                    && result[node].is_none()
             })
             .collect();
         members.sort_by_key(|&node| position[node]);
@@ -1336,10 +1483,14 @@ pub fn assign_registers_sequenced(
             let start = position[node];
             let end = value_end(node);
             let closed_free = |register: u8, occupied: &[(u8, usize, usize)]| -> bool {
-                occupied.iter().all(|&(taken, s, e)| taken != register || e < start || s > end)
+                occupied
+                    .iter()
+                    .all(|&(taken, s, e)| taken != register || e < start || s > end)
             };
             let open_free = |register: u8, occupied: &[(u8, usize, usize)]| -> bool {
-                occupied.iter().all(|&(taken, s, e)| taken != register || e <= start || s > end)
+                occupied
+                    .iter()
+                    .all(|&(taken, s, e)| taken != register || e <= start || s > end)
             };
             let own_dying: Option<u8> = nodes[node]
                 .reads
@@ -1353,7 +1504,10 @@ pub fn assign_registers_sequenced(
                             (0..count)
                                 .rev()
                                 .find(|&w| nodes[w].writes.contains(read))
-                                .and_then(|writer| result[writer].map(|register| (register, value_end(writer), true)))
+                                .and_then(|writer| {
+                                    result[writer]
+                                        .map(|register| (register, value_end(writer), true))
+                                })
                         })
                 })
                 .filter(|&(_, death, internal)| {
@@ -1365,7 +1519,9 @@ pub fn assign_registers_sequenced(
                 let last_first_def = last_store_sink
                     .map(|sink| {
                         (0..count)
-                            .filter(|&member| chain_of(member) == sink && nodes[member].kind != OpKind::Store)
+                            .filter(|&member| {
+                                chain_of(member) == sink && nodes[member].kind != OpKind::Store
+                            })
                             .map(|member| position[member])
                             .min()
                             .unwrap_or(usize::MAX)
@@ -1394,7 +1550,6 @@ pub fn assign_registers_sequenced(
     }
     result
 }
-
 
 /// The FLOAT register machines (fires 331-335 captures). Both share the
 /// interval/window frame: values are non-store defs, intervals are CLOSED
@@ -1558,9 +1713,14 @@ pub fn assign_float_registers(
         }
         position
     };
-    let is_value = |node: usize| nodes[node].kind != OpKind::Store && !nodes[node].writes.is_empty();
+    let is_value =
+        |node: usize| nodes[node].kind != OpKind::Store && !nodes[node].writes.is_empty();
     let value_end = |node: usize| -> usize {
-        consumer_of[node].iter().map(|&reader| position[reader]).max().unwrap_or(position[node])
+        consumer_of[node]
+            .iter()
+            .map(|&reader| position[reader])
+            .max()
+            .unwrap_or(position[node])
     };
     let param_end = |value: u32| -> usize {
         (0..count)
@@ -1569,9 +1729,8 @@ pub fn assign_float_registers(
             .max()
             .unwrap_or(0)
     };
-    let return_node: Option<usize> = (0..count).find(|&node| {
-        consumer_of[node].is_empty() && is_value(node)
-    });
+    let return_node: Option<usize> =
+        (0..count).find(|&node| consumer_of[node].is_empty() && is_value(node));
     let mut result: Vec<Option<u8>> = vec![None; count];
     if let Some(ret) = return_node {
         result[ret] = Some(1);
@@ -1590,7 +1749,11 @@ pub fn assign_float_registers(
                 .filter(|&node| position[node] < boundary && value_end(node) >= boundary)
                 .count()
         };
-        let mut window = (0..=slots).map(boundary_values).max().unwrap_or(0).max(params.len());
+        let mut window = (0..=slots)
+            .map(boundary_values)
+            .max()
+            .unwrap_or(0)
+            .max(params.len());
         loop {
             let fits = (0..=slots).all(|boundary| {
                 let inside_params = params
@@ -1631,7 +1794,9 @@ pub fn assign_float_registers(
             // chain flows forward through the dying-operand doors.
             sequence.sort_by_key(|&node| position[node]);
         } else if model.order_by_death {
-            let return_reads: Vec<u32> = return_node.map(|ret| nodes[ret].reads.clone()).unwrap_or_default();
+            let return_reads: Vec<u32> = return_node
+                .map(|ret| nodes[ret].reads.clone())
+                .unwrap_or_default();
             sequence.sort_by_key(|&node| {
                 let root_slot = if model.root_slot_order {
                     nodes[node]
@@ -1685,7 +1850,9 @@ pub fn assign_float_registers(
                     let start = position[node];
                     let end = value_end(node);
                     let inside_arith = (0..count)
-                        .filter(|&other| other != node && is_value(other) && nodes[other].kind != OpKind::Load)
+                        .filter(|&other| {
+                            other != node && is_value(other) && nodes[other].kind != OpKind::Load
+                        })
                         .filter(|&other| position[other] > start && position[other] < end)
                         .count();
                     inside_arith >= 2
@@ -1698,7 +1865,9 @@ pub fn assign_float_registers(
             if model.tier_position_desc {
                 let first_chain_arith = (0..count)
                     .filter(|&other| {
-                        is_value(other) && nodes[other].kind != OpKind::Load && !nodes[other].local_home
+                        is_value(other)
+                            && nodes[other].kind != OpKind::Load
+                            && !nodes[other].local_home
                     })
                     .map(|other| position[other])
                     .min();
@@ -1752,16 +1921,19 @@ pub fn assign_float_registers(
                 let register = (0..=next_top)
                     .rev()
                     .find(|&register| {
-                        occupied.iter().all(|&(taken, taken_start, taken_end, owner)| {
-                            if taken != register || taken_end < start || taken_start > end {
-                                return true;
-                            }
-                            owner == usize::MAX
-                                && taken_end == start
-                                && params.iter().any(|&(value, param_register)| {
-                                    param_register == register && nodes[node].reads.contains(&value)
-                                })
-                        })
+                        occupied
+                            .iter()
+                            .all(|&(taken, taken_start, taken_end, owner)| {
+                                if taken != register || taken_end < start || taken_start > end {
+                                    return true;
+                                }
+                                owner == usize::MAX
+                                    && taken_end == start
+                                    && params.iter().any(|&(value, param_register)| {
+                                        param_register == register
+                                            && nodes[node].reads.contains(&value)
+                                    })
+                            })
                     })
                     .unwrap_or(next_top);
                 result[node] = Some(register);
@@ -1791,14 +1963,18 @@ pub fn assign_float_registers(
                     })
                     .filter(|&node| {
                         !nodes[node].writes.first().is_some_and(|value| {
-                            tier_members.iter().any(|&member| nodes[member].reads.contains(value))
+                            tier_members
+                                .iter()
+                                .any(|&member| nodes[member].reads.contains(value))
                         })
                     })
                     .collect();
                 if model.prepass_start_asc {
-                    pending_loads.sort_by_key(|&node| (std::cmp::Reverse(value_end(node)), position[node]));
+                    pending_loads
+                        .sort_by_key(|&node| (std::cmp::Reverse(value_end(node)), position[node]));
                 } else {
-                    pending_loads.sort_by_key(|&node| std::cmp::Reverse((value_end(node), position[node])));
+                    pending_loads
+                        .sort_by_key(|&node| std::cmp::Reverse((value_end(node), position[node])));
                 }
                 for node in pending_loads {
                     let start = position[node];
@@ -1830,35 +2006,43 @@ pub fn assign_float_registers(
                     // A dying register is reusable only when nothing ELSE
                     // holds it across this value's span (the d5 interleave's
                     // early-claimed f0 blocks chain1's MIN — measured).
-                    let reusable = |register: u8, occupied: &Vec<(u8, usize, usize, usize)>| -> bool {
-                        occupied.iter().all(|&(taken, taken_start, taken_end, owner)| {
-                            if taken != register || taken_end <= start || taken_start > end {
-                                return true;
-                            }
-                            // The CONSUMER-BOUNDARY door: dying exactly into
-                            // the occupant that consumes this value passes
-                            // (measured: the shallow table's even chain joins
-                            // the return's f1 at its death).
-                            taken_start == end
-                                && owner != usize::MAX
-                                && nodes[node]
-                                    .writes
-                                    .first()
-                                    .is_some_and(|value| nodes[owner].reads.contains(value))
-                        })
+                    let reusable = |register: u8,
+                                    occupied: &Vec<(u8, usize, usize, usize)>|
+                     -> bool {
+                        occupied
+                            .iter()
+                            .all(|&(taken, taken_start, taken_end, owner)| {
+                                if taken != register || taken_end <= start || taken_start > end {
+                                    return true;
+                                }
+                                // The CONSUMER-BOUNDARY door: dying exactly into
+                                // the occupant that consumes this value passes
+                                // (measured: the shallow table's even chain joins
+                                // the return's f1 at its death).
+                                taken_start == end
+                                    && owner != usize::MAX
+                                    && nodes[node]
+                                        .writes
+                                        .first()
+                                        .is_some_and(|value| nodes[owner].reads.contains(value))
+                            })
                     };
                     let min_dying: Option<u8> = nodes[node]
                         .reads
                         .iter()
                         .filter_map(|read| {
-                            if let Some(&(value, register)) = params.iter().find(|&&(value, _)| value == *read) {
+                            if let Some(&(value, register)) =
+                                params.iter().find(|&&(value, _)| value == *read)
+                            {
                                 return (param_end(value) == start).then_some(register);
                             }
                             (0..count)
                                 .rev()
                                 .find(|&writer| nodes[writer].writes.contains(read))
                                 .and_then(|writer| {
-                                    (value_end(writer) == start).then(|| result[writer]).flatten()
+                                    (value_end(writer) == start)
+                                        .then(|| result[writer])
+                                        .flatten()
                                 })
                         })
                         .filter(|&register| reusable(register, &occupied))
@@ -1868,7 +2052,9 @@ pub fn assign_float_registers(
                     // coefficient loads DESCEND from the window top.
                     let feeds_tier = nodes[node].kind == OpKind::Load
                         && nodes[node].writes.first().is_some_and(|value| {
-                            tier_members.iter().any(|&member| nodes[member].reads.contains(value))
+                            tier_members
+                                .iter()
+                                .any(|&member| nodes[member].reads.contains(value))
                         });
                     // An ESCAPING chain root (its value read by a trailing
                     // STORE sink — it lives across the dual's branch) takes
@@ -1876,7 +2062,8 @@ pub fn assign_float_registers(
                     // (measured: ksin_dual's r = m2's f3, not L15's f0).
                     let escapes = nodes[node].writes.first().is_some_and(|value| {
                         (0..count).any(|reader| {
-                            nodes[reader].kind == OpKind::Store && nodes[reader].reads.contains(value)
+                            nodes[reader].kind == OpKind::Store
+                                && nodes[reader].reads.contains(value)
                         })
                     });
                     let c_dying: Option<u8> = if escapes && nodes[node].reads.len() >= 2 {
@@ -1885,7 +2072,9 @@ pub fn assign_float_registers(
                             .rev()
                             .find(|&writer| nodes[writer].writes.contains(&c_value))
                             .and_then(|writer| {
-                                (value_end(writer) == position[node]).then(|| result[writer]).flatten()
+                                (value_end(writer) == position[node])
+                                    .then(|| result[writer])
+                                    .flatten()
                             })
                             .filter(|&register| reusable(register, &occupied))
                     } else {
@@ -1899,7 +2088,10 @@ pub fn assign_float_registers(
                     let register = if nodes[node].kind != OpKind::Load {
                         match c_dying.or(chain_pick) {
                             Some(register) => register,
-                            None => match (0..window).rev().find(|&register| free(register, &occupied)) {
+                            None => match (0..window)
+                                .rev()
+                                .find(|&register| free(register, &occupied))
+                            {
                                 Some(register) => register,
                                 None => return vec![None; count],
                             },
@@ -1910,7 +2102,10 @@ pub fn assign_float_registers(
                             None => return vec![None; count],
                         }
                     } else {
-                        match (0..window).rev().find(|&register| free(register, &occupied)) {
+                        match (0..window)
+                            .rev()
+                            .find(|&register| free(register, &occupied))
+                        {
                             Some(register) => register,
                             None => return vec![None; count],
                         }
@@ -1926,13 +2121,17 @@ pub fn assign_float_registers(
         // is being vacated TO this node (the dying door).
         let dying_vacates = |node: usize, register: u8, result: &Vec<Option<u8>>| -> bool {
             nodes[node].reads.iter().any(|read| {
-                if let Some(&(value, param_register)) = params.iter().find(|&&(value, _)| value == *read) {
+                if let Some(&(value, param_register)) =
+                    params.iter().find(|&&(value, _)| value == *read)
+                {
                     return param_register == register && param_end(value) == position[node];
                 }
                 (0..count)
                     .rev()
                     .find(|&writer| nodes[writer].writes.contains(read))
-                    .is_some_and(|writer| result[writer] == Some(register) && value_end(writer) == position[node])
+                    .is_some_and(|writer| {
+                        result[writer] == Some(register) && value_end(writer) == position[node]
+                    })
             })
         };
         // Within an equal-death group, a member holding an IMMEDIATELY
@@ -1956,7 +2155,9 @@ pub fn assign_float_registers(
                 } else {
                     let b_slot = nodes[owner].reads.last() == Some(&value);
                     model.share_arith
-                        && (!model.arith_share_two_op_only || nodes[owner].reads.len() <= 2 || b_slot)
+                        && (!model.arith_share_two_op_only
+                            || nodes[owner].reads.len() <= 2
+                            || b_slot)
                 };
                 if !class_ok {
                     return false;
@@ -1967,7 +2168,9 @@ pub fn assign_float_registers(
                             .rev()
                             .find(|&writer| nodes[writer].writes.contains(read))
                             .is_some_and(|writer| {
-                                writer != node && nodes[writer].kind != OpKind::Load && result[writer].is_none()
+                                writer != node
+                                    && nodes[writer].kind != OpKind::Load
+                                    && result[writer].is_none()
                             })
                     });
                     if blocked {
@@ -1991,8 +2194,8 @@ pub fn assign_float_registers(
                 end
             };
             if group_end - cursor > 1 {
-                if let Some(promoted) = (cursor..group_end)
-                    .find(|&index| allowed_share_now(sequence[index], &result))
+                if let Some(promoted) =
+                    (cursor..group_end).find(|&index| allowed_share_now(sequence[index], &result))
                 {
                     sequence[cursor..=promoted].rotate_right(1);
                 }
@@ -2018,7 +2221,9 @@ pub fn assign_float_registers(
                         .first()
                         .is_some_and(|value| nodes[owner].reads.last() == Some(value));
                     model.share_arith
-                        && (!model.arith_share_two_op_only || nodes[owner].reads.len() <= 2 || b_slot)
+                        && (!model.arith_share_two_op_only
+                            || nodes[owner].reads.len() <= 2
+                            || b_slot)
                 };
                 if !class_ok {
                     return false;
@@ -2027,13 +2232,14 @@ pub fn assign_float_registers(
                     // The consumer's OTHER value operands: a pending (still
                     // unallocated) arith sibling blocks the join.
                     let blocked = nodes[owner].reads.iter().any(|read| {
-                        (0..count).rev().find(|&writer| nodes[writer].writes.contains(read)).is_some_and(
-                            |writer| {
+                        (0..count)
+                            .rev()
+                            .find(|&writer| nodes[writer].writes.contains(read))
+                            .is_some_and(|writer| {
                                 writer != node
                                     && nodes[writer].kind != OpKind::Load
                                     && result[writer].is_none()
-                            },
-                        )
+                            })
                     });
                     if blocked {
                         return false;
@@ -2042,36 +2248,42 @@ pub fn assign_float_registers(
                 true
             };
             let pick = (0u8..14).find(|&register| {
-                occupied.iter().all(|&(taken, taken_start, taken_end, owner)| {
-                    if taken != register || taken_end < start || taken_start > end {
-                        return true;
-                    }
-                    // Operand -> consumer share: the overlap is exactly the
-                    // consumption slot and the occupant consumes this node.
-                    // The DYING DOOR: when this register is also vacated by
-                    // the node's own dying operand, the consumer boundary
-                    // passes regardless of the arity/class rules (the
-                    // accumulation chain operand -> node -> consumer).
-                    if owner != usize::MAX
-                        && consumer_of[node].contains(&owner)
-                        && taken_start == end
-                        && (share_ok(owner, &result)
-                            || (model.dying_door_share && dying_vacates(node, register, &result)))
-                        && (!model.share_f0_only || register == 0)
-                    {
-                        return true;
-                    }
-                    // Def over its own dying operand (a param or earlier
-                    // value read by this node, ending exactly at our def).
-                    let dying_operand = if owner == usize::MAX {
-                        params.iter().any(|&(value, taken_register)| {
-                            taken_register == taken && nodes[node].reads.contains(&value)
-                        })
-                    } else {
-                        nodes[node].reads.iter().any(|read| nodes[owner].writes.contains(read))
-                    };
-                    dying_operand && taken_end == start
-                })
+                occupied
+                    .iter()
+                    .all(|&(taken, taken_start, taken_end, owner)| {
+                        if taken != register || taken_end < start || taken_start > end {
+                            return true;
+                        }
+                        // Operand -> consumer share: the overlap is exactly the
+                        // consumption slot and the occupant consumes this node.
+                        // The DYING DOOR: when this register is also vacated by
+                        // the node's own dying operand, the consumer boundary
+                        // passes regardless of the arity/class rules (the
+                        // accumulation chain operand -> node -> consumer).
+                        if owner != usize::MAX
+                            && consumer_of[node].contains(&owner)
+                            && taken_start == end
+                            && (share_ok(owner, &result)
+                                || (model.dying_door_share
+                                    && dying_vacates(node, register, &result)))
+                            && (!model.share_f0_only || register == 0)
+                        {
+                            return true;
+                        }
+                        // Def over its own dying operand (a param or earlier
+                        // value read by this node, ending exactly at our def).
+                        let dying_operand = if owner == usize::MAX {
+                            params.iter().any(|&(value, taken_register)| {
+                                taken_register == taken && nodes[node].reads.contains(&value)
+                            })
+                        } else {
+                            nodes[node]
+                                .reads
+                                .iter()
+                                .any(|read| nodes[owner].writes.contains(read))
+                        };
+                        dying_operand && taken_end == start
+                    })
             });
             let register = pick.unwrap_or(13);
             result[node] = Some(register);
@@ -2082,7 +2294,9 @@ pub fn assign_float_registers(
         // A def whose operands die at its slot reuses one of their registers
         // (per dying_pick), releasing the others; otherwise it pops the stack.
         let mut stack: Vec<u8> = Vec::new();
-        let available: Vec<u8> = (0..window).filter(|register| !param_registers.contains(register)).collect();
+        let available: Vec<u8> = (0..window)
+            .filter(|register| !param_registers.contains(register))
+            .collect();
         if model.init_ascending {
             stack.extend(available.iter());
         } else {
@@ -2112,7 +2326,8 @@ pub fn assign_float_registers(
                                 .rev()
                                 .find(|&writer| nodes[writer].writes.contains(read))
                                 .and_then(|writer| {
-                                    result[writer].map(|register| (register, position[writer] as isize))
+                                    result[writer]
+                                        .map(|register| (register, position[writer] as isize))
                                 })
                         })
                 })
@@ -2136,8 +2351,14 @@ pub fn assign_float_registers(
             let reused: Option<u8> = match model.dying_pick {
                 DyingPick::MinReg => dying.iter().map(|&(register, _)| register).min(),
                 DyingPick::MaxReg => dying.iter().map(|&(register, _)| register).max(),
-                DyingPick::OldestDef => dying.iter().min_by_key(|&&(_, slot)| slot).map(|&(register, _)| register),
-                DyingPick::NewestDef => dying.iter().max_by_key(|&&(_, slot)| slot).map(|&(register, _)| register),
+                DyingPick::OldestDef => dying
+                    .iter()
+                    .min_by_key(|&&(_, slot)| slot)
+                    .map(|&(register, _)| register),
+                DyingPick::NewestDef => dying
+                    .iter()
+                    .max_by_key(|&&(_, slot)| slot)
+                    .map(|&(register, _)| register),
             };
             let register = match reused {
                 Some(register) => {

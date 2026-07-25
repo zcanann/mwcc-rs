@@ -70,11 +70,7 @@ impl Generator {
             self.emit_address_high(target_base, target);
         }
         self.record_relocation(RelocationKind::Addr16Lo, array);
-        let source = if direct {
-            array_high
-        } else {
-            GENERAL_SCRATCH
-        };
+        let source = if direct { array_high } else { GENERAL_SCRATCH };
         self.output.instructions.push(Instruction::AddImmediate {
             d: source,
             a: array_high,
@@ -90,12 +86,9 @@ impl Generator {
         } else {
             self.record_relocation(RelocationKind::Addr16Lo, target);
         }
-        self.output.instructions.push(displacement_store(
-            target_pointee,
-            source,
-            target_base,
-            0,
-        )?);
+        self.output
+            .instructions
+            .push(displacement_store(target_pointee, source, target_base, 0)?);
         if restore_array {
             self.reserved.remove(&array_high);
         }
@@ -115,8 +108,8 @@ impl Generator {
             return self.emit_global_array_base(name, total_size, destination);
         }
 
-        let small = self.behavior.global_addressing == GlobalAddressing::SmallData
-            && total_size <= 8;
+        let small =
+            self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8;
         if small {
             self.record_relocation(RelocationKind::EmbSda21, name);
             self.output.instructions.push(Instruction::AddImmediate {

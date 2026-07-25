@@ -57,7 +57,8 @@ impl Labels {
         for &(index, label) in &self.pending {
             let resolved = self.bound[label.0].ok_or(label)?;
             match &mut instructions[index] {
-                Instruction::BranchConditionalForward { target, .. } | Instruction::Branch { target } => *target = resolved,
+                Instruction::BranchConditionalForward { target, .. }
+                | Instruction::Branch { target } => *target = resolved,
                 other => unreachable!("label use recorded on a non-branch: {other:?}"),
             }
         }
@@ -74,13 +75,28 @@ mod tests {
         let mut labels = Labels::default();
         let skip = labels.fresh();
         let mut stream = vec![
-            Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 0 },
-            Instruction::AddImmediate { d: 3, a: 3, immediate: 1 },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 0,
+            },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 3,
+                immediate: 1,
+            },
         ];
         labels.use_at(0, skip);
         labels.bind(skip, 2);
         labels.resolve(&mut stream).unwrap();
-        assert_eq!(stream[0], Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 2 });
+        assert_eq!(
+            stream[0],
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 2
+            }
+        );
     }
 
     #[test]
@@ -89,7 +105,11 @@ mod tests {
         let epilogue = labels.fresh();
         let mut stream = vec![
             Instruction::Branch { target: 0 },
-            Instruction::AddImmediate { d: 3, a: 3, immediate: 1 },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 3,
+                immediate: 1,
+            },
             Instruction::Branch { target: 0 },
             Instruction::BranchToLinkRegister,
         ];
@@ -108,13 +128,32 @@ mod tests {
         let head = labels.fresh();
         labels.bind(head, 1);
         let mut stream = vec![
-            Instruction::AddImmediate { d: 3, a: 0, immediate: 0 },
-            Instruction::AddImmediate { d: 3, a: 3, immediate: -1 },
-            Instruction::BranchConditionalForward { options: 12, condition_bit: 1, target: 0 },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 3,
+                immediate: -1,
+            },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 1,
+                target: 0,
+            },
         ];
         labels.use_at(2, head);
         labels.resolve(&mut stream).unwrap();
-        assert_eq!(stream[2], Instruction::BranchConditionalForward { options: 12, condition_bit: 1, target: 1 });
+        assert_eq!(
+            stream[2],
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 1,
+                target: 1
+            }
+        );
     }
 
     #[test]

@@ -68,10 +68,7 @@ pub(super) fn global(
 
 /// Compiler-generated vtable groups are emitted after the translation unit's
 /// ordinary function stream, regardless of which key function owns them.
-pub(super) fn position_after_functions(
-    globals: &mut [GlobalDeclaration],
-    functions: &[Function],
-) {
+pub(super) fn position_after_functions(globals: &mut [GlobalDeclaration], functions: &[Function]) {
     let non_static_functions = functions
         .iter()
         .filter(|function| !function.is_static)

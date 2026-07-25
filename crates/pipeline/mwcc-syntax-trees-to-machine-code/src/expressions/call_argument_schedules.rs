@@ -14,14 +14,9 @@ impl Generator {
         arguments: &[Expression],
         direct_call: bool,
     ) -> Compilation<bool> {
-        let [
-            first @ Expression::Member {
-                base,
-                member_type,
-                ..
-            },
-            Expression::IntegerLiteral(value),
-        ] = arguments
+        let [first @ Expression::Member {
+            base, member_type, ..
+        }, Expression::IntegerLiteral(value)] = arguments
         else {
             return Ok(false);
         };
@@ -92,15 +87,12 @@ impl Generator {
         direct_call: bool,
     ) -> Compilation<bool> {
         let (global, middle, wide) = match arguments {
-            [
-                Expression::Variable(global),
-                Expression::IntegerLiteral(middle),
-            ] => (global, middle, None),
-            [
-                Expression::Variable(global),
-                Expression::IntegerLiteral(middle),
-                Expression::IntegerLiteral(wide),
-            ] => (global, middle, Some(wide)),
+            [Expression::Variable(global), Expression::IntegerLiteral(middle)] => {
+                (global, middle, None)
+            }
+            [Expression::Variable(global), Expression::IntegerLiteral(middle), Expression::IntegerLiteral(wide)] => {
+                (global, middle, Some(wide))
+            }
             _ => return Ok(false),
         };
         if !direct_call
@@ -128,10 +120,12 @@ impl Generator {
 
         self.emit_address_high(first, global);
         if let Some((_, high_adjusted, _)) = wide_parts {
-            self.output.instructions.push(Instruction::load_immediate_shifted(
-                first + 2,
-                high_adjusted,
-            ));
+            self.output
+                .instructions
+                .push(Instruction::load_immediate_shifted(
+                    first + 2,
+                    high_adjusted,
+                ));
         }
 
         self.emit_address_low(first, global);
@@ -145,11 +139,9 @@ impl Generator {
                 immediate: low,
             });
         }
-        self.output.instructions.push(self.global_load_instruction(
-            Type::Short,
-            first,
-            first,
-        )?);
+        self.output
+            .instructions
+            .push(self.global_load_instruction(Type::Short, first, first)?);
         Ok(true)
     }
 }

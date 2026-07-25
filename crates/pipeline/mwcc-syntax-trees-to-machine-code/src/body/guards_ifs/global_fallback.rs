@@ -14,7 +14,10 @@ impl Generator {
         if !function.locals.is_empty()
             || !function.statements.is_empty()
             || function.guards.len() != 1
-            || !matches!(function.return_type, Type::Pointer(_) | Type::StructPointer { .. })
+            || !matches!(
+                function.return_type,
+                Type::Pointer(_) | Type::StructPointer { .. }
+            )
         {
             return Ok(false);
         }
@@ -32,8 +35,14 @@ impl Generator {
             return Ok(false);
         };
         if condition != guard_value
-            || !matches!(self.globals.get(condition), Some(Type::Pointer(_) | Type::StructPointer { .. }))
-            || !matches!(self.globals.get(fallback), Some(Type::Pointer(_) | Type::StructPointer { .. }))
+            || !matches!(
+                self.globals.get(condition),
+                Some(Type::Pointer(_) | Type::StructPointer { .. })
+            )
+            || !matches!(
+                self.globals.get(fallback),
+                Some(Type::Pointer(_) | Type::StructPointer { .. })
+            )
         {
             return Ok(false);
         }

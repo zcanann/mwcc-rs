@@ -8,8 +8,7 @@ use mwcc_syntax_trees::{Function, Type};
 use mwcc_versions::MemCopyWordScheduleStyle;
 
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
-const MF_COPY_AL_MP4_AST_HASHES: &[u64] =
-    &[0xe811_318e_a6d5_31c7, 0xf11f_c48f_2889_2b99];
+const MF_COPY_AL_MP4_AST_HASHES: &[u64] = &[0xe811_318e_a6d5_31c7, 0xf11f_c48f_2889_2b99];
 
 impl Generator {
     pub(super) fn try_mf_copy_al_mp4(&mut self, function: &Function) -> Compilation<bool> {

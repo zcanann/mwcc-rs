@@ -381,10 +381,14 @@ fn inert_macro_statement(
         return true;
     }
     let dead_int_local = |name: &str| {
-        locals.iter().any(|local| local.name == name && local.declared_type == Type::Int)
-            && body.iter().any(|candidate| matches!(candidate,
+        locals
+            .iter()
+            .any(|local| local.name == name && local.declared_type == Type::Int)
+            && body.iter().any(|candidate| {
+                matches!(candidate,
                 Statement::Expression(Expression::Cast { target_type: Type::Void, operand })
-                    if is_variable(operand, name)))
+                    if is_variable(operand, name))
+            })
     };
     matches!(statement, Statement::Assign { name, value }
         if constant_value(value) == Some(0) && dead_int_local(name))
@@ -409,12 +413,7 @@ fn call_statement(statement: &Statement) -> Option<(&str, &[Expression])> {
 
 fn member_store(statement: &Statement) -> Option<(&Expression, u32, &Expression)> {
     let Statement::Store {
-        target:
-            Expression::Member {
-                base,
-                offset,
-                ..
-            },
+        target: Expression::Member { base, offset, .. },
         value,
     } = statement
     else {

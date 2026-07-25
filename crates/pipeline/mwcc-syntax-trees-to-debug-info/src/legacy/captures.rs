@@ -17,19 +17,13 @@ use mwcc_versions::CompilerBuild;
 
 const EF_KIGAE_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_ef_kigae_gc_1_3_2.mwdc");
-const EF_KIGAE_FINGERPRINTS: &[u64] =
-    &[0xdd31_0f7f_a477_fb18, 0x1b1c_305c_3159_f71c];
-const S_FLOOR_CAPTURE: &[u8] =
-    include_bytes!("../../assets/animal_crossing_s_floor_gc_1_3.mwdc");
-const S_FLOOR_FINGERPRINTS: &[u64] =
-    &[0xf9af_62d6_1b10_82c3, 0xbabf_c68e_5677_afc5];
-const FILE_POS_CAPTURE: &[u8] =
-    include_bytes!("../../assets/animal_crossing_file_pos_gc_1_3.mwdc");
-const FILE_POS_FINGERPRINTS: &[u64] =
-    &[0x50d6_4d34_9e0f_902f, 0x3809_1f43_3d90_5267];
+const EF_KIGAE_FINGERPRINTS: &[u64] = &[0xdd31_0f7f_a477_fb18, 0x1b1c_305c_3159_f71c];
+const S_FLOOR_CAPTURE: &[u8] = include_bytes!("../../assets/animal_crossing_s_floor_gc_1_3.mwdc");
+const S_FLOOR_FINGERPRINTS: &[u64] = &[0xf9af_62d6_1b10_82c3, 0xbabf_c68e_5677_afc5];
+const FILE_POS_CAPTURE: &[u8] = include_bytes!("../../assets/animal_crossing_file_pos_gc_1_3.mwdc");
+const FILE_POS_FINGERPRINTS: &[u64] = &[0x50d6_4d34_9e0f_902f, 0x3809_1f43_3d90_5267];
 const FILE_POS_SOURCE_TEXT_FINGERPRINTS: &[u64] = &[0x7666_1cca_4a40_933c];
-const NUBEVENT_CAPTURE: &[u8] =
-    include_bytes!("../../assets/animal_crossing_nubevent_gc_1_3.mwdc");
+const NUBEVENT_CAPTURE: &[u8] = include_bytes!("../../assets/animal_crossing_nubevent_gc_1_3.mwdc");
 const NUBEVENT_FINGERPRINT: u64 = 0x7dbc_d63c_8428_78fd;
 const CPLUSLIBPPC_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_cpluslibppc_gc_1_3_2.mwdc");

@@ -109,7 +109,13 @@ fn recognize<'a>(
     {
         return None;
     }
-    let mut globals = [initialized.as_str(), first, second, first_mirror, second_mirror];
+    let mut globals = [
+        initialized.as_str(),
+        first,
+        second,
+        first_mirror,
+        second_mirror,
+    ];
     globals.sort_unstable();
     if globals.windows(2).any(|pair| pair[0] == pair[1]) {
         return None;

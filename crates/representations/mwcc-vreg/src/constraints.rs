@@ -79,8 +79,12 @@ mod tests {
         assert_eq!(constraints.pool(Class::General).first(), Some(&3));
         assert_eq!(constraints.pool(Class::General).last(), Some(&12));
         assert_eq!(constraints.pool(Class::Float).first(), Some(&1));
-        assert!(!constraints.pool(Class::General).contains(&constraints.general_scratch));
-        assert!(!constraints.pool(Class::Float).contains(&constraints.float_scratch));
+        assert!(!constraints
+            .pool(Class::General)
+            .contains(&constraints.general_scratch));
+        assert!(!constraints
+            .pool(Class::Float)
+            .contains(&constraints.float_scratch));
     }
 
     #[test]

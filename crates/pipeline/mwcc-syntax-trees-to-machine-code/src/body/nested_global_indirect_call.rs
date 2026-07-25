@@ -335,7 +335,6 @@ impl Generator {
         Ok(true)
     }
 
-
     /// The null fifth-argument sibling needs only the incoming priority in a
     /// callee-saved home. Its other colliding inputs can be permuted after the
     /// three-word aggregate has been loaded, producing the compact one-save

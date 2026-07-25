@@ -114,7 +114,22 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
                 let directive = line.trim().trim_start_matches('#').trim();
                 if let Some(rest) = directive.strip_prefix("pragma ") {
                     let rest = rest.trim();
-                    if matches!(rest, "cplusplus on" | "cplusplus off" | "cplusplus reset" | "push" | "pop" | "defer_codegen on" | "defer_codegen off" | "force_active on" | "force_active off" | "force_active reset" | "peephole on" | "peephole off" | "peephole reset") {
+                    if matches!(
+                        rest,
+                        "cplusplus on"
+                            | "cplusplus off"
+                            | "cplusplus reset"
+                            | "push"
+                            | "pop"
+                            | "defer_codegen on"
+                            | "defer_codegen off"
+                            | "force_active on"
+                            | "force_active off"
+                            | "force_active reset"
+                            | "peephole on"
+                            | "peephole off"
+                            | "peephole reset"
+                    ) {
                         push_token!(Token::Pragma(rest.to_string()), line_start);
                     }
                 }
@@ -131,7 +146,9 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
         // block comment
         if character == '/' && peek(bytes, position + 1) == Some(b'*') {
             position += 2;
-            while position + 1 < bytes.len() && !(bytes[position] == b'*' && bytes[position + 1] == b'/') {
+            while position + 1 < bytes.len()
+                && !(bytes[position] == b'*' && bytes[position + 1] == b'/')
+            {
                 position += 1;
             }
             position += 2;
@@ -152,11 +169,20 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
                     }
                     Some(b'\\') => {
                         position += 1;
-                        let escaped = *bytes.get(position).ok_or_else(|| Diagnostic::error("unterminated string literal"))?;
+                        let escaped = *bytes
+                            .get(position)
+                            .ok_or_else(|| Diagnostic::error("unterminated string literal"))?;
                         position += 1;
                         content.push(match escaped {
-                            b'n' => 10, b't' => 9, b'r' => 13, b'0' => 0, b'a' => 7,
-                            b'b' => 8, b'f' => 12, b'v' => 11, other => other,
+                            b'n' => 10,
+                            b't' => 9,
+                            b'r' => 13,
+                            b'0' => 0,
+                            b'a' => 7,
+                            b'b' => 8,
+                            b'f' => 12,
+                            b'v' => 11,
+                            other => other,
                         });
                     }
                     Some(byte) => {
@@ -211,9 +237,9 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
                     }
                     Some(b'\\') => {
                         position += 1;
-                        let escaped = *bytes.get(position).ok_or_else(|| {
-                            Diagnostic::error("unterminated character literal")
-                        })?;
+                        let escaped = *bytes
+                            .get(position)
+                            .ok_or_else(|| Diagnostic::error("unterminated character literal"))?;
                         position += 1;
                         match escaped {
                             b'n' => 10,
@@ -246,7 +272,9 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
         // identifier or keyword
         if character.is_ascii_alphabetic() || character == '_' {
             let start = position;
-            while position < bytes.len() && (bytes[position].is_ascii_alphanumeric() || bytes[position] == b'_') {
+            while position < bytes.len()
+                && (bytes[position].is_ascii_alphanumeric() || bytes[position] == b'_')
+            {
                 position += 1;
             }
             let word = std::str::from_utf8(&bytes[start..position])
@@ -314,7 +342,8 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
             let text = std::str::from_utf8(&bytes[start..position])
                 .expect("the hexadecimal scanner accepts only ASCII bytes");
             let value = u64::from_str_radix(text, 16)
-                .map_err(|_| Diagnostic::error("malformed hexadecimal literal"))? as i64;
+                .map_err(|_| Diagnostic::error("malformed hexadecimal literal"))?
+                as i64;
             position = consume_integer_suffix(bytes, position);
             push_token!(Token::IntegerLiteral(value), token_start);
             continue;
@@ -334,14 +363,18 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
             let text = std::str::from_utf8(&bytes[start..position])
                 .expect("the binary scanner accepts only ASCII bytes");
             let value = u64::from_str_radix(text, 2)
-                .map_err(|_| Diagnostic::error("malformed binary literal"))? as i64;
+                .map_err(|_| Diagnostic::error("malformed binary literal"))?
+                as i64;
             position = consume_integer_suffix(bytes, position);
             push_token!(Token::IntegerLiteral(value), token_start);
             continue;
         }
         // decimal integer or float literal (a leading-dot float `.5` counts:
         // C allows the omitted integer part).
-        if character.is_ascii_digit() || (character == '.' && peek(bytes, position + 1).is_some_and(|byte| byte.is_ascii_digit())) {
+        if character.is_ascii_digit()
+            || (character == '.'
+                && peek(bytes, position + 1).is_some_and(|byte| byte.is_ascii_digit()))
+        {
             let start = position;
             let mut is_float = false;
             while position < bytes.len() {
@@ -352,7 +385,10 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
                     }
                     position += 1;
                 } else if (byte == b'e' || byte == b'E')
-                    && matches!(peek(bytes, position + 1), Some(b'0'..=b'9') | Some(b'+') | Some(b'-'))
+                    && matches!(
+                        peek(bytes, position + 1),
+                        Some(b'0'..=b'9') | Some(b'+') | Some(b'-')
+                    )
                 {
                     // Scientific-notation exponent `e[+-]?digits` (`1.0e300`, `2.5e-10`,
                     // `1e10`) — always a float, even without a fractional dot.
@@ -377,10 +413,14 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
                 .trim_end_matches(['f', 'F']);
             position = consume_integer_suffix(bytes, position);
             if is_float {
-                let value = text.parse().map_err(|_| Diagnostic::error("malformed float literal"))?;
+                let value = text
+                    .parse()
+                    .map_err(|_| Diagnostic::error("malformed float literal"))?;
                 push_token!(Token::FloatLiteral(value), start);
             } else {
-                let value = text.parse().map_err(|_| Diagnostic::error("malformed integer literal"))?;
+                let value = text
+                    .parse()
+                    .map_err(|_| Diagnostic::error("malformed integer literal"))?;
                 push_token!(Token::IntegerLiteral(value), start);
             }
             continue;
@@ -478,7 +518,11 @@ fn parse_line_directive(line: &[u8]) -> Option<u32> {
     let text = std::str::from_utf8(line).ok()?.trim();
     let rest = text.strip_prefix('#')?.trim_start();
     let rest = rest.strip_prefix("line")?;
-    if rest.as_bytes().first().is_some_and(|byte| !byte.is_ascii_whitespace()) {
+    if rest
+        .as_bytes()
+        .first()
+        .is_some_and(|byte| !byte.is_ascii_whitespace())
+    {
         return None;
     }
     rest.trim_start()
@@ -560,8 +604,7 @@ mod tests {
 
     #[test]
     fn long_multi_character_constants_pack_as_64_bit_values() {
-        let tokens =
-            tokenize_bytes(b"long long a = 'ABCDE'; long long b = 'ABCDEFGH';").unwrap();
+        let tokens = tokenize_bytes(b"long long a = 'ABCDE'; long long b = 'ABCDEFGH';").unwrap();
         assert!(tokens.contains(&Token::IntegerLiteral(0x41_4243_4445)));
         assert!(tokens.contains(&Token::IntegerLiteral(0x4142_4344_4546_4748)));
     }

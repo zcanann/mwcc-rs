@@ -62,7 +62,11 @@ impl Generator {
             kind: LoopKind::For,
             initializer: Some(Expression::Assign { target, value }),
             condition: Some(condition),
-            step: Some(Expression::Assign { target: step_target, value: step_value }),
+            step:
+                Some(Expression::Assign {
+                    target: step_target,
+                    value: step_value,
+                }),
             body,
         } = &function.statements[0]
         else {
@@ -157,53 +161,158 @@ impl Generator {
         self.non_leaf = true;
         self.frame_size = 32;
         self.callee_saved = vec![31, 30, 29];
-        self.output.instructions.push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 1, offset: 4 });
-        self.output.instructions.push(Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -32 });
-        self.output.instructions.push(Instruction::StoreWord { s: 31, a: 1, offset: 28 });
-        self.output.instructions.push(Instruction::StoreWord { s: 30, a: 1, offset: 24 });
-        self.output.instructions.push(Instruction::load_immediate(30, 0));
-        self.output.instructions.push(Instruction::StoreWord { s: 29, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 29, a: 3, immediate: 0 });
+        self.output
+            .instructions
+            .push(Instruction::MoveFromLinkRegister { d: 0 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 1,
+            offset: 4,
+        });
+        self.output
+            .instructions
+            .push(Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -32,
+            });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 31,
+            a: 1,
+            offset: 28,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 30,
+            a: 1,
+            offset: 24,
+        });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(30, 0));
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 29,
+            a: 1,
+            offset: 20,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 29,
+            a: 3,
+            immediate: 0,
+        });
         self.record_relocation(RelocationKind::EmbSda21, queue);
-        self.output.instructions.push(Instruction::LoadWord { d: 31, a: 0, offset: 0 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 31,
+            a: 0,
+            offset: 0,
+        });
 
         let body_label = self.fresh_label();
         let condition_label = self.fresh_label();
         self.emit_branch_to(condition_label);
         self.bind_label(body_label);
-        self.output.instructions.push(Instruction::LoadWord { d: 12, a: 31, offset: callback });
-        self.output.instructions.push(Instruction::AddImmediate { d: 3, a: 29, immediate: 0 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 12 });
-        self.output.instructions.push(Instruction::BranchToLinkRegisterAndLink);
-        self.output.instructions.push(Instruction::CountLeadingZeros { a: 0, s: 3 });
-        self.output.instructions.push(Instruction::LoadWord { d: 31, a: 31, offset: next });
-        self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: 0, s: 0, shift: 5 });
-        self.output.instructions.push(Instruction::Or { a: 30, s: 30, b: 0 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 12,
+            a: 31,
+            offset: callback,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 3,
+            a: 29,
+            immediate: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 12 });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegisterAndLink);
+        self.output
+            .instructions
+            .push(Instruction::CountLeadingZeros { a: 0, s: 3 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 31,
+            a: 31,
+            offset: next,
+        });
+        self.output
+            .instructions
+            .push(Instruction::ShiftRightLogicalImmediate {
+                a: 0,
+                s: 0,
+                shift: 5,
+            });
+        self.output
+            .instructions
+            .push(Instruction::Or { a: 30, s: 30, b: 0 });
         self.bind_label(condition_label);
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 31, immediate: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate {
+                a: 31,
+                immediate: 0,
+            });
         self.emit_branch_conditional_to(4, 2, body_label);
 
         self.record_relocation(RelocationKind::Rel24, sync);
-        self.output.instructions.push(Instruction::BranchAndLink { target: sync.clone() });
-        self.output.instructions.push(Instruction::CountLeadingZeros { a: 0, s: 3 });
-        self.output.instructions.push(Instruction::ShiftRightLogicalImmediate { a: 0, s: 0, shift: 5 });
-        self.output.instructions.push(Instruction::OrRecord { a: 30, s: 30, b: 0 });
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: sync.clone(),
+        });
+        self.output
+            .instructions
+            .push(Instruction::CountLeadingZeros { a: 0, s: 3 });
+        self.output
+            .instructions
+            .push(Instruction::ShiftRightLogicalImmediate {
+                a: 0,
+                s: 0,
+                shift: 5,
+            });
+        self.output
+            .instructions
+            .push(Instruction::OrRecord { a: 30, s: 30, b: 0 });
         let success = self.fresh_label();
         let join = self.fresh_label();
         self.emit_branch_conditional_to(12, 2, success);
-        self.output.instructions.push(Instruction::load_immediate(3, 0));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, 0));
         self.emit_branch_to(join);
         self.bind_label(success);
-        self.output.instructions.push(Instruction::load_immediate(3, 1));
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, 1));
         self.bind_label(join);
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 36 });
-        self.output.instructions.push(Instruction::LoadWord { d: 31, a: 1, offset: 28 });
-        self.output.instructions.push(Instruction::LoadWord { d: 30, a: 1, offset: 24 });
-        self.output.instructions.push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::LoadWord { d: 29, a: 1, offset: 20 });
-        self.output.instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: 32 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 1,
+            offset: 36,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 31,
+            a: 1,
+            offset: 28,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 30,
+            a: 1,
+            offset: 24,
+        });
+        self.output
+            .instructions
+            .push(Instruction::MoveToLinkRegister { s: 0 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 29,
+            a: 1,
+            offset: 20,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 32,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         Ok(true)
     }
 }

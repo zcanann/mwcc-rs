@@ -301,8 +301,7 @@ pub struct TranslationUnit {
     /// Named aggregate declarations keyed by their parser identity. Executable
     /// lowering uses the compact resolved [`Type`]; debug lowering follows this
     /// graph to recover source names, member order, and member types.
-    pub aggregate_definitions:
-        std::collections::HashMap<String, crate::AggregateDefinition>,
+    pub aggregate_definitions: std::collections::HashMap<String, crate::AggregateDefinition>,
     /// Aggregate identity for globals whose compact type is a struct value or
     /// pointer. Kept separately so ordinary codegen does not carry debug-only
     /// declaration names through every expression.
@@ -310,8 +309,7 @@ pub struct TranslationUnit {
     /// Source aggregate identity for function parameters, keyed by emitted
     /// function name and parameter name. Executable lowering only needs the
     /// resolved pointer width/stride; legacy DWARF needs the declaration graph.
-    pub function_parameter_aggregate_tags:
-        std::collections::HashMap<(String, String), String>,
+    pub function_parameter_aggregate_tags: std::collections::HashMap<(String, String), String>,
     /// Function prototypes (`type name(params);`) by name, return type, and
     /// parameter types, so a call to an externally-defined function knows its
     /// result type (e.g. a `double`-returning math routine) and its parameter

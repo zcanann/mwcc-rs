@@ -57,17 +57,19 @@ impl Generator {
         if !matches!(self.globals.get(global.as_str()), Some(Type::Struct { .. })) {
             return Ok(false);
         }
-        let Some(row_register) = leaf_name(row_expression).and_then(|name| self.lookup_general(name))
+        let Some(row_register) =
+            leaf_name(row_expression).and_then(|name| self.lookup_general(name))
         else {
             return Ok(false);
         };
         let Some(column) = constant_value(column_expression) else {
             return Ok(false);
         };
-        let displacement = i16::try_from(
-            i64::from(*offset) + column.saturating_mul(i64::from(element.size())),
-        )
-        .map_err(|_| Diagnostic::error("multidimensional member address is out of range"))?;
+        let displacement =
+            i16::try_from(i64::from(*offset) + column.saturating_mul(i64::from(element.size())))
+                .map_err(|_| {
+                    Diagnostic::error("multidimensional member address is out of range")
+                })?;
 
         let address = self.lowest_free_general()?;
         let restore_address = self.reserved.insert(address);
@@ -85,11 +87,13 @@ impl Generator {
             let immediate = i16::try_from(*row_stride).map_err(|_| {
                 Diagnostic::error("multidimensional member stride is not encodable")
             })?;
-            self.output.instructions.push(Instruction::MultiplyImmediate {
-                d: scaled,
-                a: row_register,
-                immediate,
-            });
+            self.output
+                .instructions
+                .push(Instruction::MultiplyImmediate {
+                    d: scaled,
+                    a: row_register,
+                    immediate,
+                });
         }
         self.emit_address_high(address, global);
         self.record_relocation(RelocationKind::Addr16Lo, global);

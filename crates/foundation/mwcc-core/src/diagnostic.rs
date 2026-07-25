@@ -13,18 +13,28 @@ pub struct Diagnostic {
 
 impl Diagnostic {
     pub fn error(message: impl Into<String>) -> Self {
-        Diagnostic { message: message.into(), span: None }
+        Diagnostic {
+            message: message.into(),
+            span: None,
+        }
     }
 
     pub fn at(message: impl Into<String>, span: SourceSpan) -> Self {
-        Diagnostic { message: message.into(), span: Some(span) }
+        Diagnostic {
+            message: message.into(),
+            span: Some(span),
+        }
     }
 }
 
 impl std::fmt::Display for Diagnostic {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.span {
-            Some(span) => write!(formatter, "{} (at {}..{})", self.message, span.start, span.end),
+            Some(span) => write!(
+                formatter,
+                "{} (at {}..{})",
+                self.message, span.start, span.end
+            ),
             None => write!(formatter, "{}", self.message),
         }
     }

@@ -58,10 +58,7 @@ impl Generator {
     /// Lower an empty-bodied priority search followed by the empty/tail and predecessor splice
     /// repairs. Build 145 keeps the iterator in r5, folds `&queue.tail` through `lwzu`, and places
     /// the final predecessor store in the compare/branch shadow.
-    pub(crate) fn try_sorted_intrusive_insert(
-        &mut self,
-        function: &Function,
-    ) -> Compilation<bool> {
+    pub(crate) fn try_sorted_intrusive_insert(&mut self, function: &Function) -> Compilation<bool> {
         if function.return_type != Type::Void
             || function.parameters.len() != 1
             || function.locals.len() != 2
@@ -74,8 +71,10 @@ impl Generator {
         let item = &function.parameters[0].name;
         let temporary = &function.locals[0].name;
         let iterator = &function.locals[1].name;
-        if !matches!(function.parameters[0].parameter_type, Type::StructPointer { .. })
-            || !matches!(function.locals[0].declared_type, Type::StructPointer { .. })
+        if !matches!(
+            function.parameters[0].parameter_type,
+            Type::StructPointer { .. }
+        ) || !matches!(function.locals[0].declared_type, Type::StructPointer { .. })
             || !matches!(function.locals[1].declared_type, Type::StructPointer { .. })
         {
             return Ok(false);
@@ -90,7 +89,11 @@ impl Generator {
             kind: LoopKind::For,
             initializer: Some(Expression::Assign { target, value }),
             condition: Some(condition),
-            step: Some(Expression::Assign { target: step_target, value: step_value }),
+            step:
+                Some(Expression::Assign {
+                    target: step_target,
+                    value: step_value,
+                }),
             body,
         } = loop_statement
         else {
@@ -215,7 +218,7 @@ impl Generator {
         };
         if loaded_previous_offset != previous_offset
             || !store_value(set_iter_previous, iterator, previous_offset)
-            .is_some_and(|value| variable(value, item))
+                .is_some_and(|value| variable(value, item))
             || !store_value(set_item_previous, item, previous_offset)
                 .is_some_and(|value| variable(value, temporary))
         {
@@ -259,51 +262,139 @@ impl Generator {
         let existing_previous = self.fresh_label();
 
         self.record_relocation(RelocationKind::EmbSda21, queue);
-        self.output.instructions.push(Instruction::LoadWord { d: 5, a: 0, offset: 0 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 5,
+            a: 0,
+            offset: 0,
+        });
         self.emit_branch_to(loop_condition);
         self.bind_label(loop_step);
-        self.output.instructions.push(Instruction::LoadWord { d: 5, a: 5, offset: next });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 5,
+            a: 5,
+            offset: next,
+        });
         self.bind_label(loop_condition);
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 5, immediate: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate { a: 5, immediate: 0 });
         self.emit_branch_conditional_to(12, 2, after_loop);
-        self.output.instructions.push(Instruction::LoadWord { d: 4, a: 5, offset: priority });
-        self.output.instructions.push(Instruction::LoadWord { d: 0, a: 3, offset: priority });
-        self.output.instructions.push(Instruction::CompareLogicalWord { a: 4, b: 0 });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 4,
+            a: 5,
+            offset: priority,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 0,
+            a: 3,
+            offset: priority,
+        });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWord { a: 4, b: 0 });
         self.emit_branch_conditional_to(4, 1, loop_step);
 
         self.bind_label(after_loop);
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 5, immediate: 0 });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate { a: 5, immediate: 0 });
         self.emit_branch_conditional_to(4, 2, nonempty_insert);
         self.record_relocation(RelocationKind::EmbSda21, queue);
-        self.output.instructions.push(Instruction::AddImmediate { d: 5, a: 0, immediate: 0 });
-        self.output.instructions.push(Instruction::LoadWordWithUpdate { d: 4, a: 5, offset: tail });
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 4, immediate: 0 });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: 5,
+            a: 0,
+            immediate: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::LoadWordWithUpdate {
+                d: 4,
+                a: 5,
+                offset: tail,
+            });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate { a: 4, immediate: 0 });
         self.emit_branch_conditional_to(4, 2, existing_tail);
         self.record_relocation(RelocationKind::EmbSda21, queue);
-        self.output.instructions.push(Instruction::StoreWord { s: 3, a: 0, offset: 0 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 3,
+            a: 0,
+            offset: 0,
+        });
         self.emit_branch_to(tail_join);
         self.bind_label(existing_tail);
-        self.output.instructions.push(Instruction::StoreWord { s: 3, a: 4, offset: next });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 3,
+            a: 4,
+            offset: next,
+        });
         self.bind_label(tail_join);
-        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 3, offset: previous });
-        self.output.instructions.push(Instruction::load_immediate(0, 0));
-        self.output.instructions.push(Instruction::StoreWord { s: 0, a: 3, offset: next });
-        self.output.instructions.push(Instruction::StoreWord { s: 3, a: 5, offset: 0 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 4,
+            a: 3,
+            offset: previous,
+        });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(0, 0));
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 3,
+            offset: next,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 3,
+            a: 5,
+            offset: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
 
         self.bind_label(nonempty_insert);
-        self.output.instructions.push(Instruction::StoreWord { s: 5, a: 3, offset: next });
-        self.output.instructions.push(Instruction::LoadWord { d: 4, a: 5, offset: previous });
-        self.output.instructions.push(Instruction::StoreWord { s: 3, a: 5, offset: previous });
-        self.output.instructions.push(Instruction::CompareLogicalWordImmediate { a: 4, immediate: 0 });
-        self.output.instructions.push(Instruction::StoreWord { s: 4, a: 3, offset: previous });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 5,
+            a: 3,
+            offset: next,
+        });
+        self.output.instructions.push(Instruction::LoadWord {
+            d: 4,
+            a: 5,
+            offset: previous,
+        });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 3,
+            a: 5,
+            offset: previous,
+        });
+        self.output
+            .instructions
+            .push(Instruction::CompareLogicalWordImmediate { a: 4, immediate: 0 });
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 4,
+            a: 3,
+            offset: previous,
+        });
         self.emit_branch_conditional_to(4, 2, existing_previous);
         self.record_relocation(RelocationKind::EmbSda21, queue);
-        self.output.instructions.push(Instruction::StoreWord { s: 3, a: 0, offset: 0 });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 3,
+            a: 0,
+            offset: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         self.bind_label(existing_previous);
-        self.output.instructions.push(Instruction::StoreWord { s: 3, a: 4, offset: next });
-        self.output.instructions.push(Instruction::BranchToLinkRegister);
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 3,
+            a: 4,
+            offset: next,
+        });
+        self.output
+            .instructions
+            .push(Instruction::BranchToLinkRegister);
         Ok(true)
     }
 }

@@ -749,9 +749,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         let post_function_bump = function.post_function_anonymous_bump.unwrap_or_else(|| {
             if function.frame.is_some() {
                 debug
-                    .and_then(|debug| {
-                        debug.post_framed_function_anonymous_bump_override
-                    })
+                    .and_then(|debug| debug.post_framed_function_anonymous_bump_override)
                     .unwrap_or(input.object_format.post_framed_function_anonymous_bump)
             } else {
                 input.object_format.post_leaf_function_anonymous_bump
@@ -803,8 +801,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         .iter()
         .filter(|section| {
             functions.iter().any(|function| {
-                function.section.unwrap_or(".text") == **section
-                    && !function.relocations.is_empty()
+                function.section.unwrap_or(".text") == **section && !function.relocations.is_empty()
             })
         })
         .map(|section| format!(".rela{section}"))
@@ -1015,8 +1012,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut function_symbols: Vec<u32> = vec![0u32; functions.len()];
     let mut local_function_symbols: std::collections::HashMap<&str, u32> =
         std::collections::HashMap::new();
-    let mut emitted_early_func: std::collections::HashSet<usize> =
-        std::collections::HashSet::new();
+    let mut emitted_early_func: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut debug_symbols: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     let mut emitted_debug_symbols: std::collections::HashSet<&str> =
         std::collections::HashSet::new();
@@ -1044,19 +1040,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         }};
     }
     if let Some(debug) = debug {
-        for symbol in debug
-            .symbols
-            .iter()
-            .filter(|symbol| {
-                symbol.binding == DebugSymbolBinding::Local
-                    && symbol.placement == DebugSymbolPlacement::Early
-            })
-        {
+        for symbol in debug.symbols.iter().filter(|symbol| {
+            symbol.binding == DebugSymbolBinding::Local
+                && symbol.placement == DebugSymbolPlacement::Early
+        }) {
             if let Some(function_name) = symbol.name.strip_prefix(".line.") {
                 if let Some(index) = functions.iter().position(|function| {
-                    function.is_static
-                        && !function.implicit_local
-                        && function.name == function_name
+                    function.is_static && !function.implicit_local && function.name == function_name
                 }) {
                     if emitted_early_func.insert(index) {
                         let function_symbol = (symtab.len() / SYMBOL_SIZE) as u32;
@@ -1090,7 +1080,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         .flat_map(|debug| debug.symbols.iter())
         .filter_map(|symbol| {
             (symbol.binding != DebugSymbolBinding::Local)
-                .then(|| symbol.name.strip_prefix(".line.").map(|name| (name, symbol)))
+                .then(|| {
+                    symbol
+                        .name
+                        .strip_prefix(".line.")
+                        .map(|name| (name, symbol))
+                })
                 .flatten()
         })
         .collect();
@@ -2426,10 +2421,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                             if global_symbols.contains_key(declared.as_str()) {
                                 continue;
                             }
-                            global_symbols.insert(
-                                declared.as_str(),
-                                (symtab.len() / SYMBOL_SIZE) as u32,
-                            );
+                            global_symbols
+                                .insert(declared.as_str(), (symtab.len() / SYMBOL_SIZE) as u32);
                             write_symbol(
                                 &mut symtab,
                                 strtab.add(declared),
@@ -2545,8 +2538,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             ($function_index:expr) => {{
                 let symbol_index = $function_index;
                 let symbol_function = &functions[symbol_index];
-                if !symbol_function.is_static
-                    && !global_symbols.contains_key(symbol_function.name)
+                if !symbol_function.is_static && !global_symbols.contains_key(symbol_function.name)
                 {
                     function_symbols[symbol_index] = (symtab.len() / SYMBOL_SIZE) as u32;
                     let binding = if symbol_function.is_weak {
@@ -2581,10 +2573,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                                 0
                             },
                     ));
-                    global_symbols.insert(
-                        symbol_function.name,
-                        function_symbols[symbol_index],
-                    );
+                    global_symbols.insert(symbol_function.name, function_symbols[symbol_index]);
                     if input.object_format.function_symbol_order
                         != FunctionSymbolOrder::FunctionFirstAtDefinition
                     {

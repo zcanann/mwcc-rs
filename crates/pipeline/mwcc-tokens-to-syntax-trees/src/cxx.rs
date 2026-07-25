@@ -775,8 +775,7 @@ impl Parser {
                             self.cxx_expression_struct_tag(argument),
                         ) {
                             return expected == actual
-                                || expected.rsplit("::").next()
-                                    == actual.rsplit("::").next();
+                                || expected.rsplit("::").next() == actual.rsplit("::").next();
                         }
                     }
                     self.cxx_expression_type(argument)
@@ -992,9 +991,9 @@ impl Parser {
         if let Some(colon) = header.iter().position(|token| *token == Token::Colon) {
             let inheritance = &header[colon + 1..];
             let multiple = inheritance.iter().any(|token| token == &Token::Comma);
-            let virtual_base = inheritance.iter().any(
-                |token| matches!(token, Token::Identifier(word) if word == "virtual"),
-            );
+            let virtual_base = inheritance
+                .iter()
+                .any(|token| matches!(token, Token::Identifier(word) if word == "virtual"));
             let base = inheritance.iter().find_map(|token| match token {
                 Token::Identifier(word)
                     if !matches!(word.as_str(), "public" | "private" | "protected") =>
@@ -1064,9 +1063,10 @@ impl Parser {
                             Token::Identifier(name) => Some(canonical_inline_member_name(
                                 &class,
                                 name,
-                                index.checked_sub(2).and_then(|before_name| {
-                                    self.tokens.get(before_name)
-                                }) == Some(&Token::Tilde),
+                                index
+                                    .checked_sub(2)
+                                    .and_then(|before_name| self.tokens.get(before_name))
+                                    == Some(&Token::Tilde),
                             )),
                             _ => None,
                         });
@@ -1081,8 +1081,8 @@ impl Parser {
                     if let Some((explicitly_virtual, is_destructor)) =
                         function_declaration_virtuality(&self.tokens, index)
                     {
-                        let is_virtual = explicitly_virtual
-                            || (is_destructor && inherits_virtual_destructor);
+                        let is_virtual =
+                            explicitly_virtual || (is_destructor && inherits_virtual_destructor);
                         if is_virtual {
                             if is_destructor {
                                 self.cxx_inline_ordinal_facts
@@ -1091,11 +1091,9 @@ impl Parser {
                                     self.cxx_inline_ordinal_facts
                                         .inherited_virtual_destructor_declarations += 1;
                                 }
-                                self.cxx_virtual_destructor_classes
-                                    .insert(class.clone());
+                                self.cxx_virtual_destructor_classes.insert(class.clone());
                             } else {
-                                self.cxx_inline_ordinal_facts
-                                    .virtual_method_declarations += 1;
+                                self.cxx_inline_ordinal_facts.virtual_method_declarations += 1;
                             }
                         }
                     }
@@ -1145,11 +1143,7 @@ impl Parser {
                                         && tokens[1] == Token::ParenOpen
                                 })
                                 .count();
-                            self.capture_cxx_inline_definition(
-                                declaration_start,
-                                index,
-                                &class,
-                            );
+                            self.capture_cxx_inline_definition(declaration_start, index, &class);
                         }
                         explicitly_inline = false;
                         member_name = None;
@@ -1224,11 +1218,9 @@ impl Parser {
             return;
         };
         let scopes: Vec<&str> = class.split("::").collect();
-        let Ok(mangled) = mangle_qualified_member_function_typed(
-            &scopes,
-            "__ct",
-            &signature.cxx_parameters,
-        ) else {
+        let Ok(mangled) =
+            mangle_qualified_member_function_typed(&scopes, "__ct", &signature.cxx_parameters)
+        else {
             return;
         };
         let method = RecoveredCxxMethod {
@@ -1281,7 +1273,9 @@ impl Parser {
         };
         let member_name = member_name.clone();
         let destructor = member_index > 0
-            && source.get(member_index - 1).is_some_and(|(token, _)| *token == Token::Tilde);
+            && source
+                .get(member_index - 1)
+                .is_some_and(|(token, _)| *token == Token::Tilde);
         let constructor = !destructor
             && member_index == 0
             && class
@@ -1374,8 +1368,7 @@ impl Parser {
                     .or_insert_with(|| qualified.to_owned());
                 self.structs.insert(qualified.to_owned(), layout);
                 if !self.cxx_classes.contains_key(qualified) {
-                    self.cxx_class_declaration_order
-                        .push(qualified.to_owned());
+                    self.cxx_class_declaration_order.push(qualified.to_owned());
                 }
                 self.cxx_classes.insert(qualified.to_owned(), class);
             }
@@ -2398,15 +2391,19 @@ impl Parser {
                 })
                 .collect();
             match candidates.as_slice() {
-                [method] => return Ok(Some(ImplicitMemberCall::Direct {
-                    name: method.mangled.clone(),
-                    is_inline: self.skipped_inline_names.contains(&method.mangled),
-                    this_adjustment: 0,
-                })),
+                [method] => {
+                    return Ok(Some(ImplicitMemberCall::Direct {
+                        name: method.mangled.clone(),
+                        is_inline: self.skipped_inline_names.contains(&method.mangled),
+                        this_adjustment: 0,
+                    }))
+                }
                 [] => {}
-                _ => return Err(Diagnostic::error(format!(
+                _ => {
+                    return Err(Diagnostic::error(format!(
                     "member overload resolution for '{owner}::{function}' is ambiguous (roadmap)"
-                ))),
+                )))
+                }
             }
             let Some(base) = self.cxx_primary_bases.get(owner) else {
                 break;
@@ -2484,9 +2481,8 @@ impl Parser {
                     .resolve_scoped_cxx_class_name(&source_base_name)
                     .unwrap_or(source_base_name);
                 let base_class = self.cxx_classes.get(&base_name).cloned();
-                let (base_is_polymorphic, base_vptr_offset, base_virtual_slots) = base_class
-                    .as_ref()
-                    .map_or((false, None, 0), |base| {
+                let (base_is_polymorphic, base_vptr_offset, base_virtual_slots) =
+                    base_class.as_ref().map_or((false, None, 0), |base| {
                         (base.is_polymorphic, base.vptr_offset, base.virtual_slots)
                     });
                 let base = self.structs.get(&base_name).ok_or_else(|| {
@@ -2606,8 +2602,7 @@ impl Parser {
                 let nested_qualified = format!("{qualified_name}::{nested_name}");
                 self.struct_typedefs
                     .insert(nested_name, nested_qualified.clone());
-                self.structs
-                    .insert(nested_qualified.clone(), nested_layout);
+                self.structs.insert(nested_qualified.clone(), nested_layout);
                 if !self.cxx_classes.contains_key(&nested_qualified) {
                     self.cxx_class_declaration_order
                         .push(nested_qualified.clone());
@@ -2702,21 +2697,28 @@ impl Parser {
                     if !is_inline && class.vtable_key_function.is_none() {
                         let qualified = self.qualify_cxx_class_name(&name);
                         let scopes: Vec<&str> = qualified.split("::").collect();
-                        class.vtable_key_function = Some(
-                            mangle_qualified_member_function(&scopes, "__dt", &[])?,
-                        );
+                        class.vtable_key_function =
+                            Some(mangle_qualified_member_function(&scopes, "__dt", &[])?);
                     }
                     if class.virtual_destructor_slot.is_none() {
-                        class.virtual_destructor_slot = Some(u16::try_from(
-                            8usize
-                                .checked_add(class.virtual_slots.checked_mul(4).ok_or_else(|| {
-                                    Diagnostic::error("C++ virtual destructor slot overflow")
-                                })?)
-                                .ok_or_else(|| {
-                                    Diagnostic::error("C++ virtual destructor slot overflow")
-                                })?,
-                        )
-                        .map_err(|_| Diagnostic::error("C++ virtual destructor slot overflow"))?);
+                        class.virtual_destructor_slot = Some(
+                            u16::try_from(
+                                8usize
+                                    .checked_add(class.virtual_slots.checked_mul(4).ok_or_else(
+                                        || {
+                                            Diagnostic::error(
+                                                "C++ virtual destructor slot overflow",
+                                            )
+                                        },
+                                    )?)
+                                    .ok_or_else(|| {
+                                        Diagnostic::error("C++ virtual destructor slot overflow")
+                                    })?,
+                            )
+                            .map_err(|_| {
+                                Diagnostic::error("C++ virtual destructor slot overflow")
+                            })?,
+                        );
                         class.virtual_slots += 1;
                     }
                     class.has_virtual_destructor = true;
@@ -2781,8 +2783,8 @@ impl Parser {
                 self.skip_class_member()?;
                 continue;
             }
-            if let Some((field_name, _callback_type)) = self
-                .try_cxx_function_pointer_declarator(CxxParameterType::plain(field_type))?
+            if let Some((field_name, _callback_type)) =
+                self.try_cxx_function_pointer_declarator(CxxParameterType::plain(field_type))?
             {
                 if *self.peek() != Token::Semicolon {
                     return Err(Diagnostic::error(
@@ -2922,12 +2924,7 @@ impl Parser {
                     } else {
                         Some(pointee_of(field_type)?)
                     };
-                    (
-                        total_bytes,
-                        element,
-                        Some(total_bytes),
-                        first_index_stride,
-                    )
+                    (total_bytes, element, Some(total_bytes), first_index_stride)
                 } else {
                     (element_size, None, None, None)
                 };
@@ -3076,7 +3073,9 @@ impl Parser {
         class_name: &str,
     ) -> Compilation<VirtualDispatch> {
         let class = self.cxx_classes.get(class_name).ok_or_else(|| {
-            Diagnostic::error(format!("class layout for delete target '{class_name}' was not recovered"))
+            Diagnostic::error(format!(
+                "class layout for delete target '{class_name}' was not recovered"
+            ))
         })?;
         let slot_offset = class.virtual_destructor_slot.ok_or_else(|| {
             Diagnostic::error(format!(
@@ -3214,8 +3213,8 @@ impl Parser {
                 if is_reference {
                     parameter_type = Type::StructPointer { element_size: 0 };
                 }
-                if let Some((_, callback_type)) = self
-                    .try_cxx_function_pointer_declarator(source_identity.clone())?
+                if let Some((_, callback_type)) =
+                    self.try_cxx_function_pointer_declarator(source_identity.clone())?
                 {
                     parameters.push(Type::StructPointer { element_size: 0 });
                     cxx_parameters.push(
@@ -3542,11 +3541,7 @@ impl Parser {
                 }
             };
             statements.push(Statement::Expression(Expression::Call {
-                name: self.mangle_typed_member_in_current_namespace(
-                    &base.name,
-                    "__dt",
-                    &[],
-                )?,
+                name: self.mangle_typed_member_in_current_namespace(&base.name, "__dt", &[])?,
                 arguments: vec![this, Expression::IntegerLiteral(0)],
             }));
         }

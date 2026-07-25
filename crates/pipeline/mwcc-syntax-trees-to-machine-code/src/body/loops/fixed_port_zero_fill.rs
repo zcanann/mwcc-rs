@@ -161,7 +161,8 @@ impl Generator {
         else {
             return Ok(false);
         };
-        let Some(command) = constant_value(command_value).and_then(|value| i16::try_from(value).ok())
+        let Some(command) =
+            constant_value(command_value).and_then(|value| i16::try_from(value).ok())
         else {
             return Ok(false);
         };
@@ -180,9 +181,11 @@ impl Generator {
         };
         let extent_matches = match width_name {
             Some(width) => matches!(extent_value, Expression::Variable(name) if name == width),
-            None => matches!(extent_value, Expression::Member { base, offset, member_type: Type::UnsignedShort, index_stride: None }
+            None => {
+                matches!(extent_value, Expression::Member { base, offset, member_type: Type::UnsignedShort, index_stride: None }
                 if *offset == *left_offset
-                    && matches!(base.as_ref(), Expression::Variable(name) if name == global)),
+                    && matches!(base.as_ref(), Expression::Variable(name) if name == global))
+            }
         };
         if extent_port != port || !extent_matches {
             return Ok(false);
@@ -272,21 +275,25 @@ impl Generator {
                 a: 0,
                 immediate: port_high,
             });
-        self.output.instructions.push(Instruction::LoadHalfwordZero {
-            d: 6,
-            a: 3,
-            offset: left_displacement,
-        });
+        self.output
+            .instructions
+            .push(Instruction::LoadHalfwordZero {
+                d: 6,
+                a: 3,
+                offset: left_displacement,
+            });
         self.output.instructions.push(Instruction::AddImmediate {
             d: 4,
             a: 0,
             immediate: 0,
         });
-        self.output.instructions.push(Instruction::LoadHalfwordZero {
-            d: 3,
-            a: 3,
-            offset: right_displacement,
-        });
+        self.output
+            .instructions
+            .push(Instruction::LoadHalfwordZero {
+                d: 3,
+                a: 3,
+                offset: right_displacement,
+            });
         self.output
             .instructions
             .push(Instruction::MultiplyLow { d: 7, a: 6, b: 3 });
@@ -310,7 +317,11 @@ impl Generator {
             .push(Instruction::CompareLogicalWordImmediate { a: 7, immediate: 0 });
         self.output
             .instructions
-            .push(Instruction::ShiftRightLogicalImmediate { a: 3, s: 3, shift: 2 });
+            .push(Instruction::ShiftRightLogicalImmediate {
+                a: 3,
+                s: 3,
+                shift: 2,
+            });
         self.emit_branch_conditional_to(4, 1, exit); // ble
         self.output
             .instructions

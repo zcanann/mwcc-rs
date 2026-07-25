@@ -85,8 +85,13 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
         }
         // Uses first: extend the open range (opening one from entry if this is a
         // parameter's first appearance).
-        for operand in operands.iter().filter(|operand| operand.role == RegisterRole::Use) {
-            let entry = open.entry((operand.class, operand.register)).or_insert((0, index));
+        for operand in operands
+            .iter()
+            .filter(|operand| operand.role == RegisterRole::Use)
+        {
+            let entry = open
+                .entry((operand.class, operand.register))
+                .or_insert((0, index));
             entry.1 = index;
         }
         if is_call {
@@ -142,7 +147,10 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
         // redefinition (a base register reused for the effective address) — so the
         // allocator must too; a split would let the linear scan hand the two halves
         // different homes.
-        for operand in operands.iter().filter(|operand| operand.role == RegisterRole::Define) {
+        for operand in operands
+            .iter()
+            .filter(|operand| operand.role == RegisterRole::Define)
+        {
             let key = (operand.class, operand.register);
             if Reg::is_virtual_field(operand.register) {
                 let entry = open.entry(key).or_insert((index, index));
@@ -183,12 +191,7 @@ pub fn analyze(instructions: &[Instruction]) -> Liveness {
                 class,
                 start,
                 end,
-                live_slots: Some(slots_for_range(
-                    &live_slots,
-                    (class, value),
-                    start,
-                    end,
-                )),
+                live_slots: Some(slots_for_range(&live_slots, (class, value), start, end)),
             });
         }
     }
@@ -256,10 +259,7 @@ fn control_flow_live_slots(
         for key in live_in[index].iter().chain(uses[index].iter()) {
             slots.entry(*key).or_default().push(2 * index);
         }
-        for key in live_out[index]
-            .iter()
-            .chain(definitions[index].iter())
-        {
+        for key in live_out[index].iter().chain(definitions[index].iter()) {
             slots.entry(*key).or_default().push(2 * index + 1);
         }
     }
@@ -315,9 +315,17 @@ mod tests {
     #[test]
     fn a_reused_physical_register_gets_one_occupancy_per_definition() {
         let stream = [
-            Instruction::AddImmediate { d: 3, a: 4, immediate: 1 }, // r3 = r4 + 1 (def r3)
-            Instruction::Or { a: 5, s: 3, b: 3 },                   // r5 = r3 (r3's last use)
-            Instruction::AddImmediate { d: 3, a: 5, immediate: 2 }, // r3 = r5 + 2 (redef r3)
+            Instruction::AddImmediate {
+                d: 3,
+                a: 4,
+                immediate: 1,
+            }, // r3 = r4 + 1 (def r3)
+            Instruction::Or { a: 5, s: 3, b: 3 }, // r5 = r3 (r3's last use)
+            Instruction::AddImmediate {
+                d: 3,
+                a: 5,
+                immediate: 2,
+            }, // r3 = r5 + 2 (redef r3)
         ];
         let liveness = analyze(&stream);
         let r3: Vec<_> = liveness
@@ -338,21 +346,59 @@ mod tests {
         // v0 must span [0,4] (one home across the redefinition at 3), so v1's
         // overlapping range gets the NEXT register — matching mwcc's r4/r5.
         let stream = [
-            Instruction::AddImmediate { d: v(0), a: 0, immediate: 0 },  // lis-ish: def v0
-            Instruction::AddImmediate { d: 3, a: v(0), immediate: 0 },  // use v0
-            Instruction::AddImmediate { d: v(1), a: 0, immediate: 9 },  // def v1
-            Instruction::Add { d: v(0), a: 3, b: 0 },                   // REDEFINE v0
-            Instruction::StoreWord { s: v(1), a: v(0), offset: -4 },    // use both
+            Instruction::AddImmediate {
+                d: v(0),
+                a: 0,
+                immediate: 0,
+            }, // lis-ish: def v0
+            Instruction::AddImmediate {
+                d: 3,
+                a: v(0),
+                immediate: 0,
+            }, // use v0
+            Instruction::AddImmediate {
+                d: v(1),
+                a: 0,
+                immediate: 9,
+            }, // def v1
+            Instruction::Add {
+                d: v(0),
+                a: 3,
+                b: 0,
+            }, // REDEFINE v0
+            Instruction::StoreWord {
+                s: v(1),
+                a: v(0),
+                offset: -4,
+            }, // use both
         ];
         let liveness = analyze(&stream);
-        let v0 = liveness.intervals.iter().find(|interval| interval.vreg.id == 0).unwrap();
+        let v0 = liveness
+            .intervals
+            .iter()
+            .find(|interval| interval.vreg.id == 0)
+            .unwrap();
         assert_eq!((v0.start, v0.end), (0, 4));
         let constraints = RegisterConstraints::gekko();
-        let allocation = LinearScan.allocate(&liveness.intervals, &liveness.pinned, &liveness.calls, &constraints).unwrap();
-        let home0 = allocation.physical(VirtualRegister::new(0, Class::General)).unwrap();
-        let home1 = allocation.physical(VirtualRegister::new(1, Class::General)).unwrap();
+        let allocation = LinearScan
+            .allocate(
+                &liveness.intervals,
+                &liveness.pinned,
+                &liveness.calls,
+                &constraints,
+            )
+            .unwrap();
+        let home0 = allocation
+            .physical(VirtualRegister::new(0, Class::General))
+            .unwrap();
+        let home1 = allocation
+            .physical(VirtualRegister::new(1, Class::General))
+            .unwrap();
         assert_ne!(home0, home1);
-        assert!(home0 < home1, "the earlier-defined base takes the lower register");
+        assert!(
+            home0 < home1,
+            "the earlier-defined base takes the lower register"
+        );
     }
 
     #[test]
@@ -461,16 +507,34 @@ mod tests {
     #[test]
     fn a_virtual_reuses_a_source_register_that_dies_at_its_definition() {
         let mut stream = [
-            Instruction::Add { d: v(0), a: 3, b: 4 }, // v0 = r3 + r4 (r3,r4 die here)
-            Instruction::Or { a: 3, s: v(0), b: v(0) }, // r3 = v0
+            Instruction::Add {
+                d: v(0),
+                a: 3,
+                b: 4,
+            }, // v0 = r3 + r4 (r3,r4 die here)
+            Instruction::Or {
+                a: 3,
+                s: v(0),
+                b: v(0),
+            }, // r3 = v0
         ];
         let constraints = RegisterConstraints::gekko();
         let liveness = analyze(&stream);
-        let allocation = LinearScan.allocate(&liveness.intervals, &liveness.pinned, &liveness.calls, &constraints).unwrap();
+        let allocation = LinearScan
+            .allocate(
+                &liveness.intervals,
+                &liveness.pinned,
+                &liveness.calls,
+                &constraints,
+            )
+            .unwrap();
         apply(&mut stream, &allocation);
         // r3/r4 are read at instruction 0 and dead after, so v0 may take r3 — the
         // half-open rule in action (a result reusing a just-consumed source).
-        assert_eq!(allocation.physical(Reg::general(0).virtual_register().unwrap()), Some(3));
+        assert_eq!(
+            allocation.physical(Reg::general(0).virtual_register().unwrap()),
+            Some(3)
+        );
         assert_eq!(stream[0], Instruction::Add { d: 3, a: 3, b: 4 });
     }
 
@@ -522,7 +586,9 @@ mod tests {
                 &constraints,
             )
             .unwrap();
-        let home = allocation.physical(Reg::general(0).virtual_register().unwrap()).unwrap();
+        let home = allocation
+            .physical(Reg::general(0).virtual_register().unwrap())
+            .unwrap();
         // r3 is live at the fallthrough use, while r4 exists only in the
         // terminating arm. CFG-aware interference therefore reuses r4.
         assert_eq!(home, 4);
@@ -555,7 +621,9 @@ mod tests {
                 &constraints,
             )
             .unwrap();
-        let home = allocation.physical(Reg::general(0).virtual_register().unwrap()).unwrap();
+        let home = allocation
+            .physical(Reg::general(0).virtual_register().unwrap())
+            .unwrap();
         assert!(constraints.general_callee_saved.contains(&home));
     }
 }

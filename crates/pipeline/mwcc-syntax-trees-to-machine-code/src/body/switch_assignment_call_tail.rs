@@ -38,18 +38,14 @@ impl Generator {
         {
             return Ok(false);
         }
-        let [
-            Statement::Switch {
-                scrutinee: Expression::Variable(scrutinee),
-                arms,
-                default: None,
-            },
-            Statement::Expression(Expression::Call {
-                name: first_callee,
-                arguments: first_arguments,
-            }),
-            trailing_calls @ ..,
-        ] = function.statements.as_slice()
+        let [Statement::Switch {
+            scrutinee: Expression::Variable(scrutinee),
+            arms,
+            default: None,
+        }, Statement::Expression(Expression::Call {
+            name: first_callee,
+            arguments: first_arguments,
+        }), trailing_calls @ ..] = function.statements.as_slice()
         else {
             return Ok(false);
         };

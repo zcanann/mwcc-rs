@@ -750,8 +750,14 @@ impl Generator {
         // writes LR through the caller linkage area, starts the independent
         // conversion high word, and only then updates SP.
         if frame_push == 0
-            && matches!(self.output.instructions.get(1), Some(Instruction::MoveFromLinkRegister { d: 0 }))
-            && matches!(self.output.instructions.get(2), Some(Instruction::StoreWord { s: 0, a: 1, .. }))
+            && matches!(
+                self.output.instructions.get(1),
+                Some(Instruction::MoveFromLinkRegister { d: 0 })
+            )
+            && matches!(
+                self.output.instructions.get(2),
+                Some(Instruction::StoreWord { s: 0, a: 1, .. })
+            )
         {
             if let Instruction::StoreWord { offset, .. } = &mut self.output.instructions[2] {
                 *offset = 4;
@@ -761,7 +767,14 @@ impl Generator {
             if let Some(high_word) = self.output.instructions[updated_push + 1..]
                 .iter()
                 .position(|instruction| {
-                    matches!(instruction, Instruction::AddImmediateShifted { d: 0, a: 0, immediate: 17200 })
+                    matches!(
+                        instruction,
+                        Instruction::AddImmediateShifted {
+                            d: 0,
+                            a: 0,
+                            immediate: 17200
+                        }
+                    )
                 })
                 .map(|offset| updated_push + 1 + offset)
             {

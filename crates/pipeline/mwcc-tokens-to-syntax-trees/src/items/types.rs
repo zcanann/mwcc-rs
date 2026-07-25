@@ -137,9 +137,9 @@ impl Parser {
             })
         };
         let total_elements = multiply_dimensions(&dimensions)?;
-        let total_bytes = total_elements.checked_mul(element_size).ok_or_else(|| {
-            Diagnostic::error("array extent exceeds the 32-bit address space")
-        })?;
+        let total_bytes = total_elements
+            .checked_mul(element_size)
+            .ok_or_else(|| Diagnostic::error("array extent exceeds the 32-bit address space"))?;
         let first_index_stride = if dimensions.len() > 1 {
             Some(
                 multiply_dimensions(&dimensions[1..])?
@@ -1530,8 +1530,7 @@ impl Parser {
                 let inner_size = inner.size;
                 let inner_align = (inner.align as u32).max(1);
                 self.expect(Token::Semicolon)?;
-                let variant_tag =
-                    tag.unwrap_or_else(|| format!("@anon{}", self.structs.len()));
+                let variant_tag = tag.unwrap_or_else(|| format!("@anon{}", self.structs.len()));
                 self.structs.insert(variant_tag.clone(), inner.clone());
                 match (pointer_depth, member_name) {
                     (depth, Some(name)) if depth > 0 => {

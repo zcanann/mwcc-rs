@@ -87,10 +87,9 @@ impl Generator {
             a: 0,
             offset: 0,
         });
-        self.output.instructions.push(Instruction::CompareWordImmediate {
-            a: 0,
-            immediate: 0,
-        });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
         self.emit_branch_conditional_to(4, 2, after_initialization);
         self.output
             .instructions
@@ -104,10 +103,9 @@ impl Generator {
         self.output.instructions.push(Instruction::BranchAndLink {
             target: initialize.to_string(),
         });
-        self.output.instructions.push(Instruction::CompareWordImmediate {
-            a: 3,
-            immediate: 0,
-        });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 3, immediate: 0 });
         self.emit_branch_conditional_to(4, 2, after_initialization);
         self.output
             .instructions
@@ -120,10 +118,9 @@ impl Generator {
         });
 
         self.bind_label(after_initialization);
-        self.output.instructions.push(Instruction::CompareWordImmediate {
-            a: 3,
-            immediate: 0,
-        });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 3, immediate: 0 });
         self.emit_branch_conditional_to(12, 2, initialized_ok);
         self.output
             .instructions
@@ -143,10 +140,9 @@ impl Generator {
         self.output.instructions.push(Instruction::BranchAndLink {
             target: writer.to_string(),
         });
-        self.output.instructions.push(Instruction::CompareWordImmediate {
-            a: 3,
-            immediate: 0,
-        });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 3, immediate: 0 });
         self.emit_branch_conditional_to(12, 2, write_ok);
         self.output
             .instructions
@@ -310,10 +306,9 @@ impl Generator {
                     a: 0,
                     offset: 0,
                 });
-                self.output.instructions.push(Instruction::CompareWordImmediate {
-                    a: 0,
-                    immediate: 0,
-                });
+                self.output
+                    .instructions
+                    .push(Instruction::CompareWordImmediate { a: 0, immediate: 0 });
                 self.emit_branch_conditional_to(4, 2, after_initialization);
                 self.output
                     .instructions
@@ -327,10 +322,9 @@ impl Generator {
                 self.output.instructions.push(Instruction::BranchAndLink {
                     target: initialize.to_string(),
                 });
-                self.output.instructions.push(Instruction::CompareWordImmediate {
-                    a: 3,
-                    immediate: 0,
-                });
+                self.output
+                    .instructions
+                    .push(Instruction::CompareWordImmediate { a: 3, immediate: 0 });
                 self.emit_branch_conditional_to(4, 2, after_initialization);
                 self.output
                     .instructions
@@ -351,10 +345,9 @@ impl Generator {
             }
         }
 
-        self.output.instructions.push(Instruction::CompareWordImmediate {
-            a: 3,
-            immediate: 0,
-        });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 3, immediate: 0 });
         self.emit_branch_conditional_to(12, 2, initialized_ok);
         self.output
             .instructions
@@ -444,10 +437,9 @@ impl Generator {
             .instructions
             .push(Instruction::CompareLogicalWord { a: 0, b: 31 });
         self.emit_branch_conditional_to(12, 1, loop_exit);
-        self.output.instructions.push(Instruction::CompareWordImmediate {
-            a: 3,
-            immediate: 0,
-        });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate { a: 3, immediate: 0 });
         self.emit_branch_conditional_to(12, 2, loop_body);
 
         self.bind_label(loop_exit);
@@ -470,10 +462,9 @@ impl Generator {
             UartReadBoolean::BranchAndNarrow => {
                 let nonzero = self.fresh_label();
                 let narrowed = self.fresh_label();
-                self.output.instructions.push(Instruction::CompareWordImmediate {
-                    a: 3,
-                    immediate: 0,
-                });
+                self.output
+                    .instructions
+                    .push(Instruction::CompareWordImmediate { a: 3, immediate: 0 });
                 self.emit_branch_conditional_to(4, 2, nonzero);
                 self.output
                     .instructions

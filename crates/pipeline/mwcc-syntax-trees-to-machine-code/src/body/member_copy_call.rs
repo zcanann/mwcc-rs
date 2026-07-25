@@ -17,10 +17,7 @@ struct MemberCopy<'a> {
 }
 
 impl Generator {
-    pub(crate) fn try_member_copy_then_call(
-        &mut self,
-        function: &Function,
-    ) -> Compilation<bool> {
+    pub(crate) fn try_member_copy_then_call(&mut self, function: &Function) -> Compilation<bool> {
         if function.return_type != Type::Void
             || function.return_expression.is_some()
             || !function.guards.is_empty()

@@ -59,11 +59,9 @@ impl Generator {
             .instructions
             .push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 });
         self.emit_branch_conditional_to(4, 2, loop_body);
-        self.output.instructions.push(Instruction::SubtractFrom {
-            d: 4,
-            a: 4,
-            b: 5,
-        });
+        self.output
+            .instructions
+            .push(Instruction::SubtractFrom { d: 4, a: 4, b: 5 });
         self.output
             .instructions
             .push(Instruction::ShiftRightLogicalImmediate {

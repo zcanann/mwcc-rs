@@ -19,7 +19,10 @@ impl Generator {
             || !function.statements.is_empty()
             || !self.frame_slots.is_empty()
             || function.guards.is_empty()
-            || matches!(function.return_type, Type::Void | Type::Float | Type::Double)
+            || matches!(
+                function.return_type,
+                Type::Void | Type::Float | Type::Double
+            )
         {
             return Ok(false);
         }
@@ -35,7 +38,9 @@ impl Generator {
             };
             if self.locations.contains_key(name.as_str())
                 || self.globals.contains_key(name.as_str())
-                || arguments.iter().any(|argument| constant_value(argument).is_none())
+                || arguments
+                    .iter()
+                    .any(|argument| constant_value(argument).is_none())
                 || constant_value(&guard.value)
                     .and_then(|value| i16::try_from(value).ok())
                     .is_none()

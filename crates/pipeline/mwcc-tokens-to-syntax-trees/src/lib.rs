@@ -99,8 +99,7 @@ pub fn parse_located_translation_unit_with_enum_min(
         if qualifier.is_some() && tokens[index + 1].token == Token::Star {
             if cplusplus && qualifier == Some(true) {
                 tokens.swap(index, index + 1);
-                tokens[index + 1].token =
-                    Token::Identifier(CXX_POINTEE_CONST_MARKER.to_string());
+                tokens[index + 1].token = Token::Identifier(CXX_POINTEE_CONST_MARKER.to_string());
                 index += 2;
             } else {
                 tokens.remove(index);
@@ -262,8 +261,7 @@ mod tests {
         )
         .unwrap();
 
-        let [mwcc_syntax_trees::Statement::Assign { name, value },
-            mwcc_syntax_trees::Statement::Store { target, .. }] =
+        let [mwcc_syntax_trees::Statement::Assign { name, value }, mwcc_syntax_trees::Statement::Store { target, .. }] =
             unit.functions[0].statements.as_slice()
         else {
             panic!("expected a local assignment followed by an updated-pointer store");
@@ -430,16 +428,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(unit.aggregate_definitions["Drive"].byte_size, 24);
-        assert_eq!(
-            unit.aggregate_definitions["Drive::tri_data"].byte_size,
-            16
-        );
+        assert_eq!(unit.aggregate_definitions["Drive::tri_data"].byte_size, 16);
         assert!(matches!(
             unit.functions[0].return_expression.as_ref(),
-            Some(mwcc_syntax_trees::Expression::Member {
-                offset: 20,
-                ..
-            })
+            Some(mwcc_syntax_trees::Expression::Member { offset: 20, .. })
         ));
         assert!(matches!(
             unit.functions[1].statements.as_slice(),
@@ -2256,8 +2248,13 @@ blr\n\
             void Check::Set(Point const* start, Point const* end, unsigned int id) { Set2(start, end, id); }
         "#;
         let unit = parse_translation_unit(
-            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
-        ).unwrap();
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
         assert!(matches!(unit.functions[0].statements.as_slice(),
             [mwcc_syntax_trees::Statement::Expression(
                 mwcc_syntax_trees::Expression::Call { name, arguments }
@@ -2279,8 +2276,13 @@ blr\n\
             void Derived::run() { inspect(); }
         "#;
         let unit = parse_translation_unit(
-            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
-        ).unwrap();
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
         assert!(matches!(unit.functions[0].statements.as_slice(),
             [mwcc_syntax_trees::Statement::Expression(
                 mwcc_syntax_trees::Expression::Call { name, arguments }
@@ -2320,8 +2322,13 @@ blr\n\
             Derived::Derived() {}
         "#;
         let unit = parse_translation_unit(
-            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
-        ).unwrap();
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
         let function = &unit.functions[0];
         assert_eq!(function.name, "__ct__7DerivedFv");
         assert!(matches!(function.statements.as_slice(), [
@@ -2405,8 +2412,13 @@ blr\n\
             Derived::~Derived() {}
         "#;
         let unit = parse_translation_unit(
-            mwcc_source_to_tokens::tokenize(source).unwrap(), true, true, 1, 3,
-        ).unwrap();
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
         assert_eq!(
             unit.cxx_class_declaration_order,
             ["Primary", "Secondary", "Derived"]
@@ -2438,13 +2450,19 @@ blr\n\
             && matches!(base.as_ref(), mwcc_syntax_trees::Expression::AddressOf { operand }
                 if matches!(operand.as_ref(), mwcc_syntax_trees::Expression::Variable(vtable)
                     if vtable == "__vt__7Derived"))));
-        let vtable = unit.globals.iter().find(|global| global.name == "__vt__7Derived")
+        let vtable = unit
+            .globals
+            .iter()
+            .find(|global| global.name == "__vt__7Derived")
             .expect("the derived destructor owns the complete vtable group");
         assert_eq!(vtable.data_bytes.as_ref().map(Vec::len), Some(24));
-        assert_eq!(vtable.data_relocations, vec![
-            (8, "__dt__7DerivedFv".to_string(), 0),
-            (20, "@8@__dt__7DerivedFv".to_string(), 0),
-        ]);
+        assert_eq!(
+            vtable.data_relocations,
+            vec![
+                (8, "__dt__7DerivedFv".to_string(), 0),
+                (20, "@8@__dt__7DerivedFv".to_string(), 0),
+            ]
+        );
         assert!(matches!(unit.functions[1].statements.as_slice(), [
             mwcc_syntax_trees::Statement::If { then_body, .. }
         ] if matches!(then_body.as_slice(), [
@@ -2599,12 +2617,15 @@ blr\n\
         .unwrap();
         assert!(matches!(
             unit.functions[0].parameters.as_slice(),
-            [_, mwcc_syntax_trees::Parameter {
-                parameter_type: mwcc_syntax_trees::Type::Pointer(
-                    mwcc_syntax_trees::Pointee::Int
-                ),
-                ..
-            }]
+            [
+                _,
+                mwcc_syntax_trees::Parameter {
+                    parameter_type: mwcc_syntax_trees::Type::Pointer(
+                        mwcc_syntax_trees::Pointee::Int
+                    ),
+                    ..
+                }
+            ]
         ));
     }
 

@@ -24,7 +24,10 @@ fn classify(function: &Function) -> Option<GuardedVirtualForwarder> {
         || !function.locals.is_empty()
         || !function.statements.is_empty()
         || function.guards.len() != 1
-        || !matches!(function.return_expression, Some(Expression::IntegerLiteral(0)))
+        || !matches!(
+            function.return_expression,
+            Some(Expression::IntegerLiteral(0))
+        )
     {
         return None;
     }

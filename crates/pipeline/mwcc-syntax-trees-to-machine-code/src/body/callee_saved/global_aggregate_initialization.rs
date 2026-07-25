@@ -79,11 +79,14 @@ fn emit_predecrement(generator: &mut Generator, plan: &PredecrementPlan<'_>) {
         offset: 20,
     });
     generator.record_relocation(RelocationKind::Addr16Lo, plan.global);
-    generator.output.instructions.push(Instruction::AddImmediate {
-        d: 3,
-        a: 3,
-        immediate: 0,
-    });
+    generator
+        .output
+        .instructions
+        .push(Instruction::AddImmediate {
+            d: 3,
+            a: 3,
+            immediate: 0,
+        });
     generator.record_relocation(RelocationKind::Rel24, plan.callees[0]);
     generator
         .output
@@ -98,11 +101,14 @@ fn emit_predecrement(generator: &mut Generator, plan: &PredecrementPlan<'_>) {
         .instructions
         .push(Instruction::load_immediate_shifted(3, 0));
     generator.record_relocation(RelocationKind::Addr16Lo, plan.global);
-    generator.output.instructions.push(Instruction::AddImmediate {
-        d: 3,
-        a: 3,
-        immediate: 0,
-    });
+    generator
+        .output
+        .instructions
+        .push(Instruction::AddImmediate {
+            d: 3,
+            a: 3,
+            immediate: 0,
+        });
     generator.record_relocation(RelocationKind::Rel24, plan.callees[1]);
     generator
         .output
@@ -121,11 +127,14 @@ fn emit_predecrement(generator: &mut Generator, plan: &PredecrementPlan<'_>) {
         .instructions
         .push(Instruction::load_immediate(4, plan.stores[0].1));
     generator.record_relocation(RelocationKind::Addr16Lo, plan.global);
-    generator.output.instructions.push(Instruction::AddImmediate {
-        d: 3,
-        a: 3,
-        immediate: 0,
-    });
+    generator
+        .output
+        .instructions
+        .push(Instruction::AddImmediate {
+            d: 3,
+            a: 3,
+            immediate: 0,
+        });
     generator
         .output
         .instructions
@@ -166,11 +175,14 @@ fn emit_predecrement(generator: &mut Generator, plan: &PredecrementPlan<'_>) {
         .output
         .instructions
         .push(Instruction::MoveToLinkRegister { s: 0 });
-    generator.output.instructions.push(Instruction::AddImmediate {
-        d: 1,
-        a: 1,
-        immediate: 16,
-    });
+    generator
+        .output
+        .instructions
+        .push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 16,
+        });
     generator
         .output
         .instructions
@@ -249,11 +261,7 @@ impl Generator {
                 &PredecrementPlan {
                     global,
                     callees: [first_callee, second_callee, final_callee],
-                    stores: [
-                        (offset0, value0),
-                        (offset1, value1),
-                        (offset2, value2),
-                    ],
+                    stores: [(offset0, value0), (offset1, value1), (offset2, value2)],
                     return_value,
                 },
             );

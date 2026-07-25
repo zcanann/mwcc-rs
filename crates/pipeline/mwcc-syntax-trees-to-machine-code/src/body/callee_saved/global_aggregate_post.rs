@@ -123,11 +123,14 @@ fn emit_predecrement(generator: &mut Generator, plan: &PredecrementPostPlan<'_>)
         .instructions
         .push(Instruction::move_register(29, 3));
     generator.record_relocation(RelocationKind::Addr16Lo, plan.global);
-    generator.output.instructions.push(Instruction::AddImmediate {
-        d: 3,
-        a: 4,
-        immediate: 0,
-    });
+    generator
+        .output
+        .instructions
+        .push(Instruction::AddImmediate {
+            d: 3,
+            a: 4,
+            immediate: 0,
+        });
     generator.record_relocation(RelocationKind::Rel24, plan.acquire);
     generator
         .output
@@ -142,11 +145,14 @@ fn emit_predecrement(generator: &mut Generator, plan: &PredecrementPostPlan<'_>)
         .instructions
         .push(Instruction::load_immediate_shifted(3, 0));
     generator.record_relocation(RelocationKind::Addr16Lo, plan.global);
-    generator.output.instructions.push(Instruction::AddImmediate {
-        d: 30,
-        a: 3,
-        immediate: 0,
-    });
+    generator
+        .output
+        .instructions
+        .push(Instruction::AddImmediate {
+            d: 30,
+            a: 3,
+            immediate: 0,
+        });
     generator.output.instructions.push(Instruction::LoadWord {
         d: 3,
         a: 30,
@@ -222,11 +228,14 @@ fn emit_predecrement(generator: &mut Generator, plan: &PredecrementPostPlan<'_>)
         .output
         .instructions
         .push(Instruction::Add { d: 3, a: 30, b: 29 });
-    generator.output.instructions.push(Instruction::AddImmediate {
-        d: 3,
-        a: 3,
-        immediate: plan.array_offset,
-    });
+    generator
+        .output
+        .instructions
+        .push(Instruction::AddImmediate {
+            d: 3,
+            a: 3,
+            immediate: plan.array_offset,
+        });
     generator.record_relocation(RelocationKind::Rel24, plan.copy);
     generator
         .output
@@ -241,11 +250,14 @@ fn emit_predecrement(generator: &mut Generator, plan: &PredecrementPostPlan<'_>)
         .instructions
         .push(Instruction::load_immediate_shifted(3, 0));
     generator.record_relocation(RelocationKind::Addr16Lo, plan.global);
-    generator.output.instructions.push(Instruction::AddImmediate {
-        d: 4,
-        a: 3,
-        immediate: 0,
-    });
+    generator
+        .output
+        .instructions
+        .push(Instruction::AddImmediate {
+            d: 4,
+            a: 3,
+            immediate: 0,
+        });
     generator.output.instructions.push(Instruction::LoadWord {
         d: 0,
         a: 4,
@@ -265,11 +277,14 @@ fn emit_predecrement(generator: &mut Generator, plan: &PredecrementPostPlan<'_>)
         a: 4,
         offset: plan.id_offset,
     });
-    generator.output.instructions.push(Instruction::AddImmediate {
-        d: 0,
-        a: 3,
-        immediate: 1,
-    });
+    generator
+        .output
+        .instructions
+        .push(Instruction::AddImmediate {
+            d: 0,
+            a: 3,
+            immediate: 1,
+        });
     generator
         .output
         .instructions
@@ -299,11 +314,14 @@ fn emit_predecrement(generator: &mut Generator, plan: &PredecrementPostPlan<'_>)
         a: 30,
         offset: plan.count_offset,
     });
-    generator.output.instructions.push(Instruction::AddImmediate {
-        d: 0,
-        a: 3,
-        immediate: 1,
-    });
+    generator
+        .output
+        .instructions
+        .push(Instruction::AddImmediate {
+            d: 0,
+            a: 3,
+            immediate: 1,
+        });
     generator.output.instructions.push(Instruction::StoreWord {
         s: 0,
         a: 30,
@@ -317,11 +335,14 @@ fn emit_predecrement(generator: &mut Generator, plan: &PredecrementPostPlan<'_>)
         .instructions
         .push(Instruction::load_immediate_shifted(3, 0));
     generator.record_relocation(RelocationKind::Addr16Lo, plan.global);
-    generator.output.instructions.push(Instruction::AddImmediate {
-        d: 3,
-        a: 3,
-        immediate: 0,
-    });
+    generator
+        .output
+        .instructions
+        .push(Instruction::AddImmediate {
+            d: 3,
+            a: 3,
+            immediate: 0,
+        });
     generator.record_relocation(RelocationKind::Rel24, plan.release);
     generator
         .output
@@ -349,11 +370,14 @@ fn emit_predecrement(generator: &mut Generator, plan: &PredecrementPostPlan<'_>)
         .output
         .instructions
         .push(Instruction::MoveToLinkRegister { s: 0 });
-    generator.output.instructions.push(Instruction::AddImmediate {
-        d: 1,
-        a: 1,
-        immediate: 32,
-    });
+    generator
+        .output
+        .instructions
+        .push(Instruction::AddImmediate {
+            d: 1,
+            a: 1,
+            immediate: 32,
+        });
     generator
         .output
         .instructions
@@ -365,10 +389,7 @@ impl Generator {
     /// allocator preserves the input in r31, the queue base in r30, the count
     /// field address in r29, and the status in r28; r31 is reused for the
     /// selected entry after its incoming value has moved to the copy argument.
-    pub(crate) fn try_global_aggregate_post(
-        &mut self,
-        function: &Function,
-    ) -> Compilation<bool> {
+    pub(crate) fn try_global_aggregate_post(&mut self, function: &Function) -> Compilation<bool> {
         if !self.frame_slots.is_empty()
             || !function.guards.is_empty()
             || function.return_type != Type::Int
@@ -378,7 +399,10 @@ impl Generator {
         let [input] = function.parameters.as_slice() else {
             return Ok(false);
         };
-        if !matches!(input.parameter_type, Type::StructPointer { .. } | Type::Pointer(_)) {
+        if !matches!(
+            input.parameter_type,
+            Type::StructPointer { .. } | Type::Pointer(_)
+        ) {
             return Ok(false);
         }
         let [result, index_local] = function.locals.as_slice() else {
@@ -490,8 +514,9 @@ impl Generator {
         else {
             return Ok(false);
         };
-        let [Expression::AddressOf { operand: destination }, Expression::Variable(copy_input)] =
-            copy_arguments.as_slice()
+        let [Expression::AddressOf {
+            operand: destination,
+        }, Expression::Variable(copy_input)] = copy_arguments.as_slice()
         else {
             return Ok(false);
         };
@@ -732,10 +757,12 @@ impl Generator {
             a: 30,
             offset: count_offset,
         });
-        self.output.instructions.push(Instruction::CompareWordImmediate {
-            a: 3,
-            immediate: capacity,
-        });
+        self.output
+            .instructions
+            .push(Instruction::CompareWordImmediate {
+                a: 3,
+                immediate: capacity,
+            });
         let has_space = self.fresh_label();
         let finish_transaction = self.fresh_label();
         self.emit_branch_conditional_to(4, 2, has_space);
@@ -760,21 +787,31 @@ impl Generator {
             .push(Instruction::Add { d: 0, a: 0, b: 3 });
         self.output
             .instructions
-            .push(Instruction::ShiftRightAlgebraicImmediate { a: 3, s: 0, shift: 1 });
+            .push(Instruction::ShiftRightAlgebraicImmediate {
+                a: 3,
+                s: 0,
+                shift: 1,
+            });
         self.output
             .instructions
             .push(Instruction::AddToZeroExtended { d: 3, a: 3 });
         self.output
             .instructions
-            .push(Instruction::ShiftLeftImmediate { a: 3, s: 3, shift: 1 });
+            .push(Instruction::ShiftLeftImmediate {
+                a: 3,
+                s: 3,
+                shift: 1,
+            });
         self.output
             .instructions
             .push(Instruction::SubtractFromCarrying { d: 3, a: 3, b: 0 });
-        self.output.instructions.push(Instruction::MultiplyImmediate {
-            d: 0,
-            a: 3,
-            immediate: stride,
-        });
+        self.output
+            .instructions
+            .push(Instruction::MultiplyImmediate {
+                d: 0,
+                a: 3,
+                immediate: stride,
+            });
         self.output
             .instructions
             .push(Instruction::Add { d: 31, a: 30, b: 0 });
@@ -824,7 +861,10 @@ impl Generator {
         });
         self.output
             .instructions
-            .push(Instruction::CompareLogicalWordImmediate { a: 0, immediate: minimum as u16 });
+            .push(Instruction::CompareLogicalWordImmediate {
+                a: 0,
+                immediate: minimum as u16,
+            });
         let id_valid = self.fresh_label();
         self.emit_branch_conditional_to(4, 0, id_valid);
         self.output

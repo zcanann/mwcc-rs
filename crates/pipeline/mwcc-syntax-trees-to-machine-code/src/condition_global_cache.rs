@@ -140,9 +140,7 @@ fn collect_member_pointer_base_order(
             }
         }
         Expression::CallThrough {
-            target,
-            arguments,
-            ..
+            target, arguments, ..
         } => {
             collect_member_pointer_base_order(target, names, seen);
             for argument in arguments {

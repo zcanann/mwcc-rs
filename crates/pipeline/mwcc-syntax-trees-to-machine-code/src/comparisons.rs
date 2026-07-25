@@ -27,7 +27,10 @@ impl Generator {
                 location.class == ValueClass::General && location.width <= 16 && !location.signed
             }),
             Expression::Member { member_type, .. } => {
-                matches!(member_type, mwcc_syntax_trees::Type::UnsignedChar | mwcc_syntax_trees::Type::UnsignedShort)
+                matches!(
+                    member_type,
+                    mwcc_syntax_trees::Type::UnsignedChar | mwcc_syntax_trees::Type::UnsignedShort
+                )
             }
             _ => false,
         };
@@ -1342,7 +1345,11 @@ impl Generator {
             let integer = 3;
             self.evaluate_general(left, integer)?;
             let signed = self.signedness_of(left)?;
-            if signed && self.cast_operand_width(left).is_some_and(|width| width < 32) {
+            if signed
+                && self
+                    .cast_operand_width(left)
+                    .is_some_and(|width| width < 32)
+            {
                 let width = self.cast_operand_width(left).expect("checked");
                 self.emit_widen(integer, integer, width as u8, true);
             }
@@ -1539,13 +1546,10 @@ impl Generator {
         operand: &Expression,
         double: bool,
     ) -> Compilation<()> {
-        if self
-            .preloaded_float_compare_literal
-            .is_some_and(|preload| {
-                preload.register == dest
-                    && float_compare_literal_key(operand, double) == Some(preload.key)
-            })
-        {
+        if self.preloaded_float_compare_literal.is_some_and(|preload| {
+            preload.register == dest
+                && float_compare_literal_key(operand, double) == Some(preload.key)
+        }) {
             self.preloaded_float_compare_literal = None;
             return Ok(());
         }

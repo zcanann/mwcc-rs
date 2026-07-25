@@ -147,8 +147,7 @@ impl Generator {
             self.emit_float_select_tail(destination, false_register, false_negate);
             return Ok(());
         }
-        if self.behavior.integer_select_style
-            == mwcc_versions::IntegerSelectStyle::BranchPreserving
+        if self.behavior.integer_select_style == mwcc_versions::IntegerSelectStyle::BranchPreserving
             && tail
             && !true_negate
             && !false_negate
@@ -160,11 +159,7 @@ impl Generator {
             // the false path overwrites phi, followed by one result move.
             let false_arm = self.fresh_label();
             let join = self.fresh_label();
-            self.emit_branch_conditional_to(
-                positive_options ^ 8,
-                condition_bit,
-                false_arm,
-            );
+            self.emit_branch_conditional_to(positive_options ^ 8, condition_bit, false_arm);
             self.emit_branch_to(join);
             self.bind_label(false_arm);
             self.output.instructions.push(Instruction::FloatMove {

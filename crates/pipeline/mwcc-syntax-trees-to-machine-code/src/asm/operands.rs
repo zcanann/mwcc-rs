@@ -151,10 +151,7 @@ pub(super) fn rri(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u8, u
 /// separate from [`rri`] because only instructions whose immediate is patched
 /// directly by the linker can safely accept a relocation; aliases such as
 /// `subic` transform the immediate and must remain numeric-only.
-pub(super) fn rri_symbolic(
-    mnemonic: &str,
-    operands: &[AsmOperand],
-) -> Compilation<(u8, u8, i16)> {
+pub(super) fn rri_symbolic(mnemonic: &str, operands: &[AsmOperand]) -> Compilation<(u8, u8, i16)> {
     expect_operand_count(mnemonic, operands, 3)?;
     let d = gpr(mnemonic, &operands[0])?;
     let a = gpr(mnemonic, &operands[1])?;

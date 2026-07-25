@@ -165,12 +165,9 @@ impl Generator {
             a: GENERAL_SCRATCH,
             b: scaled,
         });
-        self.output.instructions.push(displacement_load(
-            pointee,
-            GENERAL_SCRATCH,
-            high,
-            0,
-        )?);
+        self.output
+            .instructions
+            .push(displacement_load(pointee, GENERAL_SCRATCH, high, 0)?);
         Ok(true)
     }
 
