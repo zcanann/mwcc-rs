@@ -649,10 +649,13 @@ impl Generator {
                             "a constant argument after a global load needs the LR-store-latency schedule (roadmap)",
                         ));
                     };
-                    let addressed_size = self.globals.get(addressed.as_str()).map(|ty| match ty {
-                        Type::Struct { size, .. } => u32::from(*size),
-                        other => u32::from(other.width()).div_ceil(8),
-                    });
+                    let addressed_size =
+                        self.addressable_globals
+                            .get(addressed.as_str())
+                            .map(|ty| match ty {
+                                Type::Struct { size, .. } => u32::from(*size),
+                                other => u32::from(other.width()).div_ceil(8),
+                            });
                     let array_size = self.global_array_sizes.get(array.as_str()).copied();
                     let absolute = self.behavior.global_addressing == GlobalAddressing::Absolute;
                     match (addressed_size, array_size) {

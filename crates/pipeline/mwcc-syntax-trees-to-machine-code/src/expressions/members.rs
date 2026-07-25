@@ -414,7 +414,9 @@ impl Generator {
             // its offset — `li d,g; lwz d,offset(d)`. The base register cannot be the
             // scratch r0 (it is then its own load base).
             if !self.locations.contains_key(name.as_str()) {
-                if let Some(Type::Struct { size, .. }) = self.globals.get(name.as_str()).copied() {
+                if let Some(Type::Struct { size, .. }) =
+                    self.addressable_globals.get(name.as_str()).copied()
+                {
                     let pointee = pointee_of_type(member_type).ok_or_else(|| {
                         Diagnostic::error(format!(
                             "unsupported global-value member load type {member_type:?} at +{offset}"

@@ -399,6 +399,15 @@ pub fn lower_function(
                     .map(|local| (local.name.clone(), local.declared_type)),
             )
             .collect(),
+        addressable_globals: globals
+            .iter()
+            .map(|global| (global.name.clone(), global.declared_type))
+            .chain(
+                static_locals
+                    .iter()
+                    .map(|local| (local.name.clone(), local.declared_type)),
+            )
+            .collect(),
         volatile_globals: globals
             .iter()
             .filter(|global| global.is_volatile)

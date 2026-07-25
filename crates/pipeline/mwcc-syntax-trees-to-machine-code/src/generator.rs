@@ -208,6 +208,12 @@ pub(crate) struct Generator {
     /// File-scope globals by name; a reference to one loads from the small-data
     /// area (an `R_PPC_EMB_SDA21` relocation off r13, the `0(r0)` placeholder).
     pub(crate) globals: HashMap<String, Type>,
+    /// File-scope objects whose address may be formed, including const scalar
+    /// declarations deliberately withheld from [`Self::globals`] because their
+    /// value reads require folding. Addressability is independent of whether a
+    /// direct value load is currently supported: `&extern_const_object` still
+    /// names real storage.
+    pub(crate) addressable_globals: HashMap<String, Type>,
     /// Volatile globals are kept separate from the compact type map so semantic
     /// rewrites can prove that eliminating a reload is legal.
     pub(crate) volatile_globals: HashSet<String>,

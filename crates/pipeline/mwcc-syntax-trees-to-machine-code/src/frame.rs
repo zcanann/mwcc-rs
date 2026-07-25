@@ -54,7 +54,10 @@ impl Generator {
         let Expression::Variable(global) = base.as_ref() else {
             return Ok(false);
         };
-        if !matches!(self.globals.get(global.as_str()), Some(Type::Struct { .. })) {
+        if !matches!(
+            self.addressable_globals.get(global.as_str()),
+            Some(Type::Struct { .. })
+        ) {
             return Ok(false);
         }
         let Some(row_register) = leaf_name(row_expression).and_then(|name| self.lookup_general(name))
@@ -2550,7 +2553,7 @@ impl Generator {
             // <=8 bytes may use SDA21, while a larger struct/array needs an
             // ADDR16_HA/LO pair even when small-data addressing is enabled.
             if !self.locations.contains_key(name) {
-                if let Some(&global_type) = self.globals.get(name.as_str()) {
+                if let Some(&global_type) = self.addressable_globals.get(name.as_str()) {
                     let total_size = self
                         .global_array_sizes
                         .get(name.as_str())
@@ -2626,11 +2629,23 @@ impl Generator {
         } = operand
         {
             if let Expression::Variable(name) = base.as_ref() {
+                // `&local.field` composes the aggregate's frame displacement
+                // with the field displacement. The aggregate has no GPR home:
+                // its address is formed directly from r1, just like `&local`.
+                if let Some(slot) = self.frame_slots.get(name) {
+                    let offset = checked_frame_member_offset(slot.offset, *offset)?;
+                    self.output.instructions.push(Instruction::AddImmediate {
+                        d: destination,
+                        a: 1,
+                        immediate: offset,
+                    });
+                    return Ok(());
+                }
                 // `&g.field` where `g` is a file-scope struct VALUE global: the field address
                 // `&g + offset` (an address computation), like `&a[i]` — NOT `load(g)+offset`.
                 if !self.locations.contains_key(name.as_str()) {
                     if let Some(Type::Struct { size, .. }) =
-                        self.globals.get(name.as_str()).copied()
+                        self.addressable_globals.get(name.as_str()).copied()
                     {
                         return self.emit_global_struct_member_address(
                             name,
@@ -2667,9 +2682,21 @@ impl Generator {
             }
             return self.emit_member_address(base, *offset, destination);
         }
-        Err(Diagnostic::error(
-            "address-of a non-frame-resident lvalue is not supported yet (roadmap)",
-        ))
+        Err(Diagnostic::error(format!(
+            "address-of a non-frame-resident lvalue is not supported yet (roadmap): {operand:?}"
+        )))
+    }
+}
+
+#[cfg(test)]
+mod frame_member_address_tests {
+    use super::checked_frame_member_offset;
+
+    #[test]
+    fn composes_frame_slot_and_member_displacements() {
+        assert_eq!(checked_frame_member_offset(8, 20).unwrap(), 28);
+        assert!(checked_frame_member_offset(i16::MAX, 1).is_err());
+        assert!(checked_frame_member_offset(0, u32::MAX).is_err());
     }
 }
 
@@ -2696,6 +2723,14 @@ fn slot_align(declared: Type) -> u8 {
 fn align_to(offset: i16, align: u8) -> i16 {
     let align = align as i16;
     (offset + align - 1) / align * align
+}
+
+fn checked_frame_member_offset(slot_offset: i16, member_offset: u32) -> Compilation<i16> {
+    let member_offset = i16::try_from(member_offset)
+        .map_err(|_| Diagnostic::error("frame member address offset is out of range"))?;
+    slot_offset
+        .checked_add(member_offset)
+        .ok_or_else(|| Diagnostic::error("frame member address offset is out of range"))
 }
 
 /// The store that spills a parameter register to its frame slot.
