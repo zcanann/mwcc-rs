@@ -240,6 +240,7 @@ pub fn parse_located_translation_unit_with_behavior(
         cpp_exceptions_override: None,
         function_cpp_exception_overrides: std::collections::HashMap::new(),
         pragma_stack: Vec::new(),
+        code_section: None,
         namespace_stack: Vec::new(),
         cxx_namespaces: std::collections::HashSet::new(),
         cxx_data_objects: std::collections::HashMap::new(),
@@ -1173,6 +1174,35 @@ mod tests {
         .unwrap();
         assert!(unit.functions[0].peephole_disabled);
         assert!(!unit.functions[1].peephole_disabled);
+    }
+
+    #[test]
+    fn code_type_pragmas_select_and_restore_function_sections() {
+        let source = r#"
+            #pragma section code_type ".init"
+            void boot(void) {}
+            __declspec(section ".fixed") void pinned(void) {}
+            #pragma push
+            #pragma section code_type ".fast"
+            void fast(void) {}
+            #pragma pop
+            void resumed(void) {}
+            #pragma section code_type
+            void ordinary(void) {}
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.functions[0].section.as_deref(), Some(".init"));
+        assert_eq!(unit.functions[1].section.as_deref(), Some(".fixed"));
+        assert_eq!(unit.functions[2].section.as_deref(), Some(".fast"));
+        assert_eq!(unit.functions[3].section.as_deref(), Some(".init"));
+        assert_eq!(unit.functions[4].section, None);
     }
 
     #[test]

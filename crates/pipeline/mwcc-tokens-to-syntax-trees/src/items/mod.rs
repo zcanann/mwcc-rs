@@ -269,6 +269,7 @@ impl Parser {
                     defer_codegen: self.defer_codegen,
                     force_active: self.force_active,
                     peephole_disabled: self.peephole_disabled,
+                    code_section: self.code_section.clone(),
                 }),
                 "pop" => {
                     let state = self.pragma_stack.pop().unwrap_or(crate::parser::PragmaState {
@@ -277,12 +278,14 @@ impl Parser {
                         defer_codegen: false,
                         force_active: false,
                         peephole_disabled: false,
+                        code_section: None,
                     });
                     self.cplusplus = state.cplusplus;
                     self.cpp_exceptions_override = state.cpp_exceptions_override;
                     self.defer_codegen = state.defer_codegen;
                     self.force_active = state.force_active;
                     self.peephole_disabled = state.peephole_disabled;
+                    self.code_section = state.code_section;
                 }
                 "cplusplus on" => self.cplusplus = true,
                 "cplusplus off" => self.cplusplus = false,
@@ -296,6 +299,14 @@ impl Parser {
                 "force_active off" | "force_active reset" => self.force_active = false,
                 "peephole off" => self.peephole_disabled = true,
                 "peephole on" | "peephole reset" => self.peephole_disabled = false,
+                "section code_type" => self.code_section = None,
+                directive if directive.starts_with("section code_type ") => {
+                    let name = directive["section code_type ".len()..].trim();
+                    self.code_section = name
+                        .strip_prefix('"')
+                        .and_then(|name| name.strip_suffix('"'))
+                        .map(str::to_owned);
+                }
                 _ => {}
             }
             self.advance();
@@ -2062,7 +2073,8 @@ impl Parser {
                 if let Some(mut function) = function {
                     function.section = declspec_section
                         .clone()
-                        .or_else(|| self.section_functions.get(&function.name).cloned());
+                        .or_else(|| self.section_functions.get(&function.name).cloned())
+                        .or_else(|| self.code_section.clone());
                     functions.push(function);
                 } else if let Some(section) = &declspec_section {
                     if self.plain_function_prototypes.contains(&name) {
@@ -2099,7 +2111,8 @@ impl Parser {
                 if let Some(mut function) = function {
                     function.section = declspec_section
                         .clone()
-                        .or_else(|| self.section_functions.get(&function.name).cloned());
+                        .or_else(|| self.section_functions.get(&function.name).cloned())
+                        .or_else(|| self.code_section.clone());
                     functions.push(function);
                 } else if let Some(section) = &declspec_section {
                     if self.plain_function_prototypes.contains(&name) {
@@ -3813,7 +3826,10 @@ impl Parser {
                 function.return_expression = Some(Expression::Variable("this".to_string()));
             }
             function.is_weak = function_is_weak;
-            function.section = declspec_section.clone().or(proto_section);
+            function.section = declspec_section
+                .clone()
+                .or(proto_section)
+                .or_else(|| self.code_section.clone());
             function.preceded_by_asm = functions.iter().any(|earlier| earlier.asm_body.is_some());
             function.text_deferred = materialize_by_calls;
             functions.push(function);

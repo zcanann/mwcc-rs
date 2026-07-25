@@ -6,13 +6,14 @@ use mwcc_tokens::{SourceLocation, Token};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct PragmaState {
     pub(crate) cplusplus: bool,
     pub(crate) cpp_exceptions_override: Option<bool>,
     pub(crate) defer_codegen: bool,
     pub(crate) force_active: bool,
     pub(crate) peephole_disabled: bool,
+    pub(crate) code_section: Option<String>,
 }
 
 /// One resolved struct member: its type and byte offset within the struct, plus
@@ -686,6 +687,9 @@ pub(crate) struct Parser {
     pub(crate) function_cpp_exception_overrides:
         std::collections::HashMap<String, bool>,
     pub(crate) pragma_stack: Vec<PragmaState>,
+    /// Default code section selected by `#pragma section code_type "…"`.
+    /// An explicit declaration attribute still takes precedence.
+    pub(crate) code_section: Option<String>,
     /// Active named C++ namespaces, outermost first. Top-level namespace braces
     /// are declaration containers; this stack supplies CodeWarrior's `Qn`
     /// qualification when member symbols are mangled.
