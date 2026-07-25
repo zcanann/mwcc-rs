@@ -35,7 +35,7 @@ pub(super) fn plan_structured_frame_arrays<'a>(
         };
         let bytes = element_bytes
             .checked_mul(u32::from(array.array_length?))
-            .filter(|bytes| *bytes != 0 && *bytes <= u32::from(u8::MAX))?;
+            .filter(|bytes| *bytes != 0)?;
         total_bytes = total_bytes.checked_add(i16::try_from(bytes).ok()?)?;
     }
     Some(StructuredFrameArrays {
@@ -94,5 +94,17 @@ mod tests {
 
         let plan = plan_structured_frame_arrays(&locals, &statements).expect("typed array");
         assert_eq!(plan.total_bytes, 16);
+    }
+
+    #[test]
+    fn retains_an_aggregate_array_larger_than_one_byte_of_metadata() {
+        let locals = vec![byte_array(
+            "nodes",
+            Type::Struct { size: 8, align: 4 },
+            33,
+        )];
+
+        let plan = plan_structured_frame_arrays(&locals, &[]).expect("large node stack");
+        assert_eq!(plan.total_bytes, 264);
     }
 }

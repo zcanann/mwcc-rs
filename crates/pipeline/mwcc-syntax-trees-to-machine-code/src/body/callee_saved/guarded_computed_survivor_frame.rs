@@ -89,7 +89,7 @@ impl Generator {
             FrameSlot {
                 offset: array_offset,
                 class: ValueClass::General,
-                size: array_bytes as u8,
+                size: u32::from(array_bytes),
                 value_type: array_local.declared_type,
                 parameter_register: None,
                 is_array: true,

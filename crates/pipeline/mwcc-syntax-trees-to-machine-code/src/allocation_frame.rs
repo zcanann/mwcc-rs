@@ -46,7 +46,7 @@ impl Generator {
         let local_end = self
             .frame_slots
             .values()
-            .map(|slot| i32::from(slot.offset) + i32::from(slot.size))
+            .map(|slot| i32::from(slot.offset) + i32::try_from(slot.size).unwrap_or(i32::MAX))
             .max()
             .unwrap_or(8);
         let lowest_save =

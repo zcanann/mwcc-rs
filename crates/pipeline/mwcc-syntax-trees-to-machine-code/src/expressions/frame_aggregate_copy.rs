@@ -16,7 +16,7 @@ fn frame_aggregate_array_element(slot: FrameSlot, index: i64) -> Compilation<Opt
         .and_then(|offset| i16::try_from(offset).ok())
         .ok_or_else(|| Diagnostic::error("frame aggregate array index is out of range"))?;
     let element_end = i32::from(byte_offset) + i32::try_from(size).unwrap_or(i32::MAX);
-    if element_end > i32::from(slot.size) {
+    if element_end > i32::try_from(slot.size).unwrap_or(i32::MAX) {
         return Err(Diagnostic::error(
             "frame aggregate array element lies outside its slot",
         ));

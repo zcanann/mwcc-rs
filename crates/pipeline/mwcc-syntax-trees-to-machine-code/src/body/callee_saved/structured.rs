@@ -254,6 +254,8 @@ impl Generator {
                             | Type::UnsignedShort
                             | Type::Char
                             | Type::UnsignedChar
+                            | Type::Pointer(_)
+                            | Type::StructPointer { .. }
                     )
                         && function.return_expression.is_some()))
             {
@@ -470,7 +472,7 @@ impl Generator {
             let end = self
                 .frame_slots
                 .values()
-                .map(|slot| i32::from(slot.offset) + i32::from(slot.size))
+                .map(|slot| i32::from(slot.offset) + i32::try_from(slot.size).unwrap_or(i32::MAX))
                 .max()
                 .unwrap_or(8);
             i16::try_from(end.saturating_sub(8))
@@ -822,14 +824,12 @@ impl Generator {
                     unreachable!("aggregate frame locals were filtered")
                 };
                 let slot_offset = placements[&local.name];
-                let slot_size = u8::try_from(size)
-                    .map_err(|_| Diagnostic::error("structured aggregate slot is too large"))?;
                 self.frame_slots.insert(
                     local.name.clone(),
                     FrameSlot {
                         offset: slot_offset,
                         class: ValueClass::General,
-                        size: slot_size,
+                        size,
                         value_type: local.declared_type,
                         parameter_register: None,
                         is_array: false,
@@ -954,15 +954,12 @@ impl Generator {
                 };
                 let array_bytes = element_bytes
                     * u32::from(array.array_length.expect("frame array was gated"));
-                let array_size = u8::try_from(array_bytes).map_err(|_| {
-                    Diagnostic::error("structured automatic array is too large")
-                })?;
                 self.frame_slots.insert(
                     array.name.clone(),
                     FrameSlot {
                         offset: next_array_offset,
                         class: ValueClass::General,
-                        size: array_size,
+                        size: array_bytes,
                         value_type: array.declared_type,
                         parameter_register: None,
                         is_array: true,
@@ -973,7 +970,9 @@ impl Generator {
                         .insert(array.name.clone(), row_bytes);
                 }
                 next_array_offset = next_array_offset
-                    .checked_add(i16::from(array_size))
+                    .checked_add(i16::try_from(array_bytes).map_err(|_| {
+                        Diagnostic::error("structured automatic array is too large")
+                    })?)
                     .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
             }
             let mut scalar_offset =

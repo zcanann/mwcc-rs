@@ -419,7 +419,7 @@ impl Generator {
             let slots: Vec<_> = self
                 .frame_slots
                 .values()
-                .map(|slot| (slot.offset, i16::from(slot.size)))
+                .map(|slot| (slot.offset, i16::try_from(slot.size).unwrap_or(i16::MAX)))
                 .collect();
             relayout_frame_slot_displacements(&mut self.output.instructions, &slots, 8);
             for slot in self.frame_slots.values_mut() {

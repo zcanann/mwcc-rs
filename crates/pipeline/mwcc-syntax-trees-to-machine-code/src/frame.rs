@@ -884,21 +884,18 @@ impl Generator {
                 let class = class_of(local.declared_type)?;
                 // An array occupies `N * sizeof(element)` bytes — the element's true
                 // width (1 for `char`), not the 4-byte spill slot a scalar uses. The
-                // slot size field is a byte, so a larger array defers.
+                // slot retains the complete automatic-array extent.
                 let bytes = match local.array_length {
                     Some(length) => (local.declared_type.width() as u16 / 8) * length,
                     None => slot_size(local.declared_type) as u16,
                 };
-                if bytes > u8::MAX as u16 {
-                    return Ok(false);
-                }
                 offset = align_to(offset, slot_align(local.declared_type));
                 self.frame_slots.insert(
                     local.name.clone(),
                     FrameSlot {
                         offset,
                         class,
-                        size: bytes as u8,
+                        size: u32::from(bytes),
                         value_type: local.declared_type,
                         parameter_register: None,
                         is_array,
@@ -2701,11 +2698,11 @@ mod frame_member_address_tests {
 }
 
 /// The byte size of a variable's stack slot.
-fn slot_size(declared: Type) -> u8 {
+fn slot_size(declared: Type) -> u32 {
     match declared {
         Type::Double => 8,
         // A struct value occupies its full byte size on the stack.
-        Type::Struct { size, .. } => size as u8,
+        Type::Struct { size, .. } => size,
         _ => 4,
     }
 }
@@ -2715,7 +2712,7 @@ fn slot_size(declared: Type) -> u8 {
 fn slot_align(declared: Type) -> u8 {
     match declared {
         Type::Struct { align, .. } => align,
-        other => slot_size(other),
+        other => u8::try_from(slot_size(other)).unwrap_or(4),
     }
 }
 

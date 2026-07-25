@@ -1224,7 +1224,8 @@ impl Generator {
                     let stack_end = stack_start + 4;
                     let overlaps_local = self.frame_slots.values().any(|slot| {
                         let slot_start = i32::from(slot.offset);
-                        let slot_end = slot_start + i32::from(slot.size);
+                        let slot_end =
+                            slot_start + i32::try_from(slot.size).unwrap_or(i32::MAX);
                         slot_start < stack_end && stack_start < slot_end
                     });
                     if self.frame_size == 0 || overlaps_local {

@@ -180,7 +180,7 @@ pub(crate) struct FrameSlot {
     /// Whether the variable is a float/double (spilled with `stfd`/`stfs`).
     pub(crate) class: ValueClass,
     /// Byte size of the variable (4 or 8).
-    pub(crate) size: u8,
+    pub(crate) size: u32,
     /// Source-level type of the stored value. This is deliberately separate
     /// from `size`: narrow scalar parameters and locals occupy ABI-sized
     /// lanes, but must still use byte/halfword loads and stores.
