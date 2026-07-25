@@ -50,12 +50,20 @@ pub(crate) fn lower(
         return None;
     }
 
-    if config.build.version.0 < 4
-        && config.flags.optimization == Optimization::O4
-        && config.flags.scheduler_enabled
-    {
+    let parameterized_derived_schedule = config.flags.scheduler_enabled
+        && ((config.build.version.0 < 4 && config.flags.optimization == Optimization::O4)
+            || (config.build.version.0 >= 4 && config.flags.optimization >= Optimization::O2));
+    if parameterized_derived_schedule {
         if let Some(shape) = recognize_parameterized_derived_constructor(function, globals) {
-            let mut output = emit_parameterized_derived_constructor(function, shape);
+            let mut output = if config.build.version.0 < 4 {
+                emit_parameterized_derived_constructor(function, shape)
+            } else {
+                emit_later_parameterized_derived_constructor(
+                    function,
+                    shape,
+                    config.flags.optimization == Optimization::O4,
+                )
+            };
             finish(&mut output, function, &config);
             return Some(output);
         }
@@ -289,6 +297,66 @@ fn emit_parameterized_derived_constructor(
         },
     ];
     output.symbol_order = vec![shape.base_vtable, shape.derived_vtable];
+    output
+}
+
+/// The 4.x optimizer removes the base vptr that is immediately overwritten by
+/// the complete-object vptr. At O4, the first independent member store fills
+/// the derived address's high/low latency slot; O2 and O3 keep all member stores
+/// after the vptr installation.
+fn emit_later_parameterized_derived_constructor(
+    function: &Function,
+    shape: ParameterizedDerivedConstructor,
+    latency_interleaved: bool,
+) -> MachineFunction {
+    let mut output = MachineFunction::new(function.name.clone());
+    output.instructions.push(Instruction::load_immediate_shifted(
+        shape.derived_vtable_register,
+        0,
+    ));
+    let mut member_stores = shape.member_stores.iter();
+    if latency_interleaved {
+        let (offset, register) = member_stores
+            .next()
+            .expect("the parameterized constructor has at least one member store");
+        output.instructions.push(Instruction::StoreWord {
+            s: *register,
+            a: 3,
+            offset: *offset,
+        });
+    }
+    let low_index = output.instructions.len();
+    output.instructions.push(Instruction::AddImmediate {
+        d: shape.derived_vtable_register,
+        a: shape.derived_vtable_register,
+        immediate: 0,
+    });
+    output.instructions.push(Instruction::StoreWord {
+        s: shape.derived_vtable_register,
+        a: 3,
+        offset: shape.vptr_offset,
+    });
+    output
+        .instructions
+        .extend(member_stores.map(|(offset, register)| Instruction::StoreWord {
+            s: *register,
+            a: 3,
+            offset: *offset,
+        }));
+    output.instructions.push(Instruction::BranchToLinkRegister);
+    output.relocations = vec![
+        Relocation {
+            instruction_index: 0,
+            kind: RelocationKind::Addr16Ha,
+            target: RelocationTarget::External(shape.derived_vtable.clone()),
+        },
+        Relocation {
+            instruction_index: low_index,
+            kind: RelocationKind::Addr16Lo,
+            target: RelocationTarget::External(shape.derived_vtable.clone()),
+        },
+    ];
+    output.symbol_order = vec![shape.derived_vtable];
     output
 }
 
