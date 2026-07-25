@@ -722,6 +722,8 @@ pub struct Behavior {
     pub punned_ladder_condition_style: PunnedLadderConditionStyle,
     /// Internal CFG ordinals before a full punned-double ladder's constants.
     pub punned_ladder_prepool_label_bump: u8,
+    /// Additional full-ladder CFG ordinals retained under whole-file IPA.
+    pub punned_ladder_ipa_label_bump: u8,
     /// Linkage and floating-spill schedule for trigonometric dispatchers.
     pub trig_dispatcher_style: TrigDispatcherStyle,
     /// Placement of the zero constant consumed by a dispatcher's small arm.
@@ -1112,6 +1114,11 @@ impl Behavior {
                 .build
                 .profile
                 .punned_ladder_prepool_label_bump(),
+            punned_ladder_ipa_label_bump: if config.flags.whole_file_optimization_enabled() {
+                config.build.profile.punned_ladder_ipa_label_bump()
+            } else {
+                0
+            },
             trig_dispatcher_style: config.build.profile.trig_dispatcher_style(),
             trig_zero_constant_placement: config.build.profile.trig_zero_constant_placement(),
             trig_quadrant_dispatch_style: config
@@ -2240,6 +2247,12 @@ mod tests {
             PunnedLadderConditionStyle::PreserveOuterInCr1
         );
         assert_eq!(wii43.punned_ladder_prepool_label_bump, 47);
+
+        for compiler_build in [build::GC_3_0A3P1, build::WII_1_0] {
+            let mut config = CompilerConfig::new(compiler_build);
+            config.flags.ipa_file = true;
+            assert_eq!(Behavior::resolve(&config).punned_ladder_ipa_label_bump, 14);
+        }
     }
 
     #[test]

@@ -1135,6 +1135,7 @@ impl Generator {
         };
         self.output.anonymous_label_bump +=
             u32::from(self.behavior.punned_ladder_prepool_label_bump)
+            + u32::from(self.behavior.punned_ladder_ipa_label_bump)
             + legacy_roles
                 .as_ref()
                 .map(|roles| roles.constant_label_bump)

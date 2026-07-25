@@ -1191,6 +1191,11 @@ pub trait CodegenProfile: core::fmt::Debug {
         40
     }
 
+    /// Additional full-ladder CFG ordinals retained by whole-file IPA.
+    fn punned_ladder_ipa_label_bump(&self) -> u8 {
+        0
+    }
+
     fn trig_dispatcher_style(&self) -> TrigDispatcherStyle {
         TrigDispatcherStyle::LiveParameter
     }
@@ -1486,6 +1491,10 @@ impl CodegenProfile for Gc41Build51213 {
         45
     }
 
+    fn punned_ladder_ipa_label_bump(&self) -> u8 {
+        14
+    }
+
     fn forwarded_trace_string_style(&self) -> ForwardedTraceStringStyle {
         ForwardedTraceStringStyle::PackedLowBeforeInteger
     }
@@ -1662,6 +1671,10 @@ impl CodegenProfile for Wii43Build145 {
 
     fn punned_ladder_prepool_label_bump(&self) -> u8 {
         47
+    }
+
+    fn punned_ladder_ipa_label_bump(&self) -> u8 {
+        14
     }
 
     fn forwarded_trace_string_style(&self) -> ForwardedTraceStringStyle {
