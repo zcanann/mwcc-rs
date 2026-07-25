@@ -948,10 +948,14 @@ impl Generator {
             }
             let mut next_array_offset = array_offset;
             for array in frame_arrays {
-                let array_bytes = u16::from(array.declared_type.width() / 8)
-                    * array.array_length.expect("frame array was gated");
+                let element_bytes = match array.declared_type {
+                    Type::Struct { size, .. } => size,
+                    value_type => u32::from(value_type.width() / 8),
+                };
+                let array_bytes = element_bytes
+                    * u32::from(array.array_length.expect("frame array was gated"));
                 let array_size = u8::try_from(array_bytes).map_err(|_| {
-                    Diagnostic::error("structured automatic byte array is too large")
+                    Diagnostic::error("structured automatic array is too large")
                 })?;
                 self.frame_slots.insert(
                     array.name.clone(),
@@ -964,6 +968,10 @@ impl Generator {
                         is_array: true,
                     },
                 );
+                if let Some(row_bytes) = array.row_bytes {
+                    self.frame_row_bytes
+                        .insert(array.name.clone(), row_bytes);
+                }
                 next_array_offset = next_array_offset
                     .checked_add(i16::from(array_size))
                     .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
@@ -1015,11 +1023,15 @@ impl Generator {
                 if !body_uses_local(&function.statements, &array.name) {
                     continue;
                 }
-                let pointee = match array.declared_type {
-                    Type::Char => Pointee::Char,
-                    Type::UnsignedChar => Pointee::UnsignedChar,
-                    _ => unreachable!("structured frame array type was gated"),
+                let (pointee, stride) = match array.declared_type {
+                    Type::Struct { size, .. } => (None, Some(u32::from(size))),
+                    value_type => (pointee_of_type(value_type), None),
                 };
+                if pointee.is_none() && stride.is_none() {
+                    return Err(Diagnostic::error(
+                        "structured frame array has no element representation",
+                    ));
+                }
                 self.locations.insert(
                     array.name.clone(),
                     Location {
@@ -1027,8 +1039,8 @@ impl Generator {
                         register: GENERAL_SCRATCH,
                         signed: false,
                         width: 32,
-                        pointee: Some(pointee),
-                        stride: None,
+                        pointee,
+                        stride,
                     },
                 );
             }

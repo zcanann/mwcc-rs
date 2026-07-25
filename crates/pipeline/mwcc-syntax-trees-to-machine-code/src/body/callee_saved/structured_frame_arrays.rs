@@ -1,8 +1,9 @@
-//! Automatic byte-array planning for structured stack frames.
+//! Automatic typed-array planning for structured stack frames.
 //!
-//! Source padding and scratch buffers remain distinct frame slots even when
-//! they are unused.  Keeping their validation and byte accounting here lets
-//! the structured body owner compose any number of them with aggregate slots.
+//! Source arrays remain distinct frame slots even when they are unused.
+//! Keeping their validation and byte accounting here lets the structured body
+//! owner compose scalar, aggregate, and flattened multidimensional arrays with
+//! the rest of the frame.
 
 #[allow(unused_imports)]
 use super::*;
@@ -26,14 +27,16 @@ pub(super) fn plan_structured_frame_arrays<'a>(
         if array.is_static
             || array.initializer.is_some()
             || array.data_bytes.is_some()
-            || (!matches!(array.declared_type, Type::Char | Type::UnsignedChar)
-                && body_uses_local(statements, &array.name))
         {
             return None;
         }
-        let bytes = u16::from(array.declared_type.width() / 8)
-            .checked_mul(array.array_length?)
-            .filter(|bytes| *bytes != 0 && *bytes <= u16::from(u8::MAX))?;
+        let element_bytes = match array.declared_type {
+            Type::Struct { size, .. } => size,
+            value_type => u32::from(value_type.width() / 8),
+        };
+        let bytes = element_bytes
+            .checked_mul(u32::from(array.array_length?))
+            .filter(|bytes| *bytes != 0 && *bytes <= u32::from(u8::MAX))?;
         total_bytes = total_bytes.checked_add(i16::try_from(bytes).ok()?)?;
     }
     Some(StructuredFrameArrays {
@@ -84,12 +87,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_a_used_non_byte_array_until_element_lowering_owns_it() {
+    fn retains_a_used_typed_array_for_element_lowering() {
         let locals = vec![byte_array("words", Type::UnsignedInt, 4)];
         let statements = vec![Statement::Expression(Expression::Variable(
             "words".into(),
         ))];
 
-        assert!(plan_structured_frame_arrays(&locals, &statements).is_none());
+        let plan = plan_structured_frame_arrays(&locals, &statements).expect("typed array");
+        assert_eq!(plan.total_bytes, 16);
     }
 }
