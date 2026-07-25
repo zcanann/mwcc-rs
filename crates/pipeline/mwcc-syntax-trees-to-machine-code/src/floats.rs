@@ -390,8 +390,7 @@ impl Generator {
             .is_some_and(|width| width < 32)
             || !(self.is_word_load(integer_operand)
                 || self.general_register_of_leaf(integer_operand).is_ok()
-                || (is_complex(integer_operand)
-                    && fits_single_scratch(integer_operand, false)))
+                || (is_complex(integer_operand) && fits_single_scratch(integer_operand, false)))
             || !(self.is_float_operand(float_operand) || self.is_float_leaf(float_operand))
         {
             return Ok(false);
@@ -418,102 +417,6 @@ impl Generator {
             .instructions
             .push(float_combine(operator, destination, operands, double)?);
         Ok(true)
-    }
-
-    /// Try to fuse `left op right` into a multiply-add when one side is a
-    /// multiplication. mwcc contracts these under -fp_contract on, so we either
-    /// fuse or stop honestly — never fall back to a separate multiply.
-    pub(crate) fn try_emit_float_fused(
-        &mut self,
-        operator: BinaryOperator,
-        left: &Expression,
-        right: &Expression,
-        destination: u8,
-        double: bool,
-    ) -> Compilation<bool> {
-        if !self.behavior.contract_floating_point {
-            return Ok(false);
-        }
-        if self.try_emit_located_fused_triplet(
-            operator,
-            left,
-            right,
-            destination,
-            double,
-        )? {
-            return Ok(true);
-        }
-        if let Some((x, y)) = as_multiplication(left) {
-            let multiplicand = self.float_register_of_leaf(x)?;
-            let multiplier = self.float_register_of_leaf(y)?;
-            let addend = self.place_float_addend(right)?;
-            self.output.instructions.push(match (operator, double) {
-                (BinaryOperator::Add, false) => Instruction::FloatMultiplyAddSingle {
-                    d: destination,
-                    a: multiplicand,
-                    c: multiplier,
-                    b: addend,
-                },
-                (BinaryOperator::Subtract, false) => Instruction::FloatMultiplySubtractSingle {
-                    d: destination,
-                    a: multiplicand,
-                    c: multiplier,
-                    b: addend,
-                },
-                (BinaryOperator::Add, true) => Instruction::FloatMultiplyAddDouble {
-                    d: destination,
-                    a: multiplicand,
-                    c: multiplier,
-                    b: addend,
-                },
-                (BinaryOperator::Subtract, true) => Instruction::FloatMultiplySubtractDouble {
-                    d: destination,
-                    a: multiplicand,
-                    c: multiplier,
-                    b: addend,
-                },
-                _ => unreachable!("caller restricts to add/subtract"),
-            });
-            return Ok(true);
-        }
-        if let Some((x, y)) = as_multiplication(right) {
-            let multiplicand = self.float_register_of_leaf(x)?;
-            let multiplier = self.float_register_of_leaf(y)?;
-            let addend = self.place_float_addend(left)?;
-            self.output.instructions.push(match (operator, double) {
-                (BinaryOperator::Add, false) => Instruction::FloatMultiplyAddSingle {
-                    d: destination,
-                    a: multiplicand,
-                    c: multiplier,
-                    b: addend,
-                },
-                (BinaryOperator::Subtract, false) => {
-                    Instruction::FloatNegativeMultiplySubtractSingle {
-                        d: destination,
-                        a: multiplicand,
-                        c: multiplier,
-                        b: addend,
-                    }
-                }
-                (BinaryOperator::Add, true) => Instruction::FloatMultiplyAddDouble {
-                    d: destination,
-                    a: multiplicand,
-                    c: multiplier,
-                    b: addend,
-                },
-                (BinaryOperator::Subtract, true) => {
-                    Instruction::FloatNegativeMultiplySubtractDouble {
-                        d: destination,
-                        a: multiplicand,
-                        c: multiplier,
-                        b: addend,
-                    }
-                }
-                _ => unreachable!("caller restricts to add/subtract"),
-            });
-            return Ok(true);
-        }
-        Ok(false)
     }
 
     /// Whether a float-class expression is double-precision (so it uses the
@@ -831,17 +734,13 @@ impl Generator {
         let right_computed = is_complex(right)
             || self.is_float_call_value(right)
             || matches!(right, Expression::Comma { .. } | Expression::Assign { .. });
-        if expression_has_call(right)
-            && !left_computed
-            && !self.float_location_survives_call(left)
+        if expression_has_call(right) && !left_computed && !self.float_location_survives_call(left)
         {
             return Err(Diagnostic::error(
                 "a float leaf live across a right-hand call needs a callee-saved home",
             ));
         }
-        if expression_has_call(left)
-            && !right_computed
-            && !self.float_location_survives_call(right)
+        if expression_has_call(left) && !right_computed && !self.float_location_survives_call(right)
         {
             return Err(Diagnostic::error(
                 "a float leaf live across a left-hand call needs a callee-saved home",
