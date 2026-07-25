@@ -250,30 +250,62 @@ impl Parser {
             return assignment.map(|call| Some(Statement::Expression(call)));
         }
 
-        let Expression::Binary {
-            operator,
-            left,
-            right,
-        } = value
-        else {
-            return Ok(None);
-        };
-        let Some(operator_name) = crate::cxx::arithmetic_operator_name(*operator) else {
-            return Ok(None);
-        };
         let Some(result_tag) = value_tag else {
             return Ok(None);
         };
         if !same_cxx_aggregate_identity(target_tag, result_tag) {
             return Ok(None);
         }
-        let Some(operand_tag) = self
-            .cxx_expression_struct_tag(left)
-            .map(str::to_owned)
-        else {
-            return Ok(None);
+        let saved_expression_tag = self.expression_struct_tag.take();
+        let producer = match value {
+            Expression::Binary {
+                operator,
+                left,
+                right,
+            } => {
+                let Some(operator_name) = crate::cxx::arithmetic_operator_name(*operator) else {
+                    self.expression_struct_tag = saved_expression_tag;
+                    return Ok(None);
+                };
+                let Some(operand_tag) = self
+                    .cxx_expression_struct_tag(left)
+                    .map(str::to_owned)
+                else {
+                    self.expression_struct_tag = saved_expression_tag;
+                    return Ok(None);
+                };
+                self.expression_struct_tag =
+                    self.cxx_expression_struct_tag(right).map(str::to_owned);
+                match self.lower_cxx_instance_member_call(
+                    &operand_tag,
+                    operator_name,
+                    left.as_ref().clone(),
+                    vec![right.as_ref().clone()],
+                ) {
+                    Ok(producer) => producer,
+                    Err(error) => {
+                        self.expression_struct_tag = saved_expression_tag;
+                        return Err(error);
+                    }
+                }
+            }
+            Expression::Call { name, .. }
+                if self
+                    .function_return_structs
+                    .get(name)
+                    .is_some_and(|tag| same_cxx_aggregate_identity(tag, result_tag)) =>
+            {
+                value.clone()
+            }
+            Expression::VirtualCall {
+                return_type: Type::Struct { .. },
+                ..
+            } => value.clone(),
+            _ => {
+                self.expression_struct_tag = saved_expression_tag;
+                return Ok(None);
+            }
         };
-        let right_tag = self.cxx_expression_struct_tag(right).map(str::to_owned);
         let resolved_result = self
             .resolve_scoped_cxx_class_name(result_tag)
             .unwrap_or_else(|| result_tag.to_owned());
@@ -282,6 +314,7 @@ impl Parser {
             .get(&resolved_result)
             .or_else(|| self.structs.get(result_tag))
         else {
+            self.expression_struct_tag = saved_expression_tag;
             return Ok(None);
         };
         let temporary_type = Type::Struct {
@@ -314,21 +347,6 @@ impl Parser {
             row_bytes: None,
         });
 
-        let saved_expression_tag =
-            std::mem::replace(&mut self.expression_struct_tag, right_tag);
-        let producer = self.lower_cxx_instance_member_call(
-            &operand_tag,
-            operator_name,
-            left.as_ref().clone(),
-            vec![right.as_ref().clone()],
-        );
-        let producer = match producer {
-            Ok(producer) => producer,
-            Err(error) => {
-                self.expression_struct_tag = saved_expression_tag;
-                return Err(error);
-            }
-        };
         self.expression_struct_tag = Some(result_tag.to_owned());
         let consumer = self.lower_cxx_instance_member_call(
             target_tag,

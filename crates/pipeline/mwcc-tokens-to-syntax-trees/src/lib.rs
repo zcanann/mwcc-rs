@@ -4371,6 +4371,61 @@ blr\n\
     }
 
     #[test]
+    fn passes_retained_inline_aggregate_arguments_by_reference() {
+        let source = r#"
+            struct Vec {
+                float x;
+                float y;
+                float z;
+                Vec& operator=(const Vec&);
+                Vec cross(const Vec& other) const { return *this; }
+            };
+            struct Plane { Vec normal; float distance; };
+            void calculate(Vec* source) {
+                Plane plane;
+                plane.normal = source[0].cross(source[1]);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let function = unit
+            .functions
+            .iter()
+            .find(|function| function.name == "calculate__FP3Vec")
+            .expect("calculate function");
+        assert!(function.locals.iter().any(|local| {
+            local.name.starts_with("__mwcc_aggregate_result_")
+                && local.declared_type == (Type::Struct { size: 12, align: 4 })
+        }));
+        assert!(matches!(
+            function.statements.as_slice(),
+            [Statement::Expression(Expression::Comma { left, .. })]
+                if matches!(
+                    left.as_ref(),
+                    Expression::Assign { value, .. }
+                        if matches!(
+                            value.as_ref(),
+                            Expression::Call { name, arguments }
+                                if name == "cross__3VecCFRC3Vec"
+                                    && matches!(
+                                        arguments.as_slice(),
+                                        [
+                                            Expression::AddressOf { .. },
+                                            Expression::AddressOf { .. },
+                                        ]
+                                    )
+                        )
+                )
+        ));
+    }
+
+    #[test]
     fn preserves_multidimensional_member_row_stride_in_address_expression() {
         let source = r#"
             typedef unsigned char u8;

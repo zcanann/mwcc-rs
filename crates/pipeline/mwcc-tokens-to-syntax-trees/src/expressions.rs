@@ -1873,7 +1873,22 @@ impl Parser {
                 ..
             } => concrete_object && direct_name.is_some() && *direct_is_inline,
         };
-        if !retained_inline_call {
+        let retained_inline_aggregate_value = retained_inline_call
+            && match &member_call {
+                crate::cxx::ImplicitMemberCall::Direct { name, .. } => Some(name.as_str()),
+                crate::cxx::ImplicitMemberCall::Virtual { direct_name, .. } => {
+                    direct_name.as_deref()
+                }
+                crate::cxx::ImplicitMemberCall::Static { .. } => None,
+            }
+            .is_some_and(|name| {
+                self.skipped_inline_signatures.iter().any(
+                    |(candidate, return_type, _)| {
+                        candidate == name && matches!(return_type, Type::Struct { .. })
+                    },
+                )
+            });
+        if !retained_inline_call || retained_inline_aggregate_value {
             arguments =
                 self.lower_cxx_aggregate_reference_arguments(member_call.parameters(), arguments);
         }
