@@ -2552,7 +2552,28 @@ fn structured_return_is_supported(function: &Function) -> bool {
                 | Type::StructPointer { .. }
                 | Type::Float
                 | Type::Double
-        ) && function.return_expression.is_some())
+        ) && (function.return_expression.is_some()
+            || statements_always_return(&function.statements)))
+}
+
+/// Whether control cannot reach the end of this statement sequence. Structured
+/// lowering already emits source-level returns through a shared epilogue; an
+/// integer function whose final if/else tree returns from every leaf therefore
+/// needs no synthetic trailing return expression.
+fn statements_always_return(statements: &[Statement]) -> bool {
+    statements.iter().any(|statement| match statement {
+        Statement::Return(_) => true,
+        Statement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            !else_body.is_empty()
+                && statements_always_return(then_body)
+                && statements_always_return(else_body)
+        }
+        _ => false,
+    })
 }
 
 fn supports_statements(
@@ -2792,5 +2813,30 @@ mod tests {
             Expression::Variable(c),
             Expression::Variable(d),
         ] if c == "c" && d == "d"));
+    }
+
+    #[test]
+    fn recognizes_a_nested_if_tree_that_returns_from_every_leaf() {
+        let returned = |value| Statement::Return(Some(Expression::IntegerLiteral(value)));
+        let nested = Statement::If {
+            condition: Expression::Variable("outer".into()),
+            then_body: vec![Statement::If {
+                condition: Expression::Variable("inner".into()),
+                then_body: vec![returned(1)],
+                else_body: vec![returned(2)],
+            }],
+            else_body: vec![returned(3)],
+        };
+        assert!(statements_always_return(&[nested]));
+    }
+
+    #[test]
+    fn rejects_an_if_tree_with_a_fallthrough_leaf() {
+        let incomplete = Statement::If {
+            condition: Expression::Variable("condition".into()),
+            then_body: vec![Statement::Return(Some(Expression::IntegerLiteral(1)))],
+            else_body: Vec::new(),
+        };
+        assert!(!statements_always_return(&[incomplete]));
     }
 }
