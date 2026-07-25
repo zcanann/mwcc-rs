@@ -59,7 +59,6 @@ mod structured_frame_entry;
 mod structured_frame_assignment;
 mod structured_frame_bitfield_stores;
 mod structured_frame_call_schedule;
-mod structured_frame_entry;
 mod structured_home_layout;
 mod structured_if_else;
 mod structured_inline_assertion;
@@ -70,7 +69,6 @@ mod structured_parameter_home_reuse;
 mod structured_prologue;
 mod structured_store_schedule;
 mod structured_value_versions;
-mod pointer_state_call_loop;
 
 pub(crate) use queue_service::{summarize_queue_service, QueueServiceSummary};
 pub(crate) use queue_transactions::{summarize_queue_pop, QueuePopSummary};
