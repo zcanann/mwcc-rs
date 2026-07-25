@@ -4208,6 +4208,64 @@ blr\n\
     }
 
     #[test]
+    fn distinguishes_inline_compound_and_out_of_line_binary_operators() {
+        let source = r#"
+            struct Vec {
+                float x;
+                Vec& operator-=(const Vec&) { return *this; }
+                Vec operator-(const Vec&) const;
+            };
+            Vec Vec::operator-(const Vec& other) const {
+                Vec result = *this;
+                result -= other;
+                return result;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(
+            unit.functions
+                .iter()
+                .any(|function| function.name.starts_with("__mi__3Vec")),
+            "the non-inline operator- definition must be emitted"
+        );
+    }
+
+    #[test]
+    fn distinguishes_inline_and_out_of_line_compound_operator_overloads() {
+        let source = r#"
+            struct Vec {
+                float x;
+                Vec& operator+=(float) { return *this; }
+                Vec& operator+=(const Vec&);
+            };
+            Vec& Vec::operator+=(const Vec& other) {
+                return *this;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(
+            unit.functions
+                .iter()
+                .any(|function| function.name.starts_with("__apl__3VecFRC3Vec")),
+            "the non-inline operator+= overload must be emitted"
+        );
+    }
+
+    #[test]
     fn preserves_multidimensional_member_row_stride_in_address_expression() {
         let source = r#"
             typedef unsigned char u8;

@@ -47,14 +47,20 @@ pub(crate) fn canonical_inline_member_name(
 /// semantically supported rather than being guessed in the general item
 /// parser.
 pub(crate) fn parse_arithmetic_operator_name(parser: &mut Parser) -> Compilation<String> {
-    let name = match parser.advance() {
-        Token::Plus => "__pl",
-        Token::Minus => "__mi",
-        Token::Star => "__ml",
-        Token::Slash => "__dv",
+    let operator = parser.advance();
+    let compound = parser.eat_keyword(Token::Equals);
+    let name = match (operator, compound) {
+        (Token::Plus, false) => "__pl",
+        (Token::Minus, false) => "__mi",
+        (Token::Star, false) => "__ml",
+        (Token::Slash, false) => "__dv",
+        (Token::Plus, true) => "__apl",
+        (Token::Minus, true) => "__ami",
+        (Token::Star, true) => "__amu",
+        (Token::Slash, true) => "__adv",
         token => {
             return Err(Diagnostic::error(format!(
-                "C++ operator declarator '{token}' is not supported yet (roadmap)"
+                "C++ operator declarator '{token:?}' is not supported yet (roadmap)"
             )))
         }
     };
@@ -72,6 +78,24 @@ pub(crate) fn arithmetic_operator_name(operator: BinaryOperator) -> Option<&'sta
         BinaryOperator::Multiply => Some("__ml"),
         BinaryOperator::Divide => Some("__dv"),
         _ => None,
+    }
+}
+
+/// Stable declaration identity for an operator's punctuation. Arithmetic
+/// binary operators use their ABI source names; other spellings still receive
+/// distinct internal keys so an inline `operator-=` cannot make an out-of-line
+/// `operator-` definition look inline.
+pub(crate) fn canonical_operator_member_name(punctuation: &[Token]) -> String {
+    match punctuation {
+        [Token::Plus] => "__pl".to_string(),
+        [Token::Minus] => "__mi".to_string(),
+        [Token::Star] => "__ml".to_string(),
+        [Token::Slash] => "__dv".to_string(),
+        [Token::Plus, Token::Equals] => "__apl".to_string(),
+        [Token::Minus, Token::Equals] => "__ami".to_string(),
+        [Token::Star, Token::Equals] => "__amu".to_string(),
+        [Token::Slash, Token::Equals] => "__adv".to_string(),
+        _ => format!("@operator:{punctuation:?}"),
     }
 }
 
@@ -1623,7 +1647,16 @@ impl Parser {
                             |token| matches!(token, Token::Identifier(word) if word == "operator"),
                         )
                     {
-                        member_name = Some("operator".to_string());
+                        let punctuation = self.tokens[member_declaration_start..index]
+                            .iter()
+                            .rposition(
+                                |token| matches!(token, Token::Identifier(word) if word == "operator"),
+                            )
+                            .map(|operator| {
+                                &self.tokens[member_declaration_start + operator + 1..index]
+                            })
+                            .unwrap_or_default();
+                        member_name = Some(canonical_operator_member_name(punctuation));
                     }
                 }
             }

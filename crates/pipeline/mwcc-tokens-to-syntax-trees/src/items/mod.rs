@@ -740,9 +740,12 @@ impl Parser {
                 // Route definitions whose inherited inline status was proven by
                 // declaration recovery through the same dropped-inline accounting
                 // as definitions carrying a written `inline` keyword.
-                Err(Diagnostic::error(
-                    "deferred unused C++ inline member materialization",
-                ))
+                let name = self
+                    .skipped_function_name()
+                    .unwrap_or_else(|| "<unknown>".to_string());
+                Err(Diagnostic::error(format!(
+                    "deferred unused C++ inline member materialization '{name}'",
+                )))
             } else {
                 self.parse_top_level_item(&mut globals, &mut functions, &mut prototypes)
             };

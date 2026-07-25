@@ -1339,14 +1339,41 @@ impl Parser {
                         return false;
                     };
                     let qualified_class = self.qualify_cxx_class_name(class);
+                    let member = if member == "operator" {
+                        let Some(operator) = self.tokens[self.position..index]
+                            .iter()
+                            .rposition(
+                                |token| matches!(token, Token::Identifier(word) if word == "operator"),
+                            )
+                        else {
+                            return false;
+                        };
+                        let operator = self.position + operator;
+                        let Some(paren) = self.tokens[operator + 1..index]
+                            .iter()
+                            .position(|token| *token == Token::ParenOpen)
+                        else {
+                            return false;
+                        };
+                        crate::cxx::canonical_operator_member_name(
+                            &self.tokens[operator + 1..operator + 1 + paren],
+                        )
+                    } else {
+                        member.to_string()
+                    };
                     let member = crate::cxx::canonical_inline_member_name(
                         class,
-                        member,
+                        &member,
                         member_is_destructor,
                     );
+                    let overload_count = self
+                        .cxx_instance_methods
+                        .get(&(qualified_class.clone(), member.clone()))
+                        .map_or(0, Vec::len);
                     let ordinary_inline = self
                         .inline_cxx_members
-                        .contains(&(qualified_class, member.clone()));
+                        .contains(&(qualified_class, member.clone()))
+                        && overload_count <= 1;
                     let template_inline = (explicit_specialization
                         || saw_template_arguments
                         || self.template_aliases.contains_key(class))
