@@ -252,13 +252,21 @@ impl Generator {
             .unwrap_or(self.output.instructions.len());
         // Build 163's extra lane belongs to an ALU-materialized value that is
         // already live before the first call (parameters and computed locals).
-        // A home first defined by a memory load, or only by a call result after
-        // the call, retains the logical frame size. This is the allocator's
-        // value-origin distinction, not a semantic-family whitelist.
+        // A home first defined by a memory load, a relocatable address
+        // materialization, or only by a call result after the call retains the
+        // compact physical frame. Relocatable addresses are source-local
+        // cursors, not values carried through the optimizer's entry table.
+        // This is the allocator's value-origin distinction, not a
+        // semantic-family whitelist.
         let materialized_home_before_call =
             self.output.instructions[..first_call]
                 .iter()
-                .any(|instruction| {
+                .enumerate()
+                .any(|(instruction_index, instruction)| {
+                    let relocatable_address = has_address_materialization_relocation(
+                        &self.output.relocations,
+                        instruction_index,
+                    );
                     let defines_home =
                         mwcc_vreg::register_operands(instruction)
                             .into_iter()
@@ -268,6 +276,7 @@ impl Generator {
                                     && physical_saved.contains(&operand.register)
                             });
                     defines_home
+                        && !relocatable_address
                         && !matches!(
                             instruction,
                             Instruction::LoadWord { .. }
@@ -305,7 +314,8 @@ impl Generator {
         let extra_lane_count = if preserve_logical_size {
             0
         } else if self.legacy_discarded_call_locals == 0 {
-            if materialized_home_before_call
+            if self.entry_parameter_words != 0
+                && materialized_home_before_call
                 && self.legacy_callee_saved_frame_layout
                     == LegacyCalleeSavedFrameLayout::RetainEntryParameterTable
             {
@@ -326,7 +336,8 @@ impl Generator {
                 usize::from(reserve_forwarded_parameter_lane)
             }
         } else {
-            let retained_parameter_lanes = if materialized_home_before_call
+            let retained_parameter_lanes = if self.entry_parameter_words != 0
+                && materialized_home_before_call
                 && self.legacy_callee_saved_frame_layout
                     == LegacyCalleeSavedFrameLayout::RetainEntryParameterTable
             {
@@ -374,9 +385,21 @@ impl Generator {
         } else {
             entry_lane_bytes.saturating_add(inline_lane_bytes)
         };
-        let base_size = old_size.saturating_add(retained_frame_bytes);
+        // The allocator starts from the mainline 16-byte frame convention.
+        // Once physical homes are known, a linkage-first frame with no
+        // addressable local region owns only the caller linkage words and its
+        // saved GPRs, rounded to a doubleword. Retained optimizer lanes are
+        // added independently below.
+        let compact_saved_size = compact_linkage_first_saved_frame_size(physical_saved.len());
+        let physical_base_size =
+            if self.frame_slots.is_empty() && self.callee_saved_conversion_bytes == 0 {
+                compact_saved_size
+            } else {
+                old_size
+            };
+        let base_size = physical_base_size.saturating_add(retained_frame_bytes);
         let conversion_size = if self.callee_saved_conversion_bytes == 0 {
-            old_size
+            physical_base_size
         } else {
             let conversion_end = old_size
                 .saturating_add(self.callee_saved_conversion_bytes)
@@ -1151,6 +1174,28 @@ fn relayout_frame_slot_displacements(
     }
 }
 
+fn has_address_materialization_relocation(
+    relocations: &[mwcc_machine_code::Relocation],
+    instruction_index: usize,
+) -> bool {
+    relocations.iter().any(|relocation| {
+        relocation.instruction_index == instruction_index
+            && matches!(
+                relocation.kind,
+                mwcc_machine_code::RelocationKind::Addr16Hi
+                    | mwcc_machine_code::RelocationKind::Addr16Ha
+                    | mwcc_machine_code::RelocationKind::Addr16Lo
+            )
+    })
+}
+
+fn compact_linkage_first_saved_frame_size(saved_registers: usize) -> i16 {
+    i16::try_from(8 + saved_registers * 4)
+        .unwrap_or(i16::MAX)
+        .saturating_add(7)
+        & !7
+}
+
 /// Remap instruction-index relocations after `[0..=end]` rotates left once.
 fn remap_prefix_rotate_left(
     relocations: &mut [mwcc_machine_code::Relocation],
@@ -1169,6 +1214,39 @@ fn remap_prefix_rotate_left(
 mod tests {
     use super::*;
     use mwcc_machine_code::{Relocation, RelocationKind, RelocationTarget};
+
+    #[test]
+    fn compact_linkage_first_frame_uses_doubleword_alignment() {
+        assert_eq!(compact_linkage_first_saved_frame_size(3), 24);
+        assert_eq!(compact_linkage_first_saved_frame_size(4), 24);
+        assert_eq!(compact_linkage_first_saved_frame_size(5), 32);
+    }
+
+    #[test]
+    fn address_relocations_identify_source_local_cursor_materialization() {
+        let relocations = [
+            Relocation {
+                instruction_index: 3,
+                kind: RelocationKind::Addr16Ha,
+                target: RelocationTarget::External("_rom_copy_info".into()),
+            },
+            Relocation {
+                instruction_index: 4,
+                kind: RelocationKind::Addr16Lo,
+                target: RelocationTarget::External("_rom_copy_info".into()),
+            },
+            Relocation {
+                instruction_index: 9,
+                kind: RelocationKind::Rel24,
+                target: RelocationTarget::External("memcpy".into()),
+            },
+        ];
+
+        assert!(has_address_materialization_relocation(&relocations, 3));
+        assert!(has_address_materialization_relocation(&relocations, 4));
+        assert!(!has_address_materialization_relocation(&relocations, 9));
+        assert!(!has_address_materialization_relocation(&relocations, 10));
+    }
 
     #[test]
     fn prefix_rotation_keeps_relocations_on_their_instructions() {
