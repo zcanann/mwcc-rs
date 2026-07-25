@@ -181,6 +181,15 @@ impl Generator {
                 {
                     return Ok(());
                 }
+                if self.try_emit_negated_leaf_call_add(
+                    *operator,
+                    left,
+                    right,
+                    destination,
+                    double,
+                )? {
+                    return Ok(());
+                }
                 // A commutative float op (`+`/`*`) with a NEGATE operand diverges: `-a + b` keeps the
                 // fneg but swaps the fadds operand order (mwcc puts the fneg result FIRST), and
                 // `-(a*b) + c` contracts to a single `fnmsubs` we emit un-fused (fmuls; fneg; fadds).
@@ -641,7 +650,7 @@ impl Generator {
         unreachable!("caller checked one side is a float load")
     }
 
-    fn is_float_call_value(&self, expression: &Expression) -> bool {
+    pub(crate) fn is_float_call_value(&self, expression: &Expression) -> bool {
         match expression {
             Expression::Call { name, .. } => matches!(
                 self.call_return_types.get(name),
@@ -654,7 +663,7 @@ impl Generator {
         }
     }
 
-    fn float_location_survives_call(&self, expression: &Expression) -> bool {
+    pub(crate) fn float_location_survives_call(&self, expression: &Expression) -> bool {
         self.registers_used_by(expression)
             .into_iter()
             .all(|register| !matches!(register, 0 | 3..=12))
