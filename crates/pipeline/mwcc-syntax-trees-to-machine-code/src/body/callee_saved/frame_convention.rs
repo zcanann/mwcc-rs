@@ -301,6 +301,14 @@ impl Generator {
                     if s == b && physical_saved.contains(a))
             })
             .count();
+        let guarded_before_first_call = self.output.instructions[..first_call]
+            .iter()
+            .any(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::Branch { .. } | Instruction::BranchConditionalForward { .. }
+                )
+            });
         let preserve_logical_size = self.legacy_callee_saved_frame_layout
             == LegacyCalleeSavedFrameLayout::PreserveLogicalSize;
         let reserve_forwarded_parameter_lane = self.legacy_callee_saved_frame_layout
@@ -495,7 +503,7 @@ impl Generator {
                                 && operand.register == source
                         })
                 });
-            if promoted_parameter_count >= 2
+            if (promoted_parameter_count >= 2 && !guarded_before_first_call)
                 || (self.legacy_inline_expansion_frame_bytes == 0
                     && source_redefined_by_materialization)
             {
