@@ -3,6 +3,113 @@
 use super::*;
 
 impl Generator {
+    /// Build 163 keeps a positive guarded return and its masked fallback as a
+    /// short-circuit diamond even when the value is an inlined initializer:
+    /// every failed condition enters the fallback, while the completed guard
+    /// copies the live source into the destination and jumps to the join.
+    pub(crate) fn try_emit_legacy_guarded_mask_fallback_select(
+        &mut self,
+        condition: &Expression,
+        when_true: &Expression,
+        when_false: &Expression,
+        destination: u8,
+        tail: bool,
+        origin: ConditionalOrigin,
+    ) -> Compilation<bool> {
+        if tail
+            || destination == GENERAL_SCRATCH
+            || origin != ConditionalOrigin::IfReturns
+        {
+            return Ok(false);
+        }
+        let Expression::Variable(true_name) = when_true else {
+            return Ok(false);
+        };
+        let Expression::Binary {
+            operator: BinaryOperator::BitOr,
+            left: masked,
+            right: high,
+        } = when_false
+        else {
+            return Ok(false);
+        };
+        let Expression::Binary {
+            operator: BinaryOperator::BitAnd,
+            left: masked_source,
+            right: mask,
+        } = masked.as_ref()
+        else {
+            return Ok(false);
+        };
+        if !matches!(masked_source.as_ref(), Expression::Variable(name) if name == true_name)
+            || constant_value(mask).is_none()
+            || constant_value(high).is_none()
+        {
+            return Ok(false);
+        }
+        let Some(true_register) = self.lookup_general(true_name) else {
+            return Ok(false);
+        };
+
+        fn collect<'a>(expression: &'a Expression, terms: &mut Vec<&'a Expression>) {
+            if let Expression::Binary {
+                operator: BinaryOperator::LogicalAnd,
+                left,
+                right,
+            } = expression
+            {
+                collect(left, terms);
+                collect(right, terms);
+            } else {
+                terms.push(expression);
+            }
+        }
+        let mut terms = Vec::new();
+        collect(condition, &mut terms);
+        if terms.len() < 2 {
+            return Ok(false);
+        }
+
+        let previous_cache = self.begin_condition_global_cache(condition);
+        let previous_float_cache = self.begin_condition_float_cache(condition);
+        let emitted = (|| {
+            self.preload_condition_global_cache(condition)?;
+            let mut fallback_branches = Vec::with_capacity(terms.len());
+            for term in terms {
+                let (options, condition_bit) = self.emit_condition_test(term)?;
+                fallback_branches.push(self.output.instructions.len());
+                self.output
+                    .instructions
+                    .push(Instruction::BranchConditionalForward {
+                        options,
+                        condition_bit,
+                        target: 0,
+                    });
+            }
+            self.output
+                .instructions
+                .push(Instruction::move_register(destination, true_register));
+            let join_branch = self.output.instructions.len();
+            self.output
+                .instructions
+                .push(Instruction::Branch { target: 0 });
+            let fallback = self.output.instructions.len();
+            for branch in fallback_branches {
+                self.patch_forward(branch, fallback);
+            }
+            self.evaluate_general(when_false, destination)?;
+            let join = self.output.instructions.len();
+            if let Instruction::Branch { target } = &mut self.output.instructions[join_branch] {
+                *target = join;
+            }
+            Ok(())
+        })();
+        self.restore_condition_global_cache(previous_cache);
+        self.restore_condition_float_cache(previous_float_cache);
+        emitted?;
+        Ok(true)
+    }
+
     /// Build 163 materializes a simple ternary into the ABI result register
     /// when a surrounding call has forced the operands into callee-saved
     /// registers.  The leaf implementation below can instead use an operand

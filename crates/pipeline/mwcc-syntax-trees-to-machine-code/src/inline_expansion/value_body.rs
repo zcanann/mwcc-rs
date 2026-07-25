@@ -366,10 +366,65 @@ fn sequence(expressions: Vec<Expression>) -> Expression {
 /// they are a direct expression body. More involved selection summaries remain
 /// limited to definitions the frontend identified as explicitly/skipped inline.
 pub(super) fn summarize_automatic(function: &Function) -> Option<ValueInlineBody> {
-    if !function.locals.is_empty() || !function.statements.is_empty() {
+    if !function.locals.is_empty() {
+        return None;
+    }
+    if let Some(expression) = summarize_guarded_early_return(function) {
+        return Some(ValueInlineBody {
+            source: function.clone(),
+            expression,
+        });
+    }
+    if !function.statements.is_empty() {
         return None;
     }
     summarize(function)
+}
+
+/// Summarize a same-TU scalar helper whose only control flow is a chain of
+/// positive guards ending in an early value return:
+///
+/// `if (a) if (b) return x; return y;` becomes `a && b ? x : y`.
+///
+/// This retains short-circuit order and gives the ordinary automatic inliner a
+/// semantic value body without teaching it arbitrary statement splicing.
+fn summarize_guarded_early_return(function: &Function) -> Option<Expression> {
+    if !function.guards.is_empty()
+        || function.asm_body.is_some()
+        || function.return_type == Type::Void
+    {
+        return None;
+    }
+    let fallback = function.return_expression.clone()?;
+    let mut statements = function.statements.as_slice();
+    let mut conditions = Vec::new();
+    let early = loop {
+        match statements {
+            [Statement::If {
+                condition,
+                then_body,
+                else_body,
+            }] if else_body.is_empty() => {
+                conditions.push(condition.clone());
+                statements = then_body;
+            }
+            [Statement::Return(Some(value))] => break value.clone(),
+            _ => return None,
+        }
+    };
+    let condition = conditions
+        .into_iter()
+        .reduce(|left, right| Expression::Binary {
+            operator: BinaryOperator::LogicalAnd,
+            left: Box::new(left),
+            right: Box::new(right),
+        })?;
+    Some(Expression::Conditional {
+        condition: Box::new(condition),
+        when_true: Box::new(early),
+        when_false: Box::new(fallback),
+        origin: ConditionalOrigin::IfReturns,
+    })
 }
 
 /// Ordinary one-use void wrappers are also automatic-inline candidates when
@@ -582,5 +637,42 @@ mod tests {
             operator: BinaryOperator::NotEqual,
             ..
         })));
+    }
+
+    #[test]
+    fn summarizes_a_nested_guarded_early_return_for_automatic_inlining() {
+        let mut function = empty_function("translate", Type::UnsignedInt);
+        function.parameters.push(Parameter {
+            parameter_type: Type::UnsignedInt,
+            name: "address".into(),
+        });
+        function.statements = vec![Statement::If {
+            condition: Expression::Variable("in_range".into()),
+            then_body: vec![Statement::If {
+                condition: Expression::Variable("enabled".into()),
+                then_body: vec![Statement::Return(Some(Expression::Variable(
+                    "address".into(),
+                )))],
+                else_body: Vec::new(),
+            }],
+            else_body: Vec::new(),
+        }];
+        function.return_expression = Some(Expression::IntegerLiteral(0));
+
+        let summary = summarize_automatic(&function).expect("guarded value summary");
+        assert!(matches!(
+            summary.expression,
+            Expression::Conditional {
+                condition,
+                when_true,
+                when_false,
+                ..
+            } if matches!(condition.as_ref(), Expression::Binary {
+                operator: BinaryOperator::LogicalAnd,
+                ..
+            })
+                && matches!(when_true.as_ref(), Expression::Variable(name) if name == "address")
+                && matches!(when_false.as_ref(), Expression::IntegerLiteral(0))
+        ));
     }
 }

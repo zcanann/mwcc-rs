@@ -83,6 +83,38 @@ impl Generator {
         if as_dereference(left).is_some() || as_dereference(right).is_some() {
             return self.place_dereference_operands(operator, left, right);
         }
+        // A file-scope array is an address-valued operand, not a scalar global
+        // load. Keep the sibling leaf live while materializing the array address
+        // into r0 (`lis temp; addi r0,temp,lo; add d,r0,index`).
+        let left_array = leaf_name(left)
+            .and_then(|name| self.global_array_address_extent(name));
+        let right_array = leaf_name(right)
+            .and_then(|name| self.global_array_address_extent(name));
+        match (left_array, right_array) {
+            (Some(total_size), None) if !is_complex(right) => {
+                let sibling = self.wide_leaf_register(right)?;
+                let restore = self.reserved.insert(sibling);
+                let placed =
+                    self.emit_global_array_decay(leaf_name(left).unwrap(), total_size, GENERAL_SCRATCH);
+                if restore {
+                    self.reserved.remove(&sibling);
+                }
+                placed?;
+                return Operands::ordered(GENERAL_SCRATCH, sibling);
+            }
+            (None, Some(total_size)) if !is_complex(left) => {
+                let sibling = self.wide_leaf_register(left)?;
+                let restore = self.reserved.insert(sibling);
+                let placed =
+                    self.emit_global_array_decay(leaf_name(right).unwrap(), total_size, GENERAL_SCRATCH);
+                if restore {
+                    self.reserved.remove(&sibling);
+                }
+                placed?;
+                return Operands::ordered(sibling, GENERAL_SCRATCH);
+            }
+            _ => {}
+        }
         // A global operand also loads into a register (from the small-data area).
         if self.is_global(left) || self.is_global(right) {
             return self.place_global_operands(operator, left, right);

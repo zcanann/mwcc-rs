@@ -75,6 +75,19 @@ impl Generator {
             return Ok(Some(destination));
         }
         if let Expression::Variable(name) = operand {
+            // An array variable is an address value even when it reaches the
+            // generic binary operand placer (`array + index`). Unsized extern
+            // arrays carry the conservative address-only extent sentinel, so
+            // this path must precede scalar-global loads as well.
+            if let Some(total_size) = self.global_array_address_extent(name) {
+                let target = if prefer_destination {
+                    destination
+                } else {
+                    GENERAL_SCRATCH
+                };
+                self.emit_global_array_decay(name, total_size, target)?;
+                return Ok(Some(target));
+            }
             // A scalar whose address is taken has no register home. Reload it
             // into the consumer's preferred working register using the slot's
             // source type (which may be narrower than its allocation lane).

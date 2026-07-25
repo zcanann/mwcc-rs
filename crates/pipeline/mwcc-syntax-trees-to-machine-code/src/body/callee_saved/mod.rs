@@ -87,6 +87,8 @@ mod structured_guard_cache_schedule;
 mod structured_guarded_ucode_schedule;
 mod structured_home_layout;
 mod structured_if_else;
+mod structured_initializer_live_in;
+mod structured_initializer_live_in_schedule;
 mod structured_inline_residue;
 mod structured_inline_assertion;
 mod structured_locals;

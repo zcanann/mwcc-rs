@@ -155,6 +155,16 @@ impl Generator {
         )? {
             return Ok(());
         }
+        if self.try_emit_legacy_guarded_mask_fallback_select(
+            condition,
+            when_true,
+            when_false,
+            destination,
+            tail,
+            origin,
+        )? {
+            return Ok(());
+        }
         if self.try_emit_legacy_computed_select(
             condition,
             when_true,

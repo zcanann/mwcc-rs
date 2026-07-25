@@ -433,6 +433,15 @@ impl Generator {
         let (eager_saved_locals, deferred_saved_locals): (Vec<_>, Vec<_>) = saved_locals
             .into_iter()
             .partition(|local| local.initializer.is_some());
+        let saved_parameter_names = saved_parameters
+            .iter()
+            .map(|parameter| parameter.name.as_str())
+            .collect();
+        let initializer_live_in = self.plan_initializer_live_in(
+            function,
+            &eager_saved_locals,
+            &saved_parameter_names,
+        );
         let Some(deferred_home_plan) = plan_deferred_saved_homes(function, &deferred_saved_locals)
         else {
             decline!("deferred saved-home planning rejected the body");
@@ -1290,6 +1299,9 @@ impl Generator {
             }
         }
 
+        if let Some(plan) = initializer_live_in {
+            self.emit_initializer_live_in(plan);
+        }
         let mut home_index = 0;
         let mut deferred_round_up_base = None;
         let mut dense_eager_consumed_statements = 0usize;
@@ -1825,6 +1837,7 @@ impl Generator {
         self.schedule_saved_return_epilogue();
         self.schedule_saved_receiver_entry_epilogue();
         self.schedule_legacy_inline_expansion_residue();
+        self.schedule_structured_initializer_live_in();
         if rounded_pointer_dense_layout {
             self.schedule_power_pc_7400_rounded_pointer_entry();
         }
