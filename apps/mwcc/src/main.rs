@@ -1443,6 +1443,15 @@ fn compile(
         {
             continue;
         }
+        if behavior.whole_file_optimization
+            && global_initializers::unreferenced_section_registration(
+                global,
+                &unit.globals,
+                &machine_functions,
+            )
+        {
+            continue;
+        }
         // C++ gives a non-static const definition external linkage only when
         // explicitly requested (including an out-of-class static-data-member
         // definition). Legacy MWCC stores those externally visible objects in

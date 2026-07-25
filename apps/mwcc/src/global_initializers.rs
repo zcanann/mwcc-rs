@@ -5,7 +5,7 @@
 //! lower. Keeping those checks separate makes new initializer families
 //! measurable without adding more policy to the driver loop.
 
-use mwcc_machine_code::MachineFunction;
+use mwcc_machine_code::{MachineFunction, RelocationTarget};
 use mwcc_syntax_trees::{GlobalDeclaration, PointerElement, Type};
 use std::collections::HashSet;
 
@@ -65,6 +65,51 @@ pub(crate) fn owned_string_table(
         && elements
             .iter()
             .all(|element| matches!(element, PointerElement::Str(_) | PointerElement::Null))
+}
+
+/// Whole-file IPA removes an internal, read-only section registration when
+/// nothing in the unit names the registration object. The section attribute
+/// itself is not a liveness root in the 4.x optimizer: measured `.dtors$10`
+/// probes retain the word without `-ipa file` and remove it with that flag.
+///
+/// Keep the classification semantic and conservative. A reference from code,
+/// another data initializer, or `force_active` preserves the object.
+pub(crate) fn unreferenced_section_registration(
+    global: &GlobalDeclaration,
+    globals: &[GlobalDeclaration],
+    functions: &[MachineFunction],
+) -> bool {
+    if !global.is_static
+        || !global.is_const
+        || global.force_active
+        || global.section.is_none()
+        || !matches!(
+            global.address_initializer.as_deref(),
+            Some([PointerElement::Symbol(_)])
+        )
+    {
+        return false;
+    }
+    let referenced_by_code = functions.iter().any(|function| {
+        function.symbol_order.iter().any(|name| name == &global.name)
+            || function.relocations.iter().any(|relocation| {
+                matches!(
+                    &relocation.target,
+                    RelocationTarget::External(name)
+                        | RelocationTarget::ExternalWithAddend(name, _)
+                        if name == &global.name
+                )
+            })
+    });
+    let referenced_by_data = globals
+        .iter()
+        .filter(|candidate| candidate.name != global.name)
+        .filter_map(|candidate| candidate.address_initializer.as_deref())
+        .flatten()
+        .any(|element| {
+            matches!(element, PointerElement::Symbol(name) if name == &global.name)
+        });
+    !referenced_by_code && !referenced_by_data
 }
 
 #[cfg(test)]
@@ -144,5 +189,34 @@ mod tests {
         global.is_const = true;
 
         assert!(owned_string_table(&global, &elements));
+    }
+
+    #[test]
+    fn classifies_only_unreferenced_internal_section_registrations() {
+        let mut registration =
+            private_table(vec![PointerElement::Symbol("destroy".into())]);
+        registration.is_const = true;
+        registration.array_length = None;
+        registration.section = Some(".dtors$10".into());
+        assert!(unreferenced_section_registration(
+            &registration,
+            std::slice::from_ref(&registration),
+            &[],
+        ));
+
+        let mut referenced = MachineFunction::new("caller");
+        referenced.symbol_order.push(registration.name.clone());
+        assert!(!unreferenced_section_registration(
+            &registration,
+            std::slice::from_ref(&registration),
+            &[referenced],
+        ));
+
+        registration.force_active = true;
+        assert!(!unreferenced_section_registration(
+            &registration,
+            std::slice::from_ref(&registration),
+            &[],
+        ));
     }
 }
