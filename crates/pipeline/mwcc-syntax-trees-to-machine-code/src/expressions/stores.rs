@@ -1118,18 +1118,6 @@ impl Generator {
                 return Ok(true);
             }
         }
-        let Expression::Variable(source_name) = value else {
-            return Ok(false);
-        };
-        let Some(source) = self.frame_slots.get(source_name).copied() else {
-            return Ok(false);
-        };
-        let Type::Struct {
-            size: source_size, ..
-        } = source.value_type
-        else {
-            return Ok(false);
-        };
         let (target_offset, target_size) = match target {
             Expression::Variable(target_name) => {
                 let Some(slot) = self.frame_slots.get(target_name).copied() else {
@@ -1165,6 +1153,33 @@ impl Generator {
             }
             _ => return Ok(false),
         };
+        let (source_register, source_offset, source_size, source_is_frame) = match value {
+            Expression::Variable(source_name) => {
+                let Some(source) = self.frame_slots.get(source_name).copied() else {
+                    return Ok(false);
+                };
+                let Type::Struct { size, .. } = source.value_type else {
+                    return Ok(false);
+                };
+                (1, source.offset, size, true)
+            }
+            Expression::Dereference { pointer } => {
+                let Expression::Variable(source_name) = pointer.as_ref() else {
+                    return Ok(false);
+                };
+                let Some(location) = self.locations.get(source_name) else {
+                    return Ok(false);
+                };
+                let Some(size) = location.stride else {
+                    return Ok(false);
+                };
+                if location.class != ValueClass::General {
+                    return Ok(false);
+                }
+                (location.register, 0i16, size, false)
+            }
+            _ => return Ok(false),
+        };
         if source_size != target_size || source_size == 0 || source_size % 4 != 0 {
             return Err(Diagnostic::error(
                 "a frame aggregate copy requires equal, word-sized objects (roadmap)",
@@ -1172,11 +1187,14 @@ impl Generator {
         }
         let bytes = i16::try_from(source_size)
             .map_err(|_| Diagnostic::error("frame aggregate copy is too large"))?;
-        let source_end = source
-            .offset
-            .checked_add(bytes)
-            .ok_or_else(|| Diagnostic::error("frame aggregate source is out of range"))?;
-        let backwards = target_offset > source.offset && target_offset < source_end;
+        let backwards = if source_is_frame {
+            let source_end = source_offset
+                .checked_add(bytes)
+                .ok_or_else(|| Diagnostic::error("frame aggregate source is out of range"))?;
+            target_offset > source_offset && target_offset < source_end
+        } else {
+            false
+        };
         let words = source_size / 4;
         let indices: Box<dyn Iterator<Item = u32>> = if backwards {
             Box::new((0..words).rev())
@@ -1186,7 +1204,7 @@ impl Generator {
         for word in indices {
             let displacement = i16::try_from(word * 4)
                 .map_err(|_| Diagnostic::error("frame aggregate word offset is out of range"))?;
-            let source_offset = source.offset.checked_add(displacement).ok_or_else(|| {
+            let source_word_offset = source_offset.checked_add(displacement).ok_or_else(|| {
                 Diagnostic::error("frame aggregate source word is out of range")
             })?;
             let destination_offset = target_offset.checked_add(displacement).ok_or_else(|| {
@@ -1194,8 +1212,8 @@ impl Generator {
             })?;
             self.output.instructions.push(Instruction::LoadWord {
                 d: GENERAL_SCRATCH,
-                a: 1,
-                offset: source_offset,
+                a: source_register,
+                offset: source_word_offset,
             });
             self.output.instructions.push(Instruction::StoreWord {
                 s: GENERAL_SCRATCH,
