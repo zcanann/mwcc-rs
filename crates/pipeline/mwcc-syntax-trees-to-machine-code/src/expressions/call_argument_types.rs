@@ -69,6 +69,25 @@ pub(super) fn classify_call_argument(
     }
 }
 
+/// Map an ABI argument index back to the source prototype.
+///
+/// Aggregate-returning calls prepend a hidden result address which is absent
+/// from the source parameter list. Keeping the shift here prevents each call
+/// schedule from independently (and inconsistently) classifying the receiver
+/// or first explicit argument against the wrong prototype slot.
+pub(super) fn source_parameter_type(
+    parameter_types: Option<&[Type]>,
+    returns_aggregate: bool,
+    abi_argument_count: usize,
+    abi_index: usize,
+) -> Option<Type> {
+    let parameter_types = parameter_types?;
+    let hidden_result =
+        returns_aggregate && abi_argument_count == parameter_types.len().checked_add(1)?;
+    let source_index = abi_index.checked_sub(usize::from(hidden_result))?;
+    parameter_types.get(source_index).copied()
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum AggregateReferenceSource<'a> {
     /// `*p` passed by reference: the address expression is already `p`.
@@ -143,6 +162,21 @@ mod tests {
         assert_eq!(
             outgoing_general_stack_offset(Eabi::LAST_GENERAL_ARGUMENT + 2),
             Some(12)
+        );
+    }
+
+    #[test]
+    fn shifts_source_types_past_an_aggregate_hidden_result() {
+        let types = [Type::StructPointer { element_size: 12 }, Type::Float];
+
+        assert_eq!(source_parameter_type(Some(&types), true, 3, 0), None);
+        assert_eq!(
+            source_parameter_type(Some(&types), true, 3, 1),
+            Some(types[0])
+        );
+        assert_eq!(
+            source_parameter_type(Some(&types), true, 3, 2),
+            Some(Type::Float)
         );
     }
 

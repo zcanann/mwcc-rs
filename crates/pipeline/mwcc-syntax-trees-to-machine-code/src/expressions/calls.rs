@@ -955,9 +955,17 @@ impl Generator {
                     .all(|(index, argument)| {
                         !self.is_float_value(argument)
                             && !matches!(
-                                self.call_parameter_types
-                                    .get(name)
-                                    .and_then(|types| types.get(index)),
+                                super::call_argument_types::source_parameter_type(
+                                    self.call_parameter_types
+                                        .get(name)
+                                        .map(Vec::as_slice),
+                                    matches!(
+                                        self.call_return_types.get(name),
+                                        Some(Type::Struct { .. })
+                                    ),
+                                    arguments.len(),
+                                    index,
+                                ),
                                 Some(
                                     Type::Float
                                         | Type::Double
@@ -975,11 +983,15 @@ impl Generator {
             self.emit_integer_materialization_copy(target, source);
         }
         for (index, argument) in arguments.iter().enumerate() {
-            let parameter_type = self
-                .call_parameter_types
-                .get(name)
-                .and_then(|types| types.get(index))
-                .copied();
+            let parameter_type = super::call_argument_types::source_parameter_type(
+                self.call_parameter_types.get(name).map(Vec::as_slice),
+                matches!(
+                    self.call_return_types.get(name),
+                    Some(Type::Struct { .. })
+                ),
+                arguments.len(),
+                index,
+            );
             let placement = classify_call_argument(
                 parameter_type,
                 self.is_float_value(argument),
@@ -1000,7 +1012,7 @@ impl Generator {
                 if convert_integer {
                     let source = self.general_register_of_leaf(argument).map_err(|_| {
                         Diagnostic::error(format!(
-                            "integer argument {index} to '{name}' needs a register before float conversion"
+                            "integer argument {index} to '{name}' needs a register before float conversion: {argument:?}"
                         ))
                     })?;
                     let signed = self.signedness_of(argument)?;
@@ -1087,11 +1099,7 @@ impl Generator {
                 // `extsb` (only a wider parameter, e.g. `void g(int)`, widens the argument).
                 // Handled for the in-place case (the value already sits in the argument
                 // register); a move or a non-leaf falls through to the widening eval.
-                if let Some(parameter_type) = self
-                    .call_parameter_types
-                    .get(name)
-                    .and_then(|types| types.get(index))
-                {
+                if let Some(parameter_type) = parameter_type {
                     if let Ok((register, width, _)) = self.leaf_info(general_argument) {
                         if width < 32
                             && (parameter_type.width() as u32) <= width as u32
@@ -1109,11 +1117,7 @@ impl Generator {
                 // the wide value un-narrowed: `g(256)` to a `char` parameter must pass 0, not
                 // 256 (a miscompile). A constant is materialized in range; a narrow leaf /
                 // load / global already fits and is handled by the passthrough above.
-                if let Some(parameter_type) = self
-                    .call_parameter_types
-                    .get(name)
-                    .and_then(|types| types.get(index))
-                {
+                if let Some(parameter_type) = parameter_type {
                     if (parameter_type.width() as u32) < 32
                         && constant_value(general_argument).is_none()
                     {
