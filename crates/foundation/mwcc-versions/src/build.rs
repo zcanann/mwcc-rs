@@ -5,8 +5,8 @@
 
 use crate::profile::{
     CodegenProfile, Gc132Build81, Gc13Build53, Gc20Patch1, Gc41Build51213, Mainline,
-    MainlineEarlyAggregateLoads,
-    Wii43Build145, GC233_BUILD159_PATCH1, GC233_BUILD163,
+    MainlineEarlyAggregateLoads, Wii43Build145, GC233_BUILD159_PATCH1, GC233_BUILD163,
+    GC233_BUILD163_NINTENDO,
 };
 
 /// A specific mwcceppc build we aim to reproduce byte-for-byte.
@@ -97,7 +97,7 @@ pub const GC_1_2_5N: CompilerBuild = CompilerBuild {
     initial_anonymous_counter: 2,
     post_leaf_function_anonymous_bump: 1,
     post_framed_function_anonymous_bump: 1,
-    profile: &GC233_BUILD163,
+    profile: &GC233_BUILD163_NINTENDO,
 };
 
 /// GC/1.3 — mwcceppc 2.4.2 build 53. The earliest preserved 2.4.2 build; the

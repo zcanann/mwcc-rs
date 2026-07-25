@@ -27,6 +27,15 @@ pub enum PlainLinkageEpilogueStyle {
     StackRestoreBeforeReload,
 }
 
+/// Restore order for linkage-first frames with saved general-purpose registers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SavedGprEpilogueStyle {
+    /// Reload LR before restoring the final saved GPR, then restore the stack.
+    LinkRegisterBeforeFinalSaved,
+    /// Restore every saved GPR and the stack before moving the saved LR to LR.
+    LinkRegisterAfterStackRestore,
+}
+
 /// Restore order after a call result is stored through a saved pointer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointerCallStoreEpilogueStyle {
@@ -970,6 +979,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         PlainLinkageEpilogueStyle::ReloadBeforeStackRestore
     }
 
+    fn saved_gpr_epilogue_style(&self) -> SavedGprEpilogueStyle {
+        SavedGprEpilogueStyle::LinkRegisterAfterStackRestore
+    }
+
     /// Restore order for a call-result store through a saved pointer when the
     /// O4 latency scheduler is active.
     fn pointer_call_store_epilogue_style(&self) -> PointerCallStoreEpilogueStyle {
@@ -1834,14 +1847,22 @@ impl CodegenProfile for Gc132Build81 {
 #[derive(Debug)]
 pub struct Gc233Build163 {
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle,
+    saved_gpr_epilogue_style: SavedGprEpilogueStyle,
 }
 
 pub const GC233_BUILD163: Gc233Build163 = Gc233Build163 {
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::ReloadBeforeStackRestore,
+    saved_gpr_epilogue_style: SavedGprEpilogueStyle::LinkRegisterBeforeFinalSaved,
+};
+
+pub const GC233_BUILD163_NINTENDO: Gc233Build163 = Gc233Build163 {
+    plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::ReloadBeforeStackRestore,
+    saved_gpr_epilogue_style: SavedGprEpilogueStyle::LinkRegisterAfterStackRestore,
 };
 
 pub const GC233_BUILD159_PATCH1: Gc233Build163 = Gc233Build163 {
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::StackRestoreBeforeReload,
+    saved_gpr_epilogue_style: SavedGprEpilogueStyle::LinkRegisterBeforeFinalSaved,
 };
 
 impl CodegenProfile for Gc233Build163 {
@@ -1887,6 +1908,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn plain_linkage_epilogue_style(&self) -> PlainLinkageEpilogueStyle {
         self.plain_linkage_epilogue_style
+    }
+
+    fn saved_gpr_epilogue_style(&self) -> SavedGprEpilogueStyle {
+        self.saved_gpr_epilogue_style
     }
 
     fn data_section_relocation_style(&self) -> DataSectionRelocationStyle {

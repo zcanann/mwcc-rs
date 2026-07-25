@@ -33,9 +33,9 @@ use crate::profile::{
     NarrowStoreConversionStyle, NegativePowerOfTwoMultiplyStyle, NestedGlobalDispatchSchedule,
     PlainLinkageEpilogueStyle, PointerCallStoreEpilogueStyle, PunnedConditionalWritebackStyle,
     PunnedFloatFrameConvention, PunnedShiftWritebackStyle, QueueServiceInliningStyle,
-    RaiseFamilyStyle, ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle, SharedFloatDagStyle,
-    SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle, StoredGlobalReadStyle,
-    SymbolTraversalStyle, TrigDispatcherStyle, TrigQuadrantDispatchStyle,
+    RaiseFamilyStyle, ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle, SavedGprEpilogueStyle,
+    SharedFloatDagStyle, SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle,
+    StoredGlobalReadStyle, SymbolTraversalStyle, TrigDispatcherStyle, TrigQuadrantDispatchStyle,
     TrigZeroConstantPlacement, VaArgScheduleStyle, ValueTrackedMutationStyle,
     WideConstantAddSchedule,
 };
@@ -640,6 +640,8 @@ pub struct Behavior {
     pub frame_convention: FrameConvention,
     /// Saved-LR reload order for a linkage-first frame with no saved GPRs.
     pub plain_linkage_epilogue_style: PlainLinkageEpilogueStyle,
+    /// LR restore order for a linkage-first frame with saved GPRs.
+    pub saved_gpr_epilogue_style: SavedGprEpilogueStyle,
     /// Restore order after storing a call result through a saved pointer.
     pub pointer_call_store_epilogue_style: PointerCallStoreEpilogueStyle,
     /// Whether stack-using leaf functions carry unwind-table entries.
@@ -1011,6 +1013,7 @@ impl Behavior {
             frexp_scale_before_eptr_store: config.build.profile.frexp_scale_before_eptr_store(),
             frame_convention: config.build.profile.frame_convention(),
             plain_linkage_epilogue_style: config.build.profile.plain_linkage_epilogue_style(),
+            saved_gpr_epilogue_style: config.build.profile.saved_gpr_epilogue_style(),
             pointer_call_store_epilogue_style: config
                 .build
                 .profile
@@ -1933,6 +1936,7 @@ mod tests {
         let original = Behavior::resolve(&CompilerConfig::new(build::GC_1_1));
         let patched = Behavior::resolve(&CompilerConfig::new(build::GC_1_1P1));
         let build_163 = Behavior::resolve(&CompilerConfig::new(build::GC_1_2_5));
+        let build_163_nintendo = Behavior::resolve(&CompilerConfig::new(build::GC_1_2_5N));
 
         assert_eq!(
             original.plain_linkage_epilogue_style,
@@ -1949,6 +1953,14 @@ mod tests {
         assert_eq!(
             build_163.plain_linkage_epilogue_style,
             PlainLinkageEpilogueStyle::ReloadBeforeStackRestore
+        );
+        assert_eq!(
+            build_163.saved_gpr_epilogue_style,
+            SavedGprEpilogueStyle::LinkRegisterBeforeFinalSaved
+        );
+        assert_eq!(
+            build_163_nintendo.saved_gpr_epilogue_style,
+            SavedGprEpilogueStyle::LinkRegisterAfterStackRestore
         );
     }
 

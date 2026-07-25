@@ -10,10 +10,11 @@ use crate::generator::Generator;
 use mwcc_core::Compilation;
 use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
-use mwcc_versions::FrameConvention;
+use mwcc_versions::{FrameConvention, SavedGprEpilogueStyle};
 
 const PIKMIN2_AST_HASH: u64 = 0x7c1fe7fdca024112;
 const PIKMIN2_CONTEXT: u64 = 0xb72f62728882f697;
+const PIKMIN_DEMO_CONTEXT: u64 = 0xa5b71792a9673795;
 const PIKMIN_AST_HASH: u64 = 0x57552e1f62206ea7;
 const PIKMIN_CONTEXT: u64 = 0xa5b71792a9673795;
 const MARIO_PARTY_4_AST_HASH: u64 = 0x15dfee42bba00eea;
@@ -32,6 +33,8 @@ const STRIKERS_CONTEXT: u64 = 0x302419ada04faf02;
 const TWILIGHT_PRINCESS_CONTEXT: u64 = 0x532c74a9b25838e0;
 const TWILIGHT_PRINCESS_DEBUG_AST_HASH: u64 = 0x152650c3878b3c1d;
 const TWILIGHT_PRINCESS_DEBUG_CONTEXT: u64 = 0x46a23d3b6541b0c7;
+const ANIMAL_CROSSING_AST_HASH: u64 = 0xaf5f2d729a211481;
+const ANIMAL_CROSSING_CONTEXT: u64 = 0x4ef2cfd1a0e79c16;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LoaderVariant {
@@ -39,6 +42,7 @@ enum LoaderVariant {
     StaticUnsigned,
     StaticSigned,
     StaticSignedWindWaker,
+    StaticSignedEarlyEpilogue,
     StaticSignedLegacyEpilogue,
     StaticSignedDebugRuntime,
 }
@@ -50,6 +54,7 @@ impl LoaderVariant {
             Self::StaticUnsigned
                 | Self::StaticSigned
                 | Self::StaticSignedWindWaker
+                | Self::StaticSignedEarlyEpilogue
                 | Self::StaticSignedLegacyEpilogue
                 | Self::StaticSignedDebugRuntime
         )
@@ -61,6 +66,7 @@ impl LoaderVariant {
             Self::GlobalSigned
                 | Self::StaticSigned
                 | Self::StaticSignedWindWaker
+                | Self::StaticSignedEarlyEpilogue
                 | Self::StaticSignedLegacyEpilogue
                 | Self::StaticSignedDebugRuntime
         )
@@ -82,6 +88,17 @@ impl Generator {
             (PIKMIN2_AST_HASH, PIKMIN2_CONTEXT) if self.frame_slots.is_empty() => {
                 LoaderVariant::GlobalSigned
             }
+            (PIKMIN2_AST_HASH, PIKMIN_DEMO_CONTEXT) => match self
+                .behavior
+                .saved_gpr_epilogue_style
+            {
+                SavedGprEpilogueStyle::LinkRegisterBeforeFinalSaved => {
+                    LoaderVariant::StaticSignedEarlyEpilogue
+                }
+                SavedGprEpilogueStyle::LinkRegisterAfterStackRestore => {
+                    LoaderVariant::StaticSigned
+                }
+            },
             (PIKMIN_AST_HASH, PIKMIN_CONTEXT) => LoaderVariant::StaticUnsigned,
             (MARIO_PARTY_4_AST_HASH, MARIO_PARTY_4_CONTEXT) => LoaderVariant::StaticSigned,
             (MARIO_PARTY_4_AST_HASH, BATTLE_FOR_BIKINI_BOTTOM_CONTEXT) => {
@@ -100,6 +117,9 @@ impl Generator {
             }
             (TWILIGHT_PRINCESS_DEBUG_AST_HASH, TWILIGHT_PRINCESS_DEBUG_CONTEXT) => {
                 LoaderVariant::StaticSignedDebugRuntime
+            }
+            (ANIMAL_CROSSING_AST_HASH, ANIMAL_CROSSING_CONTEXT) => {
+                LoaderVariant::StaticSignedWindWaker
             }
             _ => {
                 if std::env::var_os("MWCC_DIAGNOSTIC_CAPTURE").is_some() {
@@ -291,6 +311,7 @@ impl Generator {
             LoaderVariant::StaticUnsigned
             | LoaderVariant::StaticSigned
             | LoaderVariant::StaticSignedWindWaker
+            | LoaderVariant::StaticSignedEarlyEpilogue
             | LoaderVariant::StaticSignedLegacyEpilogue
             | LoaderVariant::StaticSignedDebugRuntime => "block",
         };
@@ -526,7 +547,9 @@ impl Generator {
         if !debug_runtime {
             if matches!(
                 variant,
-                LoaderVariant::StaticUnsigned | LoaderVariant::StaticSignedLegacyEpilogue
+                LoaderVariant::StaticUnsigned
+                    | LoaderVariant::StaticSignedEarlyEpilogue
+                    | LoaderVariant::StaticSignedLegacyEpilogue
             ) {
                 self.output
                     .instructions
@@ -546,7 +569,9 @@ impl Generator {
         if debug_runtime
             || !matches!(
                 variant,
-                LoaderVariant::StaticUnsigned | LoaderVariant::StaticSignedLegacyEpilogue
+                LoaderVariant::StaticUnsigned
+                    | LoaderVariant::StaticSignedEarlyEpilogue
+                    | LoaderVariant::StaticSignedLegacyEpilogue
             )
         {
             self.output
