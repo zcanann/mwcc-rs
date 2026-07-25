@@ -193,6 +193,27 @@ pub fn lower_function(
                 )
             }
         });
+    if let Some(mut output) = cxx_abi::lower_link_node_constructor(
+        expanded_constructor
+            .as_ref()
+            .map(|expanded| &expanded.function)
+            .unwrap_or(function),
+        config.clone(),
+    ) {
+        output.anonymous_label_bump += constructor_inline_ordinal_residue;
+        return Ok(output);
+    }
+    if let Some(mut output) = cxx_abi::lower_partial_constructor_chain(
+        expanded_constructor
+            .as_ref()
+            .map(|expanded| &expanded.function)
+            .unwrap_or(function),
+        source_inline_string_symbols,
+        config.clone(),
+    ) {
+        output.anonymous_label_bump += constructor_inline_ordinal_residue;
+        return Ok(output);
+    }
     if let Some(mut output) = cxx_abi::lower_inlined_constructor_chain(
         expanded_constructor
             .as_ref()

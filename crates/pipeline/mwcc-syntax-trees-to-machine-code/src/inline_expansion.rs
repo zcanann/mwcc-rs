@@ -94,6 +94,15 @@ impl InlineBodySet {
     /// one-call definition remains emitted when it has external linkage, but
     /// its body is also available for call-site composition.
     pub fn analyze_with_definitions(definitions: &[Function], skipped: &[Function]) -> Self {
+        let retained_names: HashSet<&str> = skipped
+            .iter()
+            .map(|function| function.name.as_str())
+            .collect();
+        let callable_fallbacks: HashSet<&str> = definitions
+            .iter()
+            .map(|function| function.name.as_str())
+            .filter(|name| retained_names.contains(name))
+            .collect();
         let asm_fragments: HashMap<_, _> = skipped
             .iter()
             .filter_map(|function| {
@@ -114,6 +123,7 @@ impl InlineBodySet {
         let required: HashSet<String> = skipped
             .iter()
             .filter(|function| !asm_fragments.contains_key(&function.name))
+            .filter(|function| !callable_fallbacks.contains(function.name.as_str()))
             .map(|function| function.name.clone())
             .collect();
         let mut call_counts = HashMap::<String, usize>::new();
@@ -126,7 +136,9 @@ impl InlineBodySet {
         }
         let mut bodies = HashMap::new();
         for function in skipped {
-            if asm_fragments.contains_key(&function.name) {
+            if asm_fragments.contains_key(&function.name)
+                || callable_fallbacks.contains(function.name.as_str())
+            {
                 continue;
             }
             let materialized = materialize_embedded_asm_statements(function);
@@ -154,11 +166,15 @@ impl InlineBodySet {
         let mut values: HashMap<_, _> = skipped
             .iter()
             .filter(|function| !asm_fragments.contains_key(&function.name))
+            .filter(|function| !callable_fallbacks.contains(function.name.as_str()))
             .filter_map(|function| {
                 value_body::summarize(function).map(|body| (function.name.clone(), body))
             })
             .collect();
-        for function in definitions {
+        for function in definitions
+            .iter()
+            .filter(|function| !callable_fallbacks.contains(function.name.as_str()))
+        {
             if let Some(body) = value_body::summarize_automatic(function) {
                 values.entry(function.name.clone()).or_insert(body);
             } else if call_counts.get(&function.name).copied() == Some(1) {
@@ -207,6 +223,40 @@ impl InlineBodySet {
             asm_fragments,
             elide_overwritten_vptr_stores: false,
         }
+    }
+
+    /// Find retained-inline bodies reached beyond MWCC's nested automatic
+    /// inlining budget. Each returned name is grouped after the emitted
+    /// definition whose expansion first needs its weak callable fallback.
+    pub fn depth_limited_fallbacks(
+        definitions: &[Function],
+        skipped: &[Function],
+        maximum_depth: usize,
+    ) -> Vec<Vec<String>> {
+        let bodies: HashMap<&str, &Function> = skipped
+            .iter()
+            .map(|function| (function.name.as_str(), function))
+            .collect();
+        let mut emitted: HashSet<String> = definitions
+            .iter()
+            .map(|function| function.name.clone())
+            .collect();
+        definitions
+            .iter()
+            .map(|definition| {
+                let mut group = Vec::new();
+                collect_depth_limited_fallbacks(
+                    definition,
+                    0,
+                    maximum_depth,
+                    &bodies,
+                    &mut emitted,
+                    &mut HashSet::new(),
+                    &mut group,
+                );
+                group
+            })
+            .collect()
     }
 
     pub fn with_overwritten_vptr_elision(mut self, enabled: bool) -> Self {
@@ -438,7 +488,7 @@ impl InlineBodySet {
         } else {
             statements
         };
-        let calls_remain = self.calls_any(&expanded);
+        let calls_remain = self.calls_required(&expanded);
         if calls_remain
             && std::env::var_os("MWCC_CAPTURE_FUNCTION")
                 .is_some_and(|name| name == std::ffi::OsStr::new(&function.name))
@@ -483,6 +533,7 @@ impl InlineBodySet {
                 Statement::Expression(Expression::Call { name, arguments })
                     if self.bodies.contains_key(name)
                         && !active.contains(name)
+                        && active.len() < 2
                         && (stable_arguments(
                             &self.bodies[name],
                             arguments,
@@ -986,6 +1037,55 @@ fn remove_overwritten_vptr_stores(statements: Vec<Statement>) -> Vec<Statement> 
         output.push(statement);
     }
     output
+}
+
+fn collect_depth_limited_fallbacks(
+    function: &Function,
+    depth: usize,
+    maximum_depth: usize,
+    bodies: &HashMap<&str, &Function>,
+    emitted: &mut HashSet<String>,
+    active: &mut HashSet<String>,
+    output: &mut Vec<String>,
+) {
+    let mut calls = HashMap::new();
+    collect_function_calls(function, &mut calls);
+    let mut names = calls.into_keys().collect::<Vec<_>>();
+    names.sort();
+    for name in names {
+        let Some(body) = bodies.get(name.as_str()).copied() else {
+            continue;
+        };
+        if depth >= maximum_depth {
+            if emitted.insert(name.clone()) {
+                output.push(name.clone());
+                // A materialized fallback is a fresh compilation root. Its
+                // own automatic-inlining budget starts over.
+                collect_depth_limited_fallbacks(
+                    body,
+                    0,
+                    maximum_depth,
+                    bodies,
+                    emitted,
+                    &mut HashSet::new(),
+                    output,
+                );
+            }
+            continue;
+        }
+        if active.insert(name.clone()) {
+            collect_depth_limited_fallbacks(
+                body,
+                depth + 1,
+                maximum_depth,
+                bodies,
+                emitted,
+                active,
+                output,
+            );
+            active.remove(&name);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1613,6 +1713,54 @@ mod tests {
             Statement::Store {
                 value: Expression::Variable(name), ..
             } if name == "data"
+        ));
+    }
+
+    #[test]
+    fn materializes_and_calls_beyond_the_nested_inline_budget() {
+        fn caller(name: &str, callee: &str) -> Function {
+            function(
+                name,
+                Vec::new(),
+                vec![Statement::Expression(Expression::Call {
+                    name: callee.into(),
+                    arguments: Vec::new(),
+                })],
+            )
+        }
+
+        let root = caller("root", "first");
+        let first = caller("first", "second");
+        let second = caller("second", "third");
+        let third = function(
+            "third",
+            Vec::new(),
+            vec![Statement::Store {
+                target: Expression::Variable("sink".into()),
+                value: Expression::IntegerLiteral(1),
+            }],
+        );
+        let skipped = [first, second, third.clone()];
+
+        assert_eq!(
+            InlineBodySet::depth_limited_fallbacks(
+                std::slice::from_ref(&root),
+                &skipped,
+                2
+            ),
+            [vec!["third".to_string()]]
+        );
+
+        let expanded = InlineBodySet::analyze_with_definitions(
+            &[root.clone(), third],
+            &skipped,
+        )
+        .expand_calls(&root)
+        .expect("a callable depth-limited fallback may remain");
+        assert!(matches!(
+            expanded.statements.as_slice(),
+            [Statement::Expression(Expression::Call { name, arguments })]
+                if name == "third" && arguments.is_empty()
         ));
     }
 

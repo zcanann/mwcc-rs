@@ -10,6 +10,7 @@ mod cxx_inline_reference_temporaries;
 mod cxx_rtti_names;
 mod function_order;
 mod global_initializers;
+mod inline_fallbacks;
 mod inline_ordinal_positions;
 mod reference_analysis;
 
@@ -698,6 +699,9 @@ fn compile(
             behavior.materialize_inline_primary_base_vtables,
             behavior.cxx_rtti_owned_closure_schedule,
         );
+    }
+    if config.flags.inline_enabled {
+        inline_fallbacks::materialize_depth_limited(&mut unit);
     }
     let mut disabled_inline_materializations = std::collections::HashSet::new();
     if !config.flags.inline_enabled {
