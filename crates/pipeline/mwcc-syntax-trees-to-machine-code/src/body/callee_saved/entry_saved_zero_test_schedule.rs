@@ -39,6 +39,7 @@ fn find_entry_saved_zero_test(instructions: &[Instruction]) -> Option<(usize, us
             continue;
         }
 
+        let mut saw_float_work = false;
         for compare in copy + 1..instructions.len().saturating_sub(1) {
             if matches!(
                 instructions[compare],
@@ -46,12 +47,31 @@ fn find_entry_saved_zero_test(instructions: &[Instruction]) -> Option<(usize, us
             ) && matches!(
                 instructions[compare + 1],
                 Instruction::BranchConditionalForward { condition_bit: 2, .. }
-            ) {
+            ) && saw_float_work
+            {
                 return Some((copy, compare));
             }
             if !preserves_entry_zero_record(&instructions[compare], saved) {
                 break;
             }
+            saw_float_work |= matches!(
+                instructions[compare],
+                Instruction::LoadFloatSingle { .. }
+                    | Instruction::LoadFloatDouble { .. }
+                    | Instruction::StoreFloatSingle { .. }
+                    | Instruction::StoreFloatDouble { .. }
+                    | Instruction::FloatAddSingle { .. }
+                    | Instruction::FloatSubtractSingle { .. }
+                    | Instruction::FloatMultiplySingle { .. }
+                    | Instruction::FloatDivideSingle { .. }
+                    | Instruction::FloatMultiplyAddSingle { .. }
+                    | Instruction::FloatMultiplySubtractSingle { .. }
+                    | Instruction::FloatNegativeMultiplyAddSingle { .. }
+                    | Instruction::FloatNegativeMultiplySubtractSingle { .. }
+                    | Instruction::FloatMove { .. }
+                    | Instruction::FloatNegate { .. }
+                    | Instruction::FloatAbsolute { .. }
+            );
         }
     }
     None
@@ -133,6 +153,29 @@ mod tests {
             Instruction::move_register(31, 4),
             Instruction::OrRecord { a: 0, s: 3, b: 3 },
             Instruction::CompareLogicalWordImmediate { a: 31, immediate: 0 },
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 5,
+            },
+        ];
+
+        assert_eq!(find_entry_saved_zero_test(&instructions), None);
+    }
+
+    #[test]
+    fn keeps_an_explicit_zero_compare_without_float_initializer_work() {
+        let instructions = vec![
+            Instruction::move_register(31, 5),
+            Instruction::StoreWord {
+                s: 30,
+                a: 1,
+                offset: 24,
+            },
+            Instruction::CompareLogicalWordImmediate {
+                a: 31,
+                immediate: 0,
+            },
             Instruction::BranchConditionalForward {
                 options: 4,
                 condition_bit: 2,
