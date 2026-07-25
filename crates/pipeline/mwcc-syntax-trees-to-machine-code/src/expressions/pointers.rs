@@ -690,6 +690,15 @@ impl Generator {
                 self.evaluate_general(operand, register)?;
                 return Ok((*pointee, register));
             }
+            // An inlined pointer-returning helper can leave its address as a
+            // conditional integer value. Materialize that value in a distinct
+            // allocator-backed address lane before loading through it; sharing
+            // the eventual load destination would collapse MWCC's select phi.
+            if matches!(operand.as_ref(), Expression::Conditional { .. }) {
+                let register = self.fresh_virtual_general();
+                self.evaluate_general(operand, register)?;
+                return Ok((*pointee, register));
+            }
         }
         if let Some((member_base, offset, member_type)) = as_member(base) {
             let pointee = match member_type {

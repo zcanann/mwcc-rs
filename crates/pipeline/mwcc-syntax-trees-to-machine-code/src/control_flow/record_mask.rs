@@ -13,6 +13,35 @@ impl Generator {
         value: &Expression,
         mask: &Expression,
     ) -> Compilation<bool> {
+        // `if (bits & (1 << index))`: form the one-hot mask in r0 and
+        // consume it with `and.` so the following branch reads CR0 directly.
+        // This is the variable sibling of the constant rlwinm. path below.
+        if let Expression::Binary {
+            operator: BinaryOperator::ShiftLeft,
+            left,
+            right,
+        } = mask
+        {
+            if constant_value(left) == Some(1) {
+                if let (Some(value), Some(amount)) = (
+                    leaf_name(value).and_then(|name| self.lookup_general(name)),
+                    leaf_name(right).and_then(|name| self.lookup_general(name)),
+                ) {
+                    self.load_integer_constant(GENERAL_SCRATCH, 1);
+                    self.output.instructions.push(Instruction::ShiftLeftWord {
+                        a: GENERAL_SCRATCH,
+                        s: GENERAL_SCRATCH,
+                        b: amount,
+                    });
+                    self.output.instructions.push(Instruction::AndRecord {
+                        a: GENERAL_SCRATCH,
+                        s: value,
+                        b: GENERAL_SCRATCH,
+                    });
+                    return Ok(true);
+                }
+            }
+        }
         let Some(mask) = constant_value(mask).and_then(|value| u32::try_from(value).ok()) else {
             return Ok(false);
         };
