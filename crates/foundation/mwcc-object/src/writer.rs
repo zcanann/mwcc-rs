@@ -83,6 +83,15 @@ fn data_comment_flags(object: &DataObject<'_>) -> u32 {
     weak | force_active
 }
 
+/// Compiler-analysis constants have an absolute analysis ordinal but do not
+/// consume the executable counter. Their symbols are registered with other
+/// upfront analysis data while their bytes trail ordinary function constants.
+fn is_trailing_analysis_constant(object: &DataObject<'_>) -> bool {
+    object.is_const
+        && object.preassigned_anonymous_ordinal.is_some()
+        && !object.preassigned_ordinal_advances_counter
+}
+
 /// The Metrowerks `.comment` record for a plain function. Bytes 12..15 spell the
 /// compiler version (`02 04 0X` = 2.4.X) and byte 11 is a format marker that
 /// tracks the version line; [`comment_record`] patches them per build. After the
@@ -313,13 +322,17 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     {
         place(object, ".dtors", &mut dtors_size);
     }
-    // The const `.sdata2` globals occupy the FRONT of the constant pool (ahead of
-    // any function float constants), in forward declaration order.
+    // Source const `.sdata2` globals occupy the FRONT of the constant pool
+    // (ahead of any function float constants), in forward declaration order.
+    // Compiler-analysis residues retain upfront symbols but trail the function
+    // pool and are placed after it below.
     let mut sdata2_global_size = 0u32;
     for object in input
         .data_objects
         .iter()
-        .filter(|object| section_of(object) == ".sdata2")
+        .filter(|object| {
+            section_of(object) == ".sdata2" && !is_trailing_analysis_constant(object)
+        })
     {
         place(object, ".sdata2", &mut sdata2_global_size);
     }
@@ -587,6 +600,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut ctors = vec![0u8; ctors_size as usize];
     let mut dtors = vec![0u8; dtors_size as usize];
     for object in &input.data_objects {
+        if is_trailing_analysis_constant(object) {
+            continue;
+        }
         if let Some(bytes) = &object.initial_bytes {
             let offset = data_offsets[object.name] as usize;
             match section_of(object) {
@@ -617,7 +633,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // ADDR16 references cannot share a symbol.
     let mut sdata2 = vec![0u8; sdata2_global_size as usize];
     for object in &input.data_objects {
-        if section_of(object) == ".sdata2" {
+        if section_of(object) == ".sdata2" && !is_trailing_analysis_constant(object) {
             if let Some(bytes) = &object.initial_bytes {
                 let offset = data_offsets[object.name] as usize;
                 sdata2[offset..offset + bytes.len()].copy_from_slice(bytes);
@@ -669,6 +685,28 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             offsets.push(offset);
         }
         constant_offsets.push(offsets);
+    }
+    // Dropped-inline analysis constants materialize only after the function
+    // pool walk, without changing their already assigned absolute ordinals.
+    let mut trailing_sdata2_size = sdata2.len() as u32;
+    for object in input
+        .data_objects
+        .iter()
+        .filter(|object| is_trailing_analysis_constant(object))
+    {
+        let alignment = object.alignment.max(1);
+        trailing_sdata2_size = trailing_sdata2_size.div_ceil(alignment) * alignment;
+        data_section.insert(object.name, ".sdata2");
+        data_offsets.insert(object.name, trailing_sdata2_size);
+        data_sizes.insert(object.name, object.size);
+        data_layout_aligns.insert(object.name, alignment);
+        data_aligns.insert(object.name, object.comment_alignment.max(1));
+        trailing_sdata2_size += object.size;
+        sdata2.resize(trailing_sdata2_size as usize, 0);
+        if let Some(bytes) = &object.initial_bytes {
+            let offset = data_offsets[object.name] as usize;
+            sdata2[offset..offset + bytes.len()].copy_from_slice(bytes);
+        }
     }
 
     // The anonymous `@N` counter, walked once over the functions. Each function's

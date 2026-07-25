@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
     DebugLayout, DebugRelocation, DebugRelocationKind, DebugSection, DebugSections, DebugSymbol,
+    FunctionObject, ObjectFormat,
 };
 
 fn be_u16(bytes: &[u8], offset: usize) -> u16 {
@@ -64,6 +65,35 @@ fn symbol_names(object: &[u8]) -> Vec<String> {
         .collect()
 }
 
+fn symbol_value_and_size(object: &[u8], wanted: &str) -> (u32, u32) {
+    let section_headers = be_u32(object, 32) as usize;
+    let section_size = be_u16(object, 46) as usize;
+    let section_count = be_u16(object, 48) as usize;
+    let symtab_index = (0..section_count)
+        .find(|index| be_u32(object, section_headers + index * section_size + 4) == SHT_SYMTAB)
+        .unwrap();
+    let symtab_header = section_headers + symtab_index * section_size;
+    let symtab_offset = be_u32(object, symtab_header + 16) as usize;
+    let symtab_size = be_u32(object, symtab_header + 20) as usize;
+    let strtab_index = be_u32(object, symtab_header + 24) as usize;
+    let strtab_header = section_headers + strtab_index * section_size;
+    let strtab_offset = be_u32(object, strtab_header + 16) as usize;
+    for index in 0..symtab_size / SYMBOL_SIZE {
+        let symbol = symtab_offset + index * SYMBOL_SIZE;
+        let name_offset = be_u32(object, symbol) as usize;
+        let start = strtab_offset + name_offset;
+        let end = object[start..]
+            .iter()
+            .position(|byte| *byte == 0)
+            .map(|length| start + length)
+            .unwrap();
+        if &object[start..end] == wanted.as_bytes() {
+            return (be_u32(object, symbol + 4), be_u32(object, symbol + 8));
+        }
+    }
+    panic!("missing ELF symbol '{wanted}'")
+}
+
 fn constant(byte_width: u8, image: bool) -> Sdata2Constant {
     Sdata2Constant {
         bits: 0,
@@ -90,6 +120,123 @@ fn pool_numbers_can_precede_the_ordinary_function_position() {
 fn source_analysis_advances_the_writers_dense_ordinal_stream() {
     assert_eq!(dense_anonymous_counter(2, 43, 0, 0, 0), 45);
     assert_eq!(dense_anonymous_counter(2, 43, 7, 2, 1), 49);
+}
+
+#[test]
+fn nonadvancing_analysis_constants_trail_function_constant_pools() {
+    let residue = DataObject {
+        name: "@190",
+        size: 2,
+        alignment: 2,
+        comment_alignment: 2,
+        initial_bytes: Some(vec![0xaa, 0xbb]),
+        is_const: true,
+        force_full_data_section: false,
+        is_static: true,
+        force_active: false,
+        is_explicit_zero: false,
+        preassigned_anonymous_ordinal: Some(190),
+        preassigned_ordinal_advances_counter: false,
+        relocations: Vec::new(),
+        non_static_functions_before: 0,
+        functions_before: 0,
+        is_weak: false,
+        static_local_owner: None,
+        anonymous_adjust: 0,
+        section: None,
+    };
+    let text = [0x4e, 0x80, 0x00, 0x20];
+    let function = FunctionObject {
+        name: "f",
+        is_static: false,
+        static_locals_lead: false,
+        text_deferred: false,
+        is_weak: false,
+        section: None,
+        is_asm: false,
+        entry_points: Vec::new(),
+        force_active: false,
+        text: &text,
+        data_section_displacements: Vec::new(),
+        relocations: Vec::new(),
+        constants: vec![Sdata2Constant {
+            bits: 0x1122_3344_5566_7788,
+            byte_width: 8,
+            static_slot: false,
+            image: false,
+            force_new: false,
+            force_full_data_section: false,
+        }],
+        frame: None,
+        anonymous_bump: 0,
+        implicit_local: false,
+        weak_inline: false,
+        constant_number_gaps: Vec::new(),
+        constant_number_adjust: 0,
+        phantom_externals: Vec::new(),
+        post_constant_bump: 0,
+        post_function_anonymous_bump: None,
+        string_count: 0,
+        string_number_after_constants: None,
+        string_number_after_rodata: None,
+        string_names: Vec::new(),
+        jump_tables: Vec::new(),
+        anonymous_rodata: Vec::new(),
+        local_undefined_callees: Vec::new(),
+        symbol_order: Vec::new(),
+        defined_data_precedes_defined_functions: false,
+        referenced_function_symbols: Vec::new(),
+        implicit_external_callees: Vec::new(),
+        early_implicit_external_callees: Vec::new(),
+    };
+    let object = write_object(&ObjectInput {
+        source_name: "residue.cpp",
+        object_format: ObjectFormat {
+            comment: CommentFormat {
+                marker: 8,
+                version: (2, 4, 7),
+                pooling_enabled: true,
+            },
+            emb_sda21_offset: 0,
+            code_alignment: 4,
+            sdata2_writable: false,
+            function_symbol_order: FunctionSymbolOrder::ReferencesFirst,
+            weak_vtable_function_symbol_tail: false,
+            initialized_globals_before_deferred_functions: false,
+            local_data_symbols_in_declaration_order: false,
+            small_zero_statics_in_declaration_order: false,
+            rodata_anchor_before_data_symbols: false,
+            rodata_anchor_comment_flags: 0,
+            data_relocations_use_section_anchors: false,
+            data_anchor_comment_flags: 0,
+            initial_anonymous_counter: 1,
+            leading_source_anonymous_bump: 0,
+            post_leaf_function_anonymous_bump: 0,
+            post_framed_function_anonymous_bump: 0,
+        },
+        functions: vec![function],
+        data_objects: vec![residue],
+        small_data: true,
+        emit_mwcats: false,
+        inline_asm_symbols: &[],
+        early_static_function_symbols: &[],
+        early_undefined_externals: &[],
+        section_function_declarations: &[],
+        section_externals: &[],
+        local_symbol_order: &[],
+        debug: None,
+    });
+
+    let sdata2 = section_index(&object, ".sdata2");
+    let header = section_header(&object, sdata2);
+    let offset = be_u32(&object, header + 16) as usize;
+    let size = be_u32(&object, header + 20) as usize;
+    assert_eq!(
+        &object[offset..offset + size],
+        &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0xaa, 0xbb]
+    );
+    assert_eq!(symbol_value_and_size(&object, "@1"), (0, 8));
+    assert_eq!(symbol_value_and_size(&object, "@190"), (8, 2));
 }
 
 #[test]
