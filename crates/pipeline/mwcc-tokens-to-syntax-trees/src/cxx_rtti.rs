@@ -13,7 +13,7 @@ const ANONYMOUS_PREFIX: &str = "@@cxx_rtti:";
 /// Add RTTI handles, type-name objects, inheritance tables, and vtable header
 /// fields for the class closure referenced by this translation unit's owned
 /// vtables. Generated classes follow reverse declaration order, as MWCC does.
-pub fn materialize(unit: &mut TranslationUnit) {
+pub fn materialize(unit: &mut TranslationUnit, orphaned_handle_is_local: bool) {
     // RTTI ownership is fixed during the ordinary definition walk, before weak
     // inline bodies are materialized at the end of the translation unit. Keep
     // those late bodies out of the RTTI symbol's source-position count.
@@ -160,12 +160,17 @@ pub fn materialize(unit: &mut TranslationUnit) {
         // order. Store field 1 before field 0 so RTTI handles appear in their
         // measured address order (`name`, then optional base table).
         relocations.push((0, name, 0));
+        let (handle_is_static, handle_is_weak) = rtti_handle_linkage(
+            late_weak_owner,
+            owner_position.is_some(),
+            orphaned_handle_is_local,
+        );
         let mut handle = data_global(
             rtti,
             vec![0; 8],
             relocations,
-            late_weak_owner,
-            !late_weak_owner,
+            handle_is_static,
+            handle_is_weak,
             4,
         );
         if let Some((non_static_functions_before, functions_before)) = owner_position {
@@ -179,6 +184,15 @@ pub fn materialize(unit: &mut TranslationUnit) {
     let insertion = insertion.min(retained.len());
     retained.splice(insertion..insertion, generated);
     unit.globals = retained;
+}
+
+fn rtti_handle_linkage(
+    late_weak_owner: bool,
+    has_vtable_owner: bool,
+    orphaned_handle_is_local: bool,
+) -> (bool, bool) {
+    let local = late_weak_owner || (!has_vtable_owner && orphaned_handle_is_local);
+    (local, !local)
 }
 
 fn collect_class_closure<'a>(
@@ -314,7 +328,9 @@ fn rtti_symbol(class: &CxxAbiClass) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{data_global, inheritance_entries, materialize_vtable_headers};
+    use super::{
+        data_global, inheritance_entries, materialize_vtable_headers, rtti_handle_linkage,
+    };
     use mwcc_syntax_trees::{CxxAbiBase, CxxAbiClass, CxxAbiVtableComponent};
     use std::collections::HashMap;
 
@@ -351,6 +367,13 @@ mod tests {
             .map(|(class, offset)| (class.source_name.as_str(), offset))
             .collect();
         assert_eq!(entries, [("D", 8), ("B", 4), ("A", 0), ("C", 0)]);
+    }
+
+    #[test]
+    fn legacy_orphaned_rtti_handles_remain_local() {
+        assert_eq!(rtti_handle_linkage(false, false, true), (true, false));
+        assert_eq!(rtti_handle_linkage(false, false, false), (false, true));
+        assert_eq!(rtti_handle_linkage(true, true, false), (true, false));
     }
 
     #[test]

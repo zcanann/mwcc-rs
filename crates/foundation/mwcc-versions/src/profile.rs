@@ -839,6 +839,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         None
     }
 
+    /// Whether an inherited class pulled into an owned RTTI closure keeps its
+    /// handle local when this translation unit does not own that class's vtable.
+    fn orphaned_cxx_rtti_handle_is_local(&self) -> bool {
+        false
+    }
+
     /// Whether plain `char` (no `signed`/`unsigned` qualifier) is signed. The one
     /// knob distinguishing GC build 53 from 81+; it cascades through read/operand
     /// extension, `>>`/`/`/`%` strength reduction, comparison folding, and the
@@ -1913,6 +1919,10 @@ impl CodegenProfile for Gc233Build163 {
             statement_body: 1,
             value_body: 3,
         })
+    }
+
+    fn orphaned_cxx_rtti_handle_is_local(&self) -> bool {
+        true
     }
 
     fn cxx_rtti_virtual_method_label_weight(&self, _whole_file: bool) -> u8 {

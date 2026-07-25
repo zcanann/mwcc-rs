@@ -552,6 +552,8 @@ pub struct Behavior {
     pub inline_statement_substitution_label_weight: u8,
     /// Optional constructor-specific inline-composition transaction.
     pub cxx_constructor_inline_ordinal_weights: Option<CxxConstructorInlineOrdinalWeights>,
+    /// Inherited RTTI handles without a vtable owner remain local.
+    pub orphaned_cxx_rtti_handle_is_local: bool,
     /// Hidden deferred-inlining labels retained per call-dispatch switch arm.
     /// Zero for ordinary compilation and for unmeasured compiler generations.
     pub deferred_call_dispatcher_labels_per_case: u8,
@@ -910,6 +912,10 @@ impl Behavior {
                 .build
                 .profile
                 .cxx_constructor_inline_ordinal_weights(),
+            orphaned_cxx_rtti_handle_is_local: config
+                .build
+                .profile
+                .orphaned_cxx_rtti_handle_is_local(),
             deferred_call_dispatcher_labels_per_case: if config.flags.inline_deferred {
                 config
                     .build
@@ -1770,6 +1776,7 @@ mod tests {
                 value_body: 3,
             })
         );
+        assert!(behavior.orphaned_cxx_rtti_handle_is_local);
         assert_eq!(
             behavior.cxx_reference_bound_scalar_temporary_label_bump,
             2

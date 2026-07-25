@@ -692,7 +692,10 @@ fn compile(
     )?;
     name_translation_unit_startup(&mut unit, source_name);
     if is_cxx && config.flags.rtti {
-        mwcc_tokens_to_syntax_trees::materialize_cxx_rtti(&mut unit);
+        mwcc_tokens_to_syntax_trees::materialize_cxx_rtti(
+            &mut unit,
+            behavior.orphaned_cxx_rtti_handle_is_local,
+        );
     }
     let mut disabled_inline_materializations = std::collections::HashSet::new();
     if !config.flags.inline_enabled {
