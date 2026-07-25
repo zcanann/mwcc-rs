@@ -80,6 +80,7 @@ pub(super) fn lower(
     machine_functions: &[MachineFunction],
     emitted_data_symbols: &HashSet<String>,
     source_name: &str,
+    is_cxx: bool,
     build: CompilerBuild,
     code_alignment: u32,
 ) -> Compilation<DebugSections> {
@@ -283,7 +284,7 @@ pub(super) fn lower(
             ),
             attribute(
                 AttributeName::Language,
-                AttributeValue::Data4(if source_name.ends_with(".cpp") { 4 } else { 1 }),
+                AttributeValue::Data4(source_language(is_cxx)),
             ),
             attribute(
                 AttributeName::LowPc,
@@ -918,6 +919,10 @@ fn signed_int_type() -> Attribute {
     )
 }
 
+fn source_language(is_cxx: bool) -> u32 {
+    if is_cxx { 4 } else { 1 }
+}
+
 fn function_return_type(
     unit: &TranslationUnit,
     function: &Function,
@@ -937,6 +942,12 @@ fn function_return_type(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_language_uses_the_invocation_mode() {
+        assert_eq!(source_language(false), 1);
+        assert_eq!(source_language(true), 4);
+    }
 
     fn inline_static() -> mwcc_syntax_trees::GlobalDeclaration {
         mwcc_syntax_trees::GlobalDeclaration {

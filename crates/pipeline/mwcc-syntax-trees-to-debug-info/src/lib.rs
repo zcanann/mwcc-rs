@@ -24,6 +24,7 @@ pub fn lower_debug_info(
     has_emitted_data: bool,
     emitted_data_symbols: &HashSet<String>,
     source_name: &str,
+    is_cxx: bool,
     source: &[u8],
     build: CompilerBuild,
     code_alignment: u32,
@@ -59,6 +60,7 @@ pub fn lower_debug_info(
             machine_functions,
             emitted_data_symbols,
             source_name,
+            is_cxx,
             build,
             code_alignment,
         )?;
@@ -84,6 +86,7 @@ pub fn lower_debug_info(
                 machine_functions,
                 emitted_data_symbols,
                 source_name,
+                is_cxx,
                 build,
                 code_alignment,
             )?;
@@ -96,6 +99,7 @@ pub fn lower_debug_info(
                 machine_functions,
                 emitted_data_symbols,
                 source_name,
+                is_cxx,
                 build,
                 code_alignment,
             )?;
@@ -114,6 +118,7 @@ pub fn lower_debug_info(
                 machine_functions,
                 emitted_data_symbols,
                 source_name,
+                is_cxx,
                 build,
                 code_alignment,
             )?;
@@ -136,6 +141,7 @@ pub fn lower_debug_info(
         machine_functions,
         emitted_data_symbols,
         source_name,
+        is_cxx,
         build,
         code_alignment,
     )

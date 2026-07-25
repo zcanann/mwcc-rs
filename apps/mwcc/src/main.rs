@@ -2535,6 +2535,7 @@ fn compile(
             !defined_globals.is_empty(),
             &emitted_data_symbols,
             source_name,
+            is_cxx,
             source,
             config.build,
             code_alignment,
