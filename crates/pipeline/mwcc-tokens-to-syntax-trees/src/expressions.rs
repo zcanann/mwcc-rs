@@ -1811,7 +1811,7 @@ impl Parser {
     /// argument. Both `object.method()` and callable-object `object()` syntax
     /// use this path so virtual dispatch, inline identity, and base adjustment
     /// remain consistent.
-    fn lower_cxx_instance_member_call(
+    pub(crate) fn lower_cxx_instance_member_call(
         &mut self,
         class: &str,
         member: &str,
@@ -1825,23 +1825,16 @@ impl Parser {
                 ..
             }
         );
-        let concrete_object = match &object {
-            Expression::Variable(name) => matches!(
-                self.variable_types
-                    .get(name)
-                    .or_else(|| self.global_types.get(name)),
-                Some(Type::Struct { .. })
-            ),
-            // `outer->inner.Method()` names the embedded aggregate value. The
-            // implicit object argument is its address, just as for a named
-            // aggregate variable; passing the value would ask codegen to load
-            // an entire struct into one GPR.
-            Expression::Member {
-                member_type: Type::Struct { .. },
-                ..
-            } => true,
-            _ => false,
-        };
+        // An aggregate value supplies its address as the implicit object
+        // argument. Query the resolved expression type so indexed lvalues
+        // (`array[i].operator=(...)`) follow the same ABI path as named and
+        // embedded-member objects. References remain pointer-shaped and pass
+        // their stored address directly.
+        let concrete_object = matches!(
+            self.cxx_expression_type(&object),
+            Some(Type::Struct { .. })
+        ) || matches!(&object, Expression::Index { .. })
+            && self.cxx_expression_struct_tag(&object).is_some();
         if arguments.is_empty() {
             if let Some((endpoint, return_tag, return_type)) =
                 self.resolve_inline_iterator_endpoint(class, member)

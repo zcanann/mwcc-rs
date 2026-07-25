@@ -58,6 +58,7 @@ pub(crate) fn parse_arithmetic_operator_name(parser: &mut Parser) -> Compilation
         (Token::Minus, true) => "__ami",
         (Token::Star, true) => "__amu",
         (Token::Slash, true) => "__adv",
+        (Token::Equals, false) => "__as",
         token => {
             return Err(Diagnostic::error(format!(
                 "C++ operator declarator '{token:?}' is not supported yet (roadmap)"
@@ -95,6 +96,7 @@ pub(crate) fn canonical_operator_member_name(punctuation: &[Token]) -> String {
         [Token::Minus, Token::Equals] => "__ami".to_string(),
         [Token::Star, Token::Equals] => "__amu".to_string(),
         [Token::Slash, Token::Equals] => "__adv".to_string(),
+        [Token::Equals] => "__as".to_string(),
         _ => format!("@operator:{punctuation:?}"),
     }
 }
@@ -1239,12 +1241,21 @@ impl Parser {
             let Some(parameter) = cxx_parameters.get(index) else {
                 return variadic;
             };
-            if let (Some(expected), Some(actual)) = (
-                parameter.qualified_name.as_deref(),
-                self.cxx_expression_struct_tag(argument),
-            ) {
-                return expected == actual
-                    || expected.rsplit("::").next() == actual.rsplit("::").next();
+            let actual_aggregate = self.cxx_expression_struct_tag(argument).or_else(|| {
+                (arguments.len() == 1)
+                    .then_some(self.expression_struct_tag.as_deref())
+                    .flatten()
+            });
+            match (parameter.qualified_name.as_deref(), actual_aggregate) {
+                (Some(expected), Some(actual)) => {
+                    return expected == actual
+                        || expected.rsplit("::").next() == actual.rsplit("::").next();
+                }
+                // A known aggregate identity cannot exactly match a scalar
+                // parameter, and a named aggregate parameter cannot exactly
+                // match an argument whose aggregate identity is unavailable.
+                (Some(_), None) | (None, Some(_)) => return false,
+                (None, None) => {}
             }
             self.cxx_expression_type(argument)
                 .is_none_or(|actual| parameters.get(index) == Some(&actual))
@@ -1322,6 +1333,7 @@ impl Parser {
             Expression::AddressOf { operand }
             | Expression::Cast { operand, .. }
             | Expression::Dereference { pointer: operand }
+            | Expression::Index { base: operand, .. }
             | Expression::PostStep {
                 target: operand, ..
             } => {
@@ -2900,8 +2912,22 @@ impl Parser {
                         parameters: method.parameters.clone(),
                     }));
                 }
+                let detail = candidates
+                    .iter()
+                    .map(|method| {
+                        let identities = method
+                            .cxx_parameters
+                            .iter()
+                            .map(|parameter| parameter.qualified_name.as_deref())
+                            .collect::<Vec<_>>();
+                        format!(
+                            "{} parameters={:?} aggregates={identities:?}",
+                            method.mangled, method.parameters
+                        )
+                    })
+                    .collect::<Vec<_>>();
                 return Err(Diagnostic::error(format!(
-                    "C++ member call '{resolved}::{member}' is ambiguous (roadmap)"
+                    "C++ member call '{resolved}::{member}' is ambiguous among {detail:?} for arguments {arguments:?} (roadmap)"
                 )));
             }
         }
@@ -4805,15 +4831,19 @@ impl Parser {
         parameters: &[Type],
         arguments: Vec<Expression>,
     ) -> Vec<Expression> {
+        let single_argument = arguments.len() == 1;
         arguments
             .into_iter()
             .enumerate()
             .map(|(index, argument)| {
                 if matches!(parameters.get(index), Some(Type::StructPointer { .. }))
-                    && matches!(
+                    && (matches!(
                         self.cxx_expression_type(&argument),
                         Some(Type::Struct { .. })
-                    )
+                    ) || matches!(&argument, Expression::Index { .. })
+                        && (self.cxx_expression_struct_tag(&argument).is_some()
+                            || single_argument
+                                && self.expression_struct_tag.is_some()))
                 {
                     Expression::AddressOf {
                         operand: Box::new(argument),

@@ -525,7 +525,9 @@ impl Generator {
                         .get(name.as_str())
                         .and_then(|location| location.pointee)
                     else {
-                        return Err(Diagnostic::error("frame array is missing its element type"));
+                        return Err(Diagnostic::error(format!(
+                            "frame array '{name}' is missing its scalar element type for {target:?} = {value:?}"
+                        )));
                     };
                     let Some(index) = constant_value(index) else {
                         return Err(Diagnostic::error(

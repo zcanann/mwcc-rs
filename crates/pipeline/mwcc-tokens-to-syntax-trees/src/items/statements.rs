@@ -97,7 +97,10 @@ impl Parser {
         // side. `expression_struct_tag` is a one-expression scratch slot, so the
         // RHS would otherwise overwrite the target's tag before a value copy can
         // be expanded into its typed scalar fields.
-        let first_struct_tag = self.expression_struct_tag.take();
+        let first_struct_tag = self
+            .expression_struct_tag
+            .take()
+            .or_else(|| self.cxx_expression_struct_tag(&first).map(str::to_owned));
         // Prefix `++`/`--` desugars to `target = target ± 1` in factor; the
         // POSTFIX form arrives as PostStep and lowers here, where the value
         // is discarded (the two forms coincide only in that case).
@@ -130,7 +133,10 @@ impl Parser {
         } else if *self.peek() == Token::Equals {
             self.advance();
             let value = self.expression()?;
-            let value_struct_tag = self.expression_struct_tag.take();
+            let value_struct_tag = self
+                .expression_struct_tag
+                .take()
+                .or_else(|| self.cxx_expression_struct_tag(&value).map(str::to_owned));
             if self.eat_keyword(Token::Comma) {
                 let assignment = Expression::Assign {
                     target: Box::new(crate::lvalues::canonical_assignment_target(first)),
@@ -141,6 +147,50 @@ impl Parser {
                 return Ok(Statement::Expression(expression));
             }
             self.expect(Token::Semicolon)?;
+            let target_is_aggregate_value = matches!(
+                self.cxx_expression_type(&first),
+                Some(Type::Struct { .. })
+            ) || matches!(
+                &first,
+                Expression::Variable(name) if self.cxx_reference_variables.contains(name)
+            ) || matches!(&first, Expression::Index { .. }) && first_struct_tag.is_some();
+            // Start with indexed aggregate-to-aggregate assignment: both
+            // operands are addressable lvalues, so overload lowering needs no
+            // temporary-object materialization. Aggregate arithmetic results
+            // require a hidden-result temporary and remain on the existing
+            // backend path until that owner is modeled.
+            let indexed_aggregate_copy =
+                matches!((&first, &value), (Expression::Index { .. }, Expression::Index { .. }));
+            if self.cplusplus && target_is_aggregate_value && indexed_aggregate_copy {
+                if let Some(class) = first_struct_tag.as_deref() {
+                    let saved_expression_tag =
+                        std::mem::replace(&mut self.expression_struct_tag, value_struct_tag.clone());
+                    let assignment = self.resolve_instance_member_call(
+                        class,
+                        "__as",
+                        std::slice::from_ref(&value),
+                    );
+                    let assignment = match assignment {
+                        Ok(assignment) => assignment,
+                        Err(error) => {
+                            self.expression_struct_tag = saved_expression_tag;
+                            return Err(error);
+                        }
+                    };
+                    if assignment.is_some() {
+                        let call = self.lower_cxx_instance_member_call(
+                            class,
+                            "__as",
+                            first,
+                            vec![value],
+                        );
+                        self.expression_struct_tag = saved_expression_tag;
+                        let call = call?;
+                        return Ok(Statement::Expression(call));
+                    }
+                    self.expression_struct_tag = saved_expression_tag;
+                }
+            }
             if let Some(copy) = self.lower_typed_aggregate_assignment(
                 &first,
                 &value,

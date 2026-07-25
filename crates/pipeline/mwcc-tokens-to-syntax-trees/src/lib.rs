@@ -4266,6 +4266,50 @@ blr\n\
     }
 
     #[test]
+    fn resolves_indexed_aggregate_copy_assignment_by_class_identity() {
+        let source = r#"
+            struct Vec {
+                float x;
+                float y;
+                float z;
+                Vec& operator=(float);
+                Vec& operator=(const Vec&);
+            };
+            void copy(Vec* destination, Vec* source, int index) {
+                destination[index] = source[index];
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [Statement::Expression(Expression::Call { name, arguments })]
+                if name == "__as__3VecFRC3Vec"
+                    && matches!(
+                        arguments.as_slice(),
+                        [
+                            Expression::AddressOf { operand: destination },
+                            Expression::AddressOf { operand: source },
+                        ] if matches!(
+                            destination.as_ref(),
+                            Expression::Index { base, .. }
+                                if matches!(base.as_ref(), Expression::Variable(name) if name == "destination")
+                        ) && matches!(
+                            source.as_ref(),
+                            Expression::Index { base, .. }
+                                if matches!(base.as_ref(), Expression::Variable(name) if name == "source")
+                        )
+                    )
+        ));
+    }
+
+    #[test]
     fn preserves_multidimensional_member_row_stride_in_address_expression() {
         let source = r#"
             typedef unsigned char u8;
