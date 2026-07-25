@@ -1280,6 +1280,34 @@ impl Parser {
             Expression::Call { name, .. } => {
                 self.function_return_structs.get(name).map(String::as_str)
             }
+            Expression::Conditional {
+                when_true,
+                when_false,
+                ..
+            } => {
+                let when_true_tag = self.cxx_expression_struct_tag(when_true);
+                let when_false_tag = self.cxx_expression_struct_tag(when_false);
+                match (when_true_tag, when_false_tag) {
+                    (Some(left), Some(right)) if left == right => Some(left),
+                    (Some(tag), None)
+                        if matches!(
+                            crate::expressions::fold_constant_expression(when_false),
+                            Ok(0)
+                        ) =>
+                    {
+                        Some(tag)
+                    }
+                    (None, Some(tag))
+                        if matches!(
+                            crate::expressions::fold_constant_expression(when_true),
+                            Ok(0)
+                        ) =>
+                    {
+                        Some(tag)
+                    }
+                    _ => None,
+                }
+            }
             _ => None,
         }
     }

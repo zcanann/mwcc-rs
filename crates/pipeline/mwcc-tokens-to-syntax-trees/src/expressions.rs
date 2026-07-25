@@ -355,16 +355,48 @@ impl Parser {
         if *self.peek() == Token::Question {
             self.advance();
             let when_true = self.expression()?;
+            let when_true_struct_tag = self
+                .cxx_expression_struct_tag(&when_true)
+                .map(str::to_owned)
+                .or_else(|| self.expression_struct_tag.clone());
             self.expect(Token::Colon)?;
             let when_false = self.expression()?;
+            let when_false_struct_tag = self
+                .cxx_expression_struct_tag(&when_false)
+                .map(str::to_owned)
+                .or_else(|| self.expression_struct_tag.clone());
+            let result_struct_tag = match (
+                when_true_struct_tag.as_ref(),
+                when_false_struct_tag.as_ref(),
+            ) {
+                (Some(left), Some(right)) if left == right => Some(left.clone()),
+                (Some(tag), None)
+                    if matches!(fold_constant_expression(&when_false), Ok(0)) =>
+                {
+                    Some(tag.clone())
+                }
+                (None, Some(tag))
+                    if matches!(fold_constant_expression(&when_true), Ok(0)) =>
+                {
+                    Some(tag.clone())
+                }
+                _ => None,
+            };
             // A COMPILE-TIME-CONSTANT condition selects its branch at parse
             // time — fdlibm's `(sizeof(x) == 8 ? *(1+(_INT32*)&x) : ...)`
             // (the __HI/__LO macros) folds to the taken word access, which
             // also makes the LVALUE form a plain dereference store target.
             // (Fire 524: reintroduced WITH the coordinated capture re-bake.)
             if let Ok(value) = fold_constant_expression(&condition) {
-                return Ok(if value != 0 { when_true } else { when_false });
+                let (selected, selected_tag) = if value != 0 {
+                    (when_true, when_true_struct_tag)
+                } else {
+                    (when_false, when_false_struct_tag)
+                };
+                self.expression_struct_tag = selected_tag;
+                return Ok(selected);
             }
+            self.expression_struct_tag = result_struct_tag;
             return Ok(Expression::Conditional {
                 condition: Box::new(condition),
                 when_true: Box::new(when_true),
@@ -1082,6 +1114,11 @@ impl Parser {
                     // `(type) expr` is a cast; otherwise a parenthesised expression.
                     if self.peek_is_type() {
                         let mut target_type = self.parse_type()?;
+                        // `parse_type` retains the aggregate base even when it
+                        // collapses `Struct**` to the executable word-pointer
+                        // representation. Capture it before any operand type
+                        // parse overwrites the side-channel.
+                        let parsed_struct_tag = self.last_struct_tag.take();
                         // A function-pointer cast `(RET (*)(params))` targets a pointer.
                         if *self.peek() == Token::ParenOpen
                             && self.tokens.get(self.position + 1) == Some(&Token::Star)
@@ -1141,9 +1178,7 @@ impl Parser {
                         }
                         // Capture the cast's struct tag before parsing the operand (which may
                         // itself run `parse_type` and overwrite `last_struct_tag`).
-                        if matches!(target_type, mwcc_syntax_trees::Type::StructPointer { .. }) {
-                            cast_struct_tag = self.last_struct_tag.take();
-                        }
+                        cast_struct_tag = parsed_struct_tag;
                         let operand = self.factor()?;
                         Expression::Cast {
                             target_type,
@@ -1235,6 +1270,11 @@ impl Parser {
             Expression::PostStep { target, .. } => {
                 self.cxx_expression_struct_tag(target).map(str::to_owned)
             }
+            // A conditional that selected a common aggregate-pointer type keeps
+            // that identity for a following member access. The parser records
+            // the exact tag while parsing the branches because pointer-to-pointer
+            // casts cannot encode it in the compact executable Type model.
+            Expression::Conditional { .. } => self.expression_struct_tag.take(),
             _ => None,
         };
         let mut pending_arrow_effect: Option<Expression> = None;

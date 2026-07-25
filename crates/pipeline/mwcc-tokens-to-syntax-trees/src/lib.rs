@@ -4154,6 +4154,32 @@ blr\n\
     }
 
     #[test]
+    fn preserves_struct_pointer_identity_through_indirection_and_a_null_conditional() {
+        let source = r#"
+            typedef unsigned char u8;
+            struct Data { int value; };
+            int probe(u8* base, int offset) {
+                return (((Data**)(base + offset)) ?
+                    *((Data**)(base + offset)) : 0)->value;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let Some(Expression::Member { base, offset, .. }) = &unit.functions[0].return_expression
+        else {
+            panic!("expected member access on a conditional struct pointer")
+        };
+        assert!(matches!(base.as_ref(), Expression::Conditional { .. }));
+        assert_eq!(*offset, 0);
+    }
+
+    #[test]
     fn preserves_multidimensional_member_row_stride_in_address_expression() {
         let source = r#"
             typedef unsigned char u8;
