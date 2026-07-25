@@ -608,7 +608,7 @@ impl InlineBodySet {
                     *statement_body_substitutions += 1;
                     let mut callee_calls = HashMap::new();
                     collect_function_calls(callee, &mut callee_calls);
-                    if !callee_calls.is_empty() {
+                    if !callee_calls.is_empty() && self.required.contains(name) {
                         *statement_frame_residue_substitutions += 1;
                     }
                     active.insert(name.clone());
@@ -1163,6 +1163,39 @@ mod tests {
             .expect("both statement bodies should compose");
         assert_eq!(expanded.statement_body_substitutions, 2);
         assert_eq!(expanded.statement_frame_residue_substitutions, 1);
+    }
+
+    #[test]
+    fn ordinary_statement_body_does_not_leave_retained_inline_frame_residue() {
+        let helper = function(
+            "helper",
+            vec![Parameter {
+                parameter_type: Type::Int,
+                name: "value".into(),
+            }],
+            vec![Statement::Expression(Expression::Call {
+                name: "external".into(),
+                arguments: vec![Expression::Variable("value".into())],
+            })],
+        );
+        let caller = function(
+            "caller",
+            vec![Parameter {
+                parameter_type: Type::Int,
+                name: "value".into(),
+            }],
+            vec![Statement::Expression(Expression::Call {
+                name: "helper".into(),
+                arguments: vec![Expression::Variable("value".into())],
+            })],
+        );
+
+        let expanded =
+            InlineBodySet::analyze_with_definitions(&[helper, caller.clone()], &[])
+                .expand_calls_with_facts(&caller)
+                .expect("the ordinary statement body should compose");
+        assert_eq!(expanded.statement_body_substitutions, 1);
+        assert_eq!(expanded.statement_frame_residue_substitutions, 0);
     }
 
     #[test]
