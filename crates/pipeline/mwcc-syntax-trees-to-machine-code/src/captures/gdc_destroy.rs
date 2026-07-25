@@ -185,9 +185,16 @@ impl Generator {
             a: 0,
             offset: 0,
         });
-        self.output
-            .instructions
-            .push(Instruction::CompareLogicalWordImmediate { a: 3, immediate: 0 }); // cmplwi r3,0
+        self.output.instructions.push(
+            match self.behavior.null_pointer_compare_style {
+                mwcc_versions::NullPointerCompareStyle::Logical => {
+                    Instruction::CompareLogicalWordImmediate { a: 3, immediate: 0 }
+                }
+                mwcc_versions::NullPointerCompareStyle::Signed => {
+                    Instruction::CompareWordImmediate { a: 3, immediate: 0 }
+                }
+            },
+        );
         self.emit_branch_conditional_to(4, 2, labels[&4]); // bne <body>
         self.output.instructions.push(Instruction::LoadWord {
             d: 0,

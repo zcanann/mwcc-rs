@@ -24,7 +24,7 @@ use crate::profile::{
     ForwardedTraceStringStyle,
     FrameConvention, FrexpFamilyStyle, FunctionAddressStoreStyle, FunctionOrdinalAccountingStyle,
     CxxTrivialDestructorStyle, GlobalArrayDecayStoreStyle, GlobalArrayIndexStyle,
-    GuardedByteCopyStyle,
+    GuardedByteCopyStyle, NullPointerCompareStyle,
     GuardedMemberInitializationStyle,
     IndexedRmwAssignmentStyle, IntCallResultConversionStyle, IntegerComparisonValueStyle,
     IntegerDagStyle, IntegerLoopStyle, IntegerSelectStyle, JumpTableBaseStyle,
@@ -605,6 +605,8 @@ pub struct Behavior {
     pub guarded_member_initialization_style: GuardedMemberInitializationStyle,
     /// Comparison and loop-alignment family for guarded byte copies.
     pub guarded_byte_copy_style: GuardedByteCopyStyle,
+    /// Opcode family for explicit equality/inequality tests against null.
+    pub null_pointer_compare_style: NullPointerCompareStyle,
     /// Whole-family schedule for the fdlibm-style `frexp` transaction.
     pub frexp_family_style: FrexpFamilyStyle,
     /// Additional anonymous labels retained around `frexp` when deferred
@@ -994,6 +996,7 @@ impl Behavior {
                 .profile
                 .guarded_member_initialization_style(),
             guarded_byte_copy_style: config.build.profile.guarded_byte_copy_style(),
+            null_pointer_compare_style: config.build.profile.null_pointer_compare_style(),
             frexp_family_style: config.build.profile.frexp_family_style(),
             frexp_deferred_label_bump: if config.flags.inline_deferred {
                 config.build.profile.frexp_deferred_label_bump()
@@ -2335,5 +2338,14 @@ mod tests {
             style(build::WII_1_0),
             GuardedByteCopyStyle::SignedCompareWithAlignedStore
         );
+    }
+
+    #[test]
+    fn null_pointer_compare_tracks_optimizer_generations() {
+        let style =
+            |build| Behavior::resolve(&CompilerConfig::new(build)).null_pointer_compare_style;
+        assert_eq!(style(build::GC_2_7), NullPointerCompareStyle::Logical);
+        assert_eq!(style(build::GC_3_0A3P1), NullPointerCompareStyle::Signed);
+        assert_eq!(style(build::WII_1_0), NullPointerCompareStyle::Signed);
     }
 }

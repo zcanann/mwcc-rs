@@ -137,6 +137,15 @@ pub enum GuardedByteCopyStyle {
     SignedCompareWithAlignedStore,
 }
 
+/// Integer comparison opcode used for an explicit null-pointer test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NullPointerCompareStyle {
+    /// The 2.x optimizer treats the pointer value as unsigned (`cmplwi`).
+    Logical,
+    /// The 4.x optimizer canonicalizes equality with zero to `cmpwi`.
+    Signed,
+}
+
 /// Whole-family lowering of the fdlibm-style `frexp` transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrexpFamilyStyle {
@@ -955,6 +964,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         GuardedByteCopyStyle::LogicalCompare
     }
 
+    fn null_pointer_compare_style(&self) -> NullPointerCompareStyle {
+        NullPointerCompareStyle::Logical
+    }
+
     fn frexp_family_style(&self) -> FrexpFamilyStyle {
         FrexpFamilyStyle::VirtualCompactFrame
     }
@@ -1525,6 +1538,10 @@ impl CodegenProfile for Gc41Build51213 {
         GuardedByteCopyStyle::SignedCompare
     }
 
+    fn null_pointer_compare_style(&self) -> NullPointerCompareStyle {
+        NullPointerCompareStyle::Signed
+    }
+
     fn guarded_member_initialization_style(&self) -> GuardedMemberInitializationStyle {
         GuardedMemberInitializationStyle::PooledFloatThenInteger
     }
@@ -1765,6 +1782,10 @@ impl CodegenProfile for Wii43Build145 {
 
     fn guarded_byte_copy_style(&self) -> GuardedByteCopyStyle {
         GuardedByteCopyStyle::SignedCompareWithAlignedStore
+    }
+
+    fn null_pointer_compare_style(&self) -> NullPointerCompareStyle {
+        NullPointerCompareStyle::Signed
     }
 
     fn guarded_member_initialization_style(&self) -> GuardedMemberInitializationStyle {
