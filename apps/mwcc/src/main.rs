@@ -1154,6 +1154,13 @@ fn compile(
             .saturating_sub(literal_temporary_bump_discount)
             + prototype_name_bump
     };
+    if diagnose_syntax_tree {
+        eprintln!(
+            "cxx-unit-ordinal-accounting inline={cxx_inline_bump} \
+             declaration={unit_declaration_bump} prototype={prototype_name_bump} \
+             literal-discount={literal_temporary_bump_discount}"
+        );
+    }
     let cxx_rtti_prior_declaration_bump = if cxx_analysis_residues.is_some() {
         0
     } else {

@@ -1878,6 +1878,14 @@ impl CodegenProfile for Gc233Build163 {
         2
     }
 
+    fn cxx_inline_control_flow_label_weight(&self) -> u8 {
+        2
+    }
+
+    fn cxx_virtual_destructor_label_bump(&self) -> u8 {
+        1
+    }
+
     fn cxx_rtti_virtual_method_label_weight(&self, _whole_file: bool) -> u8 {
         1
     }

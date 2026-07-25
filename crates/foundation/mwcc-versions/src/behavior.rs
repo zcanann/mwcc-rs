@@ -1752,7 +1752,8 @@ mod tests {
             20
         );
         assert_eq!(behavior.frame_convention, FrameConvention::LinkageFirst);
-        assert_eq!(behavior.cxx_inline_control_flow_label_weight, 1);
+        assert_eq!(behavior.cxx_inline_control_flow_label_weight, 2);
+        assert_eq!(behavior.cxx_virtual_destructor_label_bump, 1);
         assert_eq!(
             behavior.cxx_reference_bound_scalar_temporary_label_bump,
             2
