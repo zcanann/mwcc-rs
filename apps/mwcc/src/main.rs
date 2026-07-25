@@ -1081,8 +1081,8 @@ fn compile(
         cxx_reference_temporary_analysis.binding_count;
     if diagnose_syntax_tree {
         eprintln!(
-            "cxx-reference-bound-scalar-temporaries \
-             {cxx_reference_bound_scalar_temporaries}"
+            "cxx-inline-ordinal-facts {cxx_inline_facts:?}; \
+             reference-bound-scalar-temporaries={cxx_reference_bound_scalar_temporaries}"
         );
     }
     let mutable_inline_local_declarators = cxx_inline_facts

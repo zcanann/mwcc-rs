@@ -1956,7 +1956,7 @@ impl CodegenProfile for Gc233Build163 {
     }
 
     fn cxx_inline_control_flow_label_weight(&self) -> u8 {
-        2
+        1
     }
 
     fn cxx_virtual_destructor_label_bump(&self) -> u8 {
