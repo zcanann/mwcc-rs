@@ -61,7 +61,7 @@ impl Generator {
     /// Insert a value preload into the final load/compare latency slot emitted by
     /// a simple condition. Relocations already point at the preceding loads; shift
     /// only entries at or after the comparison insertion point.
-    fn insert_before_terminal_compare(&mut self, instruction: Instruction) -> bool {
+    pub(crate) fn insert_before_terminal_compare(&mut self, instruction: Instruction) -> bool {
         let Some(position) = self.output.instructions.len().checked_sub(1) else {
             return false;
         };

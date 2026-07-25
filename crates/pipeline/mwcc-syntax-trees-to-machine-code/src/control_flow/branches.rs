@@ -22,21 +22,14 @@ impl Generator {
         tail: bool,
         origin: ConditionalOrigin,
     ) -> Compilation<()> {
-        // A logical (&&/||) condition feeding a select/guard would compute the operator as a
-        // 0/1 value and then re-normalize/select on it (`(a&&b) ? 1 : 0` -> `(a&&b) != 0`),
-        // whereas mwcc short-circuits the logical operator directly into the arms (each term
-        // branches to the return blocks: `cmpwi r3,0; beq END; cmpwi r4,0; beq END; li
-        // r3,1`). That short-circuit-to-arms lowering is the general control-flow path
-        // (roadmap #21); until then defer rather than ship the normalize-shaped diff. (A bare
-        // `return a && b` goes through evaluate_general, not here, and stays byte-exact.)
-        if matches!(
+        if self.try_emit_logical_call_select(
             condition,
-            Expression::Binary {
-                operator: BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr,
-                ..
-            }
-        ) {
-            return Err(Diagnostic::error("a logical (&&/||) condition in a select/guard needs short-circuit lowering (roadmap #21)"));
+            when_true,
+            when_false,
+            destination,
+            tail,
+        )? {
+            return Ok(());
         }
 
         // A string-valued ternary is a pointer diamond. Each arm materializes
@@ -1815,6 +1808,15 @@ impl Generator {
         if let Expression::Comma { left, right } = operand {
             self.emit_comma_side_effect(left)?;
             return self.condition_operand_register(right);
+        }
+        // A logical condition selecting between a call and a scalar value keeps
+        // the selected value in the EABI call-result register. The dedicated
+        // select owner emits both arms into that home, so compare it directly
+        // instead of forcing a redundant move through r0.
+        if super::logical_call_select::is_logical_call_select(operand) {
+            let result = mwcc_target::Eabi::general_result().number;
+            self.evaluate_general(operand, result)?;
+            return Ok(result);
         }
         // A source-proven one-word aggregate already has its sole offset-zero
         // member in the scalarized local home. Comparing that member can use the
