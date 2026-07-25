@@ -105,6 +105,45 @@ fn constant(byte_width: u8, image: bool) -> Sdata2Constant {
     }
 }
 
+fn weak_function(name: &'static str) -> FunctionObject<'static> {
+    FunctionObject {
+        name,
+        is_static: false,
+        static_locals_lead: false,
+        text_deferred: false,
+        is_weak: true,
+        section: None,
+        is_asm: false,
+        entry_points: Vec::new(),
+        force_active: false,
+        text: &[0x4e, 0x80, 0x00, 0x20],
+        data_section_displacements: Vec::new(),
+        relocations: Vec::new(),
+        constants: Vec::new(),
+        frame: None,
+        anonymous_bump: 0,
+        implicit_local: false,
+        weak_inline: true,
+        constant_number_gaps: Vec::new(),
+        constant_number_adjust: 0,
+        phantom_externals: Vec::new(),
+        post_constant_bump: 0,
+        post_function_anonymous_bump: None,
+        string_count: 0,
+        string_number_after_constants: None,
+        string_number_after_rodata: None,
+        string_names: Vec::new(),
+        jump_tables: Vec::new(),
+        anonymous_rodata: Vec::new(),
+        local_undefined_callees: Vec::new(),
+        symbol_order: Vec::new(),
+        defined_data_precedes_defined_functions: false,
+        referenced_function_symbols: Vec::new(),
+        implicit_external_callees: Vec::new(),
+        early_implicit_external_callees: Vec::new(),
+    }
+}
+
 #[test]
 fn discarded_inline_images_use_aggregate_alignment() {
     assert_eq!(constant_alignment(&constant(8, true)), 4);
@@ -120,6 +159,88 @@ fn pool_numbers_can_precede_the_ordinary_function_position() {
 fn source_analysis_advances_the_writers_dense_ordinal_stream() {
     assert_eq!(dense_anonymous_counter(2, 43, 0, 0, 0), 45);
     assert_eq!(dense_anonymous_counter(2, 43, 7, 2, 1), 49);
+}
+
+#[test]
+fn owned_rtti_closures_schedule_base_tables_then_vtable_transactions() {
+    let relocation = |offset, target: &str| crate::DataRelocation {
+        offset,
+        target: target.into(),
+        addend: 0,
+    };
+    let vtable = DataObject {
+        name: "__vt__4Boss",
+        size: 20,
+        alignment: 4,
+        comment_alignment: 4,
+        initial_bytes: Some(vec![0; 20]),
+        is_const: false,
+        force_full_data_section: true,
+        is_static: false,
+        force_active: false,
+        is_explicit_zero: false,
+        preassigned_anonymous_ordinal: None,
+        preassigned_ordinal_advances_counter: false,
+        relocations: vec![
+            relocation(8, "getAge__4BaseFv"),
+            relocation(12, "read__4BaseFv"),
+            relocation(16, "update__4BaseFv"),
+            relocation(0, "__RTTI__4Boss"),
+        ],
+        non_static_functions_before: 0,
+        functions_before: 0,
+        is_weak: true,
+        static_local_owner: None,
+        anonymous_adjust: 0,
+        section: None,
+    };
+    let base_table = DataObject {
+        name: "@40",
+        size: 12,
+        alignment: 4,
+        comment_alignment: 4,
+        initial_bytes: Some(vec![0; 12]),
+        is_const: false,
+        force_full_data_section: true,
+        is_static: true,
+        force_active: false,
+        is_explicit_zero: false,
+        preassigned_anonymous_ordinal: Some(40),
+        preassigned_ordinal_advances_counter: true,
+        relocations: vec![
+            relocation(0, "__RTTI__4Base"),
+            relocation(8, "__RTTI__4Core"),
+        ],
+        non_static_functions_before: 0,
+        functions_before: 0,
+        is_weak: false,
+        static_local_owner: None,
+        anonymous_adjust: 0,
+        section: None,
+    };
+    // Reverse body-emission order is getAge, read.
+    let functions = [
+        weak_function("read__4BaseFv"),
+        weak_function("getAge__4BaseFv"),
+    ];
+    let objects = [vtable, base_table];
+    let order = data_relocation_order(&objects, &functions, &[0, 1], true);
+    let targets: Vec<&str> = order
+        .iter()
+        .map(|&(object, relocation)| objects[object].relocations[relocation].target.as_str())
+        .collect();
+
+    assert_eq!(
+        targets,
+        [
+            "__RTTI__4Core",
+            "__RTTI__4Base",
+            "__RTTI__4Boss",
+            "getAge__4BaseFv",
+            "read__4BaseFv",
+            "update__4BaseFv",
+        ]
+    );
 }
 
 #[test]
@@ -202,6 +323,7 @@ fn nonadvancing_analysis_constants_trail_function_constant_pools() {
             sdata2_writable: false,
             function_symbol_order: FunctionSymbolOrder::ReferencesFirst,
             weak_vtable_function_symbol_tail: false,
+            owned_rtti_closure_relocation_order: false,
             initialized_globals_before_deferred_functions: false,
             local_data_symbols_in_declaration_order: false,
             small_zero_statics_in_declaration_order: false,
@@ -451,6 +573,7 @@ fn grouped_debug_data_relocations_restore_source_declaration_order() {
             sdata2_writable: false,
             function_symbol_order: FunctionSymbolOrder::Deferred,
             weak_vtable_function_symbol_tail: false,
+            owned_rtti_closure_relocation_order: false,
             initialized_globals_before_deferred_functions: false,
             local_data_symbols_in_declaration_order: false,
             small_zero_statics_in_declaration_order: false,
@@ -572,6 +695,7 @@ fn data_anchor_precedes_the_first_upfront_local_data_object() {
             sdata2_writable: false,
             function_symbol_order: FunctionSymbolOrder::ReferencesFirst,
             weak_vtable_function_symbol_tail: false,
+            owned_rtti_closure_relocation_order: false,
             initialized_globals_before_deferred_functions: false,
             local_data_symbols_in_declaration_order: false,
             small_zero_statics_in_declaration_order: false,
@@ -678,6 +802,7 @@ fn const_pointer_arrays_emit_reverse_rodata_relocations() {
             sdata2_writable: false,
             function_symbol_order: FunctionSymbolOrder::ReferencesFirst,
             weak_vtable_function_symbol_tail: false,
+            owned_rtti_closure_relocation_order: false,
             initialized_globals_before_deferred_functions: false,
             local_data_symbols_in_declaration_order: false,
             small_zero_statics_in_declaration_order: false,

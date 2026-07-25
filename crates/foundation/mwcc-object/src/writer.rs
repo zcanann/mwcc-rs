@@ -10,7 +10,7 @@
 
 use crate::{
     layout_code_sections, CommentFormat, DataObject, DebugRelocationTarget, DebugSymbolBinding,
-    DebugSymbolPlacement, FunctionSymbolOrder, ObjectInput, RelocationTarget,
+    DebugSymbolPlacement, FunctionObject, FunctionSymbolOrder, ObjectInput, RelocationTarget,
     Sdata2Constant,
 };
 
@@ -90,6 +90,115 @@ fn is_trailing_analysis_constant(object: &DataObject<'_>) -> bool {
     object.is_const
         && object.preassigned_anonymous_ordinal.is_some()
         && !object.preassigned_ordinal_advances_counter
+}
+
+/// Return `(data-object index, relocation index)` in the compiler's transaction
+/// order. Ordinary data retains declaration order with reverse field order.
+/// Build 163's owned all-inline RTTI closure instead completes every inheritance
+/// table before visiting root/base vtables. A vtable registers its RTTI pointer,
+/// then weak bodies in reverse emission order, then remaining slots in reverse.
+fn data_relocation_order(
+    objects: &[DataObject<'_>],
+    functions: &[FunctionObject<'_>],
+    eligible_objects: &[usize],
+    owned_rtti_closure: bool,
+) -> Vec<(usize, usize)> {
+    let append_reverse = |order: &mut Vec<(usize, usize)>, object_index: usize| {
+        order.extend(
+            (0..objects[object_index].relocations.len())
+                .rev()
+                .map(|relocation_index| (object_index, relocation_index)),
+        );
+    };
+    if !owned_rtti_closure {
+        let mut order = Vec::new();
+        for &object_index in eligible_objects {
+            append_reverse(&mut order, object_index);
+        }
+        return order;
+    }
+
+    let is_base_table = |object: &DataObject<'_>| {
+        object.name.starts_with('@')
+            && !object.relocations.is_empty()
+            && object
+                .relocations
+                .iter()
+                .all(|relocation| relocation.target.starts_with("__RTTI__"))
+    };
+    let is_owned_vtable = |object: &DataObject<'_>| {
+        object.is_weak
+            && object.name.starts_with("__vt__")
+            && object
+                .relocations
+                .iter()
+                .any(|relocation| relocation.target.starts_with("__RTTI__"))
+    };
+    let closure_objects: Vec<usize> = eligible_objects
+        .iter()
+        .copied()
+        .filter(|&index| is_base_table(&objects[index]) || is_owned_vtable(&objects[index]))
+        .collect();
+    if closure_objects.is_empty() {
+        let mut order = Vec::new();
+        for &object_index in eligible_objects {
+            append_reverse(&mut order, object_index);
+        }
+        return order;
+    }
+
+    let mut closure_order = Vec::new();
+    for &object_index in &closure_objects {
+        if is_base_table(&objects[object_index]) {
+            append_reverse(&mut closure_order, object_index);
+        }
+    }
+    for &object_index in &closure_objects {
+        let object = &objects[object_index];
+        if !is_owned_vtable(object) {
+            continue;
+        }
+        let mut emitted = vec![false; object.relocations.len()];
+        for (relocation_index, relocation) in object.relocations.iter().enumerate() {
+            if relocation.target.starts_with("__RTTI__") {
+                closure_order.push((object_index, relocation_index));
+                emitted[relocation_index] = true;
+            }
+        }
+        for function in functions
+            .iter()
+            .rev()
+            .filter(|function| function.weak_inline)
+        {
+            if let Some((relocation_index, _)) =
+                object.relocations.iter().enumerate().find(|(index, relocation)| {
+                    !emitted[*index] && relocation.target == function.name
+                })
+            {
+                closure_order.push((object_index, relocation_index));
+                emitted[relocation_index] = true;
+            }
+        }
+        for relocation_index in (0..object.relocations.len()).rev() {
+            if !emitted[relocation_index] {
+                closure_order.push((object_index, relocation_index));
+            }
+        }
+    }
+
+    let mut order = Vec::new();
+    let mut emitted_closure = false;
+    for &object_index in eligible_objects {
+        if closure_objects.contains(&object_index) {
+            if !emitted_closure {
+                order.extend(closure_order.iter().copied());
+                emitted_closure = true;
+            }
+        } else {
+            append_reverse(&mut order, object_index);
+        }
+    }
+    order
 }
 
 /// The Metrowerks `.comment` record for a plain function. Bytes 12..15 spell the
@@ -2498,16 +2607,21 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // source objects (CARDNet: sqrtf constants, __init_hardware/__flush_cache,
     // __CARDVendorID). Keep the prefix narrow so ordinary declaration ordering
     // is unchanged once a non-weak object has been encountered.
-    for object in input.data_objects.iter().take_while(|object| {
+    for object in input
+        .data_objects
+        .iter()
+        .skip_while(|object| is_trailing_analysis_constant(object))
+        .take_while(|object| {
             object.is_weak
-            && is_initialized_run_object(object)
-            && initialized_object_is_upfront(
-                object,
-                input
-                    .object_format
-                    .initialized_globals_before_deferred_functions,
-            )
-    }) {
+                && is_initialized_run_object(object)
+                && initialized_object_is_upfront(
+                    object,
+                    input
+                        .object_format
+                        .initialized_globals_before_deferred_functions,
+                )
+        })
+    {
         emit_initialized_object!(object);
     }
     for name in input.early_undefined_externals {
@@ -3004,18 +3118,12 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             && function.weak_inline
             && functions[..index].iter().all(|prior| !prior.weak_inline)
         {
-            let mut emitted = std::collections::HashSet::new();
-            for object in input.data_objects.iter().filter(|object| {
-                object.is_weak && object.name.starts_with("__vt__")
-            }) {
-                for relocation in object.relocations.iter().rev() {
-                    if let Some(function_index) = functions.iter().position(|candidate| {
-                        candidate.weak_inline && candidate.name == relocation.target
-                    }) {
-                        if emitted.insert(function_index) {
-                            emit_function_symbol!(function_index);
-                        }
-                    }
+            // Body materialization has already grouped vtable slots by owner and
+            // overload family. Symbol registration closes that transaction in
+            // reverse body-emission order.
+            for function_index in (index..functions.len()).rev() {
+                if functions[function_index].weak_inline {
+                    emit_function_symbol!(function_index);
                 }
             }
         }
@@ -3411,20 +3519,28 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             );
         }
     }
-    for object in &input.data_objects {
-        if data_section[object.name] != ".data" {
-            continue;
-        }
-        for relocation in object.relocations.iter().rev() {
-            let (symbol, section_addend) = resolve_data_target(&relocation.target);
-            write_rela(
-                &mut rela_data,
-                data_offsets[object.name] + relocation.offset,
-                symbol,
-                R_PPC_ADDR32,
-                section_addend.wrapping_add(relocation.addend as u32),
-            );
-        }
+    let data_object_indices: Vec<usize> = input
+        .data_objects
+        .iter()
+        .enumerate()
+        .filter_map(|(index, object)| (data_section[object.name] == ".data").then_some(index))
+        .collect();
+    for (object_index, relocation_index) in data_relocation_order(
+        &input.data_objects,
+        &functions,
+        &data_object_indices,
+        input.object_format.owned_rtti_closure_relocation_order,
+    ) {
+        let object = &input.data_objects[object_index];
+        let relocation = &object.relocations[relocation_index];
+        let (symbol, section_addend) = resolve_data_target(&relocation.target);
+        write_rela(
+            &mut rela_data,
+            data_offsets[object.name] + relocation.offset,
+            symbol,
+            R_PPC_ADDR32,
+            section_addend.wrapping_add(relocation.addend as u32),
+        );
     }
     // `.rela.ctors`/`.rela.dtors`: each chain reference's `ADDR32` to its function.
     let mut rela_ctors = Vec::new();

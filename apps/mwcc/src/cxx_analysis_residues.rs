@@ -118,7 +118,9 @@ pub fn build163_vtable_const_residue(
         ) as u32;
     let mut residue = object(ordinal, 2, Some(vec![0, 0]), false);
     residue.alignment = 2;
-    residue.comment_alignment = 2;
+    // Storage is only halfword-aligned, but Build 163 records the frontend
+    // temporary with the word alignment of its analysis object.
+    residue.comment_alignment = 4;
     residue.is_const = true;
     residue.preassigned_ordinal_advances_counter = false;
     Some(residue)

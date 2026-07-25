@@ -43,6 +43,9 @@ pub struct ObjectFormat {
     /// Weak vtable-owned inline functions keep forward text layout but expose
     /// reverse-slot symbol discovery after ordinary source functions.
     pub weak_vtable_function_symbol_tail: bool,
+    /// Owned all-inline RTTI closures emit base-table relocations before their
+    /// root/base vtables, whose weak slots follow reverse body-emission order.
+    pub owned_rtti_closure_relocation_order: bool,
     /// Deferred code generation completes initialized file-scope declarations
     /// before its reversed function-emission pass, regardless of where those
     /// declarations appeared between source functions.
