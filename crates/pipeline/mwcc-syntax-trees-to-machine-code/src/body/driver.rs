@@ -3180,6 +3180,9 @@ impl Generator {
                 if self.try_guarded_call_return(function)? {
                     return Ok(());
                 }
+                if self.try_callee_saved_structured_guard_body(function)? {
+                    return Ok(());
+                }
                 return Err(Diagnostic::error(
                     "calls combined with guards not yet supported",
                 ));

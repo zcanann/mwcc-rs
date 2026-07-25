@@ -78,6 +78,29 @@ impl Generator {
         self.try_callee_saved_structured_body_impl(function, false)
     }
 
+    /// Route trailing guarded returns through the same structured statement
+    /// compiler as source-level early returns. Guards are a compact parser
+    /// representation; once calls require whole-body liveness, retaining a
+    /// separate lowering path only prevents frame and saved-home planning from
+    /// seeing the complete control-flow graph.
+    pub(crate) fn try_callee_saved_structured_guard_body(
+        &mut self,
+        function: &Function,
+    ) -> Compilation<bool> {
+        if function.guards.is_empty() {
+            return Ok(false);
+        }
+        let mut normalized = function.clone();
+        normalized
+            .statements
+            .extend(normalized.guards.drain(..).map(|guard| Statement::If {
+                condition: guard.condition,
+                then_body: vec![Statement::Return(Some(guard.value))],
+                else_body: Vec::new(),
+            }));
+        self.try_callee_saved_structured_frame_body(&normalized)
+    }
+
     /// The same virtual-register path with uninitialized automatic byte arrays
     /// composed below its saved homes and a shared integer-valued exit.
     pub(crate) fn try_callee_saved_structured_frame_body(
