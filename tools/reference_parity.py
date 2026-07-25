@@ -208,6 +208,23 @@ def selection_is_probability_sample(path: Path) -> bool:
     )
 
 
+def missing_probability_selection_ids(
+    path: Path, rows: Iterable[Dict[str, Any]]
+) -> List[str]:
+    """Return declared audit members that disappeared before execution.
+
+    Configuration identities can change when inventory normalization changes.
+    Silently intersecting a fixed probability sample with a different inventory
+    biases the estimate, so every declared sample and sentinel must resolve.
+    """
+
+    if not selection_is_probability_sample(path):
+        return []
+    declared = load_selection(path)
+    resolved = {row_configuration_id(row) for row in rows}
+    return sorted(declared - resolved)
+
+
 def stable_sample(rows: List[Dict[str, Any]], size: int, seed: str) -> List[Dict[str, Any]]:
     if size <= 0 or size >= len(rows):
         return rows
@@ -520,6 +537,18 @@ def main() -> int:
         print(f"inventory failed: {error}", file=sys.stderr)
         return 2
     rows = selected_rows(inventory["translation_units"], args)
+    if args.selection is not None:
+        missing_selection_ids = missing_probability_selection_ids(args.selection, rows)
+        if missing_selection_ids:
+            examples = ", ".join(missing_selection_ids[:3])
+            suffix = "" if len(missing_selection_ids) <= 3 else ", ..."
+            print(
+                "probability-sample selection integrity failed: "
+                f"{len(missing_selection_ids)} declared configuration IDs are absent "
+                f"after inventory/filter selection ({examples}{suffix})",
+                file=sys.stderr,
+            )
+            return 2
     if args.write_selection is not None:
         args.write_selection.parent.mkdir(parents=True, exist_ok=True)
         selection = {

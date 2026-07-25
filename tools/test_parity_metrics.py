@@ -51,6 +51,7 @@ from reference_parity import (
     harness_fingerprint,
     immutable_compiler_snapshot,
     immutable_harness_snapshot,
+    missing_probability_selection_ids,
     parity_metadata,
     parse_args as parse_reference_args,
     result_cache_name,
@@ -781,6 +782,24 @@ class IdentityTests(unittest.TestCase):
             work.write_text('{"configuration_ids":[]}', encoding="utf-8")
             self.assertTrue(selection_is_probability_sample(audit))
             self.assertFalse(selection_is_probability_sample(work))
+
+    def test_probability_sample_rejects_silent_inventory_intersection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            audit = Path(directory) / "audit.json"
+            audit.write_text(
+                '{"kind":"simple_random_sample_without_replacement",'
+                '"sample_configuration_ids":["present","missing"],'
+                '"configuration_ids":["present","missing","sentinel"]}',
+                encoding="utf-8",
+            )
+            rows = [
+                {"configuration_id": "present"},
+                {"configuration_id": "sentinel"},
+            ]
+            self.assertEqual(
+                missing_probability_selection_ids(audit, rows),
+                ["missing"],
+            )
 
     def test_selective_retry_reuses_every_other_cached_status(self):
         self.assertFalse(cached_record_reusable(None, {"HARNESS"}))
