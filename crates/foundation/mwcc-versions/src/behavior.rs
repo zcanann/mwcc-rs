@@ -2183,7 +2183,7 @@ mod tests {
             crate::build::by_label_experimental("Wii/1.0").unwrap(),
         ));
         assert_eq!(wii43.call_dispatcher_style, CallDispatcherStyle::Packed41);
-        assert_eq!(wii43.call_dispatcher_table_base_labels, 0);
+        assert_eq!(wii43.call_dispatcher_table_base_labels, 2);
         assert_eq!(wii43.skipped_plain_inline_label_base, 3);
         assert_eq!(wii43.skipped_function_template_label_base, 1);
         assert_eq!(wii43.dropped_inline_parameter_label_weight, 1);

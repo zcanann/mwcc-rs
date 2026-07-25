@@ -1816,7 +1816,7 @@ impl CodegenProfile for Wii43Build145 {
     }
 
     fn call_dispatcher_table_base_labels(&self) -> u8 {
-        0
+        2
     }
 
     fn call_dispatcher_style(&self) -> CallDispatcherStyle {

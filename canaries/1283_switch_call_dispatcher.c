@@ -1,6 +1,6 @@
 // A dense call dispatcher preserves its message pointer and accumulated result
 // across prefix/suffix trace calls and every jump-table arm.
-// builds: GC/3.0a3p1
+// builds: GC/3.0a3p1 Wii/1.0
 // flags: -Cpp_exceptions off -O4,p -inline deferred,auto -rostr -str reuse -sdata 0 -sdata2 0
 typedef struct DispatchMessage {
     unsigned char bytes[21];
