@@ -77,7 +77,9 @@ impl Parser {
         end: usize,
         class: &str,
     ) {
-        let Some(declaration_type) = self.static_data_declaration_type(declaration_start) else {
+        let Some((declaration_type, declaration_struct)) =
+            self.static_data_declaration_type(declaration_start)
+        else {
             return;
         };
         let mut declarator_start = declaration_start;
@@ -112,17 +114,28 @@ impl Parser {
                 ) {
                     let size = type_size(declaration_type);
                     self.global_sizes.entry(mangled.clone()).or_insert((size, None));
-                    self.global_types.entry(mangled).or_insert(declaration_type);
+                    self.global_types
+                        .entry(mangled.clone())
+                        .or_insert(declaration_type);
+                    if let Some(tag) = &declaration_struct {
+                        self.global_structs
+                            .entry(mangled)
+                            .or_insert_with(|| tag.clone());
+                    }
                 }
             }
             declarator_start = declarator_end + 1;
         }
     }
 
-    fn static_data_declaration_type(&self, declaration_start: usize) -> Option<Type> {
+    fn static_data_declaration_type(
+        &self,
+        declaration_start: usize,
+    ) -> Option<(Type, Option<String>)> {
         let mut probe = self.clone();
         probe.position = declaration_start;
         let mut declared_type = probe.parse_type().ok()?;
+        let declaration_struct = probe.last_struct_tag.take();
         while probe.tokens.get(probe.position) == Some(&Token::Star) {
             probe.position += 1;
             declared_type = match declared_type {
@@ -133,6 +146,6 @@ impl Parser {
                 scalar => Type::Pointer(pointee_of(scalar).ok()?),
             };
         }
-        Some(declared_type)
+        Some((declared_type, declaration_struct))
     }
 }

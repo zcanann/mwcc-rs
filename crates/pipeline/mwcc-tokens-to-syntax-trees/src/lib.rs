@@ -2818,6 +2818,43 @@ blr\n\
     }
 
     #[test]
+    fn resolves_a_member_of_a_qualified_static_aggregate() {
+        let source = r#"
+            template <typename T> class List {
+            public:
+                T* head;
+                T* tail;
+            };
+            class Node {
+            public:
+                static List<Node> active;
+            };
+            Node* first() { return Node::active.head; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            unit.functions[0].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Member {
+                base,
+                offset: 0,
+                ..
+            }) if matches!(
+                base.as_ref(),
+                mwcc_syntax_trees::Expression::Variable(name)
+                    if name == "active__4Node"
+            )
+        ));
+    }
+
+    #[test]
     fn keeps_a_const_static_data_member_externally_linked() {
         let source = r#"
             class CallStack {
