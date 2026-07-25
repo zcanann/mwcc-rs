@@ -1738,6 +1738,30 @@ impl Generator {
             self.emit_comma_side_effect(left)?;
             return self.evaluate_register_store_value(right, value_type, destination);
         }
+        // References are represented as struct pointers after parsing. Binding
+        // one to an indexed aggregate lvalue stores the element ADDRESS, not
+        // the aggregate's first word. Keep this expectation-driven conversion
+        // here, where both the destination type and initializer are available;
+        // ordinary scalar subscripts must continue through value loading.
+        if let (
+            Type::StructPointer { element_size },
+            Expression::Index { base, .. },
+        ) = (value_type, value)
+        {
+            let indexed_element_size = match base.as_ref() {
+                Expression::Member {
+                    member_type: Type::StructPointer { element_size },
+                    ..
+                } => Some(*element_size),
+                Expression::Variable(name) => {
+                    self.locations.get(name.as_str()).and_then(|location| location.stride)
+                }
+                _ => None,
+            };
+            if indexed_element_size == Some(element_size) {
+                return self.emit_address_of(value, destination);
+            }
+        }
         self.evaluate(value, value_type, destination)
     }
 
