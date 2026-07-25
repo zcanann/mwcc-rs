@@ -681,6 +681,9 @@ impl Generator {
         let store0 = if i0 == 0 { i0_reg } else { i1_reg };
         let store1 = if i0 == 0 { i1_reg } else { i0_reg };
         let legacy_reloading = legacy_roles.is_some();
+        let preserve_outer_condition = k1 == k5
+            && self.behavior.punned_ladder_condition_style
+                == mwcc_versions::PunnedLadderConditionStyle::PreserveOuterInCr1;
         // -- emit --
         self.frame_size = 16;
         self.output
@@ -742,18 +745,28 @@ impl Generator {
         let arm2_at = self.fresh_label();
         let arm3_at = self.fresh_label();
         // The ladder.
-        self.output
-            .instructions
-            .push(Instruction::CompareWordImmediate {
+        self.output.instructions.push(if preserve_outer_condition {
+            Instruction::CompareWordImmediateField {
+                crf: 1,
                 a: j0_reg,
                 immediate: k1,
-            });
+            }
+        } else {
+            Instruction::CompareWordImmediate {
+                a: j0_reg,
+                immediate: k1,
+            }
+        });
         if source_load != i0_reg {
             self.output
                 .instructions
                 .push(Instruction::move_register(i0_reg, source_load));
         }
-        self.emit_branch_conditional_to(4, 0, ladder2_at); // bge
+        self.emit_branch_conditional_to(
+            4,
+            if preserve_outer_condition { 4 } else { 0 },
+            ladder2_at,
+        ); // bge
         self.output
             .instructions
             .push(Instruction::CompareWordImmediate {
@@ -1028,13 +1041,15 @@ impl Generator {
                 immediate: 0,
             });
         self.emit_branch_conditional_to(a3_sign_branch.0, a3_sign_branch.1, a3_andc);
-        self.output
-            .instructions
-            .push(Instruction::CompareWordImmediate {
-                a: j0_reg,
-                immediate: k5,
-            });
-        self.emit_branch_conditional_to(4, 2, a3_carry); // bne
+        if !preserve_outer_condition {
+            self.output
+                .instructions
+                .push(Instruction::CompareWordImmediate {
+                    a: j0_reg,
+                    immediate: k5,
+                });
+        }
+        self.emit_branch_conditional_to(4, if preserve_outer_condition { 6 } else { 2 }, a3_carry); // bne
         self.output.instructions.push(Instruction::AddImmediate {
             d: i0_reg,
             a: i0_reg,

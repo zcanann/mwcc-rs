@@ -370,6 +370,16 @@ pub enum PunnedShiftWritebackStyle {
     LegacyReloading,
 }
 
+/// Condition-register lifetime used by the full punned-double writeback ladder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PunnedLadderConditionStyle {
+    /// GC 1.x through 2.7 recompute the late exponent test in CR0.
+    RecompareLateTest,
+    /// GC 4.1 and Wii 4.3 preserve the outer exponent comparison in CR1 and
+    /// branch on it again in the final carry arm.
+    PreserveOuterInCr1,
+}
+
 /// Linkage and floating-spill schedule for fdlibm trigonometric dispatchers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrigDispatcherStyle {
@@ -1166,6 +1176,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         PunnedShiftWritebackStyle::LiveParameter
     }
 
+    fn punned_ladder_condition_style(&self) -> PunnedLadderConditionStyle {
+        PunnedLadderConditionStyle::RecompareLateTest
+    }
+
     fn trig_dispatcher_style(&self) -> TrigDispatcherStyle {
         TrigDispatcherStyle::LiveParameter
     }
@@ -1453,6 +1467,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn punned_ladder_condition_style(&self) -> PunnedLadderConditionStyle {
+        PunnedLadderConditionStyle::PreserveOuterInCr1
+    }
+
     fn forwarded_trace_string_style(&self) -> ForwardedTraceStringStyle {
         ForwardedTraceStringStyle::PackedLowBeforeInteger
     }
@@ -1623,6 +1641,10 @@ impl CodegenProfile for Gc41Build51213 {
 #[derive(Debug)]
 pub struct Wii43Build145;
 impl CodegenProfile for Wii43Build145 {
+    fn punned_ladder_condition_style(&self) -> PunnedLadderConditionStyle {
+        PunnedLadderConditionStyle::PreserveOuterInCr1
+    }
+
     fn forwarded_trace_string_style(&self) -> ForwardedTraceStringStyle {
         ForwardedTraceStringStyle::PackedLowBeforeInteger
     }

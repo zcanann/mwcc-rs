@@ -33,7 +33,8 @@ use crate::profile::{
     NarrowCompoundShiftStyle, NarrowComputedReturnStyle, NarrowGuardScheduleStyle,
     NarrowStoreConversionStyle, NegativePowerOfTwoMultiplyStyle, NestedGlobalDispatchSchedule,
     PlainLinkageEpilogueStyle, PointerCallStoreEpilogueStyle, PunnedConditionalWritebackStyle,
-    PunnedFloatFrameConvention, PunnedShiftWritebackStyle, QueueServiceInliningStyle,
+    PunnedFloatFrameConvention, PunnedLadderConditionStyle, PunnedShiftWritebackStyle,
+    QueueServiceInliningStyle,
     RaiseFamilyStyle, ReadOnlySectionAnchorOrder, ReturnRegisterStoreStyle, SavedGprEpilogueStyle,
     SharedFloatDagStyle, SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle,
     StoredGlobalReadStyle, SymbolTraversalStyle, TrigDispatcherStyle, TrigQuadrantDispatchStyle,
@@ -714,6 +715,8 @@ pub struct Behavior {
     pub punned_conditional_writeback_style: PunnedConditionalWritebackStyle,
     /// Frame, reload, and integer-allocation convention for shifted-mask writebacks.
     pub punned_shift_writeback_style: PunnedShiftWritebackStyle,
+    /// Condition-register lifetime for the full punned-double writeback ladder.
+    pub punned_ladder_condition_style: PunnedLadderConditionStyle,
     /// Linkage and floating-spill schedule for trigonometric dispatchers.
     pub trig_dispatcher_style: TrigDispatcherStyle,
     /// Placement of the zero constant consumed by a dispatcher's small arm.
@@ -1095,6 +1098,7 @@ impl Behavior {
                 .profile
                 .punned_conditional_writeback_style(),
             punned_shift_writeback_style: config.build.profile.punned_shift_writeback_style(),
+            punned_ladder_condition_style: config.build.profile.punned_ladder_condition_style(),
             trig_dispatcher_style: config.build.profile.trig_dispatcher_style(),
             trig_zero_constant_placement: config.build.profile.trig_zero_constant_placement(),
             trig_quadrant_dispatch_style: config
@@ -2199,6 +2203,24 @@ mod tests {
             ipa.function_ordinal_accounting_style,
             FunctionOrdinalAccountingStyle::Gc41Ipa
         );
+    }
+
+    #[test]
+    fn later_profiles_preserve_punned_ladder_outer_condition() {
+        let mainline = Behavior::resolve(&CompilerConfig::new(build::GC_2_7));
+        let gc41 = Behavior::resolve(&CompilerConfig::new(build::GC_3_0A3P1));
+        let wii43 = Behavior::resolve(&CompilerConfig::new(build::WII_1_0));
+
+        assert_eq!(
+            mainline.punned_ladder_condition_style,
+            PunnedLadderConditionStyle::RecompareLateTest
+        );
+        for later in [gc41, wii43] {
+            assert_eq!(
+                later.punned_ladder_condition_style,
+                PunnedLadderConditionStyle::PreserveOuterInCr1
+            );
+        }
     }
 
     #[test]
