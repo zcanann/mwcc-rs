@@ -338,6 +338,7 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
         if character.is_ascii_digit() || (character == '.' && peek(bytes, position + 1).is_some_and(|byte| byte.is_ascii_digit())) {
             let start = position;
             let mut is_float = false;
+            let mut single_suffix = false;
             while position < bytes.len() {
                 let byte = bytes[position];
                 if byte.is_ascii_digit() || byte == b'.' {
@@ -360,6 +361,7 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
                     }
                 } else if byte == b'f' || byte == b'F' {
                     is_float = true;
+                    single_suffix = true;
                     position += 1;
                     break;
                 } else {
@@ -372,7 +374,11 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
             position = consume_integer_suffix(bytes, position);
             if is_float {
                 let value = text.parse().map_err(|_| Diagnostic::error("malformed float literal"))?;
-                push_token!(Token::FloatLiteral(value), start);
+                if single_suffix {
+                    push_token!(Token::FloatLiteral(value), start);
+                } else {
+                    push_token!(Token::DoubleLiteral(value), start);
+                }
             } else {
                 let value = text.parse().map_err(|_| Diagnostic::error("malformed integer literal"))?;
                 push_token!(Token::IntegerLiteral(value), start);
@@ -684,6 +690,13 @@ mod tests {
         assert!(tokens.contains(&Token::IntegerLiteral(15)));
         assert!(tokens.contains(&Token::IntegerLiteral(10)));
         assert!(!tokens.contains(&Token::Identifier("b1111".to_string())));
+    }
+
+    #[test]
+    fn floating_literal_suffix_preserves_c_precision() {
+        let tokens = tokenize_bytes(b"double d = 3.25; float f = 3.25f;").unwrap();
+        assert!(tokens.contains(&Token::DoubleLiteral(3.25)));
+        assert!(tokens.contains(&Token::FloatLiteral(3.25)));
     }
 
     #[test]

@@ -1807,11 +1807,17 @@ impl Parser {
                                 index += 1;
                             }
                             let image = match (self.tokens.get(index), declared_type) {
-                                (Some(Token::FloatLiteral(value)), Type::Double) => {
+                                (
+                                    Some(Token::FloatLiteral(value) | Token::DoubleLiteral(value)),
+                                    Type::Double,
+                                ) => {
                                     let value = if negative { -*value } else { *value };
                                     Some(value.to_be_bytes().to_vec())
                                 }
-                                (Some(Token::FloatLiteral(value)), Type::Float) => {
+                                (
+                                    Some(Token::FloatLiteral(value) | Token::DoubleLiteral(value)),
+                                    Type::Float,
+                                ) => {
                                     let value = if negative { -*value } else { *value };
                                     Some((value as f32).to_be_bytes().to_vec())
                                 }
@@ -4875,14 +4881,21 @@ impl Parser {
                                     // A float-literal element (optionally negated) keeps the direct
                                     // read; any other element is a CONSTANT EXPRESSION — enums,
                                     // shifts, arithmetic (`1 << 4`, `-A`) — parsed and folded.
-                                    let is_float = matches!(self.peek(), Token::FloatLiteral(_))
+                                    let is_float = matches!(
+                                        self.peek(),
+                                        Token::FloatLiteral(_) | Token::DoubleLiteral(_)
+                                    )
                                         || (*self.peek() == Token::Minus
-                                            && matches!(self.peek_at(1), Token::FloatLiteral(_)));
+                                            && matches!(
+                                                self.peek_at(1),
+                                                Token::FloatLiteral(_) | Token::DoubleLiteral(_)
+                                            ));
                                     if is_float {
                                         let negative = self.eat_keyword(Token::Minus);
-                                        let Token::FloatLiteral(value) = self.advance().clone()
-                                        else {
-                                            unreachable!()
+                                        let value = match self.advance().clone() {
+                                            Token::FloatLiteral(value)
+                                            | Token::DoubleLiteral(value) => value,
+                                            _ => unreachable!(),
                                         };
                                         let value = if negative { -value } else { value };
                                         match declared_type {

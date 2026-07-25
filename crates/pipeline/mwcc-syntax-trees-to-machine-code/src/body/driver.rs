@@ -4821,6 +4821,23 @@ impl Generator {
                     self.load_float_literal(destination, *value, value_type == Type::Double);
                     return Ok(());
                 }
+                // The frontend preserves an unsuffixed C literal as a typed
+                // `double` wrapper. A constant conversion to float is folded
+                // into the pool image; no runtime `frsp` is needed.
+                if let Expression::Cast {
+                    target_type: Type::Double,
+                    operand,
+                } = expression
+                {
+                    if let Expression::FloatLiteral(value) = operand.as_ref() {
+                        self.load_float_literal(
+                            destination,
+                            *value,
+                            value_type == Type::Double,
+                        );
+                        return Ok(());
+                    }
+                }
                 // An integer constant converted to float is folded at compile
                 // time, then materialized from the destination precision's
                 // pool. It is not a run-time int-to-float conversion sequence.
@@ -4908,7 +4925,14 @@ impl Generator {
                 if integer_memory_load {
                     return Err(Diagnostic::error("an integer memory load in a float context needs an int->float conversion (roadmap)"));
                 }
-                self.evaluate_float(expression, destination)
+                self.evaluate_float(expression, destination)?;
+                if value_type == Type::Float && self.is_double_value(expression) {
+                    self.output.instructions.push(Instruction::RoundToSingle {
+                        d: destination,
+                        b: destination,
+                    });
+                }
+                Ok(())
             }
             Type::Void => Err(Diagnostic::error("cannot evaluate a void expression")),
             // A float leaf in an integer context is an implicit float->int conversion

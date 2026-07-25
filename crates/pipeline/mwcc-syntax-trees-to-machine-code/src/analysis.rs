@@ -2090,6 +2090,13 @@ pub(crate) fn fits_single_scratch(expression: &Expression, destination_is_scratc
         } if target_type.width() == 32 && !matches!(target_type, Type::Float | Type::Double) => {
             fits_single_scratch(operand, destination_is_scratch)
         }
+        // An unsuffixed C floating literal is represented as a typed-double
+        // wrapper around the literal payload. It is still a leaf pool load and
+        // needs no additional temporary beyond its requested destination.
+        Expression::Cast {
+            target_type: Type::Double,
+            operand,
+        } if matches!(operand.as_ref(), Expression::FloatLiteral(_)) => true,
         Expression::Conditional { .. } | Expression::Cast { .. } => false,
         Expression::BitFieldRead { extracted, .. } => {
             fits_single_scratch(extracted, destination_is_scratch)

@@ -738,11 +738,17 @@ impl Parser {
                     loop {
                         let negative = self.eat_keyword(Token::Minus);
                         match (self.advance().clone(), declared_type) {
-                                (Token::FloatLiteral(value), Type::Double) => {
+                                (
+                                    Token::FloatLiteral(value) | Token::DoubleLiteral(value),
+                                    Type::Double,
+                                ) => {
                                     let value = if negative { -value } else { value };
                                     bytes.extend_from_slice(&value.to_be_bytes());
                                 }
-                                (Token::FloatLiteral(value), Type::Float) => {
+                                (
+                                    Token::FloatLiteral(value) | Token::DoubleLiteral(value),
+                                    Type::Float,
+                                ) => {
                                     let value = if negative { -value } else { value };
                                     bytes.extend_from_slice(&(value as f32).to_be_bytes());
                                 }

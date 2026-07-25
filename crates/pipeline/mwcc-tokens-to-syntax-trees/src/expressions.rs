@@ -166,6 +166,29 @@ pub(crate) fn fold_constant_float(expression: &Expression) -> Compilation<f64> {
     })
 }
 
+fn floating_constant_type(expression: &Expression) -> Option<Type> {
+    match expression {
+        Expression::FloatLiteral(_) => Some(Type::Float),
+        Expression::Cast {
+            target_type: Type::Double,
+            operand,
+        } if matches!(operand.as_ref(), Expression::FloatLiteral(_)) => Some(Type::Double),
+        _ => None,
+    }
+}
+
+fn typed_float_constant(value: f64, value_type: Type) -> Expression {
+    let literal = Expression::FloatLiteral(value);
+    if value_type == Type::Double {
+        Expression::Cast {
+            target_type: Type::Double,
+            operand: Box::new(literal),
+        }
+    } else {
+        literal
+    }
+}
+
 /// Reduce `value` to `integer_type`'s width, sign-extending a signed type — the
 /// effect of a C integer cast on a constant.
 pub(crate) fn truncate_to_integer(value: i64, integer_type: Type) -> i64 {
@@ -479,18 +502,26 @@ impl Parser {
                     if let Ok(value) = fold_constant_expression(&left) {
                         left = Expression::IntegerLiteral(value);
                     }
-                } else if matches!(
-                    (lhs.as_ref(), rhs.as_ref()),
-                    (Expression::FloatLiteral(_), Expression::FloatLiteral(_))
-                        | (Expression::FloatLiteral(_), Expression::IntegerLiteral(_))
-                        | (Expression::IntegerLiteral(_), Expression::FloatLiteral(_))
-                ) {
+                } else if (floating_constant_type(lhs).is_some()
+                    || floating_constant_type(rhs).is_some())
+                    && (floating_constant_type(lhs).is_some()
+                        || matches!(lhs.as_ref(), Expression::IntegerLiteral(_)))
+                    && (floating_constant_type(rhs).is_some()
+                        || matches!(rhs.as_ref(), Expression::IntegerLiteral(_)))
+                {
                     // Ordinary function expressions get the same arithmetic
                     // constant folding as float globals. Keeping this in the
                     // parser means codegen only sees the literal mwcc pools,
                     // rather than a synthetic runtime divide tree.
                     if let Ok(value) = fold_constant_float(&left) {
-                        left = Expression::FloatLiteral(value);
+                        let value_type = if floating_constant_type(lhs) == Some(Type::Double)
+                            || floating_constant_type(rhs) == Some(Type::Double)
+                        {
+                            Type::Double
+                        } else {
+                            Type::Float
+                        };
+                        left = typed_float_constant(value, value_type);
                     }
                 }
             }
@@ -573,10 +604,13 @@ impl Parser {
                         return Ok(Expression::IntegerLiteral(value));
                     }
                 } else if operator == UnaryOperator::Negate
-                    && matches!(operand.as_ref(), Expression::FloatLiteral(_))
+                    && floating_constant_type(operand).is_some()
                 {
                     if let Ok(value) = fold_constant_float(&unary_expression) {
-                        return Ok(Expression::FloatLiteral(value));
+                        return Ok(typed_float_constant(
+                            value,
+                            floating_constant_type(operand).expect("checked"),
+                        ));
                     }
                 }
             }
@@ -716,6 +750,10 @@ impl Parser {
             match self.advance() {
             Token::IntegerLiteral(value) => Expression::IntegerLiteral(value),
             Token::FloatLiteral(value) => Expression::FloatLiteral(value),
+            Token::DoubleLiteral(value) => Expression::Cast {
+                target_type: Type::Double,
+                operand: Box::new(Expression::FloatLiteral(value)),
+            },
             // A string literal (the raw bytes) — pooled and loaded by address.
             Token::StringLiteral(bytes) => Expression::StringLiteral(bytes),
             Token::WideStringLiteral(_) => {

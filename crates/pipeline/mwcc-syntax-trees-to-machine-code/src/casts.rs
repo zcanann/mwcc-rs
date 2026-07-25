@@ -416,6 +416,10 @@ impl Generator {
                 }
             }
         }
+        if let Expression::FloatLiteral(value) = operand {
+            self.load_float_literal(destination, *value, double);
+            return Ok(());
+        }
         // A cast between floating types needs an instruction only when it NARROWS:
         // `(float)` of a double rounds it to single precision with `frsp`. A leaf
         // rounds in place from its own register; a sub-expression is computed into

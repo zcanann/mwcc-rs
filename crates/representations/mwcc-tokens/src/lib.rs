@@ -38,7 +38,10 @@ pub enum Token {
     // identifiers and literals
     Identifier(String),
     IntegerLiteral(i64),
+    /// A decimal floating literal with an explicit `f`/`F` suffix.
     FloatLiteral(f64),
+    /// An unsuffixed decimal floating literal, whose C type is `double`.
+    DoubleLiteral(f64),
     /// A string literal's decoded bytes (without the surrounding quotes). Codegen
     /// for strings is not in the subset yet — the token lets the lexer get past
     /// `"…"` so the rest of a translation unit still parses.
