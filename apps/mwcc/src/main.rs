@@ -1088,6 +1088,14 @@ fn compile(
     let mutable_inline_local_declarators = cxx_inline_facts
         .inline_definition_local_declarators
         .saturating_sub(cxx_inline_facts.inline_definition_const_local_declarators);
+    let emits_weak_vtable_closure = config.flags.rtti
+        && unit
+            .globals
+            .iter()
+            .any(|global| global.is_weak && global.name.starts_with("__vt__"));
+    let executable_control_flow_weight = behavior.cxx_inline_control_flow_label_weight
+        + u8::from(emits_weak_vtable_closure)
+            * behavior.emitted_vtable_inline_control_flow_replay_weight;
     let cxx_inline_bump = cxx_inline_facts.class_definitions
         * usize::from(behavior.cxx_class_definition_label_bump)
         + cxx_inline_facts.inline_definitions
@@ -1101,9 +1109,9 @@ fn compile(
         + cxx_inline_facts.inline_definition_const_local_declarators
             * usize::from(behavior.dropped_inline_const_local_declaration_label_weight)
         + cxx_inline_facts.control_flow_labels
-            * usize::from(behavior.cxx_inline_control_flow_label_weight)
+            * usize::from(executable_control_flow_weight)
         + cxx_inline_facts.instantiated_template_control_flow_labels
-            * usize::from(behavior.cxx_inline_control_flow_label_weight)
+            * usize::from(executable_control_flow_weight)
         + cxx_inline_facts.nonvirtual_destructors
             * usize::from(behavior.cxx_nonvirtual_destructor_label_bump)
         + cxx_inline_facts.nonvirtual_destructors
@@ -1163,7 +1171,8 @@ fn compile(
         eprintln!(
             "cxx-unit-ordinal-accounting inline={cxx_inline_bump} \
              declaration={unit_declaration_bump} prototype={prototype_name_bump} \
-             literal-discount={literal_temporary_bump_discount}"
+             literal-discount={literal_temporary_bump_discount} \
+             emitted-vtable-replay={emits_weak_vtable_closure}"
         );
     }
     let cxx_rtti_prior_declaration_bump = if cxx_analysis_residues.is_some() {

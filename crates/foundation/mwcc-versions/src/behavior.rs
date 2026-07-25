@@ -789,6 +789,7 @@ pub struct Behavior {
     pub cxx_class_definition_label_bump: u8,
     pub cxx_inline_definition_label_bump: u8,
     pub cxx_inline_control_flow_label_weight: u8,
+    pub emitted_vtable_inline_control_flow_replay_weight: u8,
     pub cxx_nonvirtual_destructor_label_bump: u8,
     pub cxx_trivial_class_temporary_label_bump: u8,
     pub cxx_nontrivial_class_temporary_label_bump: u8,
@@ -1217,6 +1218,10 @@ impl Behavior {
                 .build
                 .profile
                 .cxx_inline_control_flow_label_weight(),
+            emitted_vtable_inline_control_flow_replay_weight: config
+                .build
+                .profile
+                .emitted_vtable_inline_control_flow_replay_weight(),
             cxx_nonvirtual_destructor_label_bump: config
                 .build
                 .profile
@@ -1802,6 +1807,10 @@ mod tests {
         );
         assert_eq!(behavior.frame_convention, FrameConvention::LinkageFirst);
         assert_eq!(behavior.cxx_inline_control_flow_label_weight, 1);
+        assert_eq!(
+            behavior.emitted_vtable_inline_control_flow_replay_weight,
+            1
+        );
         assert_eq!(behavior.cxx_virtual_destructor_label_bump, 1);
         assert_eq!(
             behavior.cxx_constructor_inline_ordinal_weights,

@@ -1361,6 +1361,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         1
     }
 
+    /// Additional executable-analysis pass over dropped inline control flow
+    /// when the translation unit materializes a weak vtable closure.
+    fn emitted_vtable_inline_control_flow_replay_weight(&self) -> u8 {
+        0
+    }
+
     fn cxx_virtual_destructor_label_bump(&self) -> u8 {
         2
     }
@@ -1969,6 +1975,10 @@ impl CodegenProfile for Gc233Build163 {
     }
 
     fn cxx_inline_control_flow_label_weight(&self) -> u8 {
+        1
+    }
+
+    fn emitted_vtable_inline_control_flow_replay_weight(&self) -> u8 {
         1
     }
 
