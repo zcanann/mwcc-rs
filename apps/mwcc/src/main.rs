@@ -856,6 +856,16 @@ fn compile(
         );
         eprintln!("referenced-materialized-inlines {referenced_materialized_inlines:#?}");
         eprintln!("skipped-inline-names {:#?}", unit.skipped_inline_names);
+        for global in unit
+            .globals
+            .iter()
+            .filter(|global| global.is_weak && global.name.starts_with("__vt__"))
+        {
+            eprintln!(
+                "weak-vtable-relocations {} {:#?}",
+                global.name, global.data_relocations
+            );
+        }
         for function in &unit.skipped_inline_definitions {
             eprintln!("skipped-inline {function:#?}");
         }
@@ -1248,6 +1258,25 @@ fn compile(
                 function.frame.is_some()
             );
         }
+    }
+    if behavior.weak_vtable_function_symbol_tail && !config.flags.inline_deferred {
+        let vtable_targets = unit
+            .globals
+            .iter()
+            // Construction discovers the most-derived weak table first; its
+            // inherited slots claim shared bodies before base tables do.
+            .rev()
+            .filter(|global| global.is_weak && global.name.starts_with("__vt__"))
+            .flat_map(|global| {
+                global
+                    .data_relocations
+                    .iter()
+                    .map(|(_, target, _)| target.as_str())
+            });
+        function_order::apply_weak_vtable_emission_tail(
+            &mut machine_functions,
+            vtable_targets,
+        );
     }
     // Deferred inlining has its own translation-unit emission schedule. Keep the
     // policy isolated from lowering and object layout: both consume its result.

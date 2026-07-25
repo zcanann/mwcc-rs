@@ -95,6 +95,98 @@ fn emit_with_materialized_callees(
     }
 }
 
+/// Move generated weak inline bodies behind ordinary source functions in the
+/// order Build 163 materializes them from weak vtable relocation transactions.
+///
+/// The materializer groups slots by declaring class, processes those groups
+/// most-derived-first, preserves method-family order within one class, and
+/// reverses each overload family. This differs from the reverse relocation walk
+/// used to register symbols. A body referenced by more than one table is emitted
+/// only once; unreferenced recovered bodies keep their recovery order afterward.
+pub(crate) fn apply_weak_vtable_emission_tail<'a>(
+    functions: &mut Vec<MachineFunction>,
+    vtable_targets: impl IntoIterator<Item = &'a str>,
+) {
+    let (mut source_functions, weak_functions): (Vec<_>, Vec<_>) = std::mem::take(functions)
+        .into_iter()
+        .partition(|function| !function.weak_inline);
+    if weak_functions.is_empty() {
+        *functions = source_functions;
+        return;
+    }
+
+    let mut pending: HashMap<String, MachineFunction> = weak_functions
+        .iter()
+        .cloned()
+        .map(|function| (function.name.clone(), function))
+        .collect();
+    let mut class_groups: Vec<(String, Vec<(String, Vec<String>)>)> = Vec::new();
+    for target in vtable_targets {
+        if !pending.contains_key(target) {
+            continue;
+        }
+        let Some((method, owner)) = mangled_member_identity(target) else {
+            continue;
+        };
+        let class_index = class_groups
+            .iter()
+            .position(|(candidate, _)| candidate == owner)
+            .unwrap_or_else(|| {
+                class_groups.push((owner.to_string(), Vec::new()));
+                class_groups.len() - 1
+            });
+        let families = &mut class_groups[class_index].1;
+        let family_index = families
+            .iter()
+            .position(|(candidate, _)| candidate == method)
+            .unwrap_or_else(|| {
+                families.push((method.to_string(), Vec::new()));
+                families.len() - 1
+            });
+        if !families[family_index]
+            .1
+            .iter()
+            .any(|candidate| candidate == target)
+        {
+            families[family_index].1.push(target.to_string());
+        }
+    }
+    for (_, families) in class_groups.into_iter().rev() {
+        for (_, targets) in families {
+            for target in targets.into_iter().rev() {
+                if let Some(function) = pending.remove(&target) {
+                    source_functions.push(function);
+                }
+            }
+        }
+    }
+    for function in weak_functions {
+        if let Some(function) = pending.remove(&function.name) {
+            source_functions.push(function);
+        }
+    }
+    *functions = source_functions;
+}
+
+fn mangled_member_identity(name: &str) -> Option<(&str, &str)> {
+    for (delimiter, _) in name.match_indices("__") {
+        let suffix = &name[delimiter + 2..];
+        let digit_count = suffix
+            .bytes()
+            .take_while(|byte| byte.is_ascii_digit())
+            .count();
+        if digit_count == 0 {
+            continue;
+        }
+        let owner_length = suffix[..digit_count].parse::<usize>().ok()?;
+        let owner_start = digit_count;
+        let owner_end = owner_start.checked_add(owner_length)?;
+        let owner = suffix.get(owner_start..owner_end)?;
+        return Some((&name[..delimiter], owner));
+    }
+    None
+}
+
 /// Apply `-inline …,deferred` emission order.
 ///
 /// Hand-written asm is assembled immediately, forming a leading stream in its
@@ -245,6 +337,64 @@ mod tests {
         let mut function = MachineFunction::new(name.to_string());
         function.is_asm = is_asm;
         function
+    }
+
+    #[test]
+    fn weak_vtable_bodies_group_by_owner_and_reverse_overloads() {
+        let mut functions = vec![
+            function("source_a", false),
+            function("getAge__5ANodeFv", false),
+            function("read__8CoreNodeFv", false),
+            function("concat__4NodeFv", false),
+            function("concat__4NodeFR3VQS", false),
+            function("concat__4NodeFR8Matrix4f", false),
+            function("getModel__4NodeFv", false),
+            function("source_b", false),
+            function("orphan__6UnusedFv", false),
+        ];
+        for function in &mut functions {
+            function.weak_inline = !function.name.starts_with("source_");
+        }
+
+        apply_weak_vtable_emission_tail(
+            &mut functions,
+            [
+                "getAge__5ANodeFv",
+                "read__8CoreNodeFv",
+                "external__4NodeFv",
+                "concat__4NodeFv",
+                "concat__4NodeFR3VQS",
+                "concat__4NodeFR8Matrix4f",
+                "getModel__4NodeFv",
+                "concat__4NodeFR8Matrix4f",
+            ],
+        );
+
+        assert_eq!(
+            functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "source_a",
+                "source_b",
+                "concat__4NodeFR8Matrix4f",
+                "concat__4NodeFR3VQS",
+                "concat__4NodeFv",
+                "getModel__4NodeFv",
+                "read__8CoreNodeFv",
+                "getAge__5ANodeFv",
+                "orphan__6UnusedFv",
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_constructor_style_member_prefixes() {
+        assert_eq!(
+            mangled_member_identity("__dt__4NodeFv"),
+            Some(("__dt", "Node"))
+        );
     }
 
     #[test]

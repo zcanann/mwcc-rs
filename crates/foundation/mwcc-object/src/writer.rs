@@ -2957,10 +2957,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
 
         // Build 163 finishes the ordinary source-function symbol stream before
         // it registers generated weak bodies reached from a weak vtable. The
-        // body bytes retain their materialization order, but symbol discovery
-        // follows the table's reverse relocation walk. Emit that symbol-only
-        // tail when the first weak inline body is reached; the normal function
-        // pass below then observes the symbols as already registered.
+        // driver has already placed body bytes in the vtable's relocation
+        // transaction order; symbols are registered by the distinct reverse
+        // relocation walk. Emit that symbol tail when the first weak inline
+        // body is reached. The normal function pass below then observes the
+        // symbols as already registered.
         if input.object_format.weak_vtable_function_symbol_tail
             && function.weak_inline
             && functions[..index].iter().all(|prior| !prior.weak_inline)
