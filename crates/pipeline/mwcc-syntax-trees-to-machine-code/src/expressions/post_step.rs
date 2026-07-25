@@ -9,6 +9,64 @@
 use super::*;
 
 impl Generator {
+    /// Apply the mutation half of a postfix step after a caller has consumed
+    /// the old register value. Member access through `pointer++` uses this to
+    /// preserve MWCC's `load old; increment pointer` schedule without first
+    /// copying the old pointer into a synthetic result register.
+    pub(crate) fn emit_post_step_update_after_use(
+        &mut self,
+        target: &Expression,
+        operator: BinaryOperator,
+        pointer_link: Option<(u32, u32)>,
+    ) -> Compilation<bool> {
+        if pointer_link.is_some() {
+            return Ok(false);
+        }
+        let Expression::Variable(name) = target else {
+            return Ok(false);
+        };
+        let Some((source, class, width, pointee, stride)) =
+            self.locations.get(name.as_str()).map(|location| {
+                (
+                    location.register,
+                    location.class,
+                    location.width,
+                    location.pointee,
+                    location.stride,
+                )
+            })
+        else {
+            return Ok(false);
+        };
+        if class != ValueClass::General || width != 32 {
+            return Err(Diagnostic::error(
+                "a register-local postfix update requires a word-sized integer or pointer",
+            ));
+        }
+        let amount = stride
+            .map(i16::try_from)
+            .transpose()
+            .map_err(|_| Diagnostic::error("postfix pointer stride is out of range"))?
+            .or_else(|| pointee.map(|pointee| i16::from(pointee.size())))
+            .unwrap_or(1);
+        let amount = signed_step_amount(operator, amount)?;
+        let stepped = if source < mwcc_vreg::VIRTUAL_BASE {
+            self.fresh_virtual_general()
+        } else {
+            source
+        };
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: stepped,
+            a: source,
+            immediate: amount,
+        });
+        self.locations
+            .get_mut(name.as_str())
+            .expect("postfix local location disappeared")
+            .register = stepped;
+        Ok(true)
+    }
+
     pub(crate) fn emit_post_step_value(
         &mut self,
         target: &Expression,

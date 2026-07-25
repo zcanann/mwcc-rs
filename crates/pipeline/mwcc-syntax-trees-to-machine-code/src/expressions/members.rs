@@ -263,6 +263,43 @@ impl Generator {
                 destination,
             );
         }
+        // `pointer++->field` consumes the old pointer for the member load, then
+        // advances the local pointer. Keeping the update after the load matches
+        // MWCC's loop-tail schedule and avoids materializing an otherwise
+        // unnecessary copy of the old pointer.
+        if let Expression::PostStep {
+            target,
+            operator,
+            pointer_link,
+        } = base
+        {
+            if index_stride.is_some() {
+                return Err(Diagnostic::error(
+                    "an indexed member through a postfix base is not supported yet",
+                ));
+            }
+            let pointee = pointee_of_type(member_type).ok_or_else(|| {
+                Diagnostic::error(format!(
+                    "unsupported postfix-base member load type {member_type:?} at +{offset}"
+                ))
+            })?;
+            let address = self.member_base_register(target)?;
+            let displacement = i16::try_from(offset).map_err(|_| {
+                Diagnostic::error("a postfix-base member offset is out of range")
+            })?;
+            self.output.instructions.push(displacement_load(
+                pointee,
+                destination,
+                address,
+                displacement,
+            )?);
+            if !self.emit_post_step_update_after_use(target, *operator, *pointer_link)? {
+                return Err(Diagnostic::error(
+                    "a postfix member base needs a register-local pointer",
+                ));
+            }
+            return Ok(());
+        }
         // `object->pointer_member->field`: materialize the intermediate pointer
         // in a disposable register. `member_base_register` historically reused
         // the original base register, which is incorrect when that base has a
