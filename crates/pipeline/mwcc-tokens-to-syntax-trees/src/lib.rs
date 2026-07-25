@@ -4128,6 +4128,32 @@ blr\n\
     }
 
     #[test]
+    fn preserves_struct_identity_for_an_array_declared_after_a_statement() {
+        let source = r#"
+            struct Element { int value; };
+            int probe(int index) {
+                index += 1;
+                Element elements[3];
+                return elements[index].value;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let Some(Expression::Member { base, offset, .. }) = &unit.functions[0].return_expression
+        else {
+            panic!("expected an indexed struct member")
+        };
+        assert!(matches!(base.as_ref(), Expression::Index { .. }));
+        assert_eq!(*offset, 0);
+    }
+
+    #[test]
     fn preserves_multidimensional_member_row_stride_in_address_expression() {
         let source = r#"
             typedef unsigned char u8;

@@ -747,6 +747,9 @@ impl Parser {
                         });
                         local_names.insert(name.clone());
                         self.variable_types.insert(name.clone(), declared_type);
+                        if let Some(tag) = &struct_tag {
+                            self.variable_structs.insert(name.clone(), tag.clone());
+                        }
                         self.variable_array_bytes
                             .insert(name.clone(), element_bytes * length as u32);
                         if !self.eat_keyword(Token::Comma) {
@@ -807,6 +810,9 @@ impl Parser {
                         other => other.width() as u32 / 8,
                     };
                     self.variable_types.insert(name.clone(), declared_type);
+                    if let Some(tag) = &struct_tag {
+                        self.variable_structs.insert(name.clone(), tag.clone());
+                    }
                     self.variable_array_bytes
                         .insert(name.clone(), element_bytes * length as u32);
                     block_locals.push(LocalDeclaration {
