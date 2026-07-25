@@ -1177,6 +1177,21 @@ impl Generator {
                     }
                 }
             }
+            // `(a & C) != 0` is the positive form of the same record-mask
+            // test. Tail-guard lowering can invert this `beq` directly into
+            // MWCC's `bnelr`.
+            if matches!(operator, BinaryOperator::NotEqual) && constant_value(right) == Some(0) {
+                if let Expression::Binary {
+                    operator: BinaryOperator::BitAnd,
+                    left: and_left,
+                    right: and_right,
+                } = left.as_ref()
+                {
+                    if self.try_emit_record_mask_test(and_left, and_right)? {
+                        return Ok((12, 2)); // beq — skip when masked bits are clear
+                    }
+                }
+            }
             // `((a & i) | b) == 0` with a VARIABLE mask — and into the
             // scratch, then the record OR with b FIRST (measured V1:
             // and r0,r5,r0; or. r0,r6,r0; bne — the opposite operand
@@ -1849,6 +1864,11 @@ impl Generator {
         // A global has no home register: load it into the scratch (`lwz r0,gv@sda21`)
         // and let the caller compare, like a memory load.
         if self.is_global(operand) {
+            if let Expression::Variable(name) = operand {
+                if let Some(register) = self.condition_global_base(name)? {
+                    return Ok(register);
+                }
+            }
             self.evaluate_general(operand, GENERAL_SCRATCH)?;
             return Ok(GENERAL_SCRATCH);
         }
@@ -1874,7 +1894,9 @@ impl Generator {
                     operator: BinaryOperator::LogicalAnd
                         | BinaryOperator::LogicalOr
                         | BinaryOperator::BitAnd
-                        | BinaryOperator::BitOr,
+                        | BinaryOperator::BitOr
+                        | BinaryOperator::Add
+                        | BinaryOperator::Subtract,
                     ..
                 }
         ) {

@@ -21,8 +21,20 @@ impl Generator {
         &mut self,
         condition: &Expression,
     ) -> HashMap<String, ConditionGlobalValue> {
+        self.begin_condition_global_cache_with_followup(condition, None)
+    }
+
+    /// Begin a condition cache whose lifetime may continue directly into a
+    /// nested guard. `followup` affects reuse planning only; its loads remain
+    /// lazy until control reaches that guard.
+    pub(crate) fn begin_condition_global_cache_with_followup(
+        &mut self,
+        condition: &Expression,
+        followup: Option<&Expression>,
+    ) -> HashMap<String, ConditionGlobalValue> {
         let previous = std::mem::take(&mut self.condition_global_values);
-        self.condition_global_values = self.condition_global_cache_for(condition, None);
+        self.condition_global_values =
+            self.condition_global_cache_for(condition, followup, Some(&previous));
         previous
     }
 
@@ -31,22 +43,41 @@ impl Generator {
     /// used by this condition begin pending as usual.
     pub(crate) fn continue_condition_global_cache(&mut self, condition: &Expression) {
         let previous = std::mem::take(&mut self.condition_global_values);
-        self.condition_global_values = self.condition_global_cache_for(condition, Some(&previous));
+        self.condition_global_values =
+            self.condition_global_cache_for(condition, None, Some(&previous));
     }
 
     fn condition_global_cache_for(
         &self,
         condition: &Expression,
+        followup: Option<&Expression>,
         reusable: Option<&HashMap<String, ConditionGlobalValue>>,
     ) -> HashMap<String, ConditionGlobalValue> {
-        cacheable_member_pointer_bases(condition)
+        let mut counts = cacheable_member_pointer_bases(condition);
+        collect_direct_global_values(condition, &mut counts);
+        if let Some(followup) = followup {
+            for (name, count) in cacheable_member_pointer_bases(followup) {
+                *counts.entry(name).or_default() += count;
+            }
+            collect_direct_global_values(followup, &mut counts);
+        }
+        counts
             .into_iter()
             .filter(|(name, count)| {
-                *count >= 2
+                (*count >= 2 || reusable.is_some_and(|values| values.contains_key(name)))
                     && !self.volatile_globals.contains(name.as_str())
                     && matches!(
                         self.globals.get(name.as_str()),
-                        Some(Type::Pointer(_) | Type::StructPointer { .. })
+                        Some(
+                            Type::Int
+                                | Type::UnsignedInt
+                                | Type::Char
+                                | Type::UnsignedChar
+                                | Type::Short
+                                | Type::UnsignedShort
+                                | Type::Pointer(_)
+                                | Type::StructPointer { .. }
+                        )
                     )
             })
             .map(|(name, _)| {
@@ -74,7 +105,13 @@ impl Generator {
         condition: &Expression,
     ) -> Compilation<()> {
         let mut names = Vec::new();
-        collect_member_pointer_base_order(condition, &mut names, &mut HashSet::new());
+        let mut seen = HashSet::new();
+        collect_member_pointer_base_order(condition, &mut names, &mut seen);
+        visit_direct_global_values(condition, &mut |name| {
+            if seen.insert(name.to_owned()) {
+                names.push(name.to_owned());
+            }
+        });
         for name in names {
             if matches!(
                 self.condition_global_values.get(&name),
@@ -99,6 +136,99 @@ impl Generator {
             }
         }
     }
+}
+
+/// Visit scalar global VALUE reads. Member bases are owned by the pointer-base
+/// analysis below, while address-of expressions do not read a global value.
+fn visit_direct_global_values(expression: &Expression, visit: &mut impl FnMut(&str)) {
+    match expression {
+        Expression::Variable(name) => visit(name),
+        Expression::Member { .. }
+        | Expression::MemberAddress { .. }
+        | Expression::AddressOf { .. } => {}
+        Expression::Binary { left, right, .. }
+        | Expression::Index {
+            base: left,
+            index: right,
+        }
+        | Expression::Comma { left, right } => {
+            visit_direct_global_values(left, visit);
+            visit_direct_global_values(right, visit);
+        }
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+            ..
+        } => {
+            visit_direct_global_values(condition, visit);
+            visit_direct_global_values(when_true, visit);
+            visit_direct_global_values(when_false, visit);
+        }
+        Expression::Call { arguments, .. } => {
+            for argument in arguments {
+                visit_direct_global_values(argument, visit);
+            }
+        }
+        Expression::CallThrough {
+            target,
+            arguments,
+            ..
+        } => {
+            visit_direct_global_values(target, visit);
+            for argument in arguments {
+                visit_direct_global_values(argument, visit);
+            }
+        }
+        Expression::VirtualCall {
+            object, arguments, ..
+        } => {
+            visit_direct_global_values(object, visit);
+            for argument in arguments {
+                visit_direct_global_values(argument, visit);
+            }
+        }
+        Expression::ConstructedNew {
+            allocation,
+            arguments,
+            ..
+        } => {
+            visit_direct_global_values(allocation, visit);
+            for argument in arguments {
+                visit_direct_global_values(argument, visit);
+            }
+        }
+        Expression::PostStep { target, .. } => visit_direct_global_values(target, visit),
+        Expression::Assign { target, value, .. } => {
+            visit_direct_global_values(target, visit);
+            visit_direct_global_values(value, visit);
+        }
+        Expression::Unary { operand, .. }
+        | Expression::Cast { operand, .. }
+        | Expression::Dereference { pointer: operand }
+        | Expression::IndexedUpdateValue { value: operand }
+        | Expression::BitFieldRead {
+            extracted: operand, ..
+        } => visit_direct_global_values(operand, visit),
+        Expression::AggregateLiteral(values) => {
+            for value in values {
+                visit_direct_global_values(value, visit);
+            }
+        }
+        Expression::CompoundLiteral { .. }
+        | Expression::IntegerLiteral(_)
+        | Expression::FloatLiteral(_)
+        | Expression::StringLiteral(_) => {}
+    }
+}
+
+fn collect_direct_global_values(
+    expression: &Expression,
+    counts: &mut HashMap<String, usize>,
+) {
+    visit_direct_global_values(expression, &mut |name| {
+        *counts.entry(name.to_owned()).or_default() += 1;
+    });
 }
 
 fn collect_member_pointer_base_order(

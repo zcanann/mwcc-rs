@@ -96,6 +96,9 @@ impl Generator {
             // unless it was just stored and is still live in a register, which is
             // reused (no reload), reproducing mwcc.
             if !self.locations.contains_key(name) && self.globals.contains_key(name.as_str()) {
+                if let Some(register) = self.condition_global_base(name)? {
+                    return Ok(Some(register));
+                }
                 if let Some(register) = self.live_global_register(name, prefer_destination) {
                     return Ok(Some(register));
                 }

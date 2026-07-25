@@ -119,6 +119,7 @@ mod structured_prologue;
 mod structured_release_schedule;
 mod structured_rounded_pointer_schedule;
 mod structured_store_schedule;
+mod structured_tail_result_guard;
 mod structured_tlut_packet_schedule;
 mod structured_saved_float_initializer;
 mod structured_shared_member_arguments;

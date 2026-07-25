@@ -1893,6 +1893,17 @@ impl Generator {
                     then_body,
                     else_body,
                 } if else_body.is_empty() => {
+                    if self.try_emit_structured_tail_result_guard(
+                        condition,
+                        then_body,
+                        function,
+                    )? {
+                        continue;
+                    }
+                    let nested_condition = match then_body.first() {
+                        Some(Statement::If { condition, .. }) => Some(condition),
+                        _ => None,
+                    };
                     let terms = logical_and_terms(condition);
                     let (previous_cache, previous_float_cache) =
                         if let Some((previous, previous_float)) =
@@ -1903,7 +1914,10 @@ impl Generator {
                             (previous, previous_float)
                         } else {
                             (
-                                self.begin_condition_global_cache(condition),
+                                self.begin_condition_global_cache_with_followup(
+                                    condition,
+                                    nested_condition,
+                                ),
                                 self.begin_condition_float_cache(condition),
                             )
                         };
@@ -2057,6 +2071,8 @@ impl Generator {
                             self.condition_float_cache.clone(),
                         )
                     });
+                    let nested_true_cache =
+                        nested_condition.map(|_| self.condition_global_values.clone());
                     self.restore_condition_global_cache(previous_cache);
                     let branches = match condition_result {
                         Ok(branches) => branches,
@@ -2080,6 +2096,9 @@ impl Generator {
                         }) as usize;
                     let (carried_prefix, remainder) =
                         then_body.split_at(carried_prefix_len);
+                    let prefix_cache_restore = nested_true_cache.map(|cache| {
+                        std::mem::replace(&mut self.condition_global_values, cache)
+                    });
                     let prefix_result = self.emit_structured_statements(
                         carried_prefix,
                         function,
@@ -2090,6 +2109,9 @@ impl Generator {
                         pending_gotos,
                         entry_alias,
                     );
+                    if let Some(previous) = prefix_cache_restore {
+                        self.restore_condition_global_cache(previous);
+                    }
                     self.restore_condition_float_cache(previous_float_cache);
                     let body_result = prefix_result.and_then(|()| {
                         self.emit_structured_statements(
