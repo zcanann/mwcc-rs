@@ -8,6 +8,7 @@ impl Generator {
     /// Allocator-owned callee-saved bodies cannot use the ordinary pre-allocation
     /// call-prologue scheduler, so their final machine stream is normalized here.
     pub(crate) fn schedule_linkage_first_entry_arguments(&mut self) {
+        schedule_guarded_saved_entry_copies(&mut self.output);
         schedule_entry_arguments(&mut self.output);
         schedule_entry_zero_store(&mut self.output);
         schedule_entry_wide_mask(&mut self.output);
@@ -44,6 +45,83 @@ impl Generator {
         self.output.instructions.insert(to, instruction);
         self.labels.moved_before(from, to);
         remap_relocations_for_move(&mut self.output.relocations, from, to);
+    }
+}
+
+/// A short-circuit guard consumes its saved scalar parameters before the first
+/// call can clobber their incoming registers. Build 163 completes the physical
+/// save range first, then copies the entry values from low saved register to
+/// high; direct-call entry groups retain their separate latency-slot policy.
+fn schedule_guarded_saved_entry_copies(
+    output: &mut mwcc_machine_code::MachineFunction,
+) {
+    let Some(stack_update) = output.instructions.iter().position(|instruction| {
+        matches!(
+            instruction,
+            Instruction::StoreWordWithUpdate { s: 1, a: 1, .. }
+        )
+    }) else {
+        return;
+    };
+    let Some(first_branch) = output.instructions[stack_update + 1..]
+        .iter()
+        .position(|instruction| {
+            matches!(
+                instruction,
+                Instruction::Branch { .. } | Instruction::BranchConditionalForward { .. }
+            )
+        })
+        .map(|offset| stack_update + 1 + offset)
+    else {
+        return;
+    };
+    for start in stack_update + 1..first_branch.saturating_sub(3) {
+        let [first_store, first_copy, second_store, second_copy] =
+            &output.instructions[start..start + 4]
+        else {
+            unreachable!()
+        };
+        let (
+            Instruction::StoreWord {
+                s: first_saved,
+                a: 1,
+                ..
+            },
+            Instruction::Or {
+                a: first_home,
+                s: first_incoming,
+                b: first_again,
+            },
+            Instruction::StoreWord {
+                s: second_saved,
+                a: 1,
+                ..
+            },
+            Instruction::Or {
+                a: second_home,
+                s: second_incoming,
+                b: second_again,
+            },
+        ) = (first_store, first_copy, second_store, second_copy)
+        else {
+            continue;
+        };
+        if first_saved != first_home
+            || second_saved != second_home
+            || first_incoming != first_again
+            || second_incoming != second_again
+            || first_saved <= second_saved
+        {
+            continue;
+        }
+        let reordered = [
+            first_store.clone(),
+            second_store.clone(),
+            second_copy.clone(),
+            first_copy.clone(),
+        ];
+        output.instructions[start..start + 4].clone_from_slice(&reordered);
+        return;
     }
 }
 
@@ -398,6 +476,51 @@ fn remap_relocations_for_move(
 mod tests {
     use super::*;
     use mwcc_machine_code::{Relocation, RelocationKind, RelocationTarget};
+
+    #[test]
+    fn guarded_saved_copies_follow_the_complete_save_range() {
+        let mut output = mwcc_machine_code::MachineFunction::new("guarded");
+        output.instructions = vec![
+            Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -32,
+            },
+            Instruction::StoreWord {
+                s: 31,
+                a: 1,
+                offset: 28,
+            },
+            Instruction::move_register(31, 5),
+            Instruction::StoreWord {
+                s: 30,
+                a: 1,
+                offset: 24,
+            },
+            Instruction::move_register(30, 3),
+            Instruction::CompareLogicalWordImmediate {
+                a: 31,
+                immediate: 0,
+            },
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 9,
+            },
+        ];
+
+        schedule_guarded_saved_entry_copies(&mut output);
+
+        assert!(matches!(
+            &output.instructions[1..5],
+            [
+                Instruction::StoreWord { s: 31, .. },
+                Instruction::StoreWord { s: 30, .. },
+                Instruction::Or { a: 30, s: 3, b: 3 },
+                Instruction::Or { a: 31, s: 5, b: 5 },
+            ]
+        ));
+    }
 
     #[test]
     fn fills_three_linkage_slots_and_tracks_crossed_relocation() {
