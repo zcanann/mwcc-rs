@@ -837,11 +837,33 @@ impl Generator {
                 Diagnostic::error("struct member store of this type is not supported yet")
             })?;
             if let Some((inner, inner_offset)) = embedded_member_address_base(base) {
+                if let Expression::Variable(name) = inner {
+                    if let Some(slot) = self.frame_slots.get(name).copied() {
+                        let displacement = crate::frame::checked_frame_member_offset(
+                            slot.offset,
+                            inner_offset,
+                        )
+                        .and_then(|embedded_offset| {
+                            crate::frame::checked_frame_member_offset(embedded_offset, *offset)
+                        })?;
+                        let source = self.place_store_value(value, pointee)?;
+                        self.output.instructions.push(displacement_store(
+                            pointee,
+                            source,
+                            1,
+                            displacement,
+                        )?);
+                        return Ok(());
+                    }
+                }
                 let address = self.member_base_register(inner)?;
                 let source = self.place_store_value(value, pointee)?;
-                let displacement = i16::try_from(inner_offset + *offset).map_err(|_| {
-                    Diagnostic::error("embedded struct member store offset out of range")
-                })?;
+                let displacement = inner_offset
+                    .checked_add(*offset)
+                    .and_then(|offset| i16::try_from(offset).ok())
+                    .ok_or_else(|| {
+                        Diagnostic::error("embedded struct member store offset out of range")
+                    })?;
                 self.output.instructions.push(displacement_store(
                     pointee,
                     source,

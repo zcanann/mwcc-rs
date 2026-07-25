@@ -2725,7 +2725,10 @@ fn align_to(offset: i16, align: u8) -> i16 {
     (offset + align - 1) / align * align
 }
 
-fn checked_frame_member_offset(slot_offset: i16, member_offset: u32) -> Compilation<i16> {
+pub(crate) fn checked_frame_member_offset(
+    slot_offset: i16,
+    member_offset: u32,
+) -> Compilation<i16> {
     let member_offset = i16::try_from(member_offset)
         .map_err(|_| Diagnostic::error("frame member address offset is out of range"))?;
     slot_offset
