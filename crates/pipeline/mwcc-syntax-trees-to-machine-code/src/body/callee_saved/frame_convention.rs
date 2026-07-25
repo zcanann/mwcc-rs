@@ -425,16 +425,12 @@ impl Generator {
         if let Instruction::StoreWord { offset, .. } = &mut self.output.instructions[link_store] {
             *offset = 4;
         }
-        for (index, &register) in physical_saved.iter().enumerate() {
-            let old_offset = old_size - 4 * (index as i16 + 1);
-            let new_offset = new_size - 4 * (index as i16 + 1);
-            relayout_callee_saved_slot(
-                &mut self.output.instructions,
-                register,
-                old_offset,
-                new_offset,
-            );
-        }
+        relayout_callee_saved_slots(
+            &mut self.output.instructions,
+            &physical_saved,
+            old_size,
+            new_size,
+        );
         for instruction in &mut self.output.instructions {
             match instruction {
                 Instruction::LoadWord { d: 0, a: 1, offset } if *offset == old_size + 4 => {
@@ -1111,22 +1107,41 @@ fn schedule_interleaved_saved_register_copy(instructions: &mut [Instruction]) {
 /// its prologue store. The save use and epilogue reload definition are
 /// disconnected live ranges, so allocation may initially assign the reload a
 /// different physical identity even though both represent one ABI slot.
-fn relayout_callee_saved_slot(
+fn relayout_callee_saved_slots(
     instructions: &mut [Instruction],
-    saved_register: u8,
-    old_offset: i16,
-    new_offset: i16,
+    saved_registers: &[u8],
+    old_frame_size: i16,
+    new_frame_size: i16,
 ) {
+    let slots: Vec<_> = saved_registers
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, register)| {
+            (
+                register,
+                old_frame_size - 4 * (index as i16 + 1),
+                new_frame_size - 4 * (index as i16 + 1),
+            )
+        })
+        .collect();
     for instruction in instructions {
         match instruction {
-            Instruction::StoreWord { s, a: 1, offset }
-                if *s == saved_register && *offset == old_offset =>
-            {
-                *offset = new_offset;
+            Instruction::StoreWord { s, a: 1, offset } => {
+                if let Some((_, _, new_offset)) = slots
+                    .iter()
+                    .find(|(register, old_offset, _)| s == register && offset == old_offset)
+                {
+                    *offset = *new_offset;
+                }
             }
-            Instruction::LoadWord { d, a: 1, offset } if *offset == old_offset => {
-                *d = saved_register;
-                *offset = new_offset;
+            Instruction::LoadWord { d, a: 1, offset } => {
+                if let Some((register, _, new_offset)) =
+                    slots.iter().find(|(_, old_offset, _)| offset == old_offset)
+                {
+                    *d = *register;
+                    *offset = *new_offset;
+                }
             }
             _ => {}
         }
@@ -1320,7 +1335,7 @@ mod tests {
             },
         ];
 
-        relayout_callee_saved_slot(&mut instructions, 30, 20, 36);
+        relayout_callee_saved_slots(&mut instructions, &[30], 24, 40);
 
         assert_eq!(
             instructions,
@@ -1337,6 +1352,56 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn shrinking_saved_slots_does_not_revisit_a_new_offset() {
+        let mut instructions = vec![
+            Instruction::StoreWord {
+                s: 31,
+                a: 1,
+                offset: 28,
+            },
+            Instruction::StoreWord {
+                s: 30,
+                a: 1,
+                offset: 24,
+            },
+            Instruction::StoreWord {
+                s: 29,
+                a: 1,
+                offset: 20,
+            },
+            Instruction::LoadWord {
+                d: 31,
+                a: 1,
+                offset: 28,
+            },
+            Instruction::LoadWord {
+                d: 30,
+                a: 1,
+                offset: 24,
+            },
+            Instruction::LoadWord {
+                d: 29,
+                a: 1,
+                offset: 20,
+            },
+        ];
+
+        relayout_callee_saved_slots(&mut instructions, &[31, 30, 29], 32, 24);
+
+        assert!(matches!(
+            instructions.as_slice(),
+            [
+                Instruction::StoreWord { s: 31, offset: 20, .. },
+                Instruction::StoreWord { s: 30, offset: 16, .. },
+                Instruction::StoreWord { s: 29, offset: 12, .. },
+                Instruction::LoadWord { d: 31, offset: 20, .. },
+                Instruction::LoadWord { d: 30, offset: 16, .. },
+                Instruction::LoadWord { d: 29, offset: 12, .. },
+            ]
+        ));
     }
 
     #[test]
