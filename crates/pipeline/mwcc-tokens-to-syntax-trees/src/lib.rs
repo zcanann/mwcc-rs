@@ -835,6 +835,27 @@ mod tests {
     }
 
     #[test]
+    fn binds_member_access_to_a_post_incremented_struct_pointer() {
+        let source = r#"
+            struct Triangle { int flags; };
+            int consume(Triangle* triangles) { return (triangles++)->flags; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(Expression::Member { base, offset: 0, .. })
+                if matches!(base.as_ref(), Expression::PostStep { .. })
+        ));
+    }
+
+    #[test]
     fn recovers_nested_class_layout_for_out_of_class_member_bodies() {
         let source = r#"
             class Outer {

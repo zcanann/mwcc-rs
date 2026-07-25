@@ -1228,6 +1228,13 @@ impl Parser {
             // through member-call lowering so `object->getValue().field` can
             // resolve the returned temporary's layout.
             Expression::VirtualCall { .. } => self.expression_struct_tag.take(),
+            // `(pointer++)->field` yields the pointer's old value before the
+            // step. Its pointee identity is unchanged, so member lookup follows
+            // the target variable while codegen retains the PostStep side
+            // effect on the base expression.
+            Expression::PostStep { target, .. } => {
+                self.cxx_expression_struct_tag(target).map(str::to_owned)
+            }
             _ => None,
         };
         let mut pending_arrow_effect: Option<Expression> = None;

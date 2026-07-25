@@ -1271,7 +1271,10 @@ impl Parser {
                 .map(String::as_str),
             Expression::AddressOf { operand }
             | Expression::Cast { operand, .. }
-            | Expression::Dereference { pointer: operand } => {
+            | Expression::Dereference { pointer: operand }
+            | Expression::PostStep {
+                target: operand, ..
+            } => {
                 self.cxx_expression_struct_tag(operand)
             }
             Expression::Call { name, .. } => {
