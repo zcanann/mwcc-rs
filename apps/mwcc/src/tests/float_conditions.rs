@@ -105,3 +105,42 @@ fn preserves_a_compound_float_member_assignment_value() {
     ];
     assert!(object.windows(update.len()).any(|bytes| bytes == update));
 }
+
+#[test]
+fn selects_a_computed_float_with_a_logical_range_condition() {
+    let source = br#"
+        void compiled(
+            float value,
+            float lower,
+            float upper,
+            float numerator,
+            float* output
+        ) {
+            *output = value >= lower && value <= upper
+                ? 0.0f
+                : numerator / value;
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.cpp_exceptions = false;
+    flags.emit_mwcats = false;
+    let config = mwcc_versions::CompilerConfig {
+        build: mwcc_versions::GC_1_2_5N,
+        flags,
+    };
+    let object = compile(
+        source,
+        "logical-range-float-select.c",
+        config,
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("a logical range condition should select between computed float arms");
+
+    // The false arm remains path-local and performs the source division only
+    // after the logical condition branches to it.
+    let divide = [0xec, 0x04, 0x08, 0x24]; // fdivs f0,f4,f1
+    assert!(object.windows(divide.len()).any(|bytes| bytes == divide));
+}

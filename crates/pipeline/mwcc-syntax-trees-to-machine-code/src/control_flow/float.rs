@@ -66,6 +66,32 @@ impl Generator {
         destination: u8,
         tail: bool,
     ) -> Compilation<()> {
+        if !tail
+            && matches!(
+                condition,
+                Expression::Binary {
+                    operator: BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr,
+                    ..
+                }
+            )
+        {
+            // MWCC materializes a short-circuit logical condition as an
+            // integer boolean before selecting a computed floating value. The
+            // ordinary condition owner already emits that exact logical
+            // sequence; branch to the false value and evaluate each arm only
+            // on its selected path.
+            self.output.has_float_branch = true;
+            let (false_options, condition_bit) = self.emit_condition_test(condition)?;
+            let false_arm = self.fresh_label();
+            let join = self.fresh_label();
+            self.emit_branch_conditional_to(false_options, condition_bit, false_arm);
+            self.evaluate_float(when_true, destination)?;
+            self.emit_branch_to(join);
+            self.bind_label(false_arm);
+            self.evaluate_float(when_false, destination)?;
+            self.bind_label(join);
+            return Ok(());
+        }
         let Expression::Binary {
             operator,
             left,
