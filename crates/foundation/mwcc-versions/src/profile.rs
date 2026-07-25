@@ -897,7 +897,7 @@ pub trait CodegenProfile: core::fmt::Debug {
 
     /// Build 163 colors a guarded nested-member value before its retained base;
     /// the 2.4.x allocator gives the retained base the lower register instead.
-    fn legacy_guarded_nested_member_base_order(&self) -> bool {
+    fn legacy_pointer_value_register_order(&self) -> bool {
         false
     }
 
@@ -2081,7 +2081,7 @@ impl CodegenProfile for Gc233Build163 {
         true
     }
 
-    fn legacy_guarded_nested_member_base_order(&self) -> bool {
+    fn legacy_pointer_value_register_order(&self) -> bool {
         true
     }
 

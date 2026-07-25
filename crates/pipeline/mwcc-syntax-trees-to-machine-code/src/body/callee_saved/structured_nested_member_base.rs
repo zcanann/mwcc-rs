@@ -15,7 +15,7 @@ impl Generator {
             guarded_nested_member_reload(&self.output.instructions)
         {
             let (value_preference, retained_preference) =
-                if self.behavior.legacy_guarded_nested_member_base_order {
+                if self.behavior.legacy_pointer_value_register_order {
                     (
                         Eabi::FIRST_GENERAL_ARGUMENT + 1,
                         Eabi::FIRST_GENERAL_ARGUMENT + 2,

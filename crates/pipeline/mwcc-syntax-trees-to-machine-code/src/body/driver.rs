@@ -2462,6 +2462,12 @@ impl Generator {
         if self.try_emit_increment_while(function)? {
             return Ok(());
         }
+        // A mutex/list walk retains one running scalar minimum while chasing
+        // two nested pointers. It is leaf but loop-carried, so claim it before
+        // straight-line value tracking sees the conditional reassignment.
+        if self.try_pointer_walk_running_minimum(function)? {
+            return Ok(());
+        }
         // `while (p) { if (…) return p; p = p->next; }` — a linked-list search: the
         // rotated chase loop with an in-body early return (`bclr`).
         if self.try_list_search_loop(function)? {
