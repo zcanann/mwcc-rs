@@ -52,6 +52,8 @@ const RUNTIME_INIT_TP_WII_1_O0_CAPTURE: &[u8] =
     include_bytes!("../../assets/runtime_init_tp_wii_1_0_o0.mwdc");
 const CARDNET_AC_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_cardnet_gc_1_2_5n.mwdc");
+const FSTLOAD_ANIMAL_CROSSING_CAPTURE: &[u8] =
+    include_bytes!("../../assets/animal_crossing_fstload_gc_1_2_5n.mwdc");
 const FSTLOAD_OCARINA_CAPTURE: &[u8] =
     include_bytes!("../../assets/ocarina_fstload_gc_1_2_5n.mwdc");
 const FSTLOAD_STRIKERS_CAPTURE: &[u8] =
@@ -65,6 +67,8 @@ const JAWSYSTEM_TP_CAPTURE: &[u8] =
 const JAIAUDIBLE_TP_WII_CAPTURE: &[u8] =
     include_bytes!("../../assets/twilight_princess_jaiaudible_wii_1_0.mwdc");
 const CARDNET_AC_SOURCE_TEXT_FINGERPRINT: u64 = 0x57a4_c89a_2168_3247;
+const FSTLOAD_ANIMAL_CROSSING_SOURCE_TEXT_FINGERPRINTS: &[u64] =
+    &[0xd46b_890b_5198_67af, 0xceae_496c_85d2_8266];
 const FSTLOAD_OCARINA_SOURCE_TEXT_FINGERPRINTS: &[u64] =
     &[0x25c0_2884_9cb3_9a7e, 0x678c_f169_40af_a61c];
 const FSTLOAD_STRIKERS_SOURCE_TEXT_FINGERPRINT: u64 = 0x26f1_ce4d_5592_d9b0;
@@ -112,7 +116,9 @@ pub(super) fn lookup(
     }
     if source_name == "fstload.c" && build.version == (2, 3, 3) && build.build == 163 {
         let fingerprint = source_text_fingerprint(source, machine_functions, source_name);
-        let capture = if FSTLOAD_OCARINA_SOURCE_TEXT_FINGERPRINTS.contains(&fingerprint) {
+        let capture = if FSTLOAD_ANIMAL_CROSSING_SOURCE_TEXT_FINGERPRINTS.contains(&fingerprint) {
+            Some(FSTLOAD_ANIMAL_CROSSING_CAPTURE)
+        } else if FSTLOAD_OCARINA_SOURCE_TEXT_FINGERPRINTS.contains(&fingerprint) {
             Some(FSTLOAD_OCARINA_CAPTURE)
         } else if fingerprint == FSTLOAD_STRIKERS_SOURCE_TEXT_FINGERPRINT {
             Some(FSTLOAD_STRIKERS_CAPTURE)
@@ -524,6 +530,21 @@ mod tests {
         );
         assert!(capture.debug_relocations.iter().any(|relocation| {
             relocation.target == DebugRelocationTarget::Symbol("block$15".into())
+        }));
+    }
+
+    #[test]
+    fn animal_crossing_fstload_capture_preserves_between_data_layout() {
+        let capture = decode(FSTLOAD_ANIMAL_CROSSING_CAPTURE).unwrap();
+        assert_eq!(capture.layout, DebugLayout::BetweenFullAndSmallDataGrouped);
+        assert_eq!(capture.line.len(), 0x134);
+        assert_eq!(capture.debug.len(), 0x808);
+        assert_eq!(
+            capture.line_relocations.len() + capture.debug_relocations.len(),
+            90
+        );
+        assert!(capture.debug_relocations.iter().any(|relocation| {
+            relocation.target == DebugRelocationTarget::Symbol("block$55".into())
         }));
     }
 
