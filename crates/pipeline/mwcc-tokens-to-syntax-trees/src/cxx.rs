@@ -170,6 +170,13 @@ pub(crate) struct MemberMethod {
 pub(crate) struct ClassParameterTypes {
     pub(crate) parameters: Vec<Type>,
     pub(crate) cxx_parameters: Vec<CxxParameterType>,
+    /// Number of arguments that must be written at the call site. The
+    /// remaining trailing parameters have source default arguments.
+    pub(crate) required_parameter_count: usize,
+    /// Source defaults aligned with `parameters`. An absent entry is a
+    /// required parameter; present expressions are substituted before ABI
+    /// lowering so inline and out-of-line constructors see identical calls.
+    pub(crate) default_arguments: Vec<Option<Expression>>,
 }
 
 /// Constructor work split at the point where CodeWarrior installs this
@@ -4453,7 +4460,13 @@ impl Parser {
             let mut candidates = class
                 .constructors
                 .iter()
-                .filter(|signature| signature.parameters.len() == arguments.len())
+                .filter(|signature| {
+                    arguments.len() >= signature.required_parameter_count
+                        && arguments.len() <= signature.parameters.len()
+                        && signature.default_arguments[arguments.len()..]
+                            .iter()
+                            .all(Option::is_some)
+                })
                 .map(|signature| {
                     mangle_qualified_member_function_typed(
                         &resolved_class.split("::").collect::<Vec<_>>(),
@@ -4751,7 +4764,13 @@ impl Parser {
         let signatures = class
             .constructors
             .iter()
-            .filter(|signature| signature.parameters.len() == arguments.len())
+            .filter(|signature| {
+                arguments.len() >= signature.required_parameter_count
+                    && arguments.len() <= signature.parameters.len()
+                    && signature.default_arguments[arguments.len()..]
+                        .iter()
+                        .all(Option::is_some)
+            })
             .filter(|signature| {
                 mangle_qualified_member_function_typed(
                     &resolved.split("::").collect::<Vec<_>>(),
@@ -4764,6 +4783,17 @@ impl Parser {
         let [signature] = signatures.as_slice() else {
             return arguments;
         };
+        let supplied_argument_count = arguments.len();
+        let mut arguments = arguments;
+        arguments.extend(
+            signature.default_arguments[supplied_argument_count..]
+                .iter()
+                .map(|argument| {
+                    argument
+                        .clone()
+                        .expect("candidate selection requires every omitted default")
+                }),
+        );
         self.lower_cxx_aggregate_reference_arguments(&signature.parameters, arguments)
     }
 
@@ -4793,7 +4823,10 @@ impl Parser {
                 class
                     .constructors
                     .iter()
-                    .any(|signature| signature.parameters.is_empty())
+                    .any(|signature| {
+                        signature.required_parameter_count == 0
+                            && signature.default_arguments.iter().all(Option::is_some)
+                    })
             })
             || self
                 .cxx_constructors
@@ -4811,6 +4844,8 @@ impl Parser {
         self.expect(Token::ParenOpen)?;
         let mut parameters = Vec::new();
         let mut cxx_parameters = Vec::new();
+        let mut required_parameter_count = 0;
+        let mut default_arguments = Vec::new();
         if *self.peek() == Token::KeywordVoid && *self.peek_at(1) == Token::ParenClose {
             self.advance();
         } else {
@@ -4835,13 +4870,22 @@ impl Parser {
                             .with_pointer_shape(1, None)
                             .with_function_type(Some(callback_type)),
                     );
+                    let default = self.recover_cxx_default_argument()?;
+                    if default.is_none() {
+                        required_parameter_count += 1;
+                    }
+                    default_arguments.push(default);
                 } else {
                     if matches!(self.peek(), Token::Identifier(_)) {
                         let name_position = self.position;
                         self.advance();
                         self.record_named_parameter_at(name_position);
                     }
-                    self.skip_cxx_default_argument()?;
+                    let default = self.recover_cxx_default_argument()?;
+                    if default.is_none() {
+                        required_parameter_count += 1;
+                    }
+                    default_arguments.push(default);
                     parameters.push(parameter_type);
                     let mut source_identity = source_identity;
                     source_identity.is_reference = is_reference;
@@ -4856,7 +4900,30 @@ impl Parser {
         Ok(ClassParameterTypes {
             parameters,
             cxx_parameters,
+            required_parameter_count,
+            default_arguments,
         })
+    }
+
+    /// Retain a declaration's default expression without letting speculative
+    /// expression parsing perturb the surrounding class parser. Unsupported
+    /// defaults retain their declaration syntax through the ordinary skipper;
+    /// they simply cannot yet participate in an omitted-argument call.
+    fn recover_cxx_default_argument(&mut self) -> Compilation<Option<Expression>> {
+        if !self.eat_keyword(Token::Equals) {
+            return Ok(None);
+        }
+        let value_start = self.position;
+        let mut probe = self.clone();
+        if let Ok(expression) = probe.expression() {
+            if matches!(probe.peek(), Token::Comma | Token::ParenClose) {
+                self.position = probe.position;
+                return Ok(Some(expression));
+            }
+        }
+        self.position = value_start;
+        self.skip_cxx_default_argument_value()?;
+        Ok(None)
     }
 
     /// Skip a parameter's default initializer while preserving the comma or
@@ -4866,6 +4933,10 @@ impl Parser {
         if !self.eat_keyword(Token::Equals) {
             return Ok(());
         }
+        self.skip_cxx_default_argument_value()
+    }
+
+    fn skip_cxx_default_argument_value(&mut self) -> Compilation<()> {
         let mut parens = 0usize;
         let mut brackets = 0usize;
         let mut braces = 0usize;
@@ -5056,7 +5127,13 @@ impl Parser {
             let signatures = &base_class.constructors;
             let candidates: Vec<&ClassParameterTypes> = signatures
                 .iter()
-                .filter(|signature| signature.parameters.len() == arguments.len())
+                .filter(|signature| {
+                    arguments.len() >= signature.required_parameter_count
+                        && arguments.len() <= signature.parameters.len()
+                        && signature.default_arguments[arguments.len()..]
+                            .iter()
+                            .all(Option::is_some)
+                })
                 .collect();
             // A non-polymorphic base with no declared constructor is trivially
             // default-constructed and emits no call. A polymorphic base still
@@ -5121,7 +5198,17 @@ impl Parser {
                 }
             };
             let mut call_arguments = vec![this];
+            let supplied_argument_count = arguments.len();
             call_arguments.extend(arguments);
+            call_arguments.extend(
+                candidates[0].default_arguments[supplied_argument_count..]
+                    .iter()
+                    .map(|argument| {
+                        argument
+                            .clone()
+                            .expect("candidate selection requires every omitted default")
+                    }),
+            );
             statements.push(Statement::Expression(Expression::Call {
                 name,
                 arguments: call_arguments,

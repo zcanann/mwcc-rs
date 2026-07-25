@@ -5359,6 +5359,46 @@ blr\n\
     }
 
     #[test]
+    fn default_argument_is_substituted_into_a_base_constructor_call() {
+        let source = r#"
+            struct Root {
+                Root(char* label) { mark(label); }
+                void mark(char*);
+            };
+            struct Node : Root {
+                Node(char* label = "<Node>") : Root(label) {}
+            };
+            struct Section : Node {
+                Section() {}
+            };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let constructor = unit
+            .skipped_inline_definitions
+            .iter()
+            .find(|function| function.name == "__ct__7SectionFv")
+            .expect("the inline derived constructor should be retained");
+
+        assert!(matches!(
+            constructor.statements.first(),
+            Some(Statement::Expression(Expression::Call { name, arguments }))
+                if name == "__ct__4NodeFPc"
+                    && matches!(
+                        arguments.as_slice(),
+                        [Expression::Variable(this), Expression::StringLiteral(bytes)]
+                            if this == "this" && bytes == b"<Node>"
+                    )
+        ));
+    }
+
+    #[test]
     fn source_written_constructor_does_not_construct_class_pointer_members() {
         let source = r#"
             struct Member {
