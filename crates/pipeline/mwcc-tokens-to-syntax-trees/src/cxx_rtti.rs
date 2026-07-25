@@ -25,11 +25,8 @@ pub fn materialize(
     // RTTI ownership is fixed during the ordinary definition walk, before weak
     // inline bodies are materialized at the end of the translation unit. Keep
     // those late bodies out of the RTTI symbol's source-position count.
-    let weak_materialized: HashSet<&str> = unit
-        .weak_materialized
-        .iter()
-        .map(String::as_str)
-        .collect();
+    let weak_materialized: HashSet<&str> =
+        unit.weak_materialized.iter().map(String::as_str).collect();
     let immediate_materialized: HashSet<&str> = unit
         .immediate_weak_materializations
         .iter()
@@ -106,8 +103,6 @@ pub fn materialize(
         })
         .collect();
     let mut closure_frontiers = HashMap::<&str, (usize, usize)>::new();
-    let mut physical_class_order = Vec::<&CxxAbiClass>::new();
-    let mut physically_scheduled = HashSet::new();
     if owned_closure_schedule {
         for root in &roots {
             let Some(vtable) = vtables.get(&vtable_symbol(root)) else {
@@ -121,10 +116,7 @@ pub fn materialize(
                     vtable.functions_before.saturating_sub(late_function_count),
                 )
             } else {
-                (
-                    vtable.non_static_functions_before,
-                    vtable.functions_before,
-                )
+                (vtable.non_static_functions_before, vtable.functions_before)
             };
             for (class, _) in inheritance_entries(root, &classes)
                 .into_iter()
@@ -133,9 +125,6 @@ pub fn materialize(
                 closure_frontiers
                     .entry(class.source_name.as_str())
                     .or_insert(frontier);
-                if physically_scheduled.insert(class.source_name.as_str()) {
-                    physical_class_order.push(class);
-                }
             }
         }
     }
@@ -149,10 +138,7 @@ pub fn materialize(
         let mut owner_position = None;
         let mut late_weak_vtable = None;
         if let Some(mut vtable) = vtables.remove(&vtable_symbol(class)) {
-            owner_position = Some((
-                vtable.non_static_functions_before,
-                vtable.functions_before,
-            ));
+            owner_position = Some((vtable.non_static_functions_before, vtable.functions_before));
             materialize_vtable_headers(&mut vtable, class, &rtti);
             if vtable.is_weak {
                 late_weak_vtable = Some(vtable);
@@ -164,14 +150,7 @@ pub fn materialize(
         let name = anonymous_name(class, "name");
         let mut name_bytes = class.source_name.as_bytes().to_vec();
         name_bytes.push(0);
-        let mut name_global = data_global(
-            name.clone(),
-            name_bytes,
-            Vec::new(),
-            true,
-            false,
-            4,
-        );
+        let mut name_global = data_global(name.clone(), name_bytes, Vec::new(), true, false, 4);
         if let Some(&(non_static_functions_before, functions_before)) =
             closure_frontiers.get(class.source_name.as_str())
         {
@@ -205,14 +184,8 @@ pub fn materialize(
                     (index as u32 * 8, rtti_symbol(base), 0)
                 })
                 .collect();
-            let mut hierarchy = data_global(
-                hierarchy_name.clone(),
-                bytes,
-                relocations,
-                true,
-                false,
-                4,
-            );
+            let mut hierarchy =
+                data_global(hierarchy_name.clone(), bytes, relocations, true, false, 4);
             if let Some(&(non_static_functions_before, functions_before)) =
                 closure_frontiers.get(class.source_name.as_str())
             {
@@ -256,8 +229,8 @@ pub fn materialize(
         generated.push(handle);
     }
 
-    if owned_closure_schedule && !physical_class_order.is_empty() {
-        order_owned_closure_helpers(&mut generated, &physical_class_order);
+    if owned_closure_schedule && !closure_frontiers.is_empty() {
+        order_owned_closure_globals(&mut generated, &roots, &classes);
     }
 
     let insertion = insertion.min(retained.len());
@@ -265,48 +238,63 @@ pub fn materialize(
     unit.globals = retained;
 }
 
-fn order_owned_closure_helpers(
-    generated: &mut [GlobalDeclaration],
-    physical_class_order: &[&CxxAbiClass],
+fn order_owned_closure_globals(
+    generated: &mut Vec<GlobalDeclaration>,
+    roots: &[&CxxAbiClass],
+    classes: &HashMap<&str, &CxxAbiClass>,
 ) {
-    let helper_slots: Vec<usize> = generated
+    let by_name: HashMap<String, GlobalDeclaration> = generated
         .iter()
-        .enumerate()
-        .filter_map(|(index, global)| {
-            (global.name.starts_with(ANONYMOUS_PREFIX) || global.name.starts_with("__RTTI__"))
-                .then_some(index)
-        })
+        .cloned()
+        .map(|global| (global.name.clone(), global))
         .collect();
-    let by_name: HashMap<String, GlobalDeclaration> = helper_slots
-        .iter()
-        .map(|&index| {
-            let global = generated[index].clone();
-            (global.name.clone(), global)
-        })
-        .collect();
-    let mut ordered = Vec::with_capacity(helper_slots.len());
+    let mut ordered = Vec::with_capacity(generated.len());
     let mut seen = HashSet::new();
-    for class in physical_class_order {
-        for name in [
-            anonymous_name(class, "name"),
-            anonymous_name(class, "bases"),
-            rtti_symbol(class),
-        ] {
-            if let Some(global) = by_name.get(&name) {
-                ordered.push(global.clone());
-                seen.insert(name);
+
+    for root in roots {
+        let Some(chain) = primary_base_chain(root, classes) else {
+            continue;
+        };
+        for (index, class) in chain.iter().enumerate() {
+            for name in [
+                anonymous_name(class, "name"),
+                anonymous_name(class, "bases"),
+                rtti_symbol(class),
+            ] {
+                if let Some(global) = by_name.get(&name) {
+                    ordered.push(global.clone());
+                    seen.insert(name);
+                }
+            }
+
+            let has_vtable = by_name.contains_key(&vtable_symbol(class));
+            let next_has_vtable = chain
+                .get(index + 1)
+                .is_some_and(|next| by_name.contains_key(&vtable_symbol(next)));
+            if has_vtable && !next_has_vtable {
+                // A contiguous run of all-inline construction vtables is
+                // emitted as one dependency transaction at its most-derived
+                // class frontier. The transaction stack unwinds derived first.
+                for owner in chain[..=index].iter().rev() {
+                    let name = vtable_symbol(owner);
+                    if let Some(global) = by_name.get(&name) {
+                        if seen.insert(name) {
+                            ordered.push(global.clone());
+                        }
+                    } else {
+                        break;
+                    }
+                }
             }
         }
     }
-    for &index in &helper_slots {
-        if seen.insert(generated[index].name.clone()) {
-            ordered.push(generated[index].clone());
+    for global in generated.iter() {
+        if seen.insert(global.name.clone()) {
+            ordered.push(global.clone());
         }
     }
-    debug_assert_eq!(helper_slots.len(), ordered.len());
-    for (slot, global) in helper_slots.into_iter().zip(ordered) {
-        generated[slot] = global;
-    }
+    debug_assert_eq!(generated.len(), ordered.len());
+    *generated = ordered;
 }
 
 fn synthesize_inline_primary_base_vtables(unit: &mut TranslationUnit) {
@@ -315,8 +303,7 @@ fn synthesize_inline_primary_base_vtables(unit: &mut TranslationUnit) {
         .iter()
         .map(|class| (class.source_name.as_str(), class))
         .collect();
-    let weak_functions: HashSet<&str> =
-        unit.weak_materialized.iter().map(String::as_str).collect();
+    let weak_functions: HashSet<&str> = unit.weak_materialized.iter().map(String::as_str).collect();
     let mut existing: HashSet<String> = unit
         .globals
         .iter()
@@ -347,19 +334,15 @@ fn synthesize_inline_primary_base_vtables(unit: &mut TranslationUnit) {
             if existing.contains(&symbol) {
                 continue;
             }
-            let Some(slots) =
+            let Some(layout) =
                 inline_base_vtable_slots(class, &classes, &owner_vtable, &weak_functions)
             else {
                 continue;
             };
             let mut vtable = data_global(
                 symbol.clone(),
-                vec![0; 8 + slots.len() * 4],
-                slots
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, target)| (8 + index as u32 * 4, target, 0))
-                    .collect(),
+                vec![0; layout.size],
+                layout.relocations,
                 false,
                 true,
                 4,
@@ -396,15 +379,27 @@ fn inline_base_vtable_slots(
     classes: &HashMap<&str, &CxxAbiClass>,
     owner_vtable: &GlobalDeclaration,
     weak_functions: &HashSet<&str>,
-) -> Option<Vec<String>> {
+) -> Option<InlineBaseVtable> {
+    let component = class.vtable_components.first()?;
+    let component_size = 8usize.checked_add(
+        usize::try_from(component.virtual_slots.max(1))
+            .ok()?
+            .checked_mul(4)?,
+    )?;
+    let inherited_slots = class
+        .bases
+        .first()
+        .and_then(|base| classes.get(base.name.as_str()))
+        .and_then(|base| base.vtable_components.first())
+        .map_or(0, |component| component.virtual_slots);
     let ancestry: HashSet<&str> = primary_base_chain(class, classes)?
         .into_iter()
         .map(|ancestor| ancestor.source_name.as_str())
         .collect();
-    let mut slots = Vec::new();
+    let mut relocations = Vec::new();
     let mut owns_slot = false;
     for (offset, target, _) in &owner_vtable.data_relocations {
-        if *offset < 8 {
+        if *offset < 8 || usize::try_from(*offset).ok()? >= component_size {
             continue;
         }
         let Some(target_owner) = mangled_member_owner(target) else {
@@ -417,10 +412,20 @@ fn inline_base_vtable_slots(
             }
         }
         if ancestry.contains(target_owner) {
-            slots.push(target.clone());
+            relocations.push((*offset, target.clone(), 0));
         }
     }
-    (owns_slot && !slots.is_empty()).then_some(slots)
+    let adds_slots = component.virtual_slots > inherited_slots;
+    (owns_slot || adds_slots).then_some(InlineBaseVtable {
+        size: component_size,
+        relocations,
+    })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct InlineBaseVtable {
+    size: usize,
+    relocations: Vec<(u32, String, i32)>,
 }
 
 fn mangled_member_owner(name: &str) -> Option<&str> {
@@ -583,7 +588,8 @@ fn rtti_symbol(class: &CxxAbiClass) -> String {
 mod tests {
     use super::{
         data_global, inheritance_entries, inline_base_vtable_slots, mangled_member_owner,
-        materialize_vtable_headers, order_owned_closure_helpers, rtti_handle_linkage,
+        materialize_vtable_headers, order_owned_closure_globals, rtti_handle_linkage,
+        InlineBaseVtable,
     };
     use mwcc_syntax_trees::{CxxAbiBase, CxxAbiClass, CxxAbiVtableComponent};
     use std::collections::{HashMap, HashSet};
@@ -601,6 +607,16 @@ mod tests {
                 .collect(),
             vtable_components: Vec::new(),
         }
+    }
+
+    fn polymorphic_class(name: &str, bases: &[(&str, u32)], virtual_slots: u32) -> CxxAbiClass {
+        let mut class = class(name, bases);
+        class.vtable_components.push(CxxAbiVtableComponent {
+            table_offset: 0,
+            object_offset: 0,
+            virtual_slots,
+        });
+        class
     }
 
     #[test]
@@ -631,7 +647,7 @@ mod tests {
     }
 
     #[test]
-    fn owned_closure_helpers_schedule_base_first_without_moving_vtables() {
+    fn owned_closure_schedules_helpers_and_vtable_dependency_runs() {
         let base = class("Base", &[]);
         let boss = class("Boss", &[("Base", 0)]);
         let mut generated = vec![
@@ -652,14 +668,7 @@ mod tests {
                 false,
                 4,
             ),
-            data_global(
-                "__RTTI__4Boss".into(),
-                vec![0; 8],
-                vec![],
-                true,
-                false,
-                4,
-            ),
+            data_global("__RTTI__4Boss".into(), vec![0; 8], vec![], true, false, 4),
             data_global(
                 "@@cxx_rtti:4Base:name".into(),
                 b"Base\0".to_vec(),
@@ -669,24 +678,18 @@ mod tests {
                 4,
             ),
             data_global("__vt__4Base".into(), vec![0; 12], vec![], false, true, 4),
-            data_global(
-                "__RTTI__4Base".into(),
-                vec![0; 8],
-                vec![],
-                true,
-                false,
-                4,
-            ),
+            data_global("__RTTI__4Base".into(), vec![0; 8], vec![], true, false, 4),
         ];
 
-        order_owned_closure_helpers(&mut generated, &[&base, &boss]);
+        let classes = HashMap::from([
+            (base.source_name.as_str(), &base),
+            (boss.source_name.as_str(), &boss),
+        ]);
+        order_owned_closure_globals(&mut generated, &[&boss], &classes);
 
-        assert_eq!(generated[1].name, "__vt__4Boss");
-        assert_eq!(generated[5].name, "__vt__4Base");
         assert_eq!(
             generated
                 .iter()
-                .filter(|global| !global.name.starts_with("__vt__"))
                 .map(|global| global.name.as_str())
                 .collect::<Vec<_>>(),
             [
@@ -695,6 +698,8 @@ mod tests {
                 "@@cxx_rtti:4Boss:name",
                 "@@cxx_rtti:4Boss:bases",
                 "__RTTI__4Boss",
+                "__vt__4Boss",
+                "__vt__4Base",
             ]
         );
     }
@@ -711,9 +716,9 @@ mod tests {
     #[test]
     fn all_inline_primary_bases_recover_their_vtable_prefixes() {
         let classes = [
-            class("ANode", &[]),
-            class("CoreNode", &[("ANode", 0)]),
-            class("Node", &[("CoreNode", 0)]),
+            polymorphic_class("ANode", &[], 1),
+            polymorphic_class("CoreNode", &[("ANode", 0)], 2),
+            polymorphic_class("Node", &[("CoreNode", 0)], 4),
         ];
         let by_name: HashMap<_, _> = classes
             .iter()
@@ -732,19 +737,24 @@ mod tests {
             true,
             4,
         );
-        let weak = HashSet::from([
-            "age__5ANodeFv",
-            "read__8CoreNodeFv",
-            "concat__4NodeFv",
-        ]);
+        let weak = HashSet::from(["age__5ANodeFv", "read__8CoreNodeFv", "concat__4NodeFv"]);
 
         assert_eq!(
             inline_base_vtable_slots(&classes[0], &by_name, &vtable, &weak),
-            Some(vec!["age__5ANodeFv".into()])
+            Some(InlineBaseVtable {
+                size: 12,
+                relocations: vec![(8, "age__5ANodeFv".into(), 0)],
+            })
         );
         assert_eq!(
             inline_base_vtable_slots(&classes[1], &by_name, &vtable, &weak),
-            Some(vec!["age__5ANodeFv".into(), "read__8CoreNodeFv".into()])
+            Some(InlineBaseVtable {
+                size: 16,
+                relocations: vec![
+                    (8, "age__5ANodeFv".into(), 0),
+                    (12, "read__8CoreNodeFv".into(), 0),
+                ],
+            })
         );
         assert_eq!(
             inline_base_vtable_slots(&classes[2], &by_name, &vtable, &weak),
@@ -759,10 +769,26 @@ mod tests {
             encoded_name: "1E".to_string(),
             bases: Vec::new(),
             vtable_components: vec![
-                CxxAbiVtableComponent { table_offset: 0, object_offset: 0 },
-                CxxAbiVtableComponent { table_offset: 12, object_offset: 4 },
-                CxxAbiVtableComponent { table_offset: 24, object_offset: 8 },
-                CxxAbiVtableComponent { table_offset: 36, object_offset: 12 },
+                CxxAbiVtableComponent {
+                    table_offset: 0,
+                    object_offset: 0,
+                    virtual_slots: 1,
+                },
+                CxxAbiVtableComponent {
+                    table_offset: 12,
+                    object_offset: 4,
+                    virtual_slots: 1,
+                },
+                CxxAbiVtableComponent {
+                    table_offset: 24,
+                    object_offset: 8,
+                    virtual_slots: 1,
+                },
+                CxxAbiVtableComponent {
+                    table_offset: 36,
+                    object_offset: 12,
+                    virtual_slots: 1,
+                },
             ],
         };
         let mut vtable = data_global(

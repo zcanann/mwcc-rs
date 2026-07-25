@@ -341,8 +341,7 @@ pub struct TranslationUnit {
     /// Named aggregate declarations keyed by their parser identity. Executable
     /// lowering uses the compact resolved [`Type`]; debug lowering follows this
     /// graph to recover source names, member order, and member types.
-    pub aggregate_definitions:
-        std::collections::HashMap<String, crate::AggregateDefinition>,
+    pub aggregate_definitions: std::collections::HashMap<String, crate::AggregateDefinition>,
     /// Enum declarations in source order. Executable types retain only their
     /// configured integer storage; debug lowering follows this side graph.
     pub enumeration_definitions: Vec<crate::EnumerationDefinition>,
@@ -353,18 +352,15 @@ pub struct TranslationUnit {
     /// Source signatures for file-scope function-pointer objects. Executable
     /// lowering only needs their one-word storage type; legacy DWARF emits a
     /// callable type DIE before the object that references it.
-    pub global_function_types:
-        std::collections::HashMap<String, crate::SourceFunctionType>,
+    pub global_function_types: std::collections::HashMap<String, crate::SourceFunctionType>,
     /// Source aggregate identity for function parameters, keyed by emitted
     /// function name and parameter name. Executable lowering only needs the
     /// resolved pointer width/stride; legacy DWARF needs the declaration graph.
-    pub function_parameter_aggregate_tags:
-        std::collections::HashMap<(String, String), String>,
+    pub function_parameter_aggregate_tags: std::collections::HashMap<(String, String), String>,
     /// Source aggregate identity for each function-local declaration, keyed by
     /// function and local name. Executable lowering deliberately keeps only a
     /// struct's size/alignment; debug lowering needs the declaration graph.
-    pub function_local_aggregate_tags:
-        std::collections::HashMap<(String, String), String>,
+    pub function_local_aggregate_tags: std::collections::HashMap<(String, String), String>,
     /// Source aggregate identity for each struct-returning function. The
     /// compact return [`Type`] retains ABI size/alignment; hidden-result
     /// lowering uses this parallel tag to copy fields with their real scalar
@@ -377,8 +373,7 @@ pub struct TranslationUnit {
     /// type is shared with another language type. In particular, C++ `bool`
     /// and `unsigned char` are both one-byte values but have distinct result
     /// normalization and ABI behavior.
-    pub function_return_fundamentals:
-        std::collections::HashMap<String, SourceFundamentalType>,
+    pub function_return_fundamentals: std::collections::HashMap<String, SourceFundamentalType>,
     /// Function prototypes (`type name(params);`) by name, return type, and
     /// parameter types, so a call to an externally-defined function knows its
     /// result type (e.g. a `double`-returning math routine) and its parameter
@@ -409,8 +404,7 @@ pub struct TranslationUnit {
     /// temporary's exact data image. Instance methods include a leading `None`
     /// entry for their implicit `this` argument so the mask aligns with
     /// [`Expression::Call`] arguments.
-    pub cxx_const_reference_parameter_types:
-        std::collections::HashMap<String, Vec<Option<Type>>>,
+    pub cxx_const_reference_parameter_types: std::collections::HashMap<String, Vec<Option<Type>>>,
     /// Inline-substitution provenance keyed by emitted function name.
     pub inline_expansion_facts: std::collections::HashMap<String, InlineExpansionFacts>,
     /// String identities recovered while source-level inline semantics are
@@ -449,8 +443,7 @@ pub struct TranslationUnit {
     /// Section-attributed prototypes which followed an ordinary prototype of
     /// the same function. Some early compilers suppress the otherwise-retained
     /// undefined symbol for this redeclaration shape.
-    pub section_prototypes_with_prior_plain_declaration:
-        std::collections::HashSet<String>,
+    pub section_prototypes_with_prior_plain_declaration: std::collections::HashSet<String>,
     /// The skipped inline functions' NAMES: a body that calls one must defer
     /// at codegen (mwcc inlines the body; a `bl` to the undefined local would
     /// be wrong bytes) — checked AFTER the exact-match templates get a claim.
@@ -512,6 +505,10 @@ pub struct CxxAbiBase {
 pub struct CxxAbiVtableComponent {
     pub table_offset: u32,
     pub object_offset: u32,
+    /// Number of callable slots in this component. Pure virtual entries have
+    /// no relocation, so preserving the count is necessary to reconstruct a
+    /// sparse construction-phase vtable from a derived table.
+    pub virtual_slots: u32,
 }
 
 /// Source coordinates needed for DWARF line programs. This stays on the

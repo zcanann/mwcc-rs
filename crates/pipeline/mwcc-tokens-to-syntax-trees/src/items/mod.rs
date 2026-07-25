@@ -4,14 +4,14 @@
 //!
 //! Split from the former single items.rs (fire 536); behavior-identical.
 
-mod asm;
 mod aggregate_assignments;
+mod asm;
 mod bit_fields;
-mod cxx_global_initializers;
-mod cxx_vtables;
 mod cxx_destructors;
-pub(crate) mod cxx_template_destructors;
+mod cxx_global_initializers;
 pub(crate) mod cxx_template_constructors;
+pub(crate) mod cxx_template_destructors;
+mod cxx_vtables;
 mod initializers;
 mod kr_functions;
 mod parameters;
@@ -239,13 +239,9 @@ fn function_calls(function: &Function, names: &std::collections::HashSet<String>
         .statements
         .iter()
         .any(|statement| statement_calls(statement, names))
-        || function
-            .guards
-            .iter()
-            .any(|guard| {
-                expression_calls(&guard.condition, names)
-                    || expression_calls(&guard.value, names)
-            })
+        || function.guards.iter().any(|guard| {
+            expression_calls(&guard.condition, names) || expression_calls(&guard.value, names)
+        })
         || function
             .return_expression
             .as_ref()
@@ -272,14 +268,17 @@ impl Parser {
                     code_section: self.code_section.clone(),
                 }),
                 "pop" => {
-                    let state = self.pragma_stack.pop().unwrap_or(crate::parser::PragmaState {
-                        cplusplus: self.default_cplusplus,
-                        cpp_exceptions_override: None,
-                        defer_codegen: false,
-                        force_active: false,
-                        peephole_disabled: false,
-                        code_section: None,
-                    });
+                    let state = self
+                        .pragma_stack
+                        .pop()
+                        .unwrap_or(crate::parser::PragmaState {
+                            cplusplus: self.default_cplusplus,
+                            cpp_exceptions_override: None,
+                            defer_codegen: false,
+                            force_active: false,
+                            peephole_disabled: false,
+                            code_section: None,
+                        });
                     self.cplusplus = state.cplusplus;
                     self.cpp_exceptions_override = state.cpp_exceptions_override;
                     self.defer_codegen = state.defer_codegen;
@@ -445,9 +444,7 @@ impl Parser {
                     .or_else(|| self.enum_constants.get(&terminal))
                     .copied()
                     .ok_or_else(|| {
-                        Diagnostic::error(format!(
-                            "non-constant enumerator value '{qualified}'"
-                        ))
+                        Diagnostic::error(format!("non-constant enumerator value '{qualified}'"))
                     })?
             }
             Token::ParenOpen => {
@@ -778,8 +775,7 @@ impl Parser {
             let functions_before = functions.len();
             let globals_before = globals.len();
             let bump_before_item = self.skipped_inline_functions;
-            let materialization_requests_before =
-                self.cxx_inline_materialization_requests.len();
+            let materialization_requests_before = self.cxx_inline_materialization_requests.len();
             let destructor_requests_before = self.cxx_inline_destructor_requests.len();
             let item_result = if skippable_inline_member {
                 // Route definitions whose inherited inline status was proven by
@@ -950,16 +946,11 @@ impl Parser {
                     .split_off(destructor_requests_before);
                 let caller = functions[functions_before].name.clone();
                 for class_name in destructor_classes {
-                    let Some(name) =
-                        cxx_destructors::prepare_requested(self, &class_name)?
-                    else {
+                    let Some(name) = cxx_destructors::prepare_requested(self, &class_name)? else {
                         continue;
                     };
                     let scopes = class_name.split("::").collect::<Vec<_>>();
-                    let vtable = format!(
-                        "__vt__{}",
-                        crate::cxx::encode_qualified_scope(&scopes)?
-                    );
+                    let vtable = format!("__vt__{}", crate::cxx::encode_qualified_scope(&scopes)?);
                     if !globals.iter().any(|global| global.name == vtable) {
                         let class = &self.cxx_classes[&class_name];
                         let mut table = cxx_vtables::global(class, vtable, Some(&name));
@@ -1083,9 +1074,7 @@ impl Parser {
                 initializer: None,
                 is_const: true,
                 pointer_pointee_const: false,
-                address_initializer: Some(vec![PointerElement::Symbol(
-                    startup_name.to_string(),
-                )]),
+                address_initializer: Some(vec![PointerElement::Symbol(startup_name.to_string())]),
                 data_bytes: None,
                 data_relocations: Vec::new(),
                 section: Some(".ctors".to_string()),
@@ -1135,11 +1124,10 @@ impl Parser {
             }
             referenced_functions.extend(newly_referenced);
         }
-        let requested_weak_materializations = std::mem::take(
-            &mut self.cxx_deferred_weak_materialization_requests,
-        )
-        .into_iter()
-        .collect::<std::collections::HashSet<_>>();
+        let requested_weak_materializations =
+            std::mem::take(&mut self.cxx_deferred_weak_materialization_requests)
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>();
         let mut early_materializations = Vec::new();
         for function in std::mem::take(&mut self.cxx_inline_materializations) {
             if referenced_functions.contains(&function.name)
@@ -1227,9 +1215,8 @@ impl Parser {
             .iter()
             .filter_map(|name| self.cxx_classes.get(name).map(|class| (name, class)))
             .map(|(name, class)| {
-                let encoded_name = crate::cxx::encode_qualified_scope(
-                    &name.split("::").collect::<Vec<_>>(),
-                )?;
+                let encoded_name =
+                    crate::cxx::encode_qualified_scope(&name.split("::").collect::<Vec<_>>())?;
                 let mut table_offset = 0u32;
                 let vtable_components = class
                     .vtable_components
@@ -1238,6 +1225,7 @@ impl Parser {
                         let abi = mwcc_syntax_trees::CxxAbiVtableComponent {
                             table_offset,
                             object_offset: component.object_offset,
+                            virtual_slots: component.virtual_slots as u32,
                         };
                         table_offset += 8 + component.virtual_slots.max(1) as u32 * 4;
                         abi
@@ -1322,9 +1310,7 @@ impl Parser {
                 &mut self.function_cpp_exception_overrides,
             ),
             cxx_abi_classes,
-            cxx_class_declaration_order: std::mem::take(
-                &mut self.cxx_class_declaration_order,
-            ),
+            cxx_class_declaration_order: std::mem::take(&mut self.cxx_class_declaration_order),
             aggregate_definitions,
             enumeration_definitions: std::mem::take(&mut self.enumeration_definitions),
             global_aggregate_tags: std::mem::take(&mut self.global_structs),
@@ -1332,16 +1318,10 @@ impl Parser {
             function_parameter_aggregate_tags: std::mem::take(&mut self.function_parameter_structs),
             function_local_aggregate_tags: std::mem::take(&mut self.function_local_structs),
             function_return_aggregate_tags: std::mem::take(&mut self.function_return_structs),
-            function_return_enumeration_tags: std::mem::take(
-                &mut self.function_return_enums,
-            ),
-            function_return_fundamentals: std::mem::take(
-                &mut self.function_return_fundamentals,
-            ),
+            function_return_enumeration_tags: std::mem::take(&mut self.function_return_enums),
+            function_return_fundamentals: std::mem::take(&mut self.function_return_fundamentals),
             prototypes,
-            cxx_declared_function_names: std::mem::take(
-                &mut self.cxx_declared_function_names,
-            ),
+            cxx_declared_function_names: std::mem::take(&mut self.cxx_declared_function_names),
             named_prototype_parameters: self.named_prototype_parameters,
             inline_asm_symbols: std::mem::take(&mut self.inline_asm_symbols),
             plain_inline_asm_helpers: std::mem::take(&mut self.plain_inline_asm_helpers),
@@ -1373,9 +1353,7 @@ impl Parser {
                 std::sync::Arc::new(Vec::new()),
             ))
             .unwrap_or_else(|definitions| definitions.as_ref().clone()),
-            skipped_inline_signatures: std::mem::take(
-                &mut self.skipped_inline_signatures,
-            ),
+            skipped_inline_signatures: std::mem::take(&mut self.skipped_inline_signatures),
             deferred_function_names: std::mem::take(&mut self.deferred_function_names),
             variadic_definitions: std::mem::take(&mut self.variadic_definitions),
             fixed_address_arrays: std::mem::take(&mut self.fixed_address_arrays),
@@ -1978,7 +1956,7 @@ impl Parser {
                     "inline" | "__inline" => is_inline = true,
                     "const" => declaration_const = true,
                     "volatile" => declaration_volatile = true,
-                    "register" => {},
+                    "register" => {}
                     // `__declspec(weak)` marks the declared symbol WEAK — on a
                     // prototype it applies to the later definition too.
                     "__declspec" => {
@@ -2378,9 +2356,7 @@ impl Parser {
                         .iter_mut()
                         .find(|definition| definition.name == identity)
                     {
-                        definition
-                            .source_name
-                            .get_or_insert_with(|| name.clone());
+                        definition.source_name.get_or_insert_with(|| name.clone());
                     }
                 }
                 self.typedefs.insert(name, aliased);
@@ -2858,8 +2834,8 @@ impl Parser {
                             (Some(a), Some(b)) => Some(a.max(b)),
                             (a, b) => a.or(b),
                         };
-                    let attribute_section = attribute_section_dims
-                        .or_else(|| attribute_section_name.clone());
+                    let attribute_section =
+                        attribute_section_dims.or_else(|| attribute_section_name.clone());
                     // A pointer global initialized with addresses (`int *p = &g;` or
                     // a `{&a, &b}` array) is a set of data relocations, not constants.
                     // An array of word-field structs with a pointer field (a
@@ -3150,13 +3126,9 @@ impl Parser {
             // whole list; `void *p` / `void (*f)()` are real first parameters.
             if is_kr_definition {
                 parameters = self.parse_kr_parameters()?;
-                cxx_parameters.extend(
-                    parameters
-                        .iter()
-                        .map(|parameter| {
-                            crate::cxx::CxxParameterType::plain(parameter.parameter_type)
-                        }),
-                );
+                cxx_parameters.extend(parameters.iter().map(|parameter| {
+                    crate::cxx::CxxParameterType::plain(parameter.parameter_type)
+                }));
             } else if *self.peek() == Token::KeywordVoid
                 && self.tokens.get(self.position + 1) == Some(&Token::ParenClose)
             {
@@ -3226,8 +3198,8 @@ impl Parser {
                     .with_function_type(cxx_function_type.clone());
                     // A function-pointer parameter `RET (*name)(params)` is a 4-byte
                     // opaque pointer; consume its declarator and signature.
-                    if let Some((name, name_position, callback_type)) = self
-                        .try_cxx_function_pointer_declarator(callback_return_type)?
+                    if let Some((name, name_position, callback_type)) =
+                        self.try_cxx_function_pointer_declarator(callback_return_type)?
                     {
                         if let Some(name_position) = name_position {
                             self.record_named_parameter_at(name_position);
@@ -3368,10 +3340,12 @@ impl Parser {
             let inherited_c_linkage = self
                 .c_linkage_functions
                 .contains(linkage_source_name.as_str())
-                && prototypes.iter().any(|(declared_name, _, parameter_types)| {
-                    declared_name == &source_function_name
-                        && parameter_types == &declared_parameter_types
-                });
+                && prototypes
+                    .iter()
+                    .any(|(declared_name, _, parameter_types)| {
+                        declared_name == &source_function_name
+                            && parameter_types == &declared_parameter_types
+                    });
             let mut member_definition_is_static = false;
 
             if let Some(scope) = &member_scope {
@@ -3393,15 +3367,14 @@ impl Parser {
                         &cxx_parameters,
                     )?
                 };
-                member_definition_is_static = member_declaration_scope.as_ref().is_some_and(
-                    |class| {
+                member_definition_is_static =
+                    member_declaration_scope.as_ref().is_some_and(|class| {
                         self.cxx_static_methods
                             .get(&(class.clone(), source_name.clone()))
                             .is_some_and(|methods| {
                                 methods.iter().any(|method| method.mangled == name)
                             })
-                    },
-                );
+                    });
                 if !member_definition_is_static {
                     parameters.insert(
                         0,
@@ -3475,8 +3448,7 @@ impl Parser {
             }
 
             if let Some(tag) = &return_enum_tag {
-                self.function_return_enums
-                    .insert(name.clone(), tag.clone());
+                self.function_return_enums.insert(name.clone(), tag.clone());
             }
             if let Some(fundamental) = declared_source_fundamental {
                 self.function_return_fundamentals
@@ -3656,8 +3628,7 @@ impl Parser {
                 }
             }
             let mut function = parsed_function?;
-            let constructor_vptr_insertion_index =
-                constructor_initialization.vptr_insertion_index;
+            let constructor_vptr_insertion_index = constructor_initialization.vptr_insertion_index;
             if !constructor_initialization.statements.is_empty() {
                 function
                     .statements
@@ -3687,10 +3658,8 @@ impl Parser {
                 if let Some(class) = self.cxx_classes.get(scope) {
                     if !class.vtable_components.is_empty() {
                         let scopes: Vec<&str> = scope.split("::").collect();
-                        let vtable = format!(
-                            "__vt__{}",
-                            crate::cxx::encode_qualified_scope(&scopes)?
-                        );
+                        let vtable =
+                            format!("__vt__{}", crate::cxx::encode_qualified_scope(&scopes)?);
                         let mut table_offset = 0u32;
                         let vptr_stores: Vec<Statement> = class
                             .vtable_components
@@ -3718,8 +3687,7 @@ impl Parser {
                                     },
                                     value,
                                 };
-                                table_offset +=
-                                    8 + component.virtual_slots.max(1) as u32 * 4;
+                                table_offset += 8 + component.virtual_slots.max(1) as u32 * 4;
                                 store
                             })
                             .collect();
@@ -3728,8 +3696,7 @@ impl Parser {
                             let before_source = vec![vptr_store];
                             let object_size =
                                 self.structs.get(scope).map_or(0, |layout| layout.size);
-                            let delete =
-                                cxx_destructors::delete_call(self, scope, object_size);
+                            let delete = cxx_destructors::delete_call(self, scope, object_size);
                             cxx_destructors::wrap_written(
                                 &mut function,
                                 object_size,
@@ -3739,18 +3706,14 @@ impl Parser {
                             );
 
                             if !globals.iter().any(|global| global.name == vtable) {
-                                let mut table = cxx_vtables::global(
-                                    class,
-                                    vtable,
-                                    Some(&function.name),
-                                );
+                                let mut table =
+                                    cxx_vtables::global(class, vtable, Some(&function.name));
                                 table.is_weak = function_is_weak;
                                 globals.push(table);
                             }
                         } else if constructor_scope.is_some() {
                             function.statements.splice(
-                                constructor_vptr_insertion_index
-                                    ..constructor_vptr_insertion_index,
+                                constructor_vptr_insertion_index..constructor_vptr_insertion_index,
                                 vptr_stores,
                             );
                             // A class whose virtuals are all inline has no strong
@@ -3776,11 +3739,8 @@ impl Parser {
                                     None
                                 };
                                 if !class.has_virtual_destructor || destructor.is_some() {
-                                    let mut table = cxx_vtables::global(
-                                        class,
-                                        vtable,
-                                        destructor.as_deref(),
-                                    );
+                                    let mut table =
+                                        cxx_vtables::global(class, vtable, destructor.as_deref());
                                     table.is_weak = true;
                                     globals.push(table);
                                 }
@@ -3796,27 +3756,16 @@ impl Parser {
                         .as_deref()
                         .is_some_and(|key| key == function.name);
                     let scopes: Vec<&str> = scope.split("::").collect();
-                    let vtable = format!(
-                        "__vt__{}",
-                        crate::cxx::encode_qualified_scope(&scopes)?
-                    );
+                    let vtable = format!("__vt__{}", crate::cxx::encode_qualified_scope(&scopes)?);
                     if owns_vtable && !globals.iter().any(|global| global.name == vtable) {
                         let scopes: Vec<&str> = scope.split("::").collect();
                         let destructor = class
                             .has_virtual_destructor
                             .then(|| {
-                                crate::cxx::mangle_qualified_member_function(
-                                    &scopes,
-                                    "__dt",
-                                    &[],
-                                )
+                                crate::cxx::mangle_qualified_member_function(&scopes, "__dt", &[])
                             })
                             .transpose()?;
-                        let mut table = cxx_vtables::global(
-                            class,
-                            vtable,
-                            destructor.as_deref(),
-                        );
+                        let mut table = cxx_vtables::global(class, vtable, destructor.as_deref());
                         table.is_weak = function_is_weak;
                         globals.push(table);
                     }
@@ -4107,9 +4056,7 @@ impl Parser {
                     bump += (local_declarators - const_local_declarators)
                         * usize::from(self.dropped_inline_local_declaration_label_weight);
                     bump += const_local_declarators
-                        * usize::from(
-                            self.dropped_inline_const_local_declaration_label_weight,
-                        );
+                        * usize::from(self.dropped_inline_const_local_declaration_label_weight);
                     // A local aggregate type definition has one invariant
                     // frontend-analysis cost in every characterized build,
                     // separate from the generation-specific ordinary-local
@@ -4415,7 +4362,8 @@ impl Parser {
     /// semantic parser or recovery skips it. The body token is a stable key
     /// across speculative parsing, matching anonymous-enum accounting.
     fn capture_anonymous_aggregate_ordinal(&mut self) {
-        let starts_aggregate_declaration = self.tokens.get(self.position) == Some(&Token::KeywordStruct)
+        let starts_aggregate_declaration = self.tokens.get(self.position)
+            == Some(&Token::KeywordStruct)
             || matches!(self.tokens.get(self.position), Some(Token::Identifier(word)) if matches!(word.as_str(), "typedef" | "union" | "class"));
         if !starts_aggregate_declaration {
             return;
@@ -4575,8 +4523,7 @@ impl Parser {
                     let (alias, declared_type, struct_tag) =
                         self.parse_local_typeof_member_typedef()?;
                     let previous_type = self.typedefs.insert(alias.clone(), declared_type);
-                    let previous_function_type =
-                        self.function_pointer_typedefs.remove(&alias);
+                    let previous_function_type = self.function_pointer_typedefs.remove(&alias);
                     local_function_pointer_typedefs.push((
                         alias.clone(),
                         previous_type,
@@ -4614,7 +4561,7 @@ impl Parser {
                 match word.as_str() {
                     "static" => is_static = true,
                     "extern" => is_extern = true,
-                    "register" | "auto" => {},
+                    "register" | "auto" => {}
                     "const" => declaration_const = true,
                     "volatile" => declaration_volatile = true,
                     _ => break,
@@ -4755,27 +4702,23 @@ impl Parser {
                 let name = self.parse_identifier()?;
                 if let Some(tag) = &struct_tag {
                     self.variable_structs.insert(name.clone(), tag.clone());
-                    self.function_local_structs.insert(
-                        (debug_function_name.clone(), name.clone()),
-                        tag.clone(),
-                    );
+                    self.function_local_structs
+                        .insert((debug_function_name.clone(), name.clone()), tag.clone());
                 }
                 // A class-typed function-local static is dynamically
                 // initialized on first passage, even when its constructor
                 // argument is a constant. Retain the constructor call as the
                 // local's initializer; machine lowering owns the guard and
                 // destructor registration transaction.
-                let direct_static_constructor = if is_static
-                    && struct_tag.is_some()
-                    && *self.peek() == Token::ParenOpen
-                {
-                    Some(self.parse_direct_local_constructor_call(
-                        struct_tag.as_deref().expect("checked above"),
-                        &name,
-                    )?)
-                } else {
-                    None
-                };
+                let direct_static_constructor =
+                    if is_static && struct_tag.is_some() && *self.peek() == Token::ParenOpen {
+                        Some(self.parse_direct_local_constructor_call(
+                            struct_tag.as_deref().expect("checked above"),
+                            &name,
+                        )?)
+                    } else {
+                        None
+                    };
                 // A local array `type buf[N];` — a frame slot of `N` elements. A
                 // STATIC local array (`static const f32 c[] = {...};`) captures its
                 // byte image instead (it is static storage, not a frame slot).
@@ -4900,12 +4843,11 @@ impl Parser {
                                     let is_float = matches!(
                                         self.peek(),
                                         Token::FloatLiteral(_) | Token::DoubleLiteral(_)
-                                    )
-                                        || (*self.peek() == Token::Minus
-                                            && matches!(
-                                                self.peek_at(1),
-                                                Token::FloatLiteral(_) | Token::DoubleLiteral(_)
-                                            ));
+                                    ) || (*self.peek() == Token::Minus
+                                        && matches!(
+                                            self.peek_at(1),
+                                            Token::FloatLiteral(_) | Token::DoubleLiteral(_)
+                                        ));
                                     if is_float {
                                         let negative = self.eat_keyword(Token::Minus);
                                         let value = match self.advance().clone() {
@@ -5409,9 +5351,7 @@ impl Parser {
     /// element type: `typedef __typeof__(((struct S){0}).field[0]) Alias;`.
     /// This is declaration introspection only; the compound literal is never
     /// evaluated, and the selected type comes from the recovered aggregate.
-    fn parse_local_typeof_member_typedef(
-        &mut self,
-    ) -> Compilation<(String, Type, Option<String>)> {
+    fn parse_local_typeof_member_typedef(&mut self) -> Compilation<(String, Type, Option<String>)> {
         if !self.eat_word("typedef") || !self.eat_word("__typeof__") {
             return Err(Diagnostic::error("expected a local __typeof__ typedef"));
         }
@@ -5447,7 +5387,9 @@ impl Parser {
             self.position += 1;
         }
         if braces != 0 || brackets != 0 {
-            return Err(Diagnostic::error("unbalanced local __typeof__ member expression"));
+            return Err(Diagnostic::error(
+                "unbalanced local __typeof__ member expression",
+            ));
         }
         let aggregate = struct_name
             .ok_or_else(|| Diagnostic::error("__typeof__ member expression has no struct type"))?;
@@ -5617,9 +5559,7 @@ fn source_parameter_count(tokens: &[Token], open: usize, close: usize) -> usize 
             Token::BraceClose => braces = braces.saturating_sub(1),
             Token::Less if parens == 0 && brackets == 0 && braces == 0 => angles += 1,
             Token::Greater if angles > 0 => angles -= 1,
-            Token::Comma
-                if parens == 0 && brackets == 0 && braces == 0 && angles == 0 =>
-            {
+            Token::Comma if parens == 0 && brackets == 0 && braces == 0 && angles == 0 => {
                 if !parameter_segment_is_variadic(&body[segment_start..index]) {
                     count += 1;
                 }
