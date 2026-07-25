@@ -19,7 +19,7 @@ impl Generator {
         destination: u8,
         double: bool,
     ) -> Compilation<bool> {
-        if double || destination != FLOAT_SCRATCH || operator != BinaryOperator::Add {
+        if double || operator != BinaryOperator::Add {
             return Ok(false);
         }
         let (addend, x, y) = match right {
@@ -44,18 +44,39 @@ impl Generator {
             return Ok(false);
         }
 
-        let multiplicand = self.fresh_virtual_float_preferring(2);
-        let multiplier = self.fresh_virtual_float_preferring(1);
+        let (multiplicand, multiplier, addend_register) = if destination == FLOAT_SCRATCH {
+            (
+                self.fresh_virtual_float_preferring(2),
+                self.fresh_virtual_float_preferring(1),
+                destination,
+            )
+        } else {
+            // When this triplet is the left child of a larger expression, keep
+            // its result in the requested home and load the second factor there.
+            // The first factor gets a separate live lane while f0 remains free
+            // for both addends and the sibling subtree.
+            if destination >= mwcc_vreg::VIRTUAL_BASE {
+                self.register_prefer.insert(
+                    u32::from(destination - mwcc_vreg::VIRTUAL_BASE),
+                    3,
+                );
+            }
+            (
+                self.fresh_virtual_float_preferring(4),
+                destination,
+                FLOAT_SCRATCH,
+            )
+        };
         self.emit_located_operand(x, multiplicand)?;
         self.emit_located_operand(y, multiplier)?;
-        self.emit_located_operand(addend, destination)?;
+        self.emit_located_operand(addend, addend_register)?;
         self.output
             .instructions
             .push(Instruction::FloatMultiplyAddSingle {
                 d: destination,
                 a: multiplicand,
                 c: multiplier,
-                b: destination,
+                b: addend_register,
             });
         Ok(true)
     }
