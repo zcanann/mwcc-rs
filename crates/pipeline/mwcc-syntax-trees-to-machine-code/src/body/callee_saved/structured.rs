@@ -1529,7 +1529,13 @@ impl Generator {
                 .is_none_or(|initializer| !crate::analysis::expression_has_call(initializer))
         });
         let entry_parameter_alias = (!dense_inline_save && initializers_preserve_entry_alias)
-            .then(|| plan_first_call_alias(alias_statements, &saved_parameter_homes))
+            .then(|| {
+                plan_first_call_alias(
+                    alias_statements,
+                    &saved_parameter_homes,
+                    &function.parameters,
+                )
+            })
             .flatten();
         for (name, home, _) in &saved_parameter_homes {
             if entry_parameter_alias

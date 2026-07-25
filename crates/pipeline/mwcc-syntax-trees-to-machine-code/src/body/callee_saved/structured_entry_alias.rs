@@ -23,7 +23,17 @@ pub(super) enum EntryAliasBoundary {
 pub(super) fn plan_first_call_alias(
     statements: &[Statement],
     saved_parameters: &[(String, u8, u8)],
+    parameters: &[mwcc_syntax_trees::Parameter],
 ) -> Option<EntryParameterAlias> {
+    let zero_test_record_form = |name: &str| {
+        parameters.iter().any(|parameter| {
+            parameter.name == name
+                && matches!(
+                    parameter.parameter_type,
+                    Type::Pointer(_) | Type::StructPointer { .. }
+                )
+        })
+    };
     if let Statement::Expression(Expression::Call { arguments, .. }) = statements.first()? {
         let (Expression::Variable(name), later_arguments) = arguments.split_first()? else {
             return None;
@@ -64,6 +74,9 @@ pub(super) fn plan_first_call_alias(
         .find(|(name, _, incoming)| {
             (3..=10).contains(incoming) && expression_reads_name(first, name)
         })?;
+    if !zero_test_record_form(name) {
+        return None;
+    }
     Some(EntryParameterAlias {
         name: name.clone(),
         home: *home,
@@ -125,6 +138,14 @@ pub(super) fn fold_entry_alias_zero_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mwcc_syntax_trees::Parameter;
+
+    fn pointer_parameter(name: &str) -> Parameter {
+        Parameter {
+            parameter_type: Type::Pointer(mwcc_syntax_trees::Pointee::Int),
+            name: name.into(),
+        }
+    }
 
     fn call(arguments: Vec<Expression>) -> Vec<Statement> {
         vec![Statement::Expression(Expression::Call {
@@ -141,7 +162,9 @@ mod tests {
         ]);
         let saved = vec![("pointer".to_string(), 31, 3)];
 
-        let alias = plan_first_call_alias(&statements, &saved).expect("eligible alias");
+        let alias =
+            plan_first_call_alias(&statements, &saved, &[pointer_parameter("pointer")])
+                .expect("eligible alias");
 
         assert_eq!(alias.name, "pointer");
         assert_eq!(alias.home, 31);
@@ -156,7 +179,9 @@ mod tests {
         ]);
         let saved = vec![("pointer".to_string(), 31, 3)];
 
-        assert!(plan_first_call_alias(&statements, &saved).is_none());
+        assert!(
+            plan_first_call_alias(&statements, &saved, &[pointer_parameter("pointer")]).is_none()
+        );
     }
 
     #[test]
@@ -182,7 +207,9 @@ mod tests {
         }];
         let saved = vec![("pointer".to_string(), 31, 3)];
 
-        let alias = plan_first_call_alias(&statements, &saved).expect("eligible alias");
+        let alias =
+            plan_first_call_alias(&statements, &saved, &[pointer_parameter("pointer")])
+                .expect("eligible alias");
 
         assert_eq!(alias.boundary, EntryAliasBoundary::AfterFirstConditionTerm);
     }
@@ -201,7 +228,8 @@ mod tests {
         }];
         let saved = vec![("object".to_string(), 31, 4)];
 
-        let alias = plan_first_call_alias(&statements, &saved).expect("eligible alias");
+        let alias = plan_first_call_alias(&statements, &saved, &[pointer_parameter("object")])
+            .expect("eligible alias");
 
         assert_eq!(alias.name, "object");
         assert_eq!(alias.home, 31);
@@ -251,5 +279,20 @@ mod tests {
             Some(Instruction::OrRecord { a: 31, s: 3, b: 3 })
         ));
         assert_eq!(instructions.len(), 3);
+    }
+
+    #[test]
+    fn scalar_entry_guard_keeps_its_explicit_zero_compare() {
+        let statements = vec![Statement::If {
+            condition: Expression::Variable("size".into()),
+            then_body: call(vec![Expression::Variable("size".into())]),
+            else_body: vec![],
+        }];
+        let saved = vec![("size".to_string(), 31, 5)];
+        let parameters = [Parameter {
+            parameter_type: Type::UnsignedInt,
+            name: "size".into(),
+        }];
+        assert!(plan_first_call_alias(&statements, &saved, &parameters).is_none());
     }
 }
