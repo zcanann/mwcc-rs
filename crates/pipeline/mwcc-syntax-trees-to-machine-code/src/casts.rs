@@ -421,40 +421,18 @@ impl Generator {
             self.load_float_literal(destination, *value, double);
             return Ok(());
         }
-        // A cast between floating types needs an instruction only when it NARROWS:
-        // `(float)` of a double rounds it to single precision with `frsp`. A leaf
-        // rounds in place from its own register; a sub-expression is computed into
-        // the destination first (mwcc keeps that intermediate in the destination,
-        // not the scratch), then rounded `frsp d, d`. A same-width `(double)` of a
-        // double is a NO-OP — the value only needs to land in `destination` (mwcc
-        // emits nothing when it is already there, e.g. `return (double)dbl_call()`
-        // whose result is already in the return register); do NOT emit a spurious frsp.
-        // A `(double)` of a FLOAT is also a no-op: a single value in an f-register is
-        // already the double it represents (`cos((double)float_x)` passes f1 through).
-        if self.is_double_value(operand) || self.is_float_leaf(operand) {
-            if self.is_float_leaf(operand) {
-                let source = self.float_register_of_leaf(operand)?;
-                if double {
-                    if source != destination {
-                        self.output.instructions.push(Instruction::FloatMove {
-                            d: destination,
-                            b: source,
-                        });
-                    }
-                } else {
-                    self.output.instructions.push(Instruction::RoundToSingle {
-                        d: destination,
-                        b: source,
-                    });
-                }
-            } else {
-                self.evaluate_float(operand, destination)?;
-                if !double {
-                    self.output.instructions.push(Instruction::RoundToSingle {
-                        d: destination,
-                        b: destination,
-                    });
-                }
+        // A cast between floating types needs an instruction only when it
+        // NARROWS from double to float. Same-precision casts and float-to-double
+        // widening are representation-preserving in an FPR.
+        let operand_is_double = self.is_double_value(operand);
+        if operand_is_double || self.is_float_operand(operand) {
+            let narrows = !double && operand_is_double;
+            self.evaluate_float(operand, destination)?;
+            if narrows {
+                self.output.instructions.push(Instruction::RoundToSingle {
+                    d: destination,
+                    b: destination,
+                });
             }
             return Ok(());
         }

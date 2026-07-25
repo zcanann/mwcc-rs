@@ -2107,13 +2107,14 @@ pub(crate) fn fits_single_scratch(expression: &Expression, destination_is_scratc
         } if target_type.width() == 32 && !matches!(target_type, Type::Float | Type::Double) => {
             fits_single_scratch(operand, destination_is_scratch)
         }
-        // An unsuffixed C floating literal is represented as a typed-double
-        // wrapper around the literal payload. It is still a leaf pool load and
-        // needs no additional temporary beyond its requested destination.
+        // A floating cast owns its requested destination. Widening and
+        // same-precision casts are register moves/no-ops; narrowing adds `frsp`;
+        // integer conversion uses its dedicated frame schedule. None requires
+        // the caller to preserve another floating scratch register.
         Expression::Cast {
-            target_type: Type::Double,
+            target_type: Type::Float | Type::Double,
             operand,
-        } if matches!(operand.as_ref(), Expression::FloatLiteral(_)) => true,
+        } => fits_single_scratch(operand, destination_is_scratch),
         Expression::Conditional { .. } | Expression::Cast { .. } => false,
         Expression::BitFieldRead { extracted, .. } => {
             fits_single_scratch(extracted, destination_is_scratch)
@@ -2237,6 +2238,20 @@ mod tests {
                 index_stride: None,
             })),
         };
+        assert!(fits_single_scratch(&difference, true));
+    }
+
+    #[test]
+    fn floating_leaf_casts_are_transparent_to_scratch_planning() {
+        let difference = Expression::Binary {
+            operator: BinaryOperator::Subtract,
+            left: Box::new(Expression::Cast {
+                target_type: Type::Float,
+                operand: Box::new(Expression::Variable("value".into())),
+            }),
+            right: Box::new(Expression::FloatLiteral(1.0)),
+        };
+
         assert!(fits_single_scratch(&difference, true));
     }
 
