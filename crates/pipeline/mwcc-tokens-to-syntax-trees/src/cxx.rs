@@ -5601,6 +5601,7 @@ fn encode_type(parameter: &CxxParameterType) -> Compilation<String> {
     let source_spelling = match parameter.source_fundamental {
         Some(SourceFundamentalType::Boolean) => Some("b"),
         Some(SourceFundamentalType::PlainChar) => Some("c"),
+        Some(SourceFundamentalType::SignedChar) => Some("Sc"),
         Some(SourceFundamentalType::SignedLong) => Some("l"),
         Some(SourceFundamentalType::UnsignedLong) => Some("Ul"),
         _ => None,
@@ -5824,6 +5825,8 @@ mod tests {
     fn mangles_erased_boolean_long_and_aggregate_pointer_depth() {
         let boolean = CxxParameterType::plain(Type::UnsignedChar)
             .with_source_fundamental(Some(SourceFundamentalType::Boolean));
+        let signed_char = CxxParameterType::plain(Type::Char)
+            .with_source_fundamental(Some(SourceFundamentalType::SignedChar));
         let unsigned_long = CxxParameterType::plain(Type::UnsignedInt)
             .with_source_fundamental(Some(SourceFundamentalType::UnsignedLong));
         let aggregate_pointer_pointer = CxxParameterType::parsed(
@@ -5837,6 +5840,7 @@ mod tests {
         )
         .with_pointer_shape(2, None);
         assert_eq!(encode_type(&boolean).unwrap(), "b");
+        assert_eq!(encode_type(&signed_char).unwrap(), "Sc");
         assert_eq!(encode_type(&unsigned_long).unwrap(), "Ul");
         assert_eq!(
             encode_type(&aggregate_pointer_pointer).unwrap(),

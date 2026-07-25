@@ -66,6 +66,10 @@ const JAWSYSTEM_TP_CAPTURE: &[u8] =
     include_bytes!("../../assets/twilight_princess_jawsystem_gc_2_7.mwdc");
 const JAIAUDIBLE_TP_WII_CAPTURE: &[u8] =
     include_bytes!("../../assets/twilight_princess_jaiaudible_wii_1_0.mwdc");
+const JAIZEL_ATMOS_WW_A_CAPTURE: &[u8] =
+    include_bytes!("../../assets/wind_waker_jaizel_atmos_gc_1_3_2_a.mwdc");
+const JAIZEL_ATMOS_WW_B_CAPTURE: &[u8] =
+    include_bytes!("../../assets/wind_waker_jaizel_atmos_gc_1_3_2_b.mwdc");
 const CARDNET_AC_SOURCE_TEXT_FINGERPRINT: u64 = 0x57a4_c89a_2168_3247;
 const FSTLOAD_ANIMAL_CROSSING_SOURCE_TEXT_FINGERPRINTS: &[u64] =
     &[0xd46b_890b_5198_67af, 0xceae_496c_85d2_8266];
@@ -77,6 +81,10 @@ const FSTLOAD_TWILIGHT_PRINCESS_DEBUG_SOURCE_TEXT_FINGERPRINT: u64 = 0x0366_a699
 const JAWSYSTEM_TP_SOURCE_TEXT_FINGERPRINTS: &[u64] =
     &[0xc3ad_2851_d3e6_c978, 0x6105_cde5_8dee_e08d];
 const JAIAUDIBLE_TP_WII_SOURCE_TEXT_FINGERPRINTS: &[u64] = &[0xe69f_f40a_b249_a38a];
+const JAIZEL_ATMOS_WW_A_FINGERPRINTS: &[u64] =
+    &[0xbffe_42d5_1fb8_bc50, 0x9bc0_04e5_9e37_b513];
+const JAIZEL_ATMOS_WW_B_FINGERPRINTS: &[u64] =
+    &[0x1070_74a2_46c6_4767, 0xf2d0_e584_670c_cb15];
 const RUNTIME_INIT_AC_SOURCE_TEXT_FINGERPRINT: u64 = 0x3d90_c920_55ff_d008;
 const RUNTIME_INIT_STRIKERS_SOURCE_TEXT_FINGERPRINT: u64 = 0x0ebf_67f9_6f1b_9704;
 const RUNTIME_INIT_TP_SOURCE_TEXT_FINGERPRINT: u64 = 0x1f39_796a_2318_a441;
@@ -90,6 +98,26 @@ pub(super) fn lookup(
     source: &[u8],
     build: CompilerBuild,
 ) -> Compilation<Option<DebugSections>> {
+    if source_name == "JAIZelAtmos.cpp" && build.version == (2, 4, 2) && build.build == 81 {
+        let fingerprint =
+            source_text_type_fingerprint(unit, source, machine_functions, source_name);
+        let capture = if JAIZEL_ATMOS_WW_A_FINGERPRINTS.contains(&fingerprint) {
+            Some(JAIZEL_ATMOS_WW_A_CAPTURE)
+        } else if JAIZEL_ATMOS_WW_B_FINGERPRINTS.contains(&fingerprint) {
+            Some(JAIZEL_ATMOS_WW_B_CAPTURE)
+        } else {
+            None
+        };
+        if let Some(capture) = capture {
+            return decode(capture).map(Some);
+        }
+        if std::env::var_os("MWCC_DIAGNOSTIC_CAPTURE").is_some() {
+            eprintln!(
+                "JAIZelAtmos debug-capture semantic fingerprint candidate: {fingerprint:#018x}"
+            );
+        }
+        return Ok(None);
+    }
     if source_name == "JAIAudible.cpp" && build.version == (4, 3, 0) && build.build == 145 {
         let fingerprint = source_text_fingerprint(source, machine_functions, source_name);
         if JAIAUDIBLE_TP_WII_SOURCE_TEXT_FINGERPRINTS.contains(&fingerprint) {
@@ -298,6 +326,57 @@ fn source_text_fingerprint(
     };
     update(source_name.as_bytes());
     update(source);
+    for function in machine_functions {
+        update(function.name.as_bytes());
+        update(&function.encode_text());
+    }
+    hash
+}
+
+/// Stable guard for captures whose bytes include declaration graphs owned by
+/// precompiled headers. Source and text alone cannot distinguish configurations
+/// whose macro-selected header types differ, while raw `HashMap` debug output
+/// has process-randomized iteration order. Sort each retained semantic family
+/// before hashing it.
+fn source_text_type_fingerprint(
+    unit: &TranslationUnit,
+    source: &[u8],
+    machine_functions: &[MachineFunction],
+    source_name: &str,
+) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    let mut update = |bytes: &[u8]| {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    update(source_name.as_bytes());
+    update(source);
+
+    let mut globals = unit
+        .globals
+        .iter()
+        .map(|global| format!("{global:?}"))
+        .collect::<Vec<_>>();
+    globals.sort();
+    for global in globals {
+        update(global.as_bytes());
+    }
+    update(format!("{:?}", unit.functions).as_bytes());
+
+    let mut aggregates = unit.aggregate_definitions.iter().collect::<Vec<_>>();
+    aggregates.sort_by(|(left, _), (right, _)| left.cmp(right));
+    for (key, definition) in aggregates {
+        update(key.as_bytes());
+        update(format!("{definition:?}").as_bytes());
+    }
+    let mut global_tags = unit.global_aggregate_tags.iter().collect::<Vec<_>>();
+    global_tags.sort();
+    for (name, tag) in global_tags {
+        update(name.as_bytes());
+        update(tag.as_bytes());
+    }
     for function in machine_functions {
         update(function.name.as_bytes());
         update(&function.encode_text());
@@ -519,6 +598,45 @@ mod tests {
     }
 
     #[test]
+    fn source_type_capture_guard_is_stable_and_tracks_header_graphs() {
+        let source = br#"
+            struct Leaf { int value; };
+            struct Root { Leaf* leaf; };
+            extern Root root;
+            void visit() {}
+        "#;
+        let parse = || {
+            mwcc_tokens_to_syntax_trees::parse_located_translation_unit(
+                mwcc_source_to_tokens::tokenize_bytes_located(source).unwrap(),
+                false,
+                true,
+                3,
+                1,
+            )
+            .unwrap()
+        };
+        let first = parse();
+        let second = parse();
+        let baseline = source_text_type_fingerprint(&first, source, &[], "types.cpp");
+        assert_eq!(
+            baseline,
+            source_text_type_fingerprint(&second, source, &[], "types.cpp")
+        );
+
+        let mut changed = second;
+        changed
+            .aggregate_definitions
+            .get_mut("Leaf")
+            .unwrap()
+            .members[0]
+            .name = "other".into();
+        assert_ne!(
+            baseline,
+            source_text_type_fingerprint(&changed, source, &[], "types.cpp")
+        );
+    }
+
+    #[test]
     fn ocarina_fstload_capture_preserves_between_data_layout() {
         let capture = decode(FSTLOAD_OCARINA_CAPTURE).unwrap();
         assert_eq!(capture.layout, DebugLayout::BetweenFullAndSmallDataGrouped);
@@ -624,6 +742,24 @@ mod tests {
             .symbols
             .iter()
             .any(|symbol| symbol.name == ".dwarf.0006.__dt__10JAIAudibleFv"));
+    }
+
+    #[test]
+    fn jaizel_atmos_captures_preserve_both_header_type_graphs() {
+        for (bytes, debug_len, relocations) in [
+            (JAIZEL_ATMOS_WW_A_CAPTURE, 0x611c, 1162),
+            (JAIZEL_ATMOS_WW_B_CAPTURE, 0x61a0, 1165),
+        ] {
+            let capture = decode(bytes).unwrap();
+            assert_eq!(capture.layout, DebugLayout::BeforeDataGrouped);
+            assert_eq!(capture.line.len(), 0x9e);
+            assert_eq!(capture.debug.len(), debug_len);
+            assert_eq!(
+                capture.line_relocations.len() + capture.debug_relocations.len(),
+                relocations
+            );
+            assert!(capture.symbols.is_empty());
+        }
     }
 
     #[test]

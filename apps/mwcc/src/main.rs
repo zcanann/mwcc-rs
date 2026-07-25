@@ -2348,11 +2348,25 @@ fn compile(
             _ => None,
         })
         .collect();
+    // Build 81 does not materialize header-owned asm helpers for a C++ unit
+    // whose only definitions are empty method stubs.  Once any definition has
+    // an executable body, its ordinary 2.4.2 retention rule applies (measured
+    // independently by the Metroid Prime virtual-collection unit).
+    let cxx_has_executable_definition = unit.functions.iter().any(|function| {
+        !function.locals.is_empty()
+            || !function.statements.is_empty()
+            || !function.guards.is_empty()
+            || function.return_expression.is_some()
+            || function.asm_body.is_some()
+            || !function.inline_asm_blocks.is_empty()
+    });
     let object_inline_asm_symbols: Vec<String> = unit
         .inline_asm_symbols
         .iter()
         .filter(|name| {
-            ((is_cxx && behavior.retain_unused_cxx_inline_asm_symbols)
+            ((is_cxx
+                && behavior.retain_unused_cxx_inline_asm_symbols
+                && cxx_has_executable_definition)
                 || (!is_cxx
                     && behavior.retain_unused_c_inline_asm_symbols
                     && !config.flags.inline_deferred
