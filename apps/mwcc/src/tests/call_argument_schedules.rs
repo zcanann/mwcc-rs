@@ -143,3 +143,42 @@ fn reconstructs_saved_siblings_after_a_nested_heap_call() {
         .windows(nested_arguments.len())
         .any(|bytes| bytes == nested_arguments));
 }
+
+#[test]
+fn reconstructs_an_aggregate_hidden_result_prefix_after_a_float_call() {
+    let source = br#"
+        struct Vec {
+            float x;
+            float y;
+            float z;
+            Vec& operator=(const Vec&);
+            Vec operator*(float) const;
+            float dot(const Vec&) const;
+        };
+        void scale(
+            Vec& result,
+            const Vec& right,
+            float length
+        ) {
+            Vec left;
+            result = left * (left.dot(right) / length);
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.cpp_exceptions = false;
+    flags.emit_mwcats = false;
+    let config = mwcc_versions::CompilerConfig {
+        build: mwcc_versions::GC_1_2_5N,
+        flags,
+    };
+    compile(
+        source,
+        "aggregate-hidden-result-float-tail.cpp",
+        config,
+        Some(SourceLanguage::Cxx),
+        None,
+        false,
+    )
+    .expect("the float call should precede the reloadable hidden-result and object addresses");
+}

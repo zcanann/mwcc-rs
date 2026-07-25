@@ -54,6 +54,86 @@ fn stable_call_binary(
 }
 
 impl Generator {
+    /// Marshal a reloadable general prefix after evaluating a call-bearing
+    /// floating tail argument.
+    ///
+    /// The nested call owns r3-r12 but returns through the independent FPR
+    /// sequence. A frame address, global, or nonvolatile-register expression
+    /// can therefore be reconstructed in r3 after the complete float
+    /// expression reaches f1. Aggregate-returning calls may prepend their
+    /// hidden-result address to the source signature, producing
+    /// `(result*, this*, float)`; that ABI-only prefix follows the same rule.
+    pub(crate) fn try_emit_reloadable_general_prefix_call_bearing_float_tail_arguments(
+        &mut self,
+        arguments: &[Expression],
+        name: &str,
+    ) -> Compilation<bool> {
+        let Some((tail, prefix)) = arguments.split_last() else {
+            return Ok(false);
+        };
+        if prefix.is_empty() {
+            return Ok(false);
+        }
+        let direct_call = !self.globals.contains_key(name)
+            && !self.locations.contains_key(name)
+            && !self.known_locals.contains(name);
+        let hidden_result = matches!(
+            self.call_return_types.get(name),
+            Some(Type::Struct { .. })
+        );
+        let expected_types = self.call_parameter_types.get(name).is_some_and(|types| {
+            let source_index = |abi_index: usize| {
+                abi_index.checked_sub(usize::from(hidden_result))
+            };
+            arguments.len() == types.len() + usize::from(hidden_result)
+                && prefix.iter().enumerate().all(|(index, _)| {
+                    hidden_result && index == 0
+                        || source_index(index)
+                            .and_then(|index| types.get(index))
+                            .is_some_and(|ty| !matches!(ty, Type::Float | Type::Double))
+                })
+                && source_index(arguments.len() - 1)
+                    .and_then(|index| types.get(index))
+                    .is_some_and(|ty| matches!(ty, Type::Float | Type::Double))
+        });
+        let prefix_is_reloadable = prefix.iter().all(|argument| {
+            !expression_has_call(argument)
+                && self
+                    .registers_used_by(argument)
+                    .into_iter()
+                    .all(|register| !matches!(register, 0 | 3..=12))
+        });
+        if !direct_call
+            || !expected_types
+            || !prefix_is_reloadable
+            || !self.is_float_value(tail)
+            || !expression_has_call(tail)
+        {
+            return Ok(false);
+        }
+
+        self.evaluate_float(tail, Eabi::FIRST_FLOAT_ARGUMENT)
+            .map_err(|mut diagnostic| {
+                diagnostic.message.push_str(&format!(
+                    " (while scheduling call-bearing float tail argument to '{name}')"
+                ));
+                diagnostic
+            })?;
+        for (index, argument) in prefix.iter().enumerate() {
+            self.evaluate_general(
+                argument,
+                Eabi::FIRST_GENERAL_ARGUMENT + index as u8,
+            )
+            .map_err(|mut diagnostic| {
+                diagnostic.message.push_str(&format!(
+                    " (while reconstructing general-prefix argument {index} to '{name}')"
+                ));
+                diagnostic
+            })?;
+        }
+        Ok(true)
+    }
+
     /// Marshal one argument-free nested call in a later general-class slot
     /// before its reloadable siblings.
     ///
