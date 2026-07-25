@@ -4102,6 +4102,32 @@ blr\n\
     }
 
     #[test]
+    fn flattens_multidimensional_declarator_list_after_a_statement() {
+        let source = r#"
+            int probe(int value) {
+                value += 1;
+                float first[3][3], second[3][3];
+                return value;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let locals = &unit.functions[0].locals;
+        let first = locals.iter().find(|local| local.name == "first").unwrap();
+        let second = locals.iter().find(|local| local.name == "second").unwrap();
+        assert_eq!(first.array_length, Some(9));
+        assert_eq!(second.array_length, Some(9));
+        assert_eq!(first.row_bytes, Some(12));
+        assert_eq!(second.row_bytes, Some(12));
+    }
+
+    #[test]
     fn preserves_multidimensional_member_row_stride_in_address_expression() {
         let source = r#"
             typedef unsigned char u8;

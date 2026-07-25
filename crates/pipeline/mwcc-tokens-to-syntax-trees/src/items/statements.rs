@@ -697,18 +697,13 @@ impl Parser {
                     name
                 };
                 if *self.peek() == Token::BracketOpen {
+                    let (explicit, inner_elements) =
+                        self.parse_local_array_dimensions()?;
                     if !is_static {
                         // `u8 text[36];` — an automatic block-scoped array
                         // hoists exactly like a function-level local array:
                         // a frame slot of N elements (strtold's digit buffer).
                         // A braced initializer here is still deferred.
-                        self.advance();
-                        let explicit = if *self.peek() == Token::BracketClose {
-                            None
-                        } else {
-                            Some(self.parse_integer_constant()? as u16)
-                        };
-                        self.expect(Token::BracketClose)?;
                         // `char model[] = "INFINITY";` — the string image
                         // (with NUL) sizes the array; mwcc block-copies it
                         // into the frame slot (codegen defers un-captured).
@@ -732,6 +727,11 @@ impl Parser {
                                     "an unsized block-scoped array needs an initializer (roadmap)",
                                 )),
                             };
+                        let element_bytes = match declared_type {
+                            Type::Struct { size, .. } => size as u32,
+                            Type::Pointer(_) | Type::StructPointer { .. } => 4,
+                            other => other.width() as u32 / 8,
+                        };
                         block_locals.push(LocalDeclaration {
                             declared_type,
                             name: name.clone(),
@@ -742,15 +742,11 @@ impl Parser {
                             data_bytes,
                             data_relocations: Vec::new(),
                             is_const: false,
-                            row_bytes: None,
+                            row_bytes: (inner_elements > 1)
+                                .then(|| inner_elements.saturating_mul(element_bytes as u16)),
                         });
                         local_names.insert(name.clone());
                         self.variable_types.insert(name.clone(), declared_type);
-                        let element_bytes = match declared_type {
-                            Type::Struct { size, .. } => size as u32,
-                            Type::Pointer(_) | Type::StructPointer { .. } => 4,
-                            other => other.width() as u32 / 8,
-                        };
                         self.variable_array_bytes
                             .insert(name.clone(), element_bytes * length as u32);
                         if !self.eat_keyword(Token::Comma) {
@@ -761,13 +757,6 @@ impl Parser {
                     }
                     // `static double pow_10[8] = { 1e1, … };` — parse the
                     // image exactly like a function-level static array.
-                    self.advance();
-                    let explicit = if *self.peek() == Token::BracketClose {
-                        None
-                    } else {
-                        Some(self.parse_integer_constant()? as u16)
-                    };
-                    self.expect(Token::BracketClose)?;
                     self.expect(Token::Equals)?;
                     self.expect(Token::BraceOpen)?;
                     let mut bytes: Vec<u8> = Vec::new();
@@ -830,7 +819,8 @@ impl Parser {
                         data_bytes: Some(bytes),
                         data_relocations: Vec::new(),
                         is_const: self.last_type_was_const,
-                        row_bytes: None,
+                        row_bytes: (inner_elements > 1)
+                            .then(|| inner_elements.saturating_mul(element_bytes as u16)),
                     });
                     local_names.insert(name);
                     if !self.eat_keyword(Token::Comma) {

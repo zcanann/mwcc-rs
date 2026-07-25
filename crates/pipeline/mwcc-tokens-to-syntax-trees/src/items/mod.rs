@@ -253,6 +253,41 @@ fn function_calls(function: &Function, names: &std::collections::HashSet<String>
 // flattened into its body).
 
 impl Parser {
+    /// Consume every dimension of a local-array declarator and return its
+    /// flattened element count plus the number of elements in one outer row.
+    /// Both function-leading and statement-position declarations use this so
+    /// `T a[3][4], b[3][4]` has one representation regardless of where it
+    /// appears in the body.
+    fn parse_local_array_dimensions(&mut self) -> Compilation<(Option<u16>, u16)> {
+        self.expect(Token::BracketOpen)?;
+        let mut total = if *self.peek() == Token::BracketClose {
+            None
+        } else {
+            Some(self.parse_integer_constant()? as u16)
+        };
+        self.expect(Token::BracketClose)?;
+
+        let mut inner_elements = 1u16;
+        while self.eat_keyword(Token::BracketOpen) {
+            if *self.peek() == Token::BracketClose {
+                return Err(Diagnostic::error(
+                    "an inner local array dimension needs an explicit length",
+                ));
+            }
+            let extent = self.parse_integer_constant()? as u16;
+            self.expect(Token::BracketClose)?;
+            inner_elements = inner_elements.saturating_mul(extent);
+            let outer_elements = total.ok_or_else(|| {
+                Diagnostic::error(
+                    "a multi-dimensional local array needs an explicit outer dimension",
+                )
+            })?;
+            total = Some(outer_elements.saturating_mul(extent));
+        }
+
+        Ok((total, inner_elements))
+    }
+
     /// Consume surfaced file-scope pragmas and update parser state. Keeping this
     /// at translation-unit level lets stateful pragmas affect the declaration
     /// that follows instead of being mistaken for part of that item.
@@ -4650,29 +4685,14 @@ impl Parser {
                 let mut data_bytes: Option<Vec<u8>> = None;
                 let mut inner_elements: u16 = 1;
                 let array_length = if *self.peek() == Token::BracketOpen {
-                    self.advance();
-                    let explicit = if *self.peek() == Token::BracketClose {
-                        None
-                    } else {
-                        Some(self.parse_integer_constant()? as u16)
-                    };
-                    self.expect(Token::BracketClose)?;
                     // Further dimensions FLATTEN row-major into one frame slot of the
                     // product size — exactly the array-typedef local's representation
                     // (`Mtx m;` = `f32 m[12]`, proven byte-exact); `float m[3][4];` is
                     // the same object declared directly. Element access still defers in
                     // codegen; an initializer on a flattened array is unmeasured.
-                    let mut explicit = explicit;
-                    while *self.peek() == Token::BracketOpen {
-                        self.advance();
-                        let extra = self.parse_integer_constant()? as u16;
-                        self.expect(Token::BracketClose)?;
-                        inner_elements = inner_elements.saturating_mul(extra);
-                        match explicit {
-                            Some(length) => explicit = Some(length.saturating_mul(extra)),
-                            None => return Err(Diagnostic::error("a multi-dimensional local array needs explicit dimensions (roadmap)")),
-                        }
-                    }
+                    let (explicit, parsed_inner_elements) =
+                        self.parse_local_array_dimensions()?;
+                    inner_elements = parsed_inner_elements;
                     if *self.peek() == Token::Equals {
                         self.advance();
                         if is_static
