@@ -19,8 +19,8 @@ struct ParameterizedDerivedConstructor {
     base_vtable: String,
     derived_vtable: String,
     vptr_offset: i16,
-    member_offset: i16,
-    parameter_register: u8,
+    member_stores: Vec<(i16, u8)>,
+    derived_vtable_register: u8,
 }
 
 /// Lower a polymorphic leaf constructor consisting of its synthesized primary
@@ -87,13 +87,7 @@ pub(crate) fn lower(
     let mut output = MachineFunction::new(function.name.clone());
     if config.flags.ipa_file {
         if let Some(value) = reused_immediate(&actions, vptr_offset) {
-            emit_ipa_reused_immediate(
-                &mut output,
-                &vtable,
-                vptr_offset,
-                value,
-                &actions,
-            );
+            emit_ipa_reused_immediate(&mut output, &vtable, vptr_offset, value, &actions);
             finish(&mut output, function, &config);
             return Some(output);
         }
@@ -131,11 +125,9 @@ pub(crate) fn lower(
                 output
                     .instructions
                     .push(Instruction::load_immediate(0, value));
-                output.instructions.push(Instruction::StoreWord {
-                    s: 0,
-                    a: 3,
-                    offset,
-                });
+                output
+                    .instructions
+                    .push(Instruction::StoreWord { s: 0, a: 3, offset });
             }
             TailAction::StoreThisGlobal { name } => {
                 let instruction_index = output.instructions.len();
@@ -167,49 +159,67 @@ fn recognize_parameterized_derived_constructor(
     function: &Function,
     globals: &[GlobalDeclaration],
 ) -> Option<ParameterizedDerivedConstructor> {
-    let [base_store, derived_store, member_store] = function.statements.as_slice() else {
+    let [base_store, derived_store, member_stores @ ..] = function.statements.as_slice() else {
         return None;
     };
+    if member_stores.is_empty()
+        || function.parameters.len() < 2
+        || function
+            .parameters
+            .iter()
+            .any(|parameter| !is_word_type(parameter.parameter_type))
+    {
+        return None;
+    }
     let (base_vtable, vptr_offset) = parse_vptr_store(base_store, globals)?;
     let (derived_vtable, derived_offset) = parse_vptr_store(derived_store, globals)?;
     if base_vtable == derived_vtable || vptr_offset != derived_offset {
         return None;
     }
-    let Statement::Store {
-        target:
-            Expression::Member {
-                base,
-                offset,
-                member_type,
-                ..
-            },
-        value: Expression::Variable(parameter),
-    } = member_store
-    else {
-        return None;
-    };
-    if !matches!(base.as_ref(), Expression::Variable(name) if name == "this")
-        || !is_word_type(*member_type)
-        || *offset == u32::try_from(vptr_offset).ok()?
-    {
+    // r3 owns `this`; word parameters occupy r4 upward. The two vtable
+    // temporaries immediately follow the signature's last incoming register.
+    let derived_vtable_register = 3u8.checked_add(u8::try_from(function.parameters.len()).ok()?)?;
+    if derived_vtable_register >= 10 {
         return None;
     }
-    let parameter_index = function
-        .parameters
+    let member_stores = member_stores
         .iter()
-        .position(|candidate| candidate.name == *parameter)?;
-    if parameter_index == 0
-        || parameter_index > 7
-        || !is_word_type(function.parameters[parameter_index].parameter_type)
-    {
-        return None;
-    }
+        .map(|statement| {
+            let Statement::Store {
+                target:
+                    Expression::Member {
+                        base,
+                        offset,
+                        member_type,
+                        ..
+                    },
+                value: Expression::Variable(parameter),
+            } = statement
+            else {
+                return None;
+            };
+            if !matches!(base.as_ref(), Expression::Variable(name) if name == "this")
+                || !is_word_type(*member_type)
+                || *offset == u32::try_from(vptr_offset).ok()?
+            {
+                return None;
+            }
+            let parameter_index = function
+                .parameters
+                .iter()
+                .position(|candidate| candidate.name == *parameter)?;
+            (parameter_index > 0).then_some((
+                i16::try_from(*offset).ok()?,
+                3 + u8::try_from(parameter_index).ok()?,
+            ))
+        })
+        .collect::<Option<Vec<_>>>()?;
     Some(ParameterizedDerivedConstructor {
         base_vtable,
         derived_vtable,
         vptr_offset,
-        member_offset: i16::try_from(*offset).ok()?,
-        parameter_register: 3 + u8::try_from(parameter_index).ok()?,
+        member_stores,
+        derived_vtable_register,
     })
 }
 
@@ -218,22 +228,23 @@ fn emit_parameterized_derived_constructor(
     shape: ParameterizedDerivedConstructor,
 ) -> MachineFunction {
     let mut output = MachineFunction::new(function.name.clone());
+    let base_vtable_register = shape.derived_vtable_register + 1;
     output.instructions = vec![
-        Instruction::load_immediate_shifted(6, 0),
-        Instruction::load_immediate_shifted(5, 0),
+        Instruction::load_immediate_shifted(base_vtable_register, 0),
+        Instruction::load_immediate_shifted(shape.derived_vtable_register, 0),
         Instruction::AddImmediate {
-            d: 6,
-            a: 6,
+            d: base_vtable_register,
+            a: base_vtable_register,
             immediate: 0,
         },
         Instruction::StoreWord {
-            s: 6,
+            s: base_vtable_register,
             a: 3,
             offset: shape.vptr_offset,
         },
         Instruction::AddImmediate {
             d: 0,
-            a: 5,
+            a: shape.derived_vtable_register,
             immediate: 0,
         },
         Instruction::StoreWord {
@@ -241,13 +252,20 @@ fn emit_parameterized_derived_constructor(
             a: 3,
             offset: shape.vptr_offset,
         },
-        Instruction::StoreWord {
-            s: shape.parameter_register,
-            a: 3,
-            offset: shape.member_offset,
-        },
-        Instruction::BranchToLinkRegister,
     ];
+    output
+        .instructions
+        .extend(
+            shape
+                .member_stores
+                .iter()
+                .map(|(offset, register)| Instruction::StoreWord {
+                    s: *register,
+                    a: 3,
+                    offset: *offset,
+                }),
+        );
+    output.instructions.push(Instruction::BranchToLinkRegister);
     output.relocations = vec![
         Relocation {
             instruction_index: 0,
@@ -285,16 +303,19 @@ fn reused_immediate(actions: &[TailAction], vptr_offset: i16) -> Option<i16> {
     if first_offset == vptr_offset {
         return None;
     }
-    actions.iter().skip(1).all(|action| {
-        matches!(
-            action,
-            TailAction::StoreImmediate {
-                offset,
-                value: found,
-            } if *offset != vptr_offset && *found == value
-        )
-    })
-    .then_some(value)
+    actions
+        .iter()
+        .skip(1)
+        .all(|action| {
+            matches!(
+                action,
+                TailAction::StoreImmediate {
+                    offset,
+                    value: found,
+                } if *offset != vptr_offset && *found == value
+            )
+        })
+        .then_some(value)
 }
 
 fn emit_ipa_reused_immediate(
@@ -369,10 +390,7 @@ fn finish(output: &mut MachineFunction, function: &Function, config: &CompilerCo
     }
 }
 
-fn parse_vptr_store(
-    statement: &Statement,
-    globals: &[GlobalDeclaration],
-) -> Option<(String, i16)> {
+fn parse_vptr_store(statement: &Statement, globals: &[GlobalDeclaration]) -> Option<(String, i16)> {
     let Statement::Store {
         target: Expression::Member { offset, .. },
         value: Expression::AddressOf { operand },
@@ -387,10 +405,7 @@ fn parse_vptr_store(
     Some((vtable.clone(), i16::try_from(*offset).ok()?))
 }
 
-fn parse_tail_action(
-    statement: &Statement,
-    globals: &[GlobalDeclaration],
-) -> Option<TailAction> {
+fn parse_tail_action(statement: &Statement, globals: &[GlobalDeclaration]) -> Option<TailAction> {
     let Statement::Store { target, value } = statement else {
         return None;
     };
@@ -413,9 +428,8 @@ fn parse_tail_action(
         }
         (Expression::Variable(name), Expression::Variable(value)) if value == "this" => {
             let global = globals.iter().find(|global| global.name == *name)?;
-            is_pointer_type(global.declared_type).then(|| TailAction::StoreThisGlobal {
-                name: name.clone(),
-            })
+            is_pointer_type(global.declared_type)
+                .then(|| TailAction::StoreThisGlobal { name: name.clone() })
         }
         _ => None,
     }
