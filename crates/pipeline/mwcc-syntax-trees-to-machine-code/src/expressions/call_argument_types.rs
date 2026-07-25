@@ -69,6 +69,25 @@ pub(super) fn classify_call_argument(
     }
 }
 
+/// A C++ reference parameter is represented as a struct pointer in the compact
+/// ABI types. When its source expression is `*p`, the caller passes `p` itself;
+/// loading the aggregate value would both be semantically wrong and require a
+/// scalar pointee classification that aggregates deliberately do not have.
+pub(super) fn aggregate_reference_address<'a>(
+    argument: &'a Expression,
+    parameter_type: Option<Type>,
+    source_size: impl FnOnce(&Expression) -> Option<u32>,
+) -> Option<&'a Expression> {
+    let Some(Type::StructPointer { element_size }) = parameter_type else {
+        return None;
+    };
+    let Expression::Dereference { pointer } = argument else {
+        return None;
+    };
+    let source_size = source_size(pointer)?;
+    (element_size == 0 || source_size == element_size).then_some(pointer.as_ref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,5 +130,34 @@ mod tests {
             outgoing_general_stack_offset(Eabi::LAST_GENERAL_ARGUMENT + 2),
             Some(12)
         );
+    }
+
+    #[test]
+    fn passes_a_dereferenced_aggregate_reference_as_its_address() {
+        let pointer = Expression::Variable("object".into());
+        let argument = Expression::Dereference {
+            pointer: Box::new(pointer.clone()),
+        };
+
+        assert!(matches!(
+            aggregate_reference_address(
+                &argument,
+                Some(Type::StructPointer { element_size: 108 }),
+                |_| Some(108),
+            ),
+            Some(Expression::Variable(name)) if name == "object"
+        ));
+        assert!(aggregate_reference_address(
+            &argument,
+            Some(Type::StructPointer { element_size: 64 }),
+            |_| Some(108),
+        )
+        .is_none());
+        assert!(aggregate_reference_address(
+            &argument,
+            Some(Type::StructPointer { element_size: 0 }),
+            |_| Some(108),
+        )
+        .is_some());
     }
 }

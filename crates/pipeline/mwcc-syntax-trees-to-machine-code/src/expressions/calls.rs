@@ -1,7 +1,8 @@
 //! Call emission and argument marshaling.
 
 use super::call_argument_types::{
-    classify_call_argument, outgoing_general_stack_offset, CallArgumentPlacement,
+    aggregate_reference_address, classify_call_argument, outgoing_general_stack_offset,
+    CallArgumentPlacement,
 };
 #[allow(unused_imports)]
 use super::*;
@@ -1077,6 +1078,18 @@ impl Generator {
                 }
                 next_float += 1;
             } else {
+                let general_argument = aggregate_reference_address(
+                    argument,
+                    parameter_type,
+                    |pointer| {
+                        leaf_name(pointer).and_then(|source| {
+                            self.locations
+                                .get(source)
+                                .and_then(|location| location.stride)
+                        })
+                    },
+                )
+                .unwrap_or(argument);
                 if prematerialized_general.is_some_and(|(later, _, _)| later == index) {
                     next_general += 1;
                     continue;
@@ -1091,7 +1104,7 @@ impl Generator {
                     .get(name)
                     .and_then(|types| types.get(index))
                 {
-                    if let Ok((register, width, _)) = self.leaf_info(argument) {
+                    if let Ok((register, width, _)) = self.leaf_info(general_argument) {
                         if width < 32
                             && (parameter_type.width() as u32) <= width as u32
                             && register == next_general
@@ -1113,12 +1126,14 @@ impl Generator {
                     .get(name)
                     .and_then(|types| types.get(index))
                 {
-                    if (parameter_type.width() as u32) < 32 && constant_value(argument).is_none() {
-                        let argument_is_narrow = match argument {
+                    if (parameter_type.width() as u32) < 32
+                        && constant_value(general_argument).is_none()
+                    {
+                        let argument_is_narrow = match general_argument {
                             Expression::Variable(variable)
                                 if self.locations.contains_key(variable.as_str()) =>
                             {
-                                self.leaf_info(argument)
+                                self.leaf_info(general_argument)
                                     .map(|(_, width, _)| width < 32)
                                     .unwrap_or(false)
                             }
@@ -1142,7 +1157,7 @@ impl Generator {
                             // prologue hoist then schedules into the mflr->LR-store slot
                             // (measured: `void g(short); g(x)` -> extsh r3,r3 mid-prologue).
                             // A value NOT already in its argument register still defers.
-                            if let Ok((register, _, _)) = self.leaf_info(argument) {
+                            if let Ok((register, _, _)) = self.leaf_info(general_argument) {
                                 if register == next_general {
                                     let narrow = match parameter_type {
                                         Type::Char => Instruction::ExtendSignByte { a: register, s: register },
@@ -1171,7 +1186,7 @@ impl Generator {
                 // later member argument. Later actual moves/computations still
                 // pass through this guard independently.
                 let passthrough_in_place = self
-                    .leaf_info(argument)
+                    .leaf_info(general_argument)
                     .map(|(register, _, _)| register == next_general)
                     .unwrap_or(false);
                 let endangered_later = (!passthrough_in_place)
@@ -1204,12 +1219,14 @@ impl Generator {
                 // a single-argument move and a duplicated earlier argument
                 // (`g(a,a)`, r3 -> r4) remain `mr`. Mainline uses `mr` throughout.
                 let downward_word_copy =
-                    self.leaf_info(argument).ok().filter(|(source, width, _)| {
+                    self.leaf_info(general_argument)
+                        .ok()
+                        .filter(|(source, width, _)| {
                         arguments.len() > 1
                             && *width == 32
                             && *source > next_general
                             && *source <= Eabi::LAST_GENERAL_ARGUMENT
-                    });
+                        });
                 if let Some(stack_offset) = outgoing_general_stack_offset(next_general) {
                     let stack_start = i32::from(stack_offset);
                     let stack_end = stack_start + 4;
@@ -1223,7 +1240,15 @@ impl Generator {
                             "general argument {index} to '{name}' needs an unreserved outgoing stack slot"
                         )));
                     }
-                    self.evaluate_general(argument, next_general)?;
+                    self.evaluate_general(general_argument, next_general)
+                        .map_err(|mut diagnostic| {
+                            diagnostic.message.push_str(&format!(
+                                " (while evaluating general argument {index} to '{name}', \
+                                 parameter {parameter_type:?}, aggregate-reference-address={})",
+                                !std::ptr::eq(general_argument, argument),
+                            ));
+                            diagnostic
+                        })?;
                     self.output.instructions.push(Instruction::StoreWord {
                         s: next_general,
                         a: 1,
@@ -1232,7 +1257,15 @@ impl Generator {
                 } else if let Some((source, _, _)) = downward_word_copy {
                     self.emit_integer_materialization_copy(next_general, source);
                 } else {
-                    self.evaluate_general(argument, next_general)?;
+                    self.evaluate_general(general_argument, next_general)
+                        .map_err(|mut diagnostic| {
+                            diagnostic.message.push_str(&format!(
+                                " (while evaluating general argument {index} to '{name}', \
+                                 parameter {parameter_type:?}, aggregate-reference-address={})",
+                                !std::ptr::eq(general_argument, argument),
+                            ));
+                            diagnostic
+                        })?;
                 }
                 next_general += 1;
             }
