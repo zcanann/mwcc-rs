@@ -352,7 +352,7 @@ pub fn parse_located_translation_unit_with_behavior(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mwcc_syntax_trees::{Expression, Statement, Type};
+    use mwcc_syntax_trees::{BinaryOperator, Expression, Statement, Type};
 
     fn located(source: &str) -> Vec<LocatedToken> {
         mwcc_source_to_tokens::tokenize(source)
@@ -9483,6 +9483,42 @@ blr\n\
             [mwcc_syntax_trees::Statement::Expression(
                 mwcc_syntax_trees::Expression::Comma { .. }
             )]
+        ));
+    }
+
+    #[test]
+    fn parses_comma_sequenced_compound_member_assignments() {
+        let source = r#"
+            struct Vec { float x, y, z; };
+            void scale(struct Vec *value, struct Vec *factor) {
+                value->x *= factor->x, value->y *= factor->y, value->z *= factor->z;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            false,
+            1,
+            3,
+        )
+        .unwrap();
+        let [Statement::Expression(Expression::Comma { left, right })] =
+            unit.functions[0].statements.as_slice()
+        else {
+            panic!("{:#?}", unit.functions[0].statements);
+        };
+        assert!(matches!(
+            (left.as_ref(), right.as_ref()),
+            (
+                Expression::Comma { .. },
+                Expression::Assign {
+                    value,
+                    ..
+                }
+            ) if matches!(value.as_ref(), Expression::Binary {
+                operator: BinaryOperator::Multiply,
+                ..
+            })
         ));
     }
 

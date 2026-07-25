@@ -110,18 +110,36 @@ impl Parser {
             self.advance();
             self.advance();
             let rhs = self.expression()?;
-            self.expect(Token::Semicolon)?;
             let value = Expression::Binary {
                 operator,
                 left: Box::new(first.clone()),
                 right: Box::new(rhs),
             };
             let value = super::indexed_update_value(&first, value);
+            if self.eat_keyword(Token::Comma) {
+                let assignment = Expression::Assign {
+                    target: Box::new(crate::lvalues::canonical_assignment_target(first)),
+                    value: Box::new(value),
+                };
+                let expression = self.finish_comma_expression(assignment)?;
+                self.expect(Token::Semicolon)?;
+                return Ok(Statement::Expression(expression));
+            }
+            self.expect(Token::Semicolon)?;
             Ok(store_or_assign(first, value, local_names))
         } else if *self.peek() == Token::Equals {
             self.advance();
             let value = self.expression()?;
             let value_struct_tag = self.expression_struct_tag.take();
+            if self.eat_keyword(Token::Comma) {
+                let assignment = Expression::Assign {
+                    target: Box::new(crate::lvalues::canonical_assignment_target(first)),
+                    value: Box::new(value),
+                };
+                let expression = self.finish_comma_expression(assignment)?;
+                self.expect(Token::Semicolon)?;
+                return Ok(Statement::Expression(expression));
+            }
             self.expect(Token::Semicolon)?;
             if let Some(copy) = self.lower_typed_aggregate_assignment(
                 &first,
@@ -153,6 +171,25 @@ impl Parser {
             }
             self.expect(Token::Semicolon)?;
             Ok(Statement::Expression(expression))
+        }
+    }
+
+    /// Complete a top-level comma sequence after its first assignment and the
+    /// separating comma have already been consumed. Keeping this sequencing
+    /// in expression form lets the backend preserve every member store in
+    /// source order while ordinary single assignments retain their specialized
+    /// `Statement::Store` lowering.
+    fn finish_comma_expression(&mut self, first: Expression) -> Compilation<Expression> {
+        let mut expression = first;
+        loop {
+            let right = self.assignment_expression()?;
+            expression = Expression::Comma {
+                left: Box::new(expression),
+                right: Box::new(right),
+            };
+            if !self.eat_keyword(Token::Comma) {
+                return Ok(expression);
+            }
         }
     }
 
