@@ -509,7 +509,15 @@ impl Generator {
                 self.emit_conditional(condition, when_true, when_false, destination, false, *origin)
             }
             Expression::Cast { target_type, operand } => self.emit_cast_to_integer(*target_type, operand, destination),
-            Expression::Dereference { pointer } => self.emit_load_from_pointer(pointer, destination),
+            Expression::Dereference { pointer } => {
+                if let Some(address) =
+                    super::pointers::aggregate_reference_pointer(expression)
+                {
+                    self.evaluate_general(address, destination)
+                } else {
+                    self.emit_load_from_pointer(pointer, destination)
+                }
+            }
             Expression::Member { base, offset, member_type, index_stride } => self.emit_member_load(base, *offset, *member_type, *index_stride, destination),
             Expression::MemberAddress { base, offset, .. } => self.emit_member_address(base, *offset, destination),
             Expression::Index { base, index } => self.emit_subscript(base, index, destination),

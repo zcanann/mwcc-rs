@@ -14,6 +14,27 @@ fn pointer_member_stride(operand: &Expression) -> Option<u32> {
     }
 }
 
+/// Recover the address carried by an aggregate-reference dereference.
+///
+/// C++ reference bindings are represented as `StructPointer` values in the
+/// compact IR. After reference-alias substitution, a use can retain the
+/// source spelling `*(Aggregate*)pointer_value` even though its runtime value
+/// is the address itself; loading word zero would read the aggregate rather
+/// than pass its address.
+pub(crate) fn aggregate_reference_pointer(expression: &Expression) -> Option<&Expression> {
+    let Expression::Dereference { pointer } = expression else {
+        return None;
+    };
+    matches!(
+        pointer.as_ref(),
+        Expression::Cast {
+            target_type: Type::StructPointer { .. },
+            ..
+        }
+    )
+    .then_some(pointer)
+}
+
 impl Generator {
     /// Place an operand and return the register holding it. A leaf stays in its
     /// own register. A sub-expression is computed into the destination when the
@@ -711,5 +732,26 @@ mod tests {
             Some(4)
         );
         assert_eq!(pointer_member_stride(&member(Type::UnsignedInt)), None);
+    }
+
+    #[test]
+    fn recognizes_a_casted_aggregate_reference_as_its_pointer_value() {
+        let pointer = Expression::Cast {
+            target_type: Type::StructPointer { element_size: 64 },
+            operand: Box::new(member(Type::StructPointer { element_size: 64 })),
+        };
+        let reference = Expression::Dereference {
+            pointer: Box::new(pointer.clone()),
+        };
+
+        let recovered =
+            aggregate_reference_pointer(&reference).expect("casted aggregate reference");
+        assert!(matches!(
+            recovered,
+            Expression::Cast {
+                target_type: Type::StructPointer { element_size: 64 },
+                ..
+            }
+        ));
     }
 }
