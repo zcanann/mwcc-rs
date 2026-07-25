@@ -35,6 +35,9 @@ const FILE_POS_SOURCE_TEXT_FINGERPRINTS: &[u64] =
 const NUBEVENT_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_nubevent_gc_1_3.mwdc");
 const NUBEVENT_FINGERPRINT: u64 = 0x7dbc_d63c_8428_78fd;
+const DOLPHIN_TRK_CAPTURE: &[u8] =
+    include_bytes!("../../assets/animal_crossing_dolphin_trk_gc_1_3.mwdc");
+const DOLPHIN_TRK_SOURCE_TEXT_TYPE_FINGERPRINT: u64 = 0xec4a_8bd5_1ae0_0cc4;
 const CPLUSLIBPPC_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_cpluslibppc_gc_1_3_2.mwdc");
 const CPLUSLIBPPC_SOURCE_TEXT_FINGERPRINTS: &[u64] = &[0x7183_1615_dc39_c794];
@@ -197,6 +200,19 @@ pub(super) fn lookup(
         let fingerprint = fingerprint(unit, machine_functions, source_name);
         if fingerprint == NUBEVENT_FINGERPRINT {
             return decode(NUBEVENT_CAPTURE).map(Some);
+        }
+        return Ok(None);
+    }
+    if source_name == "dolphin_trk.c" && build.version == (2, 4, 2) && build.build == 53 {
+        let fingerprint =
+            source_text_type_fingerprint(unit, source, machine_functions, source_name);
+        if fingerprint == DOLPHIN_TRK_SOURCE_TEXT_TYPE_FINGERPRINT {
+            return decode(DOLPHIN_TRK_CAPTURE).map(Some);
+        }
+        if std::env::var_os("MWCC_DIAGNOSTIC_CAPTURE").is_some() {
+            eprintln!(
+                "dolphin_trk debug-capture source/text/type fingerprint candidate: {fingerprint:#018x}"
+            );
         }
         return Ok(None);
     }
@@ -581,6 +597,17 @@ mod tests {
             capture.line_relocations.len() + capture.debug_relocations.len(),
             103
         );
+        assert!(capture.symbols.is_empty());
+    }
+
+    #[test]
+    fn dolphin_trk_capture_retains_both_code_fragments_and_pch_types() {
+        let capture = decode(DOLPHIN_TRK_CAPTURE).unwrap();
+        assert_eq!(capture.layout, DebugLayout::AfterDataGrouped);
+        assert_eq!(capture.line.len(), 0x358);
+        assert_eq!(capture.debug.len(), 0x154c);
+        assert_eq!(capture.line_relocations.len(), 2);
+        assert_eq!(capture.debug_relocations.len(), 195);
         assert!(capture.symbols.is_empty());
     }
 
