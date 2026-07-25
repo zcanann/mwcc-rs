@@ -45,8 +45,13 @@ impl Generator {
         // Legacy scheduling retains the intermediate object pointer separately,
         // allowing the final accessor result to define r3 directly at its call.
         let intermediate = self.fresh_virtual_general();
-        self.register_avoid
-            .insert(u32::from(intermediate - mwcc_vreg::VIRTUAL_BASE), vec![4]);
+        self.register_avoid.insert(
+            mwcc_vreg::VirtualRegister::new(
+                u32::from(intermediate - mwcc_vreg::VIRTUAL_BASE),
+                mwcc_vreg::Class::General,
+            ),
+            vec![4],
+        );
         match &mut self.output.instructions[7] {
             Instruction::LoadWord { d, a, .. } if *d == child && *a == state => {
                 *d = intermediate;

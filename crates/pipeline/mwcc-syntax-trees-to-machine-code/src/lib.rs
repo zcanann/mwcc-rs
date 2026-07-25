@@ -477,7 +477,7 @@ pub fn lower_function(
         constraints: mwcc_vreg::RegisterConstraints::gekko(),
         non_leaf: false,
         callee_saved_float: 0,
-        next_virtual: 0,
+        virtual_cursors: generator::VirtualCursors::default(),
         register_avoid: HashMap::new(),
         register_prefer: HashMap::new(),
         stored_globals: HashMap::new(),
@@ -907,10 +907,10 @@ fn allocate_registers(generator: &mut Generator) -> Compilation<Vec<u8>> {
     // Apply selection's placement hints: registers a given virtual must avoid,
     // and the consumer-tree preference it should take when free (policy #1).
     for interval in &mut liveness.intervals {
-        if let Some(avoid) = generator.register_avoid.get(&interval.vreg.id) {
+        if let Some(avoid) = generator.register_avoid.get(&interval.vreg) {
             interval.avoid = avoid.clone();
         }
-        if let Some(&prefer) = generator.register_prefer.get(&interval.vreg.id) {
+        if let Some(&prefer) = generator.register_prefer.get(&interval.vreg) {
             interval.prefer = Some(prefer);
         }
     }

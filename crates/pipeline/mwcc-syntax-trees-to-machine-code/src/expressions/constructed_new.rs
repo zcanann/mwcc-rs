@@ -61,7 +61,10 @@ impl Generator {
             ));
         }
 
-        let inline_result_name = format!("__mwcc_constructed_new_{}", self.next_virtual);
+        let inline_result_name = format!(
+            "__mwcc_constructed_new_{}_{}",
+            self.virtual_cursors.general, self.virtual_cursors.float
+        );
         let inline_body = self.inline_bodies.expand_constructed_new_body(
             constructor,
             &inline_result_name,

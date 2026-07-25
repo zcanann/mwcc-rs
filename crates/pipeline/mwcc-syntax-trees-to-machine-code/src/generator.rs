@@ -11,12 +11,45 @@ use mwcc_machine_code::{
 };
 use mwcc_syntax_trees::{BinaryOperator, Expression, Pointee, Type, UnaryOperator};
 use mwcc_versions::{Behavior, GlobalAddressing};
-use mwcc_vreg::{Class, Reg, RegisterConstraints};
+use mwcc_vreg::{Class, Reg, RegisterConstraints, VirtualRegister};
 use std::collections::{HashMap, HashSet};
 
 /// The scratch register mwcc spills the secondary operand of a binary node into.
 pub(crate) const GENERAL_SCRATCH: u8 = 0; // r0
 pub(crate) const FLOAT_SCRATCH: u8 = 0; // f0
+
+/// Per-register-file virtual identity cursors.
+///
+/// Instruction fields encode a virtual ID together with an operand's
+/// machine-described class. General and floating registers therefore have
+/// independent 224-ID namespaces; sharing one cursor needlessly halved that
+/// capacity and made long mixed GPR/FPR functions hit the transitional field
+/// ceiling.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct VirtualCursors {
+    pub(crate) general: u32,
+    pub(crate) float: u32,
+}
+
+impl VirtualCursors {
+    fn next(&mut self, class: Class) -> VirtualRegister {
+        let cursor = match class {
+            Class::General => &mut self.general,
+            Class::Float => &mut self.float,
+        };
+        let register = VirtualRegister::new(*cursor, class);
+        *cursor += 1;
+        register
+    }
+
+    fn contains(self, register: VirtualRegister) -> bool {
+        register.id
+            < match register.class {
+                Class::General => self.general,
+                Class::Float => self.float,
+            }
+    }
+}
 
 /// Canonical value of a pool literal used by a floating comparison. Keeping
 /// the comparison precision in the key prevents a preloaded `0.0f` from being
@@ -264,18 +297,16 @@ pub(crate) struct Generator {
     /// Callee-saved FLOAT registers the arm saves (f31 descending) — the
     /// extab's saved-FPR count.
     pub(crate) callee_saved_float: u8,
-    /// The next virtual-register id to hand out. A migrated selection site asks
-    /// for a fresh virtual instead of picking a physical register itself; the
-    /// allocation pass assigns the physical home from liveness.
-    pub(crate) next_virtual: u32,
+    /// The next virtual-register id in each independent register file.
+    pub(crate) virtual_cursors: VirtualCursors,
     /// Per-virtual placement hints: registers the allocator must avoid for a
     /// given virtual id. Selection records these (e.g. "a comparison operand must
     /// avoid the destination") so the allocation pass reproduces mwcc's coalescing
     /// of result-path temporaries onto the destination register.
-    pub(crate) register_avoid: HashMap<u32, Vec<u8>>,
+    pub(crate) register_avoid: HashMap<VirtualRegister, Vec<u8>>,
     /// Consumer-tree PREFERENCES: virtual id -> the register its consumer wants
     /// (Phase D policy #1); honored by LinearScan when free, pool order otherwise.
-    pub(crate) register_prefer: HashMap<u32, u8>,
+    pub(crate) register_prefer: HashMap<VirtualRegister, u8>,
     /// Return type of each callable name (prototypes + definitions), so a call's
     /// result type is known — e.g. `(float)cos(x)` rounds a double with `frsp`.
     pub(crate) call_return_types: HashMap<String, Type>,
@@ -503,9 +534,7 @@ impl Generator {
     /// A fresh general-purpose virtual register, as the u8 field value selection
     /// emits. The allocation pass resolves it to a physical register from liveness.
     pub(crate) fn fresh_virtual_general(&mut self) -> u8 {
-        let register = Reg::general(self.next_virtual);
-        self.next_virtual += 1;
-        register.to_field()
+        Reg::Virtual(self.virtual_cursors.next(Class::General)).to_field()
     }
 
     /// A fresh, unbound branch label. Branches emitted through
@@ -552,20 +581,16 @@ impl Generator {
     /// from the FPR pool, kept distinct from the general pool by the class the
     /// machine description reports for each operand.
     pub(crate) fn fresh_virtual_float(&mut self) -> u8 {
-        let register = Reg::float(self.next_virtual);
-        self.next_virtual += 1;
-        register.to_field()
+        Reg::Virtual(self.virtual_cursors.next(Class::Float)).to_field()
     }
 
     /// A fresh floating virtual carrying the same consumer-placement preference
     /// used by general virtuals. Liveness still wins when the preferred FPR is
     /// occupied; otherwise this pins MWCC's short conversion schedules.
     pub(crate) fn fresh_virtual_float_preferring(&mut self, register: u8) -> u8 {
-        let id = self.next_virtual;
-        self.register_prefer.insert(id, register);
-        let virtual_register = Reg::float(id);
-        self.next_virtual += 1;
-        virtual_register.to_field()
+        let virtual_register = self.virtual_cursors.next(Class::Float);
+        self.register_prefer.insert(virtual_register, register);
+        Reg::Virtual(virtual_register).to_field()
     }
 
     /// Whether floating-point values in the current function already use the
@@ -580,11 +605,9 @@ impl Generator {
     /// A fresh general virtual register carrying a consumer-tree PREFERENCE — the
     /// register the value's consumer wants it in (taken when free at allocation).
     pub(crate) fn fresh_virtual_general_preferring(&mut self, register: u8) -> u8 {
-        let id = self.next_virtual;
-        self.register_prefer.insert(id, register);
-        let virtual_register = Reg::general(id);
-        self.next_virtual += 1;
-        virtual_register.to_field()
+        let virtual_register = self.virtual_cursors.next(Class::General);
+        self.register_prefer.insert(virtual_register, register);
+        Reg::Virtual(virtual_register).to_field()
     }
 
     /// Update the allocator preference of an existing general virtual. Whole-body
@@ -592,18 +615,27 @@ impl Generator {
     /// MWCC's coloring order after instruction selection created the value.
     pub(crate) fn prefer_virtual_general(&mut self, register: u8, preferred: u8) {
         if let Reg::Virtual(register) = Reg::from_field(register, Class::General) {
-            self.register_prefer.insert(register.id, preferred);
+            self.register_prefer.insert(register, preferred);
         }
     }
 
     /// A fresh general virtual register that the allocator must not place in any
     /// of `avoid` — a placement hint recorded for the allocation pass.
     pub(crate) fn fresh_virtual_general_avoiding(&mut self, avoid: Vec<u8>) -> u8 {
-        let id = self.next_virtual;
-        self.register_avoid.insert(id, avoid);
-        let register = Reg::general(id);
-        self.next_virtual += 1;
-        register.to_field()
+        let register = self.virtual_cursors.next(Class::General);
+        self.register_avoid.insert(register, avoid);
+        Reg::Virtual(register).to_field()
+    }
+
+    /// Restore a speculative selection attempt's virtual state. Hint entries
+    /// created by the discarded attempt must go too, or a later virtual that
+    /// reuses the rolled-back ID inherits unrelated placement policy.
+    pub(crate) fn rollback_virtuals(&mut self, checkpoint: VirtualCursors) {
+        self.virtual_cursors = checkpoint;
+        self.register_avoid
+            .retain(|register, _| checkpoint.contains(*register));
+        self.register_prefer
+            .retain(|register, _| checkpoint.contains(*register));
     }
 
     /// Whether `expression` is a float-valued leaf.

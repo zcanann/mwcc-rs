@@ -3908,7 +3908,7 @@ impl Generator {
                 // (measured) — roll back and take the guard-sequence path.
                 let instructions_before = self.output.instructions.len();
                 let relocations_before = self.output.relocations.len();
-                let virtuals_before = self.next_virtual;
+                let virtuals_before = self.virtual_cursors;
                 let bump_before = self.output.anonymous_label_bump;
                 let labels_before = self.labels.checkpoint();
                 match self.evaluate_tail(&select, function.return_type, result) {
@@ -3921,7 +3921,7 @@ impl Generator {
                     Err(_) => {
                         self.output.instructions.truncate(instructions_before);
                         self.output.relocations.truncate(relocations_before);
-                        self.next_virtual = virtuals_before;
+                        self.rollback_virtuals(virtuals_before);
                         self.output.anonymous_label_bump = bump_before;
                         self.labels.rollback(labels_before);
                     }
@@ -4361,7 +4361,7 @@ impl Generator {
                     // (measured on the ctype tolower shape).
                     let instructions_before = self.output.instructions.len();
                     let relocations_before = self.output.relocations.len();
-                    let virtuals_before = self.next_virtual;
+                    let virtuals_before = self.virtual_cursors;
                     let bump_before = self.output.anonymous_label_bump;
                     let labels_before = self.labels.checkpoint();
                     match self
@@ -4371,7 +4371,7 @@ impl Generator {
                         Err(error) => {
                             self.output.instructions.truncate(instructions_before);
                             self.output.relocations.truncate(relocations_before);
-                            self.next_virtual = virtuals_before;
+                            self.rollback_virtuals(virtuals_before);
                             self.output.anonymous_label_bump = bump_before;
                             self.labels.rollback(labels_before);
                             // Emit the branch form DIRECTLY (a nested-ternary

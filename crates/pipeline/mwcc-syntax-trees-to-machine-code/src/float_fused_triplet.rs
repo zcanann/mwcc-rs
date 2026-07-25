@@ -150,8 +150,13 @@ impl Generator {
             // The first factor gets a separate live lane while f0 remains free
             // for both addends and the sibling subtree.
             if destination >= mwcc_vreg::VIRTUAL_BASE {
-                self.register_prefer
-                    .insert(u32::from(destination - mwcc_vreg::VIRTUAL_BASE), 3);
+                self.register_prefer.insert(
+                    mwcc_vreg::VirtualRegister::new(
+                        u32::from(destination - mwcc_vreg::VIRTUAL_BASE),
+                        mwcc_vreg::Class::Float,
+                    ),
+                    3,
+                );
             }
             (
                 self.fresh_virtual_float_preferring(4),

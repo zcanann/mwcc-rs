@@ -536,12 +536,14 @@ impl Generator {
             )
         } else if let Some(pointer) = as_dereference(operand) {
             self.emit_load_from_pointer(pointer, destination)
+        } else if let Expression::Index { base, index } = operand {
+            self.emit_subscript(base, index, destination)
         } else if let Expression::Variable(name) = operand {
             // A file-scope global (used by the float placement for float globals).
             self.emit_global_load(name, destination)
         } else {
             Err(Diagnostic::error(
-                "expected a dereference, member, or global operand",
+                "expected a dereference, member, subscript, or global operand",
             ))
         }
     }

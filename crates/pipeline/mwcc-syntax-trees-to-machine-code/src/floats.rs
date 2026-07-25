@@ -495,6 +495,12 @@ impl Generator {
         ) {
             return true;
         }
+        if let Expression::Index { base, .. } = operand {
+            return matches!(
+                self.pointee_of(base),
+                Ok(Pointee::Float | Pointee::Double)
+            );
+        }
         if let Some(pointer) = as_dereference(operand) {
             return matches!(
                 self.pointee_of(pointer),

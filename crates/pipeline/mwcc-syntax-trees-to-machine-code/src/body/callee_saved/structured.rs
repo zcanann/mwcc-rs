@@ -2231,10 +2231,10 @@ impl Generator {
                     }
                     let preference = previous
                         .and_then(|register| {
-                            (register >= mwcc_vreg::VIRTUAL_BASE)
-                                .then(|| register - mwcc_vreg::VIRTUAL_BASE)
+                            mwcc_vreg::Reg::from_field(register, mwcc_vreg::Class::General)
+                                .virtual_register()
                         })
-                        .and_then(|id| self.register_prefer.get(&u32::from(id)).copied());
+                        .and_then(|register| self.register_prefer.get(&register).copied());
                     let dying_preference = preference.or_else(|| {
                         function
                             .locals
@@ -2256,10 +2256,15 @@ impl Generator {
                                 .then(|| self.locations.get(candidate))
                                 .flatten()
                                 .and_then(|location| {
-                                    (location.register >= mwcc_vreg::VIRTUAL_BASE)
-                                        .then(|| location.register - mwcc_vreg::VIRTUAL_BASE)
+                                    mwcc_vreg::Reg::from_field(
+                                        location.register,
+                                        mwcc_vreg::Class::General,
+                                    )
+                                    .virtual_register()
                                 })
-                                .and_then(|id| self.register_prefer.get(&u32::from(id)).copied())
+                                .and_then(|register| {
+                                    self.register_prefer.get(&register).copied()
+                                })
                             })
                     });
                     let accumulator = self.try_emit_structured_call_accumulator(
