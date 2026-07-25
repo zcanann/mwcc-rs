@@ -224,7 +224,7 @@ fn template_destructor_leaf(parser: &Parser, concrete: &str) -> Option<(String, 
                 return destructible.then(|| (name.clone(), wrapper_depth));
             }
             TemplateTypePattern::Instance { name, .. } => primary = name,
-            TemplateTypePattern::Parameter(_) => return None,
+            TemplateTypePattern::Parameter(_) | TemplateTypePattern::Concrete(_) => return None,
         }
     }
 }

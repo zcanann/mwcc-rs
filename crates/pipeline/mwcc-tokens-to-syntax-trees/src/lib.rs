@@ -2855,6 +2855,51 @@ blr\n\
     }
 
     #[test]
+    fn lays_out_enum_and_function_pointer_fields_in_a_template_union() {
+        let source = r#"
+            enum Tag { Empty, Function };
+            template <typename ReturnType, typename ParamType>
+            class Function1 {
+            public:
+                enum Tag mTag;
+                union {
+                    ReturnType (*mFreeFunction)(ParamType);
+                    int* mFunctor;
+                };
+            };
+            template <typename T>
+            class Function : public Function1<void, T> {};
+            class Controller {
+            public:
+                Function<Controller&> callback;
+                unsigned short facing;
+            };
+            void set_facing(Controller* controller) {
+                controller->facing = 1;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Store {
+                target: mwcc_syntax_trees::Expression::Member {
+                    offset: 8,
+                    ..
+                },
+                ..
+            }]
+        ));
+    }
+
+    #[test]
     fn keeps_a_const_static_data_member_externally_linked() {
         let source = r#"
             class CallStack {

@@ -973,6 +973,14 @@ impl Parser {
     ) -> Option<ResolvedTemplateType> {
         match pattern {
             TemplateTypePattern::Parameter(index) => arguments.get(*index).cloned(),
+            TemplateTypePattern::Concrete(declared) => Some(ResolvedTemplateType {
+                declared: *declared,
+                known: true,
+                identity: crate::cxx::encode_template_argument_type(*declared),
+                tag: None,
+                layout: None,
+                constant: None,
+            }),
             TemplateTypePattern::Named(name) => {
                 let qualified = self
                     .resolve_scoped_cxx_class_name(name)
@@ -1054,6 +1062,9 @@ impl Parser {
                 let argument = arguments.get(*index)?;
                 Self::resolved_template_argument_identity(argument)
             }
+            TemplateTypePattern::Concrete(declared) => {
+                crate::cxx::encode_template_argument_type(*declared)
+            }
             TemplateTypePattern::Named(name) => Some(name.clone()),
             TemplateTypePattern::Instance {
                 name,
@@ -1078,6 +1089,7 @@ impl Parser {
                 (0, None),
                 |argument| (type_size(argument.declared), argument.tag.clone()),
             ),
+            TemplateTypePattern::Concrete(declared) => (type_size(*declared), None),
             TemplateTypePattern::Named(name) => (
                 self.structs.get(name).map_or(0, |layout| layout.size),
                 Some(name.clone()),
@@ -1678,7 +1690,11 @@ impl Parser {
         start: usize,
         parameters: &[String],
     ) -> Option<(TemplateTypePattern, usize)> {
-        let Token::Identifier(first) = self.tokens.get(start)? else {
+        let token = self.tokens.get(start)?;
+        if let Some(declared) = self.template_argument_type(token) {
+            return Some((TemplateTypePattern::Concrete(declared), start + 1));
+        }
+        let Token::Identifier(first) = token else {
             return None;
         };
         if let Some(index) = parameters.iter().position(|parameter| parameter == first) {
@@ -2136,6 +2152,12 @@ impl Parser {
             Token::KeywordUnsigned if self.tokens.get(cursor + 1) == Some(&Token::KeywordChar) => {
                 (TemplateFieldType::Concrete(Type::UnsignedChar), 2)
             }
+            Token::Identifier(kind)
+                if kind == "enum"
+                    && matches!(self.tokens.get(cursor + 1), Some(Token::Identifier(_))) =>
+            {
+                (TemplateFieldType::Concrete(Type::Int), 2)
+            }
             token if self.template_argument_type(token).is_some() => (
                 TemplateFieldType::Concrete(self.template_argument_type(token)?), 1
             ),
@@ -2149,6 +2171,44 @@ impl Parser {
         while matches!(self.tokens.get(cursor), Some(Token::Identifier(word)) if matches!(word.as_str(), "const" | "volatile"))
         {
             cursor += 1;
+        }
+        if self.tokens.get(cursor) == Some(&Token::ParenOpen)
+            && self.tokens.get(cursor + 1) == Some(&Token::Star)
+            && matches!(self.tokens.get(cursor + 2), Some(Token::Identifier(_)))
+            && self.tokens.get(cursor + 3) == Some(&Token::ParenClose)
+            && self.tokens.get(cursor + 4) == Some(&Token::ParenOpen)
+        {
+            let Some(Token::Identifier(name)) = self.tokens.get(cursor + 2) else {
+                unreachable!()
+            };
+            let field = TemplateField {
+                name: name.clone(),
+                field_type: TemplateFieldType::Concrete(Type::Pointer(Pointee::Int)),
+                alignment: 1,
+                array_extent_parameter: None,
+                overlap_group: None,
+            };
+            cursor += 4;
+            let mut parens = 0u32;
+            loop {
+                match self.tokens.get(cursor)? {
+                    Token::ParenOpen => parens += 1,
+                    Token::ParenClose => {
+                        parens = parens.checked_sub(1)?;
+                        if parens == 0 {
+                            cursor += 1;
+                            break;
+                        }
+                    }
+                    Token::EndOfFile => return None,
+                    _ => {}
+                }
+                cursor += 1;
+            }
+            if self.tokens.get(cursor) != Some(&Token::Semicolon) {
+                return None;
+            }
+            return Some((vec![field], cursor + 1));
         }
         if self.tokens.get(cursor) == Some(&Token::Star) {
             field_type = match field_type {
@@ -2826,6 +2886,7 @@ impl Parser {
 
     pub(crate) fn template_argument_type(&self, token: &Token) -> Option<Type> {
         match token {
+            Token::KeywordVoid => Some(Type::Void),
             Token::KeywordInt => Some(Type::Int),
             Token::KeywordChar => Some(Type::Char),
             Token::KeywordShort => Some(Type::Short),

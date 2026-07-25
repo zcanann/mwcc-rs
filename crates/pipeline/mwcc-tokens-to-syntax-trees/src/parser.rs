@@ -130,6 +130,7 @@ impl StructLayout {
 #[derive(Clone)]
 pub(crate) enum TemplateTypePattern {
     Parameter(usize),
+    Concrete(mwcc_syntax_trees::Type),
     Named(String),
     Instance {
         name: String,
