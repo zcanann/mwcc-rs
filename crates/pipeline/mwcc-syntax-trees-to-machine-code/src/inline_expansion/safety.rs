@@ -381,7 +381,8 @@ pub(super) fn materializable_arguments(
                             index_stride: None,
                             ..
                         } if !matches!(member_type, Type::Void | Type::Struct { .. })
-                            && stable_argument(base, stable_variables)
+                            && (stable_argument(base, stable_variables)
+                                || matches!(base.as_ref(), Expression::Variable(_)))
                     )
             })
 }
@@ -762,5 +763,72 @@ fn expression_mentions(expression: &Expression, name: &str) -> bool {
         | Expression::FloatLiteral(_)
         | Expression::StringLiteral(_)
         | Expression::CompoundLiteral { .. } => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mwcc_syntax_trees::Parameter;
+
+    fn scalar_parameter_function() -> Function {
+        Function {
+            return_type: Type::Void,
+            name: "consume".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: vec![Parameter {
+                parameter_type: Type::Int,
+                name: "value".into(),
+            }],
+            locals: Vec::new(),
+            statements: Vec::new(),
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        }
+    }
+
+    #[test]
+    fn materializes_scalar_member_from_a_changing_local_once() {
+        let argument = Expression::Member {
+            base: Box::new(Expression::Variable("record".into())),
+            offset: 4,
+            member_type: Type::Int,
+            index_stride: None,
+        };
+
+        assert!(materializable_arguments(
+            &scalar_parameter_function(),
+            &[argument],
+            &HashSet::new(),
+            false,
+        ));
+    }
+
+    #[test]
+    fn does_not_materialize_a_member_with_an_effectful_base() {
+        let argument = Expression::Member {
+            base: Box::new(Expression::Call {
+                name: "record".into(),
+                arguments: Vec::new(),
+            }),
+            offset: 4,
+            member_type: Type::Int,
+            index_stride: None,
+        };
+
+        assert!(!materializable_arguments(
+            &scalar_parameter_function(),
+            &[argument],
+            &HashSet::new(),
+            false,
+        ));
     }
 }
