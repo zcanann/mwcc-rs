@@ -114,6 +114,7 @@ mod member_tab;
 mod member_store_fill;
 mod materialized_store_locals;
 mod masked_word_store_switch;
+mod masked_transfer_command_switch;
 mod mixed_scalar_initialization_schedule;
 mod nested_global_indirect_call;
 mod passes;

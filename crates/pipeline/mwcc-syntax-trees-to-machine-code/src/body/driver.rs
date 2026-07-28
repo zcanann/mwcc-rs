@@ -2635,6 +2635,9 @@ impl Generator {
         if self.try_masked_word_store_switch(function)? {
             return Ok(());
         }
+        if self.try_masked_transfer_command_switch(function)? {
+            return Ok(());
+        }
         if self.try_value_tracking(function)? {
             return Ok(());
         }

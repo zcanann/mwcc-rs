@@ -2682,6 +2682,9 @@ mod tests {
     #[path = "masked_word_store_switch.rs"]
     mod masked_word_store_switch;
 
+    #[path = "masked_transfer_command_switch.rs"]
+    mod masked_transfer_command_switch;
+
     #[path = "pointer_fallback.rs"]
     mod pointer_fallback;
 
