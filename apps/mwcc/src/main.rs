@@ -1300,10 +1300,11 @@ fn compile(
         eprintln!("leading-source-ordinal-bump {leading_source_ordinal_bump}");
         for function in &machine_functions {
             eprintln!(
-                "machine-ordinal-facts {}: front={}, source_prefix={}, post={:?}, framed={}",
+                "machine-ordinal-facts {}: front={}, source_prefix={}, post_constant={}, post={:?}, framed={}",
                 function.name,
                 function.anonymous_label_bump,
                 function.deferred_source_prefix_bump,
+                function.post_constant_label_bump,
                 function.post_function_anonymous_bump,
                 function.frame.is_some()
             );

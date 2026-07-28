@@ -33,6 +33,24 @@ pub(crate) fn apply(
 /// internal labels, with one shared label closing the run. A lone array stays
 /// on the ordinary inline zero-fill path and has no hidden trailing cost.
 fn mainline_initialized_array_labels(function: &Function, output: &MachineFunction) -> u32 {
+    let retained_dead_arrays = function
+        .locals
+        .iter()
+        .filter(|local| {
+            !local.is_static
+                && local.is_const
+                && local.array_length.is_some()
+                && local
+                    .data_bytes
+                    .as_ref()
+                    .is_some_and(|bytes| bytes.iter().all(|byte| *byte == 0))
+                && !crate::analysis::function_uses_name(function, &local.name)
+        })
+        .count() as u32;
+    // The visible images are attached after executable lowering. MWCC also
+    // leaves one hidden trailing label per image and one shared terminator.
+    let retained_dead_labels = retained_dead_arrays + u32::from(retained_dead_arrays != 0);
+
     let pooled_zero_arrays = function
         .locals
         .iter()
@@ -43,17 +61,20 @@ fn mainline_initialized_array_labels(function: &Function, output: &MachineFuncti
                     .data_bytes
                     .as_ref()
                     .is_some_and(|bytes| !bytes.is_empty() && bytes.iter().all(|byte| *byte == 0))
+                && !(local.is_const
+                    && !crate::analysis::function_uses_name(function, &local.name))
         })
         .count() as u32;
-    if pooled_zero_arrays < 2 {
-        0
-    } else if output.anonymous_rodata.len() >= pooled_zero_arrays as usize {
-        // The writer now walks the N concrete image symbols. Only the two
-        // internal labels per copy and the shared closing label remain hidden.
-        2 * pooled_zero_arrays + 1
-    } else {
-        3 * pooled_zero_arrays + 1
-    }
+    retained_dead_labels
+        + if pooled_zero_arrays < 2 {
+            0
+        } else if output.anonymous_rodata.len() >= pooled_zero_arrays as usize {
+            // The writer now walks the N concrete image symbols. Only the two
+            // internal labels per copy and the shared closing label remain hidden.
+            2 * pooled_zero_arrays + 1
+        } else {
+            3 * pooled_zero_arrays + 1
+        }
 }
 
 /// A variadic call with multiple floating-to-integer arguments keeps one
@@ -348,6 +369,37 @@ mod tests {
             FunctionOrdinalAccountingStyle::Mainline,
         );
         assert_eq!(output.post_constant_label_bump, 13);
+    }
+
+    #[test]
+    fn mainline_accounts_retained_dead_const_array_images() {
+        for (array_count, expected_bump) in [(1, 2), (2, 3), (3, 4)] {
+            let mut function = function();
+            for index in 0..array_count {
+                function.locals.push(mwcc_syntax_trees::LocalDeclaration {
+                    declared_type: Type::Char,
+                    name: format!("unused_{index}"),
+                    initializer: None,
+                    is_volatile: false,
+                    array_length: Some(1),
+                    is_static: false,
+                    data_bytes: Some(Vec::new()),
+                    data_relocations: Vec::new(),
+                    is_const: true,
+                    row_bytes: None,
+                });
+            }
+            let mut output = MachineFunction::new("probe");
+            apply(
+                &function,
+                &mut output,
+                FunctionOrdinalAccountingStyle::Mainline,
+            );
+            assert_eq!(
+                output.post_constant_label_bump, expected_bump,
+                "{array_count} retained dead array(s)"
+            );
+        }
     }
 
     #[test]
