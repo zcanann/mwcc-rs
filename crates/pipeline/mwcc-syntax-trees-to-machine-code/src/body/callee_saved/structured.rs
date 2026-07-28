@@ -1410,6 +1410,8 @@ impl Generator {
                     .get_mut(name)
                     .expect("eligibility checked")
                     .register = *home;
+            } else if pooled_dense_inline_save {
+                self.emit_structured_array_pool_parameter_copies(&saved_parameter_homes);
             } else {
                 for (parameter_index, (_, home, incoming)) in
                     saved_parameter_homes.iter().enumerate()
@@ -2044,6 +2046,9 @@ impl Generator {
             ]);
         } else {
             self.emit_epilogue_and_return();
+        }
+        if pooled_dense_inline_save {
+            self.schedule_structured_array_pool_epilogue();
         }
         self.schedule_saved_return_epilogue();
         self.schedule_saved_receiver_entry_epilogue();

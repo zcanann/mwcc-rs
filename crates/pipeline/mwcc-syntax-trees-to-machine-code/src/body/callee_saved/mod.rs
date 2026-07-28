@@ -81,6 +81,7 @@ mod structured_float_compare;
 mod structured_frame_assignment;
 mod structured_frame_arrays;
 mod structured_array_pool;
+mod structured_array_pool_schedule;
 mod structured_frame_initializers;
 mod structured_frame_bitfield_stores;
 mod structured_frame_call_schedule;
