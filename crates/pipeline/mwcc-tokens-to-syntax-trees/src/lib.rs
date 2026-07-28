@@ -101,6 +101,7 @@ pub fn parse_located_translation_unit_with_enum_min(
         0,
         0,
         0,
+        0,
         false,
         0,
         0,
@@ -123,6 +124,7 @@ pub fn parse_located_translation_unit_with_behavior(
     dropped_inline_const_local_declaration_label_weight: u8,
     dropped_inline_class_automatic_label_base: u8,
     dropped_inline_class_automatic_label_weight: u8,
+    dropped_inline_class_value_temporary_label_weight: u8,
     retain_discarded_inline_aggregate_images: bool,
     anonymous_aggregate_definition_label_weight: u8,
     nested_anonymous_aggregate_definition_label_weight: u8,
@@ -141,6 +143,7 @@ pub fn parse_located_translation_unit_with_behavior(
         dropped_inline_const_local_declaration_label_weight,
         dropped_inline_class_automatic_label_base,
         dropped_inline_class_automatic_label_weight,
+        dropped_inline_class_value_temporary_label_weight,
         retain_discarded_inline_aggregate_images,
         anonymous_aggregate_definition_label_weight,
         nested_anonymous_aggregate_definition_label_weight,
@@ -167,6 +170,7 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
     dropped_inline_const_local_declaration_label_weight: u8,
     dropped_inline_class_automatic_label_base: u8,
     dropped_inline_class_automatic_label_weight: u8,
+    dropped_inline_class_value_temporary_label_weight: u8,
     retain_discarded_inline_aggregate_images: bool,
     anonymous_aggregate_definition_label_weight: u8,
     nested_anonymous_aggregate_definition_label_weight: u8,
@@ -237,6 +241,7 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         dropped_inline_const_local_declaration_label_weight,
         dropped_inline_class_automatic_label_base,
         dropped_inline_class_automatic_label_weight,
+        dropped_inline_class_value_temporary_label_weight,
         retain_discarded_inline_aggregate_images,
         anonymous_aggregate_definition_label_weight,
         nested_anonymous_aggregate_definition_label_weight,
@@ -442,6 +447,7 @@ mod tests {
             1,
             0,
             0,
+            2,
             false,
             1,
             2,
@@ -465,6 +471,7 @@ mod tests {
                 1,
                 3,
                 3,
+                0,
                 0,
                 0,
                 0,
@@ -501,6 +508,7 @@ mod tests {
                 0,
                 0,
                 0,
+                0,
                 false,
                 0,
                 0,
@@ -522,6 +530,7 @@ mod tests {
             1,
             3,
             3,
+            0,
             0,
             0,
             0,
@@ -555,6 +564,7 @@ mod tests {
             1,
             0,
             0,
+            2,
             false,
             1,
             2,
@@ -581,6 +591,7 @@ mod tests {
                 3,
                 0,
                 1,
+                0,
                 0,
                 0,
                 0,
@@ -633,6 +644,43 @@ mod tests {
             0,
             0,
             0,
+            0,
+            false,
+            0,
+            0,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(unit.skipped_inline_functions, 1);
+    }
+
+    #[test]
+    fn charges_class_value_operator_temporaries_in_discarded_inlines() {
+        let unit = parse_located_translation_unit_with_behavior(
+            located(
+                "struct Vec { \
+                     float value; \
+                     Vec operator-(const Vec&) const; \
+                     float length2() const; \
+                 }; \
+                 inline bool separated(const Vec& left, const Vec& right) { \
+                     return (right - left).length2() > 0.0f; \
+                 } \
+                 int compiled(int value) { return value; }",
+            ),
+            true,
+            true,
+            1,
+            3,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
             false,
             0,
             0,
@@ -655,6 +703,7 @@ mod tests {
             true,
             1,
             3,
+            0,
             0,
             0,
             0,
@@ -3708,6 +3757,7 @@ blr\n\
             true,
             1,
             3,
+            0,
             0,
             0,
             0,

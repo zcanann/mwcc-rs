@@ -236,6 +236,8 @@ pub(crate) struct Parser {
     pub(crate) dropped_inline_const_local_declaration_label_weight: u8,
     pub(crate) dropped_inline_class_automatic_label_base: u8,
     pub(crate) dropped_inline_class_automatic_label_weight: u8,
+    /// Per class-valued operator temporary in a discarded top-level inline.
+    pub(crate) dropped_inline_class_value_temporary_label_weight: u8,
     /// Whether an initialized aggregate automatic in a discarded inline keeps
     /// its frontend-created source image and ordinal.
     pub(crate) retain_discarded_inline_aggregate_images: bool,

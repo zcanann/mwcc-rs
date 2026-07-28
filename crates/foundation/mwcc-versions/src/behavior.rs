@@ -786,6 +786,7 @@ pub struct Behavior {
     pub dropped_inline_const_local_declaration_label_weight: u8,
     pub dropped_inline_class_automatic_label_base: u8,
     pub dropped_inline_class_automatic_label_weight: u8,
+    pub dropped_inline_class_value_temporary_label_weight: u8,
     /// Anonymous-label cost of an anonymous struct/union definition.
     pub anonymous_aggregate_definition_label_weight: u8,
     pub nested_anonymous_aggregate_definition_label_weight: u8,
@@ -1215,6 +1216,10 @@ impl Behavior {
                 .build
                 .profile
                 .dropped_inline_class_automatic_label_weight(),
+            dropped_inline_class_value_temporary_label_weight: config
+                .build
+                .profile
+                .dropped_inline_class_value_temporary_label_weight(),
             anonymous_aggregate_definition_label_weight: config
                 .build
                 .profile
@@ -2172,9 +2177,14 @@ mod tests {
         assert_eq!(mainline.dropped_inline_parameter_label_weight, 0);
         assert_eq!(mainline.dropped_inline_local_declaration_label_weight, 0);
         assert_eq!(mainline.dropped_inline_const_local_declaration_label_weight, 1);
+        assert_eq!(
+            mainline.dropped_inline_class_value_temporary_label_weight,
+            1
+        );
         assert_eq!(gc41.dropped_inline_parameter_label_weight, 1);
         assert_eq!(gc41.dropped_inline_local_declaration_label_weight, 1);
         assert_eq!(gc41.dropped_inline_const_local_declaration_label_weight, 2);
+        assert_eq!(gc41.dropped_inline_class_value_temporary_label_weight, 5);
         assert_eq!(mainline.cxx_rtti_virtual_method_label_weight, 4);
         assert_eq!(mainline.cxx_rtti_virtual_destructor_label_weight, 6);
         assert_eq!(mainline.cxx_rtti_inherited_virtual_destructor_label_bump, 2);
@@ -2205,6 +2215,7 @@ mod tests {
         assert_eq!(wii43.dropped_inline_const_local_declaration_label_weight, 1);
         assert_eq!(wii43.dropped_inline_class_automatic_label_base, 5);
         assert_eq!(wii43.dropped_inline_class_automatic_label_weight, 1);
+        assert_eq!(wii43.dropped_inline_class_value_temporary_label_weight, 2);
         assert_eq!(wii43.anonymous_aggregate_definition_label_weight, 1);
         assert_eq!(wii43.nested_anonymous_aggregate_definition_label_weight, 2);
         assert_eq!(wii43.cxx_inline_definition_label_bump, 4);

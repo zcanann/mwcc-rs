@@ -532,6 +532,16 @@ impl Parser {
             } else {
                 None
             };
+            let class_value_temporary = overload
+                .as_deref()
+                .and_then(|name| self.function_return_structs.get(name))
+                .or(result_struct_tag.as_ref());
+            if self.recover_skipped_inline_definition {
+                if let Some(target) = class_value_temporary {
+                    self.cxx_temporary_construction_targets
+                        .push(target.clone());
+                }
+            }
             left = if let Some(name) = overload {
                 Expression::Call {
                     name,

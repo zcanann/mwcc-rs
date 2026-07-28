@@ -787,6 +787,7 @@ impl Parser {
                 // before the generic function-definition guard: embedded asm
                 // makes that conservative scanner classify the body as a real
                 // definition even though this specific diagnostic is expected.
+                let mut class_value_temporaries = 0usize;
                 if error
                     .message
                     .contains("an inline function definition is skipped")
@@ -794,7 +795,7 @@ impl Parser {
                     if let Some((open, close, _)) = self.skipped_inline_parameter_span() {
                         self.remove_named_parameters_in(open, close);
                     }
-                    self.try_recover_skipped_inline_definition();
+                    class_value_temporaries = self.try_recover_skipped_inline_definition();
                 }
                 // An unparsed explicit specialization is concrete, not a primary
                 // template declaration. Static data-member specializations such
@@ -896,7 +897,11 @@ impl Parser {
                 }
                 // A skipped INLINE function definition still advances mwcc's `@N`
                 // counter by the labels its (compiled, then dropped) body uses.
-                if let Some(bump) = self.skipped_inline_label_bump()? {
+                if let Some(mut bump) = self.skipped_inline_label_bump()? {
+                    bump += class_value_temporaries
+                        * usize::from(
+                            self.dropped_inline_class_value_temporary_label_weight,
+                        );
                     if std::env::var_os("MWCC_CAPTURE_DEBUG").is_some() {
                         eprintln!(
                             "inline-bump: {} +{bump} (total {})",
@@ -1431,13 +1436,18 @@ impl Parser {
     /// Parse one deliberately skipped inline definition on an isolated parser
     /// clone. The recovered [`Function`] is analysis-only: the main parser still
     /// performs its existing ordinal accounting and skips past the definition.
-    fn try_recover_skipped_inline_definition(&mut self) {
+    fn try_recover_skipped_inline_definition(&mut self) -> usize {
         let mut probe = self.clone();
         probe.recover_skipped_inline_definition = true;
+        let temporary_count_before = probe.cxx_temporary_construction_targets.len();
         let mut globals = Vec::new();
         let mut functions = Vec::new();
         let mut prototypes = Vec::new();
         let parsed = probe.parse_top_level_item(&mut globals, &mut functions, &mut prototypes);
+        let class_value_temporaries = probe
+            .cxx_temporary_construction_targets
+            .len()
+            .saturating_sub(temporary_count_before);
         if parsed.is_ok() && functions.len() == 1 {
             self.merge_generated_inline_definitions_from(&probe);
             let source = probe.function_sources.pop().flatten();
@@ -1509,6 +1519,7 @@ impl Parser {
                 functions.len()
             );
         }
+        class_value_temporaries
     }
 
     /// The name of the (inline) function definition at the cursor: the last

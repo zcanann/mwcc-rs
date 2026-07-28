@@ -1359,6 +1359,12 @@ pub trait CodegenProfile: core::fmt::Debug {
         0
     }
 
+    /// Per class-valued operator temporary created while compiling and then
+    /// discarding a top-level inline definition.
+    fn dropped_inline_class_value_temporary_label_weight(&self) -> u8 {
+        1
+    }
+
     /// Anonymous aggregate definitions are ordinarily discarded without
     /// advancing the source-analysis ordinal stream.
     fn anonymous_aggregate_definition_label_weight(&self) -> u8 {
@@ -1578,6 +1584,10 @@ impl CodegenProfile for Gc41Build51213 {
         2
     }
 
+    fn dropped_inline_class_value_temporary_label_weight(&self) -> u8 {
+        5
+    }
+
     fn deferred_call_dispatcher_labels_per_case(&self) -> u8 {
         1
     }
@@ -1754,6 +1764,10 @@ impl CodegenProfile for Wii43Build145 {
 
     fn dropped_inline_class_automatic_label_weight(&self) -> u8 {
         1
+    }
+
+    fn dropped_inline_class_value_temporary_label_weight(&self) -> u8 {
+        2
     }
 
     fn anonymous_aggregate_definition_label_weight(&self) -> u8 {

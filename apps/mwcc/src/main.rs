@@ -707,6 +707,7 @@ fn compile(
             behavior.dropped_inline_const_local_declaration_label_weight,
             behavior.dropped_inline_class_automatic_label_base,
             behavior.dropped_inline_class_automatic_label_weight,
+            behavior.dropped_inline_class_value_temporary_label_weight,
             behavior.discarded_inline_aggregate_image_style
                 != mwcc_versions::DiscardedInlineAggregateImageStyle::None,
             behavior.anonymous_aggregate_definition_label_weight,
