@@ -190,6 +190,22 @@ fn flow(
                         read_after |=
                             advance_expression(condition, name, &mut iteration_call);
                     }
+                    // The first iteration can introduce a call whose clobber
+                    // reaches reads at the beginning of the next iteration.
+                    // Call-state is a single bit, so replaying the body once
+                    // from the backedge is sufficient to reach its fixed
+                    // point. Definitions in the body still kill the incoming
+                    // lifetime through the ordinary flow rules.
+                    let mut backedge_gotos = HashMap::new();
+                    let mut backedge_labels = HashSet::new();
+                    read_after |= flow(
+                        body,
+                        name,
+                        iteration_call,
+                        &mut backedge_gotos,
+                        &mut backedge_labels,
+                    )
+                    .read_after_call;
                 }
                 // The loop may not execute (except do/while), may break, or may
                 // complete an iteration. Preserve every possible call-bearing
@@ -401,6 +417,50 @@ mod tests {
             &statements,
             None,
             "index"
+        ));
+    }
+
+    #[test]
+    fn a_call_argument_reused_on_the_next_iteration_needs_a_saved_home() {
+        let statements = vec![Statement::Loop {
+            kind: LoopKind::While,
+            initializer: None,
+            condition: Some(Expression::IntegerLiteral(1)),
+            step: None,
+            body: vec![Statement::Expression(Expression::Call {
+                name: "compare".into(),
+                arguments: vec![Expression::Variable("needle".into())],
+            })],
+        }];
+
+        assert!(read_after_possible_call_in_return(
+            &statements,
+            None,
+            "needle"
+        ));
+    }
+
+    #[test]
+    fn a_loop_redefinition_before_the_next_read_kills_the_backedge_call() {
+        let statements = vec![Statement::Loop {
+            kind: LoopKind::While,
+            initializer: None,
+            condition: Some(Expression::IntegerLiteral(1)),
+            step: None,
+            body: vec![
+                call("consume"),
+                Statement::Assign {
+                    name: "value".into(),
+                    value: Expression::IntegerLiteral(0),
+                },
+                Statement::Expression(Expression::Variable("value".into())),
+            ],
+        }];
+
+        assert!(!read_after_possible_call_in_return(
+            &statements,
+            None,
+            "value"
         ));
     }
 
