@@ -4761,6 +4761,19 @@ impl Parser {
                                 })?;
                             data_bytes = Some(bytes);
                             Some(explicit.unwrap_or(count))
+                        } else if matches!(self.peek(), Token::StringLiteral(_)) {
+                            // A function-body `char text[N] = "…";` carries the
+                            // literal bytes and terminating NUL on the automatic
+                            // local. Frame lowering owns the eventual copy-in;
+                            // retaining the image here is the same representation
+                            // used by a declaration in a nested block.
+                            let values = self.parse_constant_initializer(declared_type)?;
+                            let count = u16::try_from(values.len()).map_err(|_| {
+                                Diagnostic::error("a local string initializer is too large")
+                            })?;
+                            data_bytes =
+                                Some(values.into_iter().map(|value| value as u8).collect());
+                            Some(explicit.unwrap_or(count))
                         } else {
                             // An AUTOMATIC initialized array parses like the static
                             // form (its byte image on the local); native frame copy-in

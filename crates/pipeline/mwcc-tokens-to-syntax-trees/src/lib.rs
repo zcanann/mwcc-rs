@@ -4104,6 +4104,30 @@ blr\n\
     }
 
     #[test]
+    fn retains_function_scope_char_array_string_initializers() {
+        let source = r#"
+            void probe(void) {
+                char empty[32] = "";
+                unsigned char inferred[] = "abc";
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let empty = &unit.functions[0].locals[0];
+        let inferred = &unit.functions[0].locals[1];
+        assert_eq!(empty.array_length, Some(32));
+        assert_eq!(empty.data_bytes.as_deref(), Some(&[0][..]));
+        assert_eq!(inferred.array_length, Some(4));
+        assert_eq!(inferred.data_bytes.as_deref(), Some(&[b'a', b'b', b'c', 0][..]));
+    }
+
+    #[test]
     fn flattens_multidimensional_declarator_list_after_a_statement() {
         let source = r#"
             int probe(int value) {
