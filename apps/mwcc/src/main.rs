@@ -2851,6 +2851,9 @@ mod tests {
     #[path = "forwarding_branch_cleanup.rs"]
     mod forwarding_branch_cleanup;
 
+    #[path = "global_byte_format_arguments.rs"]
+    mod global_byte_format_arguments;
+
     #[path = "frame_digit_pair.rs"]
     mod frame_digit_pair;
 

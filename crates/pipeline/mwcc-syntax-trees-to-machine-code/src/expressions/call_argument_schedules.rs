@@ -1,5 +1,6 @@
 //! Measured multi-instruction schedules for direct-call arguments.
 
+mod members;
 mod nested;
 
 #[allow(unused_imports)]
