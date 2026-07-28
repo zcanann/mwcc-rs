@@ -44,6 +44,7 @@ impl Generator {
                     bytes[4..8].copy_from_slice(&0x7fff_ffffu32.to_be_bytes());
                     bytes
                 },
+                static_slot_prefix_bump: None,
                 anonymous_offset: -10, // family shape (real @99)
             });
         self.output.jump_tables.push(mwcc_machine_code::JumpTable {

@@ -50,18 +50,21 @@ impl Generator {
             .anonymous_rodata
             .push(mwcc_machine_code::AnonymousRodata {
                 bytes: vec![0; 42],
+                static_slot_prefix_bump: None,
                 anonymous_offset: -1,
             });
         self.output
             .anonymous_rodata
             .push(mwcc_machine_code::AnonymousRodata {
                 bytes: b"INFINITY\0".to_vec(),
+                static_slot_prefix_bump: None,
                 anonymous_offset: 14,
             });
         self.output
             .anonymous_rodata
             .push(mwcc_machine_code::AnonymousRodata {
                 bytes: vec![0; 32],
+                static_slot_prefix_bump: None,
                 anonymous_offset: 0,
             });
         let mut labels: std::collections::HashMap<usize, mwcc_vreg::Label> =

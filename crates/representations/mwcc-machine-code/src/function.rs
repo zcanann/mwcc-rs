@@ -29,9 +29,12 @@ pub struct PoolConstant {
 #[derive(Debug, Clone)]
 pub struct AnonymousRodata {
     pub bytes: Vec<u8>,
+    /// Place this blob in the automatic object's static-local ordinal slot,
+    /// before the recorded function-local control-label prefix and packed
+    /// strings. Unit-level declaration prefixes added later remain ahead of it.
+    pub static_slot_prefix_bump: Option<u32>,
     /// How far past the function's running anonymous-`@N` counter the blob's
-    /// number sits (measured; signed — __strtold's table lands at counter-1,
-    /// like a static local).
+    /// number sits when `static_slot_prefix_bump` is `None`.
     pub anonymous_offset: i32,
 }
 

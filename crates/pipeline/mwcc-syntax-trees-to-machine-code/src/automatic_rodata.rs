@@ -34,12 +34,14 @@ pub(super) fn retain_unused_array_images(
         bytes: materialize_image(first),
         // The first automatic image occupies the function's static-local slot;
         // subsequent images continue from that ordinal.
-        anonymous_offset: -1,
+        static_slot_prefix_bump: Some(output.object_anonymous_bump()),
+        anonymous_offset: 0,
     });
     output
         .anonymous_rodata
         .extend(retained.map(|local| AnonymousRodata {
             bytes: materialize_image(local),
+            static_slot_prefix_bump: None,
             anonymous_offset: 0,
         }));
 }
@@ -117,7 +119,11 @@ mod tests {
         );
 
         assert_eq!(output.anonymous_rodata.len(), 2);
-        assert_eq!(output.anonymous_rodata[0].anonymous_offset, -1);
+        assert_eq!(
+            output.anonymous_rodata[0].static_slot_prefix_bump,
+            Some(0)
+        );
+        assert_eq!(output.anonymous_rodata[0].anonymous_offset, 0);
         assert_eq!(output.anonymous_rodata[0].bytes.len(), 12);
         assert_eq!(output.anonymous_rodata[1].anonymous_offset, 0);
         assert_eq!(output.anonymous_rodata[1].bytes.len(), 40);

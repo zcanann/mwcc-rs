@@ -42,6 +42,7 @@ impl Generator {
             .anonymous_rodata
             .push(mwcc_machine_code::AnonymousRodata {
                 bytes: vec![0u8; 0x2a],
+                static_slot_prefix_bump: None,
                 anonymous_offset: -1, // measured: @26 against the running counter 27
             });
         self.output.constant_number_gaps = vec![(0, 120)]; // pool double @147

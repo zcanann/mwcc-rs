@@ -245,7 +245,23 @@ pub fn assemble_object(
             // conversion and by three for a float conditional branch before this
             // function's constants are numbered.
             anonymous_bump: function.object_anonymous_bump(),
-            post_constant_bump: function.post_constant_label_bump,
+            post_constant_bump: function.post_constant_label_bump
+                + if let Some(static_slot_prefix_bump) = function
+                    .anonymous_rodata
+                    .iter()
+                    .find_map(|blob| blob.static_slot_prefix_bump)
+                {
+                    static_slot_prefix_bump
+                        + if function.string_number_after_constants.is_none()
+                            && function.string_number_after_rodata.is_none()
+                        {
+                            function.new_string_count
+                        } else {
+                            0
+                        }
+                } else {
+                    0
+                },
             post_function_anonymous_bump: function.post_function_anonymous_bump,
             constant_number_gaps: function.constant_number_gaps.clone(),
             constant_number_adjust: function.constant_number_adjust,
@@ -268,7 +284,28 @@ pub fn assemble_object(
             anonymous_rodata: function
                 .anonymous_rodata
                 .iter()
-                .map(|blob| (blob.bytes.clone(), blob.anonymous_offset))
+                .map(|blob| {
+                    let strings_before_rodata = if function
+                        .string_number_after_constants
+                        .is_none()
+                        && function.string_number_after_rodata.is_none()
+                    {
+                        function.new_string_count
+                    } else {
+                        0
+                    };
+                    let anonymous_offset = if let Some(prefix_bump) =
+                        blob.static_slot_prefix_bump
+                    {
+                        -1 - i32::try_from(
+                            prefix_bump + strings_before_rodata,
+                        )
+                        .unwrap_or(i32::MAX)
+                    } else {
+                        blob.anonymous_offset
+                    };
+                    (blob.bytes.clone(), anonymous_offset)
+                })
                 .collect(),
             local_undefined_callees: function.local_undefined_callees.clone(),
             symbol_order: function.symbol_order.clone(),

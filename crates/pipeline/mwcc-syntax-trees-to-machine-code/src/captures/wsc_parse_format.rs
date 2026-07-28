@@ -45,6 +45,7 @@ impl Generator {
                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                 ],
+                static_slot_prefix_bump: None,
                 anonymous_offset: -1, // real @19
             });
         self.output.jump_tables.push(mwcc_machine_code::JumpTable {

@@ -277,6 +277,7 @@ impl Generator {
                 .anonymous_rodata
                 .push(mwcc_machine_code::AnonymousRodata {
                     bytes: image.clone(),
+                    static_slot_prefix_bump: None,
                     anonymous_offset: -1,
                 });
             self.output.post_constant_label_bump += 1;

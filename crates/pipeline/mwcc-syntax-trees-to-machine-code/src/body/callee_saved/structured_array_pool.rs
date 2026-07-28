@@ -98,11 +98,12 @@ impl Generator {
     ) -> Compilation<()> {
         let images = self.materialize_structured_array_pool_images(arrays)?;
         let first_blob = self.output.anonymous_rodata.len();
-        for image in &images {
+        for (image_index, image) in images.iter().enumerate() {
             self.output
                 .anonymous_rodata
                 .push(mwcc_machine_code::AnonymousRodata {
                     bytes: image.clone(),
+                    static_slot_prefix_bump: (image_index == 0).then_some(0),
                     anonymous_offset: 0,
                 });
         }
