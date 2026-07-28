@@ -1038,6 +1038,28 @@ impl Generator {
                 self.emit_address_of(operand, register)?;
                 Ok(register)
             }
+            // `array[i].field` reaches member-address formation with the
+            // indexed struct object as its base. Materialize the element
+            // address using the shared global-array policy; loading the
+            // element would incorrectly treat an aggregate value as a word.
+            Expression::Index {
+                base: array,
+                index,
+            } if matches!(
+                array.as_ref(),
+                Expression::Variable(name)
+                    if self.global_array_address_extent(name).is_some()
+            ) => {
+                let Expression::Variable(name) = array.as_ref() else {
+                    unreachable!("the guard matched a global array variable")
+                };
+                let total_size = self
+                    .global_array_address_extent(name)
+                    .expect("the guard resolved the array extent");
+                let register = self.fresh_virtual_general();
+                self.emit_global_array_element_address(name, total_size, index, register)?;
+                Ok(register)
+            }
             // A bare `get()->field` is handled in emit_member_load (single-load, byte-exact); any
             // OTHER call context reaching here (a nested `get()->b->c`, an indexed `get()->a[i]`, a
             // member store) has a post-call schedule mwcc places differently — defer.

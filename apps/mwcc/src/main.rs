@@ -2745,6 +2745,12 @@ mod tests {
     #[path = "nested_tail_call_arguments.rs"]
     mod nested_tail_call_arguments;
 
+    #[path = "initialized_automatic_arrays.rs"]
+    mod initialized_automatic_arrays;
+
+    #[path = "static_array_forward.rs"]
+    mod static_array_forward;
+
     #[path = "spilled_pointer_cast.rs"]
     mod spilled_pointer_cast;
 

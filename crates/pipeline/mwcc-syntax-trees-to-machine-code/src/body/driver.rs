@@ -1576,17 +1576,6 @@ impl Generator {
                 .push(Instruction::BranchToLinkRegister);
             return Ok(());
         }
-        // An INITIALIZED AUTOMATIC local array needs the frame copy-in
-        // sequence natively — only a capture claim emits it byte-exactly, so
-        // an unclaimed function with one defers here (after the templates and
-        // the dead-declaration fold above).
-        if function.locals.iter().any(|local| {
-            !local.is_static && local.array_length.is_some() && local.data_bytes.is_some()
-        }) {
-            return Err(Diagnostic::error(
-                "an initialized automatic local array is not supported yet (roadmap)",
-            ));
-        }
         // A body calling a SKIPPED INLINE defers here — after the exact-match
         // templates (a whole-function capture has the inline flattened into
         // its body); the general paths must never emit a bl to the undefined

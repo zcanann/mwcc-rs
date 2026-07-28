@@ -1652,6 +1652,7 @@ impl Generator {
                 slot,
             ));
         }
+        self.emit_structured_frame_array_initializers(frame_arrays)?;
         self.plan_structured_float_handoff(function, &ephemeral_locals);
         let dense_statement_start = if dense_frame {
             if global_member_search_entry || saved_parameter_base != 0 {
@@ -1688,10 +1689,11 @@ impl Generator {
         // ABI registers before the first statement. Only extend an entry alias
         // into that statement when all declaration initializers are call-free.
         let initializers_preserve_entry_alias = function.locals.iter().all(|local| {
-            local
-                .initializer
-                .as_ref()
-                .is_none_or(|initializer| !crate::analysis::expression_has_call(initializer))
+            local.data_bytes.is_none()
+                && local
+                    .initializer
+                    .as_ref()
+                    .is_none_or(|initializer| !crate::analysis::expression_has_call(initializer))
         });
         let entry_parameter_alias = (!dense_inline_save && initializers_preserve_entry_alias)
             .then(|| {

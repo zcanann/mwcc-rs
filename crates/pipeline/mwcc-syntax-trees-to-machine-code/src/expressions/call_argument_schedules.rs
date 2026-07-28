@@ -54,6 +54,58 @@ fn stable_call_binary(
 }
 
 impl Generator {
+    /// Marshal `(i16, large_global_array, i16)` with the array's high half in
+    /// the LR-store latency window.
+    ///
+    /// The ordinary global-plus-constant owner models scalar loads. An array
+    /// argument is its address, so it needs the distinct `lis`/`addi` chain:
+    /// `lis r4,array; li r3,a; [store LR]; addi r4; li r5,b`.
+    pub(crate) fn try_emit_constant_global_array_constant_arguments(
+        &mut self,
+        arguments: &[Expression],
+        name: &str,
+    ) -> Compilation<bool> {
+        let [
+            Expression::IntegerLiteral(first),
+            Expression::Variable(array),
+            Expression::IntegerLiteral(third),
+        ] = arguments
+        else {
+            return Ok(false);
+        };
+        let direct_call = !self.globals.contains_key(name)
+            && !self.locations.contains_key(name)
+            && !self.known_locals.contains(name);
+        let Some(&array_size) = self.global_array_sizes.get(array.as_str()) else {
+            return Ok(false);
+        };
+        let (Ok(first), Ok(third)) = (i16::try_from(*first), i16::try_from(*third)) else {
+            return Ok(false);
+        };
+        if !direct_call
+            || !self.behavior.schedule_latency_slots
+            || (self.behavior.global_addressing == GlobalAddressing::SmallData && array_size <= 8)
+        {
+            return Ok(false);
+        }
+
+        let first_argument = Eabi::FIRST_GENERAL_ARGUMENT;
+        self.emit_address_high(first_argument + 1, array);
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(first_argument, first));
+        self.record_relocation(RelocationKind::Addr16Lo, array);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: first_argument + 1,
+            a: first_argument + 1,
+            immediate: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(first_argument + 2, third));
+        Ok(true)
+    }
+
     /// Marshal `(global_array, packed_string, call_expression)` around the
     /// nested call's result in r3.
     ///

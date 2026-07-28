@@ -23,10 +23,7 @@ pub(super) fn plan_structured_frame_arrays<'a>(
         .collect();
     let mut total_bytes = 0i16;
     for array in &arrays {
-        if array.is_static
-            || array.initializer.is_some()
-            || array.data_bytes.is_some()
-        {
+        if array.is_static || array.initializer.is_some() {
             return None;
         }
         let element_bytes = match array.declared_type {
@@ -36,6 +33,14 @@ pub(super) fn plan_structured_frame_arrays<'a>(
         let bytes = element_bytes
             .checked_mul(u32::from(array.array_length?))
             .filter(|bytes| *bytes != 0)?;
+        if array
+            .data_bytes
+            .as_ref()
+            .is_some_and(|image| image.len() > bytes as usize)
+            || !array.data_relocations.is_empty()
+        {
+            return None;
+        }
         total_bytes = total_bytes.checked_add(i16::try_from(bytes).ok()?)?;
     }
     Some(StructuredFrameArrays {
