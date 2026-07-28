@@ -443,6 +443,7 @@ mod sld_strtold;
 mod sldb_strtold;
 mod sldexp;
 mod sldexp_str;
+mod sms_os_alloc_from_heap;
 mod sldp_strtold;
 mod sldx;
 mod sldx_ac;
@@ -1095,6 +1096,7 @@ impl Generator {
             || self.try_gcnp_sys_free(function)?
             || self.try_gcnw_sys_free(function)?
             || self.try_gcn_sys_alloc(function)?
+            || self.try_sms_os_alloc_from_heap(function)?
             || self.try_esq_sqrt(function)?
             || self.try_ktn_tan(function)?
             || self.try_eac_acos(function)?
