@@ -4318,11 +4318,11 @@ impl Generator {
             Statement::Assign { .. } => Err(Diagnostic::error(
                 "local reassignment mixed with stores/calls is not supported yet (roadmap)",
             )),
-            // The binary-search dispatch codegen is the next piece; switches parse
-            // but defer for now (never miscompile).
-            Statement::Switch { .. } => Err(Diagnostic::error(
-                "switch dispatch codegen is not implemented yet (roadmap)",
-            )),
+            Statement::Switch {
+                scrutinee,
+                arms,
+                default,
+            } => self.emit_joined_call_switch(scrutinee, arms, default.as_ref()),
             // A general if-statement (non-trailing, non-leaf, or with an else) needs
             // forward branches and basic-block scheduling — deferred for now.
             Statement::If { .. } => Err(Diagnostic::error(format!(

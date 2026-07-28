@@ -23,6 +23,7 @@ use crate::generator::*;
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{Instruction, JumpTable, RelocationKind, RelocationTarget};
 use mwcc_syntax_trees::{ArmBody, Expression, Statement, SwitchArm, Type};
+use mwcc_target::Eabi;
 use mwcc_versions::{CallDispatcherStyle, JumpTableBaseStyle};
 
 /// A pending dispatch-branch destination, resolved to an instruction index once
@@ -36,6 +37,162 @@ pub(super) enum Target {
 }
 
 impl Generator {
+    /// Emit a statement-bodied comparison-tree switch whose case bodies each
+    /// make one call and then join the function's ordinary continuation.
+    ///
+    /// Unlike [`Self::emit_statement_switch`], a source `break` here is not a
+    /// function return: every case branches to the code following the switch.
+    /// Keeping this join topology in the shared switch lowerer lets non-leaf
+    /// functions reuse the measured comparison tree without inventing a
+    /// function-specific dispatcher.
+    pub(crate) fn emit_joined_call_switch(
+        &mut self,
+        scrutinee: &Expression,
+        arms: &[SwitchArm],
+        default: Option<&ArmBody>,
+    ) -> Compilation<()> {
+        let call_statement = |statement: &Statement| {
+            matches!(
+                statement,
+                Statement::Expression(
+                    Expression::Call { .. } | Expression::CallThrough { .. }
+                )
+            )
+        };
+        for arm in arms {
+            let ArmBody::Statements(statements) = &arm.body else {
+                return Err(Diagnostic::error(
+                    "a value-returning joined switch arm is not supported yet (roadmap)",
+                ));
+            };
+            if arm.falls_through
+                || !matches!(statements.as_slice(), [statement] if call_statement(statement))
+            {
+                return Err(Diagnostic::error(
+                    "a joined switch arm must be one non-fallthrough call (roadmap)",
+                ));
+            }
+        }
+        let default_statements = match default {
+            Some(ArmBody::Statements(statements))
+                if matches!(statements.as_slice(), [statement] if call_statement(statement)) =>
+            {
+                Some(statements.as_slice())
+            }
+            None => None,
+            Some(_) => {
+                return Err(Diagnostic::error(
+                    "a joined switch default must be one call (roadmap)",
+                ))
+            }
+        };
+
+        let register = match scrutinee {
+            Expression::Variable(name) => {
+                let location = self.locations.get(name).ok_or_else(|| {
+                    Diagnostic::error("switch scrutinee is not a known variable (roadmap)")
+                })?;
+                if location.class != ValueClass::General {
+                    return Err(Diagnostic::error(
+                        "only an integer switch scrutinee is supported yet (roadmap)",
+                    ));
+                }
+                location.register
+            }
+            Expression::Call { .. } | Expression::CallThrough { .. } => {
+                let result = Eabi::general_result().number;
+                self.evaluate_general(scrutinee, result)?;
+                result
+            }
+            _ => {
+                self.evaluate_general(scrutinee, GENERAL_SCRATCH)?;
+                GENERAL_SCRATCH
+            }
+        };
+
+        let mut sorted: Vec<&SwitchArm> = arms.iter().collect();
+        sorted.sort_by_key(|arm| arm.value);
+        if sorted.is_empty() {
+            return Err(Diagnostic::error(
+                "an empty switch is not supported (roadmap)",
+            ));
+        }
+        for pair in sorted.windows(2) {
+            if pair[0].value == pair[1].value {
+                return Err(Diagnostic::error("duplicate switch case values"));
+            }
+        }
+        if sorted[sorted.len() - 1].value - sorted[0].value + 1 > 6 {
+            return Err(Diagnostic::error(
+                "a wide-span joined switch is not supported yet (roadmap)",
+            ));
+        }
+        if sorted
+            .iter()
+            .any(|arm| arm.value < i16::MIN as i64 || arm.value >= i16::MAX as i64)
+        {
+            return Err(Diagnostic::error(
+                "switch case value out of cmpwi immediate range (roadmap)",
+            ));
+        }
+
+        let values: Vec<i64> = sorted.iter().map(|arm| arm.value).collect();
+        let mut dispatch_patches = Vec::new();
+        self.lower_switch_range(
+            register,
+            &values,
+            0,
+            values.len() - 1,
+            None,
+            None,
+            &mut dispatch_patches,
+        );
+
+        let sorted_index_by_value: std::collections::HashMap<i64, usize> = sorted
+            .iter()
+            .enumerate()
+            .map(|(index, arm)| (arm.value, index))
+            .collect();
+        let mut body_start = vec![0usize; sorted.len()];
+        let mut join_branches = Vec::with_capacity(arms.len());
+        for arm in arms {
+            body_start[sorted_index_by_value[&arm.value]] = self.output.instructions.len();
+            let ArmBody::Statements(statements) = &arm.body else {
+                unreachable!()
+            };
+            self.emit_statement(&statements[0])?;
+            join_branches.push(self.output.instructions.len());
+            self.output
+                .instructions
+                .push(Instruction::Branch { target: 0 });
+        }
+
+        let default_start = self.output.instructions.len();
+        if let Some(statements) = default_statements {
+            self.emit_statement(&statements[0])?;
+        }
+        let continuation = self.output.instructions.len();
+
+        for index in join_branches {
+            let Instruction::Branch { target } = &mut self.output.instructions[index] else {
+                unreachable!()
+            };
+            *target = continuation;
+        }
+        for (index, target) in dispatch_patches {
+            let destination = match target {
+                Target::Body(body) => body_start[body],
+                Target::Default => default_start,
+            };
+            match &mut self.output.instructions[index] {
+                Instruction::BranchConditionalForward { target, .. } => *target = destination,
+                Instruction::Branch { target } => *target = destination,
+                _ => unreachable!("switch patch points at a non-branch instruction"),
+            }
+        }
+        Ok(())
+    }
+
     /// Emit `if (guard) return; switch (...)` for a leaf void function.
     ///
     /// The guard returns on its TRUE edge; the surviving fallthrough enters the

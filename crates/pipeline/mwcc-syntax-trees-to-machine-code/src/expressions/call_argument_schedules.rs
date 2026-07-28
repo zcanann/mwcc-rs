@@ -54,6 +54,52 @@ fn stable_call_binary(
 }
 
 impl Generator {
+    /// Marshal `(large_global_array, string)` with the independent string
+    /// materialization in the array address's dependency slot.
+    ///
+    /// Packed strings need two absolute-address chains, ordered string high,
+    /// array high, string low, array low. A short unpacked string uses one
+    /// SDA materialization between the array's high and low halves.
+    pub(crate) fn try_emit_global_array_string_arguments(
+        &mut self,
+        arguments: &[Expression],
+        name: &str,
+    ) -> Compilation<bool> {
+        let [Expression::Variable(array), Expression::StringLiteral(string)] = arguments else {
+            return Ok(false);
+        };
+        let direct_call = !self.globals.contains_key(name)
+            && !self.locations.contains_key(name)
+            && !self.known_locals.contains(name);
+        let Some(&array_size) = self.global_array_sizes.get(array.as_str()) else {
+            return Ok(false);
+        };
+        if !direct_call
+            || !self.behavior.schedule_latency_slots
+            || (self.behavior.global_addressing == GlobalAddressing::SmallData && array_size <= 8)
+        {
+            return Ok(false);
+        }
+
+        let first = Eabi::FIRST_GENERAL_ARGUMENT;
+        if self.behavior.string_literals_packed {
+            self.output.packed_string_literals = true;
+            let string = self.string_literal_placeholder(string);
+            self.emit_address_high(first + 1, &string);
+            self.emit_address_high(first, array);
+            self.emit_string_address_low(&string, first + 1, first + 1);
+            self.emit_address_low(first, array);
+            return Ok(true);
+        }
+        if self.behavior.global_addressing == GlobalAddressing::SmallData && string.len() + 1 <= 8 {
+            self.emit_address_high(first, array);
+            self.evaluate_general(&arguments[1], first + 1)?;
+            self.emit_address_low(first, array);
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     /// Marshal `(large_global_array, i16, i16)` by filling the array address
     /// dependency slot with the first literal.
     ///

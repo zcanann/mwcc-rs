@@ -2763,6 +2763,9 @@ mod tests {
     #[path = "global_indexed_static_table.rs"]
     mod global_indexed_static_table;
 
+    #[path = "joined_call_switch.rs"]
+    mod joined_call_switch;
+
     #[path = "spilled_pointer_cast.rs"]
     mod spilled_pointer_cast;
 

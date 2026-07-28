@@ -1088,6 +1088,67 @@ fn schedule_shared_epilogue_link_reload(generator: &mut Generator) {
     ) {
         return;
     }
+
+    // A shared continuation that returns a static/global address has a two-op
+    // `lis`/`addi` result chain. MWCC starts that block with the LR reload, then
+    // overlaps the load latency with both address instructions. Incoming case
+    // branches must follow the reload to the moved address-high instruction.
+    if reload >= 2 {
+        let address_high = reload - 2;
+        let address_low = reload - 1;
+        let address_register = match generator.output.instructions[address_high] {
+            Instruction::AddImmediateShifted { d, a: 0, .. } if d != 0 => Some(d),
+            _ => None,
+        };
+        let address_pair = address_register.is_some_and(|register| {
+            matches!(
+                generator.output.instructions[address_low],
+                Instruction::AddImmediate { d, a, .. } if d == register && a == register
+            ) && generator.output.relocations.iter().any(|relocation| {
+                relocation.instruction_index == address_high
+                    && relocation.kind == mwcc_machine_code::RelocationKind::Addr16Ha
+            }) && generator.output.relocations.iter().any(|relocation| {
+                relocation.instruction_index == address_low
+                    && relocation.kind == mwcc_machine_code::RelocationKind::Addr16Lo
+            })
+        });
+        let incoming: Vec<usize> = generator
+            .output
+            .instructions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, instruction)| match instruction {
+                Instruction::Branch { target }
+                | Instruction::BranchConditionalForward { target, .. }
+                    if *target == address_high =>
+                {
+                    Some(index)
+                }
+                _ => None,
+            })
+            .collect();
+        if address_pair && !incoming.is_empty() {
+            generator.output.instructions[address_high..=reload].rotate_right(1);
+            let mut permutation: Vec<usize> =
+                (0..generator.output.instructions.len()).collect();
+            permutation[address_high] = address_high + 1;
+            permutation[address_low] = address_low + 1;
+            permutation[reload] = address_high;
+            remap_instruction_indices(generator, &permutation);
+            for old_branch in incoming {
+                let branch = permutation[old_branch];
+                match &mut generator.output.instructions[branch] {
+                    Instruction::Branch { target }
+                    | Instruction::BranchConditionalForward { target, .. } => {
+                        *target = address_high;
+                    }
+                    _ => unreachable!("recorded branch changed kind during address rotation"),
+                }
+            }
+            return;
+        }
+    }
+
     let relocated_small_data = generator.output.relocations.iter().any(|relocation| {
         relocation.instruction_index == result_load
             && relocation.kind == mwcc_machine_code::RelocationKind::EmbSda21
