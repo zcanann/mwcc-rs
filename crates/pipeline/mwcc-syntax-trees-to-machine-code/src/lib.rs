@@ -14,6 +14,7 @@ mod analysis;
 mod allocation_frame;
 mod arithmetic;
 mod asm;
+mod automatic_rodata;
 mod body;
 mod branch_cleanup;
 mod captures;
@@ -92,6 +93,58 @@ pub fn lower_vtable_adjustor_thunks(
 /// `call_return_fundamentals` retains source identities that the compact type IR
 /// merges, so same-type forwarding remains distinct from a required conversion.
 pub fn lower_function(
+    function: &Function,
+    globals: &[GlobalDeclaration],
+    aggregate_definitions: &HashMap<String, mwcc_syntax_trees::AggregateDefinition>,
+    function_return_aggregate_tags: &HashMap<String, String>,
+    call_return_types: &HashMap<String, mwcc_syntax_trees::Type>,
+    call_parameter_types: &HashMap<String, Vec<mwcc_syntax_trees::Type>>,
+    skipped_inline_names: &std::collections::HashSet<String>,
+    weak_materialized_names: &std::collections::HashSet<String>,
+    prototyped_names: &std::collections::HashSet<String>,
+    variadic_definitions: &std::collections::HashSet<String>,
+    fixed_address_arrays: &HashMap<String, (i64, mwcc_syntax_trees::Type)>,
+    fixed_address_objects: &HashMap<String, i64>,
+    inline_bodies: &InlineBodySet,
+    inline_summaries: &InlineSummaries,
+    inline_expansion_facts: mwcc_syntax_trees::InlineExpansionFacts,
+    source_inline_string_symbols: &HashMap<Vec<u8>, String>,
+    call_return_fundamentals: &HashMap<String, mwcc_syntax_trees::SourceFundamentalType>,
+    config: CompilerConfig,
+) -> Compilation<MachineFunction> {
+    let mut output = lower_function_body(
+        function,
+        globals,
+        aggregate_definitions,
+        function_return_aggregate_tags,
+        call_return_types,
+        call_parameter_types,
+        skipped_inline_names,
+        weak_materialized_names,
+        prototyped_names,
+        variadic_definitions,
+        fixed_address_arrays,
+        fixed_address_objects,
+        inline_bodies,
+        inline_summaries,
+        inline_expansion_facts,
+        source_inline_string_symbols,
+        call_return_fundamentals,
+        config,
+    )?;
+    automatic_rodata::retain_unused_array_images(
+        function,
+        &mut output,
+        Behavior::resolve(&config),
+    );
+    Ok(output)
+}
+
+/// Select and schedule the executable body. Object-only products derived from
+/// optimized-away source declarations are attached by [`lower_function`] after
+/// this returns, so specialized early-return lowerers cannot bypass them.
+#[allow(clippy::too_many_arguments)]
+fn lower_function_body(
     function: &Function,
     globals: &[GlobalDeclaration],
     aggregate_definitions: &HashMap<String, mwcc_syntax_trees::AggregateDefinition>,

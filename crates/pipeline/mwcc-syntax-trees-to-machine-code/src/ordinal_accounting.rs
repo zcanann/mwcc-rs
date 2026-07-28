@@ -47,16 +47,7 @@ fn mainline_initialized_array_labels(function: &Function, output: &MachineFuncti
         .count() as u32;
     if pooled_zero_arrays < 2 {
         0
-    } else if output
-        .data_section_displacements
-        .iter()
-        .any(|displacement| {
-            matches!(
-                displacement.target,
-                mwcc_machine_code::DataSectionDisplacementTarget::AnonymousRodata(_)
-            )
-        })
-    {
+    } else if output.anonymous_rodata.len() >= pooled_zero_arrays as usize {
         // The writer now walks the N concrete image symbols. Only the two
         // internal labels per copy and the shared closing label remain hidden.
         2 * pooled_zero_arrays + 1

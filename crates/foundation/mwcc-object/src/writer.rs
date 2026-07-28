@@ -485,36 +485,6 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     {
         place(object, ".sdata2", &mut sdata2_global_size);
     }
-    let mut rodata_size = 0u32;
-    for object in input
-        .data_objects
-        .iter()
-        .filter(|object| section_of(object) == ".rodata")
-    {
-        place(object, ".rodata", &mut rodata_size);
-    }
-    // Anonymous `.rodata` blobs follow the named const objects, 4-aligned
-    // (measured on strtold: "INFINITY" at 0x2c right after the 42-byte
-    // template, the 32-byte template at 0x38).
-    let mut rodata_blob_offset: Vec<Vec<u32>> = Vec::new();
-    for function in &input.functions {
-        let mut offsets = Vec::new();
-        for (bytes, _) in &function.anonymous_rodata {
-            rodata_size = rodata_size.div_ceil(4) * 4;
-            offsets.push(rodata_size);
-            rodata_size += bytes.len() as u32;
-        }
-        rodata_blob_offset.push(offsets);
-    }
-    // Large initialized `.data` is laid out in CREATION order. File-scope
-    // objects are therefore interleaved with compiler-created function data at
-    // their source position: declarations before a function, then that
-    // function's static locals/strings/jump tables, then declarations before
-    // the next function. This matters even when symbols are otherwise
-    // addressable by name: an inlined helper can share the translation-unit
-    // `...data.0` anchor and use the target object's section displacement
-    // (Pikmin nlibmath places two earlier function strings at 0 and 0x10, then
-    // AtanTable at 0x1c).
     let string_owner: std::collections::HashMap<&str, usize> = input
         .functions
         .iter()
@@ -526,6 +496,78 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 .map(move |name| (name.as_str(), function_index))
         })
         .collect();
+    // Read-only full data follows the same compiler-creation timeline as
+    // writable `.data`: declarations before a function, then function-created
+    // local images and strings, then declarations before the next function.
+    // Grouping every named object ahead of every anonymous image loses source
+    // position (BFBB places a dead function's local arrays first, then later
+    // file-scope const objects, then the next function's local images).
+    let mut rodata_size = 0u32;
+    let mut placed_rodata: std::collections::HashSet<&'a str> =
+        std::collections::HashSet::new();
+    let mut rodata_blob_offset: Vec<Vec<u32>> = input
+        .functions
+        .iter()
+        .map(|function| vec![0; function.anonymous_rodata.len()])
+        .collect();
+    for source_position in 0..=input.functions.len() {
+        for object in input.data_objects.iter().filter(|object| {
+            object.functions_before.min(input.functions.len()) == source_position
+                && section_of(object) == ".rodata"
+                && !string_owner.contains_key(object.name)
+                && object.static_local_owner.is_none()
+        }) {
+            if placed_rodata.insert(object.name) {
+                place(object, ".rodata", &mut rodata_size);
+            }
+        }
+        if source_position == input.functions.len() {
+            continue;
+        }
+        let function = &input.functions[source_position];
+        for object in input.data_objects.iter().filter(|object| {
+            object.static_local_owner == Some(source_position)
+                && section_of(object) == ".rodata"
+        }) {
+            if placed_rodata.insert(object.name) {
+                place(object, ".rodata", &mut rodata_size);
+            }
+        }
+        for (blob_index, (bytes, _)) in function.anonymous_rodata.iter().enumerate() {
+            rodata_size = rodata_size.div_ceil(4) * 4;
+            rodata_blob_offset[source_position][blob_index] = rodata_size;
+            rodata_size += bytes.len() as u32;
+        }
+        for name in &function.string_names {
+            if let Some(object) = input.data_objects.iter().find(|object| {
+                object.name == name.as_str() && section_of(object) == ".rodata"
+            }) {
+                if placed_rodata.insert(object.name) {
+                    place(object, ".rodata", &mut rodata_size);
+                }
+            }
+        }
+    }
+    // Preserve synthetic/capture objects that intentionally carry no reachable
+    // source-position owner.
+    for object in input
+        .data_objects
+        .iter()
+        .filter(|object| section_of(object) == ".rodata")
+    {
+        if placed_rodata.insert(object.name) {
+            place(object, ".rodata", &mut rodata_size);
+        }
+    }
+    // Large initialized `.data` is laid out in CREATION order. File-scope
+    // objects are therefore interleaved with compiler-created function data at
+    // their source position: declarations before a function, then that
+    // function's static locals/strings/jump tables, then declarations before
+    // the next function. This matters even when symbols are otherwise
+    // addressable by name: an inlined helper can share the translation-unit
+    // `...data.0` anchor and use the target object's section displacement
+    // (Pikmin nlibmath places two earlier function strings at 0 and 0x10, then
+    // AtanTable at 0x1c).
     let mut file_data_size = 0u32;
     let mut jump_table_offset: Vec<Vec<Option<u32>>> = input
         .functions
