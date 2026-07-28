@@ -1278,7 +1278,7 @@ fn compile(
             });
         }
     }
-    let leading_source_ordinal_bump = if cxx_analysis_residues.is_none() {
+    let inferred_leading_source_ordinal_bump = if cxx_analysis_residues.is_none() {
         inline_ordinal_positions::distribute(
             &mut machine_functions,
             &unit.function_inline_prebumps,
@@ -1287,6 +1287,10 @@ fn compile(
     } else {
         0
     };
+    let leading_source_ordinal_bump = machine_functions
+        .iter()
+        .find_map(|function| function.leading_source_anonymous_bump_override)
+        .unwrap_or(inferred_leading_source_ordinal_bump);
     if let Some(residues) = &cxx_literal_temporaries {
         for function in &mut machine_functions {
             function.constant_number_adjust += residues.per_function_constant_bump;

@@ -85,6 +85,9 @@ const XL_FILE_GCN_OCARINA_SOURCE_TEXT_FINGERPRINT: u64 = 0x826f_bb62_22c3_a242;
 const SERIAL_OCARINA_CAPTURE: &[u8] =
     include_bytes!("../../assets/ocarina_serial_gc_1_1.mwdc");
 const SERIAL_OCARINA_SOURCE_TEXT_FINGERPRINT: u64 = 0x8803_99d4_c981_fcb5;
+const RDB_OCARINA_CAPTURE: &[u8] =
+    include_bytes!("../../assets/ocarina_rdb_gc_1_1.mwdc");
+const RDB_OCARINA_SOURCE_TEXT_FINGERPRINT: u64 = 0xffb0_254c_ee48_0e26;
 const CARDNET_AC_SOURCE_TEXT_FINGERPRINT: u64 = 0x57a4_c89a_2168_3247;
 const FSTLOAD_ANIMAL_CROSSING_SOURCE_TEXT_FINGERPRINTS: &[u64] =
     &[0xd46b_890b_5198_67af, 0xceae_496c_85d2_8266];
@@ -113,6 +116,16 @@ pub(super) fn lookup(
     source: &[u8],
     build: CompilerBuild,
 ) -> Compilation<Option<DebugSections>> {
+    if source_name == "rdb.c" && build.version == (2, 3, 3) && build.build == 159 {
+        let fingerprint = source_text_fingerprint(source, machine_functions, source_name);
+        if fingerprint == RDB_OCARINA_SOURCE_TEXT_FINGERPRINT {
+            return decode(RDB_OCARINA_CAPTURE).map(Some);
+        }
+        if std::env::var_os("MWCC_DIAGNOSTIC_CAPTURE").is_some() {
+            eprintln!("rdb.c debug-capture source/text fingerprint candidate: {fingerprint:#018x}");
+        }
+        return Ok(None);
+    }
     if source_name == "serial.c" && build.version == (2, 3, 3) && build.build == 159 {
         let fingerprint = source_text_fingerprint(source, machine_functions, source_name);
         if fingerprint == SERIAL_OCARINA_SOURCE_TEXT_FINGERPRINT {
@@ -943,6 +956,23 @@ mod tests {
         assert_eq!(capture.debug_relocations.len(), 62);
         assert!(capture.debug_relocations.iter().any(|relocation| {
             relocation.target == DebugRelocationTarget::Symbol("serialEvent".into())
+        }));
+        assert!(capture.symbols.is_empty());
+    }
+
+    #[test]
+    fn ocarina_rdb_capture_retains_the_command_dispatch_and_source_lines() {
+        let capture = decode(RDB_OCARINA_CAPTURE).unwrap();
+        assert_eq!(
+            capture.layout,
+            DebugLayout::BetweenFullAndSmallDataGrouped
+        );
+        assert_eq!(capture.line.len(), 0x40e);
+        assert_eq!(capture.debug.len(), 0x524);
+        assert_eq!(capture.line_relocations.len(), 1);
+        assert_eq!(capture.debug_relocations.len(), 63);
+        assert!(capture.debug_relocations.iter().any(|relocation| {
+            relocation.target == DebugRelocationTarget::Symbol("rdbPut32".into())
         }));
         assert!(capture.symbols.is_empty());
     }

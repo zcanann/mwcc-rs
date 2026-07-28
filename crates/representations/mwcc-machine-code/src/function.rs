@@ -203,6 +203,11 @@ pub struct MachineFunction {
     /// reversed. When a later compiled body becomes the physical head, this
     /// amount is transferred to that head without changing this body's pool.
     pub deferred_source_prefix_bump: u32,
+    /// Measured override for anonymous ordinals consumed before the first emitted
+    /// source object in this translation unit. Exact whole-TU captures use this
+    /// when a dropped inline's compiler bookkeeping is only partially observable;
+    /// positional per-function distribution still runs normally.
+    pub leading_source_anonymous_bump_override: Option<u32>,
     /// Extra `@N` numbers consumed AFTER this function's pooled constants
     /// and before its extab pair (the nested punned-guard's inner block).
     pub post_constant_label_bump: u32,
@@ -309,6 +314,7 @@ impl MachineFunction {
             anonymous_label_bump: 0,
             fragmented_debug_anonymous_bump: 0,
             deferred_source_prefix_bump: 0,
+            leading_source_anonymous_bump_override: None,
             post_constant_label_bump: 0,
             post_function_anonymous_bump: None,
             pre_scheduled: false,

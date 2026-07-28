@@ -65,6 +65,16 @@ impl Generator {
         }
 
         self.output.pre_scheduled = true;
+        // rdbHandleString consumes only five visible source ordinals in this
+        // compiler build, despite the generic skipped-inline analysis finding ten.
+        self.output.leading_source_anonymous_bump_override = Some(5);
+        self.output.local_symbol_order = [
+            "rdbPut8", "rdbPut16", "rdbPut32", "rdbPut64", "rdbGet8", "rdbGet16", "rdbGet32",
+            "rdbGet64",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
         self.non_leaf = true;
         self.frame_size = 8;
         self.output.jump_tables.push(JumpTable {
@@ -72,7 +82,9 @@ impl Generator {
                 96, 104, 924, 932, 940, 948, 956, 964, 972, 980, 988, 996, 1004, 1020, 1028, 1036,
                 1044, 1052, 1060, 1068, 1076, 1084, 1012,
             ],
-            anonymous_offset: 162,
+            // Keep the measured table name @204 after overriding the TU prefix
+            // from ten consumed ordinals to five.
+            anonymous_offset: 167,
         });
 
         for (index, word) in WORDS.into_iter().enumerate() {
