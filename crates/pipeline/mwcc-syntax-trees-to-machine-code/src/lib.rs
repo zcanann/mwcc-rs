@@ -805,6 +805,7 @@ fn lower_function_body(
     // scheduling first means physical-register reuse cannot create false
     // dependencies that block a hoist, and allocation then colors the scheduled
     // order — reproducing mwcc's interleaving of the two phases.
+    generator.schedule_structured_array_pool_following_format_call();
     generator.schedule_leading_int_to_float_argument();
     schedule_instructions(&mut generator);
     let allocated_float_saves = allocate_registers(&mut generator).map_err(|mut diagnostic| {

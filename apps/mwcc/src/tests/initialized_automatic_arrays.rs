@@ -164,6 +164,8 @@ fn issues_compact_pooled_array_entry_packets_in_mwcc_order() {
     flags.debug_info = false;
     flags.cpp_exceptions = false;
     flags.emit_mwcats = false;
+    flags.string_literals_packed = true;
+    flags.string_literals_read_only = true;
     let object = compile(
         source,
         "compact-pooled-array-entry.cpp",
@@ -186,4 +188,16 @@ fn issues_compact_pooled_array_entry_packets_in_mwcc_order() {
     assert!(object
         .windows(entry_packets.len())
         .any(|bytes| bytes == entry_packets));
+
+    // The following global-table address overlaps the date separator store,
+    // then releases r3/r5 for the formatted call's frame arguments.
+    let following_call = [
+        0x3c, 0x60, 0x00, 0x00, 0x38, 0xa0, 0x00, 0x2f, 0x38, 0x03, 0x00, 0x00, 0x3c, 0x80, 0x00,
+        0x00, 0x7c, 0x60, 0xaa, 0x14, 0x98, 0xa1, 0x00, 0x2a, 0x88, 0xc3, 0x00, 0x48, 0x38, 0x84,
+        0x00, 0x00, 0x88, 0xe3, 0x00, 0x49, 0x38, 0x61, 0x00, 0x48, 0x38, 0xa1, 0x00, 0x28, 0x4c,
+        0xc6, 0x31, 0x82, 0x48, 0x00, 0x00, 0x01,
+    ];
+    assert!(object
+        .windows(following_call.len())
+        .any(|bytes| bytes == following_call));
 }
