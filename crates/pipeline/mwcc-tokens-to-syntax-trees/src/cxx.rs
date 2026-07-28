@@ -4013,8 +4013,14 @@ impl Parser {
                 && *self.peek_at(2) == Token::Semicolon
             {
                 self.advance();
-                self.advance();
-                self.advance();
+                let nested_name = self.parse_identifier()?;
+                self.expect(Token::Semicolon)?;
+                let nested_qualified = format!("{qualified_name}::{nested_name}");
+                self.struct_typedefs
+                    .insert(nested_name.clone(), nested_qualified.clone());
+                self.struct_typedefs
+                    .insert(format!("{name}::{nested_name}"), nested_qualified.clone());
+                self.structs.entry(nested_qualified).or_default();
                 continue;
             }
             let nested_typedef_definition = matches!(self.peek(), Token::Identifier(word) if word == "typedef")

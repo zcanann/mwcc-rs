@@ -4794,6 +4794,40 @@ blr\n\
     }
 
     #[test]
+    fn nested_forwards_do_not_hide_later_static_member_declarations() {
+        let source = r#"
+            struct System {
+                struct callback;
+                struct record {
+                    const callback* cb;
+                };
+                struct callback {
+                    void (*invoke)(const record&);
+                };
+                static void register_tags(const callback* tag, unsigned count);
+            };
+            void caller(System::callback* tag) {
+                System::register_tags(tag, 1);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Expression(
+                mwcc_syntax_trees::Expression::Call { name, arguments }
+            )] if name.contains("register_tags") && arguments.len() == 2
+        ));
+    }
+
+    #[test]
     fn resolves_an_unqualified_static_call_inside_a_static_member_definition() {
         let source = r#"
             struct Capture {
