@@ -12,6 +12,7 @@ mod function_order;
 mod global_initializers;
 mod inline_fallbacks;
 mod inline_ordinal_positions;
+mod packed_strings;
 mod reference_analysis;
 
 use mwcc_core::{Compilation, Diagnostic};
@@ -1431,6 +1432,13 @@ fn compile(
     // File-scope strings declared BETWEEN functions: (functions_before,
     // placeholder) — numbered in the resolver walk at their source position.
     let mut pending_file_strings: Vec<(usize, String)> = Vec::new();
+    // `-str pool` coalesces every literal into one TU-wide string base. Global
+    // initializers are lowered before functions here, but MWCC lays function
+    // literals into that base first, so retain global literals as placeholders
+    // until the function walk has established the leading bytes.
+    let mut pending_packed_strings: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut pending_packed_string_names: std::collections::HashMap<Vec<u8>, String> =
+        std::collections::HashMap::new();
     // Strings pooled from STRUCT-member relocations collect here per global (the
     // enclosing push borrows `defined_globals`), then append after it.
     let mut pooled_string_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
@@ -1588,7 +1596,7 @@ fn compile(
             let mut relocations = Vec::new();
             for (index, element) in elements.iter().enumerate() {
                 let offset = index as u32 * 4;
-                let target = match element {
+                let (target, addend) = match element {
                     PointerElement::Null => continue,
                     // A scalar field is literal bytes, not a relocation.
                     PointerElement::Scalar(value) => {
@@ -1596,12 +1604,27 @@ fn compile(
                             .copy_from_slice(&(*value as u32).to_be_bytes());
                         continue;
                     }
-                    PointerElement::Symbol(name) => name.clone(),
+                    PointerElement::Symbol(name) => (name.clone(), 0),
                     PointerElement::Str(string_bytes) => {
-                        string_pool
-                            .get(string_bytes.as_slice())
-                            .cloned()
-                            .unwrap_or_else(|| {
+                        if config.flags.string_literals_packed {
+                            let name = pending_packed_string_names
+                                .get(string_bytes.as_slice())
+                                .cloned()
+                                .unwrap_or_else(|| {
+                                    let name =
+                                        format!("@@packed{}", pending_packed_strings.len());
+                                    pending_packed_string_names
+                                        .insert(string_bytes.clone(), name.clone());
+                                    pending_packed_strings
+                                        .push((name.clone(), string_bytes.clone()));
+                                    name
+                                });
+                            (name, 0)
+                        } else {
+                            let name = string_pool
+                                .get(string_bytes.as_slice())
+                                .cloned()
+                                .unwrap_or_else(|| {
                                 // Declared BETWEEN functions: the string numbers
                                 // IN-STREAM at its source position (assigned in the
                                 // resolver walk below via a placeholder). Up-front
@@ -1648,13 +1671,15 @@ fn compile(
                                     relocations: Vec::new(),
                                 });
                                 name
-                            })
+                            });
+                            (name, 0)
+                        }
                     }
                 };
                 relocations.push(mwcc_machine_code_to_object::DataRelocation {
                     offset,
                     target,
-                    addend: 0,
+                    addend,
                 });
             }
             // Relocated or non-zero bytes are initialized data (`.sdata`/`.data`); an
@@ -1885,13 +1910,28 @@ fn compile(
                     // target from the parser: pool it like an address-initializer
                     // string (an anonymous `@N` `.sdata` object, first-appearance
                     // numbering, deduplicated under `-str reuse` — locale's lconv).
-                    let target = match target.strip_prefix('\u{1}') {
+                    let (target, packed_addend) = match target.strip_prefix('\u{1}') {
                         Some(literal) => {
                             let string_bytes: Vec<u8> = literal.as_bytes().to_vec();
-                            string_pool
-                                .get(string_bytes.as_slice())
-                                .cloned()
-                                .unwrap_or_else(|| {
+                            if config.flags.string_literals_packed {
+                                let name = pending_packed_string_names
+                                    .get(string_bytes.as_slice())
+                                    .cloned()
+                                    .unwrap_or_else(|| {
+                                        let name =
+                                            format!("@@packed{}", pending_packed_strings.len());
+                                        pending_packed_string_names
+                                            .insert(string_bytes.clone(), name.clone());
+                                        pending_packed_strings
+                                            .push((name.clone(), string_bytes.clone()));
+                                        name
+                                    });
+                                (name, 0)
+                            } else {
+                                let name = string_pool
+                                    .get(string_bytes.as_slice())
+                                    .cloned()
+                                    .unwrap_or_else(|| {
                                     string_counter += 1;
                                     let ordinal =
                                         leading_source_ordinal_bump + string_counter;
@@ -1928,14 +1968,16 @@ fn compile(
                                         },
                                     );
                                     name
-                                })
+                                });
+                                (name, 0)
+                            }
                         }
-                        None => target.clone(),
+                        None => (target.clone(), *addend),
                     };
                     mwcc_machine_code_to_object::DataRelocation {
                         offset: *offset,
                         target,
-                        addend: *addend,
+                        addend: packed_addend,
                     }
                 })
                 .collect(),
@@ -1972,7 +2014,8 @@ fn compile(
         std::collections::HashSet::new();
     let mut function_string_objects: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
     let mut emitted_named_string_objects = std::collections::HashSet::new();
-    let mut packed_string_base_counter = 0u32;
+    let mut packed_strings = packed_strings::PackedStrings::default();
+    let mut packed_string_base_claimed = false;
     let mut file_string_renames: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     for (function_index, machine_function) in machine_functions.iter_mut().enumerate() {
@@ -2000,42 +2043,21 @@ fn compile(
         // pool entry) are recorded by name so the writer emits their symbols at the FRONT of this
         // function's `@N` block, interleaved per-function with its constants/unwind entries.
         let mut new_string_names: Vec<String> = Vec::new();
+        let mut resolved_addends = Vec::new();
         let mut resolved: Vec<String> = if machine_function.packed_string_literals {
-            let name = format!("@stringBase{packed_string_base_counter}");
-            packed_string_base_counter += 1;
-            let mut object_bytes = Vec::new();
+            let name = "@stringBase0".to_owned();
             let mut names = Vec::with_capacity(machine_function.string_literals.len());
             for bytes in &machine_function.string_literals {
                 names.push(name.clone());
-                object_bytes.extend_from_slice(bytes);
-                object_bytes.push(0);
+                resolved_addends.push(packed_strings.intern(bytes) as i32);
             }
-            new_string_names.push(name.clone());
-            function_string_objects.push(mwcc_machine_code_to_object::DefinedGlobal {
-                section: None,
-                anonymous_adjust: 0,
-                static_local_owner: None,
-                is_weak: false,
-                force_active: false,
-                non_static_functions_before: 0,
-                functions_before: 0,
-                name,
-                size: object_bytes.len() as u32,
-                alignment: 4,
-                comment_alignment: 4,
-                initial_bytes: Some(object_bytes),
-                is_const: config.flags.string_literals_read_only,
-                // A packed read-only string base is a `.rodata` blob even when
-                // its payload fits the ordinary sdata2 size threshold.
-                force_full_data_section: config.flags.string_literals_read_only,
-                is_static: true,
-                is_explicit_zero: false,
-                preassigned_anonymous_ordinal: None,
-                preassigned_ordinal_advances_counter: false,
-                relocations: Vec::new(),
-            });
+            if !packed_string_base_claimed {
+                new_string_names.push(name);
+                packed_string_base_claimed = true;
+            }
             names
         } else {
+            resolved_addends.resize(machine_function.string_literals.len(), 0);
             machine_function
                 .string_literals
                 .iter()
@@ -2236,8 +2258,16 @@ fn compile(
                         .strip_prefix("@@str")
                         .and_then(|rest| rest.parse::<usize>().ok())
                     {
-                        relocation.target =
-                            mwcc_machine_code::RelocationTarget::External(resolved[index].clone());
+                        relocation.target = if resolved_addends[index] == 0 {
+                            mwcc_machine_code::RelocationTarget::External(
+                                resolved[index].clone(),
+                            )
+                        } else {
+                            mwcc_machine_code::RelocationTarget::ExternalWithAddend(
+                                resolved[index].clone(),
+                                resolved_addends[index],
+                            )
+                        };
                     }
                 }
                 mwcc_machine_code::RelocationTarget::ExternalWithAddend(name, addend) => {
@@ -2247,7 +2277,7 @@ fn compile(
                     {
                         relocation.target = mwcc_machine_code::RelocationTarget::ExternalWithAddend(
                             resolved[index].clone(),
-                            *addend,
+                            *addend + resolved_addends[index],
                         );
                     }
                 }
@@ -2265,9 +2295,49 @@ fn compile(
                     .and_then(|rest| rest.parse::<usize>().ok())
                 {
                     relocation.target = resolved[index].clone();
+                    relocation.addend += resolved_addends[index];
                 }
             }
         }
+    }
+    let mut packed_string_renames: std::collections::HashMap<String, i32> =
+        std::collections::HashMap::new();
+    for (placeholder, bytes) in pending_packed_strings {
+        packed_string_renames.insert(placeholder, packed_strings.intern(&bytes) as i32);
+    }
+    if !packed_string_renames.is_empty() {
+        for global in &mut defined_globals {
+            for relocation in &mut global.relocations {
+                if let Some(offset) = packed_string_renames.get(&relocation.target) {
+                    relocation.target = "@stringBase0".to_owned();
+                    relocation.addend += offset;
+                }
+            }
+        }
+    }
+    if !packed_strings.is_empty() {
+        let object_bytes = packed_strings.into_bytes();
+        function_string_objects.push(mwcc_machine_code_to_object::DefinedGlobal {
+            section: None,
+            anonymous_adjust: 0,
+            static_local_owner: None,
+            is_weak: false,
+            force_active: false,
+            non_static_functions_before: 0,
+            functions_before: 0,
+            name: "@stringBase0".to_owned(),
+            size: object_bytes.len() as u32,
+            alignment: 4,
+            comment_alignment: 4,
+            initial_bytes: Some(object_bytes),
+            is_const: config.flags.string_literals_read_only,
+            force_full_data_section: config.flags.string_literals_read_only,
+            is_static: true,
+            is_explicit_zero: false,
+            preassigned_anonymous_ordinal: None,
+            preassigned_ordinal_advances_counter: false,
+            relocations: Vec::new(),
+        });
     }
     if !file_string_renames.is_empty() {
         for global in &mut defined_globals {
@@ -2756,6 +2826,9 @@ mod tests {
 
     #[path = "static_local_string_table.rs"]
     mod static_local_string_table;
+
+    #[path = "packed_string_pool.rs"]
+    mod packed_string_pool;
 
     #[path = "duplicate_static_local_names.rs"]
     mod duplicate_static_local_names;
