@@ -4,6 +4,97 @@
 use super::*;
 
 impl Generator {
+    /// Marshal `(global_array, packed_string, zero_arg_call + i16)` while
+    /// preserving the nested result until the final argument is formed.
+    ///
+    /// MWCC evaluates the nested call first, starts both reloadable address
+    /// chains, then saves the result in r6 before constructing r3 and r5:
+    ///
+    /// ```text
+    /// bl nested
+    /// lis r4,string@ha
+    /// lis r5,array@ha
+    /// mr r6,r3
+    /// addi r4,r4,string@l
+    /// addi r3,r5,array@l
+    /// addi r5,r6,offset
+    /// ```
+    pub(crate) fn try_emit_global_array_string_call_offset_arguments(
+        &mut self,
+        arguments: &[Expression],
+        name: &str,
+    ) -> Compilation<bool> {
+        let [
+            Expression::Variable(array),
+            Expression::StringLiteral(string),
+            Expression::Binary {
+                operator: BinaryOperator::Add,
+                left,
+                right,
+            },
+        ] = arguments
+        else {
+            return Ok(false);
+        };
+        let (nested, offset) = match (left.as_ref(), right.as_ref()) {
+            (nested @ Expression::Call { .. }, Expression::IntegerLiteral(offset))
+            | (Expression::IntegerLiteral(offset), nested @ Expression::Call { .. }) => {
+                (nested, *offset)
+            }
+            _ => return Ok(false),
+        };
+        let Expression::Call {
+            name: nested_name,
+            arguments: nested_arguments,
+        } = nested
+        else {
+            return Ok(false);
+        };
+        let direct = |callee: &str| {
+            !self.globals.contains_key(callee)
+                && !self.locations.contains_key(callee)
+                && !self.known_locals.contains(callee)
+        };
+        let Some(&array_size) = self.global_array_sizes.get(array.as_str()) else {
+            return Ok(false);
+        };
+        let Ok(offset) = i16::try_from(offset) else {
+            return Ok(false);
+        };
+        if !direct(name)
+            || !direct(nested_name)
+            || !nested_arguments.is_empty()
+            || (self.behavior.global_addressing == GlobalAddressing::SmallData && array_size <= 8)
+            || !self.behavior.string_literals_packed
+            || !self.behavior.schedule_latency_slots
+            || self.is_float_value(nested)
+        {
+            return Ok(false);
+        }
+
+        let first = Eabi::FIRST_GENERAL_ARGUMENT;
+        self.emit_call(nested_name, nested_arguments, None, false)?;
+
+        self.output.packed_string_literals = true;
+        let string = self.string_literal_placeholder(string);
+        self.emit_address_high(first + 1, &string);
+        self.emit_address_high(first + 2, array);
+        self.emit_integer_materialization_copy(first + 3, first);
+        self.emit_string_address_low(&string, first + 1, first + 1);
+        self.record_relocation(RelocationKind::Addr16Lo, array);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: first,
+            a: first + 2,
+            immediate: 0,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: first + 2,
+            a: first + 3,
+            immediate: offset,
+        });
+        Ok(true)
+    }
+
     /// Marshal `(global_struct.pointer.word, i16)` with the literal in the
     /// global address's dependency slot.
     ///

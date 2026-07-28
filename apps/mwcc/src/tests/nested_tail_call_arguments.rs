@@ -51,6 +51,61 @@ fn schedules_a_nested_tail_result_between_reloadable_addresses() {
 }
 
 #[test]
+fn schedules_a_nested_result_offset_after_reloadable_addresses() {
+    let source = br#"
+        int select_card(void);
+        int format(char*, const char*, ...);
+
+        char* seed_format(void) {
+            static char buffer[12];
+            format(buffer, "%d", 0);
+            return buffer;
+        }
+
+        char* render_card(void) {
+            static char buffer[12];
+            format(buffer, "%c", 65 + select_card());
+            return buffer;
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.cpp_exceptions = false;
+    flags.emit_mwcats = false;
+    flags.string_literals_read_only = true;
+    flags.string_literals_packed = true;
+    let object = compile(
+        source,
+        "nested-result-offset.c",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_2_0P1,
+            flags,
+        },
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("the nested result offset schedule should compile");
+
+    // The earlier "%d" makes "%c" an interior packed-string address at +3.
+    // Preserve the nested result in r6, complete both reloadable addresses,
+    // form the third argument, and materialize that pool offset last.
+    let schedule = [
+        0x3c, 0x80, 0x00, 0x00, // lis r4,string@ha
+        0x3c, 0xa0, 0x00, 0x00, // lis r5,buffer@ha
+        0x7c, 0x66, 0x1b, 0x78, // mr r6,r3
+        0x38, 0x84, 0x00, 0x00, // addi r4,r4,string@l
+        0x38, 0x65, 0x00, 0x00, // addi r3,r5,buffer@l
+        0x38, 0xa6, 0x00, 0x41, // addi r5,r6,65
+        0x38, 0x84, 0x00, 0x03, // addi r4,r4,3
+        0x4c, 0xc6, 0x31, 0x82, // crclr 6
+    ];
+    assert!(object
+        .windows(schedule.len())
+        .any(|bytes| bytes == schedule));
+}
+
+#[test]
 fn compiles_a_frame_buffer_nested_scene_tag_call_exactly() {
     let source = br#"
         struct Scene {

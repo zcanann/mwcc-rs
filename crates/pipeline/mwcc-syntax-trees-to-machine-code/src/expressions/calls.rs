@@ -415,6 +415,9 @@ impl Generator {
         if self.try_emit_reloadable_first_nested_second_arguments(arguments, name)? {
             return Ok(());
         }
+        if self.try_emit_global_array_string_call_offset_arguments(arguments, name)? {
+            return Ok(());
+        }
         if self.try_emit_zero_arg_nested_general_argument(arguments, name)? {
             return Ok(());
         }

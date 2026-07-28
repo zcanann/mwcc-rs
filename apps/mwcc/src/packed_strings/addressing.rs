@@ -103,7 +103,7 @@ fn schedule_zero_offset_base_lows(function: &mut MachineFunction, base: &str) {
             _ => continue,
         };
         while position + 1 < function.instructions.len()
-            && ready_integer_argument_setup(&function.instructions[position + 1], packed_base)
+            && ready_zero_offset_argument_setup(&function.instructions[position + 1], packed_base)
             && !is_control_entry(function, position)
             && !is_control_entry(function, position + 1)
         {
@@ -154,6 +154,14 @@ fn ready_integer_argument_setup(instruction: &Instruction, packed_base: u8) -> b
         Instruction::Or { a, s, b } if s == b => *a != packed_base && *s != packed_base,
         _ => false,
     }
+}
+
+fn ready_zero_offset_argument_setup(instruction: &Instruction, packed_base: u8) -> bool {
+    !matches!(
+        instruction,
+        Instruction::AddImmediate { d, a, .. }
+            if *d == packed_base + 1 && *a >= 6
+    ) && ready_integer_argument_setup(instruction, packed_base)
 }
 
 fn insert_instruction(function: &mut MachineFunction, position: usize, instruction: Instruction) {
@@ -401,5 +409,73 @@ mod tests {
             }
         ));
         assert_eq!(function.relocations[1].instruction_index, 3);
+    }
+
+    #[test]
+    fn keeps_a_zero_offset_base_low_before_a_dependent_result_offset() {
+        let mut function = MachineFunction::new("probe");
+        function.instructions = vec![
+            Instruction::AddImmediateShifted {
+                d: 4,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 4,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 6,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 5,
+                a: 6,
+                immediate: 1,
+            },
+            Instruction::BranchToLinkRegister,
+        ];
+        function.relocations = vec![
+            Relocation {
+                instruction_index: 0,
+                kind: RelocationKind::Addr16Ha,
+                target: RelocationTarget::External("@stringBase0".to_owned()),
+            },
+            Relocation {
+                instruction_index: 1,
+                kind: RelocationKind::Addr16Lo,
+                target: RelocationTarget::External("@stringBase0".to_owned()),
+            },
+        ];
+
+        materialize_function_offsets(&mut function, "@stringBase0");
+
+        assert!(matches!(
+            function.instructions[1],
+            Instruction::AddImmediate {
+                d: 3,
+                a: 6,
+                immediate: 0
+            }
+        ));
+        assert!(matches!(
+            function.instructions[2],
+            Instruction::AddImmediate {
+                d: 4,
+                a: 4,
+                immediate: 0
+            }
+        ));
+        assert!(matches!(
+            function.instructions[3],
+            Instruction::AddImmediate {
+                d: 5,
+                a: 6,
+                immediate: 1
+            }
+        ));
+        assert_eq!(function.relocations[1].instruction_index, 2);
     }
 }
