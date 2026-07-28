@@ -359,6 +359,7 @@ fn lower_function_body(
         .collect();
     let mut static_local_data: Vec<mwcc_machine_code::StaticLocal> = Vec::new();
     let mut static_local_strings: Vec<Vec<u8>> = Vec::new();
+    let mut static_aggregate_strings: Vec<Vec<u8>> = Vec::new();
     for local in &static_locals {
         if globals.iter().any(|global| global.name == local.name) {
             return Err(Diagnostic::error(
@@ -412,14 +413,26 @@ fn lower_function_body(
                 let target = match &relocation.target {
                     LocalDataRelocationTarget::Symbol(target) => target.clone(),
                     LocalDataRelocationTarget::StringLiteral(bytes) => {
-                        let index = static_local_strings
+                        let source_positioned_aggregate = config.flags.string_literals_packed
+                            && local.array_length.is_none()
+                            && matches!(local.declared_type, mwcc_syntax_trees::Type::Struct { .. });
+                        let strings = if source_positioned_aggregate {
+                            &mut static_aggregate_strings
+                        } else {
+                            &mut static_local_strings
+                        };
+                        let index = strings
                             .iter()
                             .position(|existing| existing == bytes)
                             .unwrap_or_else(|| {
-                                static_local_strings.push(bytes.clone());
-                                static_local_strings.len() - 1
+                                strings.push(bytes.clone());
+                                strings.len() - 1
                             });
-                        format!("@@str{index}")
+                        if source_positioned_aggregate {
+                            format!("@@staticstr{index}")
+                        } else {
+                            format!("@@str{index}")
+                        }
                     }
                 };
                 (relocation.offset, target, relocation.addend)
@@ -680,6 +693,7 @@ fn lower_function_body(
     // Static-local pointer tables are declared before executable statements,
     // so their literal targets lead the function's ordinary string pool.
     generator.output.string_literals = static_local_strings;
+    generator.output.static_local_string_literals = static_aggregate_strings;
     generator.assign_parameters(function)?;
     generator.evaluate_body(function).map_err(|mut diagnostic| {
         let context = format!("function '{}'", function.name);

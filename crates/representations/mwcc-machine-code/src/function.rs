@@ -126,6 +126,10 @@ pub struct MachineFunction {
     /// inline definitions. The key is an index into `string_literals`. Ordinary
     /// source literals remain absent and continue through the anonymous `@N` pool.
     pub string_literal_symbols: std::collections::HashMap<usize, String>,
+    /// Packed-mode strings referenced only by static-local data initializers.
+    /// These participate in the source-positioned data-initializer timeline,
+    /// rather than the earlier executable-body string walk.
+    pub static_local_string_literals: Vec<Vec<u8>>,
     /// Pack this function's literals into one NUL-separated `@stringBaseN`
     /// object. Later absolute-addressing compilers use one base relocation plus
     /// interior offsets instead of one anonymous object per literal.
@@ -301,6 +305,7 @@ impl MachineFunction {
             constants: Vec::new(),
             string_literals: Vec::new(),
             string_literal_symbols: std::collections::HashMap::new(),
+            static_local_string_literals: Vec::new(),
             packed_string_literals: false,
             new_string_count: 0,
             string_number_after_constants: None,

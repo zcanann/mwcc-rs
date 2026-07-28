@@ -1112,6 +1112,7 @@ fn compile(
     let read_only_small_data =
         config.flags.read_only_global_addressing == mwcc_versions::GlobalAddressing::SmallData;
     let mut static_local_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
+    let mut pending_packed_strings = packed_strings::PendingInitializerStrings::default();
     let cxx_inline_facts = unit.cxx_inline_ordinal_facts;
     let cxx_reference_temporary_analysis =
         cxx_inline_reference_temporaries::analyze(&unit);
@@ -1255,6 +1256,27 @@ fn compile(
                 Some(&prebump) => prebump as i64 - total_inline_bump,
                 None => 0,
             } + function.static_local_adjust;
+            let relocations = local
+                .relocations
+                .iter()
+                .map(|(offset, target, addend)| {
+                    let target = target
+                        .strip_prefix("@@staticstr")
+                        .and_then(|rest| rest.parse::<usize>().ok())
+                        .map(|index| {
+                            pending_packed_strings.defer_static_local(
+                                function_index + 1,
+                                &function.static_local_string_literals[index],
+                            )
+                        })
+                        .unwrap_or_else(|| target.clone());
+                    mwcc_machine_code_to_object::DataRelocation {
+                        offset: *offset,
+                        target,
+                        addend: *addend,
+                    }
+                })
+                .collect();
             static_local_globals.push(mwcc_machine_code_to_object::DefinedGlobal {
                 anonymous_adjust,
                 static_local_owner: Some(function_index),
@@ -1273,17 +1295,7 @@ fn compile(
                 is_explicit_zero: false,
                 preassigned_anonymous_ordinal: None,
                 preassigned_ordinal_advances_counter: false,
-                relocations: local
-                    .relocations
-                    .iter()
-                    .map(
-                        |(offset, target, addend)| mwcc_machine_code_to_object::DataRelocation {
-                            offset: *offset,
-                            target: target.clone(),
-                            addend: *addend,
-                        },
-                    )
-                    .collect(),
+                relocations,
                 section: None,
             });
         }
@@ -1431,9 +1443,6 @@ fn compile(
     // initializers are lowered before functions here, but MWCC lays function
     // literals into that base first, so retain global literals as placeholders
     // until the function walk has established the leading bytes.
-    let mut pending_packed_strings: Vec<(String, Vec<u8>)> = Vec::new();
-    let mut pending_packed_string_names: std::collections::HashMap<Vec<u8>, String> =
-        std::collections::HashMap::new();
     // Strings pooled from STRUCT-member relocations collect here per global (the
     // enclosing push borrows `defined_globals`), then append after it.
     let mut pooled_string_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
@@ -1603,18 +1612,8 @@ fn compile(
                     PointerElement::Symbol(name) => (name.clone(), 0),
                     PointerElement::Str(string_bytes) => {
                         if config.flags.string_literals_packed {
-                            let name = pending_packed_string_names
-                                .get(string_bytes.as_slice())
-                                .cloned()
-                                .unwrap_or_else(|| {
-                                    let name =
-                                        format!("@@packed{}", pending_packed_strings.len());
-                                    pending_packed_string_names
-                                        .insert(string_bytes.clone(), name.clone());
-                                    pending_packed_strings
-                                        .push((name.clone(), string_bytes.clone()));
-                                    name
-                                });
+                            let name = pending_packed_strings
+                                .defer_global(global.functions_before, string_bytes);
                             (name, 0)
                         } else {
                             let name = string_pool
@@ -1910,18 +1909,8 @@ fn compile(
                         Some(literal) => {
                             let string_bytes: Vec<u8> = literal.as_bytes().to_vec();
                             if config.flags.string_literals_packed {
-                                let name = pending_packed_string_names
-                                    .get(string_bytes.as_slice())
-                                    .cloned()
-                                    .unwrap_or_else(|| {
-                                        let name =
-                                            format!("@@packed{}", pending_packed_strings.len());
-                                        pending_packed_string_names
-                                            .insert(string_bytes.clone(), name.clone());
-                                        pending_packed_strings
-                                            .push((name.clone(), string_bytes.clone()));
-                                        name
-                                    });
+                                let name = pending_packed_strings
+                                    .defer_global(global.functions_before, &string_bytes);
                                 (name, 0)
                             } else {
                                 let name = string_pool
@@ -2301,13 +2290,9 @@ fn compile(
             }
         }
     }
-    let mut packed_string_renames: std::collections::HashMap<String, i32> =
-        std::collections::HashMap::new();
-    for (placeholder, bytes) in pending_packed_strings {
-        packed_string_renames.insert(placeholder, packed_strings.intern(&bytes) as i32);
-    }
+    let packed_string_renames = pending_packed_strings.materialize(&mut packed_strings);
     if !packed_string_renames.is_empty() {
-        for global in &mut defined_globals {
+        for global in defined_globals.iter_mut().chain(&mut static_local_globals) {
             for relocation in &mut global.relocations {
                 if let Some(offset) = packed_string_renames.get(&relocation.target) {
                     relocation.target = "@stringBase0".to_owned();
