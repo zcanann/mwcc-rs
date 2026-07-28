@@ -85,6 +85,11 @@ pub(crate) fn materialize_function_offsets(function: &mut MachineFunction, base:
 /// applies the string offset. Keep this schedule beside the transformation
 /// that creates the offset instruction.
 fn schedule_offset_format_call(function: &mut MachineFunction) {
+    schedule_date_separator_offset_format_call(function);
+    schedule_zero_terminated_offset_format_call(function);
+}
+
+fn schedule_date_separator_offset_format_call(function: &mut MachineFunction) {
     let Some(start) = function.instructions.windows(14).position(|window| {
         matches!(
             window,
@@ -139,6 +144,64 @@ fn schedule_offset_format_call(function: &mut MachineFunction) {
     }
 
     swap_adjacent_instructions(function, start + 6);
+    swap_adjacent_instructions(function, start + 8);
+    swap_adjacent_instructions(function, start + 9);
+}
+
+fn schedule_zero_terminated_offset_format_call(function: &mut MachineFunction) {
+    let Some(start) = function.instructions.windows(13).position(|window| {
+        matches!(
+            window,
+            [
+                Instruction::AddImmediateShifted { d: 3, a: 0, .. },
+                Instruction::AddImmediate {
+                    d: 5,
+                    a: 0,
+                    immediate: 0,
+                },
+                Instruction::AddImmediate { d: 0, a: 3, .. },
+                Instruction::AddImmediateShifted { d: 4, a: 0, .. },
+                Instruction::Add {
+                    d: 3,
+                    a: 0,
+                    b: 14,
+                },
+                Instruction::StoreByte { s: 5, a: 1, .. },
+                Instruction::AddImmediate {
+                    d: 4,
+                    a: 4,
+                    immediate: 0,
+                },
+                Instruction::AddImmediate {
+                    d: 4,
+                    a: 4,
+                    immediate: string_offset,
+                },
+                Instruction::LoadByteZero {
+                    d: 5,
+                    a: 3,
+                    offset: first_load_offset,
+                },
+                Instruction::LoadByteZero {
+                    d: 6,
+                    a: 3,
+                    offset: second_load_offset,
+                },
+                Instruction::AddImmediate { d: 3, a: 1, .. },
+                Instruction::ConditionRegisterClear { d: 6 },
+                Instruction::BranchAndLink { target },
+            ] if (target == "sprintf" || target.starts_with("sprintf__"))
+                && *string_offset > 0
+                && *second_load_offset == *first_load_offset + 1
+        )
+    }) else {
+        return;
+    };
+    if (start + 7..=start + 10).any(|position| is_control_entry(function, position)) {
+        return;
+    }
+
+    swap_adjacent_instructions(function, start + 7);
     swap_adjacent_instructions(function, start + 8);
     swap_adjacent_instructions(function, start + 9);
 }
@@ -441,6 +504,86 @@ mod tests {
             ]
         ));
         assert_eq!(function.relocations[0].instruction_index, 6);
+    }
+
+    #[test]
+    fn delays_a_materialized_offset_past_the_terminated_table_loads() {
+        let mut function = MachineFunction::new("probe");
+        function.instructions = vec![
+            Instruction::AddImmediateShifted {
+                d: 3,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::load_immediate(5, 0),
+            Instruction::AddImmediate {
+                d: 0,
+                a: 3,
+                immediate: 0,
+            },
+            Instruction::AddImmediateShifted {
+                d: 4,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::Add { d: 3, a: 0, b: 14 },
+            Instruction::StoreByte {
+                s: 5,
+                a: 1,
+                offset: 103,
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 4,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 4,
+                immediate: 27,
+            },
+            Instruction::LoadByteZero {
+                d: 5,
+                a: 3,
+                offset: 75,
+            },
+            Instruction::LoadByteZero {
+                d: 6,
+                a: 3,
+                offset: 76,
+            },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 1,
+                immediate: 40,
+            },
+            Instruction::ConditionRegisterClear { d: 6 },
+            Instruction::BranchAndLink {
+                target: "sprintf".to_owned(),
+            },
+        ];
+        function.relocations.push(Relocation {
+            instruction_index: 7,
+            kind: RelocationKind::Addr16Lo,
+            target: RelocationTarget::External("@offset".to_owned()),
+        });
+
+        schedule_offset_format_call(&mut function);
+
+        assert!(matches!(
+            function.instructions[7..11],
+            [
+                Instruction::LoadByteZero { d: 5, .. },
+                Instruction::LoadByteZero { d: 6, .. },
+                Instruction::AddImmediate { d: 3, a: 1, .. },
+                Instruction::AddImmediate {
+                    d: 4,
+                    a: 4,
+                    immediate: 27,
+                },
+            ]
+        ));
+        assert_eq!(function.relocations[0].instruction_index, 10);
     }
 
     #[test]

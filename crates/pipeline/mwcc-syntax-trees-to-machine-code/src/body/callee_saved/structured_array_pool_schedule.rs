@@ -169,6 +169,97 @@ impl Generator {
             .sort_by_key(|relocation| relocation.instruction_index);
     }
 
+    /// The next formatted call terminates the previous local buffer, then reads
+    /// two adjacent bytes from the same indexed global record. MWCC overlaps
+    /// those transactions: the table address begins first, the zero occupies
+    /// r5 until the store, and the table base then reuses r3 for both loads.
+    pub(crate) fn schedule_structured_array_pool_zero_terminated_format_call(&mut self) {
+        if !self.structured_array_pool_emitted {
+            return;
+        }
+        let Some(start) = self.output.instructions.windows(12).position(|window| {
+            matches!(
+                window,
+                [
+                    Instruction::AddImmediate {
+                        d: 0,
+                        a: 0,
+                        immediate: 0,
+                    },
+                    Instruction::StoreByte {
+                        s: 0,
+                        a: 1,
+                        offset: store_offset,
+                    },
+                    Instruction::AddImmediate { d: 3, a: 1, .. },
+                    Instruction::AddImmediateShifted { d: 4, a: 0, .. },
+                    Instruction::AddImmediate {
+                        d: 4,
+                        a: 4,
+                        immediate: 0,
+                    },
+                    Instruction::AddImmediateShifted {
+                        d: table_high,
+                        a: 0,
+                        ..
+                    },
+                    Instruction::AddImmediate {
+                        d: 0,
+                        a: table_low,
+                        immediate: 0,
+                    },
+                    Instruction::Add {
+                        d: table_add,
+                        a: 0,
+                        ..
+                    },
+                    Instruction::LoadByteZero {
+                        d: 5,
+                        a: first_load_base,
+                        offset: first_load_offset,
+                    },
+                    Instruction::LoadByteZero {
+                        d: 6,
+                        a: second_load_base,
+                        offset: second_load_offset,
+                    },
+                    Instruction::ConditionRegisterClear { d: 6 },
+                    Instruction::BranchAndLink { target },
+                ] if (target == "sprintf" || target.starts_with("sprintf__"))
+                    && table_high == table_low
+                    && table_high == table_add
+                    && table_high == first_load_base
+                    && table_high == second_load_base
+                    && *second_load_offset == *first_load_offset + 1
+                    && *store_offset > 0
+            )
+        }) else {
+            return;
+        };
+
+        let literal = self.fresh_virtual_general_preferring(5);
+        let mut old = self.output.instructions[start..start + 11].to_vec();
+        old[0] = Instruction::load_immediate(literal, 0);
+        let Instruction::StoreByte { a, offset, .. } = old[1] else {
+            unreachable!("the pooled-array terminator store was matched above");
+        };
+        old[1] = Instruction::StoreByte {
+            s: literal,
+            a,
+            offset,
+        };
+        let order = [5, 0, 6, 3, 7, 1, 4, 8, 9, 2, 10];
+        let mut permutation: Vec<usize> = (0..self.output.instructions.len()).collect();
+        for (new_relative, old_relative) in order.into_iter().enumerate() {
+            self.output.instructions[start + new_relative] = old[old_relative].clone();
+            permutation[start + old_relative] = start + new_relative;
+        }
+        crate::remap_instruction_indices(self, &permutation);
+        self.output
+            .relocations
+            .sort_by_key(|relocation| relocation.instruction_index);
+    }
+
     /// A pooled frame saves a dense physical GPR range with `stmw`, then copies
     /// retained incoming values into their homes in incoming-register order.
     /// Home planning is lifetime-ranked and therefore stores parameters in the
