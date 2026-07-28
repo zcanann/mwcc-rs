@@ -225,6 +225,7 @@ pub(crate) struct RecoveredCxxMethod {
     pub(crate) variadic: bool,
     pub(crate) parameters: Vec<Type>,
     pub(crate) cxx_parameters: Vec<CxxParameterType>,
+    pub(crate) is_const_member: bool,
 }
 
 fn mangle_layout_member_method(
@@ -249,8 +250,45 @@ pub(crate) struct RecoveredCxxVirtualMethod {
     pub(crate) parameters: Vec<Type>,
     pub(crate) fixed_parameter_count: usize,
     pub(crate) variadic: bool,
+    pub(crate) is_const_member: bool,
     pub(crate) vptr_offset: u16,
     pub(crate) slot_offset: u16,
+}
+
+/// Source qualification of the object expression used for a member call.
+/// `Unknown` preserves ambiguity when cv information was erased by an
+/// unsupported expression shape instead of guessing a mutable receiver.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CxxReceiverQualification {
+    Mutable,
+    Const,
+    Unknown,
+}
+
+fn retain_receiver_viable<'a, T>(
+    mut candidates: Vec<&'a T>,
+    receiver: CxxReceiverQualification,
+    is_const_member: impl Fn(&T) -> bool,
+) -> Vec<&'a T> {
+    if receiver == CxxReceiverQualification::Const {
+        candidates.retain(|candidate| is_const_member(candidate));
+    }
+    candidates
+}
+
+fn prefer_receiver_qualification<'a, T>(
+    mut candidates: Vec<&'a T>,
+    receiver: CxxReceiverQualification,
+    is_const_member: impl Fn(&T) -> bool,
+) -> Vec<&'a T> {
+    if receiver == CxxReceiverQualification::Mutable
+        && candidates
+            .iter()
+            .any(|candidate| !is_const_member(candidate))
+    {
+        candidates.retain(|candidate| !is_const_member(candidate));
+    }
+    candidates
 }
 
 /// Declaration-only virtual dispatch state. This is intentionally independent
@@ -970,6 +1008,7 @@ impl Parser {
                 variadic,
                 parameters: parameters.to_vec(),
                 cxx_parameters: cxx_parameters.to_vec(),
+                is_const_member: false,
             });
         }
     }
@@ -994,6 +1033,7 @@ impl Parser {
                 variadic,
                 parameters: parameters.to_vec(),
                 cxx_parameters: cxx_parameters.to_vec(),
+                is_const_member: false,
             });
         }
     }
@@ -1103,7 +1143,12 @@ impl Parser {
         right: &Expression,
     ) -> Compilation<Option<String>> {
         let Some(call) =
-            self.resolve_member_call_in_class(class, source_name, std::slice::from_ref(right))?
+            self.resolve_member_call_in_class(
+                class,
+                source_name,
+                std::slice::from_ref(right),
+                CxxReceiverQualification::Unknown,
+            )?
         else {
             return Ok(None);
         };
@@ -1320,6 +1365,51 @@ impl Parser {
         }
     }
 
+    pub(crate) fn cxx_receiver_qualification(
+        &self,
+        expression: &Expression,
+    ) -> CxxReceiverQualification {
+        match expression {
+            Expression::Variable(name) if name == "this" => {
+                match self.current_cxx_member_is_const {
+                    Some(true) => CxxReceiverQualification::Const,
+                    Some(false) => CxxReceiverQualification::Mutable,
+                    None => CxxReceiverQualification::Unknown,
+                }
+            }
+            Expression::Variable(name) if self.cxx_const_object_variables.contains(name) => {
+                CxxReceiverQualification::Const
+            }
+            Expression::Variable(name)
+                if self.variable_types.contains_key(name)
+                    && self.variable_structs.contains_key(name) =>
+            {
+                CxxReceiverQualification::Mutable
+            }
+            Expression::AddressOf { operand }
+            | Expression::Dereference { pointer: operand }
+            | Expression::Member { base: operand, .. }
+            | Expression::Index { base: operand, .. } => {
+                self.cxx_receiver_qualification(operand)
+            }
+            Expression::Comma { right, .. } => self.cxx_receiver_qualification(right),
+            Expression::Conditional {
+                when_true,
+                when_false,
+                ..
+            } => {
+                let when_true = self.cxx_receiver_qualification(when_true);
+                let when_false = self.cxx_receiver_qualification(when_false);
+                if when_true == when_false {
+                    when_true
+                } else {
+                    CxxReceiverQualification::Unknown
+                }
+            }
+            _ => CxxReceiverQualification::Unknown,
+        }
+    }
+
     pub(crate) fn cxx_expression_struct_tag<'a>(
         &'a self,
         expression: &'a Expression,
@@ -1341,6 +1431,34 @@ impl Parser {
             }
             Expression::Call { name, .. } => {
                 self.function_return_structs.get(name).map(String::as_str)
+            }
+            Expression::Member {
+                base,
+                offset,
+                member_type,
+                ..
+            } => {
+                let owner = self.cxx_expression_struct_tag(base)?;
+                let resolved = self.resolve_scoped_cxx_class_name(owner);
+                let layout = self.structs.get(owner).or_else(|| {
+                    resolved
+                        .as_deref()
+                        .and_then(|resolved| self.structs.get(resolved))
+                })?;
+                // The compact executable AST stores a resolved offset instead
+                // of the source member name. Recover declaration identity only
+                // when that offset/type pair identifies one aggregate field;
+                // overlapping union members with different tags stay
+                // deliberately ambiguous.
+                let mut fields = layout.fields.values().filter(|field| {
+                    field.offset == *offset
+                        && field.member_type == *member_type
+                        && field.struct_tag.is_some()
+                });
+                let tag = fields.next()?.struct_tag.as_deref()?;
+                fields
+                    .all(|field| field.struct_tag.as_deref() == Some(tag))
+                    .then_some(tag)
             }
             Expression::Conditional {
                 when_true,
@@ -1931,6 +2049,7 @@ impl Parser {
             variadic: false,
             parameters: signature.parameters,
             cxx_parameters: signature.cxx_parameters,
+            is_const_member: false,
         };
         let methods = std::sync::Arc::make_mut(&mut self.cxx_constructors)
             .entry(class.to_owned())
@@ -2463,6 +2582,7 @@ impl Parser {
                                 parameters: parameters.clone(),
                                 fixed_parameter_count: parameters.len(),
                                 variadic,
+                                is_const_member,
                                 vptr_offset: 0,
                                 slot_offset,
                             },
@@ -2507,6 +2627,7 @@ impl Parser {
                             variadic,
                             parameters: parameters.clone(),
                             cxx_parameters: cxx_parameters.clone(),
+                            is_const_member,
                         });
                 }
                 // A virtual call never references the out-of-line member symbol
@@ -2532,6 +2653,7 @@ impl Parser {
                 variadic,
                 parameters: parameters.clone(),
                 cxx_parameters: cxx_parameters.clone(),
+                is_const_member,
             };
             if let Some(return_struct_tag) = return_struct_tag {
                 self.function_return_structs
@@ -2839,6 +2961,21 @@ impl Parser {
         member: &str,
         arguments: &[Expression],
     ) -> Compilation<Option<ImplicitMemberCall>> {
+        self.resolve_instance_member_call_for_receiver(
+            class,
+            member,
+            arguments,
+            CxxReceiverQualification::Unknown,
+        )
+    }
+
+    pub(crate) fn resolve_instance_member_call_for_receiver(
+        &mut self,
+        class: &str,
+        member: &str,
+        arguments: &[Expression],
+        receiver: CxxReceiverQualification,
+    ) -> Compilation<Option<ImplicitMemberCall>> {
         let argument_count = arguments.len();
         let resolved = self
             .resolve_scoped_cxx_class_name(class)
@@ -2877,6 +3014,8 @@ impl Parser {
                     || (method.variadic && argument_count >= method.fixed_parameter_count)
             })
             .collect();
+        let candidates =
+            retain_receiver_viable(candidates, receiver, |method| method.is_const_member);
         match candidates.as_slice() {
             [method] => {
                 return Ok(Some(ImplicitMemberCall::Direct {
@@ -2900,6 +3039,9 @@ impl Parser {
                         )
                     })
                     .collect::<Vec<_>>();
+                let exact = prefer_receiver_qualification(exact, receiver, |method| {
+                    method.is_const_member
+                });
                 if let [method] = exact.as_slice() {
                     return Ok(Some(ImplicitMemberCall::Direct {
                         name: method.mangled.clone(),
@@ -2939,7 +3081,12 @@ impl Parser {
             self.resolve_inline_template_base_forwarder(class, member, argument_count)
         {
             if let Some(call) =
-                self.resolve_member_call_in_class(&base, &forwarded_member, arguments)?
+                self.resolve_member_call_in_class(
+                    &base,
+                    &forwarded_member,
+                    arguments,
+                    receiver,
+                )?
             {
                 let wrapper = format!("{class}::{wrapper}");
                 if let ImplicitMemberCall::Direct {
@@ -2982,11 +3129,13 @@ impl Parser {
         // falls back to a declaration-only primary-base chain. The latter is
         // important for templates whose concrete layout could not be recovered:
         // their primary base remains at offset zero and can still own members.
-        if let Some(call) = self.resolve_member_call_in_class(&resolved, member, arguments)? {
+        if let Some(call) =
+            self.resolve_member_call_in_class(&resolved, member, arguments, receiver)?
+        {
             return Ok(Some(call));
         }
         if let Some((dispatch, return_struct_tag, parameters)) =
-            self.resolve_virtual_member_call(&resolved, member, argument_count)?
+            self.resolve_virtual_member_call(&resolved, member, argument_count, receiver)?
         {
             return Ok(Some(ImplicitMemberCall::Virtual {
                 dispatch,
@@ -3008,6 +3157,7 @@ impl Parser {
         class: &str,
         member: &str,
         argument_count: usize,
+        receiver: CxxReceiverQualification,
     ) -> Compilation<Option<(VirtualDispatch, Option<String>, Vec<Type>)>> {
         let source_class = class;
         let class = self.qualify_cxx_class_name(source_class);
@@ -3032,6 +3182,10 @@ impl Parser {
                         || (method.variadic && argument_count >= method.fixed_parameter_count))
             })
             .collect();
+        let candidates =
+            retain_receiver_viable(candidates, receiver, |method| method.is_const_member);
+        let candidates =
+            prefer_receiver_qualification(candidates, receiver, |method| method.is_const_member);
         if candidates.is_empty() {
             let primary = source_class.split('<').next().unwrap_or(source_class);
             let qualified_primary = self.qualify_cxx_class_name(primary);
@@ -3224,7 +3378,14 @@ impl Parser {
         let Some(class_name) = self.current_cxx_member_class.as_deref() else {
             return Ok(None);
         };
-        if let Some(call) = self.resolve_member_call_in_class(class_name, function, arguments)? {
+        let receiver = match self.current_cxx_member_is_const {
+            Some(true) => CxxReceiverQualification::Const,
+            Some(false) => CxxReceiverQualification::Mutable,
+            None => CxxReceiverQualification::Unknown,
+        };
+        if let Some(call) =
+            self.resolve_member_call_in_class(class_name, function, arguments, receiver)?
+        {
             return Ok(Some(call));
         }
         let candidates = self
@@ -3258,6 +3419,7 @@ impl Parser {
         class_name: &str,
         function: &str,
         arguments: &[Expression],
+        receiver: CxxReceiverQualification,
     ) -> Compilation<Option<ImplicitMemberCall>> {
         let argument_count = arguments.len();
         if let Some(methods) = self
@@ -3269,6 +3431,8 @@ impl Parser {
                 .iter()
                 .filter(|method| method.parameters.len() == argument_count)
                 .collect();
+            let candidates =
+                retain_receiver_viable(candidates, receiver, |method| method.is_const_member);
             let candidates = if candidates.len() > 1 {
                 candidates
                     .into_iter()
@@ -3284,9 +3448,23 @@ impl Parser {
             } else {
                 candidates
             };
+            let candidates =
+                prefer_receiver_qualification(candidates, receiver, |method| {
+                    method.is_const_member
+                });
             if candidates.len() != 1 {
+                let parameter_identities = candidates
+                    .iter()
+                    .map(|method| {
+                        method
+                            .cxx_parameters
+                            .iter()
+                            .map(|parameter| parameter.qualified_name.as_deref())
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>();
                 return Err(Diagnostic::error(format!(
-                    "member overload resolution for '{class_name}::{function}' is ambiguous or unavailable (roadmap)"
+                    "member overload resolution for '{class_name}::{function}' is ambiguous or unavailable for arguments {arguments:?}; candidate aggregate parameters {parameter_identities:?} (roadmap)"
                 )));
             }
             let method = candidates[0];
@@ -3335,6 +3513,8 @@ impl Parser {
                     .iter()
                     .filter(|method| method.parameters.len() == argument_count)
                     .collect();
+                let candidates =
+                    retain_receiver_viable(candidates, receiver, |method| method.is_const_member);
                 let candidates = if candidates.len() > 1 {
                     candidates
                         .into_iter()
@@ -3350,9 +3530,23 @@ impl Parser {
                 } else {
                     candidates
                 };
+                let candidates =
+                    prefer_receiver_qualification(candidates, receiver, |method| {
+                        method.is_const_member
+                    });
                 if candidates.len() != 1 {
+                    let parameter_identities = candidates
+                        .iter()
+                        .map(|method| {
+                            method
+                                .cxx_parameters
+                                .iter()
+                                .map(|parameter| parameter.qualified_name.as_deref())
+                                .collect::<Vec<_>>()
+                        })
+                        .collect::<Vec<_>>();
                     return Err(Diagnostic::error(format!(
-                        "member overload resolution for '{owner}::{function}' is ambiguous or unavailable (roadmap)"
+                        "member overload resolution for '{owner}::{function}' is ambiguous or unavailable for arguments {arguments:?}; candidate aggregate parameters {parameter_identities:?} (roadmap)"
                     )));
                 }
                 inherited.push((owner, candidates[0].clone(), this_adjustment));
@@ -3406,6 +3600,8 @@ impl Parser {
                         || (method.variadic && argument_count >= method.fixed_parameter_count)
                 })
                 .collect();
+            let candidates =
+                retain_receiver_viable(candidates, receiver, |method| method.is_const_member);
             match candidates.as_slice() {
                 [method] => {
                     return Ok(Some(ImplicitMemberCall::Direct {
@@ -3432,6 +3628,9 @@ impl Parser {
                             )
                         })
                         .collect::<Vec<_>>();
+                    let exact = prefer_receiver_qualification(exact, receiver, |method| {
+                        method.is_const_member
+                    });
                     if let [method] = exact.as_slice() {
                         return Ok(Some(ImplicitMemberCall::Direct {
                             name: method.mangled.clone(),

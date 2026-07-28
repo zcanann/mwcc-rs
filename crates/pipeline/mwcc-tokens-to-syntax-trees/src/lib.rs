@@ -288,6 +288,7 @@ pub fn parse_located_translation_unit_with_behavior(
         cxx_explicit_instance_methods: std::sync::Arc::new(HashMap::new()),
         cxx_primary_bases: HashMap::new(),
         current_cxx_member_class: None,
+        current_cxx_member_is_const: None,
         cxx_member_template_forwarders: HashMap::new(),
         cxx_template_forwarder_specializations: HashMap::new(),
         cxx_dispatch_tables: HashMap::new(),
@@ -297,6 +298,7 @@ pub fn parse_located_translation_unit_with_behavior(
         template_aliases: HashMap::new(),
         variable_structs: HashMap::new(),
         cxx_reference_variables: std::collections::HashSet::new(),
+        cxx_const_object_variables: std::collections::HashSet::new(),
         function_return_structs: HashMap::new(),
         function_return_fundamentals: HashMap::new(),
         fixed_address_globals: HashMap::new(),
@@ -9637,6 +9639,96 @@ blr\n\
             Some(mwcc_syntax_trees::Expression::Call { name, .. })
                 if name.contains("Creature") && !name.contains("Vector3f")
         ));
+    }
+
+    #[test]
+    fn resolves_member_overloads_from_aggregate_member_identity() {
+        let source = r#"
+            struct Vec {};
+            struct cXyz : Vec {};
+            struct Pair {
+                Vec start;
+                Vec end;
+            };
+            struct Line {
+                void SetStartEnd(const cXyz&, const cXyz&);
+                void SetStartEnd(const Vec&, const Vec&);
+            };
+            struct Shape : Line {
+                void from_xyz(const cXyz& start, const cXyz& end);
+                void from_pair(const Pair& pair);
+            };
+            void Shape::from_xyz(const cXyz& start, const cXyz& end) {
+                SetStartEnd(start, end);
+            }
+            void Shape::from_pair(const Pair& pair) {
+                SetStartEnd(pair.start, pair.end);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let called_names = unit
+            .functions
+            .iter()
+            .map(|function| match function.statements.as_slice() {
+                [mwcc_syntax_trees::Statement::Expression(
+                    mwcc_syntax_trees::Expression::Call { name, .. },
+                )] => name.as_str(),
+                statements => panic!("expected one member call, found {statements:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert!(called_names[0].contains("cXyz"));
+        assert!(called_names[1].contains("Vec"));
+        assert!(!called_names[1].contains("cXyz"));
+    }
+
+    #[test]
+    fn resolves_const_and_mutable_member_overloads_from_receiver() {
+        let source = r#"
+            struct Reader {
+                int read();
+                int read() const;
+                int self_mutable();
+                int self_const() const;
+            };
+            struct User {
+                int from_mutable(Reader& reader);
+                int from_const(const Reader& reader);
+            };
+            int User::from_mutable(Reader& reader) { return reader.read(); }
+            int User::from_const(const Reader& reader) { return reader.read(); }
+            int Reader::self_mutable() { return read(); }
+            int Reader::self_const() const { return read(); }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let called_name = |function_name: &str| {
+            let function = unit
+                .functions
+                .iter()
+                .find(|function| function.name.starts_with(function_name))
+                .unwrap_or_else(|| panic!("missing {function_name} in {unit:#?}"));
+            match function.return_expression.as_ref() {
+                Some(mwcc_syntax_trees::Expression::Call { name, .. }) => name.as_str(),
+                expression => panic!("expected member call, found {expression:?}"),
+            }
+        };
+        assert_eq!(called_name("from_mutable__"), "read__6ReaderFv");
+        assert_eq!(called_name("from_const__"), "read__6ReaderCFv");
+        assert_eq!(called_name("self_mutable__"), "read__6ReaderFv");
+        assert_eq!(called_name("self_const__"), "read__6ReaderCFv");
     }
 
     #[test]

@@ -395,6 +395,9 @@ pub(crate) struct Parser {
     /// recovered-layout key and may intentionally be only the terminal class
     /// name when a namespace-qualified layout is unavailable.
     pub(crate) current_cxx_member_class: Option<String>,
+    /// Cv-qualification of the implicit object in the member body currently
+    /// being parsed. `None` outside a non-static member definition.
+    pub(crate) current_cxx_member_is_const: Option<bool>,
     /// In-class member templates whose body is a zero-runtime-argument
     /// forwarding call, keyed by `(class, member)` and naming the free helper
     /// template they invoke.  This is declaration recovery, not a general
@@ -432,6 +435,10 @@ pub(crate) struct Parser {
     /// distinction prevents ordinary `T*` assignments from entering aggregate
     /// field-copy scalarization while preserving `T const&` setters.
     pub(crate) cxx_reference_variables: std::collections::HashSet<String>,
+    /// Function-scoped aggregate objects whose source declaration makes the
+    /// reached object const (`T const&`, `T const*`, or a const aggregate
+    /// value). Executable pointer types erase this qualification.
+    pub(crate) cxx_const_object_variables: std::collections::HashSet<String>,
     /// Functions that RETURN a struct pointer, mapped to the pointee's struct tag,
     /// so `get()->field` resolves the returned pointer's layout (populated when a
     /// `struct S *get(...)` prototype/definition is parsed).

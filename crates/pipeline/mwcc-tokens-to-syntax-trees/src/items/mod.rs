@@ -3080,6 +3080,7 @@ impl Parser {
             let mut parameters = Vec::new();
             let mut cxx_parameters = Vec::new();
             let mut cxx_reference_parameters = std::collections::HashSet::new();
+            let mut cxx_const_object_parameters = std::collections::HashSet::new();
             let mut is_variadic = false;
             // Row-stride records are scoped to ONE function's parameters — a stale
             // entry from a previous function would mis-stride a same-named variable.
@@ -3207,6 +3208,9 @@ impl Parser {
                         }
                         if is_reference && !name.is_empty() {
                             cxx_reference_parameters.insert(name.clone());
+                        }
+                        if struct_tag.is_some() && cxx_pointee_const && !name.is_empty() {
+                            cxx_const_object_parameters.insert(name.clone());
                         }
                         // Record the row stride for a decayed array-typedef / row-pointer
                         // parameter so `m[i][j]` desugars to the strided Member access.
@@ -3557,8 +3561,12 @@ impl Parser {
             }
             let previous_member_scope = self.current_member_scope.clone();
             let previous_member_class = self.current_cxx_member_class.clone();
+            let previous_member_is_const = self.current_cxx_member_is_const;
             let previous_this_struct = self.variable_structs.get("this").cloned();
             self.current_cxx_member_class = member_declaration_scope.clone();
+            self.current_cxx_member_is_const =
+                (!member_definition_is_static && member_declaration_scope.is_some())
+                    .then_some(member_is_const);
             if !member_definition_is_static {
                 if let Some(scope) = &member_layout_scope {
                     self.current_member_scope = Some(scope.clone());
@@ -3578,9 +3586,11 @@ impl Parser {
                 function_is_static,
                 parameters,
                 cxx_reference_parameters,
+                cxx_const_object_parameters,
             );
             self.current_member_scope = previous_member_scope;
             self.current_cxx_member_class = previous_member_class;
+            self.current_cxx_member_is_const = previous_member_is_const;
             match previous_this_struct {
                 Some(scope) => {
                     self.variable_structs.insert("this".to_string(), scope);
@@ -4429,6 +4439,7 @@ impl Parser {
         is_static: bool,
         parameters: Vec<Parameter>,
         cxx_reference_parameters: std::collections::HashSet<String>,
+        cxx_const_object_parameters: std::collections::HashSet<String>,
     ) -> Compilation<Function> {
         let debug_function_name = name.clone();
         self.inline_substitution_count = 0;
@@ -4456,6 +4467,7 @@ impl Parser {
         self.variable_types.clear();
         self.variable_array_bytes.clear();
         self.cxx_reference_variables = cxx_reference_parameters;
+        self.cxx_const_object_variables = cxx_const_object_parameters;
         for parameter in &parameters {
             self.variable_types
                 .insert(parameter.name.clone(), parameter.parameter_type);

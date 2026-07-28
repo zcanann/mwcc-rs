@@ -1818,6 +1818,7 @@ impl Parser {
         object: Expression,
         mut arguments: Vec<Expression>,
     ) -> Compilation<Expression> {
+        let receiver_qualification = self.cxx_receiver_qualification(&object);
         let embedded_aggregate_object = matches!(
             &object,
             Expression::Member {
@@ -1852,7 +1853,12 @@ impl Parser {
                 });
             }
         }
-        let Some(member_call) = self.resolve_instance_member_call(class, member, &arguments)?
+        let Some(member_call) = self.resolve_instance_member_call_for_receiver(
+            class,
+            member,
+            &arguments,
+            receiver_qualification,
+        )?
         else {
             if let Some(copy) =
                 self.lower_three_component_copy_setter(class, member, object.clone(), &arguments)
