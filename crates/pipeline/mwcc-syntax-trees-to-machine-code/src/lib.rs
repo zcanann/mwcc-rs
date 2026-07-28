@@ -816,6 +816,7 @@ fn lower_function_body(
     // Coalesce away `mr rX,rX` self-moves the allocator leaves when it colors a value's
     // virtual home to the register the value already holds (mwcc coalesces them).
     coalesce_self_moves(&mut generator);
+    generator.schedule_allocated_structured_array_pool_parameter_copies();
     // Allocation can coalesce a just-published frame value and its immediate
     // reload to the same physical register even when their virtual lanes were
     // distinct during selection. Remove that newly visible reload only for

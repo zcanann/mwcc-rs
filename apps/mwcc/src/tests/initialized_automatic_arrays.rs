@@ -85,3 +85,47 @@ fn pools_multiple_initialized_arrays_into_a_dense_copy_transaction() {
         .windows(tail_copy.len())
         .any(|bytes| bytes == tail_copy));
 }
+
+#[test]
+fn copies_pooled_frame_parameters_in_incoming_register_order() {
+    let source = br#"
+        #pragma use_lmw_stmw on
+        void consume(char*);
+        void consume_int(int);
+
+        char* initialize(int index, char* output, unsigned unused) {
+            char date[32] = "";
+            char time[32] = "";
+            char ampm[32] = "";
+            char buffer[256] = "";
+            consume(date);
+            consume(time);
+            consume(ampm);
+            consume(buffer);
+            consume_int(index);
+            return output;
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.cpp_exceptions = false;
+    flags.emit_mwcats = false;
+    let object = compile(
+        source,
+        "pooled-frame-parameter-order.c",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_2_0P1,
+            flags,
+        },
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("a pooled frame with two retained parameters should compile");
+
+    // stmw r14,360(r1); mr r30,r3; mr r31,r4
+    let entry = [
+        0xbd, 0xc1, 0x01, 0x68, 0x7c, 0x7e, 0x1b, 0x78, 0x7c, 0x9f, 0x23, 0x78,
+    ];
+    assert!(object.windows(entry.len()).any(|bytes| bytes == entry));
+}

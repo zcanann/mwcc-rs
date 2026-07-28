@@ -39,4 +39,47 @@ impl Generator {
             self.output.instructions.swap(end - 3, end - 2);
         }
     }
+
+    /// Physical allocation uses entry-move order to break otherwise-equal home
+    /// preferences, so changing the virtual stream to obtain MWCC's issue order
+    /// can also swap the homes themselves. Reorder the already-allocated
+    /// parameter-copy run instead: incoming r3, r4, ... order is then purely a
+    /// schedule decision and cannot perturb allocation.
+    pub(crate) fn schedule_allocated_structured_array_pool_parameter_copies(&mut self) {
+        if self.output.anonymous_rodata.len() < 2
+            || !self
+                .output
+                .anonymous_rodata
+                .iter()
+                .any(|blob| blob.static_slot_prefix_bump.is_some())
+        {
+            return;
+        }
+
+        let Some(store_index) = self.output.instructions.iter().position(|instruction| {
+            matches!(instruction, Instruction::StoreMultipleWord { s: 14, .. })
+        }) else {
+            return;
+        };
+        let start = store_index + 1;
+        let count = self.output.instructions[start..]
+            .iter()
+            .take_while(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::Or { a, s, b }
+                        if a != s && s == b && (14..=31).contains(a) && (3..=10).contains(s)
+                )
+            })
+            .count();
+        if count < 2 {
+            return;
+        }
+        self.output.instructions[start..start + count].sort_by_key(|instruction| {
+            let Instruction::Or { s, .. } = instruction else {
+                unreachable!("the parameter-copy run was filtered as register moves")
+            };
+            *s
+        });
+    }
 }
