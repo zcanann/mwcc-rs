@@ -95,6 +95,15 @@ pub(crate) struct ListWipeSummary {
     pub(crate) next_offset: i16,
 }
 
+/// A list-membership helper that recognizes the list registry itself or one of
+/// the payload addresses carried by its intrusive node chain.
+#[derive(Clone, Debug)]
+pub(crate) struct ListMembershipSummary {
+    pub(crate) registry: String,
+    pub(crate) head_offset: i16,
+    pub(crate) payload_offset: i16,
+}
+
 /// Verified helper-body facts available while lowering one translation unit.
 #[derive(Clone, Debug, Default)]
 pub struct InlineSummaries {
@@ -109,6 +118,7 @@ pub struct InlineSummaries {
     unoptimized_local_selects: HashMap<String, UnoptimizedLocalSelectSummary>,
     byte_appends: HashMap<String, ByteAppendSummary>,
     list_wipes: HashMap<String, ListWipeSummary>,
+    list_memberships: HashMap<String, ListMembershipSummary>,
     fixed_size_copies: HashMap<String, FixedSizeCopySummary>,
     guarded_aggregate_updates: HashMap<String, GuardedAggregateUpdateSummary>,
     guarded_float_table_indexes: HashMap<String, GuardedFloatTableIndexSummary>,
@@ -206,6 +216,11 @@ impl InlineSummaries {
             }
             if let Some(summary) = summarize_list_wipe(function) {
                 summaries.list_wipes.insert(function.name.clone(), summary);
+            }
+            if let Some(summary) = summarize_list_membership(function) {
+                summaries
+                    .list_memberships
+                    .insert(function.name.clone(), summary);
             }
         }
         // Build 163's label walk gives a summarized service helper three fewer
@@ -314,6 +329,10 @@ impl InlineSummaries {
 
     pub(crate) fn list_wipe(&self, name: &str) -> Option<&ListWipeSummary> {
         self.list_wipes.get(name)
+    }
+
+    pub(crate) fn list_membership(&self, name: &str) -> Option<&ListMembershipSummary> {
+        self.list_memberships.get(name)
     }
 
     pub(crate) fn ipa_pointer_walker_caller(
@@ -479,6 +498,135 @@ fn summarize_list_wipe(function: &Function) -> Option<ListWipeSummary> {
         count_offset,
         head_offset: i16::try_from(*head_offset).ok()?,
         next_offset,
+    })
+}
+
+fn summarize_list_membership(function: &Function) -> Option<ListMembershipSummary> {
+    if function.return_type != Type::Int
+        || !function.is_static
+        || !function.guards.is_empty()
+        || !matches!(function.return_expression.as_ref(), Some(value)
+            if constant_value(value) == Some(0))
+    {
+        return None;
+    }
+    let [list] = function.parameters.as_slice() else {
+        return None;
+    };
+    let [node] = function.locals.as_slice() else {
+        return None;
+    };
+    if !matches!(list.parameter_type, Type::StructPointer { .. })
+        || !matches!(node.declared_type, Type::Pointer(_))
+        || node.initializer.is_some()
+    {
+        return None;
+    }
+    let [registry_guard, Statement::Assign {
+        name: assigned_node,
+        value:
+            Expression::Member {
+                base: head_base,
+                offset: head_offset,
+                index_stride: None,
+                ..
+            },
+    }, Statement::Loop {
+        kind: LoopKind::While,
+        initializer: None,
+        condition: Some(loop_condition),
+        step: None,
+        body,
+    }] = function.statements.as_slice()
+    else {
+        return None;
+    };
+    let Statement::If {
+        condition:
+            Expression::Binary {
+                operator: BinaryOperator::Equal,
+                left: guard_list,
+                right: guard_registry,
+            },
+        then_body: guard_body,
+        else_body: guard_else,
+    } = registry_guard
+    else {
+        return None;
+    };
+    let Expression::AddressOf { operand: registry } = guard_registry.as_ref() else {
+        return None;
+    };
+    let Expression::Variable(registry_name) = registry.as_ref() else {
+        return None;
+    };
+    if !variable(guard_list, &list.name)
+        || !variable(head_base, registry_name)
+        || assigned_node != &node.name
+        || !guard_else.is_empty()
+        || !matches!(guard_body.as_slice(), [Statement::Return(Some(value))]
+            if constant_value(value) == Some(1))
+        || !matches!(loop_condition, Expression::Binary {
+            operator: BinaryOperator::NotEqual, left, right
+        } if variable(left, &node.name) && constant_value(right) == Some(0))
+    {
+        return None;
+    }
+    let [match_guard, Statement::Assign {
+        name: advanced_node,
+        value:
+            Expression::Dereference {
+                pointer: next_pointer,
+            },
+    }] = body.as_slice()
+    else {
+        return None;
+    };
+    let Statement::If {
+        condition:
+            Expression::Binary {
+                operator: BinaryOperator::Equal,
+                left: candidate,
+                right: payload,
+            },
+        then_body: match_body,
+        else_body: match_else,
+    } = match_guard
+    else {
+        return None;
+    };
+    let Expression::Cast { operand: payload, .. } = payload.as_ref() else {
+        return None;
+    };
+    let Expression::Binary {
+        operator: BinaryOperator::Add,
+        left: payload_node,
+        right: payload_offset,
+    } = payload.as_ref()
+    else {
+        return None;
+    };
+    let Expression::Cast {
+        operand: payload_node, ..
+    } = payload_node.as_ref()
+    else {
+        return None;
+    };
+    if !variable(candidate, &list.name)
+        || !variable(payload_node, &node.name)
+        || !match_else.is_empty()
+        || !matches!(match_body.as_slice(), [Statement::Return(Some(value))]
+            if constant_value(value) == Some(1))
+        || advanced_node != &node.name
+        || !matches!(next_pointer.as_ref(), Expression::Cast { operand, .. }
+            if variable(operand, &node.name))
+    {
+        return None;
+    }
+    Some(ListMembershipSummary {
+        registry: registry_name.clone(),
+        head_offset: i16::try_from(*head_offset).ok()?,
+        payload_offset: i16::try_from(constant_value(payload_offset)?).ok()?,
     })
 }
 
