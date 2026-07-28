@@ -942,6 +942,20 @@ impl Generator {
     /// its value is loaded into the inner base register (reused) before use.
     pub(crate) fn member_base_register(&mut self, base: &Expression) -> Compilation<u8> {
         match base {
+            // A file-scope struct VALUE is an addressable object, not a scalar
+            // register value. Materialize `&global` once and let the ordinary
+            // member/subscript displacement fold onto that address.
+            Expression::Variable(name)
+                if !self.locations.contains_key(name.as_str())
+                    && matches!(
+                        self.addressable_globals.get(name.as_str()),
+                        Some(Type::Struct { .. })
+                    ) =>
+            {
+                let register = self.fresh_virtual_general_preferring(3);
+                self.emit_address_of(base, register)?;
+                Ok(register)
+            }
             Expression::Variable(name) => self.general_register_of(name),
             // A source-proven one-word wrapper member denotes the wrapper's
             // complete pointer value. When that member becomes the base of a

@@ -575,6 +575,9 @@ impl Generator {
         // order-dependent shapes as If statements for the branch-form handler — so this
         // is exactly the FLAT form mwcc emits for these bodies.
         if function.guards.is_empty() {
+            if function.return_type == Type::UnsignedInt && self.is_float_value(&inlined) {
+                self.emit_plain_nonleaf_prologue();
+            }
             self.evaluate_tail(&inlined, function.return_type, result)?;
             self.emit_epilogue_and_return();
         } else {

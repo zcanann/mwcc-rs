@@ -785,8 +785,11 @@ impl Generator {
             // float -> unsigned uses a runtime helper call (the value may exceed
             // INT_MAX, which `fctiwz` cannot represent), not the signed frame bounce.
             if !self.signed_of(target_type) {
+                if target_type == Type::UnsignedInt {
+                    return self.emit_float_to_unsigned_integer(operand, destination);
+                }
                 return Err(mwcc_core::Diagnostic::error(
-                    "float-to-unsigned conversion needs a runtime helper (roadmap)",
+                    "float-to-narrow-unsigned conversion is not modeled (roadmap)",
                 ));
             }
             // float -> int: convert, bounce through the frame, then narrow if needed.
@@ -809,8 +812,11 @@ impl Generator {
             if matches!(self.call_return_types.get(name), Some(Type::Float | Type::Double)));
         if is_float_call {
             if !self.signed_of(target_type) {
+                if target_type == Type::UnsignedInt {
+                    return self.emit_float_to_unsigned_integer(operand, destination);
+                }
                 return Err(mwcc_core::Diagnostic::error(
-                    "float-to-unsigned conversion needs a runtime helper (roadmap)",
+                    "float-to-narrow-unsigned conversion is not modeled (roadmap)",
                 ));
             }
             self.emit_float_to_signed_integer(operand, destination)?;

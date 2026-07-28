@@ -3269,7 +3269,7 @@ impl Generator {
         // A function that calls is non-leaf: save the link register using the
         // selected generation's linkage convention before doing anything else.
         let mut lr_store_index: Option<usize> = None;
-        if function_makes_call(function) {
+        if function_makes_call(function) || self.return_needs_float_to_unsigned_helper(function) {
             if !function.guards.is_empty() {
                 if self.try_call_result_member_callback_guard(function)? {
                     return Ok(());

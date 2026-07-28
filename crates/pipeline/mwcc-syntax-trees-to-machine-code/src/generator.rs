@@ -1088,6 +1088,11 @@ impl Generator {
         {
             return Ok(*pointee);
         }
+        // An inline array member decays to a pointer whose element type is
+        // explicit in the syntax tree (`object->values[index]`).
+        if let Expression::MemberAddress { element, .. } = pointer {
+            return Ok(*element);
+        }
         // The first index of a flattened multidimensional frame array denotes
         // a row address. Its pointee remains the declared scalar element type;
         // the recorded row width affects addressing, not classification.

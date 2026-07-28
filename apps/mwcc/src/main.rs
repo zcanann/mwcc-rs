@@ -2775,6 +2775,9 @@ mod tests {
     #[path = "indexed_member_call_store_loop.rs"]
     mod indexed_member_call_store_loop;
 
+    #[path = "float_to_unsigned_runtime.rs"]
+    mod float_to_unsigned_runtime;
+
     #[path = "spilled_pointer_cast.rs"]
     mod spilled_pointer_cast;
 
