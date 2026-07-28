@@ -6,7 +6,8 @@ use crate::parser::{Parser, StructField, StructLayout};
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_syntax_trees::{
     Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, LoopKind, Parameter,
-    Pointee, PointerElement, Statement, SwitchArm, TranslationUnit, Type,
+    LocalDataRelocation, LocalDataRelocationTarget, Pointee, PointerElement, Statement, SwitchArm,
+    TranslationUnit, Type,
 };
 use mwcc_tokens::Token;
 
@@ -896,22 +897,36 @@ impl Parser {
                     None
                 };
                 let mut data_bytes = None;
-                let mut data_relocations = Vec::new();
+                let mut data_relocations: Vec<LocalDataRelocation> = Vec::new();
                 let initializer = if is_static && self.eat_keyword(Token::Equals) {
                     if *self.peek() == Token::BraceOpen
                         && matches!(declared_type, Type::Struct { .. })
                         && struct_tag.is_some()
                     {
+                        let mut relocations = Vec::new();
                         data_bytes = Some(self.parse_one_struct_relocated(
                             struct_tag.as_ref().unwrap(),
                             0,
-                            &mut data_relocations,
+                            &mut relocations,
                         )?);
+                        data_relocations.extend(relocations.into_iter().map(
+                            |(offset, target, addend)| LocalDataRelocation {
+                                offset,
+                                target: LocalDataRelocationTarget::Symbol(target),
+                                addend,
+                            },
+                        ));
                     } else if matches!(declared_type, Type::Pointer(_) | Type::StructPointer { .. })
                     {
                         let (bytes, relocations) = self.parse_static_local_pointer_initializer()?;
                         data_bytes = Some(bytes);
-                        data_relocations = relocations;
+                        data_relocations.extend(relocations.into_iter().map(
+                            |(offset, target, addend)| LocalDataRelocation {
+                                offset,
+                                target: LocalDataRelocationTarget::Symbol(target),
+                                addend,
+                            },
+                        ));
                     } else if matches!(
                         declared_type,
                         Type::Int

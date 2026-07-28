@@ -2233,6 +2233,20 @@ fn compile(
                 _ => {}
             }
         }
+        for local in static_local_globals
+            .iter_mut()
+            .filter(|local| local.static_local_owner == Some(function_index))
+        {
+            for relocation in &mut local.relocations {
+                if let Some(index) = relocation
+                    .target
+                    .strip_prefix("@@str")
+                    .and_then(|rest| rest.parse::<usize>().ok())
+                {
+                    relocation.target = resolved[index].clone();
+                }
+            }
+        }
     }
     if !file_string_renames.is_empty() {
         for global in &mut defined_globals {
@@ -2718,6 +2732,9 @@ mod tests {
 
     #[path = "metroid_prime_qsort.rs"]
     mod metroid_prime_qsort;
+
+    #[path = "static_local_string_table.rs"]
+    mod static_local_string_table;
 
     #[path = "spilled_pointer_cast.rs"]
     mod spilled_pointer_cast;

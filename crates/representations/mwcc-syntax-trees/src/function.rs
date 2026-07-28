@@ -34,18 +34,32 @@ pub struct LocalDeclaration {
     /// `register`/`auto` hints do not set this — they are ordinary automatic locals.
     pub is_static: bool,
     /// A static local's constant byte image (a brace-initialized array or a
-    /// scalar literal); `None` for a zero-initialized or automatic local.
+    /// scalar literal); initialized automatic arrays also retain their source
+    /// image for frame copy-in. `None` means zero/no image.
     pub data_bytes: Option<Vec<u8>>,
-    /// `R_PPC_ADDR32` relocations carried by a static local's data image:
-    /// (byte offset, target symbol, addend). Empty for automatic locals and
-    /// ordinary constant images.
-    pub data_relocations: Vec<(u32, String, i32)>,
+    /// Address-bearing entries in a static local's byte image. String targets
+    /// remain byte-valued until function string pooling assigns their `@N`
+    /// symbols.
+    pub data_relocations: Vec<LocalDataRelocation>,
     /// Whether the static local was declared `const` (routes .sdata2/.rodata).
     pub is_const: bool,
     /// For a flattened MULTI-DIMENSIONAL array local (`float m[3][4];` / `Mtx m;`):
     /// the byte stride of one row (`m[k]` is the ADDRESS `slot + k*row_bytes`).
     /// `None` for scalars and one-dimensional arrays (whose `m[k]` is a VALUE).
     pub row_bytes: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalDataRelocation {
+    pub offset: u32,
+    pub target: LocalDataRelocationTarget,
+    pub addend: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalDataRelocationTarget {
+    Symbol(String),
+    StringLiteral(Vec<u8>),
 }
 
 /// A guarded early return: `if (condition) return value;`.

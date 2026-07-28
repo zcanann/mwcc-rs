@@ -354,7 +354,9 @@ pub fn parse_located_translation_unit_with_behavior(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mwcc_syntax_trees::{BinaryOperator, Expression, Statement, Type};
+    use mwcc_syntax_trees::{
+        BinaryOperator, Expression, LocalDataRelocation, LocalDataRelocationTarget, Statement, Type,
+    };
 
     fn located(source: &str) -> Vec<LocatedToken> {
         mwcc_source_to_tokens::tokenize(source)
@@ -8915,7 +8917,50 @@ blr\n\
             .unwrap();
 
         assert_eq!(pointer.data_bytes.as_deref(), Some(&[0, 0, 0, 0][..]));
-        assert_eq!(pointer.data_relocations, [(0, "value".to_string(), 0)]);
+        assert_eq!(
+            pointer.data_relocations,
+            [LocalDataRelocation {
+                offset: 0,
+                target: LocalDataRelocationTarget::Symbol("value".to_string()),
+                addend: 0,
+            }]
+        );
+    }
+
+    #[test]
+    fn retains_static_local_pointer_table_string_targets() {
+        let source = r#"
+            char* choose(unsigned index) {
+                static char* text[2] = {"first", "second"};
+                return text[index];
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let table = &unit.functions[0].locals[0];
+        assert_eq!(table.array_length, Some(2));
+        assert_eq!(table.data_bytes.as_deref(), Some(&[0; 8][..]));
+        assert_eq!(
+            table.data_relocations,
+            [
+                LocalDataRelocation {
+                    offset: 0,
+                    target: LocalDataRelocationTarget::StringLiteral(b"first".to_vec()),
+                    addend: 0,
+                },
+                LocalDataRelocation {
+                    offset: 4,
+                    target: LocalDataRelocationTarget::StringLiteral(b"second".to_vec()),
+                    addend: 0,
+                },
+            ]
+        );
     }
 
     #[test]

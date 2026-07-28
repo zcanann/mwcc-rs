@@ -23,7 +23,8 @@ mod types;
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_syntax_trees::{
     ConditionalOrigin, Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration,
-    LoopKind, Parameter, Pointee, PointerElement, Statement, SwitchArm, TranslationUnit, Type,
+    LocalDataRelocation, LocalDataRelocationTarget, LoopKind, Parameter, Pointee, PointerElement,
+    Statement, SwitchArm, TranslationUnit, Type,
 };
 use mwcc_tokens::Token;
 
@@ -4696,7 +4697,7 @@ impl Parser {
                 // A local array `type buf[N];` — a frame slot of `N` elements. A
                 // STATIC local array (`static const f32 c[] = {...};`) captures its
                 // byte image instead (it is static storage, not a frame slot).
-                let mut data_relocations: Vec<(u32, String, i32)> = Vec::new();
+                let mut data_relocations: Vec<LocalDataRelocation> = Vec::new();
                 let mut data_bytes: Option<Vec<u8>> = None;
                 let mut inner_elements: u16 = 1;
                 let array_length = if *self.peek() == Token::BracketOpen {
@@ -4732,10 +4733,18 @@ impl Parser {
                                         [index * 4..index * 4 + 4]
                                         .copy_from_slice(&(value as u32).to_be_bytes()),
                                     PointerElement::Symbol(target) => {
-                                        data_relocations.push((offset, target, 0));
+                                        data_relocations.push(LocalDataRelocation {
+                                            offset,
+                                            target: LocalDataRelocationTarget::Symbol(target),
+                                            addend: 0,
+                                        });
                                     }
-                                    PointerElement::Str(_) => {
-                                        return Err(Diagnostic::error("a string in a static-local pointer array needs function-local pooling (roadmap)"));
+                                    PointerElement::Str(bytes) => {
+                                        data_relocations.push(LocalDataRelocation {
+                                            offset,
+                                            target: LocalDataRelocationTarget::StringLiteral(bytes),
+                                            addend: 0,
+                                        });
                                     }
                                 }
                             }
@@ -4749,8 +4758,16 @@ impl Parser {
                             // array of structs. The same relocation-aware serializer serves
                             // file-scope struct arrays.
                             let tag = struct_tag.as_ref().unwrap();
+                            let mut relocations = Vec::new();
                             let bytes =
-                                self.parse_struct_array_initializer(tag, &mut data_relocations)?;
+                                self.parse_struct_array_initializer(tag, &mut relocations)?;
+                            data_relocations.extend(relocations.into_iter().map(
+                                |(offset, target, addend)| LocalDataRelocation {
+                                    offset,
+                                    target: LocalDataRelocationTarget::Symbol(target),
+                                    addend,
+                                },
+                            ));
                             let element_size = match declared_type {
                                 Type::Struct { size, .. } => size as usize,
                                 _ => unreachable!(),
@@ -4879,8 +4896,16 @@ impl Parser {
                             && struct_tag.is_some()
                         {
                             let tag = struct_tag.as_ref().unwrap();
+                            let mut relocations = Vec::new();
                             let image =
-                                self.parse_one_struct_relocated(tag, 0, &mut data_relocations)?;
+                                self.parse_one_struct_relocated(tag, 0, &mut relocations)?;
+                            data_relocations.extend(relocations.into_iter().map(
+                                |(offset, target, addend)| LocalDataRelocation {
+                                    offset,
+                                    target: LocalDataRelocationTarget::Symbol(target),
+                                    addend,
+                                },
+                            ));
                             data_bytes = Some(image);
                             None
                         } else {

@@ -6,7 +6,7 @@
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{FrameInfo, Instruction, MachineFunction, RelocationTarget};
-use mwcc_syntax_trees::{Function, GlobalDeclaration};
+use mwcc_syntax_trees::{Function, GlobalDeclaration, LocalDataRelocationTarget};
 use mwcc_versions::{Behavior, CompilerConfig};
 use std::collections::{HashMap, HashSet};
 
@@ -302,6 +302,7 @@ pub fn lower_function(
         .cloned()
         .collect();
     let mut static_local_data: Vec<mwcc_machine_code::StaticLocal> = Vec::new();
+    let mut static_local_strings: Vec<Vec<u8>> = Vec::new();
     for local in &static_locals {
         if globals.iter().any(|global| global.name == local.name) {
             return Err(Diagnostic::error(
@@ -348,13 +349,33 @@ pub fn lower_function(
             }
             _ => element.max(4),
         };
+        let relocations = local
+            .data_relocations
+            .iter()
+            .map(|relocation| {
+                let target = match &relocation.target {
+                    LocalDataRelocationTarget::Symbol(target) => target.clone(),
+                    LocalDataRelocationTarget::StringLiteral(bytes) => {
+                        let index = static_local_strings
+                            .iter()
+                            .position(|existing| existing == bytes)
+                            .unwrap_or_else(|| {
+                                static_local_strings.push(bytes.clone());
+                                static_local_strings.len() - 1
+                            });
+                        format!("@@str{index}")
+                    }
+                };
+                (relocation.offset, target, relocation.addend)
+            })
+            .collect();
         static_local_data.push(mwcc_machine_code::StaticLocal {
             name: local.name.clone(),
             initial_bytes: bytes,
             size,
             alignment,
             is_const: local.is_const,
-            relocations: local.data_relocations.clone(),
+            relocations,
         });
     }
     // The body machinery never sees the statics as automatic locals.
@@ -597,6 +618,9 @@ pub fn lower_function(
         inline_string_symbols: source_inline_string_symbols.clone(),
         inline_summaries: inline_summaries.clone(),
     };
+    // Static-local pointer tables are declared before executable statements,
+    // so their literal targets lead the function's ordinary string pool.
+    generator.output.string_literals = static_local_strings;
     generator.assign_parameters(function)?;
     generator.evaluate_body(function).map_err(|mut diagnostic| {
         let context = format!("function '{}'", function.name);
