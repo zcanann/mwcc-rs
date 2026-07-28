@@ -329,7 +329,13 @@ impl LoadContext<'_> {
     }
 
     fn resolve_include(&self, including_file: &Path, include: &Include<'_>) -> Option<PathBuf> {
-        let requested = Path::new(include.path);
+        // CodeWarrior projects commonly spell Windows separators inside
+        // otherwise portable include directives. Treat them as path
+        // separators on every host so an angle include such as
+        // `<PowerPC_EABI_Support\MSL_C\printf.h>` does not silently remain in
+        // the token stream on Unix.
+        let normalized = include.path.replace('\\', "/");
+        let requested = Path::new(&normalized);
         // A configured project may put a generated binary `.mch` first on the
         // access path. That file is serialized MWCC state, not C++ source. Our
         // frontend reconstructs the declarations from the companion textual
@@ -738,6 +744,30 @@ mod tests {
             loaded,
             b"#line 1\nint sibling;\n#line 2\n#line 1\nint access;\n#line 3\n"
         );
+    }
+
+    #[test]
+    fn resolves_codewarrior_backslashes_in_angle_includes() {
+        let scratch = Scratch::new();
+        let headers = scratch.0.join("headers");
+        std::fs::create_dir_all(headers.join("MSL_C/MSL_Common")).unwrap();
+        std::fs::write(
+            headers.join("MSL_C/MSL_Common/printf.h"),
+            b"int sprintf(char*, const char*, ...);\n",
+        )
+        .unwrap();
+        std::fs::write(
+            scratch.0.join("unit.c"),
+            b"#include <MSL_C\\MSL_Common/printf.h>\n",
+        )
+        .unwrap();
+
+        let loaded = SourceLoader::new(vec![headers])
+            .load(&scratch.0.join("unit.c"))
+            .unwrap();
+        assert!(loaded
+            .windows(b"int sprintf(char*, const char*, ...);".len())
+            .any(|window| window == b"int sprintf(char*, const char*, ...);"));
     }
 
     #[test]
