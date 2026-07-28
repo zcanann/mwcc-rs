@@ -89,14 +89,6 @@ impl Parser {
             for (index, field_type) in field_types.iter().enumerate() {
                 if matches!(field_type, Type::Pointer(_) | Type::StructPointer { .. }) {
                     let element = self.parse_pointer_init_element()?;
-                    // A string element pools an anonymous `@N` object, whose NUMBER in a
-                    // real translation unit is offset by phantom `@N` mwcc consumes while
-                    // processing preceding (header inline) functions — not modeled yet, so
-                    // defer string tables. `&symbol`/`&global`/`0`/scalar tables have no
-                    // `@N` and stay byte-exact.
-                    if matches!(element, PointerElement::Str(_)) {
-                        return Err(Diagnostic::error("a struct-table with string literals needs the anonymous @N base (roadmap)"));
-                    }
                     elements.push(element);
                 } else {
                     elements.push(PointerElement::Scalar(self.parse_integer_constant()?));

@@ -10300,6 +10300,61 @@ blr\n\
     }
 
     #[test]
+    fn retains_strings_and_symbols_in_struct_pointer_tables() {
+        let source = r#"
+            typedef unsigned int U32;
+            typedef U32 (*Callback)(void*);
+            struct Entry {
+                U32 id;
+                U32 reserved;
+                const char* name;
+                Callback callback;
+            };
+            U32 callback(void*) { return 7; }
+            struct Entry table[] = {
+                { 1, 0, "first", callback },
+                { 2, 0, "second", callback },
+                { 0, 0, 0, 0 },
+            };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let table = unit
+            .globals
+            .iter()
+            .find(|global| global.name == "table")
+            .unwrap();
+
+        assert_eq!(table.array_length, Some(3));
+        assert!(matches!(
+            table.address_initializer.as_deref(),
+            Some([
+                mwcc_syntax_trees::PointerElement::Scalar(1),
+                mwcc_syntax_trees::PointerElement::Scalar(0),
+                mwcc_syntax_trees::PointerElement::Str(first),
+                mwcc_syntax_trees::PointerElement::Symbol(first_callback),
+                mwcc_syntax_trees::PointerElement::Scalar(2),
+                mwcc_syntax_trees::PointerElement::Scalar(0),
+                mwcc_syntax_trees::PointerElement::Str(second),
+                mwcc_syntax_trees::PointerElement::Symbol(second_callback),
+                mwcc_syntax_trees::PointerElement::Scalar(0),
+                mwcc_syntax_trees::PointerElement::Scalar(0),
+                mwcc_syntax_trees::PointerElement::Null,
+                mwcc_syntax_trees::PointerElement::Null,
+            ]) if first == b"first"
+                && second == b"second"
+                && first_callback.contains("callback")
+                && second_callback == first_callback
+        ));
+    }
+
+    #[test]
     fn integer_struct_field_retains_cast_symbol_relocation() {
         let source = r#"
             typedef unsigned int u32;
