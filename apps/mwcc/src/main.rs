@@ -2725,6 +2725,9 @@ mod tests {
     #[path = "inlined_object_make.rs"]
     mod inlined_object_make;
 
+    #[path = "inlined_callback_open.rs"]
+    mod inlined_callback_open;
+
     #[path = "inlined_payload_event.rs"]
     mod inlined_payload_event;
 

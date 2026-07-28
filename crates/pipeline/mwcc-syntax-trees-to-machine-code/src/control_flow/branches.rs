@@ -22,6 +22,15 @@ impl Generator {
         tail: bool,
         origin: ConditionalOrigin,
     ) -> Compilation<()> {
+        if self.try_emit_callback_fallback_select(
+            condition,
+            when_true,
+            when_false,
+            destination,
+            tail,
+        )? {
+            return Ok(());
+        }
         if self.try_emit_logical_call_select(
             condition,
             when_true,
@@ -1838,7 +1847,9 @@ impl Generator {
         // the selected value in the EABI call-result register. The dedicated
         // select owner emits both arms into that home, so compare it directly
         // instead of forcing a redundant move through r0.
-        if super::logical_call_select::is_logical_call_select(operand) {
+        if super::logical_call_select::is_logical_call_select(operand)
+            || super::callback_fallback_select::is_callback_fallback_select(operand)
+        {
             let result = mwcc_target::Eabi::general_result().number;
             self.evaluate_general(operand, result)?;
             return Ok(result);

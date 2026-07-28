@@ -87,6 +87,7 @@ mod guarded_member_decrement_if_else;
 mod if_else;
 mod indirect_call;
 mod inlined_guarded_aggregate_update;
+mod inlined_callback_open;
 mod inlined_local_select;
 mod inlined_object_make;
 mod ladders;

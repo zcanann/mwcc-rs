@@ -65,11 +65,12 @@ impl ValueInlineBody {
 }
 
 pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
-    if !function.guards.is_empty() || function.asm_body.is_some() {
+    if function.asm_body.is_some() {
         return None;
     }
     if function.return_type == Type::Void {
-        if function.return_expression.is_some()
+        if !function.guards.is_empty()
+            || function.return_expression.is_some()
             || (!composable_function(function) && !sequenced_aggregate_void_body(function))
             || !function.statements.iter().all(void_expression_statement)
         {
@@ -81,6 +82,12 @@ pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
                 expression,
             },
         );
+    }
+    if let Some(expression) = summarize_guard_chain(function) {
+        return Some(ValueInlineBody {
+            source: function.clone(),
+            expression,
+        });
     }
     // A direct scalar/member return is the smallest value-inline body. Keep it
     // before the result-local pattern below: ordinary (non-inline) definitions
@@ -114,6 +121,37 @@ pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
             expression,
         }
     })
+}
+
+/// Preserve a retained inline's ordered `if (condition) return value;` chain.
+///
+/// These guards are already a value-selection DAG: lowering them to nested
+/// conditionals keeps short-circuit order and leaves each chosen return
+/// expression at its original control-flow point. Restrict this summary to a
+/// body with no locals or ordinary statements so there are no side effects to
+/// move across the first condition.
+fn summarize_guard_chain(function: &Function) -> Option<Expression> {
+    if function.guards.is_empty()
+        || !function.locals.is_empty()
+        || !function.statements.is_empty()
+    {
+        return None;
+    }
+    let fallback = normalize_reference_result(
+        function.return_type,
+        function.return_expression.clone()?,
+    );
+    Some(function.guards.iter().rev().fold(fallback, |otherwise, guard| {
+        Expression::Conditional {
+            condition: Box::new(guard.condition.clone()),
+            when_true: Box::new(normalize_reference_result(
+                function.return_type,
+                guard.value.clone(),
+            )),
+            when_false: Box::new(otherwise),
+            origin: ConditionalOrigin::IfReturns,
+        }
+    }))
 }
 
 /// Preserve the address-valued result of a C++ reference accessor.
@@ -476,7 +514,9 @@ fn is_boolean_expression(expression: &Expression) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mwcc_syntax_trees::{BinaryOperator, LocalDeclaration, Parameter};
+    use mwcc_syntax_trees::{
+        BinaryOperator, GuardedReturn, LocalDeclaration, Parameter, Pointee,
+    };
 
     fn empty_function(name: &str, return_type: Type) -> Function {
         Function {
@@ -673,6 +713,39 @@ mod tests {
             })
                 && matches!(when_true.as_ref(), Expression::Variable(name) if name == "address")
                 && matches!(when_false.as_ref(), Expression::IntegerLiteral(0))
+        ));
+    }
+
+    #[test]
+    fn summarizes_retained_callback_or_fallback_guards() {
+        let mut function = empty_function("dispatch", Type::Int);
+        function.parameters.push(Parameter {
+            parameter_type: Type::Pointer(Pointee::Int),
+            name: "value".into(),
+        });
+        function.guards.push(GuardedReturn {
+            condition: Expression::Variable("callback".into()),
+            value: Expression::CallThrough {
+                target: Box::new(Expression::Variable("callback".into())),
+                arguments: vec![Expression::Variable("value".into())],
+            },
+        });
+        function.return_expression = Some(Expression::Call {
+            name: "fallback".into(),
+            arguments: vec![Expression::Variable("value".into())],
+        });
+
+        let summary = summarize(&function).expect("guard chain should summarize");
+        assert!(matches!(
+            summary.expression,
+            Expression::Conditional {
+                condition,
+                when_true,
+                when_false,
+                origin: ConditionalOrigin::IfReturns,
+            } if matches!(condition.as_ref(), Expression::Variable(name) if name == "callback")
+                && matches!(when_true.as_ref(), Expression::CallThrough { .. })
+                && matches!(when_false.as_ref(), Expression::Call { name, .. } if name == "fallback")
         ));
     }
 }
