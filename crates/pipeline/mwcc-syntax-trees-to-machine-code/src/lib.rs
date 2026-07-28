@@ -836,6 +836,7 @@ pub fn lower_function(
     generator.schedule_saved_character_formatter_arguments();
     generator.schedule_position_formatter_arguments();
     generator.schedule_temporary_buffer_format_copy();
+    generator.schedule_guarded_formatter_member_cache();
     generator.schedule_ground_knockback_projection();
     generator.schedule_guarded_member_alias_initialization();
     generator.schedule_entry_saved_zero_test();
