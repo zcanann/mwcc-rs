@@ -1455,6 +1455,9 @@ impl Generator {
         if self.try_payload_object_free(function)? {
             return Ok(());
         }
+        if self.try_inlined_object_make(function)? {
+            return Ok(());
+        }
         if self.try_global_list_teardown(function)? {
             return Ok(());
         }

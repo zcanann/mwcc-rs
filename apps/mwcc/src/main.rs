@@ -2722,6 +2722,9 @@ mod tests {
     #[path = "payload_object_free.rs"]
     mod payload_object_free;
 
+    #[path = "inlined_object_make.rs"]
+    mod inlined_object_make;
+
     #[path = "inlined_payload_event.rs"]
     mod inlined_payload_event;
 

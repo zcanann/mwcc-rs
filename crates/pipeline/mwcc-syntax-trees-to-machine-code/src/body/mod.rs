@@ -88,6 +88,7 @@ mod if_else;
 mod indirect_call;
 mod inlined_guarded_aggregate_update;
 mod inlined_local_select;
+mod inlined_object_make;
 mod ladders;
 mod legacy_constant_store;
 mod leading_store_guard;
