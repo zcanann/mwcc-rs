@@ -2719,6 +2719,9 @@ mod tests {
     #[path = "global_list_teardown.rs"]
     mod global_list_teardown;
 
+    #[path = "payload_object_free.rs"]
+    mod payload_object_free;
+
     #[path = "inlined_payload_event.rs"]
     mod inlined_payload_event;
 

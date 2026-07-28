@@ -112,6 +112,7 @@ mod materialized_store_locals;
 mod mixed_scalar_initialization_schedule;
 mod nested_global_indirect_call;
 mod passes;
+mod payload_object_free;
 mod punned_ladder_policy;
 mod punned_select;
 mod punned_writeback;
