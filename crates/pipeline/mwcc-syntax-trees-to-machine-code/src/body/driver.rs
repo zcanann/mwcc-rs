@@ -1446,6 +1446,9 @@ impl Generator {
         if self.try_ascii_uppercase_loop(function)? {
             return Ok(());
         }
+        if self.try_linked_list_remove(function)? {
+            return Ok(());
+        }
         if self.try_linked_list_append(function)? {
             return Ok(());
         }

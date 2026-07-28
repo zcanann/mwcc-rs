@@ -17,6 +17,7 @@ mod inlined_list_membership;
 mod inlined_list_wipe;
 mod interrupt_vector_copy;
 mod linked_list_append;
+mod linked_list_remove;
 pub(crate) mod policy;
 mod poll_search;
 mod pointer_walk_minimum;

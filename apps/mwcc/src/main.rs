@@ -2704,6 +2704,9 @@ mod tests {
     #[path = "linked_list_append.rs"]
     mod linked_list_append;
 
+    #[path = "linked_list_remove.rs"]
+    mod linked_list_remove;
+
     #[path = "member_float_select.rs"]
     mod member_float_select;
     mod member_setup;
