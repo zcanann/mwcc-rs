@@ -64,6 +64,7 @@ mod cached_member_guard;
 mod chunked_callback_read;
 mod expression_statement;
 mod float_store_fill;
+mod formatter_buffer_copy_schedule;
 mod formatter_character_schedule;
 mod formatter_position_schedule;
 mod float_friction_select;
