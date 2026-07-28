@@ -2044,7 +2044,9 @@ fn compile(
         // function's `@N` block, interleaved per-function with its constants/unwind entries.
         let mut new_string_names: Vec<String> = Vec::new();
         let mut resolved_addends = Vec::new();
-        let mut resolved: Vec<String> = if machine_function.packed_string_literals {
+        let mut resolved: Vec<String> = if config.flags.string_literals_packed
+            && !machine_function.string_literals.is_empty()
+        {
             let name = "@stringBase0".to_owned();
             let mut names = Vec::with_capacity(machine_function.string_literals.len());
             for bytes in &machine_function.string_literals {
