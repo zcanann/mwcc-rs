@@ -172,3 +172,51 @@ fn reloads_an_address_taken_scalar_for_a_pointer_store() {
         "the frame scalar was misclassified as an external symbol"
     );
 }
+
+#[test]
+fn reloads_an_address_taken_parameter_after_its_pointer_escapes() {
+    let source = br#"
+        extern int rewrite(unsigned*);
+        extern int consume(int);
+
+        int bridge(int size) {
+            if (!rewrite((unsigned*)&size)) {
+                return 0;
+            }
+            return consume(size);
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.emit_mwcats = false;
+    let object = compile(
+        source,
+        "escaped-address-taken-parameter.c",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_1,
+            flags,
+        },
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("the address-taken parameter should acquire a frame slot");
+
+    // The incoming value initializes the object before its address escapes.
+    let publication = [
+        0x90, 0x61, 0x00, 0x08, // stw r3,8(r1)
+        0x38, 0x61, 0x00, 0x08, // addi r3,r1,8
+        0x48, 0x00, 0x00, 0x01, // bl rewrite
+    ];
+    assert!(object
+        .windows(publication.len())
+        .any(|bytes| bytes == publication));
+
+    // rewrite may replace size through the escaped pointer. Passing the stale
+    // incoming r3 to consume would be a miscompile; the frame object must win.
+    let reload = [
+        0x80, 0x61, 0x00, 0x08, // lwz r3,8(r1)
+        0x48, 0x00, 0x00, 0x01, // bl consume
+    ];
+    assert!(object.windows(reload.len()).any(|bytes| bytes == reload));
+}

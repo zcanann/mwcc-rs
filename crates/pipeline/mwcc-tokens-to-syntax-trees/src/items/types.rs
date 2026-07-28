@@ -1193,18 +1193,16 @@ impl Parser {
                         ));
                     }
                     is_array = true;
-                    // A scalar array records its element type for indexed access. A
-                    // struct-value array (`GXTexRegion TexRegions[8];`) or a pointer
-                    // array (`u8 *mess_stack[8];`) has no scalar pointee — its element
-                    // size still lays the array out correctly (4 bytes per pointer, the
-                    // struct width per struct), so later members resolve; indexed
-                    // element access defers in codegen rather than miscomputing.
-                    if !matches!(
-                        field_type,
-                        Type::Struct { .. } | Type::Pointer(_) | Type::StructPointer { .. }
-                    ) {
-                        array_element = Some(pointee_of(field_type)?);
-                    }
+                    // Scalar and pointer arrays both decay to addressable scalar
+                    // storage. A pointer element is an opaque word at this layer:
+                    // indexing loads the address, while its deeper pointee identity
+                    // remains intentionally erased. Struct-value arrays still need
+                    // aggregate element representation and defer.
+                    array_element = match field_type {
+                        Type::Struct { .. } => None,
+                        Type::Pointer(_) | Type::StructPointer { .. } => Some(Pointee::Pointer),
+                        _ => Some(pointee_of(field_type)?),
+                    };
                     // Preserve the first index's byte stride as well as total size:
                     // `field[R][C]` advances `C * sizeof(element)` for `field[row]`.
                     let (total_bytes, first_index_stride) = self
@@ -1764,13 +1762,12 @@ impl Parser {
             };
             if *self.peek() == Token::BracketOpen {
                 is_array = true;
-                if array_element.is_none()
-                    && !matches!(
-                        field_type,
-                        Type::Struct { .. } | Type::Pointer(_) | Type::StructPointer { .. }
-                    )
-                {
-                    array_element = Some(pointee_of(field_type)?);
+                if array_element.is_none() {
+                    array_element = match field_type {
+                        Type::Struct { .. } => None,
+                        Type::Pointer(_) | Type::StructPointer { .. } => Some(Pointee::Pointer),
+                        _ => Some(pointee_of(field_type)?),
+                    };
                 }
                 let (total_bytes, first_index_stride) = self
                     .parse_array_declarator_extent(size)?

@@ -867,6 +867,13 @@ impl Generator {
     }
 
     pub(crate) fn lookup_general(&self, name: &str) -> Option<u8> {
+        // Once a variable has addressable storage, its register is only an
+        // incoming/initial value. A call through the escaped address may replace
+        // the object, so all later value consumers must go through `evaluate`
+        // and reload the frame slot rather than taking this fast register path.
+        if self.frame_slots.contains_key(name) {
+            return None;
+        }
         self.locations
             .get(name)
             .filter(|location| location.class == ValueClass::General)
@@ -1123,6 +1130,12 @@ impl Generator {
     /// (register, width-bits, signed) for a general-register leaf variable.
     pub(crate) fn leaf_info(&self, expression: &Expression) -> Compilation<(u8, u8, bool)> {
         if let Expression::Variable(name) = expression {
+            // An addressable object is no longer a register leaf. Its incoming
+            // register may initialize the frame slot, but an escaped pointer can
+            // replace the stored value before any later use.
+            if self.frame_slots.contains_key(name) {
+                return Err(Diagnostic::error("expected a general-register leaf"));
+            }
             if let Some(location) = self.locations.get(name.as_str()) {
                 if location.class == ValueClass::General {
                     return Ok((location.register, location.width, location.signed));

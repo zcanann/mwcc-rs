@@ -209,6 +209,15 @@ impl Generator {
             Vec::new()
         };
         let address_taken = crate::frame::collect_address_taken(function);
+        let frame_scalar_parameters: Vec<_> = if with_frame_array {
+            function
+                .parameters
+                .iter()
+                .filter(|parameter| address_taken.contains(parameter.name.as_str()))
+                .collect()
+        } else {
+            Vec::new()
+        };
         let frame_scalar_locals: Vec<&LocalDeclaration> = if with_frame_array {
             function
                 .locals
@@ -222,7 +231,10 @@ impl Generator {
         } else {
             Vec::new()
         };
-        if frame_scalar_locals.iter().any(|local| {
+        if frame_scalar_parameters.iter().any(|parameter| {
+            class_of(parameter.parameter_type).ok() != Some(ValueClass::General)
+                || parameter.parameter_type.width() > 32
+        }) || frame_scalar_locals.iter().any(|local| {
             local.is_static
                 || class_of(local.declared_type).ok() != Some(ValueClass::General)
                 || local.declared_type.width() > 32
@@ -241,6 +253,7 @@ impl Generator {
             };
             if plan.arrays.is_empty()
                 && aggregate_frame_locals.is_empty()
+                && frame_scalar_parameters.is_empty()
                 && frame_scalar_locals.is_empty()
             {
                 decline!("frame mode requires an automatic array, aggregate, or scalar slot");
@@ -271,7 +284,9 @@ impl Generator {
         let frame_arrays = &frame_array_plan.arrays;
         let frame_array_bytes = frame_array_plan.total_bytes;
         let aggregate_call_copy_plan =
-            (frame_arrays.is_empty() && frame_scalar_locals.is_empty())
+            (frame_arrays.is_empty()
+                && frame_scalar_parameters.is_empty()
+                && frame_scalar_locals.is_empty())
                 .then(|| {
                     plan_terminal_one_word_aggregate_call_copies(
                         &aggregate_frame_locals,
@@ -316,6 +331,9 @@ impl Generator {
                 function
                     .parameters
                     .iter()
+                    .filter(|parameter| {
+                        !address_taken.contains(parameter.name.as_str())
+                    })
                     .map(|parameter| parameter.name.as_str()),
             )
             .collect();
@@ -449,7 +467,11 @@ impl Generator {
 
         let scalar_only_frame_bytes = if frame_arrays.is_empty() {
             frame_publication.as_ref().map_or_else(
-                || i16::try_from(frame_scalar_locals.len() * 4),
+                || {
+                    i16::try_from(
+                        (frame_scalar_parameters.len() + frame_scalar_locals.len()) * 4,
+                    )
+                },
                 |_| Ok(LOCAL_REGION_BYTES),
             )
                 .map_err(|_| Diagnostic::error("structured scalar frame is too large"))?
@@ -847,7 +869,10 @@ impl Generator {
             }
         }
         self.structured_aggregate_call_copy_plan = aggregate_call_copy_plan.clone();
-        if !frame_arrays.is_empty() || !frame_scalar_locals.is_empty() {
+        if !frame_arrays.is_empty()
+            || !frame_scalar_parameters.is_empty()
+            || !frame_scalar_locals.is_empty()
+        {
             let mut extra_scalar_words = function
                 .locals
                 .iter()
@@ -856,6 +881,9 @@ impl Generator {
                         && !aggregate_frame_locals
                             .iter()
                             .any(|aggregate| aggregate.name == local.name)
+                        && !frame_scalar_locals
+                            .iter()
+                            .any(|scalar| scalar.name == local.name)
                         && !deferred_saved_locals
                             .iter()
                             .any(|saved| saved.name == local.name)
@@ -938,6 +966,7 @@ impl Generator {
                 let alignment = if folded_terminal_pointer_alias
                     || saved_float_plan.group_count != 0
                     || (unused_frame_array && !aggregate_frame_locals.is_empty())
+                    || !frame_scalar_parameters.is_empty()
                 {
                     8
                 } else {
@@ -986,16 +1015,56 @@ impl Generator {
             }
             let mut scalar_offset =
                 if frame_arrays.is_empty() {
-                    frame_publication
-                        .as_ref()
-                        .map_or(8, |_| CURSOR_OFFSET)
+                    if self.behavior.frame_convention == FrameConvention::LinkageFirst
+                        && !frame_scalar_parameters.is_empty()
+                    {
+                        array_offset
+                            .checked_sub(
+                                i16::try_from(frame_scalar_parameters.len() * 4).map_err(|_| {
+                                    Diagnostic::error("structured scalar frame is too large")
+                                })?,
+                            )
+                            .ok_or_else(|| {
+                                Diagnostic::error("structured scalar frame is too large")
+                            })?
+                    } else {
+                        frame_publication
+                            .as_ref()
+                            .map_or(8, |_| CURSOR_OFFSET)
+                    }
                 } else {
                     array_offset
-                        .checked_sub(i16::try_from(frame_scalar_locals.len() * 4).map_err(
-                            |_| Diagnostic::error("structured scalar frame is too large"),
-                        )?)
+                        .checked_sub(
+                            i16::try_from(
+                                (frame_scalar_parameters.len() + frame_scalar_locals.len()) * 4,
+                            )
+                            .map_err(|_| {
+                                Diagnostic::error("structured scalar frame is too large")
+                            })?,
+                        )
                         .ok_or_else(|| Diagnostic::error("structured scalar frame is too large"))?
                 };
+            for parameter in &frame_scalar_parameters {
+                let incoming = self
+                    .locations
+                    .get(&parameter.name)
+                    .expect("address-taken parameter was assigned")
+                    .register;
+                self.frame_slots.insert(
+                    parameter.name.clone(),
+                    FrameSlot {
+                        offset: scalar_offset,
+                        class: ValueClass::General,
+                        size: 4,
+                        value_type: parameter.parameter_type,
+                        parameter_register: Some(incoming),
+                        is_array: false,
+                    },
+                );
+                scalar_offset = scalar_offset
+                    .checked_add(4)
+                    .ok_or_else(|| Diagnostic::error("structured scalar frame is too large"))?;
+            }
             for local in &frame_scalar_locals {
                 self.frame_slots.insert(
                     local.name.clone(),
@@ -1051,10 +1120,14 @@ impl Generator {
         self.non_leaf = true;
         self.frame_size = plan.frame_size;
         self.callee_saved = homes.clone();
-        self.legacy_callee_saved_frame_layout = if unused_frame_array {
+        self.legacy_callee_saved_frame_layout = if unused_frame_array
+            || !frame_scalar_parameters.is_empty()
+        {
             // An unused source-level scratch array still occupies its declared
-            // bytes, but creates no retained value-table lane. Its logical
-            // frame already accounts for the array and every saved home.
+            // bytes, but creates no retained value-table lane. Addressable
+            // parameters likewise already occupy the linkage-first incoming
+            // value table. Their logical frames account for the local region
+            // and every saved home, so neither case reserves another lane.
             LegacyCalleeSavedFrameLayout::PreserveLogicalSize
         } else if !with_frame_array
             && eager_saved_locals.len() == 1
@@ -1527,6 +1600,14 @@ impl Generator {
             if let Some(initializer) = &local.initializer {
                 self.emit_store(&Expression::Variable(local.name.clone()), initializer)?;
             }
+        }
+        for parameter in &frame_scalar_parameters {
+            let slot = self.frame_slots[&parameter.name];
+            self.output.instructions.push(crate::frame::spill_instruction(
+                slot.parameter_register
+                    .expect("address-taken parameter has an incoming register"),
+                slot,
+            ));
         }
         self.plan_structured_float_handoff(function, &ephemeral_locals);
         let dense_statement_start = if dense_frame {

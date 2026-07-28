@@ -7007,6 +7007,37 @@ blr\n\
     }
 
     #[test]
+    fn preserves_pointer_array_members_as_inline_array_addresses() {
+        let source = r#"
+            struct System { int prefix; void* objects[4]; };
+            void* read(struct System* system) { return system->objects[2]; }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let Some(Expression::Index { base, index }) = &unit.functions[0].return_expression else {
+            panic!("expected pointer-array index")
+        };
+        assert!(matches!(
+            base.as_ref(),
+            Expression::MemberAddress {
+                offset: 4,
+                element: mwcc_syntax_trees::Pointee::Pointer,
+                ..
+            }
+        ));
+        assert!(matches!(
+            index.as_ref(),
+            Expression::IntegerLiteral(2)
+        ));
+    }
+
+    #[test]
     fn recovers_function_pointer_class_member_layout() {
         let source = r#"
             class Handler {

@@ -2734,7 +2734,7 @@ pub(crate) fn checked_frame_member_offset(
 }
 
 /// The store that spills a parameter register to its frame slot.
-fn spill_instruction(register: u8, slot: FrameSlot) -> Instruction {
+pub(crate) fn spill_instruction(register: u8, slot: FrameSlot) -> Instruction {
     match (slot.class, slot.size) {
         (ValueClass::Float, 8) => Instruction::StoreFloatDouble {
             s: register,
