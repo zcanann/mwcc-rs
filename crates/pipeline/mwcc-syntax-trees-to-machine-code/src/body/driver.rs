@@ -3163,6 +3163,12 @@ impl Generator {
         if self.try_guarded_member_decrement_if_else(function)? {
             return Ok(());
         }
+        // A leading call result can discriminate two single-call arms without
+        // crossing either arm's call. This narrower liveness owner keeps the
+        // result in r3 and emits the measured LR-only diamond.
+        if self.try_call_result_if_else(function)? {
+            return Ok(());
+        }
         // A non-leaf `if (c) { then } else { else }` with straight-line bodies: the
         // condition test schedules into the prologue, `beq` jumps to the else body,
         // the then body falls through to an unconditional `b` over the else body to

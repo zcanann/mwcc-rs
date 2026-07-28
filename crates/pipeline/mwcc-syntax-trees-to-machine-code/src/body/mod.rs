@@ -3,6 +3,7 @@
 //! Split by family (fire 525); behavior-identical to the former single body.rs.
 
 mod call_prologue;
+mod call_result_if_else;
 mod leading_bitfield_clear_call;
 mod leading_float_update_clamp;
 mod terminal_float_update;

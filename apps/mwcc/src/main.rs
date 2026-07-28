@@ -2739,6 +2739,9 @@ mod tests {
     #[path = "dead_automatic_arrays.rs"]
     mod dead_automatic_arrays;
 
+    #[path = "call_result_if_else.rs"]
+    mod call_result_if_else;
+
     #[path = "spilled_pointer_cast.rs"]
     mod spilled_pointer_cast;
 
