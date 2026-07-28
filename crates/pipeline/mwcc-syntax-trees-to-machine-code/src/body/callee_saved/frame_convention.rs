@@ -311,6 +311,10 @@ impl Generator {
             });
         let preserve_logical_size = self.legacy_callee_saved_frame_layout
             == LegacyCalleeSavedFrameLayout::PreserveLogicalSize;
+        let addressable_parameter_frame = self
+            .frame_slots
+            .values()
+            .any(|slot| slot.parameter_register.is_some());
         let reserve_forwarded_parameter_lane = self.legacy_callee_saved_frame_layout
             == LegacyCalleeSavedFrameLayout::ReserveForwardedParameterLane;
         let retain_eager_local_lane = self.legacy_callee_saved_frame_layout
@@ -503,9 +507,10 @@ impl Generator {
                                 && operand.register == source
                         })
                 });
-            if (promoted_parameter_count >= 2 && !guarded_before_first_call)
-                || (self.legacy_inline_expansion_frame_bytes == 0
-                    && source_redefined_by_materialization)
+            if !addressable_parameter_frame
+                && ((promoted_parameter_count >= 2 && !guarded_before_first_call)
+                    || (self.legacy_inline_expansion_frame_bytes == 0
+                        && source_redefined_by_materialization))
             {
                 self.output.instructions[index] = Instruction::AddImmediate {
                     d: destination,
@@ -538,6 +543,7 @@ impl Generator {
         self.output.instructions[..=link_store].rotate_left(1);
         remap_prefix_rotate_left(&mut self.output.relocations, link_store);
         self.schedule_linkage_first_entry_arguments();
+        self.schedule_linkage_first_addressable_parameter_calls();
         // The same linkage-first convention tears down in the inverse order:
         // restore SP before writing LR. Most allocator-owned epilogues already
         // arrive in that order; hand-emitted loop owners still carry the 2.4.x
