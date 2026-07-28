@@ -5,13 +5,14 @@ use super::*;
 use super::members::split_scaled_index;
 
 impl Generator {
-    /// Load `array[call()]` under the legacy explicit-address policy.
+    /// Load `array[call()]` while preserving the nested result in r3.
     ///
-    /// The call result remains in r3 and becomes the completed element
-    /// address. MWCC overlaps the independent high-half materialization with
-    /// scaling, stages the relocated low half through r0, and then loads from
-    /// offset zero. An unsigned narrow return fuses its ABI normalization with
-    /// the scale (`u8 << 2` becomes one `rlwinm`).
+    /// Both address policies evaluate the call first and overlap the array's
+    /// high half with index scaling. Legacy builds turn r3 into the complete
+    /// element address through an r0 base; mainline builds keep the scaled
+    /// index in r0 and complete the array base directly in the destination.
+    /// An unsigned narrow return fuses its ABI normalization with the scale
+    /// (`u8 << 2` becomes one `rlwinm`).
     pub(crate) fn try_emit_legacy_call_indexed_global_array_load(
         &mut self,
         name: &str,
@@ -31,8 +32,6 @@ impl Generator {
             || self.globals.contains_key(call)
             || self.locations.contains_key(call)
             || self.known_locals.contains(call)
-            || self.behavior.global_array_index_style
-                != mwcc_versions::GlobalArrayIndexStyle::ExplicitAddress
             || (self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8)
             || matches!(
                 pointee,
@@ -60,6 +59,43 @@ impl Generator {
         let high = self.fresh_virtual_general_preferring(4);
         self.emit_address_high(high, name);
         let shift = pointee.size().trailing_zeros() as u8;
+        if self.behavior.global_array_index_style
+            != mwcc_versions::GlobalArrayIndexStyle::ExplicitAddress
+        {
+            match return_type {
+                Type::UnsignedChar | Type::UnsignedShort => {
+                    let width = return_type.width();
+                    self.output.instructions.push(Instruction::RotateAndMask {
+                        a: GENERAL_SCRATCH,
+                        s: index_register,
+                        shift,
+                        begin: 32 - width - shift,
+                        end: 31 - shift,
+                    });
+                }
+                _ => self
+                    .output
+                    .instructions
+                    .push(Instruction::ShiftLeftImmediate {
+                        a: GENERAL_SCRATCH,
+                        s: index_register,
+                        shift,
+                    }),
+            }
+            self.record_relocation(RelocationKind::Addr16Lo, name);
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: destination,
+                a: high,
+                immediate: 0,
+            });
+            self.output.instructions.push(indexed_load(
+                pointee,
+                destination,
+                destination,
+                GENERAL_SCRATCH,
+            )?);
+            return Ok(true);
+        }
         match return_type {
             Type::UnsignedChar | Type::UnsignedShort => {
                 let width = return_type.width();

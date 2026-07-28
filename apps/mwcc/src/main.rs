@@ -2751,6 +2751,9 @@ mod tests {
     #[path = "static_array_forward.rs"]
     mod static_array_forward;
 
+    #[path = "call_indexed_static_table.rs"]
+    mod call_indexed_static_table;
+
     #[path = "spilled_pointer_cast.rs"]
     mod spilled_pointer_cast;
 
