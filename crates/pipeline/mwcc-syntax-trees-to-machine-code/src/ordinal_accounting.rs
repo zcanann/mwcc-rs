@@ -29,10 +29,10 @@ pub(crate) fn apply(
 }
 
 /// The mainline optimizer turns a run of zero-initialized automatic arrays
-/// into one pooled image per array. Each copy contributes the image and two
-/// internal labels, with one shared label closing the run. A lone array stays
-/// on the ordinary inline zero-fill path and has no hidden trailing cost.
-fn mainline_initialized_array_labels(function: &Function, output: &MachineFunction) -> u32 {
+/// into one pooled image per array. Each copy contributes one internal label,
+/// with one shared label closing the run. Lone-array pooling is handled by its
+/// dedicated lowering path and does not enter this multi-image accounting.
+fn mainline_initialized_array_labels(function: &Function, output: &mut MachineFunction) -> u32 {
     let retained_dead_arrays = function
         .locals
         .iter()
@@ -65,13 +65,23 @@ fn mainline_initialized_array_labels(function: &Function, output: &MachineFuncti
                     && !crate::analysis::function_uses_name(function, &local.name))
         })
         .count() as u32;
+    let emitted_pooled_images = pooled_zero_arrays >= 2
+        && output.anonymous_rodata.len() >= pooled_zero_arrays as usize;
+    if emitted_pooled_images {
+        // These images occupy the function's static-local ordinal run, before
+        // control-flow bookkeeping. The blob writer starts from the pool-block
+        // counter, so pull the first image back across that front bump and into
+        // the preceding static-local slot.
+        output.anonymous_rodata[0].anonymous_offset =
+            -1 - i32::try_from(output.object_anonymous_bump()).unwrap_or(i32::MAX);
+    }
     retained_dead_labels
         + if pooled_zero_arrays < 2 {
             0
-        } else if output.anonymous_rodata.len() >= pooled_zero_arrays as usize {
-            // The writer now walks the N concrete image symbols. Only the two
-            // internal labels per copy and the shared closing label remain hidden.
-            2 * pooled_zero_arrays + 1
+        } else if emitted_pooled_images {
+            // The writer walks the N concrete image symbols. One internal label
+            // per copy and the shared closing label remain hidden.
+            pooled_zero_arrays + 1
         } else {
             3 * pooled_zero_arrays + 1
         }
@@ -363,12 +373,22 @@ mod tests {
             });
         }
         let mut output = MachineFunction::new("probe");
+        output.anonymous_label_bump = 8;
+        for size in [32, 32, 32, 256] {
+            output
+                .anonymous_rodata
+                .push(mwcc_machine_code::AnonymousRodata {
+                    bytes: vec![0; size],
+                    anonymous_offset: 0,
+                });
+        }
         apply(
             &function,
             &mut output,
             FunctionOrdinalAccountingStyle::Mainline,
         );
-        assert_eq!(output.post_constant_label_bump, 13);
+        assert_eq!(output.anonymous_rodata[0].anonymous_offset, -9);
+        assert_eq!(output.post_constant_label_bump, 5);
     }
 
     #[test]
