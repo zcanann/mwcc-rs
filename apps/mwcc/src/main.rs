@@ -2751,6 +2751,9 @@ mod tests {
     #[path = "frame_digit_pair.rs"]
     mod frame_digit_pair;
 
+    #[path = "scaled_two_call_add.rs"]
+    mod scaled_two_call_add;
+
     #[path = "initialized_automatic_arrays.rs"]
     mod initialized_automatic_arrays;
 

@@ -3441,6 +3441,9 @@ impl Generator {
                 return Ok(());
             }
             // `return f() OP g();` — two call results combined in the return.
+            if self.try_callee_saved_scaled_two_call_add(function)? {
+                return Ok(());
+            }
             if self.try_callee_saved_two_call_combine(function)? {
                 return Ok(());
             }
