@@ -303,6 +303,7 @@ mod mpc_sinf;
 mod mp_ianim_advancement;
 mod mp_ianim_vsimplified;
 mod mp_wstring_l;
+mod oot_rdb_put32;
 mod mtc_logf;
 mod mth_fabsf;
 mod mth_frexp;
@@ -793,6 +794,7 @@ impl Generator {
             );
         }
         let fired = self.try_rt_va_arg(function)?
+            || self.try_oot_rdb_put32(function)?
             || self.try_melee_thrown_koopa(function)?
             || self.try_mp_ianim_advancement(function)?
             || self.try_mp_ianim_vsimplified(function)?
