@@ -2756,6 +2756,9 @@ mod tests {
     #[path = "static_local_string_table.rs"]
     mod static_local_string_table;
 
+    #[path = "duplicate_static_local_names.rs"]
+    mod duplicate_static_local_names;
+
     #[path = "dead_automatic_arrays.rs"]
     mod dead_automatic_arrays;
 

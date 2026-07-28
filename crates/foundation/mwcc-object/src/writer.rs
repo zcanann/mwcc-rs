@@ -254,6 +254,12 @@ const ELF_HEADER_SIZE: u32 = 52;
 const SECTION_HEADER_SIZE: u32 = 40;
 const SYMBOL_SIZE: usize = 16;
 
+fn data_symbol_name(link_name: &str) -> &str {
+    link_name
+        .split_once('\u{1f}')
+        .map_or(link_name, |(symbol_name, _)| symbol_name)
+}
+
 /// One section's header fields plus its payload bytes. The writer lays these out
 /// in order; `link`/`info` are resolved section indices.
 struct Section {
@@ -1891,9 +1897,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             if object.static_local_owner == Some(index) {
                 local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
                 let section = index_of(data_section[object.name]) as u16;
+                let symbol_name = data_symbol_name(object.name);
                 let display = match static_local_numbers.get(object.name) {
-                    Some(&number) => strtab.add(&format!("{}${}", object.name, number)),
-                    None => strtab.add(object.name),
+                    Some(&number) => strtab.add(&format!("{symbol_name}${number}")),
+                    None => strtab.add(symbol_name),
                 };
                 write_symbol(
                     &mut symtab,
@@ -2255,9 +2262,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 if object.static_local_owner == Some(index) {
                     local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
                     let section = index_of(data_section[object.name]) as u16;
+                    let symbol_name = data_symbol_name(object.name);
                     let display = match static_local_numbers.get(object.name) {
-                        Some(&number) => strtab.add(&format!("{}${}", object.name, number)),
-                        None => strtab.add(object.name),
+                        Some(&number) => strtab.add(&format!("{symbol_name}${number}")),
+                        None => strtab.add(symbol_name),
                     };
                     write_symbol(
                         &mut symtab,
@@ -3627,7 +3635,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if let Some(debug) = debug {
         let resolve_static_local_display = |display_name: &str| {
             static_local_numbers.iter().find_map(|(name, number)| {
-                (display_name == format!("{name}${number}"))
+                (display_name == format!("{}${number}", data_symbol_name(name)))
                     .then(|| local_data_symbols.get(name).copied())
                     .flatten()
             })

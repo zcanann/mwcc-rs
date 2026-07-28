@@ -8,8 +8,8 @@ use mwcc_machine_code::{
     MachineFunction, RelocationKind as MachineRelocationKind, RelocationTarget as MachineTarget,
 };
 use mwcc_object::{
-    DataObject, FrameLayout, FunctionObject, JumpTable, ObjectInput, RelocationTarget,
-    Sdata2Constant, TextRelocation,
+    static_local_link_name, DataObject, FrameLayout, FunctionObject, JumpTable, ObjectInput,
+    RelocationTarget, Sdata2Constant, TextRelocation,
 };
 
 pub use mwcc_object::DebugSections;
@@ -114,10 +114,34 @@ pub fn assemble_object(
         .iter()
         .map(|function| function.encode_text())
         .collect();
+    let data_link_names: Vec<String> = defined_globals
+        .iter()
+        .enumerate()
+        .map(|(definition_index, global)| {
+            if global.static_local_owner.is_some() {
+                static_local_link_name(&global.name, definition_index)
+            } else {
+                global.name.clone()
+            }
+        })
+        .collect();
+    let local_static_target = |function_index: usize, symbol: &str| {
+        defined_globals
+            .iter()
+            .enumerate()
+            .find(|(_, global)| {
+                global.static_local_owner == Some(function_index) && global.name == symbol
+            })
+            .map_or_else(
+                || symbol.to_owned(),
+                |(index, _)| data_link_names[index].clone(),
+            )
+    };
     let function_objects = functions
         .iter()
         .zip(&texts)
-        .map(|(function, text)| FunctionObject {
+        .enumerate()
+        .map(|(function_index, (function, text))| FunctionObject {
             name: &function.name,
             is_static: function.is_static,
             static_locals_lead: function.static_locals_lead,
@@ -140,7 +164,7 @@ pub fn assemble_object(
                 .map(|fixup| {
                     (
                         fixup.instruction_index as u32 * 4 + 2,
-                        fixup.symbol.clone(),
+                        local_static_target(function_index, &fixup.symbol),
                     )
                 })
                 .collect(),
@@ -161,10 +185,16 @@ pub fn assemble_object(
                     elf_type: relocation.kind.elf_type(),
                     target: match &relocation.target {
                         MachineTarget::External(symbol) => {
-                            RelocationTarget::External(symbol.clone())
+                            RelocationTarget::External(local_static_target(
+                                function_index,
+                                symbol,
+                            ))
                         }
                         MachineTarget::ExternalWithAddend(symbol, addend) => {
-                            RelocationTarget::ExternalWithAddend(symbol.clone(), *addend)
+                            RelocationTarget::ExternalWithAddend(
+                                local_static_target(function_index, symbol),
+                                *addend,
+                            )
                         }
                         MachineTarget::Constant(index) => RelocationTarget::Constant(*index),
                         MachineTarget::ConstantWithAddend(index, addend) => {
@@ -240,8 +270,9 @@ pub fn assemble_object(
         .collect();
     let data_objects = defined_globals
         .iter()
-        .map(|global| DataObject {
-            name: &global.name,
+        .zip(&data_link_names)
+        .map(|(global, link_name)| DataObject {
+            name: link_name,
             size: global.size,
             alignment: global.alignment,
             comment_alignment: global.comment_alignment,

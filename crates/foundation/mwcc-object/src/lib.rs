@@ -153,6 +153,10 @@ pub struct ObjectInput<'a> {
 /// A `const` object is read-only: it lands in `.sdata2` (≤ 8 bytes) or `.rodata`
 /// (larger) instead, both in forward declaration order.
 pub struct DataObject<'a> {
+    /// Link-time identity used inside the object writer. Function-local statics
+    /// append an internal unit-separator suffix so equally-spelled locals owned
+    /// by different functions cannot alias in layout and symbol maps. The
+    /// suffix is stripped from the ELF symbol spelling by the writer.
     pub name: &'a str,
     pub size: u32,
     /// Alignment used for section layout.
@@ -202,6 +206,15 @@ pub struct DataObject<'a> {
     /// default section routing (e.g. `.dtors` for a global-destructor reference).
     /// `None` uses the size/const/zero rules.
     pub section: Option<&'a str>,
+}
+
+/// Give a function-local static a translation-unit-unique writer identity.
+///
+/// C and C++ identifiers cannot contain the ASCII unit separator, so this
+/// representation cannot collide with a source-level symbol. The identity is
+/// deliberately private to the compiler pipeline and never enters `.strtab`.
+pub fn static_local_link_name(name: &str, definition_index: usize) -> String {
+    format!("{name}\u{1f}{definition_index}")
 }
 
 /// An `R_PPC_ADDR32` relocation inside a data object: 4 bytes at `offset` resolve
