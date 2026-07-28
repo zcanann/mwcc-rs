@@ -17,11 +17,37 @@ pub(crate) fn apply(
     style: FunctionOrdinalAccountingStyle,
 ) {
     let hidden = match style {
-        FunctionOrdinalAccountingStyle::Mainline => 0,
+        FunctionOrdinalAccountingStyle::Mainline => {
+            mainline_initialized_array_labels(function)
+        }
         FunctionOrdinalAccountingStyle::Gc41 => gc41_hidden_labels(function, false),
         FunctionOrdinalAccountingStyle::Gc41Ipa => gc41_hidden_labels(function, true),
     };
     output.post_constant_label_bump += hidden;
+}
+
+/// The mainline optimizer turns a run of zero-initialized automatic arrays
+/// into one pooled image per array. Each copy contributes the image and two
+/// internal labels, with one shared label closing the run. A lone array stays
+/// on the ordinary inline zero-fill path and has no hidden trailing cost.
+fn mainline_initialized_array_labels(function: &Function) -> u32 {
+    let pooled_zero_arrays = function
+        .locals
+        .iter()
+        .filter(|local| {
+            !local.is_static
+                && local.array_length.is_some()
+                && local
+                    .data_bytes
+                    .as_ref()
+                    .is_some_and(|bytes| !bytes.is_empty() && bytes.iter().all(|byte| *byte == 0))
+        })
+        .count() as u32;
+    if pooled_zero_arrays < 2 {
+        0
+    } else {
+        3 * pooled_zero_arrays + 1
+    }
 }
 
 pub(crate) fn apply_unit(
@@ -177,6 +203,32 @@ mod tests {
         function.return_expression = Some(Expression::IntegerLiteral(0));
         assert_eq!(gc41_hidden_labels(&function, false), 7);
         assert_eq!(gc41_hidden_labels(&function, true), 8);
+    }
+
+    #[test]
+    fn mainline_accounts_a_shared_run_of_zero_array_images() {
+        let mut function = function();
+        for (name, size) in [("date", 32), ("time", 32), ("ampm", 32), ("scratch", 256)] {
+            function.locals.push(mwcc_syntax_trees::LocalDeclaration {
+                declared_type: Type::Char,
+                name: name.to_owned(),
+                initializer: None,
+                is_volatile: false,
+                array_length: Some(size),
+                is_static: false,
+                data_bytes: Some(vec![0; usize::from(size)]),
+                data_relocations: Vec::new(),
+                is_const: false,
+                row_bytes: None,
+            });
+        }
+        let mut output = MachineFunction::new("probe");
+        apply(
+            &function,
+            &mut output,
+            FunctionOrdinalAccountingStyle::Mainline,
+        );
+        assert_eq!(output.post_constant_label_bump, 13);
     }
 
     #[test]
