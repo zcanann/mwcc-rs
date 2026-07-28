@@ -280,13 +280,15 @@ impl Generator {
         } else {
             super::structured_frame_arrays::StructuredFrameArrays {
                 arrays: Vec::new(),
+                image_sources: Vec::new(),
                 total_bytes: 0,
             }
         };
         let frame_arrays = &frame_array_plan.arrays;
+        let frame_array_image_sources = &frame_array_plan.image_sources;
         let frame_array_bytes = frame_array_plan.total_bytes;
         let array_pool_plan = (self.behavior.frame_convention == FrameConvention::Predecrement)
-            .then(|| plan_structured_array_pool(frame_arrays))
+            .then(|| plan_structured_array_pool(frame_arrays, frame_array_image_sources))
             .flatten();
         let global_index_cache_plan = array_pool_plan.as_ref().and_then(|_| {
             plan_structured_global_index_cache(
@@ -1204,7 +1206,11 @@ impl Generator {
                 a: 1,
                 offset: plan.frame_size + 4,
             });
-            self.emit_structured_array_pool_base_low();
+            self.emit_structured_array_pool_base_low(
+                array_pool_plan
+                    .as_ref()
+                    .expect("pooled frame has an array-pool plan"),
+            );
             self.output
                 .instructions
                 .push(Instruction::StoreMultipleWord {
@@ -1708,7 +1714,10 @@ impl Generator {
                 slot,
             ));
         }
-        self.emit_structured_frame_array_initializers(frame_arrays)?;
+        self.emit_structured_frame_array_initializers(
+            frame_arrays,
+            frame_array_image_sources,
+        )?;
         if let Some(cache) = global_index_cache_plan {
             let source = saved_parameter_homes
                 .iter()
@@ -1717,7 +1726,15 @@ impl Generator {
                 .ok_or_else(|| {
                     Diagnostic::error("structured global-index cache has no source register")
                 })?;
-            let scaled = self.fresh_virtual_general_preferring(14);
+            // The compact pooled-copy forms finish using their saved base at
+            // the same boundary where the scaled global index is born. MWCC
+            // reuses that physical register (CUT1 r29, CUT2 r21); the full
+            // 24-word transaction retains its established r14 preference.
+            let scaled = self.fresh_virtual_general_preferring(
+                array_pool_plan
+                    .as_ref()
+                    .map_or(14, |plan| plan.first_saved_register),
+            );
             emit_scaled_index(
                 &mut self.output.instructions,
                 scaled,

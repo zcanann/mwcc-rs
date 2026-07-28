@@ -96,7 +96,10 @@ impl Generator {
                 .collect();
             let ([save], [restore]) = (saves.as_slice(), restores.as_slice()) else {
                 return Err(Diagnostic::error(
-                    "allocated callee-saved values need canonical individual save/restore slots",
+                    format!(
+                        "allocated callee-saved values need canonical individual save/restore slots \
+                         (declared {declared:?}, required {required:?})"
+                    ),
                 ));
             };
             save_indices.push(*save);

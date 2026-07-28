@@ -12,10 +12,13 @@ impl Generator {
     pub(super) fn emit_structured_frame_array_initializers(
         &mut self,
         arrays: &[&LocalDeclaration],
+        image_sources: &[&LocalDeclaration],
     ) -> Compilation<()> {
         if self.behavior.frame_convention == FrameConvention::Predecrement {
-            if let Some(plan) = super::structured_array_pool::plan_structured_array_pool(arrays) {
-                return self.emit_structured_array_pool(arrays, &plan);
+            if let Some(plan) =
+                super::structured_array_pool::plan_structured_array_pool(arrays, image_sources)
+            {
+                return self.emit_structured_array_pool(arrays, image_sources, &plan);
             }
         }
         for array in arrays {

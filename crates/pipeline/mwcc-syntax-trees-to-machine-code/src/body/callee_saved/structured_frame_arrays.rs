@@ -1,29 +1,29 @@
 //! Automatic typed-array planning for structured stack frames.
 //!
 //! Source arrays ordinarily remain distinct frame slots even when they are
-//! unused. Mainline optimization has one important exception: when an entire
-//! initialized-array group is dead, it removes the storage and copy transaction
-//! while retaining the source images in `.rodata`. Image retention belongs to
-//! `automatic_rodata`; this owner plans only executable frame storage.
+//! unused. Mainline optimization has one important exception: dead initialized
+//! arrays lose their storage and copy work while retaining their source images
+//! in `.rodata`, including holes inside a partially live group. Image retention
+//! belongs to `automatic_rodata`; this owner plans only executable frame storage.
 
 #[allow(unused_imports)]
 use super::*;
 
 pub(super) struct StructuredFrameArrays<'a> {
     pub(super) arrays: Vec<&'a LocalDeclaration>,
+    pub(super) image_sources: Vec<&'a LocalDeclaration>,
     pub(super) total_bytes: i16,
 }
 
 pub(super) fn plan_structured_frame_arrays<'a>(
     function: &'a Function,
 ) -> Option<StructuredFrameArrays<'a>> {
-    let mut arrays: Vec<_> = function
+    let source_arrays: Vec<_> = function
         .locals
         .iter()
         .filter(|local| local.array_length.is_some())
         .collect();
-    let mut total_bytes = 0i16;
-    for array in &arrays {
+    for array in &source_arrays {
         if array.is_static || array.initializer.is_some() {
             return None;
         }
@@ -42,19 +42,26 @@ pub(super) fn plan_structured_frame_arrays<'a>(
         {
             return None;
         }
-        total_bytes = total_bytes.checked_add(i16::try_from(bytes).ok()?)?;
     }
-    if !arrays.is_empty()
-        && arrays.iter().all(|array| {
-            array.data_bytes.is_some()
-                && !crate::analysis::function_uses_name(function, &array.name)
+    let arrays: Vec<_> = source_arrays
+        .iter()
+        .copied()
+        .filter(|array| {
+            array.data_bytes.is_none()
+                || crate::analysis::function_uses_name(function, &array.name)
         })
-    {
-        arrays.clear();
-        total_bytes = 0;
+        .collect();
+    let mut total_bytes = 0i16;
+    for array in &arrays {
+        total_bytes =
+            total_bytes.checked_add(i16::try_from(array_byte_size(array)?).ok()?)?;
     }
     Some(StructuredFrameArrays {
         arrays,
+        image_sources: source_arrays
+            .into_iter()
+            .filter(|array| array.data_bytes.is_some())
+            .collect(),
         total_bytes,
     })
 }
@@ -193,7 +200,37 @@ mod tests {
         let plan = plan_structured_frame_arrays(&function).expect("initialized arrays");
 
         assert!(plan.arrays.is_empty());
+        assert_eq!(plan.image_sources.len(), 2);
         assert_eq!(plan.total_bytes, 0);
+    }
+
+    #[test]
+    fn separates_partially_dead_images_from_live_frame_storage() {
+        let mut date = byte_array("date", Type::UnsignedChar, 32);
+        date.data_bytes = Some(vec![0]);
+        let mut time = byte_array("time", Type::UnsignedChar, 32);
+        time.data_bytes = Some(vec![0]);
+        let mut buffer = byte_array("buffer", Type::UnsignedChar, 256);
+        buffer.data_bytes = Some(vec![0]);
+        let mut function = function_with_locals(vec![date, time, buffer]);
+        function
+            .statements
+            .push(Statement::Expression(Expression::Variable("date".into())));
+        function
+            .statements
+            .push(Statement::Expression(Expression::Variable("buffer".into())));
+
+        let plan = plan_structured_frame_arrays(&function).expect("initialized arrays");
+
+        assert_eq!(
+            plan.arrays
+                .iter()
+                .map(|array| array.name.as_str())
+                .collect::<Vec<_>>(),
+            ["date", "buffer"]
+        );
+        assert_eq!(plan.image_sources.len(), 3);
+        assert_eq!(plan.total_bytes, 288);
     }
 
     #[test]
