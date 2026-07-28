@@ -2974,6 +2974,9 @@ impl Generator {
         if self.try_switch_assignment_call_tail(function)? {
             return Ok(());
         }
+        if self.try_resource_event_switch(function)? {
+            return Ok(());
+        }
         // A dense table dispatcher whose arms assign one callee result while
         // preserving both the forwarded parameter and result across calls.
         if self.try_switch_call_dispatcher(function)? {

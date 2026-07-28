@@ -2683,6 +2683,9 @@ mod tests {
     #[path = "raise_family.rs"]
     mod raise_family;
 
+    #[path = "resource_event_switch.rs"]
+    mod resource_event_switch;
+
     #[path = "pointer_fallback.rs"]
     mod pointer_fallback;
 
