@@ -33,6 +33,7 @@ use super::structured_frame_arrays::{
 };
 use super::structured_array_pool::plan_structured_array_pool;
 use super::structured_frame_entry::structured_dense_frame_entry_index;
+use super::structured_global_index_cache::plan as plan_structured_global_index_cache;
 use super::structured_frame_publication::{
     StructuredFramePublication, CURSOR_OFFSET, LOCAL_REGION_BYTES, OWNER_OFFSET,
 };
@@ -289,6 +290,13 @@ impl Generator {
         let array_pool_plan = (self.behavior.frame_convention == FrameConvention::Predecrement)
             .then(|| plan_structured_array_pool(frame_arrays))
             .flatten();
+        let global_index_cache_plan = array_pool_plan.as_ref().and_then(|_| {
+            plan_structured_global_index_cache(
+                function,
+                &self.globals,
+                &self.global_array_sizes,
+            )
+        });
         let aggregate_call_copy_plan =
             (frame_arrays.is_empty()
                 && frame_scalar_parameters.is_empty()
@@ -1701,6 +1709,25 @@ impl Generator {
             ));
         }
         self.emit_structured_frame_array_initializers(frame_arrays)?;
+        if let Some(cache) = global_index_cache_plan {
+            let source = self.lookup_general(&cache.index).ok_or_else(|| {
+                Diagnostic::error("structured global-index cache has no source register")
+            })?;
+            let scaled = self.fresh_virtual_general_preferring(14);
+            emit_scaled_index(
+                &mut self.output.instructions,
+                scaled,
+                source,
+                cache.stride,
+            )?;
+            self.structured_global_index_cache =
+                Some(crate::generator::StructuredGlobalIndexCache {
+                    global: cache.global,
+                    index: cache.index,
+                    stride: cache.stride,
+                    scaled,
+                });
+        }
         self.plan_structured_float_handoff(function, &ephemeral_locals);
         let dense_statement_start = if dense_frame {
             if global_member_search_entry || saved_parameter_base != 0 {
@@ -2589,14 +2616,26 @@ impl Generator {
                                             Diagnostic::error("structured computed address index has no register")
                                         })?;
                                             let high = self.fresh_virtual_general();
-                                            let scaled = self.fresh_virtual_general();
+                                            let cached_scaled = self
+                                                .structured_global_index_cache
+                                                .as_ref()
+                                                .filter(|cache| {
+                                                    cache.global == *global
+                                                        && cache.index == *index_name
+                                                        && cache.stride == element_size
+                                                })
+                                                .map(|cache| cache.scaled);
+                                            let scaled = cached_scaled
+                                                .unwrap_or_else(|| self.fresh_virtual_general());
                                             self.emit_address_high(high, global);
-                                            emit_scaled_index(
-                                                &mut self.output.instructions,
-                                                scaled,
-                                                index_register,
-                                                element_size,
-                                            )?;
+                                            if cached_scaled.is_none() {
+                                                emit_scaled_index(
+                                                    &mut self.output.instructions,
+                                                    scaled,
+                                                    index_register,
+                                                    element_size,
+                                                )?;
+                                            }
                                             self.record_relocation(
                                                 RelocationKind::Addr16Lo,
                                                 global,

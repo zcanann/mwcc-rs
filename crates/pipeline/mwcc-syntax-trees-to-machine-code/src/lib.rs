@@ -482,6 +482,7 @@ pub fn lower_function(
                     .map(|global| global.name.clone()),
             )
             .collect(),
+        structured_global_index_cache: None,
         full_bss_globals: globals
             .iter()
             .filter(|global| {

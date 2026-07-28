@@ -91,6 +91,7 @@ mod structured_frame_packet_call_schedule;
 mod structured_frame_preloop_packet_schedule;
 mod structured_frame_publication;
 mod structured_frame_value_forwarding;
+mod structured_global_index_cache;
 mod structured_guard_cache_schedule;
 mod structured_guarded_ucode_schedule;
 mod structured_home_layout;

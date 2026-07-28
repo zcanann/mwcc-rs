@@ -226,6 +226,14 @@ pub(crate) struct StructuredAggregateCallCopyPlan {
     pub(crate) total_bytes: i16,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct StructuredGlobalIndexCache {
+    pub(crate) global: String,
+    pub(crate) index: String,
+    pub(crate) stride: u32,
+    pub(crate) scaled: u8,
+}
+
 pub(crate) struct Generator {
     /// This function is a VARIADIC definition — only a capture may emit it
     /// (the register-save prologue is unmodeled in general codegen).
@@ -260,6 +268,9 @@ pub(crate) struct Generator {
     /// while type classification and address materialization only need to know
     /// that the symbol is an array.
     pub(crate) global_arrays: HashSet<String>,
+    /// A source-stable global struct-array subscript whose scaled index is
+    /// retained across calls by the structured body owner.
+    pub(crate) structured_global_index_cache: Option<StructuredGlobalIndexCache>,
     /// Defined, uninitialized file-scope objects routed to full `.bss`.
     ///
     /// Aggregate-wide schedules may address these through `...bss.0`; keeping

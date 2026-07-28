@@ -1778,23 +1778,40 @@ impl Generator {
         }
 
         let index_register = self.general_register_of_leaf(index)?;
-        let scaled = self.fresh_virtual_general_preferring(4);
-        if element_size.is_power_of_two() {
-            self.output.instructions.push(Instruction::ShiftLeftImmediate {
-                a: scaled,
-                s: index_register,
-                shift: element_size.trailing_zeros() as u8,
-            });
+        let cached_scaled = match index {
+            Expression::Variable(index_name) => self
+                .structured_global_index_cache
+                .as_ref()
+                .filter(|cache| {
+                    cache.global == name
+                        && cache.index == *index_name
+                        && cache.stride == element_size
+                })
+                .map(|cache| cache.scaled),
+            _ => None,
+        };
+        let scaled = if let Some(scaled) = cached_scaled {
+            scaled
         } else {
-            let immediate = i16::try_from(element_size).map_err(|_| {
-                Diagnostic::error("global-array element size is too large to scale (roadmap)")
-            })?;
-            self.output.instructions.push(Instruction::MultiplyImmediate {
-                d: scaled,
-                a: index_register,
-                immediate,
-            });
-        }
+            let scaled = self.fresh_virtual_general_preferring(4);
+            if element_size.is_power_of_two() {
+                self.output.instructions.push(Instruction::ShiftLeftImmediate {
+                    a: scaled,
+                    s: index_register,
+                    shift: element_size.trailing_zeros() as u8,
+                });
+            } else {
+                let immediate = i16::try_from(element_size).map_err(|_| {
+                    Diagnostic::error("global-array element size is too large to scale (roadmap)")
+                })?;
+                self.output.instructions.push(Instruction::MultiplyImmediate {
+                    d: scaled,
+                    a: index_register,
+                    immediate,
+                });
+            }
+            scaled
+        };
         let small = self.behavior.global_addressing == GlobalAddressing::SmallData
             && total_size <= 8;
         if small {
