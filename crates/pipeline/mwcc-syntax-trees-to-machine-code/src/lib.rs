@@ -917,6 +917,7 @@ fn lower_function_body(
     schedule_allocated_structured_array_pool_control_flow(&mut generator);
     generator.schedule_allocated_structured_array_pool_parameter_copies();
     generator.schedule_allocated_compact_structured_array_pool_entry();
+    generator.schedule_allocated_structured_array_pool_first_image();
 
     ordinal_accounting::apply(
         function,

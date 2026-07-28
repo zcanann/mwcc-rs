@@ -283,4 +283,45 @@ impl Generator {
             .relocations
             .sort_by_key(|relocation| relocation.instruction_index);
     }
+
+    /// Once the compact entry packets have fixed the saved-register homes,
+    /// MWCC starts the first pool-image address before materializing its copy
+    /// count. Both are independent; this is issue order only and must not feed
+    /// back into allocation.
+    pub(crate) fn schedule_allocated_structured_array_pool_first_image(&mut self) {
+        if !self.structured_array_pool_emitted {
+            return;
+        }
+        let Some(start) = self
+            .output
+            .instructions
+            .windows(2)
+            .position(|window| {
+                matches!(
+                    window,
+                    [
+                        Instruction::AddImmediate {
+                            d: 14..=31,
+                            a: 0,
+                            immediate: 32,
+                        },
+                        Instruction::AddImmediate {
+                            d: 3,
+                            a: 5,
+                            immediate: 1..,
+                        },
+                    ]
+                )
+            })
+        else {
+            return;
+        };
+        self.output.instructions.swap(start, start + 1);
+        let mut permutation: Vec<usize> = (0..self.output.instructions.len()).collect();
+        permutation.swap(start, start + 1);
+        crate::remap_instruction_indices(self, &permutation);
+        self.output
+            .relocations
+            .sort_by_key(|relocation| relocation.instruction_index);
+    }
 }

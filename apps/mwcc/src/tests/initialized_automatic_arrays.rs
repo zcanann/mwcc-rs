@@ -75,6 +75,12 @@ fn pools_multiple_initialized_arrays_into_a_dense_copy_transaction() {
     // count register.
     assert!(object.windows(2).any(|bytes| bytes == [0xbd, 0xc1]));
 
+    // addi r3,r5,pool-image; li r14,32
+    let first_image = [0x38, 0x65, 0x00, 0x5c, 0x39, 0xc0, 0x00, 0x20];
+    assert!(object
+        .windows(first_image.len())
+        .any(|bytes| bytes == first_image));
+
     // mtctr r14; lwz r5,4(r3); lwzu r0,8(r3); stw r5,4(r4);
     // stwu r0,8(r4); bdnz
     let tail_copy = [
