@@ -2757,6 +2757,9 @@ mod tests {
     #[path = "static_array_string_constant.rs"]
     mod static_array_string_constant;
 
+    #[path = "global_indexed_static_table.rs"]
+    mod global_indexed_static_table;
+
     #[path = "spilled_pointer_cast.rs"]
     mod spilled_pointer_cast;
 

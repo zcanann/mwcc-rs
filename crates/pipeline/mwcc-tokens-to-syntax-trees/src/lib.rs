@@ -1078,6 +1078,28 @@ mod tests {
     }
 
     #[test]
+    fn retains_an_extern_global_of_a_named_cxx_enum() {
+        let source = b"\
+            enum CurrentPlayer { SpongeBob, Patrick, Sandy };\n\
+            extern CurrentPlayer gCurrentPlayer;\n\
+            int current(void) { return gCurrentPlayer; }\n";
+        let unit = parse_located_translation_unit(
+            mwcc_source_to_tokens::tokenize_bytes_located(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(unit.globals.iter().any(|global| {
+            global.name == "gCurrentPlayer"
+                && global.is_extern
+                && global.declared_type == mwcc_syntax_trees::Type::Int
+        }));
+    }
+
+    #[test]
     fn folds_float_arithmetic_inside_function_expressions() {
         let source = r#"
             int roof(float y) {

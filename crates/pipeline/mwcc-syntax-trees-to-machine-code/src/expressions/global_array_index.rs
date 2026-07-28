@@ -5,6 +5,80 @@ use super::*;
 use super::members::split_scaled_index;
 
 impl Generator {
+    /// Load `array[global_index]` under the mainline address policy.
+    ///
+    /// The scalar index first loads into r0. MWCC then completes the large
+    /// array base before scaling r0 in place, leaving the scale immediately
+    /// adjacent to the indexed load:
+    /// `lwz r0,index; lis base,array; addi base; slwi r0; lwzx`.
+    pub(crate) fn try_emit_global_scalar_indexed_global_array_load(
+        &mut self,
+        name: &str,
+        total_size: u32,
+        pointee: Pointee,
+        index: &Expression,
+        destination: u8,
+    ) -> Compilation<bool> {
+        let Expression::Variable(index_name) = index else {
+            return Ok(false);
+        };
+        let Some(index_type) = self.globals.get(index_name.as_str()).copied() else {
+            return Ok(false);
+        };
+        if self.behavior.global_array_index_style
+            == mwcc_versions::GlobalArrayIndexStyle::ExplicitAddress
+            || (self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8)
+            || self.global_array_address_extent(index_name).is_some()
+            || !matches!(
+                index_type,
+                Type::Int
+                    | Type::UnsignedInt
+                    | Type::Short
+                    | Type::UnsignedShort
+                    | Type::Char
+                    | Type::UnsignedChar
+            )
+            || matches!(
+                pointee,
+                Pointee::Float
+                    | Pointee::Double
+                    | Pointee::LongLong
+                    | Pointee::UnsignedLongLong
+            )
+            || !pointee.size().is_power_of_two()
+        {
+            return Ok(false);
+        }
+
+        self.evaluate_general(index, GENERAL_SCRATCH)?;
+        let base = if destination == GENERAL_SCRATCH {
+            self.fresh_virtual_general()
+        } else {
+            destination
+        };
+        self.emit_address_high(base, name);
+        self.record_relocation(RelocationKind::Addr16Lo, name);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: base,
+            a: base,
+            immediate: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::ShiftLeftImmediate {
+                a: GENERAL_SCRATCH,
+                s: GENERAL_SCRATCH,
+                shift: pointee.size().trailing_zeros() as u8,
+            });
+        self.output.instructions.push(indexed_load(
+            pointee,
+            destination,
+            base,
+            GENERAL_SCRATCH,
+        )?);
+        Ok(true)
+    }
+
     /// Load `array[call()]` while preserving the nested result in r3.
     ///
     /// Both address policies evaluate the call first and overlap the array's
