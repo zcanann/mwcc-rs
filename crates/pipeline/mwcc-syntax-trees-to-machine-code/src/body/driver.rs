@@ -3419,12 +3419,6 @@ impl Generator {
             if self.try_inlined_short_circuit_call_loop(function)? {
                 return Ok(());
             }
-            // General structured body with values spanning conditional calls:
-            // assign virtual callee-saved homes once, then lower its forward
-            // branches through the ordinary expression/store emitters.
-            if self.try_callee_saved_structured_body(function)? {
-                return Ok(());
-            }
             // SDK list walks which snapshot `next` before conditionally calling
             // on the current node. The successor is a genuine loop-carried
             // callee-saved value; keep this beside the other allocator owners.
@@ -3450,6 +3444,15 @@ impl Generator {
                 return Ok(());
             }
             if self.try_bounded_buffer_read(function)? {
+                return Ok(());
+            }
+            // General structured body with values spanning conditional calls:
+            // assign virtual callee-saved homes once, then lower its forward
+            // branches through the ordinary expression/store emitters. This is
+            // the fallible generic fallback, so exact semantic owners must get
+            // first refusal: an unsupported statement can return a diagnostic
+            // instead of merely declining the function.
+            if self.try_callee_saved_structured_body(function)? {
                 return Ok(());
             }
             if reads_value_across_call(function) {
