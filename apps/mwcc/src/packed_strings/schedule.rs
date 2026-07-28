@@ -6,6 +6,8 @@ pub(super) fn schedule_materialized_offsets(function: &mut MachineFunction) {
     schedule_date_separator_format_call(function);
     schedule_zero_terminated_format_call(function);
     schedule_final_time_format_call(function);
+    schedule_date_time_join_format_call(function);
+    schedule_terminated_label_compare(function);
 }
 
 fn schedule_date_separator_format_call(function: &mut MachineFunction) {
@@ -205,6 +207,136 @@ fn schedule_final_time_format_call(function: &mut MachineFunction) {
     remap_instruction_owners(function, &permutation);
 }
 
+fn schedule_date_time_join_format_call(function: &mut MachineFunction) {
+    let Some(start) = function.instructions.windows(8).position(|window| {
+        matches!(
+            window,
+            [
+                Instruction::AddImmediateShifted { d: 4, a: 0, .. },
+                Instruction::AddImmediate {
+                    d: 3,
+                    a: 1,
+                    immediate: date_offset,
+                },
+                Instruction::AddImmediate {
+                    d: 4,
+                    a: 4,
+                    immediate: 0,
+                },
+                Instruction::AddImmediate {
+                    d: 5,
+                    a: 1,
+                    immediate: date_copy_offset,
+                },
+                Instruction::AddImmediate { d: 6, a: 1, .. },
+                Instruction::AddImmediate {
+                    d: 4,
+                    a: 4,
+                    immediate: string_offset,
+                },
+                Instruction::ConditionRegisterClear { d: 6 },
+                Instruction::BranchAndLink { target },
+            ] if is_sprintf(target)
+                && date_offset == date_copy_offset
+                && *string_offset > 0
+        )
+    }) else {
+        return;
+    };
+    if (start + 1..=start + 6).any(|position| is_control_entry(function, position)) {
+        return;
+    }
+
+    let old = function.instructions[start..start + 7].to_vec();
+    let mut scheduled = vec![
+        old[0].clone(),
+        old[1].clone(),
+        old[2].clone(),
+        old[4].clone(),
+        Instruction::move_register(5, 3),
+        old[5].clone(),
+        old[6].clone(),
+    ];
+    function.instructions[start..start + 7].swap_with_slice(&mut scheduled);
+
+    let order = [0, 1, 2, 4, 3, 5, 6];
+    let mut permutation: Vec<usize> = (0..function.instructions.len()).collect();
+    for (new_relative, old_relative) in order.into_iter().enumerate() {
+        permutation[start + old_relative] = start + new_relative;
+    }
+    remap_instruction_owners(function, &permutation);
+}
+
+fn schedule_terminated_label_compare(function: &mut MachineFunction) {
+    let Some(start) = function.instructions.windows(8).position(|window| {
+        matches!(
+            window,
+            [
+                Instruction::AddImmediate {
+                    d: 0,
+                    a: 0,
+                    immediate: 0,
+                },
+                Instruction::StoreByte {
+                    s: 0,
+                    a: 1,
+                    offset: first_store_offset,
+                },
+                Instruction::StoreByte {
+                    s: 0,
+                    a: 1,
+                    offset: second_store_offset,
+                },
+                Instruction::AddImmediateShifted { d: 4, a: 0, .. },
+                Instruction::AddImmediate {
+                    d: 4,
+                    a: 4,
+                    immediate: 0,
+                },
+                Instruction::Or {
+                    a: 3,
+                    s: label,
+                    b: label_copy,
+                },
+                Instruction::AddImmediate {
+                    d: 4,
+                    a: 4,
+                    immediate: string_offset,
+                },
+                Instruction::BranchAndLink { target },
+            ] if target.starts_with("xStricmp")
+                && label == label_copy
+                && (14..=31).contains(label)
+                && first_store_offset < second_store_offset
+                && *string_offset > 0
+        )
+    }) else {
+        return;
+    };
+    if (start + 1..=start + 6).any(|position| is_control_entry(function, position)) {
+        return;
+    }
+
+    let old = function.instructions[start..start + 7].to_vec();
+    let mut scheduled = vec![
+        old[0].clone(),
+        rewrite_lis(&old[3], 3),
+        rewrite_addi(&old[4], 4, 3),
+        old[1].clone(),
+        old[5].clone(),
+        old[2].clone(),
+        old[6].clone(),
+    ];
+    function.instructions[start..start + 7].swap_with_slice(&mut scheduled);
+
+    let order = [0, 3, 4, 1, 5, 2, 6];
+    let mut permutation: Vec<usize> = (0..function.instructions.len()).collect();
+    for (new_relative, old_relative) in order.into_iter().enumerate() {
+        permutation[start + old_relative] = start + new_relative;
+    }
+    remap_instruction_owners(function, &permutation);
+}
+
 fn rewrite_lis(instruction: &Instruction, d: u8) -> Instruction {
     let Instruction::AddImmediateShifted { a, immediate, .. } = instruction else {
         unreachable!("the packed-format high half was matched above");
@@ -383,6 +515,130 @@ mod tests {
                 .map(|relocation| relocation.instruction_index)
                 .collect::<Vec<_>>(),
             [1, 0, 5, 2]
+        );
+    }
+
+    #[test]
+    fn reuses_the_date_output_for_the_joined_format_call() {
+        let mut function = MachineFunction::new("probe");
+        function.instructions = vec![
+            Instruction::AddImmediateShifted {
+                d: 4,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 1,
+                immediate: 72,
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 4,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 5,
+                a: 1,
+                immediate: 72,
+            },
+            Instruction::AddImmediate {
+                d: 6,
+                a: 1,
+                immediate: 40,
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 4,
+                immediate: 49,
+            },
+            Instruction::ConditionRegisterClear { d: 6 },
+            Instruction::BranchAndLink {
+                target: "sprintf".to_owned(),
+            },
+        ];
+
+        schedule_materialized_offsets(&mut function);
+
+        assert!(matches!(
+            function.instructions[3..5],
+            [
+                Instruction::AddImmediate { d: 6, a: 1, .. },
+                Instruction::Or { a: 5, s: 3, b: 3 },
+            ]
+        ));
+    }
+
+    #[test]
+    fn overlaps_terminator_stores_with_the_label_address() {
+        let mut function = MachineFunction::new("probe");
+        function.instructions = vec![
+            Instruction::load_immediate(0, 0),
+            Instruction::StoreByte {
+                s: 0,
+                a: 1,
+                offset: 71,
+            },
+            Instruction::StoreByte {
+                s: 0,
+                a: 1,
+                offset: 103,
+            },
+            Instruction::AddImmediateShifted {
+                d: 4,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 4,
+                immediate: 0,
+            },
+            Instruction::move_register(3, 15),
+            Instruction::AddImmediate {
+                d: 4,
+                a: 4,
+                immediate: 55,
+            },
+            Instruction::BranchAndLink {
+                target: "xStricmp__FPCcPCc".to_owned(),
+            },
+        ];
+        function.relocations = [3, 4]
+            .into_iter()
+            .map(|instruction_index| Relocation {
+                instruction_index,
+                kind: RelocationKind::Addr16Lo,
+                target: RelocationTarget::External("@stringBase0".to_owned()),
+            })
+            .collect();
+
+        schedule_materialized_offsets(&mut function);
+
+        assert!(matches!(
+            function.instructions.as_slice(),
+            [
+                Instruction::AddImmediate {
+                    d: 0,
+                    a: 0,
+                    immediate: 0,
+                },
+                Instruction::AddImmediateShifted { d: 3, .. },
+                Instruction::AddImmediate { d: 4, a: 3, .. },
+                Instruction::StoreByte { offset: 71, .. },
+                Instruction::Or { a: 3, s: 15, b: 15 },
+                Instruction::StoreByte { offset: 103, .. },
+                Instruction::AddImmediate { d: 4, a: 4, .. },
+                Instruction::BranchAndLink { .. },
+            ]
+        ));
+        assert_eq!(
+            function
+                .relocations
+                .iter()
+                .map(|relocation| relocation.instruction_index)
+                .collect::<Vec<_>>(),
+            [1, 2]
         );
     }
 }
