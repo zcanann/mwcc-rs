@@ -255,7 +255,8 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
         // (their ABI/system registers are implicit).
         BranchConditionalForward { .. } | BranchConditionalToLinkRegister { .. } | BranchToLinkRegister | BranchToLinkRegisterAndLink
         | Branch { .. } | BranchToCountRegister | BranchToCountRegisterAndLink | BranchAndLink { .. } | BranchExternal { .. }
-        | InstructionSynchronize | Synchronize | EnforceInOrderIo | ReturnFromInterrupt | SystemCall => {}
+        | InstructionSynchronize | Synchronize | EnforceInOrderIo | ReturnFromInterrupt | SystemCall
+        | VerbatimWord(_) => {}
     }
 }
 

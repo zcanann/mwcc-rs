@@ -230,6 +230,7 @@ impl Instruction {
                 ((primary as u32) << 26) | ((a as u32) << 16) | ((b as u32) << 11) | ((xo as u32) << 1)
             }
             Instruction::SystemCall => 0x4400_0002,
+            Instruction::VerbatimWord(word) => word,
         }
     }
 }
@@ -288,6 +289,14 @@ mod tests {
             }
             .encode(),
             0x13e1_000c
+        );
+    }
+
+    #[test]
+    fn preserves_a_verbatim_capture_word() {
+        assert_eq!(
+            Instruction::VerbatimWord(0x4182_0018).encode(),
+            0x4182_0018
         );
     }
 }

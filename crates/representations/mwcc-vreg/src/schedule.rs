@@ -70,6 +70,7 @@ fn is_barrier(instruction: &Instruction) -> bool {
             | MoveFromLinkRegister { .. }
             | MoveToLinkRegister { .. }
             | MoveToCountRegister { .. }
+            | VerbatimWord(_)
     )
 }
 

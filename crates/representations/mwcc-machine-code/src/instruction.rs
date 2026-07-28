@@ -367,6 +367,12 @@ pub enum Instruction {
     CacheOp { primary: u8, xo: u16, a: u8, b: u8 },
     /// `sc` — system call.
     SystemCall,
+    /// One already-scheduled PowerPC word owned by an exact whole-function
+    /// capture. This deliberately has no register description: capture owners
+    /// must mark their output `pre_scheduled` and attach relocations separately.
+    /// General instruction selection and inline assembly must use structured
+    /// variants so allocation and scheduling can still inspect their operands.
+    VerbatimWord(u32),
 }
 
 impl Instruction {
