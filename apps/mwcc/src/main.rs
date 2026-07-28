@@ -2754,6 +2754,9 @@ mod tests {
     #[path = "scaled_two_call_add.rs"]
     mod scaled_two_call_add;
 
+    #[path = "global_struct_member_return.rs"]
+    mod global_struct_member_return;
+
     #[path = "initialized_automatic_arrays.rs"]
     mod initialized_automatic_arrays;
 

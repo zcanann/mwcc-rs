@@ -492,13 +492,23 @@ impl Generator {
                     } else {
                         destination
                     };
-                    // A large aggregate's offset-zero field folds the low
-                    // relocation into the load: `lis base,g@ha; lwz d,g@l(base)`.
-                    // Materializing a separate `addi` changes both text and the
-                    // relocation site (SIBios's `Si.chan` comparison).
+                    // A large aggregate's offset-zero field follows the same
+                    // ownership rule as a scalar absolute load. When the result
+                    // and address share a GPR, mwcc finishes the address before
+                    // overwriting it: `lis d,g@ha; addi d,d,g@l; lwz d,0(d)`.
+                    // A distinct address register permits the compact folded
+                    // form `lis base,g@ha; lwz d,g@l(base)` (SIBios's
+                    // `Si.chan` comparison).
                     if offset == 0 {
                         self.emit_address_high(address, name);
-                        self.record_relocation(RelocationKind::Addr16Lo, name);
+                        if address == destination
+                            || self.behavior.absolute_access_style
+                                == mwcc_versions::AbsoluteAccessStyle::MaterializedAddress
+                        {
+                            self.emit_address_low(address, name);
+                        } else {
+                            self.record_relocation(RelocationKind::Addr16Lo, name);
+                        }
                         self.output.instructions.push(displacement_load(
                             pointee,
                             destination,
