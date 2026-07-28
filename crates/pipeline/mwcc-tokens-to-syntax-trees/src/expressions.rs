@@ -695,8 +695,19 @@ impl Parser {
         // known. Normalize all three spellings here instead of leaking source syntax
         // into semantic lowering and code generation.
         let mut explicit_cast_struct_tag = None;
+        let starts_scalar_typedef_conversion = matches!(
+            (self.peek(), self.peek_at(1)),
+            (Token::Identifier(name), Token::ParenOpen)
+                if self.typedefs.get(name).is_some_and(|ty| !matches!(
+                    ty,
+                    Type::Void | Type::Struct { .. }
+                ))
+        );
         let explicit_cast_expression =
-            if self.cplusplus && token_starts_cxx_fundamental_conversion(self.peek()) {
+            if self.cplusplus
+                && (token_starts_cxx_fundamental_conversion(self.peek())
+                    || starts_scalar_typedef_conversion)
+            {
                 let target_type = self.parse_type()?;
                 self.expect(Token::ParenOpen)?;
                 // `T()` value-initializes a scalar. Represent it as the ordinary conversion
@@ -2087,8 +2098,9 @@ impl Parser {
 /// C++ permits fundamental types to be used as explicit conversion functions:
 /// `int(value)`, `unsigned long(value)`, `bool()`, and so on. These spellings are
 /// unambiguous at the start of an expression because every admitted word is reserved
-/// as a fundamental type specifier. Typedef and class names intentionally remain in
-/// the identifier/call resolver, where symbol knowledge can disambiguate them.
+/// as a fundamental type specifier. Scalar typedefs are recognized separately from
+/// the parser's symbol table; aggregate/class names remain in the identifier/call
+/// resolver, where constructor semantics can be distinguished from casts.
 fn token_starts_cxx_fundamental_conversion(token: &Token) -> bool {
     match token {
         Token::KeywordInt

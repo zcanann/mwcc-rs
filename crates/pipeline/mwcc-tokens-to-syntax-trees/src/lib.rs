@@ -1100,6 +1100,33 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_a_scalar_typedef_functional_cast() {
+        let source = b"\
+            typedef signed int S32;\n\
+            extern float value;\n\
+            int converted(void) { return S32(value); }\n";
+        let unit = parse_located_translation_unit(
+            mwcc_source_to_tokens::tokenize_bytes_located(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            unit.functions[0].return_expression.as_ref(),
+            Some(mwcc_syntax_trees::Expression::Cast {
+                target_type: mwcc_syntax_trees::Type::Int,
+                operand,
+            }) if matches!(
+                operand.as_ref(),
+                mwcc_syntax_trees::Expression::Variable(name) if name == "value"
+            )
+        ));
+    }
+
+    #[test]
     fn folds_float_arithmetic_inside_function_expressions() {
         let source = r#"
             int roof(float y) {
