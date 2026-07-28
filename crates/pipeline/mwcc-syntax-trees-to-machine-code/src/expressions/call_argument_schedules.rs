@@ -54,6 +54,72 @@ fn stable_call_binary(
 }
 
 impl Generator {
+    /// Marshal `(global_array, packed_string, call_expression)` around the
+    /// nested call's result in r3.
+    ///
+    /// MWCC evaluates the call-bearing third argument first, then overlaps the
+    /// two absolute-address dependency chains before copying the nested result
+    /// to r5. The global-array high half uses r6 so r3 remains available until
+    /// the copy:
+    ///
+    /// ```text
+    /// bl nested
+    /// lis r4,string@ha
+    /// lis r6,array@ha
+    /// addi r4,r4,string@l
+    /// mr r5,r3
+    /// addi r3,r6,array@l
+    /// ```
+    ///
+    /// This avoids a callee-saved register because both prefix arguments are
+    /// reloadable after the nested call.
+    pub(crate) fn try_emit_global_array_string_nested_tail_arguments(
+        &mut self,
+        arguments: &[Expression],
+        name: &str,
+    ) -> Compilation<bool> {
+        let [
+            Expression::Variable(array),
+            Expression::StringLiteral(string),
+            nested,
+        ] = arguments
+        else {
+            return Ok(false);
+        };
+        let direct_outer = !self.globals.contains_key(name)
+            && !self.locations.contains_key(name)
+            && !self.known_locals.contains(name);
+        let Some(&array_size) = self.global_array_sizes.get(array.as_str()) else {
+            return Ok(false);
+        };
+        if !direct_outer
+            || (self.behavior.global_addressing == GlobalAddressing::SmallData && array_size <= 8)
+            || !self.behavior.string_literals_packed
+            || !self.behavior.schedule_latency_slots
+            || self.is_float_value(nested)
+            || !expression_has_call(nested)
+        {
+            return Ok(false);
+        }
+
+        let first = Eabi::FIRST_GENERAL_ARGUMENT;
+        self.evaluate_general(nested, first)?;
+
+        self.output.packed_string_literals = true;
+        let string = self.string_literal_placeholder(string);
+        self.emit_address_high(first + 1, &string);
+        self.emit_address_high(first + 3, array);
+        self.emit_string_address_low(&string, first + 1, first + 1);
+        self.emit_integer_materialization_copy(first + 2, first);
+        self.record_relocation(RelocationKind::Addr16Lo, array);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: first,
+            a: first + 3,
+            immediate: 0,
+        });
+        Ok(true)
+    }
+
     /// Marshal a reloadable general prefix after evaluating a call-bearing
     /// floating tail argument.
     ///

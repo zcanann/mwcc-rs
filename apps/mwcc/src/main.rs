@@ -2742,6 +2742,9 @@ mod tests {
     #[path = "call_result_if_else.rs"]
     mod call_result_if_else;
 
+    #[path = "nested_tail_call_arguments.rs"]
+    mod nested_tail_call_arguments;
+
     #[path = "spilled_pointer_cast.rs"]
     mod spilled_pointer_cast;
 
