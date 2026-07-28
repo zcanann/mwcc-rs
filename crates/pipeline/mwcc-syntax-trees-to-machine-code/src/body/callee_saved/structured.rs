@@ -1710,9 +1710,13 @@ impl Generator {
         }
         self.emit_structured_frame_array_initializers(frame_arrays)?;
         if let Some(cache) = global_index_cache_plan {
-            let source = self.lookup_general(&cache.index).ok_or_else(|| {
-                Diagnostic::error("structured global-index cache has no source register")
-            })?;
+            let source = saved_parameter_homes
+                .iter()
+                .find_map(|(name, home, _)| (name == &cache.index).then_some(*home))
+                .or_else(|| self.lookup_general(&cache.index))
+                .ok_or_else(|| {
+                    Diagnostic::error("structured global-index cache has no source register")
+                })?;
             let scaled = self.fresh_virtual_general_preferring(14);
             emit_scaled_index(
                 &mut self.output.instructions,
