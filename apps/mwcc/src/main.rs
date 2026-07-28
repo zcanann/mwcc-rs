@@ -2710,6 +2710,9 @@ mod tests {
     #[path = "inlined_list_append.rs"]
     mod inlined_list_append;
 
+    #[path = "guarded_payload_membership.rs"]
+    mod guarded_payload_membership;
+
     #[path = "member_float_select.rs"]
     mod member_float_select;
     mod member_setup;

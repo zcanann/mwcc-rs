@@ -1446,6 +1446,9 @@ impl Generator {
         if self.try_ascii_uppercase_loop(function)? {
             return Ok(());
         }
+        if self.try_guarded_payload_membership(function)? {
+            return Ok(());
+        }
         if self.try_inlined_list_append(function)? {
             return Ok(());
         }

@@ -10,6 +10,7 @@ mod count_register;
 mod counters;
 mod fill_copy;
 mod fixed_port_zero_fill;
+mod guarded_payload_membership;
 mod guarded_byte_copy;
 mod indexed_calls;
 mod inlined_byte_append;
