@@ -2629,6 +2629,9 @@ mod tests {
     #[path = "bitfield_conditions.rs"]
     mod bitfield_conditions;
 
+    #[path = "bounded_member_assignment.rs"]
+    mod bounded_member_assignment;
+
     #[path = "float_conditions.rs"]
     mod float_conditions;
 

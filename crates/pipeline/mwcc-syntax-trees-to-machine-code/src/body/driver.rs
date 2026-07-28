@@ -2485,6 +2485,9 @@ impl Generator {
         if self.try_bounded_member_cursor(function)? {
             return Ok(());
         }
+        if self.try_bounded_member_assignment(function)? {
+            return Ok(());
+        }
         // `T y; if (c) y = A; else y = B; return y;` — both arms assign the returned
         // local, so the whole body is the select `return (c) ? A : B`.
         if self.try_conditional_assign(function)? {
