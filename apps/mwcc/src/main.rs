@@ -453,6 +453,24 @@ fn name_translation_unit_startup(
     }
 }
 
+fn anonymous_namespace_scope(source_name: &str) -> String {
+    let file_name = std::path::Path::new(source_name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(source_name);
+    let encoded = file_name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    format!("@unnamed@{encoded}@")
+}
+
 fn resolve_global_destructor_record_names(
     unit: &mut mwcc_syntax_trees::TranslationUnit,
     machine_functions: &mut [mwcc_machine_code::MachineFunction],
@@ -674,23 +692,25 @@ fn compile(
     }
     let behavior = mwcc_versions::Behavior::resolve(&config);
     let is_cxx = source_is_cxx(source_name, source_language);
-    let mut unit = mwcc_tokens_to_syntax_trees::parse_located_translation_unit_with_behavior(
-        located_tokens,
-        is_cxx,
-        config.char_is_signed(),
-        behavior.plain_inline_localstatic_base,
-        behavior.skipped_static_inline_label_base,
-        behavior.skipped_plain_inline_label_base,
-        behavior.skipped_function_template_label_base,
-        behavior.dropped_inline_parameter_label_weight,
-        behavior.dropped_inline_local_declaration_label_weight,
-        behavior.dropped_inline_const_local_declaration_label_weight,
-        behavior.dropped_inline_class_automatic_label_base,
-        behavior.dropped_inline_class_automatic_label_weight,
-        behavior.anonymous_aggregate_definition_label_weight,
-        behavior.nested_anonymous_aggregate_definition_label_weight,
-        config.flags.enum_storage == mwcc_versions::EnumStorage::Minimum,
-    )?;
+    let mut unit =
+        mwcc_tokens_to_syntax_trees::parse_located_translation_unit_with_behavior_and_anonymous_namespace(
+            located_tokens,
+            is_cxx,
+            config.char_is_signed(),
+            behavior.plain_inline_localstatic_base,
+            behavior.skipped_static_inline_label_base,
+            behavior.skipped_plain_inline_label_base,
+            behavior.skipped_function_template_label_base,
+            behavior.dropped_inline_parameter_label_weight,
+            behavior.dropped_inline_local_declaration_label_weight,
+            behavior.dropped_inline_const_local_declaration_label_weight,
+            behavior.dropped_inline_class_automatic_label_base,
+            behavior.dropped_inline_class_automatic_label_weight,
+            behavior.anonymous_aggregate_definition_label_weight,
+            behavior.nested_anonymous_aggregate_definition_label_weight,
+            is_cxx.then(|| anonymous_namespace_scope(source_name)),
+            config.flags.enum_storage == mwcc_versions::EnumStorage::Minimum,
+        )?;
     name_translation_unit_startup(&mut unit, source_name);
     if is_cxx && config.flags.rtti {
         mwcc_tokens_to_syntax_trees::materialize_cxx_rtti(

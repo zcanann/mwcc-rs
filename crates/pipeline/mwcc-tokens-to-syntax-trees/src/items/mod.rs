@@ -690,11 +690,11 @@ impl Parser {
             // CodeWarrior's nested `Qn` encoding, while the existing top-level item
             // parser can continue consuming the declarations inside the wrapper.
             if self.cplusplus && self.eat_word("namespace") {
-                // An anonymous namespace has internal linkage but no ABI scope
-                // spelling in this compiler family. Retain an empty stack entry
-                // solely so its closing brace is paired as a declaration scope.
+                // An anonymous namespace has a filename-derived ABI component
+                // (`@unnamed@zVar_cpp@`). Synthetic parser callers that have no
+                // source identity retain an empty entry solely for brace pairing.
                 let namespace = if *self.peek() == Token::BraceOpen {
-                    String::new()
+                    self.anonymous_namespace_scope.clone().unwrap_or_default()
                 } else {
                     self.parse_identifier()?
                 };
@@ -1918,7 +1918,12 @@ impl Parser {
             // scope the switch.
             self.consume_top_level_pragmas();
             let mut is_extern = false;
-            let mut is_static = false;
+            // Every declaration in an anonymous namespace has internal
+            // linkage, even without an explicit `static` storage specifier.
+            let mut is_static = self
+                .namespace_stack
+                .iter()
+                .any(|scope| scope.starts_with("@unnamed@"));
             let mut is_weak = false;
             let mut declspec_section: Option<String> = None;
             let mut is_inline = false;

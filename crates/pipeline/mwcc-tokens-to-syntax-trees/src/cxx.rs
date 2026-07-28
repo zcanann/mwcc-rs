@@ -998,18 +998,43 @@ impl Parser {
         variadic: bool,
     ) {
         let key = self.free_cxx_source_name(source_name);
-        let methods = std::sync::Arc::make_mut(&mut self.cxx_free_functions)
-            .entry(key)
-            .or_default();
-        if !methods.iter().any(|method| method.mangled == mangled) {
-            methods.push(RecoveredCxxMethod {
-                mangled: mangled.to_string(),
-                fixed_parameter_count: parameters.len(),
-                variadic,
-                parameters: parameters.to_vec(),
-                cxx_parameters: cxx_parameters.to_vec(),
-                is_const_member: false,
+        let method = RecoveredCxxMethod {
+            mangled: mangled.to_string(),
+            fixed_parameter_count: parameters.len(),
+            variadic,
+            parameters: parameters.to_vec(),
+            cxx_parameters: cxx_parameters.to_vec(),
+            is_const_member: false,
+        };
+        let scopes = self.named_namespace_scopes();
+        // An anonymous namespace behaves as though an implicit using-directive
+        // were present in its enclosing namespace. Keep the real qualified key
+        // for declarations parsed inside the block and an enclosing-scope alias
+        // for later unqualified calls after the closing brace.
+        let visible_key = scopes
+            .iter()
+            .any(|scope| scope.starts_with("@unnamed@"))
+            .then(|| {
+                let visible_scopes = scopes
+                    .iter()
+                    .copied()
+                    .filter(|scope| !scope.starts_with("@unnamed@"))
+                    .collect::<Vec<_>>();
+                if visible_scopes.is_empty() {
+                    source_name.to_owned()
+                } else {
+                    format!("{}::{source_name}", visible_scopes.join("::"))
+                }
             });
+        let methods_by_name = std::sync::Arc::make_mut(&mut self.cxx_free_functions);
+        for registration_key in std::iter::once(key).chain(visible_key) {
+            let methods = methods_by_name.entry(registration_key).or_default();
+            if !methods
+                .iter()
+                .any(|existing| existing.mangled == method.mangled)
+            {
+                methods.push(method.clone());
+            }
         }
     }
 
@@ -3343,8 +3368,27 @@ impl Parser {
         }
         let qualified_source = format!("{}::{source_name}", scopes.join("::"));
         let mangled = mangle_qualified_data_member(&scopes, source_name)?;
+        let visible_source = scopes
+            .iter()
+            .any(|scope| scope.starts_with("@unnamed@"))
+            .then(|| {
+                let visible_scopes = scopes
+                    .iter()
+                    .copied()
+                    .filter(|scope| !scope.starts_with("@unnamed@"))
+                    .collect::<Vec<_>>();
+                if visible_scopes.is_empty() {
+                    source_name.to_owned()
+                } else {
+                    format!("{}::{source_name}", visible_scopes.join("::"))
+                }
+            });
         self.cxx_data_objects
             .insert(qualified_source, mangled.clone());
+        if let Some(visible_source) = visible_source {
+            self.cxx_data_objects
+                .insert(visible_source, mangled.clone());
+        }
         Ok(mangled)
     }
 
@@ -3352,9 +3396,13 @@ impl Parser {
     /// namespace outward, following ordinary C++ lexical lookup.
     pub(crate) fn resolve_cxx_data_object(&self, source_name: &str) -> Option<String> {
         let scopes = self.named_namespace_scopes();
-        (1..=scopes.len()).rev().find_map(|depth| {
-            let qualified = format!("{}::{source_name}", scopes[..depth].join("::"));
-            self.cxx_data_objects.get(&qualified).cloned()
+        (0..=scopes.len()).rev().find_map(|depth| {
+            let candidate = if depth == 0 {
+                source_name.to_owned()
+            } else {
+                format!("{}::{source_name}", scopes[..depth].join("::"))
+            };
+            self.cxx_data_objects.get(&candidate).cloned()
         })
     }
 

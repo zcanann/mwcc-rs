@@ -692,6 +692,10 @@ pub(crate) struct Parser {
     /// are declaration containers; this stack supplies CodeWarrior's `Qn`
     /// qualification when member symbols are mangled.
     pub(crate) namespace_stack: Vec<String>,
+    /// CodeWarrior's filename-derived scope component for `namespace { ... }`,
+    /// e.g. `@unnamed@zVar_cpp@`. Synthetic parser clients leave this absent
+    /// and retain the historical transparent-scope behavior.
+    pub(crate) anonymous_namespace_scope: Option<String>,
     /// Fully-qualified namespace names declared in this translation unit. This
     /// distinguishes `N::free_function()` from `Class::static_method()` when
     /// both use the same surface qualification syntax.

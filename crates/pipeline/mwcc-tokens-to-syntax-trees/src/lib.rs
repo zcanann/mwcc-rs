@@ -126,6 +126,49 @@ pub fn parse_located_translation_unit_with_behavior(
     nested_anonymous_aggregate_definition_label_weight: u8,
     enum_min: bool,
 ) -> Compilation<TranslationUnit> {
+    parse_located_translation_unit_with_behavior_and_anonymous_namespace(
+        tokens,
+        cplusplus,
+        char_is_signed,
+        plain_inline_localstatic_base,
+        skipped_static_inline_label_base,
+        skipped_plain_inline_label_base,
+        skipped_function_template_label_base,
+        dropped_inline_parameter_label_weight,
+        dropped_inline_local_declaration_label_weight,
+        dropped_inline_const_local_declaration_label_weight,
+        dropped_inline_class_automatic_label_base,
+        dropped_inline_class_automatic_label_weight,
+        anonymous_aggregate_definition_label_weight,
+        nested_anonymous_aggregate_definition_label_weight,
+        None,
+        enum_min,
+    )
+}
+
+/// Parse tokens with concrete build behavior and the ABI spelling of this
+/// translation unit's anonymous namespace. Synthetic callers may use the
+/// compatibility entry point above; the compiler invocation supplies
+/// `@unnamed@<encoded basename>@` so internal functions and data receive their
+/// real CodeWarrior boundary names during semantic resolution.
+pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
+    tokens: Vec<LocatedToken>,
+    cplusplus: bool,
+    char_is_signed: bool,
+    plain_inline_localstatic_base: u8,
+    skipped_static_inline_label_base: u8,
+    skipped_plain_inline_label_base: u8,
+    skipped_function_template_label_base: u8,
+    dropped_inline_parameter_label_weight: u8,
+    dropped_inline_local_declaration_label_weight: u8,
+    dropped_inline_const_local_declaration_label_weight: u8,
+    dropped_inline_class_automatic_label_base: u8,
+    dropped_inline_class_automatic_label_weight: u8,
+    anonymous_aggregate_definition_label_weight: u8,
+    nested_anonymous_aggregate_definition_label_weight: u8,
+    anonymous_namespace_scope: Option<String>,
+    enum_min: bool,
+) -> Compilation<TranslationUnit> {
     // East pointee qualifiers are codegen-transparent, but C++ `const`
     // remains part of a function's ABI name. Move that fact after the star as
     // a parser-internal marker: declaration lookahead keeps seeing canonical
@@ -240,6 +283,7 @@ pub fn parse_located_translation_unit_with_behavior(
         pragma_stack: Vec::new(),
         code_section: None,
         namespace_stack: Vec::new(),
+        anonymous_namespace_scope,
         cxx_namespaces: std::collections::HashSet::new(),
         cxx_data_objects: std::collections::HashMap::new(),
         cxx_static_data_members: std::collections::HashMap::new(),
@@ -3518,6 +3562,61 @@ blr\n\
             unit.functions[1].return_expression.as_ref(),
             Some(mwcc_syntax_trees::Expression::Call { name, .. }) if name == "choose__Fi"
         ));
+    }
+
+    #[test]
+    fn gives_a_named_translation_unit_an_internal_anonymous_namespace_scope() {
+        let source = r#"
+            namespace {
+                int state;
+                int choose(int value) { return value; }
+            }
+            int wrapper(int value) { return choose(value) + state; }
+        "#;
+        let unit = parse_located_translation_unit_with_behavior_and_anonymous_namespace(
+            located(source),
+            true,
+            true,
+            1,
+            3,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            Some("@unnamed@sample_cpp@".to_string()),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.functions
+                .iter()
+                .map(|function| (function.name.as_str(), function.is_static))
+                .collect::<Vec<_>>(),
+            [
+                ("choose__20@unnamed@sample_cpp@Fi", true),
+                ("wrapper__Fi", false),
+            ]
+        );
+        assert_eq!(unit.globals[0].name, "state__20@unnamed@sample_cpp@");
+        assert!(unit.globals[0].is_static);
+        assert!(
+            matches!(
+                unit.functions[1].return_expression.as_ref(),
+                Some(Expression::Binary { left, right, .. })
+                    if matches!(left.as_ref(), Expression::Call { name, .. }
+                        if name == "choose__20@unnamed@sample_cpp@Fi")
+                    && matches!(right.as_ref(), Expression::Variable(name)
+                        if name == "state__20@unnamed@sample_cpp@")
+            ),
+            "{:#?}",
+            unit.functions[1].return_expression
+        );
     }
 
     #[test]
