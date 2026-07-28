@@ -2701,6 +2701,9 @@ mod tests {
     #[path = "global_aggregate_constant_initialization.rs"]
     mod global_aggregate_constant_initialization;
 
+    #[path = "linked_list_append.rs"]
+    mod linked_list_append;
+
     #[path = "member_float_select.rs"]
     mod member_float_select;
     mod member_setup;
