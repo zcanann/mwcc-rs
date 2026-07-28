@@ -397,6 +397,18 @@ impl Generator {
         arguments: &[Expression],
         name: &str,
     ) -> Compilation<()> {
+        let previous_global_index_base = self.transient_global_index_base.take();
+        let result = self.emit_argument_transaction(arguments, name);
+        self.transient_global_index_base = previous_global_index_base;
+        result
+    }
+
+    fn emit_argument_transaction(
+        &mut self,
+        arguments: &[Expression],
+        name: &str,
+    ) -> Compilation<()> {
+        self.transient_global_index_base = None;
         if self.try_emit_structured_aggregate_copy_arguments(arguments, name)? {
             return Ok(());
         }

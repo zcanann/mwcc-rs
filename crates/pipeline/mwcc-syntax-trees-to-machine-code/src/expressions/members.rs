@@ -178,6 +178,62 @@ impl Generator {
         offset: u32,
         destination: u8,
     ) -> Compilation<()> {
+        let retained_global_element = match base {
+            Expression::Index { base, index } => {
+                match (base.as_ref(), index.as_ref()) {
+                    (Expression::Variable(global), Expression::Variable(index_name)) => self
+                        .structured_global_index_cache
+                        .as_ref()
+                        .filter(|cache| {
+                            cache.global == *global
+                                && cache.index == *index_name
+                                && cache.retained_element.is_some()
+                        })
+                        .map(|cache| {
+                            (
+                                global.clone(),
+                                index.as_ref().clone(),
+                                cache.retained_element.expect("filtered as retained"),
+                                cache.retained_element_initialized,
+                            )
+                        }),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        if let Some((global, index, retained, initialized)) = retained_global_element {
+            if !initialized {
+                let total_size = self.global_array_address_extent(&global).ok_or_else(|| {
+                    Diagnostic::error("retained global-array element has no extent")
+                })?;
+                self.emit_global_array_element_address(
+                    &global,
+                    total_size,
+                    &index,
+                    retained,
+                )?;
+                self.structured_global_index_cache
+                    .as_mut()
+                    .expect("retained global-array cache disappeared")
+                    .retained_element_initialized = true;
+            }
+            if offset == 0 {
+                self.output
+                    .instructions
+                    .push(Instruction::move_register(destination, retained));
+            } else {
+                let offset = i16::try_from(offset).map_err(|_| {
+                    Diagnostic::error("retained global member offset is out of range")
+                })?;
+                self.output.instructions.push(Instruction::AddImmediate {
+                    d: destination,
+                    a: retained,
+                    immediate: offset,
+                });
+            }
+            return Ok(());
+        }
         if let Some((inner, inner_offset)) = embedded_member_address_base(base) {
             let combined = inner_offset.checked_add(offset).ok_or_else(|| {
                 Diagnostic::error("nested member address offset overflow (roadmap)")
@@ -1080,6 +1136,44 @@ impl Generator {
                 let total_size = self
                     .global_array_address_extent(name)
                     .expect("the guard resolved the array extent");
+                if let Expression::Variable(index_name) = index.as_ref() {
+                    let cached_stride = self
+                        .structured_global_index_cache
+                        .as_ref()
+                        .filter(|cache| {
+                            cache.global == *name && cache.index == *index_name
+                        })
+                        .map(|cache| cache.stride);
+                    if let Some(stride) = cached_stride {
+                        if let Some(base) = self
+                            .transient_global_index_base
+                            .as_ref()
+                            .filter(|base| {
+                                base.global == *name
+                                    && base.index == *index_name
+                                    && base.stride == stride
+                            })
+                            .map(|base| base.register)
+                        {
+                            return Ok(base);
+                        }
+                        let register = self.fresh_virtual_general_preferring(3);
+                        self.emit_global_array_element_address(
+                            name,
+                            total_size,
+                            index,
+                            register,
+                        )?;
+                        self.transient_global_index_base =
+                            Some(crate::generator::TransientGlobalIndexBase {
+                                global: name.clone(),
+                                index: index_name.clone(),
+                                stride,
+                                register,
+                            });
+                        return Ok(register);
+                    }
+                }
                 let register = self.fresh_virtual_general();
                 self.emit_global_array_element_address(name, total_size, index, register)?;
                 Ok(register)

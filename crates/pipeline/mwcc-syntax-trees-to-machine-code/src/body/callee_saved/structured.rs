@@ -1724,12 +1724,17 @@ impl Generator {
                 source,
                 cache.stride,
             )?;
+            let retained_element = cache
+                .retain_element
+                .then(|| self.fresh_virtual_general_preferring(15));
             self.structured_global_index_cache =
                 Some(crate::generator::StructuredGlobalIndexCache {
                     global: cache.global,
                     index: cache.index,
                     stride: cache.stride,
                     scaled,
+                    retained_element,
+                    retained_element_initialized: false,
                 });
         }
         self.plan_structured_float_handoff(function, &ephemeral_locals);
@@ -2089,6 +2094,35 @@ impl Generator {
         let mut carried_condition_cache_restore = None;
         let mut scheduled_float_store = None;
         for (statement_index, statement) in statements.iter().enumerate() {
+            let repeats_previous_scratch_constant = statement_index
+                .checked_sub(1)
+                .and_then(|start| statements.get(start..=statement_index))
+                .is_some_and(|pair| {
+                    matches!(
+                        self.constant_store_run_plan(pair),
+                        Some(ConstStoreRun::AllSame)
+                    )
+                });
+            let repeats_next_scratch_constant = statement_index
+                .checked_add(1)
+                .and_then(|end| statements.get(statement_index..=end))
+                .is_some_and(|pair| {
+                    matches!(
+                        self.constant_store_run_plan(pair),
+                        Some(ConstStoreRun::AllSame)
+                    )
+                });
+            let repeated_scratch_constant =
+                repeats_previous_scratch_constant || repeats_next_scratch_constant;
+            if repeated_scratch_constant {
+                if !self.reuse_scratch_constant {
+                    self.scratch_constant = None;
+                }
+                self.reuse_scratch_constant = true;
+            } else {
+                self.reuse_scratch_constant = false;
+                self.scratch_constant = None;
+            }
             let emitted_start = self.output.instructions.len();
             match statement {
                 Statement::If {
@@ -2619,8 +2653,7 @@ impl Generator {
                                             let index_register = self.lookup_general(index_name).ok_or_else(|| {
                                             Diagnostic::error("structured computed address index has no register")
                                         })?;
-                                            let high = self.fresh_virtual_general();
-                                            let cached_scaled = self
+                                            let retained_element = self
                                                 .structured_global_index_cache
                                                 .as_ref()
                                                 .filter(|cache| {
@@ -2628,35 +2661,80 @@ impl Generator {
                                                         && cache.index == *index_name
                                                         && cache.stride == element_size
                                                 })
-                                                .map(|cache| cache.scaled);
-                                            let scaled = cached_scaled
-                                                .unwrap_or_else(|| self.fresh_virtual_general());
-                                            self.emit_address_high(high, global);
-                                            if cached_scaled.is_none() {
-                                                emit_scaled_index(
-                                                    &mut self.output.instructions,
-                                                    scaled,
-                                                    index_register,
-                                                    element_size,
-                                                )?;
+                                                .and_then(|cache| {
+                                                    cache.retained_element.map(|retained| {
+                                                        (
+                                                            retained,
+                                                            cache.retained_element_initialized,
+                                                        )
+                                                    })
+                                                });
+                                            if let Some((retained, true)) = retained_element {
+                                                self.locations
+                                                    .get_mut(name)
+                                                    .expect("structured computed address local")
+                                                    .register = retained;
+                                                true
+                                            } else {
+                                                let high = self.fresh_virtual_general();
+                                                let cached_scaled = self
+                                                    .structured_global_index_cache
+                                                    .as_ref()
+                                                    .filter(|cache| {
+                                                        cache.global == *global
+                                                            && cache.index == *index_name
+                                                            && cache.stride == element_size
+                                                    })
+                                                    .map(|cache| cache.scaled);
+                                                let scaled = cached_scaled.unwrap_or_else(|| {
+                                                    self.fresh_virtual_general()
+                                                });
+                                                self.emit_address_high(high, global);
+                                                if cached_scaled.is_none() {
+                                                    emit_scaled_index(
+                                                        &mut self.output.instructions,
+                                                        scaled,
+                                                        index_register,
+                                                        element_size,
+                                                    )?;
+                                                }
+                                                self.record_relocation(
+                                                    RelocationKind::Addr16Lo,
+                                                    global,
+                                                );
+                                                self.output.instructions.push(
+                                                    Instruction::AddImmediate {
+                                                        d: GENERAL_SCRATCH,
+                                                        a: high,
+                                                        immediate: 0,
+                                                    },
+                                                );
+                                                let computed_destination =
+                                                    retained_element.map_or(
+                                                        destination,
+                                                        |(retained, _)| retained,
+                                                    );
+                                                self.output.instructions.push(Instruction::Add {
+                                                    d: computed_destination,
+                                                    a: GENERAL_SCRATCH,
+                                                    b: scaled,
+                                                });
+                                                if retained_element.is_some() {
+                                                    self.structured_global_index_cache
+                                                        .as_mut()
+                                                        .expect(
+                                                            "retained global-index cache disappeared",
+                                                        )
+                                                        .retained_element_initialized = true;
+                                                    self.locations
+                                                        .get_mut(name)
+                                                        .expect(
+                                                            "structured computed address local",
+                                                        )
+                                                        .register = computed_destination;
+                                                }
+                                                true
                                             }
-                                            self.record_relocation(
-                                                RelocationKind::Addr16Lo,
-                                                global,
-                                            );
-                                            self.output.instructions.push(
-                                                Instruction::AddImmediate {
-                                                    d: GENERAL_SCRATCH,
-                                                    a: high,
-                                                    immediate: 0,
-                                                },
-                                            );
-                                            self.output.instructions.push(Instruction::Add {
-                                                d: destination,
-                                                a: GENERAL_SCRATCH,
-                                                b: scaled,
-                                            });
-                                            true
                                         } else {
                                             false
                                         }
@@ -2806,6 +2884,8 @@ impl Generator {
                 );
             }
         }
+        self.reuse_scratch_constant = false;
+        self.scratch_constant = None;
         debug_assert!(scheduled_float_store.is_none());
         if let Some((previous, previous_float)) = carried_condition_cache_restore {
             self.restore_condition_global_cache(previous);

@@ -483,6 +483,7 @@ pub fn lower_function(
             )
             .collect(),
         structured_global_index_cache: None,
+        transient_global_index_base: None,
         full_bss_globals: globals
             .iter()
             .filter(|global| {

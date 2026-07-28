@@ -11,6 +11,7 @@ pub(super) struct StructuredGlobalIndexPlan {
     pub(super) global: String,
     pub(super) index: String,
     pub(super) stride: u32,
+    pub(super) retain_element: bool,
 }
 
 pub(super) fn plan(
@@ -23,9 +24,10 @@ pub(super) fn plan(
         .iter()
         .map(|parameter| parameter.name.as_str())
         .collect();
-    let mut counts = std::collections::HashMap::<(String, String, u32), usize>::new();
+    let mut occurrences =
+        std::collections::HashMap::<(String, String, u32), Vec<u32>>::new();
     for statement in &function.statements {
-        visit_statement(statement, &mut |global, index| {
+        visit_statement(statement, &mut |global, index, offset| {
             if !parameters.contains(index) || !global_array_sizes.contains_key(global) {
                 return;
             }
@@ -33,25 +35,33 @@ pub(super) fn plan(
                 return;
             };
             if size != 0 {
-                *counts
+                occurrences
                     .entry((global.to_owned(), index.to_owned(), u32::from(size)))
-                    .or_default() += 1;
+                    .or_default()
+                    .push(offset);
             }
         });
     }
-    let ((global, index, stride), count) =
-        counts.into_iter().max_by_key(|(_, count)| *count)?;
-    if count < 3 || statements_assign_name(&function.statements, &index) {
+    let ((global, index, stride), offsets) =
+        occurrences.into_iter().max_by_key(|(_, offsets)| offsets.len())?;
+    if offsets.len() < 3 || statements_assign_name(&function.statements, &index) {
         return None;
     }
+    let retain_element =
+        offsets.first().is_some_and(|offset| *offset != 0)
+            && offsets.last() == Some(&0);
     Some(StructuredGlobalIndexPlan {
         global,
         index,
         stride,
+        retain_element,
     })
 }
 
-fn visit_statement(statement: &Statement, visit: &mut impl FnMut(&str, &str)) {
+fn visit_statement(
+    statement: &Statement,
+    visit: &mut impl FnMut(&str, &str, u32),
+) {
     match statement {
         Statement::Store { target, value } => {
             visit_expression(target, visit);
@@ -110,7 +120,7 @@ fn visit_statement(statement: &Statement, visit: &mut impl FnMut(&str, &str)) {
     }
 }
 
-fn visit_arm_body(body: &ArmBody, visit: &mut impl FnMut(&str, &str)) {
+fn visit_arm_body(body: &ArmBody, visit: &mut impl FnMut(&str, &str, u32)) {
     match body {
         ArmBody::Return(expression) => visit_expression(expression, visit),
         ArmBody::Statements(statements) => {
@@ -121,13 +131,16 @@ fn visit_arm_body(body: &ArmBody, visit: &mut impl FnMut(&str, &str)) {
     }
 }
 
-fn visit_expression(expression: &Expression, visit: &mut impl FnMut(&str, &str)) {
-    if let Expression::MemberAddress { base, .. } = expression {
+fn visit_expression(
+    expression: &Expression,
+    visit: &mut impl FnMut(&str, &str, u32),
+) {
+    if let Expression::MemberAddress { base, offset, .. } = expression {
         if let Expression::Index { base, index } = base.as_ref() {
             if let (Expression::Variable(global), Expression::Variable(index)) =
                 (base.as_ref(), index.as_ref())
             {
-                visit(global, index);
+                visit(global, index, *offset);
             }
         }
     }
@@ -313,6 +326,7 @@ mod tests {
                 global: "records".into(),
                 index: "i".into(),
                 stride: 108,
+                retain_element: false,
             })
         );
     }
@@ -331,5 +345,18 @@ mod tests {
         ]);
         let (globals, sizes) = maps();
         assert_eq!(plan(&function, &globals, &sizes), None);
+    }
+
+    #[test]
+    fn retains_an_element_used_first_by_member_and_last_by_base() {
+        let function = function(vec![Statement::Expression(Expression::Call {
+            name: "sink".into(),
+            arguments: vec![member(64), member(64), member(0)],
+        })]);
+        let (globals, sizes) = maps();
+        assert!(
+            plan(&function, &globals, &sizes)
+                .is_some_and(|plan| plan.retain_element)
+        );
     }
 }

@@ -232,6 +232,16 @@ pub(crate) struct StructuredGlobalIndexCache {
     pub(crate) index: String,
     pub(crate) stride: u32,
     pub(crate) scaled: u8,
+    pub(crate) retained_element: Option<u8>,
+    pub(crate) retained_element_initialized: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TransientGlobalIndexBase {
+    pub(crate) global: String,
+    pub(crate) index: String,
+    pub(crate) stride: u32,
+    pub(crate) register: u8,
 }
 
 pub(crate) struct Generator {
@@ -271,6 +281,9 @@ pub(crate) struct Generator {
     /// A source-stable global struct-array subscript whose scaled index is
     /// retained across calls by the structured body owner.
     pub(crate) structured_global_index_cache: Option<StructuredGlobalIndexCache>,
+    /// Complete global element base shared only within the current call's
+    /// argument transaction. It is reset before every argument list.
+    pub(crate) transient_global_index_base: Option<TransientGlobalIndexBase>,
     /// Defined, uninitialized file-scope objects routed to full `.bss`.
     ///
     /// Aggregate-wide schedules may address these through `...bss.0`; keeping
@@ -454,12 +467,12 @@ pub(crate) struct Generator {
     /// Exclusive end of a structured body's pre-planned int-to-float range.
     pub(crate) int_to_float_scratch_end: i16,
     /// When set, a constant store value reuses the scratch register if it already
-    /// holds that constant (`scratch_constant`). Enabled only by the
-    /// constant-store-fill path, which guarantees nothing clobbers the scratch
-    /// between stores, so the reuse is provably valid.
+    /// holds that constant (`scratch_constant`). Enabled only by a planned
+    /// scratch-safe constant-store run, which guarantees nothing clobbers the
+    /// scratch between stores, so the reuse is provably valid.
     pub(crate) reuse_scratch_constant: bool,
     /// The constant currently materialized in the scratch register, during a
-    /// constant-store-fill run.
+    /// scratch-safe constant-store run.
     pub(crate) scratch_constant: Option<i32>,
     /// Constants pre-materialized into specific registers ahead of a run of
     /// distinct-constant stores, so each store reuses its register rather than
