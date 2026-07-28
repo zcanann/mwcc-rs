@@ -96,15 +96,16 @@ fn initializes_an_extra_zero_member_before_registering_callbacks() {
         extern int set_get(void*, void*, void*, void*, void*, void*);
 
         int device_event(Device* device, int event, void* argument) {
+            Device* self = (Device*)device;
             switch (event) {
                 case 2:
-                    device->host = argument;
-                    device->index = 0;
+                    self->host = argument;
+                    self->index = 0;
                     break;
                 case 0x1002:
-                    if (!set_put(((System*)device->host)->cpu, argument,
+                    if (!set_put(((System*)self->host)->cpu, argument,
                                  put8, put16, put32, put64)) return 0;
-                    if (!set_get(((System*)device->host)->cpu, argument,
+                    if (!set_get(((System*)self->host)->cpu, argument,
                                  get8, get16, get32, get64)) return 0;
                 case 0:
                 case 1:

@@ -103,14 +103,20 @@ fn failure_registration(
     if !variable(forwarded, argument) {
         return None;
     }
-    let Expression::Member {
-        base: host,
-        offset: device_offset,
-        index_stride: None,
-        ..
-    } = peel_zero_index(device)
-    else {
-        return None;
+    let (host, device_offset) = match peel_zero_index(device) {
+        Expression::Member {
+            base,
+            offset,
+            index_stride: None,
+            ..
+        }
+        | Expression::MemberAddress {
+            base,
+            offset,
+            index_stride: None,
+            ..
+        } => (base.as_ref(), *offset),
+        _ => return None,
     };
     let host_offset = member(host, object)?;
     Some((
@@ -124,13 +130,12 @@ fn failure_registration(
             ],
         },
         host_offset,
-        i16::try_from(*device_offset).ok()?,
+        i16::try_from(device_offset).ok()?,
     ))
 }
 
 fn classify(function: &Function) -> Option<DeviceRegistrationEventSwitch> {
     if function.return_type != Type::Int
-        || !function.locals.is_empty()
         || !function.guards.is_empty()
         || constant(function.return_expression.as_ref()?) != Some(1)
     {
@@ -138,6 +143,23 @@ fn classify(function: &Function) -> Option<DeviceRegistrationEventSwitch> {
     }
     let [object, selector, argument] = function.parameters.as_slice() else {
         return None;
+    };
+    // A typed self-alias such as `Sram *self = (Sram *)object` has no storage
+    // identity after optimization. Accept that decomp-source spelling while
+    // keeping every member and registration check tied to the original object.
+    let object_name = match function.locals.as_slice() {
+        [] => object.name.as_str(),
+        [local]
+            if local.array_length.is_none()
+                && !local.is_static
+                && local
+                    .initializer
+                    .as_ref()
+                    .is_some_and(|initializer| variable(initializer, &object.name)) =>
+        {
+            local.name.as_str()
+        }
+        _ => return None,
     };
     let [Statement::Switch {
         scrutinee,
@@ -167,14 +189,14 @@ fn classify(function: &Function) -> Option<DeviceRegistrationEventSwitch> {
                 value: zero_value,
             },
         ] if constant(zero_value) == Some(0) => {
-            (host_store, Some(member(zero_target, &object.name)?))
+            (host_store, Some(member(zero_target, object_name)?))
         }
         _ => return None,
     };
     let Statement::Store { target, value } = host_store else {
         return None;
     };
-    let host_offset = member(target, &object.name)?;
+    let host_offset = member(target, object_name)?;
     if initialize.falls_through || !variable(value, &argument.name) {
         return None;
     }
@@ -187,9 +209,9 @@ fn classify(function: &Function) -> Option<DeviceRegistrationEventSwitch> {
         return None;
     };
     let (put, put_host_offset, put_device_offset) =
-        failure_registration(put_statement, &object.name, &argument.name)?;
+        failure_registration(put_statement, object_name, &argument.name)?;
     let (get, get_host_offset, get_device_offset) =
-        failure_registration(get_statement, &object.name, &argument.name)?;
+        failure_registration(get_statement, object_name, &argument.name)?;
     if registration.falls_through {
         let registration_index = arms
             .iter()
