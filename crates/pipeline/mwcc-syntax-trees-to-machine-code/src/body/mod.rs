@@ -4,6 +4,7 @@
 
 mod call_prologue;
 mod call_result_if_else;
+mod call_result_member_callback_guard;
 mod leading_bitfield_clear_call;
 mod leading_float_update_clamp;
 mod terminal_float_update;

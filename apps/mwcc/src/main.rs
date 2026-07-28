@@ -2742,6 +2742,9 @@ mod tests {
     #[path = "call_result_if_else.rs"]
     mod call_result_if_else;
 
+    #[path = "call_result_member_callback_guard.rs"]
+    mod call_result_member_callback_guard;
+
     #[path = "nested_tail_call_arguments.rs"]
     mod nested_tail_call_arguments;
 
