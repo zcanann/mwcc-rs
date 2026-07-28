@@ -2772,6 +2772,9 @@ mod tests {
     #[path = "member_pointer_and_bitfield_chain.rs"]
     mod member_pointer_and_bitfield_chain;
 
+    #[path = "indexed_member_call_store_loop.rs"]
+    mod indexed_member_call_store_loop;
+
     #[path = "spilled_pointer_cast.rs"]
     mod spilled_pointer_cast;
 

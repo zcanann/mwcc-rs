@@ -3299,6 +3299,9 @@ impl Generator {
             if self.try_virtual_collection_scan(function)? {
                 return Ok(());
             }
+            if self.try_indexed_member_call_store_loop(function)? {
+                return Ok(());
+            }
             if self.try_callee_saved_call_loop(function)? {
                 return Ok(());
             }

@@ -52,6 +52,7 @@ mod guarded_pointer_call;
 mod guarded_report_store_schedule;
 mod indirect_call_schedule;
 mod indexed_call_store_return;
+mod indexed_member_call_store_loop;
 mod queue_initialization;
 mod queue_interrupt;
 mod queue_post;
