@@ -1502,6 +1502,7 @@ fn compile(
             && global.is_const
             && global.array_length.is_none()
             && global.address_initializer.is_none()
+            && global.data_bytes.is_none()
         {
             let kept = machine_functions.iter().any(|function| {
                 function
@@ -2838,6 +2839,8 @@ mod tests {
 
     #[path = "dead_automatic_arrays.rs"]
     mod dead_automatic_arrays;
+    #[path = "const_template_globals.rs"]
+    mod const_template_globals;
 
     #[path = "call_result_if_else.rs"]
     mod call_result_if_else;

@@ -539,6 +539,13 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             rodata_size += bytes.len() as u32;
         }
         for name in &function.string_names {
+            if name.starts_with("@stringBase") {
+                // A packed string base is a translation-unit product. MWCC
+                // closes the source-positioned read-only image timeline before
+                // materializing that shared payload, even though its symbol
+                // number was claimed by the first function that used a string.
+                continue;
+            }
             if let Some(object) = input.data_objects.iter().find(|object| {
                 object.name == name.as_str() && section_of(object) == ".rodata"
             }) {

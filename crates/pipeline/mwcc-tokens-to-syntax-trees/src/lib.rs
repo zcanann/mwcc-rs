@@ -7095,6 +7095,51 @@ blr\n\
     }
 
     #[test]
+    fn retains_const_template_value_globals_with_aggregate_images() {
+        let source = r#"
+            typedef float F32;
+            template <class T> struct basic_rect {
+                T x, y, w, h;
+                const static basic_rect m_Null;
+                const static basic_rect m_Unit;
+                basic_rect& assign(T x, T y, T w, T h);
+                basic_rect& contract(T s);
+                basic_rect& expand(T x, T y, T w, T h) {
+                    this->x -= x;
+                    this->w += x + w;
+                    this->y -= y;
+                    this->h += y + h;
+                    return *this;
+                }
+            };
+            extern const basic_rect<F32> screen_bounds;
+            const basic_rect<F32> screen_bounds = { 0.0f, 0.0f, 1.0f, 1.0f };
+            const basic_rect<F32> default_adjust = { 0.0f, 0.0f, 1.0f, 1.0f };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(unit.globals.len(), 3);
+        assert!(unit.globals[0].is_extern);
+        assert_eq!(unit.globals[1].name, "screen_bounds");
+        assert_eq!(
+            unit.globals[1].data_bytes.as_deref(),
+            Some(
+                [
+                    0, 0, 0, 0, 0, 0, 0, 0, 0x3f, 0x80, 0, 0, 0x3f, 0x80, 0, 0,
+                ]
+                .as_slice()
+            )
+        );
+        assert_eq!(unit.globals[2].name, "default_adjust");
+    }
+
+    #[test]
     fn recognizes_pointer_template_instances_as_local_declarations() {
         let source = r#"
             template <typename T> struct Box { T value; };
