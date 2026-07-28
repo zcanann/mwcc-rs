@@ -19,9 +19,29 @@ pub(super) fn retain_unused_array_images(
         return;
     }
 
+    let source_images: Vec<_> = function
+        .locals
+        .iter()
+        .filter(|local| {
+            !local.is_static && local.array_length.is_some() && local.data_bytes.is_some()
+        })
+        .map(materialize_image)
+        .collect();
+    if output.anonymous_rodata.len() >= source_images.len()
+        && output
+            .anonymous_rodata
+            .iter()
+            .zip(&source_images)
+            .all(|(attached, source)| attached.bytes == *source)
+    {
+        // A structured copy transaction already attached the complete source
+        // image run. Some of those arrays may prove dead in executable code,
+        // but their images are already represented in declaration order.
+        return;
+    }
+
     let mut retained = function.locals.iter().filter(|local| {
         !local.is_static
-            && local.is_const
             && local.array_length.is_some()
             && local.data_bytes.is_some()
             && !crate::analysis::function_uses_name(function, &local.name)
@@ -87,14 +107,18 @@ mod tests {
     }
 
     #[test]
-    fn retains_mainline_dead_const_arrays_at_the_static_local_ordinal() {
+    fn retains_mainline_dead_mutable_arrays_at_the_static_local_ordinal() {
+        let mut first = local("first", 12);
+        first.is_const = false;
+        let mut second = local("second", 40);
+        second.is_const = false;
         let function = Function {
             return_type: Type::Void,
             name: "dead_arrays".into(),
             is_static: false,
             is_weak: false,
             parameters: Vec::new(),
-            locals: vec![local("first", 12), local("second", 40)],
+            locals: vec![first, second],
             statements: Vec::new(),
             guards: Vec::new(),
             return_expression: None,
@@ -127,5 +151,50 @@ mod tests {
         assert_eq!(output.anonymous_rodata[0].bytes.len(), 12);
         assert_eq!(output.anonymous_rodata[1].anonymous_offset, 0);
         assert_eq!(output.anonymous_rodata[1].bytes.len(), 40);
+    }
+
+    #[test]
+    fn does_not_duplicate_dead_images_already_attached_by_a_copy_transaction() {
+        let mut first = local("first", 12);
+        first.is_const = false;
+        let mut second = local("second", 40);
+        second.is_const = false;
+        let function = Function {
+            return_type: Type::Void,
+            name: "partially_live_arrays".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: vec![first, second],
+            statements: Vec::new(),
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+        let mut output = MachineFunction::new("partially_live_arrays");
+        for bytes in [vec![0; 12], vec![0; 40]] {
+            output.anonymous_rodata.push(AnonymousRodata {
+                bytes,
+                static_slot_prefix_bump: None,
+                anonymous_offset: 0,
+            });
+        }
+
+        retain_unused_array_images(
+            &function,
+            &mut output,
+            Behavior::resolve(&mwcc_versions::CompilerConfig {
+                build: mwcc_versions::GC_2_0P1,
+                flags: mwcc_versions::Flags::default(),
+            }),
+        );
+
+        assert_eq!(output.anonymous_rodata.len(), 2);
     }
 }

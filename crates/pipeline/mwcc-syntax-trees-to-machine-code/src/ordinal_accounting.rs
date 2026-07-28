@@ -38,7 +38,6 @@ fn mainline_initialized_array_labels(function: &Function, output: &mut MachineFu
         .iter()
         .filter(|local| {
             !local.is_static
-                && local.is_const
                 && local.array_length.is_some()
                 && local
                     .data_bytes
@@ -61,8 +60,7 @@ fn mainline_initialized_array_labels(function: &Function, output: &mut MachineFu
                     .data_bytes
                     .as_ref()
                     .is_some_and(|bytes| !bytes.is_empty() && bytes.iter().all(|byte| *byte == 0))
-                && !(local.is_const
-                    && !crate::analysis::function_uses_name(function, &local.name))
+                && crate::analysis::function_uses_name(function, &local.name)
         })
         .count() as u32;
     let emitted_pooled_images = pooled_zero_arrays >= 2
@@ -372,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    fn mainline_accounts_retained_dead_const_array_images() {
+    fn mainline_accounts_retained_dead_mutable_array_images() {
         for (array_count, expected_bump) in [(1, 2), (2, 3), (3, 4)] {
             let mut function = function();
             for index in 0..array_count {
@@ -385,7 +383,7 @@ mod tests {
                     is_static: false,
                     data_bytes: Some(Vec::new()),
                     data_relocations: Vec::new(),
-                    is_const: true,
+                    is_const: false,
                     row_bytes: None,
                 });
             }

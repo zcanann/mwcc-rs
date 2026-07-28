@@ -250,9 +250,7 @@ impl Generator {
             decline!("an address-taken scalar cannot use the structured frame");
         }
         let frame_array_plan = if with_frame_array {
-            let Some(plan) =
-                plan_structured_frame_arrays(&function.locals, &function.statements)
-            else {
+            let Some(plan) = plan_structured_frame_arrays(function) else {
                 decline!("automatic array shape is unsupported");
             };
             if plan.arrays.is_empty()

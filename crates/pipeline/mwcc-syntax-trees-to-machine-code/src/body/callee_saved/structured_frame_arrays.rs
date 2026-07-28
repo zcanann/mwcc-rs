@@ -1,9 +1,10 @@
 //! Automatic typed-array planning for structured stack frames.
 //!
-//! Source arrays remain distinct frame slots even when they are unused.
-//! Keeping their validation and byte accounting here lets the structured body
-//! owner compose scalar, aggregate, and flattened multidimensional arrays with
-//! the rest of the frame.
+//! Source arrays ordinarily remain distinct frame slots even when they are
+//! unused. Mainline optimization has one important exception: when an entire
+//! initialized-array group is dead, it removes the storage and copy transaction
+//! while retaining the source images in `.rodata`. Image retention belongs to
+//! `automatic_rodata`; this owner plans only executable frame storage.
 
 #[allow(unused_imports)]
 use super::*;
@@ -14,10 +15,10 @@ pub(super) struct StructuredFrameArrays<'a> {
 }
 
 pub(super) fn plan_structured_frame_arrays<'a>(
-    locals: &'a [LocalDeclaration],
-    statements: &[Statement],
+    function: &'a Function,
 ) -> Option<StructuredFrameArrays<'a>> {
-    let arrays: Vec<_> = locals
+    let mut arrays: Vec<_> = function
+        .locals
         .iter()
         .filter(|local| local.array_length.is_some())
         .collect();
@@ -42,6 +43,15 @@ pub(super) fn plan_structured_frame_arrays<'a>(
             return None;
         }
         total_bytes = total_bytes.checked_add(i16::try_from(bytes).ok()?)?;
+    }
+    if !arrays.is_empty()
+        && arrays.iter().all(|array| {
+            array.data_bytes.is_some()
+                && !crate::analysis::function_uses_name(function, &array.name)
+        })
+    {
+        arrays.clear();
+        total_bytes = 0;
     }
     Some(StructuredFrameArrays {
         arrays,
@@ -87,6 +97,27 @@ pub(super) fn array_byte_size(array: &LocalDeclaration) -> Option<u32> {
 mod tests {
     use super::*;
 
+    fn function_with_locals(locals: Vec<LocalDeclaration>) -> Function {
+        Function {
+            return_type: Type::Void,
+            name: "arrays".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals,
+            statements: Vec::new(),
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        }
+    }
+
     fn byte_array(name: &str, declared_type: Type, length: u16) -> LocalDeclaration {
         LocalDeclaration {
             declared_type,
@@ -109,7 +140,8 @@ mod tests {
             byte_array("suffix", Type::Char, 20),
         ];
 
-        let plan = plan_structured_frame_arrays(&locals, &[]).expect("valid byte arrays");
+        let function = function_with_locals(locals);
+        let plan = plan_structured_frame_arrays(&function).expect("valid byte arrays");
 
         assert_eq!(plan.arrays.len(), 2);
         assert_eq!(plan.total_bytes, 24);
@@ -119,7 +151,8 @@ mod tests {
     fn retains_an_unused_non_byte_padding_array() {
         let locals = vec![byte_array("words", Type::UnsignedInt, 4)];
 
-        let plan = plan_structured_frame_arrays(&locals, &[]).expect("unused padding");
+        let function = function_with_locals(locals);
+        let plan = plan_structured_frame_arrays(&function).expect("unused padding");
 
         assert_eq!(plan.total_bytes, 16);
     }
@@ -127,11 +160,12 @@ mod tests {
     #[test]
     fn retains_a_used_typed_array_for_element_lowering() {
         let locals = vec![byte_array("words", Type::UnsignedInt, 4)];
-        let statements = vec![Statement::Expression(Expression::Variable(
-            "words".into(),
-        ))];
+        let mut function = function_with_locals(locals);
+        function
+            .statements
+            .push(Statement::Expression(Expression::Variable("words".into())));
 
-        let plan = plan_structured_frame_arrays(&locals, &statements).expect("typed array");
+        let plan = plan_structured_frame_arrays(&function).expect("typed array");
         assert_eq!(plan.total_bytes, 16);
     }
 
@@ -143,8 +177,23 @@ mod tests {
             33,
         )];
 
-        let plan = plan_structured_frame_arrays(&locals, &[]).expect("large node stack");
+        let function = function_with_locals(locals);
+        let plan = plan_structured_frame_arrays(&function).expect("large node stack");
         assert_eq!(plan.total_bytes, 264);
+    }
+
+    #[test]
+    fn drops_storage_for_an_entire_dead_initialized_array_group() {
+        let mut date = byte_array("date", Type::UnsignedChar, 32);
+        date.data_bytes = Some(vec![0]);
+        let mut time = byte_array("time", Type::UnsignedChar, 32);
+        time.data_bytes = Some(vec![0]);
+
+        let function = function_with_locals(vec![date, time]);
+        let plan = plan_structured_frame_arrays(&function).expect("initialized arrays");
+
+        assert!(plan.arrays.is_empty());
+        assert_eq!(plan.total_bytes, 0);
     }
 
     #[test]
