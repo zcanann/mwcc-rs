@@ -71,14 +71,14 @@ pub(crate) fn materialize_function_offsets(function: &mut MachineFunction, base:
             continue;
         };
         let mut insertion_position = low.instruction_index + 1;
-        if matches!(
-            function.instructions.get(insertion_position),
-            Some(Instruction::AddImmediate { d: next_d, a: next_a, .. })
-                if *next_d != *d && *next_a != *d
-        ) {
+        while function
+            .instructions
+            .get(insertion_position)
+            .is_some_and(|instruction| ready_integer_argument_setup(instruction, *d))
+        {
             // Fill the packed-base dependency slot with an already-scheduled
-            // independent address calculation (notably a stack-buffer
-            // argument) before applying the interior offset.
+            // independent argument calculation before applying the interior
+            // offset.
             insertion_position += 1;
         }
         pairs.push((
@@ -106,6 +106,14 @@ pub(crate) fn materialize_function_offsets(function: &mut MachineFunction, base:
                 immediate,
             },
         );
+    }
+}
+
+fn ready_integer_argument_setup(instruction: &Instruction, packed_base: u8) -> bool {
+    match instruction {
+        Instruction::AddImmediate { d, a, .. } => *d != packed_base && *a != packed_base,
+        Instruction::Or { a, s, b } if s == b => *a != packed_base && *s != packed_base,
+        _ => false,
     }
 }
 
@@ -246,6 +254,12 @@ mod tests {
                 a: 1,
                 immediate: 8,
             },
+            Instruction::move_register(5, 3),
+            Instruction::AddImmediate {
+                d: 3,
+                a: 6,
+                immediate: 0,
+            },
             Instruction::BranchToLinkRegister,
         ];
         function.relocations = vec![
@@ -279,6 +293,18 @@ mod tests {
         ));
         assert!(matches!(
             function.instructions[3],
+            Instruction::Or { a: 5, s: 3, b: 3 }
+        ));
+        assert!(matches!(
+            function.instructions[4],
+            Instruction::AddImmediate {
+                d: 3,
+                a: 6,
+                immediate: 0
+            }
+        ));
+        assert!(matches!(
+            function.instructions[5],
             Instruction::AddImmediate {
                 d: 4,
                 a: 4,
