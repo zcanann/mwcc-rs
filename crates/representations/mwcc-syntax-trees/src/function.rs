@@ -431,10 +431,12 @@ pub struct TranslationUnit {
     /// OUTSIDE `Function` so capture AST hashes stay stable. Definitions still
     /// defer in general lowering; call sites use this to emit the EABI CR marker.
     pub variadic_definitions: std::collections::HashSet<String>,
-    /// Per static-local NAME, the skipped-inline bump total at its declaration
-    /// point (the parser's positional sample) — statics number off the
-    /// anonymous counter as of that position, not the owner's whole pre-bump.
-    pub static_local_prebumps: std::collections::HashMap<String, usize>,
+    /// Per `(owner function, static-local name)`, the skipped-inline bump total
+    /// at its declaration point (the parser's positional sample) — statics
+    /// number off the anonymous counter as of that position, not the owner's
+    /// whole pre-bump. The owner is required because unrelated functions
+    /// commonly reuse names such as `buffer`.
+    pub static_local_prebumps: std::collections::HashMap<(String, String), usize>,
     /// Materialized static-inline functions with NO prior prototype (implicit
     /// declaration): calls bind the surviving UND ghost; the local FUNC symbol
     /// trails its own static locals.

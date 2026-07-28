@@ -620,7 +620,8 @@ pub(crate) struct Parser {
     /// point — a static numbers off the anonymous counter AS OF that position
     /// (measured: mp4 uart's initialized$4 inside the FIRST inline vs pikmin's
     /// $34 behind 30 counts of earlier header inlines).
-    pub(crate) static_local_prebumps: std::collections::HashMap<String, usize>,
+    pub(crate) static_local_prebumps:
+        std::collections::HashMap<(String, String), usize>,
     /// Token positions of anonymous-`enum` bodies already counted into the
     /// anonymous-`@N` pre-bump (guards speculative re-parses from double-counting).
     pub(crate) counted_enum_positions: std::collections::HashSet<usize>,

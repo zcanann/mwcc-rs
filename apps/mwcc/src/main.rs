@@ -1260,7 +1260,8 @@ fn compile(
             // function's block below, so a first-function static shifts by its
             // full prebump; a later owner's running counter already includes the
             // total, leaving only the (typically zero) difference.
-            let anonymous_adjust = match unit.static_local_prebumps.get(&local.name) {
+            let local_identity = (function.name.clone(), local.name.clone());
+            let anonymous_adjust = match unit.static_local_prebumps.get(&local_identity) {
                 Some(&prebump) if function_index == 0 => prebump as i64,
                 Some(&prebump) => prebump as i64 - total_inline_bump,
                 None => 0,

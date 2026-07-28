@@ -846,8 +846,10 @@ impl Parser {
                         // Positional numbering: sample the running bump BEFORE this
                         // inline's own counts apply — the static declares inside it.
                         for local in &statics {
-                            self.static_local_prebumps
-                                .insert(local.name.clone(), self.skipped_inline_functions);
+                            self.static_local_prebumps.insert(
+                                (function_name.clone(), local.name.clone()),
+                                self.skipped_inline_functions,
+                            );
                         }
                         self.skipped_inline_functions += statics.len();
                     } else {
@@ -984,8 +986,10 @@ impl Parser {
                     self.function_inline_prebumps
                         .insert(function.name.clone(), bump_before_item);
                     for local in function.locals.iter().filter(|local| local.is_static) {
-                        self.static_local_prebumps
-                            .insert(local.name.clone(), bump_before_item);
+                        self.static_local_prebumps.insert(
+                            (function.name.clone(), local.name.clone()),
+                            bump_before_item,
+                        );
                     }
                 }
             }

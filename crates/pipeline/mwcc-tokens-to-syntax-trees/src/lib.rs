@@ -10857,4 +10857,45 @@ blr\n\
                 if matches!(arguments.as_slice(), [Expression::Variable(name)] if name == "value")
         ));
     }
+
+    #[test]
+    fn qualifies_static_local_prebumps_by_owning_function() {
+        let source = r#"
+            static inline int before(void) {
+                static int slot;
+                return slot;
+            }
+            int first(void) {
+                static int buffer;
+                return buffer;
+            }
+            static inline int between(void) {
+                static int slot;
+                return slot;
+            }
+            int second(void) {
+                static int buffer;
+                return buffer;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.static_local_prebumps
+                .get(&("first__Fv".to_owned(), "buffer".to_owned())),
+            Some(&4)
+        );
+        assert_eq!(
+            unit.static_local_prebumps
+                .get(&("second__Fv".to_owned(), "buffer".to_owned())),
+            Some(&8)
+        );
+    }
 }
