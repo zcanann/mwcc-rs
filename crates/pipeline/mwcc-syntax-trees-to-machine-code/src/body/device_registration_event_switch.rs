@@ -11,6 +11,7 @@ struct RegistrationCall {
 
 struct DeviceRegistrationEventSwitch {
     host_offset: i16,
+    initialize_zero_offset: Option<i16>,
     device_offset: i16,
     put: RegistrationCall,
     get: RegistrationCall,
@@ -23,6 +24,17 @@ fn constant(expression: &Expression) -> Option<i64> {
 fn peel_casts(mut expression: &Expression) -> &Expression {
     while let Expression::Cast { operand, .. } = expression {
         expression = operand;
+    }
+    expression
+}
+
+fn peel_zero_index(mut expression: &Expression) -> &Expression {
+    expression = peel_casts(expression);
+    while let Expression::Index { base, index } = expression {
+        if constant(index) != Some(0) {
+            break;
+        }
+        expression = peel_casts(base);
     }
     expression
 }
@@ -96,7 +108,7 @@ fn failure_registration(
         offset: device_offset,
         index_stride: None,
         ..
-    } = peel_casts(device)
+    } = peel_zero_index(device)
     else {
         return None;
     };
@@ -146,7 +158,20 @@ fn classify(function: &Function) -> Option<DeviceRegistrationEventSwitch> {
     let ArmBody::Statements(initialize_statements) = &initialize.body else {
         return None;
     };
-    let [Statement::Store { target, value }] = initialize_statements.as_slice() else {
+    let (host_store, initialize_zero_offset) = match initialize_statements.as_slice() {
+        [host_store] => (host_store, None),
+        [
+            host_store,
+            Statement::Store {
+                target: zero_target,
+                value: zero_value,
+            },
+        ] if constant(zero_value) == Some(0) => {
+            (host_store, Some(member(zero_target, &object.name)?))
+        }
+        _ => return None,
+    };
+    let Statement::Store { target, value } = host_store else {
         return None;
     };
     let host_offset = member(target, &object.name)?;
@@ -165,8 +190,18 @@ fn classify(function: &Function) -> Option<DeviceRegistrationEventSwitch> {
         failure_registration(put_statement, &object.name, &argument.name)?;
     let (get, get_host_offset, get_device_offset) =
         failure_registration(get_statement, &object.name, &argument.name)?;
-    if registration.falls_through
-        || put_host_offset != host_offset
+    if registration.falls_through {
+        let registration_index = arms
+            .iter()
+            .position(|arm| arm.value == registration.value)?;
+        let next = arms.get(registration_index + 1)?;
+        if next.value != 0
+            || !matches!(&next.body, ArmBody::Statements(statements) if statements.is_empty())
+        {
+            return None;
+        }
+    }
+    if put_host_offset != host_offset
         || get_host_offset != host_offset
         || put_device_offset != get_device_offset
     {
@@ -183,6 +218,7 @@ fn classify(function: &Function) -> Option<DeviceRegistrationEventSwitch> {
     }
     Some(DeviceRegistrationEventSwitch {
         host_offset,
+        initialize_zero_offset,
         device_offset: put_device_offset,
         put,
         get,
@@ -197,6 +233,7 @@ impl Generator {
         let shape = classify(function).or_else(|| match crate::captures::ast_hash(function) {
             0xf38f_59a9_1993_8e6c => Some(DeviceRegistrationEventSwitch {
                 host_offset: 0,
+                initialize_zero_offset: None,
                 device_offset: 36,
                 put: RegistrationCall {
                     callee: "cpuSetDevicePut".into(),
@@ -219,6 +256,7 @@ impl Generator {
             }),
             0x0cf8_2e65_bb27_7440 => Some(DeviceRegistrationEventSwitch {
                 host_offset: 0,
+                initialize_zero_offset: None,
                 device_offset: 36,
                 put: RegistrationCall {
                     callee: "set_put".into(),
@@ -344,6 +382,16 @@ impl Generator {
             a: OBJECT,
             offset: shape.host_offset,
         });
+        if let Some(offset) = shape.initialize_zero_offset {
+            self.output
+                .instructions
+                .push(Instruction::load_immediate(0, 0));
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: OBJECT,
+                offset,
+            });
+        }
         self.emit_branch_to(success);
 
         self.bind_label(register);
