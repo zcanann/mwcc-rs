@@ -75,7 +75,7 @@ pub(super) fn initialized_array_placement_order<'a>(
     indexed.into_iter().map(|(_, array)| array).collect()
 }
 
-fn array_byte_size(array: &LocalDeclaration) -> Option<u32> {
+pub(super) fn array_byte_size(array: &LocalDeclaration) -> Option<u32> {
     let element_bytes = match array.declared_type {
         Type::Struct { size, .. } => size,
         value_type => u32::from(value_type.width() / 8),

@@ -31,6 +31,7 @@ use super::structured_frame_assignment::{
 use super::structured_frame_arrays::{
     initialized_array_placement_order, plan_structured_frame_arrays,
 };
+use super::structured_array_pool::plan_structured_array_pool;
 use super::structured_frame_entry::structured_dense_frame_entry_index;
 use super::structured_frame_publication::{
     StructuredFramePublication, CURSOR_OFFSET, LOCAL_REGION_BYTES, OWNER_OFFSET,
@@ -285,6 +286,9 @@ impl Generator {
         };
         let frame_arrays = &frame_array_plan.arrays;
         let frame_array_bytes = frame_array_plan.total_bytes;
+        let array_pool_plan = (self.behavior.frame_convention == FrameConvention::Predecrement)
+            .then(|| plan_structured_array_pool(frame_arrays))
+            .flatten();
         let aggregate_call_copy_plan =
             (frame_arrays.is_empty()
                 && frame_scalar_parameters.is_empty()
@@ -637,6 +641,12 @@ impl Generator {
             count,
         );
         let first_saved = 32usize.saturating_sub(count);
+        let frame_first_saved = array_pool_plan
+            .as_ref()
+            .map_or(first_saved, |plan| {
+                first_saved.min(usize::from(plan.first_saved_register))
+            });
+        let frame_saved_count = 32usize.saturating_sub(frame_first_saved);
         let loop_assertion_saved_range = loop_assertion_strings.is_some();
         let dense_frame = uses_dense_saved_register_range(
             with_frame_array,
@@ -649,7 +659,8 @@ impl Generator {
         // A source loop may retain assertion string high halves alongside its
         // values in one contiguous saved-GPR range without otherwise using
         // dense-frame entry or body scheduling.
-        let dense_saved_range = dense_frame || loop_assertion_saved_range;
+        let dense_saved_range =
+            dense_frame || loop_assertion_saved_range || array_pool_plan.is_some();
         let dense_eager_round_up = dense_frame
             .then(|| plan_dense_eager_pointer_round_up(function))
             .flatten();
@@ -842,7 +853,9 @@ impl Generator {
                 (strings.asserted.clone(), homes[value_home_count + 1]),
             ];
         }
-        let mut plan = mwcc_vreg::FramePlan::with_local_region(homes.clone(), local_region_bytes);
+        let mut frame_homes = homes.clone();
+        frame_homes.resize(frame_saved_count, frame_first_saved as u8);
+        let mut plan = mwcc_vreg::FramePlan::with_local_region(frame_homes, local_region_bytes);
         if aggregate_call_copy_plan.is_some()
             && self.behavior.frame_convention == FrameConvention::LinkageFirst
             && homes.is_empty()
@@ -1132,7 +1145,11 @@ impl Generator {
         }
         self.non_leaf = true;
         self.frame_size = plan.frame_size;
-        self.callee_saved = homes.clone();
+        self.callee_saved = if array_pool_plan.is_some() {
+            (frame_first_saved as u8..=31).rev().collect()
+        } else {
+            homes.clone()
+        };
         self.legacy_callee_saved_frame_layout = if unused_frame_array
             || !frame_scalar_parameters.is_empty()
         {
@@ -1157,14 +1174,39 @@ impl Generator {
         } else {
             LegacyCalleeSavedFrameLayout::RetainEntryParameterTable
         };
-        let dense_save_helper =
-            dense_saved_range && self.behavior.frame_convention == FrameConvention::Predecrement;
+        let pooled_dense_inline_save = array_pool_plan.is_some();
+        let dense_save_helper = dense_saved_range
+            && self.behavior.frame_convention == FrameConvention::Predecrement
+            && !pooled_dense_inline_save;
         let dense_inline_save =
             dense_saved_range && self.behavior.frame_convention == FrameConvention::LinkageFirst;
-        if dense_saved_range {
+        if dense_saved_range && array_pool_plan.is_none() {
             self.output.pre_scheduled = true;
         }
-        if dense_inline_save {
+        if pooled_dense_inline_save {
+            self.output.instructions.extend([
+                Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -plan.frame_size,
+                },
+                Instruction::MoveFromLinkRegister { d: 0 },
+            ]);
+            self.emit_structured_array_pool_base_high();
+            self.output.instructions.push(Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: plan.frame_size + 4,
+            });
+            self.emit_structured_array_pool_base_low();
+            self.output
+                .instructions
+                .push(Instruction::StoreMultipleWord {
+                    s: frame_first_saved as u8,
+                    a: 1,
+                    offset: plan.frame_size - 4 * frame_saved_count as i16,
+                });
+        } else if dense_inline_save {
             self.output.instructions.extend([
                 Instruction::MoveFromLinkRegister { d: 0 },
                 Instruction::StoreWord {
@@ -1185,9 +1227,9 @@ impl Generator {
                     offset: -plan.frame_size,
                 },
                 Instruction::StoreMultipleWord {
-                    s: first_saved as u8,
+                    s: frame_first_saved as u8,
                     a: 1,
-                    offset: plan.frame_size - 4 * count as i16,
+                    offset: plan.frame_size - 4 * frame_saved_count as i16,
                 },
             ]);
         } else if aggregate_call_copy_plan.is_some()
@@ -1228,7 +1270,7 @@ impl Generator {
                 a: 1,
                 immediate: plan.frame_size,
             });
-            let helper = format!("_savegpr_{first_saved}");
+            let helper = format!("_savegpr_{frame_first_saved}");
             self.record_relocation(RelocationKind::Rel24, &helper);
             self.output
                 .instructions
@@ -1919,12 +1961,12 @@ impl Generator {
                 self.output.anonymous_label_bump += 2;
             }
         }
-        if dense_inline_save {
+        if dense_inline_save || pooled_dense_inline_save {
             self.output.instructions.extend([
                 Instruction::LoadMultipleWord {
-                    d: first_saved as u8,
+                    d: frame_first_saved as u8,
                     a: 1,
-                    offset: plan.frame_size - 4 * count as i16,
+                    offset: plan.frame_size - 4 * frame_saved_count as i16,
                 },
                 Instruction::LoadWord {
                     d: 0,
@@ -1945,7 +1987,7 @@ impl Generator {
                 a: 1,
                 immediate: plan.frame_size,
             });
-            let helper = format!("_restgpr_{first_saved}");
+            let helper = format!("_restgpr_{frame_first_saved}");
             self.record_relocation(RelocationKind::Rel24, &helper);
             self.output
                 .instructions

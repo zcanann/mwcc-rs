@@ -18,7 +18,7 @@ pub(crate) fn apply(
 ) {
     let hidden = match style {
         FunctionOrdinalAccountingStyle::Mainline => {
-            mainline_initialized_array_labels(function)
+            mainline_initialized_array_labels(function, output)
                 + mainline_variadic_float_conversion_labels(function)
                 + mainline_call_ladder_labels(function)
         }
@@ -32,7 +32,7 @@ pub(crate) fn apply(
 /// into one pooled image per array. Each copy contributes the image and two
 /// internal labels, with one shared label closing the run. A lone array stays
 /// on the ordinary inline zero-fill path and has no hidden trailing cost.
-fn mainline_initialized_array_labels(function: &Function) -> u32 {
+fn mainline_initialized_array_labels(function: &Function, output: &MachineFunction) -> u32 {
     let pooled_zero_arrays = function
         .locals
         .iter()
@@ -47,6 +47,19 @@ fn mainline_initialized_array_labels(function: &Function) -> u32 {
         .count() as u32;
     if pooled_zero_arrays < 2 {
         0
+    } else if output
+        .data_section_displacements
+        .iter()
+        .any(|displacement| {
+            matches!(
+                displacement.target,
+                mwcc_machine_code::DataSectionDisplacementTarget::AnonymousRodata(_)
+            )
+        })
+    {
+        // The writer now walks the N concrete image symbols. Only the two
+        // internal labels per copy and the shared closing label remain hidden.
+        2 * pooled_zero_arrays + 1
     } else {
         3 * pooled_zero_arrays + 1
     }

@@ -13,6 +13,11 @@ impl Generator {
         &mut self,
         arrays: &[&LocalDeclaration],
     ) -> Compilation<()> {
+        if self.behavior.frame_convention == FrameConvention::Predecrement {
+            if let Some(plan) = super::structured_array_pool::plan_structured_array_pool(arrays) {
+                return self.emit_structured_array_pool(arrays, &plan);
+            }
+        }
         for array in arrays {
             let Some(explicit) = array.data_bytes.as_ref() else {
                 continue;
