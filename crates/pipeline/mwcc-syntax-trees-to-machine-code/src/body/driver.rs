@@ -1656,6 +1656,9 @@ impl Generator {
         if self.try_float_array_store_fill(function)? {
             return Ok(());
         }
+        if self.try_global_aggregate_constant_initialization(function)? {
+            return Ok(());
+        }
         // A store to a global AGGREGATE that addresses through a base register (a struct value's
         // non-offset-0 or large field, or any array element) alongside ANOTHER store: mwcc materializes
         // that base (`li rB,g@sda21` / `lis rB,g@ha`) AHEAD of all the stores; our program-order

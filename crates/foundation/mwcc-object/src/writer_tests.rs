@@ -376,6 +376,20 @@ fn data_section_displacements_patch_only_the_d_form_immediate() {
 }
 
 #[test]
+fn bss_section_displacements_add_to_selected_member_offsets() {
+    let mut text = vec![0x90, 0x85, 0, 12];
+    let sections = HashMap::from([("state", ".bss")]);
+    let offsets = HashMap::from([("state", 0x10)]);
+    apply_data_section_displacements(
+        &mut text,
+        &[(2, "state".to_owned())],
+        &sections,
+        &offsets,
+    );
+    assert_eq!(text, [0x90, 0x85, 0, 0x1c]);
+}
+
+#[test]
 fn comment_header_records_pooling_mode() {
     let enabled = comment_record(
         CommentFormat {

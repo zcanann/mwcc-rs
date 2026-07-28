@@ -260,6 +260,12 @@ pub(crate) struct Generator {
     /// while type classification and address materialization only need to know
     /// that the symbol is an array.
     pub(crate) global_arrays: HashSet<String>,
+    /// Defined, uninitialized file-scope objects routed to full `.bss`.
+    ///
+    /// Aggregate-wide schedules may address these through `...bss.0`; keeping
+    /// storage provenance separate from the executable type map prevents an
+    /// extern or initialized aggregate from being claimed by that schedule.
+    pub(crate) full_bss_globals: HashSet<String>,
     /// Registers holding live values that must not be clobbered while a sibling
     /// sub-expression is being evaluated. The allocator draws temporaries from
     /// the registers outside this set.

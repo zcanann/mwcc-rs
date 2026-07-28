@@ -2698,6 +2698,9 @@ mod tests {
     #[path = "spilled_pointer_cast.rs"]
     mod spilled_pointer_cast;
 
+    #[path = "global_aggregate_constant_initialization.rs"]
+    mod global_aggregate_constant_initialization;
+
     #[path = "member_float_select.rs"]
     mod member_float_select;
     mod member_setup;

@@ -75,6 +75,7 @@ mod fixed_port_packet_accumulator;
 mod fixed_port_scale_switch;
 mod fixed_port_replay_update;
 mod frame_vector_accumulation_schedule;
+mod global_aggregate_constant_initialization;
 mod guards_ifs;
 mod global_struct_member_search;
 mod global_bitfield_dirty_update;

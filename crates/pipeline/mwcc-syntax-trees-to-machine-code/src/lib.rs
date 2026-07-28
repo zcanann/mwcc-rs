@@ -458,6 +458,28 @@ pub fn lower_function(
                     .map(|global| global.name.clone()),
             )
             .collect(),
+        full_bss_globals: globals
+            .iter()
+            .filter(|global| {
+                global.is_data_definition()
+                    && !global.is_const
+                    && global.section.is_none()
+                    && global.initializer.is_none()
+                    && global.data_bytes.is_none()
+                    && global.address_initializer.is_none()
+                    && match (global.declared_type, global.array_length) {
+                        (mwcc_syntax_trees::Type::Struct { size, .. }, Some(length)) => {
+                            size.saturating_mul(u32::from(length)) > 8
+                        }
+                        (mwcc_syntax_trees::Type::Struct { size, .. }, None) => size > 8,
+                        (other, Some(length)) => {
+                            u32::from(other.width()).saturating_mul(u32::from(length)) / 8 > 8
+                        }
+                        (_, None) => false,
+                    }
+            })
+            .map(|global| global.name.clone())
+            .collect(),
         reserved: HashSet::new(),
         frame_size: 0,
         float: generator::FloatContext::default(),

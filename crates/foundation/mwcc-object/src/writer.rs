@@ -264,14 +264,18 @@ fn apply_data_section_displacements(
     data_offsets: &HashMap<&str, u32>,
 ) {
     for (byte_offset, symbol) in fixups {
-        assert_eq!(
-            data_section.get(symbol.as_str()).copied(),
-            Some(".data"),
-            "late data displacement must target a defined .data object"
+        assert!(
+            matches!(
+                data_section.get(symbol.as_str()).copied(),
+                Some(".data" | ".bss")
+            ),
+            "late data displacement must target a defined full-data object"
         );
-        let displacement = i16::try_from(data_offsets[symbol.as_str()])
-            .expect("late data displacement must fit a D-form immediate");
         let start = *byte_offset as usize;
+        let selected = i16::from_be_bytes([text[start], text[start + 1]]);
+        let displacement =
+            i16::try_from(i64::from(selected) + i64::from(data_offsets[symbol.as_str()]))
+                .expect("late data displacement must fit a D-form immediate");
         text[start..start + 2].copy_from_slice(&displacement.to_be_bytes());
     }
 }
@@ -675,12 +679,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             place(object, ".sbss", &mut sbss_size);
         }
     }
-    // Function bodies can address a named object through the translation
-    // unit's zero-offset `.data` anchor and carry its section displacement in a
-    // D-form load. Those immediates cannot be selected until creation-order
-    // data layout above has interleaved all source-positioned strings, statics,
-    // globals, and jump tables. Patch private copies of the encoded text now;
-    // no ELF relocation belongs on the load itself.
+    // Function bodies can address a named object through a full-data section's
+    // zero-offset anchor and carry its section displacement in a D-form access.
+    // Those section-relative immediates cannot be selected until data layout
+    // above has interleaved all source-positioned objects. Patch private copies
+    // of the encoded text now; no ELF relocation belongs on the access itself.
     let mut code_payloads: HashMap<&str, Vec<u8>> = HashMap::new();
     for section in &function_layout.sections {
         let mut payload = Vec::with_capacity(section.byte_len as usize);

@@ -62,10 +62,10 @@ pub struct StaticLocal {
     pub relocations: Vec<(u32, String, i32)>,
 }
 
-/// A D-form load whose immediate is the final section-relative displacement of
-/// a named `.data` object. Function lowering records the semantic target;
-/// object layout patches the instruction only after all source-positioned
-/// strings, statics, and jump tables have received their offsets.
+/// A D-form access whose immediate includes the final section-relative
+/// displacement of a named full-data object. Function lowering records the
+/// semantic target; object layout adds its `.data`/`.bss` offset only after all
+/// source-positioned objects have been laid out.
 #[derive(Debug, Clone)]
 pub struct DataSectionDisplacement {
     pub instruction_index: usize,
@@ -99,8 +99,8 @@ pub struct MachineFunction {
     pub instructions: Vec<Instruction>,
     /// `.text` relocations, by the instruction they patch.
     pub relocations: Vec<Relocation>,
-    /// Late-bound D-form immediates that name an object through the unit's
-    /// zero-offset `...data.0` anchor.
+    /// Late-bound D-form immediates that name an object through a zero-offset
+    /// full-data section anchor (`...data.0` or `...bss.0`).
     pub data_section_displacements: Vec<DataSectionDisplacement>,
     /// Optimized source-variable homes retained for exact debug information.
     /// Debug lowering decides which declarations receive DIEs for a measured
