@@ -3553,6 +3553,11 @@ impl Generator {
         if self.try_leading_store_guard(function)? {
             return Ok(());
         }
+        // A doubly-linked-list front insertion schedules the list null test
+        // between the zero value and its member store.
+        if self.try_leading_store_trailing_if(function)? {
+            return Ok(());
+        }
         // Shared zero stores, a bit-field merge/test, and its guarded
         // initialization tail form one register-liveness schedule.
         if self.try_leading_shared_zero_bitfield_guard(function)? {

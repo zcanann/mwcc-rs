@@ -2916,6 +2916,9 @@ mod tests {
     #[path = "linked_list_remove.rs"]
     mod linked_list_remove;
 
+    #[path = "leading_store_trailing_if.rs"]
+    mod leading_store_trailing_if;
+
     #[path = "inlined_list_append.rs"]
     mod inlined_list_append;
 
