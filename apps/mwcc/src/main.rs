@@ -2754,6 +2754,9 @@ mod tests {
     #[path = "call_indexed_static_table.rs"]
     mod call_indexed_static_table;
 
+    #[path = "static_array_string_constant.rs"]
+    mod static_array_string_constant;
+
     #[path = "spilled_pointer_cast.rs"]
     mod spilled_pointer_cast;
 

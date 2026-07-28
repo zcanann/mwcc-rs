@@ -424,6 +424,9 @@ impl Generator {
         if self.try_emit_constant_global_array_constant_arguments(arguments, name)? {
             return Ok(());
         }
+        if self.try_emit_global_array_string_constant_arguments(arguments, name)? {
+            return Ok(());
+        }
         // Two floating arguments use an independent FPR sequence. When the
         // first value already has a callee-saved home, a call-bearing second
         // argument can be evaluated right-first into f2 and the first restored
