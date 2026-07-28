@@ -18,7 +18,7 @@ mod value_calls;
 
 use call_sites::collect_function_calls;
 use mwcc_syntax_trees::{
-    AsmItem, Expression, Function, InlineAsmBlock, Statement, Type,
+    ArmBody, AsmItem, Expression, Function, InlineAsmBlock, Statement, SwitchArm, Type,
 };
 use returns::rewrite_inline_returns;
 use safety::{
@@ -777,6 +777,61 @@ impl InlineBodySet {
                         allow_changing_scalar_arguments,
                     ),
                 }),
+                Statement::Switch {
+                    scrutinee,
+                    arms,
+                    default,
+                } => {
+                    let mut expanded_arms = Vec::with_capacity(arms.len());
+                    for arm in arms {
+                        let body = match &arm.body {
+                            ArmBody::Return(value) => ArmBody::Return(value.clone()),
+                            ArmBody::Statements(body) => ArmBody::Statements(
+                                self.expand_statements(
+                                    body,
+                                    stable_variables,
+                                    active,
+                                    changed,
+                                    locals,
+                                    occupied_names,
+                                    next_local_id,
+                                    statement_body_substitutions,
+                                    statement_frame_residue_substitutions,
+                                    false,
+                                    allow_changing_scalar_arguments,
+                                ),
+                            ),
+                        };
+                        expanded_arms.push(SwitchArm {
+                            value: arm.value,
+                            body,
+                            falls_through: arm.falls_through,
+                        });
+                    }
+                    let expanded_default = default.as_ref().map(|body| match body {
+                        ArmBody::Return(value) => ArmBody::Return(value.clone()),
+                        ArmBody::Statements(body) => ArmBody::Statements(
+                            self.expand_statements(
+                                body,
+                                stable_variables,
+                                active,
+                                changed,
+                                locals,
+                                occupied_names,
+                                next_local_id,
+                                statement_body_substitutions,
+                                statement_frame_residue_substitutions,
+                                false,
+                                allow_changing_scalar_arguments,
+                            ),
+                        ),
+                    });
+                    output.push(Statement::Switch {
+                        scrutinee: scrutinee.clone(),
+                        arms: expanded_arms,
+                        default: expanded_default,
+                    });
+                }
                 _ => output.push(statement.clone()),
             }
         }
@@ -1452,6 +1507,127 @@ mod tests {
                 && matches!(first_arguments.as_slice(), [Expression::Variable(name)] if name == first)
                 && second_init == second && second_update == second && second_value == "input"
                 && matches!(second_arguments.as_slice(), [Expression::Variable(name)] if name == second)
+        ));
+    }
+
+    #[test]
+    fn composes_a_counter_loop_from_a_nested_switch_call_site() {
+        let pointer = Type::StructPointer { element_size: 272 };
+        let mut clear = function(
+            "clear",
+            vec![Parameter {
+                parameter_type: pointer,
+                name: "object".into(),
+            }],
+            vec![
+                Statement::Loop {
+                    kind: LoopKind::For,
+                    initializer: Some(Expression::Assign {
+                        target: Box::new(Expression::Variable("index".into())),
+                        value: Box::new(Expression::IntegerLiteral(0)),
+                    }),
+                    condition: Some(Expression::Binary {
+                        operator: BinaryOperator::Less,
+                        left: Box::new(Expression::Variable("index".into())),
+                        right: Box::new(Expression::Member {
+                            base: Box::new(Expression::Variable("object".into())),
+                            offset: 260,
+                            member_type: Type::Int,
+                            index_stride: None,
+                        }),
+                    }),
+                    step: Some(Expression::PostStep {
+                        target: Box::new(Expression::Variable("index".into())),
+                        operator: BinaryOperator::Add,
+                        pointer_link: None,
+                    }),
+                    body: vec![Statement::Store {
+                        target: Expression::Index {
+                            base: Box::new(Expression::MemberAddress {
+                                base: Box::new(Expression::Variable("object".into())),
+                                offset: 4,
+                                element: Pointee::Char,
+                                index_stride: None,
+                            }),
+                            index: Box::new(Expression::Variable("index".into())),
+                        },
+                        value: Expression::IntegerLiteral(32),
+                    }],
+                },
+                Statement::Store {
+                    target: Expression::Member {
+                        base: Box::new(Expression::Variable("object".into())),
+                        offset: 260,
+                        member_type: Type::Int,
+                        index_stride: None,
+                    },
+                    value: Expression::IntegerLiteral(0),
+                },
+            ],
+        );
+        clear.locals = vec![LocalDeclaration {
+            declared_type: Type::Int,
+            name: "index".into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        }];
+        let caller = function(
+            "caller",
+            vec![Parameter {
+                parameter_type: pointer,
+                name: "object".into(),
+            }],
+            vec![Statement::Switch {
+                scrutinee: Expression::IntegerLiteral(1),
+                arms: vec![SwitchArm {
+                    value: 1,
+                    body: ArmBody::Statements(vec![Statement::Expression(
+                        Expression::Call {
+                            name: "clear".into(),
+                            arguments: vec![Expression::Variable("object".into())],
+                        },
+                    )]),
+                    falls_through: false,
+                }],
+                default: None,
+            }],
+        );
+
+        let expanded = InlineBodySet::analyze(&[clear])
+            .expand_calls(&caller)
+            .expect("the canonical retained counter loop should compose");
+        let renamed = &expanded.locals[0].name;
+        assert!(matches!(
+            expanded.statements.as_slice(),
+            [Statement::Switch { arms, .. }]
+                if matches!(
+                    arms[0].body,
+                    ArmBody::Statements(ref body)
+                        if matches!(
+                            body.as_slice(),
+                            [
+                                Statement::Loop {
+                                    initializer: Some(Expression::Assign { target, .. }),
+                                    body: loop_body,
+                                    ..
+                                },
+                                Statement::Store { .. },
+                            ] if matches!(target.as_ref(), Expression::Variable(name) if name == renamed)
+                                && matches!(
+                                    loop_body.as_slice(),
+                                    [Statement::Store {
+                                        target: Expression::Index { index, .. },
+                                        ..
+                                    }] if matches!(index.as_ref(), Expression::Variable(name) if name == renamed)
+                                )
+                        )
+                )
         ));
     }
 

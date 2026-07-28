@@ -197,13 +197,59 @@ fn reads_are_dominated<'a>(
                     return false;
                 }
             }
+            Statement::Loop {
+                initializer,
+                condition,
+                step,
+                body,
+                ..
+            } => {
+                if let Some(initializer) = initializer {
+                    if !record_dominating_assignment(initializer, tracked, assigned) {
+                        return false;
+                    }
+                }
+                if condition
+                    .as_ref()
+                    .is_some_and(|condition| reads_unassigned(condition, tracked, assigned))
+                {
+                    return false;
+                }
+                let mut loop_assigned = assigned.clone();
+                if !reads_are_dominated(body, tracked, &mut loop_assigned)
+                    || step
+                        .as_ref()
+                        .is_some_and(|step| reads_unassigned(step, tracked, &loop_assigned))
+                {
+                    return false;
+                }
+            }
             Statement::Switch { .. }
             | Statement::Break
             | Statement::Continue
             | Statement::Goto(_)
-            | Statement::Label(_)
-            | Statement::Loop { .. } => return false,
+            | Statement::Label(_) => return false,
         }
+    }
+    true
+}
+
+fn record_dominating_assignment<'a>(
+    expression: &'a Expression,
+    tracked: &HashSet<&'a str>,
+    assigned: &mut HashSet<&'a str>,
+) -> bool {
+    let Expression::Assign { target, value } = expression else {
+        return !reads_unassigned(expression, tracked, assigned);
+    };
+    let Expression::Variable(name) = target.as_ref() else {
+        return !reads_unassigned(expression, tracked, assigned);
+    };
+    if reads_unassigned(value, tracked, assigned) {
+        return false;
+    }
+    if let Some(name) = tracked.get(name.as_str()) {
+        assigned.insert(*name);
     }
     true
 }
@@ -230,6 +276,20 @@ fn composable_statements(statements: &[Statement], local_names: &HashSet<&str>) 
             composable_statements(then_body, local_names)
                 && composable_statements(else_body, local_names)
         }
+        Statement::Loop {
+            initializer: Some(Expression::Assign { target, .. }),
+            condition: Some(_),
+            step: Some(step),
+            body,
+            ..
+        } => {
+            let Expression::Variable(counter) = target.as_ref() else {
+                return false;
+            };
+            local_names.contains(counter.as_str())
+                && loop_step_updates(step, counter)
+                && composable_statements(body, local_names)
+        }
         // A void return is local control flow, not an escape from the caller.
         // Expansion rewrites it to a forward jump to the end of this particular
         // inline instance before the body enters instruction selection.
@@ -242,6 +302,18 @@ fn composable_statements(statements: &[Statement], local_names: &HashSet<&str>) 
         | Statement::Label(_)
         | Statement::Loop { .. } => false,
     })
+}
+
+fn loop_step_updates(expression: &Expression, counter: &str) -> bool {
+    match expression {
+        Expression::PostStep { target, .. } => {
+            matches!(target.as_ref(), Expression::Variable(name) if name == counter)
+        }
+        Expression::Assign { target, .. } => {
+            matches!(target.as_ref(), Expression::Variable(name) if name == counter)
+        }
+        _ => false,
+    }
 }
 
 pub(super) fn stable_argument(expression: &Expression, stable_variables: &HashSet<String>) -> bool {

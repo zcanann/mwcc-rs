@@ -40,6 +40,28 @@ pub(super) fn substitute_statement(
                 .map(|statement| substitute_statement(statement, replacements))
                 .collect(),
         },
+        Statement::Loop {
+            kind,
+            initializer,
+            condition,
+            step,
+            body,
+        } => Statement::Loop {
+            kind: *kind,
+            initializer: initializer
+                .as_ref()
+                .map(|expression| substitute_expression(expression, replacements)),
+            condition: condition
+                .as_ref()
+                .map(|expression| substitute_expression(expression, replacements)),
+            step: step
+                .as_ref()
+                .map(|expression| substitute_expression(expression, replacements)),
+            body: body
+                .iter()
+                .map(|statement| substitute_statement(statement, replacements))
+                .collect(),
+        },
         _ => statement.clone(),
     }
 }
