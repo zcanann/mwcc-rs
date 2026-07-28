@@ -7484,6 +7484,46 @@ blr\n\
     }
 
     #[test]
+    fn nested_forward_declarations_enable_later_pointer_members() {
+        let source = r#"
+            struct substr {
+                const char* text;
+                unsigned size;
+            };
+            struct xtextbox {
+                struct callback;
+                struct jot {
+                    substr text;
+                    const callback* cb;
+                    void* context;
+                };
+                struct callback {
+                    void (*render)(const jot&);
+                };
+            };
+            void set_context(xtextbox::jot& value) {
+                value.context = 0;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            unit.functions[0].statements.as_slice(),
+            [mwcc_syntax_trees::Statement::Store {
+                target: mwcc_syntax_trees::Expression::Member { offset: 12, .. },
+                ..
+            }]
+        ));
+    }
+
+    #[test]
     fn recovers_wchar_specialization_layout_and_abi_names() {
         let source = r#"
             typedef unsigned int uint;

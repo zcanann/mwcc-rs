@@ -902,6 +902,22 @@ impl Parser {
                 self.eat_keyword(Token::Semicolon);
                 continue;
             }
+            // A nested C++ forward declaration (`struct callback;`) introduces
+            // an injected aggregate name but occupies no object storage. Keep
+            // an opaque layout until its later definition replaces it so
+            // intervening members may use `callback*` and sibling nested
+            // definitions may use `callback&`.
+            if self.cplusplus
+                && *self.peek() == Token::KeywordStruct
+                && matches!(self.peek_at(1), Token::Identifier(_))
+                && *self.peek_at(2) == Token::Semicolon
+            {
+                self.advance();
+                let tag = self.parse_identifier()?;
+                self.expect(Token::Semicolon)?;
+                self.structs.entry(tag).or_default();
+                continue;
+            }
             // Static C++ members occupy no object storage. Their callable/data
             // declaration semantics are recovered separately by the C++ class
             // scanner; the C-compatible layout pass only needs to advance over
