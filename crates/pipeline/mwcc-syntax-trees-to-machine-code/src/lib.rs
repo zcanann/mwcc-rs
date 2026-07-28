@@ -1062,10 +1062,10 @@ fn hoist_link_register_reload(generator: &mut Generator) {
 }
 
 /// At a shared framed epilogue, MWCC issues the saved-LR load before an
-/// independent return-value memory load. Incoming branches must land on the
-/// moved LR load, while relocations remain attached to the return load. Those
-/// are different mappings, so this join-aware two-instruction schedule lives
-/// above the generic permutation helper.
+/// independent return-value operation. Incoming branches must land on the
+/// moved LR load, while relocations remain attached to the return operation.
+/// Those are different mappings, so this join-aware two-instruction schedule
+/// lives above the generic permutation helper.
 fn schedule_shared_epilogue_link_reload(generator: &mut Generator) {
     if !generator.behavior.schedule_latency_slots {
         return;
@@ -1082,7 +1082,7 @@ fn schedule_shared_epilogue_link_reload(generator: &mut Generator) {
         return;
     }
     let reload = mtlr - 1;
-    let result_load = reload - 1;
+    let result_operation = reload - 1;
     if !matches!(
         generator.output.instructions[reload],
         Instruction::LoadWord { d: 0, a: 1, .. }
@@ -1151,10 +1151,10 @@ fn schedule_shared_epilogue_link_reload(generator: &mut Generator) {
     }
 
     let relocated_small_data = generator.output.relocations.iter().any(|relocation| {
-        relocation.instruction_index == result_load
+        relocation.instruction_index == result_operation
             && relocation.kind == mwcc_machine_code::RelocationKind::EmbSda21
     });
-    let independent_load = match generator.output.instructions[result_load] {
+    let independent_result = match generator.output.instructions[result_operation] {
         Instruction::LoadWord { d, a, .. }
         | Instruction::LoadByteZero { d, a, .. }
         | Instruction::LoadHalfwordZero { d, a, .. }
@@ -1163,9 +1163,10 @@ fn schedule_shared_epilogue_link_reload(generator: &mut Generator) {
         }
         Instruction::LoadFloatSingle { d: _, a, .. }
         | Instruction::LoadFloatDouble { d: _, a, .. } => a != 0 || relocated_small_data,
+        Instruction::AddImmediate { d, a, .. } => d != 0 && d == a,
         _ => false,
     };
-    if !independent_load {
+    if !independent_result {
         return;
     }
     let incoming: Vec<usize> = generator
@@ -1176,7 +1177,7 @@ fn schedule_shared_epilogue_link_reload(generator: &mut Generator) {
         .filter_map(|(index, instruction)| match instruction {
             Instruction::Branch { target }
             | Instruction::BranchConditionalForward { target, .. }
-                if *target == result_load =>
+                if *target == result_operation =>
             {
                 Some(index)
             }
@@ -1187,17 +1188,20 @@ fn schedule_shared_epilogue_link_reload(generator: &mut Generator) {
         return;
     }
 
-    generator.output.instructions.swap(result_load, reload);
+    generator
+        .output
+        .instructions
+        .swap(result_operation, reload);
     let mut permutation: Vec<usize> = (0..generator.output.instructions.len()).collect();
-    permutation[result_load] = reload;
-    permutation[reload] = result_load;
+    permutation[result_operation] = reload;
+    permutation[reload] = result_operation;
     remap_instruction_indices(generator, &permutation);
     for old_branch in incoming {
         let branch = permutation[old_branch];
         match &mut generator.output.instructions[branch] {
             Instruction::Branch { target }
             | Instruction::BranchConditionalForward { target, .. } => {
-                *target = result_load;
+                *target = result_operation;
             }
             _ => unreachable!("recorded branch changed kind during adjacent swap"),
         }

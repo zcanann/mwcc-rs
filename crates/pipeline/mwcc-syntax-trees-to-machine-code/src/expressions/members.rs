@@ -1104,6 +1104,38 @@ impl Generator {
             )?);
             return Ok(());
         }
+        // `buffer[k]` on a one-dimensional automatic array is a direct
+        // r1-relative element load. The array name itself decays to an address,
+        // but a constant subscript must include the slot offset rather than
+        // treating that address as the literal zero base.
+        if let (Expression::Variable(name), Some(constant)) = (base, constant_value(index)) {
+            if let Some(slot) = self
+                .frame_slots
+                .get(name.as_str())
+                .copied()
+                .filter(|slot| slot.is_array)
+            {
+                let element = pointee_of_type(slot.value_type).ok_or_else(|| {
+                    Diagnostic::error(format!(
+                        "frame array element type {:?} has no scalar load",
+                        slot.value_type
+                    ))
+                })?;
+                let displacement = i16::try_from(
+                    i64::from(slot.offset) + constant * i64::from(element.size()),
+                )
+                .map_err(|_| {
+                    Diagnostic::error("frame-array subscript offset out of range (roadmap)")
+                })?;
+                self.output.instructions.push(displacement_load(
+                    element,
+                    destination,
+                    1,
+                    displacement,
+                )?);
+                return Ok(());
+            }
+        }
         // `g[index]` where `g` is a file-scope array global: its address is
         // materialized by size (SDA21 small / ADDR16 large), then the element load.
         if let Expression::Variable(name) = base {

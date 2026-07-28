@@ -424,10 +424,6 @@ pub fn hoist_simple_later_call_argument(instructions: &mut Vec<Instruction>) -> 
 /// (old -> new) so relocations can be remapped; identity when nothing moved.
 pub fn schedule_link_register_save(instructions: &mut Vec<Instruction>) -> Vec<usize> {
     let identity: Vec<usize> = (0..instructions.len()).collect();
-    // Reordering shifts instruction indices, which would invalidate branch targets.
-    if has_forward_branch(instructions) {
-        return identity;
-    }
     // The non-leaf prologue: `mflr r0` immediately followed by `stw r0,20(r1)`. A
     // callee-saved or already-scheduled prologue does not match (the save is not the
     // very next instruction), so it is left untouched.
@@ -444,7 +440,7 @@ pub fn schedule_link_register_save(instructions: &mut Vec<Instruction>) -> Vec<u
             Instruction::StoreWord {
                 s: 0,
                 a: 1,
-                offset: 20
+                ..
             }
         )
     {

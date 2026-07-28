@@ -1603,7 +1603,11 @@ impl Generator {
                     )
                 }
                 ValueClass::General => {
-                    if let Some(register) = dense_loop_carried.preference_for(&local.name) {
+                    if self.canonical_boolean_locals.contains(&local.name) {
+                        self.fresh_virtual_general_preferring(GENERAL_SCRATCH)
+                    } else if let Some(register) =
+                        dense_loop_carried.preference_for(&local.name)
+                    {
                         self.fresh_virtual_general_preferring(register)
                     } else {
                         self.fresh_virtual_general()

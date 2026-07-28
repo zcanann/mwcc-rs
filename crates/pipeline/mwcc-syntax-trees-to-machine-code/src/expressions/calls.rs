@@ -418,6 +418,9 @@ impl Generator {
         if self.try_emit_zero_arg_nested_general_argument(arguments, name)? {
             return Ok(());
         }
+        if self.try_emit_frame_array_string_nested_tail_arguments(arguments, name)? {
+            return Ok(());
+        }
         if self.try_emit_global_array_string_nested_tail_arguments(arguments, name)? {
             return Ok(());
         }
@@ -551,6 +554,9 @@ impl Generator {
             }
         }
         let direct_call = !self.globals.contains_key(name) && !self.locations.contains_key(name);
+        if self.try_emit_global_chained_member_constant_arguments(arguments, name)? {
+            return Ok(());
+        }
         if self.try_emit_saved_float_tail_arguments(arguments, name, direct_call)? {
             return Ok(());
         }
