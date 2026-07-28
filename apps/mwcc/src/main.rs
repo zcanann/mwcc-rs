@@ -85,6 +85,16 @@ fn apply_string_mode(flags: &mut mwcc_versions::Flags, value: &str) {
     }
 }
 
+fn anonymous_string_ordinal_count(names: &[String]) -> u32 {
+    names
+        .iter()
+        .filter(|name| {
+            name.strip_prefix('@')
+                .is_some_and(|suffix| suffix.parse::<u32>().is_ok())
+        })
+        .count() as u32
+}
+
 fn parse_invocation(arguments: &[String]) -> Invocation {
     use mwcc_versions::{CharDefault, EnumStorage, GlobalAddressing, Optimization};
     let mut invocation = Invocation {
@@ -2123,7 +2133,9 @@ fn compile(
                 })
                 .collect()
         };
-        machine_function.new_string_count = new_string_names.len() as u32;
+        // Named packed-string bases are real data symbols but do not consume
+        // the anonymous `@N` stream. Only numeric `@N` string names advance it.
+        machine_function.new_string_count = anonymous_string_ordinal_count(&new_string_names);
         machine_function.new_string_names = new_string_names;
         // Then the function's constants (deduped across the unit, with the same
         // per-index number gaps the writer applies), its jump table (the counter
@@ -2708,7 +2720,10 @@ mod tests {
     #[path = "unsigned_narrow_to_float.rs"]
     mod unsigned_narrow_to_float;
 
-    use super::{compile, global_alignments, parse_invocation, GlobalAlignments, SourceLanguage};
+    use super::{
+        anonymous_string_ordinal_count, compile, global_alignments, parse_invocation,
+        GlobalAlignments, SourceLanguage,
+    };
     use mwcc_versions::{EnumStorage, GlobalAddressing};
 
     #[path = "grab_mash.rs"]
@@ -2731,6 +2746,17 @@ mod tests {
 
     #[path = "long_long_wait.rs"]
     mod long_long_wait;
+
+    #[test]
+    fn packed_string_bases_do_not_consume_anonymous_ordinals() {
+        let names = vec![
+            "@17".to_owned(),
+            "@stringBase0".to_owned(),
+            "named_literal".to_owned(),
+            "@18".to_owned(),
+        ];
+        assert_eq!(anonymous_string_ordinal_count(&names), 2);
+    }
 
     #[path = "inline_member_zero_fill.rs"]
     mod inline_member_zero_fill;

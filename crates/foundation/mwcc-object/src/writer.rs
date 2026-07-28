@@ -952,7 +952,16 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 && object.preassigned_anonymous_ordinal.is_none()
         })
         .count() as u32;
-    let function_string_total: u32 = functions.iter().map(|function| function.string_count).sum();
+    let function_string_total = input
+        .data_objects
+        .iter()
+        .filter(|object| {
+            object.is_static
+                && object.name.starts_with('@')
+                && object.preassigned_anonymous_ordinal.is_none()
+                && function_string_names.contains(object.name)
+        })
+        .count() as u32;
     // A FILE-SCOPE pooled string declared BETWEEN functions (`static const
     // char* const p = "…"` mid-file — ansi_fp's strikers revision) numbers
     // IN-STREAM at its source position, not up front: it consumes one number
