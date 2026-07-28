@@ -67,6 +67,7 @@ mod float_store_fill;
 mod formatter_buffer_copy_schedule;
 mod formatter_character_schedule;
 mod formatter_position_schedule;
+mod frame_row_string_append_schedule;
 mod guarded_formatter_member_cache_schedule;
 mod float_friction_select;
 mod float_call_guard_return;

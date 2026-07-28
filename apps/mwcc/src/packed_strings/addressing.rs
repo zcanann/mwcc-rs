@@ -10,6 +10,7 @@ use mwcc_machine_code::{
 /// the translation-unit interner has assigned final offsets.
 pub(crate) fn materialize_function_offsets(function: &mut MachineFunction, base: &str) {
     schedule_zero_offset_base_lows(function, base);
+    materialize_retained_base_offsets(function, base);
 
     let mut pairs = Vec::new();
     for (low_relocation_index, low) in function.relocations.iter().enumerate() {
@@ -74,6 +75,83 @@ pub(crate) fn materialize_function_offsets(function: &mut MachineFunction, base:
                 immediate,
             },
         );
+    }
+}
+
+/// A loop can retain the zero-offset packed-string base in a saved register and
+/// apply one literal's final TU-wide offset only when marshaling the call
+/// argument. Keep the HA/LO pair on the shared base and patch that dependent
+/// `addi` instead of inserting an offset immediately after the low half.
+fn materialize_retained_base_offsets(function: &mut MachineFunction, base: &str) {
+    let candidates = function
+        .relocations
+        .iter()
+        .enumerate()
+        .filter_map(|(low_relocation_index, low)| {
+            let RelocationTarget::ExternalWithAddend(target, addend) = &low.target else {
+                return None;
+            };
+            if target != base || *addend == 0 || low.kind != RelocationKind::Addr16Lo {
+                return None;
+            }
+            let Instruction::AddImmediate { d: retained, .. } =
+                function.instructions.get(low.instruction_index)?
+            else {
+                return None;
+            };
+            if *retained < 14 {
+                return None;
+            }
+            let high_relocation_index =
+                function.relocations.iter().enumerate().rev().find_map(|(index, high)| {
+                    (high.instruction_index < low.instruction_index
+                        && high.kind == RelocationKind::Addr16Ha
+                        && matches!(
+                            &high.target,
+                            RelocationTarget::ExternalWithAddend(high_target, high_addend)
+                                if high_target == target && high_addend == addend
+                        ))
+                    .then_some(index)
+                })?;
+            let use_position = function
+                .instructions
+                .iter()
+                .enumerate()
+                .skip(low.instruction_index + 1)
+                .find_map(|(position, instruction)| {
+                    matches!(
+                        instruction,
+                        Instruction::AddImmediate {
+                            d,
+                            a,
+                            immediate: 0,
+                        } if a == retained && d != retained
+                    )
+                    .then_some(position)
+                })?;
+            Some((
+                low_relocation_index,
+                high_relocation_index,
+                use_position,
+                *addend,
+            ))
+        })
+        .collect::<Vec<_>>();
+
+    for (low, high, use_position, addend) in candidates {
+        let Ok(immediate) = i16::try_from(addend) else {
+            continue;
+        };
+        let Instruction::AddImmediate {
+            immediate: use_immediate,
+            ..
+        } = &mut function.instructions[use_position]
+        else {
+            continue;
+        };
+        *use_immediate = immediate;
+        function.relocations[low].target = RelocationTarget::External(base.to_owned());
+        function.relocations[high].target = RelocationTarget::External(base.to_owned());
     }
 }
 
@@ -271,6 +349,63 @@ mod tests {
         )));
         assert_eq!(function.entry_points[0].1, 4);
         assert_eq!(function.jump_tables[0].entries, vec![16]);
+    }
+
+    #[test]
+    fn applies_an_interior_offset_at_a_retained_base_use() {
+        let mut function = MachineFunction::new("probe");
+        function.instructions = vec![
+            Instruction::AddImmediateShifted {
+                d: 3,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 31,
+                a: 3,
+                immediate: 0,
+            },
+            Instruction::Branch { target: 3 },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 31,
+                immediate: 0,
+            },
+        ];
+        function.relocations = vec![
+            Relocation {
+                instruction_index: 0,
+                kind: RelocationKind::Addr16Ha,
+                target: RelocationTarget::ExternalWithAddend(
+                    "@stringBase0".to_owned(),
+                    14,
+                ),
+            },
+            Relocation {
+                instruction_index: 1,
+                kind: RelocationKind::Addr16Lo,
+                target: RelocationTarget::ExternalWithAddend(
+                    "@stringBase0".to_owned(),
+                    14,
+                ),
+            },
+        ];
+
+        materialize_function_offsets(&mut function, "@stringBase0");
+
+        assert_eq!(function.instructions.len(), 4);
+        assert!(matches!(
+            function.instructions[3],
+            Instruction::AddImmediate {
+                d: 4,
+                a: 31,
+                immediate: 14,
+            }
+        ));
+        assert!(function.relocations.iter().all(|relocation| matches!(
+            &relocation.target,
+            RelocationTarget::External(target) if target == "@stringBase0"
+        )));
     }
 
     #[test]
