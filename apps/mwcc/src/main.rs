@@ -2766,6 +2766,9 @@ mod tests {
     #[path = "joined_call_switch.rs"]
     mod joined_call_switch;
 
+    #[path = "member_pointer_and_bitfield_chain.rs"]
+    mod member_pointer_and_bitfield_chain;
+
     #[path = "spilled_pointer_cast.rs"]
     mod spilled_pointer_cast;
 

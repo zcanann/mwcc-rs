@@ -92,6 +92,9 @@ impl Generator {
         value: &Expression,
         destination: u8,
     ) -> Compilation<()> {
+        if self.try_emit_bit_field_assign(target, value, destination)? {
+            return Ok(());
+        }
         if let Expression::Variable(name) = target {
             if let Some(&global_type) = self.globals.get(name.as_str()) {
                 let pointee = pointee_of_type(global_type).ok_or_else(|| {

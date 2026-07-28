@@ -1078,6 +1078,16 @@ impl Generator {
         {
             return Ok(*pointee);
         }
+        // `object->pointer_member[index]`: the pointer value is a structured
+        // expression rather than a leaf variable, but its pointee is already
+        // explicit in the member's resolved type.
+        if let Expression::Member {
+            member_type: Type::Pointer(pointee),
+            ..
+        } = pointer
+        {
+            return Ok(*pointee);
+        }
         // The first index of a flattened multidimensional frame array denotes
         // a row address. Its pointee remains the declared scalar element type;
         // the recorded row width affects addressing, not classification.
