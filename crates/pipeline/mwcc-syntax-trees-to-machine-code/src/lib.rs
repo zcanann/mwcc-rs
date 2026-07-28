@@ -15,6 +15,7 @@ mod allocation_frame;
 mod arithmetic;
 mod asm;
 mod body;
+mod branch_cleanup;
 mod captures;
 mod casts;
 mod comparisons;
@@ -640,6 +641,9 @@ pub fn lower_function(
         return Err(mwcc_core::Diagnostic::error(
             "internal: a branch label was used but never bound",
         ));
+    }
+    if generator.behavior.schedule_latency_slots {
+        branch_cleanup::collapse_forwarding_branch_blocks(&mut generator);
     }
     collapse_conditional_skip_to_backward_branch(&mut generator);
     // Peephole: a conditional forward branch whose target is the function's TERMINAL
