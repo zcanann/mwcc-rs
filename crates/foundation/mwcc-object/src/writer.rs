@@ -740,7 +740,15 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // DECLARATION order, then UNINITIALIZED globals (`int a;`) in REVERSE declaration order.
     // (An all-uninitialized `.sbss` therefore just reverses, as before.)
     let mut sbss_size = 0u32;
-    if input.object_format.small_zero_statics_in_declaration_order {
+    if input.object_format.small_zero_data_in_declaration_order {
+        for object in input
+            .data_objects
+            .iter()
+            .filter(|object| section_of(object) == ".sbss")
+        {
+            place(object, ".sbss", &mut sbss_size);
+        }
+    } else if input.object_format.small_zero_statics_in_declaration_order {
         for object in input.data_objects.iter().filter(|object| {
             section_of(object) == ".sbss" && !object.is_static && object.is_explicit_zero
         }) {
@@ -1812,6 +1820,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 .iter()
                 .find(|object| object.name == name && is_pending_zero_static(object))
             {
+                if input.object_format.small_zero_data_in_declaration_order && object.is_static {
+                    continue;
+                }
                 if emitted_zero_static.insert(object.name) {
                     local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
                     let section = index_of(data_section[object.name]) as u16;
@@ -1833,6 +1844,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         if is_pending_zero_static(object)
             && !zero_statics_after_function_strings.contains(object.name)
             && !emitted_zero_static.contains(object.name)
+            && !(input.object_format.small_zero_data_in_declaration_order && object.is_static)
         {
             local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
             let section = index_of(data_section[object.name]) as u16;
@@ -2149,6 +2161,25 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 );
                 // The blob's `.comment` alignment record is 4 (measured on __strtold's @26).
                 comment_values.push((4, 0));
+                if rodata_anchor_needed
+                    && !rodata_anchor_emitted
+                    && !input.object_format.rodata_anchor_before_data_symbols
+                {
+                    local_data_symbols
+                        .insert("...rodata.0", (symtab.len() / SYMBOL_SIZE) as u32);
+                    write_symbol(
+                        &mut symtab,
+                        strtab.add("...rodata.0"),
+                        0,
+                        0,
+                        0,
+                        0,
+                        index_of(".rodata") as u16,
+                    );
+                    comment_values
+                        .push((1, input.object_format.rodata_anchor_comment_flags));
+                    rodata_anchor_emitted = true;
+                }
             }
             if let Some((position, _)) = function.string_number_after_rodata {
                 if position as usize >= function.anonymous_rodata.len() {
@@ -2170,6 +2201,29 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 }
             }
             rodata_blob_symbols.push(symbols_of_blobs);
+        }
+        if index == 0 && input.object_format.small_zero_data_in_declaration_order {
+            for object in &input.data_objects {
+                if !object.is_static
+                    || !is_pending_zero_static(object)
+                    || emitted_zero_static.contains(object.name)
+                {
+                    continue;
+                }
+                emitted_zero_static.insert(object.name);
+                local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
+                let section = index_of(data_section[object.name]) as u16;
+                write_symbol(
+                    &mut symtab,
+                    strtab.add(object.name),
+                    data_offsets[object.name],
+                    data_sizes[object.name],
+                    STB_LOCAL_OBJECT,
+                    0,
+                    section,
+                );
+                comment_values.push((data_aligns[object.name], data_comment_flags(object)));
+            }
         }
         let mut symbols = Vec::new();
         for (constant_index, constant) in function.constants.iter().enumerate() {
@@ -2706,7 +2760,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             && (matches!(
                 section_name,
                 ".sdata" | ".data" | ".sdata2" | ".rodata" | ".ctors" | ".dtors"
-            ) || (section_name == ".sbss" && object.is_explicit_zero))
+            ) || (section_name == ".sbss"
+                && (object.is_explicit_zero
+                    || input.object_format.small_zero_data_in_declaration_order)))
     };
     // Retained weak inline statics are registered while parsing headers before
     // section-attributed asm prototypes. Build 163 emits that leading weak run
@@ -4037,7 +4093,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         push(
             ".sbss2",
             SHT_NOBITS,
-            SHF_ALLOC,
+            if input.object_format.sdata2_writable {
+                SHF_WRITE_ALLOC
+            } else {
+                SHF_ALLOC
+            },
             0,
             0,
             section_align(".sbss2"),

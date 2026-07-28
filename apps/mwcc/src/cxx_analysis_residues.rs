@@ -79,7 +79,9 @@ fn discarded_inline_aggregate_image(
         ),
         size: image.bytes.len() as u32,
         alignment: image.alignment,
-        comment_alignment: image.alignment,
+        // The zero-fill artifact is an optimizer-owned word image even when
+        // the discarded source aggregate's natural alignment was narrower.
+        comment_alignment: image.alignment.max(4),
         initial_bytes: (!zero_fill).then(|| image.bytes.clone()),
         is_const: true,
         force_full_data_section: false,
@@ -469,5 +471,7 @@ mod tests {
         );
         assert_eq!(zero_fill.initial_bytes, None);
         assert_eq!(zero_fill.section.as_deref(), Some(".sbss2"));
+        assert_eq!(zero_fill.alignment, 2);
+        assert_eq!(zero_fill.comment_alignment, 4);
     }
 }

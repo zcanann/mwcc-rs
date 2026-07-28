@@ -2605,6 +2605,7 @@ fn compile(
             == mwcc_versions::LocalDataSymbolOrder::DeclarationOrder,
         small_zero_statics_in_declaration_order: behavior.small_zero_data_layout_style
             == mwcc_versions::SmallZeroDataLayoutStyle::LegacyStaticDeclarationOrderFirst,
+        small_zero_data_in_declaration_order: is_cxx,
         rodata_anchor_before_data_symbols: behavior.read_only_section_anchor_order
             == mwcc_versions::ReadOnlySectionAnchorOrder::BeforeDataObjects,
         rodata_anchor_comment_flags: behavior.read_only_section_anchor_comment_flags,
