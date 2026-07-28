@@ -38,6 +38,7 @@ mod bounded_member_assignment;
 mod bounded_acceleration_schedule;
 mod callee_saved;
 mod comma_operator;
+mod coalescing_free_list_insert;
 mod condition_linkage;
 mod conditional_float_call_arguments;
 mod conditional_float_requantize;

@@ -2454,6 +2454,11 @@ impl Generator {
         if self.try_fixed_head_list_membership(function)? {
             return Ok(());
         }
+        // Dolphin heap cells are inserted by address and coalesced with either
+        // adjacent neighbor in one scheduled link-repair region.
+        if self.try_coalescing_free_list_insert(function)? {
+            return Ok(());
+        }
         // SDK callback queues insert one intrusive node into a priority-sorted doubly linked
         // list. The empty-tail and predecessor repairs form one scheduled control-flow owner.
         if self.try_sorted_intrusive_insert(function)? {

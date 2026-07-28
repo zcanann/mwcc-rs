@@ -2919,6 +2919,9 @@ mod tests {
     #[path = "leading_store_trailing_if.rs"]
     mod leading_store_trailing_if;
 
+    #[path = "coalescing_free_list_insert.rs"]
+    mod coalescing_free_list_insert;
+
     #[path = "inlined_list_append.rs"]
     mod inlined_list_append;
 
