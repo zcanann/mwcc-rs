@@ -180,10 +180,6 @@ pub(crate) fn apply_unit(
     machine_functions: &mut [MachineFunction],
     style: FunctionOrdinalAccountingStyle,
 ) {
-    if style == FunctionOrdinalAccountingStyle::Mainline {
-        account_deadstripped_prefix_static_locals(machine_functions);
-        return;
-    }
     if style != FunctionOrdinalAccountingStyle::Gc41Ipa || machine_functions.is_empty() {
         return;
     }
@@ -221,25 +217,6 @@ pub(crate) fn apply_unit(
         }
     }
     machine_functions[0].anonymous_label_bump += unit_front_bump;
-}
-
-/// A retained `__deadstripped_*` leaf contributes its optimizer label before
-/// the next function's first static-local declaration, although the ordinary
-/// per-function counter catches up again by the following function. Express
-/// that positional-only label through the static-local adjustment channel.
-fn account_deadstripped_prefix_static_locals(functions: &mut [MachineFunction]) {
-    for index in 1..functions.len() {
-        let previous_is_deadstripped_leaf = functions[index - 1]
-            .name
-            .starts_with("__deadstripped_")
-            && matches!(
-                functions[index - 1].instructions.as_slice(),
-                [mwcc_machine_code::Instruction::BranchToLinkRegister]
-            );
-        if previous_is_deadstripped_leaf && !functions[index].static_locals.is_empty() {
-            functions[index].static_local_adjust += 1;
-        }
-    }
 }
 
 fn gc41_hidden_labels(function: &Function, ipa_file: bool) -> u32 {
@@ -502,28 +479,6 @@ mod tests {
         function.return_expression = Some(Expression::IntegerLiteral(0));
         assert_eq!(gc41_hidden_labels(&function, false), 4);
         assert_eq!(gc41_hidden_labels(&function, true), 0);
-    }
-
-    #[test]
-    fn mainline_positions_a_static_after_a_deadstripped_leaf() {
-        let mut deadstripped = MachineFunction::new("__deadstripped_probe");
-        deadstripped
-            .instructions
-            .push(mwcc_machine_code::Instruction::BranchToLinkRegister);
-        let mut owner = MachineFunction::new("owner");
-        owner.static_locals.push(mwcc_machine_code::StaticLocal {
-            name: "buffer".to_owned(),
-            initial_bytes: None,
-            size: 12,
-            alignment: 1,
-            is_const: false,
-            relocations: Vec::new(),
-        });
-        let mut functions = vec![deadstripped, owner];
-
-        account_deadstripped_prefix_static_locals(&mut functions);
-
-        assert_eq!(functions[1].static_local_adjust, 1);
     }
 
     #[test]
