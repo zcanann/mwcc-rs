@@ -672,8 +672,24 @@ impl Generator {
             operand,
         } = base
         {
-            if let Some(register) = leaf_name(operand).and_then(|name| self.lookup_general(name)) {
-                return Ok((*pointee, register));
+            if let Some(name) = leaf_name(operand) {
+                // An address-taken pointer local has a stale register location
+                // as well as its authoritative frame slot. Reload the pointer
+                // value before applying the cast's pointee type, just as the
+                // uncast spilled-pointer path above does.
+                if self.frame_slots.get(name).is_some_and(|slot| {
+                    matches!(
+                        slot.value_type,
+                        Type::Pointer(_) | Type::StructPointer { .. }
+                    )
+                }) {
+                    let register = self.fresh_virtual_general_preferring(3);
+                    self.evaluate_general(operand, register)?;
+                    return Ok((*pointee, register));
+                }
+                if let Some(register) = self.lookup_general(name) {
+                    return Ok((*pointee, register));
+                }
             }
             // A cast may reinterpret a computed pointer value such as a
             // pointer-typed struct member: `((float*)object->data)[i]` first

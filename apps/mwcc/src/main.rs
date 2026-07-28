@@ -2695,6 +2695,9 @@ mod tests {
     #[path = "saved_float_initializer.rs"]
     mod saved_float_initializer;
 
+    #[path = "spilled_pointer_cast.rs"]
+    mod spilled_pointer_cast;
+
     #[path = "member_float_select.rs"]
     mod member_float_select;
     mod member_setup;
