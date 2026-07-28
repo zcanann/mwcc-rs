@@ -129,3 +129,61 @@ fn copies_pooled_frame_parameters_in_incoming_register_order() {
     ];
     assert!(object.windows(entry.len()).any(|bytes| bytes == entry));
 }
+
+#[test]
+fn issues_compact_pooled_array_entry_packets_in_mwcc_order() {
+    let source = br#"
+        #pragma use_lmw_stmw on
+        typedef unsigned long size_t;
+        struct SaveEntry {
+            char prefix[64];
+            char date[32];
+        };
+        extern SaveEntry saves[];
+        char* strncpy(char*, const char*, size_t);
+        int sprintf(char*, const char*, ...);
+
+        char* initialize(int index, char* output, size_t unused) {
+            char date[32] = "";
+            char time[32] = "";
+            char ampm[32] = "";
+            char buffer[256] = "";
+
+            strncpy(date, saves[index].date, 5);
+            date[2] = '/';
+            sprintf(buffer, "%s/%c%c", date, saves[index].date[8],
+                    saves[index].date[9]);
+            strncpy(date, buffer, 32);
+            date[31] = '\0';
+            sprintf(time, "%c%c", saves[index].date[11],
+                    saves[index].date[12]);
+            return output;
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.cpp_exceptions = false;
+    flags.emit_mwcats = false;
+    let object = compile(
+        source,
+        "compact-pooled-array-entry.cpp",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_2_0P1,
+            flags,
+        },
+        Some(SourceLanguage::Cxx),
+        None,
+        false,
+    )
+    .expect("the compact pooled-array frame should compile");
+
+    // li r0,32; addi r6,r1,68; stmw r21,340(r1); addi r21,r5,rodata@l;
+    // mr r31,r4; addi r5,r21,92
+    let entry_packets = [
+        0x38, 0x00, 0x00, 0x20, 0x38, 0xc1, 0x00, 0x44, 0xbe, 0xa1, 0x01, 0x54, 0x3a, 0xa5, 0x00,
+        0x00, 0x7c, 0x9f, 0x23, 0x78, 0x38, 0xb5, 0x00, 0x5c,
+    ];
+    assert!(object
+        .windows(entry_packets.len())
+        .any(|bytes| bytes == entry_packets));
+}

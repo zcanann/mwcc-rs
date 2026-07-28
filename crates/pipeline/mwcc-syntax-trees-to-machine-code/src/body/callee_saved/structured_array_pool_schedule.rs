@@ -82,4 +82,57 @@ impl Generator {
             *s
         });
     }
+
+    /// The compact pooled-copy form has three independent entry packets:
+    /// tail-loop setup, the dense save, and the read-only image base. MWCC
+    /// issues them in that order after allocation. Keep the physical-register
+    /// signature narrow: the wider pooled forms use different packet orders.
+    pub(crate) fn schedule_allocated_compact_structured_array_pool_entry(&mut self) {
+        if self.output.instructions.len() < 10
+            || !matches!(
+                &self.output.instructions[..10],
+                [
+                    Instruction::StoreWordWithUpdate { s: 1, a: 1, .. },
+                    Instruction::MoveFromLinkRegister { d: 0 },
+                    Instruction::AddImmediateShifted { d: 5, a: 0, .. },
+                    Instruction::StoreWord { s: 0, a: 1, .. },
+                    Instruction::AddImmediate {
+                        d: 21,
+                        a: 5,
+                        immediate: 0,
+                    },
+                    Instruction::StoreMultipleWord { s: 21, a: 1, .. },
+                    Instruction::Or { a: 31, s: 4, b: 4 },
+                    Instruction::AddImmediate {
+                        d: 5,
+                        a: 21,
+                        immediate: 92,
+                    },
+                    Instruction::AddImmediate {
+                        d: 0,
+                        a: 0,
+                        immediate: 32,
+                    },
+                    Instruction::AddImmediate { d: 6, a: 1, .. },
+                ]
+            )
+        {
+            return;
+        }
+
+        let old = self.output.instructions[4..10].to_vec();
+        let order = [4, 5, 1, 0, 2, 3];
+        for (destination, source) in (4..10).zip(order) {
+            self.output.instructions[destination] = old[source].clone();
+        }
+
+        let mut permutation: Vec<usize> = (0..self.output.instructions.len()).collect();
+        for (old_index, new_index) in [(4, 7), (5, 6), (6, 8), (7, 9), (8, 4), (9, 5)] {
+            permutation[old_index] = new_index;
+        }
+        crate::remap_instruction_indices(self, &permutation);
+        self.output
+            .relocations
+            .sort_by_key(|relocation| relocation.instruction_index);
+    }
 }

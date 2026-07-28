@@ -817,6 +817,7 @@ fn lower_function_body(
     // virtual home to the register the value already holds (mwcc coalesces them).
     coalesce_self_moves(&mut generator);
     generator.schedule_allocated_structured_array_pool_parameter_copies();
+    generator.schedule_allocated_compact_structured_array_pool_entry();
     // Allocation can coalesce a just-published frame value and its immediate
     // reload to the same physical register even when their virtual lanes were
     // distinct during selection. Remove that newly visible reload only for
@@ -1299,13 +1300,16 @@ fn coalesce_self_moves(generator: &mut Generator) {
     remap_instruction_indices(generator, &permutation);
 }
 
-/// Remap relocations and internal branch destinations after an instruction
-/// permutation. Branch destinations are instruction indices just like
-/// relocation owners; leaving them stale after deleting a self-move can skip
-/// the first instruction of a guarded continuation.
+/// Remap relocations, late data displacements, and internal branch destinations
+/// after an instruction permutation. Each is owned by an instruction index;
+/// leaving one stale after scheduling or deleting a self-move patches or enters
+/// the wrong instruction.
 pub(crate) fn remap_instruction_indices(generator: &mut Generator, permutation: &[usize]) {
     for relocation in &mut generator.output.relocations {
         relocation.instruction_index = permutation[relocation.instruction_index];
+    }
+    for displacement in &mut generator.output.data_section_displacements {
+        displacement.instruction_index = permutation[displacement.instruction_index];
     }
     remap_branch_targets(&mut generator.output.instructions, permutation);
 }
