@@ -13,6 +13,7 @@ mod fixed_port_zero_fill;
 mod guarded_byte_copy;
 mod indexed_calls;
 mod inlined_byte_append;
+mod inlined_list_append;
 mod inlined_list_membership;
 mod inlined_list_wipe;
 mod interrupt_vector_copy;

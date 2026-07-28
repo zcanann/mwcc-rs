@@ -9,12 +9,13 @@
 #[allow(unused_imports)]
 use super::*;
 
-struct LinkedListAppend<'a> {
-    allocator: &'a str,
-    item_size_offset: i16,
-    item_count_offset: i16,
-    head_offset: i16,
-    node_header_size: i16,
+#[derive(Clone)]
+pub(super) struct LinkedListAppend {
+    pub(super) allocator: String,
+    pub(super) item_size_offset: i16,
+    pub(super) item_count_offset: i16,
+    pub(super) head_offset: i16,
+    pub(super) node_header_size: i16,
 }
 
 fn var(expression: &Expression, expected: &str) -> bool {
@@ -52,7 +53,7 @@ fn is_constant(expression: &Expression, expected: i64) -> bool {
     constant_value(expression) == Some(expected)
 }
 
-fn classify(function: &Function) -> Option<LinkedListAppend<'_>> {
+pub(super) fn classify(function: &Function) -> Option<LinkedListAppend> {
     if function.return_type != Type::Int
         || !function.guards.is_empty()
         || !is_constant(function.return_expression.as_ref()?, 0)
@@ -269,7 +270,7 @@ fn classify(function: &Function) -> Option<LinkedListAppend<'_>> {
     }
 
     Some(LinkedListAppend {
-        allocator,
+        allocator: allocator.clone(),
         item_size_offset: i16::try_from(item_size_offset).ok()?,
         item_count_offset: i16::try_from(item_count_offset).ok()?,
         head_offset: i16::try_from(head_offset).ok()?,
@@ -292,7 +293,7 @@ impl Generator {
         Ok(true)
     }
 
-    fn emit_linked_list_append(&mut self, shape: &LinkedListAppend<'_>) {
+    fn emit_linked_list_append(&mut self, shape: &LinkedListAppend) {
         const LIST: u8 = 30;
         const ITEM_OUT: u8 = 31;
         const NODE_SLOT: i16 = 16;
@@ -350,9 +351,9 @@ impl Generator {
                 immediate: shape.node_header_size,
             },
         ]);
-        self.record_relocation(RelocationKind::Rel24, shape.allocator);
+        self.record_relocation(RelocationKind::Rel24, &shape.allocator);
         self.output.instructions.push(Instruction::BranchAndLink {
-            target: shape.allocator.to_owned(),
+            target: shape.allocator.clone(),
         });
         self.output
             .instructions
