@@ -182,3 +182,47 @@ fn reconstructs_an_aggregate_hidden_result_prefix_after_a_float_call() {
     )
     .expect("the float call should precede the reloadable hidden-result and object addresses");
 }
+
+#[test]
+fn matches_gc_1_1_discarded_masked_call_frame() {
+    let source = br#"
+        extern void sink(int, unsigned char*, int);
+        int bridge(void* unused, int address, signed char* data) {
+            sink(address & 0x7fff, (unsigned char*)data, 1);
+            return 1;
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.cpp_exceptions = false;
+    flags.emit_mwcats = false;
+    let object = compile(
+        source,
+        "discarded-masked-call-frame.c",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_1_1,
+            flags,
+        },
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("the discarded masked call should compile");
+
+    // Exact GC/1.1 output measured from mwcceppc.
+    let expected = [
+        0x7c, 0x08, 0x02, 0xa6, // mflr r0
+        0x54, 0x83, 0x04, 0x7e, // clrlwi r3,r4,17
+        0x90, 0x01, 0x00, 0x04, // stw r0,4(r1)
+        0x38, 0x85, 0x00, 0x00, // addi r4,r5,0
+        0x38, 0xa0, 0x00, 0x01, // li r5,1
+        0x94, 0x21, 0xff, 0xf8, // stwu r1,-8(r1)
+        0x48, 0x00, 0x00, 0x01, // bl sink
+        0x80, 0x01, 0x00, 0x0c, // lwz r0,12(r1)
+        0x38, 0x60, 0x00, 0x01, // li r3,1
+        0x38, 0x21, 0x00, 0x08, // addi r1,r1,8
+        0x7c, 0x08, 0x03, 0xa6, // mtlr r0
+        0x4e, 0x80, 0x00, 0x20, // blr
+    ];
+    assert!(object.windows(expected.len()).any(|bytes| bytes == expected));
+}

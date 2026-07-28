@@ -687,6 +687,46 @@ impl Generator {
         }
         self.output.instructions[..=link_store].rotate_left(1);
         self.delay_plain_frame_update_past_condition_prefix(link_store);
+        let first_call = self
+            .output
+            .instructions
+            .iter()
+            .position(|instruction| matches!(instruction, Instruction::BranchAndLink { .. }))
+            .unwrap_or(self.output.instructions.len());
+        // A pointer reinterpretation can leave an overlapping incoming
+        // argument copy as `mr` in the semantic emitter. Build 163 represents
+        // each one-register left shift as a collision-resolving `addi`.
+        for instruction in &mut self.output.instructions[..first_call] {
+            let Instruction::Or { a, s, b } = *instruction else {
+                continue;
+            };
+            if b == s && s == a.saturating_add(1) && (3..=9).contains(&a) {
+                *instruction = Instruction::AddImmediate {
+                    d: a,
+                    a: s,
+                    immediate: 0,
+                };
+            }
+        }
+        // A discarded call followed by a constant result reloads LR first.
+        // The two writes are independent; this is build 163's measured plain
+        // frame order, distinct from a control-flow join's constant epilogue.
+        for index in first_call..self.output.instructions.len().saturating_sub(1) {
+            if matches!(
+                self.output.instructions[index],
+                Instruction::AddImmediate { d: 3, a: 0, .. }
+            ) && matches!(
+                self.output.instructions[index + 1],
+                Instruction::LoadWord {
+                    d: 0,
+                    a: 1,
+                    offset: 12
+                }
+            ) {
+                self.output.instructions.swap(index, index + 1);
+                break;
+            }
+        }
         for index in 0..self.output.instructions.len().saturating_sub(1) {
             if matches!(
                 self.output.instructions[index],
