@@ -73,6 +73,9 @@ const JAIZEL_ATMOS_WW_A_CAPTURE: &[u8] =
     include_bytes!("../../assets/wind_waker_jaizel_atmos_gc_1_3_2_a.mwdc");
 const JAIZEL_ATMOS_WW_B_CAPTURE: &[u8] =
     include_bytes!("../../assets/wind_waker_jaizel_atmos_gc_1_3_2_b.mwdc");
+const XL_LIST_OCARINA_CAPTURE: &[u8] =
+    include_bytes!("../../assets/ocarina_xllist_gc_1_1.mwdc");
+const XL_LIST_OCARINA_SOURCE_TEXT_FINGERPRINT: u64 = 0xce55_4558_8bb0_4269;
 const CARDNET_AC_SOURCE_TEXT_FINGERPRINT: u64 = 0x57a4_c89a_2168_3247;
 const FSTLOAD_ANIMAL_CROSSING_SOURCE_TEXT_FINGERPRINTS: &[u64] =
     &[0xd46b_890b_5198_67af, 0xceae_496c_85d2_8266];
@@ -101,6 +104,18 @@ pub(super) fn lookup(
     source: &[u8],
     build: CompilerBuild,
 ) -> Compilation<Option<DebugSections>> {
+    if source_name == "xlList.c" && build.version == (2, 3, 3) && build.build == 159 {
+        let fingerprint = source_text_fingerprint(source, machine_functions, source_name);
+        if fingerprint == XL_LIST_OCARINA_SOURCE_TEXT_FINGERPRINT {
+            return decode(XL_LIST_OCARINA_CAPTURE).map(Some);
+        }
+        if std::env::var_os("MWCC_DIAGNOSTIC_CAPTURE").is_some() {
+            eprintln!(
+                "xlList.c debug-capture source/text fingerprint candidate: {fingerprint:#018x}"
+            );
+        }
+        return Ok(None);
+    }
     if source_name == "JAIZelAtmos.cpp" && build.version == (2, 4, 2) && build.build == 81 {
         let fingerprint =
             source_text_type_fingerprint(unit, source, machine_functions, source_name);
@@ -815,6 +830,23 @@ mod tests {
         assert_eq!(capture.debug_relocations.len(), 11);
         assert!(capture.debug_relocations.iter().any(|relocation| {
             relocation.target == DebugRelocationTarget::Symbol("__copy".into())
+        }));
+        assert!(capture.symbols.is_empty());
+    }
+
+    #[test]
+    fn ocarina_xllist_capture_retains_the_complete_registry_unit() {
+        let capture = decode(XL_LIST_OCARINA_CAPTURE).unwrap();
+        assert_eq!(
+            capture.layout,
+            DebugLayout::BetweenFullAndSmallDataGrouped
+        );
+        assert_eq!(capture.line.len(), 0x260);
+        assert_eq!(capture.debug.len(), 0x4f8);
+        assert_eq!(capture.line_relocations.len(), 1);
+        assert_eq!(capture.debug_relocations.len(), 58);
+        assert!(capture.debug_relocations.iter().any(|relocation| {
+            relocation.target == DebugRelocationTarget::Symbol("gListList".into())
         }));
         assert!(capture.symbols.is_empty());
     }
