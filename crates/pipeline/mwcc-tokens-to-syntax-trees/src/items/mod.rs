@@ -4074,6 +4074,12 @@ impl Parser {
                     }
                     let mut startup_bump = bump;
                     let mut brace_depth = 0i32;
+                    // An uninstantiated function template is analyzed as one
+                    // control-flow graph, but never compiled into an ordinary
+                    // discarded body. Mainline MWCC therefore charges exactly
+                    // one ordinal when that graph has any control flow,
+                    // independent of how many if/loop nodes it contains.
+                    let mut template_has_control_flow = false;
                     // `&&`/`||` count ONLY inside a CONDITION's parens (fire 493:
                     // value-position short-circuits add nothing).
                     let mut condition_pending = false;
@@ -4095,43 +4101,79 @@ impl Parser {
                             Token::BraceClose => {
                                 brace_depth -= 1;
                                 if brace_depth == 0 {
+                                    if saw_function_template && template_has_control_flow {
+                                        bump += 1;
+                                        startup_bump += 1;
+                                    }
                                     self.global_destructor_inline_bump += startup_bump;
                                     return Ok(Some(bump));
                                 }
                             }
                             Token::KeywordIf => {
-                                bump += 2;
-                                startup_bump += 2;
+                                if saw_function_template {
+                                    template_has_control_flow = true;
+                                } else {
+                                    bump += 2;
+                                    startup_bump += 2;
+                                }
                                 condition_pending = true;
                             }
                             Token::Identifier(word) if word == "else" => {
-                                bump += 1;
-                                startup_bump += 1;
+                                if saw_function_template {
+                                    template_has_control_flow = true;
+                                } else {
+                                    bump += 1;
+                                    startup_bump += 1;
+                                }
                             }
                             Token::Identifier(word) if word == "switch" => {
-                                bump += 1;
-                                startup_bump += 1;
+                                if saw_function_template {
+                                    template_has_control_flow = true;
+                                } else {
+                                    bump += 1;
+                                    startup_bump += 1;
+                                }
                             }
                             Token::Identifier(word) if word == "case" => {
-                                bump += 1;
-                                startup_bump += 1;
+                                if saw_function_template {
+                                    template_has_control_flow = true;
+                                } else {
+                                    bump += 1;
+                                    startup_bump += 1;
+                                }
                             }
                             Token::Identifier(word) if word == "default" => {
-                                bump += 1;
-                                startup_bump += 1;
+                                if saw_function_template {
+                                    template_has_control_flow = true;
+                                } else {
+                                    bump += 1;
+                                    startup_bump += 1;
+                                }
                             }
                             Token::PipePipe | Token::AmpersandAmpersand if condition_depth > 0 => {
-                                bump += 1;
-                                startup_bump += 1;
+                                if saw_function_template {
+                                    template_has_control_flow = true;
+                                } else {
+                                    bump += 1;
+                                    startup_bump += 1;
+                                }
                             }
                             Token::KeywordWhile => {
-                                bump += 4;
-                                startup_bump += if saw_function_template { 2 } else { 4 };
+                                if saw_function_template {
+                                    template_has_control_flow = true;
+                                } else {
+                                    bump += 4;
+                                    startup_bump += 4;
+                                }
                                 condition_pending = true;
                             }
                             Token::KeywordFor => {
-                                bump += 5;
-                                startup_bump += if saw_function_template { 2 } else { 5 };
+                                if saw_function_template {
+                                    template_has_control_flow = true;
+                                } else {
+                                    bump += 5;
+                                    startup_bump += 5;
+                                }
                                 condition_pending = true;
                             }
                             // A do-while contributes +4 TOTAL (measured fire 493)
@@ -4139,8 +4181,12 @@ impl Parser {
                             // `do` itself is transparent.
                             Token::KeywordDo => {}
                             Token::Identifier(word) if word == "goto" => {
-                                bump += 1;
-                                startup_bump += 1;
+                                if saw_function_template {
+                                    template_has_control_flow = true;
+                                } else {
+                                    bump += 1;
+                                    startup_bump += 1;
+                                }
                             } // measured: goto+label = +1
                             Token::EndOfFile => return Ok(None),
                             _ => {}

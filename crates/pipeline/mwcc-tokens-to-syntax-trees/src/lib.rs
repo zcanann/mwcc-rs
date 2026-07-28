@@ -556,6 +556,53 @@ mod tests {
     }
 
     #[test]
+    fn charges_one_control_flow_ordinal_per_uninstantiated_function_template() {
+        let parse_cost = |body: &str| {
+            let source = format!(
+                "template <typename T> inline int inspect(T value) {{ {body} }} \
+                 int compiled(int value) {{ return value; }}"
+            );
+            parse_located_translation_unit_with_behavior(
+                located(&source),
+                true,
+                true,
+                1,
+                3,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                false,
+            )
+            .unwrap()
+            .skipped_inline_functions
+        };
+
+        assert_eq!(parse_cost("return value;"), 0);
+        assert_eq!(
+            parse_cost("if (value) { return 1; } return 0;"),
+            1
+        );
+        assert_eq!(
+            parse_cost("while (value) { --value; } return value;"),
+            1
+        );
+        assert_eq!(
+            parse_cost(
+                "for (int i = 0; i < value; ++i) { \
+                     if (i && value) { while (value) { --value; } } \
+                 } return value;"
+            ),
+            1
+        );
+    }
+
+    #[test]
     fn preserves_template_reference_qualifiers_in_member_symbols() {
         let unit = parse_translation_unit(
             mwcc_source_to_tokens::tokenize(
