@@ -350,6 +350,7 @@ fn lower_function_body(
     // (`name$K` LOCAL objects — the writer numbers them off the function's
     // @N sequence). Register each in the operand maps and record its datum;
     // the automatic-local machinery never sees it.
+    let ordinal_source_function = function;
     let static_locals: Vec<mwcc_syntax_trees::LocalDeclaration> = function
         .locals
         .iter()
@@ -928,7 +929,7 @@ fn lower_function_body(
     generator.schedule_allocated_structured_array_pool_first_image();
 
     ordinal_accounting::apply(
-        function,
+        ordinal_source_function,
         &mut generator.output,
         generator.behavior.function_ordinal_accounting_style,
     );

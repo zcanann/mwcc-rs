@@ -1252,8 +1252,8 @@ fn terminal_hidden_if_labels(statements: &[Statement]) -> u32 {
         .sum()
 }
 
-fn joined_call_hidden_labels(arm_count: usize, has_default: bool) -> u32 {
-    2 * (arm_count as u32 + u32::from(has_default)) + 2
+fn joined_call_hidden_labels(arm_count: usize, _has_default: bool) -> u32 {
+    2 * arm_count as u32 + 2
 }
 
 #[cfg(test)]
@@ -1262,7 +1262,7 @@ mod tests {
 
     #[test]
     fn joined_call_switch_accounts_arms_default_and_join() {
-        assert_eq!(joined_call_hidden_labels(2, true), 8);
+        assert_eq!(joined_call_hidden_labels(2, true), 6);
         assert_eq!(joined_call_hidden_labels(2, false), 6);
     }
 }

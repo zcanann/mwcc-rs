@@ -20,7 +20,8 @@ pub(crate) fn apply(
         FunctionOrdinalAccountingStyle::Mainline => {
             mainline_initialized_array_labels(function, output)
                 + mainline_variadic_float_conversion_labels(function)
-                + mainline_call_ladder_labels(function)
+                + mainline_call_ladder_labels(function, output)
+                + mainline_static_aggregate_initializer_labels(function)
         }
         FunctionOrdinalAccountingStyle::Gc41 => gc41_hidden_labels(function, false),
         FunctionOrdinalAccountingStyle::Gc41Ipa => gc41_hidden_labels(function, true),
@@ -73,11 +74,10 @@ fn mainline_initialized_array_labels(function: &Function, output: &mut MachineFu
         + if pooled_zero_arrays < 2 {
             0
         } else if emitted_pooled_images {
-            // The writer walks the N concrete image symbols. One internal label
-            // per copy and the shared closing label remain hidden. The object
-            // boundary preserves any function-front labels displaced by the
-            // first image's explicit static-slot placement.
-            pooled_zero_arrays + 1
+            // The writer walks the N concrete image symbols. Selection retains
+            // two additional bookkeeping labels per copy transaction; these
+            // remain hidden but advance the next source static's ordinal.
+            2 * pooled_zero_arrays
         } else {
             3 * pooled_zero_arrays + 1
         }
@@ -131,7 +131,7 @@ fn is_float_to_integer_cast(expression: &Expression) -> bool {
 /// the shared join. Specialized control-flow owners account their labels while
 /// emitting; this covers the ordinary structured-body path that otherwise has
 /// no visible label objects to number.
-fn mainline_call_ladder_labels(function: &Function) -> u32 {
+fn mainline_call_ladder_labels(function: &Function, output: &MachineFunction) -> u32 {
     // Automatic-local ladders are owned by specialized body lowerers which
     // already account their control labels while assigning registers.
     if function.locals.iter().any(|local| !local.is_static) {
@@ -140,7 +140,45 @@ fn mainline_call_ladder_labels(function: &Function) -> u32 {
     let [statement] = function.statements.as_slice() else {
         return 0;
     };
-    call_ladder_depth(statement).map_or(0, |depth| depth + 1)
+    call_ladder_depth(statement).map_or(0, |depth| {
+        if output.anonymous_label_bump == 0 {
+            depth + 1
+        } else {
+            // A specialized body owner already charged the condition labels;
+            // only the common source join remains outside its visible blocks.
+            1
+        }
+    })
+}
+
+/// A static aggregate initialized word-by-word contributes one optimizer node
+/// per word and one binding node per relocation. Restrict this to the measured
+/// single-local registration shape: the declaration's ordinal is assigned
+/// before these nodes, while later functions observe them.
+fn mainline_static_aggregate_initializer_labels(function: &Function) -> u32 {
+    let [local] = function.locals.as_slice() else {
+        return 0;
+    };
+    let Type::Struct { size, .. } = &local.declared_type else {
+        return 0;
+    };
+    if !local.is_static
+        || local.array_length.is_some()
+        || local.data_bytes.as_ref().map_or(0, Vec::len) != *size as usize
+        || local.data_relocations.is_empty()
+        || !matches!(
+            function.statements.as_slice(),
+            [Statement::Expression(Expression::Call { arguments, .. })]
+                if arguments.iter().any(|argument| matches!(
+                    argument,
+                    Expression::AddressOf { operand }
+                        if matches!(operand.as_ref(), Expression::Variable(name) if name == &local.name)
+                ))
+        )
+    {
+        return 0;
+    }
+    size.div_ceil(4) + local.data_relocations.len() as u32
 }
 
 fn call_ladder_depth(statement: &Statement) -> Option<u32> {
@@ -289,7 +327,9 @@ fn is_negated_call(expression: &Expression) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mwcc_syntax_trees::{BinaryOperator, GuardedReturn};
+    use mwcc_syntax_trees::{
+        BinaryOperator, GuardedReturn, LocalDataRelocation, LocalDataRelocationTarget,
+    };
 
     fn function() -> Function {
         Function {
@@ -344,6 +384,12 @@ mod tests {
                 is_const: false,
                 row_bytes: None,
             });
+            function
+                .statements
+                .push(Statement::Expression(Expression::Call {
+                    name: "consume".to_owned(),
+                    arguments: vec![Expression::Variable(name.to_owned())],
+                }));
         }
         let mut output = MachineFunction::new("probe");
         output.anonymous_label_bump = 8;
@@ -366,7 +412,7 @@ mod tests {
             output.anonymous_rodata[0].static_slot_prefix_bump,
             Some(8)
         );
-        assert_eq!(output.post_constant_label_bump, 5);
+        assert_eq!(output.post_constant_label_bump, 8);
     }
 
     #[test]
@@ -446,7 +492,11 @@ mod tests {
                 else_body: vec![call("many")],
             }],
         });
-        assert_eq!(mainline_call_ladder_labels(&function), 3);
+        let mut output = MachineFunction::new("probe");
+        assert_eq!(mainline_call_ladder_labels(&function, &output), 3);
+
+        output.anonymous_label_bump = 6;
+        assert_eq!(mainline_call_ladder_labels(&function, &output), 1);
 
         function.locals.push(mwcc_syntax_trees::LocalDeclaration {
             declared_type: Type::Int,
@@ -460,7 +510,48 @@ mod tests {
             is_const: false,
             row_bytes: None,
         });
-        assert_eq!(mainline_call_ladder_labels(&function), 0);
+        assert_eq!(mainline_call_ladder_labels(&function, &output), 0);
+    }
+
+    #[test]
+    fn mainline_accounts_static_aggregate_initializer_nodes() {
+        let mut function = function();
+        function.locals.push(mwcc_syntax_trees::LocalDeclaration {
+            declared_type: Type::Struct { size: 20, align: 4 },
+            name: "tag".to_owned(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: true,
+            data_bytes: Some(vec![0; 20]),
+            data_relocations: vec![
+                LocalDataRelocation {
+                    offset: 0,
+                    target: LocalDataRelocationTarget::StringLiteral(b"tag".to_vec()),
+                    addend: 0,
+                },
+                LocalDataRelocation {
+                    offset: 8,
+                    target: LocalDataRelocationTarget::Symbol("callback".to_owned()),
+                    addend: 0,
+                },
+            ],
+            is_const: false,
+            row_bytes: None,
+        });
+        function
+            .statements
+            .push(Statement::Expression(Expression::Call {
+                name: "register".to_owned(),
+                arguments: vec![Expression::AddressOf {
+                    operand: Box::new(Expression::Variable("tag".to_owned())),
+                }],
+            }));
+
+        assert_eq!(
+            mainline_static_aggregate_initializer_labels(&function),
+            7
+        );
     }
 
     #[test]
