@@ -536,6 +536,7 @@ fn lower_function_body(
             )
             .collect(),
         structured_global_index_cache: None,
+        structured_array_pool_emitted: false,
         transient_global_index_base: None,
         full_bss_globals: globals
             .iter()
@@ -816,8 +817,6 @@ fn lower_function_body(
     // Coalesce away `mr rX,rX` self-moves the allocator leaves when it colors a value's
     // virtual home to the register the value already holds (mwcc coalesces them).
     coalesce_self_moves(&mut generator);
-    generator.schedule_allocated_structured_array_pool_parameter_copies();
-    generator.schedule_allocated_compact_structured_array_pool_entry();
     // Allocation can coalesce a just-published frame value and its immediate
     // reload to the same physical register even when their virtual lanes were
     // distinct during selection. Remove that newly visible reload only for
@@ -910,6 +909,13 @@ fn lower_function_body(
     generator.reuse_structured_loop_packet_setup();
     generator.schedule_structured_frame_preloop_packets();
     generator.schedule_structured_frame_sign_clamp_load();
+    // Final issue order is deliberately after every adjacency-sensitive
+    // physical peephole. Control-flow functions were left in selection order
+    // through allocation; schedule their branch-bounded blocks now, then
+    // normalize pooled-frame packets whose MWCC order is allocation-specific.
+    schedule_allocated_structured_array_pool_control_flow(&mut generator);
+    generator.schedule_allocated_structured_array_pool_parameter_copies();
+    generator.schedule_allocated_compact_structured_array_pool_entry();
 
     ordinal_accounting::apply(
         function,
@@ -1297,6 +1303,29 @@ fn coalesce_self_moves(generator: &mut Generator) {
         &mut generator.output.instructions,
         &relocation_owners,
     );
+    remap_instruction_indices(generator, &permutation);
+}
+
+/// Initialized-array pool functions retain their selection-order virtual stream
+/// through allocation so scheduling cannot lengthen live ranges enough to make
+/// a previously feasible function spill or fail. Once registers are physical,
+/// schedule their branch-bounded blocks; other structured control-flow owners
+/// keep their dedicated measured schedules.
+fn schedule_allocated_structured_array_pool_control_flow(generator: &mut Generator) {
+    if generator.output.pre_scheduled
+        || !generator.behavior.schedule_latency_slots
+        || !generator.structured_array_pool_emitted
+        || !generator.output.instructions.iter().any(|instruction| {
+            matches!(
+                instruction,
+                Instruction::BranchConditionalForward { .. } | Instruction::Branch { .. }
+            )
+        })
+    {
+        return;
+    }
+    let permutation =
+        mwcc_vreg::schedule_branch_bounded(&mut generator.output.instructions);
     remap_instruction_indices(generator, &permutation);
 }
 

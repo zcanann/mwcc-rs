@@ -281,6 +281,10 @@ pub(crate) struct Generator {
     /// A source-stable global struct-array subscript whose scaled index is
     /// retained across calls by the structured body owner.
     pub(crate) structured_global_index_cache: Option<StructuredGlobalIndexCache>,
+    /// The structured frame emitted a pooled automatic-array copy transaction.
+    /// Later physical scheduling uses this provenance instead of inferring the
+    /// owner from common instructions such as `stmw`.
+    pub(crate) structured_array_pool_emitted: bool,
     /// Complete global element base shared only within the current call's
     /// argument transaction. It is reset before every argument list.
     pub(crate) transient_global_index_base: Option<TransientGlobalIndexBase>,

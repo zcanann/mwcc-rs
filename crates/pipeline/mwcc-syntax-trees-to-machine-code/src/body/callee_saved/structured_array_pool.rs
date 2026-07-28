@@ -133,6 +133,7 @@ impl Generator {
         image_sources: &[&LocalDeclaration],
         plan: &StructuredArrayPoolPlan,
     ) -> Compilation<()> {
+        self.structured_array_pool_emitted = true;
         let images = self.materialize_structured_array_pool_images(image_sources)?;
         let first_blob = self.output.anonymous_rodata.len();
         for (image_index, image) in images.iter().enumerate() {

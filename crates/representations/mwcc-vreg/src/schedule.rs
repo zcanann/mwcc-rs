@@ -14,9 +14,8 @@
 //! relative order the data dependences leave free.
 //!
 //! [`schedule`] returns the `old index -> new index` permutation so the caller can
-//! remap anything keyed by instruction position (relocations). To keep v1 simple
-//! and provably safe, a function containing a forward branch is left untouched
-//! (its branch targets are instruction indices that a reorder would invalidate).
+//! remap anything keyed by instruction position. [`schedule_branch_bounded`]
+//! additionally permits control flow when its caller owns branch-target remapping.
 
 use mwcc_machine_code::Instruction;
 
@@ -646,20 +645,46 @@ fn list_schedule(run: &[usize], instructions: &[Instruction]) -> Vec<usize> {
             }
         }
     }
+    let had_predecessor: Vec<bool> = remaining_predecessors
+        .iter()
+        .map(|&count| count != 0)
+        .collect();
 
     let mut scheduled = Vec::with_capacity(count);
     let mut placed = vec![false; count];
     while scheduled.len() < count {
+        // A ready load-immediate fills the issue slot before a newly-ready
+        // nonzero address adjustment. This is the same latency shape as
+        // `add base,index; li count; addi base,bias`: the constant has been
+        // ready throughout, while the bias has only just become available.
+        // Virtual SSA lanes make the bias's input and output distinct until
+        // allocation, so its nonzero immediate identifies the adjustment.
+        let ready_nonzero_adjustment = (0..count).any(|k| {
+            !placed[k]
+                && remaining_predecessors[k] == 0
+                && had_predecessor[k]
+                && matches!(
+                    instructions[run[k]],
+                    Instruction::AddImmediate {
+                        a,
+                        immediate,
+                        ..
+                    } if a != 0 && a != 1 && immediate != 0
+                )
+        });
         // Among the ready instructions: the highest latency rank first (a
         // latency-chain-head `lis` counts as rank 2), ties in program order.
         let chosen = (0..count)
             .filter(|&k| !placed[k] && remaining_predecessors[k] == 0)
             .max_by_key(|&k| {
-                let rank = latency_rank(&instructions[run[k]]).max(if heads_latency_chain[k] {
-                    2
-                } else {
-                    1
-                });
+                let fills_address_adjustment = ready_nonzero_adjustment
+                    && matches!(
+                        instructions[run[k]],
+                        Instruction::AddImmediate { a: 0, .. }
+                    );
+                let rank = latency_rank(&instructions[run[k]])
+                    .max(if heads_latency_chain[k] { 2 } else { 1 })
+                    .max(if fills_address_adjustment { 2 } else { 1 });
                 (rank, std::cmp::Reverse(run[k]))
             })
             .unwrap();
@@ -673,15 +698,23 @@ fn list_schedule(run: &[usize], instructions: &[Instruction]) -> Vec<usize> {
     scheduled
 }
 
-/// Reorder `instructions` in place to mwcc's schedule, returning the
-/// `old index -> new index` permutation (identity if nothing moved). A function
-/// with a forward branch is left untouched and the identity permutation returned.
+/// Reorder a straight-line function in place to mwcc's schedule, returning the
+/// `old index -> new index` permutation (identity if nothing moved). General
+/// callers retain the historical control-flow guard; owners that can remap
+/// branch targets use [`schedule_branch_bounded`].
 pub fn schedule(instructions: &mut Vec<Instruction>) -> Vec<usize> {
+    if has_forward_branch(instructions) {
+        return (0..instructions.len()).collect();
+    }
+    schedule_branch_bounded(instructions)
+}
+
+/// Reorder branch-bounded runs in place. Branch instructions remain barriers;
+/// the caller must remap their instruction-index targets through the returned
+/// permutation.
+pub fn schedule_branch_bounded(instructions: &mut Vec<Instruction>) -> Vec<usize> {
     let count = instructions.len();
     let identity: Vec<usize> = (0..count).collect();
-    if has_forward_branch(instructions) {
-        return identity;
-    }
 
     // new position -> old index, by walking the stream and scheduling each
     // maximal run of schedulable instructions, leaving barriers fixed.
@@ -1139,25 +1172,68 @@ mod tests {
     }
 
     #[test]
-    fn a_function_with_a_forward_branch_is_left_untouched() {
+    fn a_branch_bounds_runs_without_disabling_later_scheduling() {
         let mut stream = vec![
-            Instruction::Add { d: 3, a: 3, b: 4 },
             Instruction::BranchConditionalForward {
-                options: 12,
-                condition_bit: 2,
-                target: 3,
+                options: 16,
+                condition_bit: 0,
+                target: 0,
+            },
+            Instruction::MultiplyImmediate {
+                d: 32,
+                a: 3,
+                immediate: 108,
             },
             Instruction::AddImmediate {
-                d: 3,
-                a: 3,
-                immediate: 1,
+                d: 33,
+                a: 1,
+                immediate: 40,
             },
-            Instruction::BranchToLinkRegister,
+            Instruction::AddImmediateShifted {
+                d: 34,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 35,
+                a: 34,
+                immediate: 0,
+            },
+            Instruction::Add {
+                d: 36,
+                a: 35,
+                b: 32,
+            },
+            Instruction::AddImmediate {
+                d: 37,
+                a: 36,
+                immediate: 64,
+            },
+            Instruction::AddImmediate {
+                d: 38,
+                a: 0,
+                immediate: 5,
+            },
+            Instruction::BranchAndLink {
+                target: "strncpy".into(),
+            },
         ];
-        let original = stream.clone();
-        let permutation = schedule(&mut stream);
-        assert_eq!(stream, original);
-        assert_eq!(permutation, (0..4).collect::<Vec<_>>());
+        let permutation = schedule_branch_bounded(&mut stream);
+        assert!(matches!(
+            stream.as_slice(),
+            [
+                Instruction::BranchConditionalForward { .. },
+                Instruction::MultiplyImmediate { .. },
+                Instruction::AddImmediateShifted { d: 34, .. },
+                Instruction::AddImmediate { d: 33, a: 1, .. },
+                Instruction::AddImmediate { d: 35, a: 34, .. },
+                Instruction::Add { d: 36, .. },
+                Instruction::AddImmediate { d: 38, a: 0, .. },
+                Instruction::AddImmediate { d: 37, a: 36, .. },
+                Instruction::BranchAndLink { .. },
+            ]
+        ));
+        assert_eq!(permutation, [0, 1, 3, 2, 4, 5, 7, 6, 8]);
     }
 
     #[test]

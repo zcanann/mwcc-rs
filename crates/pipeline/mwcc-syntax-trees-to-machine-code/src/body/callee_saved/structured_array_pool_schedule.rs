@@ -46,7 +46,8 @@ impl Generator {
     /// parameter-copy run instead: incoming r3, r4, ... order is then purely a
     /// schedule decision and cannot perturb allocation.
     pub(crate) fn schedule_allocated_structured_array_pool_parameter_copies(&mut self) {
-        if self.output.anonymous_rodata.len() < 2
+        if !self.structured_array_pool_emitted
+            || self.output.anonymous_rodata.len() < 2
             || !self
                 .output
                 .anonymous_rodata
@@ -62,25 +63,51 @@ impl Generator {
             return;
         };
         let start = store_index + 1;
-        let count = self.output.instructions[start..]
+        let end = self.output.instructions[start..]
             .iter()
-            .take_while(|instruction| {
+            .position(|instruction| {
                 matches!(
                     instruction,
+                    Instruction::LoadWord { .. }
+                        | Instruction::LoadWordWithUpdate { .. }
+                        | Instruction::StoreWord { .. }
+                        | Instruction::StoreWordWithUpdate { .. }
+                        | Instruction::MoveToCountRegister { .. }
+                        | Instruction::BranchAndLink { .. }
+                )
+            })
+            .map_or(self.output.instructions.len(), |offset| start + offset);
+        let mut parameter_copies: Vec<usize> = (start..end)
+            .filter(|&index| {
+                matches!(
+                    &self.output.instructions[index],
                     Instruction::Or { a, s, b }
                         if a != s && s == b && (14..=31).contains(a) && (3..=10).contains(s)
                 )
             })
-            .count();
-        if count < 2 {
+            .collect();
+        if parameter_copies.len() < 2 {
             return;
         }
-        self.output.instructions[start..start + count].sort_by_key(|instruction| {
-            let Instruction::Or { s, .. } = instruction else {
-                unreachable!("the parameter-copy run was filtered as register moves")
+        parameter_copies.sort_by_key(|&index| {
+            let Instruction::Or { s, .. } = &self.output.instructions[index] else {
+                unreachable!("the parameter-copy list was filtered as register moves")
             };
             *s
         });
+
+        let mut order = parameter_copies.clone();
+        order.extend((start..end).filter(|index| !parameter_copies.contains(index)));
+        let old = self.output.instructions[start..end].to_vec();
+        let mut permutation: Vec<usize> = (0..self.output.instructions.len()).collect();
+        for (new_index, &old_index) in (start..end).zip(&order) {
+            self.output.instructions[new_index] = old[old_index - start].clone();
+            permutation[old_index] = new_index;
+        }
+        crate::remap_instruction_indices(self, &permutation);
+        self.output
+            .relocations
+            .sort_by_key(|relocation| relocation.instruction_index);
     }
 
     /// The compact pooled-copy form has three independent entry packets:
@@ -88,32 +115,15 @@ impl Generator {
     /// issues them in that order after allocation. Keep the physical-register
     /// signature narrow: the wider pooled forms use different packet orders.
     pub(crate) fn schedule_allocated_compact_structured_array_pool_entry(&mut self) {
-        if self.output.instructions.len() < 10
+        if !self.structured_array_pool_emitted
+            || self.output.instructions.len() < 10
             || !matches!(
-                &self.output.instructions[..10],
+                &self.output.instructions[..4],
                 [
                     Instruction::StoreWordWithUpdate { s: 1, a: 1, .. },
                     Instruction::MoveFromLinkRegister { d: 0 },
                     Instruction::AddImmediateShifted { d: 5, a: 0, .. },
                     Instruction::StoreWord { s: 0, a: 1, .. },
-                    Instruction::AddImmediate {
-                        d: 21,
-                        a: 5,
-                        immediate: 0,
-                    },
-                    Instruction::StoreMultipleWord { s: 21, a: 1, .. },
-                    Instruction::Or { a: 31, s: 4, b: 4 },
-                    Instruction::AddImmediate {
-                        d: 5,
-                        a: 21,
-                        immediate: 92,
-                    },
-                    Instruction::AddImmediate {
-                        d: 0,
-                        a: 0,
-                        immediate: 32,
-                    },
-                    Instruction::AddImmediate { d: 6, a: 1, .. },
                 ]
             )
         {
@@ -121,14 +131,60 @@ impl Generator {
         }
 
         let old = self.output.instructions[4..10].to_vec();
-        let order = [4, 5, 1, 0, 2, 3];
-        for (destination, source) in (4..10).zip(order) {
-            self.output.instructions[destination] = old[source].clone();
+        let find = |predicate: fn(&Instruction) -> bool| old.iter().position(predicate);
+        let Some(order) = [
+            find(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::AddImmediate {
+                        d: 0,
+                        a: 0,
+                        immediate: 32,
+                    }
+                )
+            }),
+            find(|instruction| matches!(instruction, Instruction::AddImmediate { d: 6, a: 1, .. })),
+            find(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::StoreMultipleWord { s: 21, a: 1, .. }
+                )
+            }),
+            find(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::AddImmediate {
+                        d: 21,
+                        a: 5,
+                        immediate: 0,
+                    }
+                )
+            }),
+            find(|instruction| matches!(instruction, Instruction::Or { a: 31, s: 4, b: 4 })),
+            find(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::AddImmediate {
+                        d: 5,
+                        a: 21,
+                        immediate: 92,
+                    }
+                )
+            }),
+        ]
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        else {
+            return;
+        };
+        if order.iter().copied().collect::<std::collections::HashSet<_>>().len() != 6 {
+            return;
         }
 
         let mut permutation: Vec<usize> = (0..self.output.instructions.len()).collect();
-        for (old_index, new_index) in [(4, 7), (5, 6), (6, 8), (7, 9), (8, 4), (9, 5)] {
-            permutation[old_index] = new_index;
+        for (new_relative, &old_relative) in order.iter().enumerate() {
+            self.output.instructions[4 + new_relative] = old[old_relative].clone();
+            permutation[4 + old_relative] = 4 + new_relative;
         }
         crate::remap_instruction_indices(self, &permutation);
         self.output
