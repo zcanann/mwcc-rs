@@ -67,6 +67,11 @@ fn mainline_initialized_array_labels(function: &Function, output: &mut MachineFu
         .count() as u32;
     let emitted_pooled_images = pooled_zero_arrays >= 2
         && output.anonymous_rodata.len() >= pooled_zero_arrays as usize;
+    let pooled_image_front_bump = if emitted_pooled_images {
+        output.object_anonymous_bump()
+    } else {
+        0
+    };
     if emitted_pooled_images {
         // These images occupy the function's static-local ordinal run, before
         // control-flow bookkeeping. The blob writer starts from the pool-block
@@ -80,8 +85,10 @@ fn mainline_initialized_array_labels(function: &Function, output: &mut MachineFu
             0
         } else if emitted_pooled_images {
             // The writer walks the N concrete image symbols. One internal label
-            // per copy and the shared closing label remain hidden.
-            pooled_zero_arrays + 1
+            // per copy and the shared closing label remain hidden. Moving the
+            // images ahead of the function-front control labels must not erase
+            // those labels from the counter followed by later functions.
+            pooled_zero_arrays + 1 + pooled_image_front_bump
         } else {
             3 * pooled_zero_arrays + 1
         }
@@ -388,7 +395,7 @@ mod tests {
             FunctionOrdinalAccountingStyle::Mainline,
         );
         assert_eq!(output.anonymous_rodata[0].anonymous_offset, -9);
-        assert_eq!(output.post_constant_label_bump, 5);
+        assert_eq!(output.post_constant_label_bump, 13);
     }
 
     #[test]

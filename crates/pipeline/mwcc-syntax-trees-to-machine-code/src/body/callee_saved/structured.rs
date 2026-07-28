@@ -1976,7 +1976,8 @@ impl Generator {
             }
         }
         // Each source-level `if` creates a pair of optimizer labels even when
-        // both collapse to direct instruction offsets. Build 163 exposes those
+        // both collapse to direct instruction offsets. An explicit `else`
+        // contributes its additional arm label. Build 163 exposes those
         // otherwise-hidden labels through the later unwind-symbol ordinal.
         let structured_labels =
             structured_hidden_label_count(&structured_function.statements);
@@ -3068,6 +3069,7 @@ pub(super) fn structured_hidden_label_count(statements: &[Statement]) -> u32 {
                 ..
             } => {
                 2 + logical_and_count(condition)
+                    + u32::from(!else_body.is_empty())
                     + structured_hidden_label_count(then_body)
                     + structured_hidden_label_count(else_body)
             }
@@ -3200,6 +3202,25 @@ mod tests {
             else_body: vec![returned(3)],
         };
         assert!(statements_always_return(&[nested]));
+    }
+
+    #[test]
+    fn counts_the_extra_optimizer_label_for_each_explicit_else_arm() {
+        let call = || Statement::Expression(Expression::Call {
+            name: "consume".into(),
+            arguments: Vec::new(),
+        });
+        let nested = Statement::If {
+            condition: Expression::Variable("outer".into()),
+            then_body: vec![Statement::If {
+                condition: Expression::Variable("inner".into()),
+                then_body: vec![call()],
+                else_body: Vec::new(),
+            }],
+            else_body: vec![call()],
+        };
+
+        assert_eq!(structured_hidden_label_count(&[nested]), 5);
     }
 
     #[test]
