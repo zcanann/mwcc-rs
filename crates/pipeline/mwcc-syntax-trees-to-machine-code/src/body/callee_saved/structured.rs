@@ -28,7 +28,9 @@ use super::structured_frame_assignment::{
     is_transient_shifted_member_mask_call_local, plan_dense_eager_pointer_round_up,
     sink_low_mask_parameter_assignment, sink_single_use_parameter_assignment,
 };
-use super::structured_frame_arrays::plan_structured_frame_arrays;
+use super::structured_frame_arrays::{
+    initialized_array_placement_order, plan_structured_frame_arrays,
+};
 use super::structured_frame_entry::structured_dense_frame_entry_index;
 use super::structured_frame_publication::{
     StructuredFramePublication, CURSOR_OFFSET, LOCAL_REGION_BYTES, OWNER_OFFSET,
@@ -996,7 +998,7 @@ impl Generator {
                     .map_err(|_| Diagnostic::error("structured legacy frame is too large"))?;
             }
             let mut next_array_offset = array_offset;
-            for array in frame_arrays {
+            for array in initialized_array_placement_order(frame_arrays) {
                 let element_bytes = match array.declared_type {
                     Type::Struct { size, .. } => size,
                     value_type => u32::from(value_type.width() / 8),

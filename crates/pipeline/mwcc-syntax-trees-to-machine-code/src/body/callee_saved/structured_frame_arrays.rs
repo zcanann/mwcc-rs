@@ -49,6 +49,40 @@ pub(super) fn plan_structured_frame_arrays<'a>(
     })
 }
 
+/// Mainline MWCC groups a run of initialized automatic arrays by slot size and
+/// allocates equal-sized images in reverse declaration order. Larger images
+/// follow the smaller size class. This is observable when the pooled copy-in
+/// image remains in declaration order: each source image is stored into its
+/// independently assigned frame slot.
+pub(super) fn initialized_array_placement_order<'a>(
+    arrays: &[&'a LocalDeclaration],
+) -> Vec<&'a LocalDeclaration> {
+    let initialized_count = arrays
+        .iter()
+        .filter(|array| array.data_bytes.is_some())
+        .count();
+    if initialized_count < 2 {
+        return arrays.to_vec();
+    }
+
+    let mut indexed: Vec<_> = arrays.iter().copied().enumerate().collect();
+    indexed.sort_by_key(|(source_index, array)| {
+        (
+            array_byte_size(array).unwrap_or(u32::MAX),
+            std::cmp::Reverse(*source_index),
+        )
+    });
+    indexed.into_iter().map(|(_, array)| array).collect()
+}
+
+fn array_byte_size(array: &LocalDeclaration) -> Option<u32> {
+    let element_bytes = match array.declared_type {
+        Type::Struct { size, .. } => size,
+        value_type => u32::from(value_type.width() / 8),
+    };
+    element_bytes.checked_mul(u32::from(array.array_length?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,5 +145,39 @@ mod tests {
 
         let plan = plan_structured_frame_arrays(&locals, &[]).expect("large node stack");
         assert_eq!(plan.total_bytes, 264);
+    }
+
+    #[test]
+    fn initialized_equal_size_arrays_receive_reverse_slots_before_larger_images() {
+        let mut date = byte_array("date", Type::UnsignedChar, 32);
+        date.data_bytes = Some(vec![0]);
+        let mut time = byte_array("time", Type::UnsignedChar, 32);
+        time.data_bytes = Some(vec![0]);
+        let mut ampm = byte_array("ampm", Type::UnsignedChar, 32);
+        ampm.data_bytes = Some(vec![0]);
+        let mut scratch = byte_array("scratch", Type::UnsignedChar, 256);
+        scratch.data_bytes = Some(vec![0]);
+        let arrays = [&date, &time, &ampm, &scratch];
+
+        let ordered = initialized_array_placement_order(&arrays);
+
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|array| array.name.as_str())
+                .collect::<Vec<_>>(),
+            ["ampm", "time", "date", "scratch"]
+        );
+    }
+
+    #[test]
+    fn a_lone_initialized_array_retains_source_placement() {
+        let mut buffer = byte_array("buffer", Type::UnsignedChar, 32);
+        buffer.data_bytes = Some(vec![0]);
+
+        assert_eq!(
+            initialized_array_placement_order(&[&buffer])[0].name,
+            "buffer"
+        );
     }
 }
