@@ -19,6 +19,7 @@ pub(crate) fn apply(
     let hidden = match style {
         FunctionOrdinalAccountingStyle::Mainline => {
             mainline_initialized_array_labels(function)
+                + mainline_variadic_float_conversion_labels(function)
         }
         FunctionOrdinalAccountingStyle::Gc41 => gc41_hidden_labels(function, false),
         FunctionOrdinalAccountingStyle::Gc41Ipa => gc41_hidden_labels(function, true),
@@ -48,6 +49,50 @@ fn mainline_initialized_array_labels(function: &Function) -> u32 {
     } else {
         3 * pooled_zero_arrays + 1
     }
+}
+
+/// A variadic call with multiple floating-to-integer arguments keeps one
+/// optimizer bookkeeping label for every conversion after the first. This is
+/// observable in the next static-local ordinal even though the labels never
+/// reach the instruction stream.
+fn mainline_variadic_float_conversion_labels(function: &Function) -> u32 {
+    function
+        .statements
+        .iter()
+        .map(|statement| match statement {
+            Statement::Expression(Expression::Call { arguments, .. }) => arguments
+                .iter()
+                .filter(|argument| is_float_to_integer_cast(argument))
+                .count()
+                .saturating_sub(1) as u32,
+            _ => 0,
+        })
+        .sum()
+}
+
+fn is_float_to_integer_cast(expression: &Expression) -> bool {
+    let Expression::Cast {
+        target_type,
+        operand,
+    } = expression
+    else {
+        return false;
+    };
+    matches!(
+        target_type,
+        Type::Int
+            | Type::UnsignedInt
+            | Type::Short
+            | Type::UnsignedShort
+            | Type::Char
+            | Type::UnsignedChar
+    ) && matches!(
+        operand.as_ref(),
+        Expression::Member {
+            member_type: Type::Float | Type::Double,
+            ..
+        }
+    )
 }
 
 pub(crate) fn apply_unit(
@@ -229,6 +274,34 @@ mod tests {
             FunctionOrdinalAccountingStyle::Mainline,
         );
         assert_eq!(output.post_constant_label_bump, 13);
+    }
+
+    #[test]
+    fn mainline_accounts_additional_variadic_float_conversions() {
+        let float_member = || Expression::Member {
+            base: Box::new(Expression::Variable("value".to_owned())),
+            offset: 0,
+            member_type: Type::Float,
+            index_stride: None,
+        };
+        let converted = || Expression::Cast {
+            target_type: Type::Int,
+            operand: Box::new(float_member()),
+        };
+        let mut function = function();
+        function
+            .statements
+            .push(Statement::Expression(Expression::Call {
+                name: "sprintf".to_owned(),
+                arguments: vec![
+                    Expression::Variable("buffer".to_owned()),
+                    Expression::StringLiteral(b"%d,%d,%d".to_vec()),
+                    converted(),
+                    converted(),
+                    converted(),
+                ],
+            }));
+        assert_eq!(mainline_variadic_float_conversion_labels(&function), 2);
     }
 
     #[test]
