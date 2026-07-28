@@ -254,8 +254,9 @@ pub struct FunctionObject<'a> {
     pub force_active: bool,
     pub text: &'a [u8],
     /// Byte offsets of D-form instruction immediates whose final value is the
-    /// section-relative offset of the named `.data` object.
-    pub data_section_displacements: Vec<(u32, String)>,
+    /// section-relative offset of a named `.data` object or anonymous `.rodata`
+    /// image.
+    pub data_section_displacements: Vec<(u32, DataSectionDisplacementTarget)>,
     /// `.text` relocations against external symbols (globals, callees) or pooled
     /// constants. Offsets are relative to this function's start.
     pub relocations: Vec<TextRelocation>,
@@ -329,6 +330,12 @@ pub struct FunctionObject<'a> {
     pub implicit_external_callees: Vec<String>,
     /// Implicit callees created before this function's referenced data symbols.
     pub early_implicit_external_callees: Vec<String>,
+}
+
+#[derive(Clone)]
+pub enum DataSectionDisplacementTarget {
+    Symbol(String),
+    AnonymousRodata(usize),
 }
 
 /// A dense `switch`'s jump table — one `.text` body offset per index, plus how far

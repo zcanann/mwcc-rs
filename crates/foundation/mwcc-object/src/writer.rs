@@ -9,9 +9,9 @@
 //! pooled across all functions in the unit.
 
 use crate::{
-    layout_code_sections, CommentFormat, DataObject, DebugRelocationTarget, DebugSymbolBinding,
-    DebugSymbolPlacement, FunctionObject, FunctionSymbolOrder, ObjectInput, RelocationTarget,
-    Sdata2Constant, TextRelocation,
+    layout_code_sections, CommentFormat, DataObject, DataSectionDisplacementTarget,
+    DebugRelocationTarget, DebugSymbolBinding, DebugSymbolPlacement, FunctionObject,
+    FunctionSymbolOrder, ObjectInput, RelocationTarget, Sdata2Constant, TextRelocation,
 };
 
 use std::collections::HashMap;
@@ -289,23 +289,31 @@ struct Section {
 
 fn apply_data_section_displacements(
     text: &mut [u8],
-    fixups: &[(u32, String)],
+    fixups: &[(u32, DataSectionDisplacementTarget)],
     data_section: &HashMap<&str, &str>,
     data_offsets: &HashMap<&str, u32>,
+    anonymous_rodata_offsets: &[u32],
 ) {
-    for (byte_offset, symbol) in fixups {
-        assert!(
-            matches!(
-                data_section.get(symbol.as_str()).copied(),
-                Some(".data" | ".bss")
-            ),
-            "late data displacement must target a defined full-data object"
-        );
+    for (byte_offset, target) in fixups {
+        let target_offset = match target {
+            DataSectionDisplacementTarget::Symbol(symbol) => {
+                assert!(
+                    matches!(
+                        data_section.get(symbol.as_str()).copied(),
+                        Some(".data" | ".bss")
+                    ),
+                    "late data displacement must target a defined full-data object"
+                );
+                data_offsets[symbol.as_str()]
+            }
+            DataSectionDisplacementTarget::AnonymousRodata(blob) => {
+                anonymous_rodata_offsets[*blob]
+            }
+        };
         let start = *byte_offset as usize;
         let selected = i16::from_be_bytes([text[start], text[start + 1]]);
-        let displacement =
-            i16::try_from(i64::from(selected) + i64::from(data_offsets[symbol.as_str()]))
-                .expect("late data displacement must fit a D-form immediate");
+        let displacement = i16::try_from(i64::from(selected) + i64::from(target_offset))
+            .expect("late data displacement must fit a D-form immediate");
         text[start..start + 2].copy_from_slice(&displacement.to_be_bytes());
     }
 }
@@ -724,6 +732,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 &function.data_section_displacements,
                 &data_section,
                 &data_offsets,
+                &rodata_blob_offset[index],
             );
             payload.extend_from_slice(&text);
         }

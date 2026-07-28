@@ -155,7 +155,9 @@ impl Generator {
             .data_section_displacements
             .push(DataSectionDisplacement {
                 instruction_index: self.output.instructions.len(),
-                symbol: aggregate.to_owned(),
+                target: mwcc_machine_code::DataSectionDisplacementTarget::Symbol(
+                    aggregate.to_owned(),
+                ),
             });
     }
 }

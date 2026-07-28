@@ -164,7 +164,18 @@ pub fn assemble_object(
                 .map(|fixup| {
                     (
                         fixup.instruction_index as u32 * 4 + 2,
-                        local_static_target(function_index, &fixup.symbol),
+                        match &fixup.target {
+                            mwcc_machine_code::DataSectionDisplacementTarget::Symbol(symbol) => {
+                                mwcc_object::DataSectionDisplacementTarget::Symbol(
+                                    local_static_target(function_index, symbol),
+                                )
+                            }
+                            mwcc_machine_code::DataSectionDisplacementTarget::AnonymousRodata(
+                                blob,
+                            ) => {
+                                mwcc_object::DataSectionDisplacementTarget::AnonymousRodata(*blob)
+                            }
+                        },
                     )
                 })
                 .collect(),

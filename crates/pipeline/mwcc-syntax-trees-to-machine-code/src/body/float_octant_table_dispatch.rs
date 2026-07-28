@@ -374,7 +374,9 @@ impl Generator {
             .data_section_displacements
             .push(DataSectionDisplacement {
                 instruction_index: self.output.instructions.len(),
-                symbol: table.to_owned(),
+                target: mwcc_machine_code::DataSectionDisplacementTarget::Symbol(
+                    table.to_owned(),
+                ),
             });
         self.output.instructions.push(Instruction::LoadHalfwordZero {
             d: 0,

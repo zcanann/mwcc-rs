@@ -69,7 +69,13 @@ pub struct StaticLocal {
 #[derive(Debug, Clone)]
 pub struct DataSectionDisplacement {
     pub instruction_index: usize,
-    pub symbol: String,
+    pub target: DataSectionDisplacementTarget,
+}
+
+#[derive(Debug, Clone)]
+pub enum DataSectionDisplacementTarget {
+    Symbol(String),
+    AnonymousRodata(usize),
 }
 
 /// Final optimized location of a source parameter or automatic local. This is

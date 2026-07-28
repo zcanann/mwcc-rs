@@ -487,7 +487,13 @@ fn data_section_displacements_patch_only_the_d_form_immediate() {
     let mut text = vec![0xa0, 0x63, 0, 0];
     let sections = HashMap::from([("table", ".data")]);
     let offsets = HashMap::from([("table", 0x1c)]);
-    apply_data_section_displacements(&mut text, &[(2, "table".to_owned())], &sections, &offsets);
+    apply_data_section_displacements(
+        &mut text,
+        &[(2, DataSectionDisplacementTarget::Symbol("table".to_owned()))],
+        &sections,
+        &offsets,
+        &[],
+    );
     assert_eq!(text, [0xa0, 0x63, 0, 0x1c]);
 }
 
@@ -496,8 +502,27 @@ fn bss_section_displacements_add_to_selected_member_offsets() {
     let mut text = vec![0x90, 0x85, 0, 12];
     let sections = HashMap::from([("state", ".bss")]);
     let offsets = HashMap::from([("state", 0x10)]);
-    apply_data_section_displacements(&mut text, &[(2, "state".to_owned())], &sections, &offsets);
+    apply_data_section_displacements(
+        &mut text,
+        &[(2, DataSectionDisplacementTarget::Symbol("state".to_owned()))],
+        &sections,
+        &offsets,
+        &[],
+    );
     assert_eq!(text, [0x90, 0x85, 0, 0x1c]);
+}
+
+#[test]
+fn anonymous_rodata_displacements_add_the_final_blob_offset() {
+    let mut text = vec![0x80, 0xa3, 0, 4];
+    apply_data_section_displacements(
+        &mut text,
+        &[(2, DataSectionDisplacementTarget::AnonymousRodata(1))],
+        &HashMap::new(),
+        &HashMap::new(),
+        &[0x20, 0x30],
+    );
+    assert_eq!(text, [0x80, 0xa3, 0, 0x34]);
 }
 
 #[test]

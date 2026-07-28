@@ -109,7 +109,9 @@ impl Generator {
             .data_section_displacements
             .push(DataSectionDisplacement {
                 instruction_index: self.output.instructions.len(),
-                symbol: shape.registry.clone(),
+                target: mwcc_machine_code::DataSectionDisplacementTarget::Symbol(
+                    shape.registry.clone(),
+                ),
             });
         self.output.instructions.extend([
             Instruction::AddImmediate {
