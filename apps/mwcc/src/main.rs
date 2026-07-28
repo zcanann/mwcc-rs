@@ -2713,6 +2713,9 @@ mod tests {
     #[path = "guarded_payload_membership.rs"]
     mod guarded_payload_membership;
 
+    #[path = "inlined_payload_event.rs"]
+    mod inlined_payload_event;
+
     #[path = "member_float_select.rs"]
     mod member_float_select;
     mod member_setup;

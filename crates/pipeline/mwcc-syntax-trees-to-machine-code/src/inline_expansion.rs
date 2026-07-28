@@ -37,6 +37,10 @@ pub struct InlineBodySet {
     /// maps below; retaining this view does not make arbitrary functions
     /// composable.
     definitions: HashMap<String, Function>,
+    /// Read-only skipped-inline definitions. Transaction lowerers may inspect
+    /// these even when generic AST composition correctly rejects their control
+    /// flow; lookup alone never makes them callable or composable.
+    retained_definitions: HashMap<String, Function>,
     bodies: HashMap<String, Function>,
     /// Ordinary small definitions that MWCC may expand selectively at hot
     /// structured call sites even when the TU calls them more than once.
@@ -225,6 +229,10 @@ impl InlineBodySet {
                 .iter()
                 .map(|function| (function.name.clone(), function.clone()))
                 .collect(),
+            retained_definitions: skipped
+                .iter()
+                .map(|function| (function.name.clone(), function.clone()))
+                .collect(),
             bodies,
             repeatable_bodies,
             values,
@@ -295,6 +303,12 @@ impl InlineBodySet {
     /// lowerers that validate the complete callee shape before composing it.
     pub(crate) fn definition_body(&self, name: &str) -> Option<&Function> {
         self.definitions.get(name)
+    }
+
+    /// A skipped inline's retained semantic body, including definitions whose
+    /// control flow lies outside the conservative generic composer.
+    pub(crate) fn retained_body(&self, name: &str) -> Option<&Function> {
+        self.retained_definitions.get(name)
     }
 
     /// Whether this function calls a definition that cannot be materialized as
