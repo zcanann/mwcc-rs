@@ -2,6 +2,7 @@
 //! (fire 614) into cohesive submodules; behavior-identical.
 
 mod call_return_chain;
+mod call_boolean;
 mod call_short_circuit;
 mod early_return;
 mod guard_block;

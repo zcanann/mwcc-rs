@@ -2716,6 +2716,9 @@ mod tests {
     #[path = "guarded_global_address_call.rs"]
     mod guarded_global_address_call;
 
+    #[path = "guarded_call_boolean.rs"]
+    mod guarded_call_boolean;
+
     #[path = "global_list_teardown.rs"]
     mod global_list_teardown;
 

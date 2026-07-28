@@ -1320,6 +1320,9 @@ impl Generator {
         if self.try_guarded_global_address_call(function)? {
             return Ok(());
         }
+        if self.try_call_boolean(function)? {
+            return Ok(());
+        }
         // A callback nested in a large global aggregate, with a by-value aggregate second
         // argument and a ninth stack argument. Claim the complete EABI transaction before
         // broad statement handlers split its address-taken parameter and callback apart.
