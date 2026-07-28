@@ -75,6 +75,34 @@ impl Generator {
         {
             return Ok(register);
         }
+        // A narrow call result occupies only its declared low bits at the ABI
+        // boundary. C/C++ integer promotion happens before `!= 0`, `> 0`, and
+        // the other sign idioms, so mwcc explicitly extends the returned r3
+        // before booleanizing it. Calls are not leaves and therefore bypass
+        // the ordinary leaf-width placement above.
+        let narrow_call = match value {
+            Expression::Call { name, .. } => self
+                .call_return_types
+                .get(name)
+                .copied()
+                .filter(|return_type| return_type.width() < 32),
+            Expression::VirtualCall { return_type, .. } if return_type.width() < 32 => {
+                Some(*return_type)
+            }
+            _ => None,
+        };
+        if destination != GENERAL_SCRATCH {
+            if let Some(return_type) = narrow_call {
+                self.evaluate_general(value, destination)?;
+                self.emit_widen(
+                    destination,
+                    destination,
+                    return_type.width(),
+                    self.signed_of(return_type),
+                );
+                return Ok(destination);
+            }
+        }
         // A signed byte load is brought into the scratch and sign-extended into the destination
         // (`lbz r0; extsb d,r0`), matching mwcc's `> 0` / `!= 0` register choice.
         if destination != GENERAL_SCRATCH && self.is_signed_byte_load(value)? {

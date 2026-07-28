@@ -2757,6 +2757,9 @@ mod tests {
     #[path = "global_struct_member_return.rs"]
     mod global_struct_member_return;
 
+    #[path = "narrow_call_boolean.rs"]
+    mod narrow_call_boolean;
+
     #[path = "initialized_automatic_arrays.rs"]
     mod initialized_automatic_arrays;
 
