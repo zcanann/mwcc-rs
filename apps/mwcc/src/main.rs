@@ -1282,7 +1282,7 @@ fn compile(
                 static_local_owner: Some(function_index),
                 is_weak: false,
                 force_active: false,
-                functions_before: 0,
+                functions_before: function_index + 1,
                 non_static_functions_before: 0,
                 name: local.name.clone(),
                 size: local.size,
@@ -2436,10 +2436,18 @@ fn compile(
                     Box::new(0..global.relocations.len())
                 } else {
                     Box::new((0..global.relocations.len()).rev())
-                };
+            };
             for relocation_index in relocation_indices {
                 let relocation = &global.relocations[relocation_index];
-                if !static_definition_index.contains_key(relocation.target.as_str()) {
+                let Some(&definition_index) =
+                    static_definition_index.get(relocation.target.as_str())
+                else {
+                    continue;
+                };
+                // A data initializer can create a forward-referenced LOCAL
+                // function symbol, but a definition already passed in the
+                // source timeline owns its normal per-function symbol slot.
+                if definition_index < global.functions_before {
                     continue;
                 }
                 if seen.insert(relocation.target.clone()) {

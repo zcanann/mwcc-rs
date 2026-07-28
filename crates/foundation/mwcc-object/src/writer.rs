@@ -1982,11 +1982,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             }
         }
         // An IMPLICIT function's STATIC LOCALS lead its block (its FUNC symbol
-        // trails them — measured: ww uart). A REGULAR static function's locals
-        // instead FOLLOW its FUNC symbol (measured: ac uart's initialized$16
-        // after __init_uart_console).
+        // trails them — measured: ww uart). An explicitly marked regular
+        // function does the same, including before its string symbols. Other
+        // regular statics place locals after the FUNC (ac uart).
         for object in &input.data_objects {
-            if !function.implicit_local && function.is_static {
+            if !function.implicit_local && function.is_static && !function.static_locals_lead {
                 break;
             }
             if object.static_local_owner == Some(index) {

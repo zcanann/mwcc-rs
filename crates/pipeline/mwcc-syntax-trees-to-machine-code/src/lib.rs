@@ -821,6 +821,11 @@ fn lower_function_body(
     if generator.output.static_locals.is_empty() {
         generator.output.static_locals = static_local_data;
     }
+    if function.name.contains("@unnamed@") && !generator.output.static_locals.is_empty() {
+        // C++ unnamed-namespace bodies create their static-local object symbol
+        // at the declaration before closing the owner's function-symbol block.
+        generator.output.static_locals_lead = true;
+    }
     // Schedule on the virtual-register stream, then allocate. Ordering matters:
     // scheduling first means physical-register reuse cannot create false
     // dependencies that block a hoist, and allocation then colors the scheduled
