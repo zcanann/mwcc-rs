@@ -76,134 +76,7 @@ pub(crate) fn materialize_function_offsets(function: &mut MachineFunction, base:
             },
         );
     }
-    schedule_offset_format_call(function);
-}
-
-/// Interior packed-string offsets do not exist until this late materialization
-/// pass. In the measured table/date formatting packet MWCC resolves the base
-/// low half, issues the independent table loads and output-frame address, then
-/// applies the string offset. Keep this schedule beside the transformation
-/// that creates the offset instruction.
-fn schedule_offset_format_call(function: &mut MachineFunction) {
-    schedule_date_separator_offset_format_call(function);
-    schedule_zero_terminated_offset_format_call(function);
-}
-
-fn schedule_date_separator_offset_format_call(function: &mut MachineFunction) {
-    let Some(start) = function.instructions.windows(14).position(|window| {
-        matches!(
-            window,
-            [
-                Instruction::AddImmediateShifted { d: 3, a: 0, .. },
-                Instruction::AddImmediate {
-                    d: 5,
-                    a: 0,
-                    immediate: 47,
-                },
-                Instruction::AddImmediate { d: 0, a: 3, .. },
-                Instruction::AddImmediateShifted { d: 4, a: 0, .. },
-                Instruction::Add {
-                    d: 3,
-                    a: 0,
-                    b: 14,
-                },
-                Instruction::StoreByte { s: 5, a: 1, .. },
-                Instruction::LoadByteZero {
-                    d: 6,
-                    a: 3,
-                    offset: first_load_offset,
-                },
-                Instruction::AddImmediate {
-                    d: 4,
-                    a: 4,
-                    immediate: 0,
-                },
-                Instruction::AddImmediate {
-                    d: 4,
-                    a: 4,
-                    immediate: string_offset,
-                },
-                Instruction::LoadByteZero {
-                    d: 7,
-                    a: 3,
-                    offset: second_load_offset,
-                },
-                Instruction::AddImmediate { d: 3, a: 1, .. },
-                Instruction::AddImmediate { d: 5, a: 1, .. },
-                Instruction::ConditionRegisterClear { d: 6 },
-                Instruction::BranchAndLink { target },
-            ] if (target == "sprintf" || target.starts_with("sprintf__"))
-                && *string_offset > 0
-                && *second_load_offset == *first_load_offset + 1
-        )
-    }) else {
-        return;
-    };
-    if (start + 6..=start + 10).any(|position| is_control_entry(function, position)) {
-        return;
-    }
-
-    swap_adjacent_instructions(function, start + 6);
-    swap_adjacent_instructions(function, start + 8);
-    swap_adjacent_instructions(function, start + 9);
-}
-
-fn schedule_zero_terminated_offset_format_call(function: &mut MachineFunction) {
-    let Some(start) = function.instructions.windows(13).position(|window| {
-        matches!(
-            window,
-            [
-                Instruction::AddImmediateShifted { d: 3, a: 0, .. },
-                Instruction::AddImmediate {
-                    d: 5,
-                    a: 0,
-                    immediate: 0,
-                },
-                Instruction::AddImmediate { d: 0, a: 3, .. },
-                Instruction::AddImmediateShifted { d: 4, a: 0, .. },
-                Instruction::Add {
-                    d: 3,
-                    a: 0,
-                    b: 14,
-                },
-                Instruction::StoreByte { s: 5, a: 1, .. },
-                Instruction::AddImmediate {
-                    d: 4,
-                    a: 4,
-                    immediate: 0,
-                },
-                Instruction::AddImmediate {
-                    d: 4,
-                    a: 4,
-                    immediate: string_offset,
-                },
-                Instruction::LoadByteZero {
-                    d: 5,
-                    a: 3,
-                    offset: first_load_offset,
-                },
-                Instruction::LoadByteZero {
-                    d: 6,
-                    a: 3,
-                    offset: second_load_offset,
-                },
-                Instruction::AddImmediate { d: 3, a: 1, .. },
-                Instruction::ConditionRegisterClear { d: 6 },
-                Instruction::BranchAndLink { target },
-            ] if (target == "sprintf" || target.starts_with("sprintf__"))
-                && *string_offset > 0
-                && *second_load_offset == *first_load_offset + 1
-        )
-    }) else {
-        return;
-    };
-    if (start + 7..=start + 10).any(|position| is_control_entry(function, position)) {
-        return;
-    }
-
-    swap_adjacent_instructions(function, start + 7);
-    swap_adjacent_instructions(function, start + 8);
-    swap_adjacent_instructions(function, start + 9);
+    super::schedule::schedule_materialized_offsets(function);
 }
 
 /// A loop can retain the zero-offset packed-string base in a saved register and
@@ -410,7 +283,8 @@ fn insert_instruction(function: &mut MachineFunction, position: usize, instructi
 
 #[cfg(test)]
 mod tests {
-    use super::{materialize_function_offsets, schedule_offset_format_call};
+    use super::materialize_function_offsets;
+    use crate::packed_strings::schedule::schedule_materialized_offsets;
     use mwcc_machine_code::{
         Instruction, JumpTable, MachineFunction, Relocation, RelocationKind,
         RelocationTarget,
@@ -483,7 +357,7 @@ mod tests {
             target: RelocationTarget::External("@stringBase0".to_owned()),
         });
 
-        schedule_offset_format_call(&mut function);
+        schedule_materialized_offsets(&mut function);
 
         assert!(matches!(
             function.instructions[6..11],
@@ -568,7 +442,7 @@ mod tests {
             target: RelocationTarget::External("@offset".to_owned()),
         });
 
-        schedule_offset_format_call(&mut function);
+        schedule_materialized_offsets(&mut function);
 
         assert!(matches!(
             function.instructions[7..11],

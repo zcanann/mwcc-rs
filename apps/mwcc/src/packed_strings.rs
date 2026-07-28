@@ -4,6 +4,7 @@
 //! byte interning and delegates late instruction scheduling to `addressing`.
 
 mod addressing;
+mod schedule;
 
 pub(crate) use addressing::materialize_function_offsets;
 
