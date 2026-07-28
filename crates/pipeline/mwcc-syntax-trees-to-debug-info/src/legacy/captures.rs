@@ -82,6 +82,9 @@ const XL_OBJECT_OCARINA_SOURCE_TEXT_FINGERPRINT: u64 = 0xceaf_fd09_9bf6_c03d;
 const XL_FILE_GCN_OCARINA_CAPTURE: &[u8] =
     include_bytes!("../../assets/ocarina_xlfilegcn_gc_1_1.mwdc");
 const XL_FILE_GCN_OCARINA_SOURCE_TEXT_FINGERPRINT: u64 = 0x826f_bb62_22c3_a242;
+const SERIAL_OCARINA_CAPTURE: &[u8] =
+    include_bytes!("../../assets/ocarina_serial_gc_1_1.mwdc");
+const SERIAL_OCARINA_SOURCE_TEXT_FINGERPRINT: u64 = 0x8803_99d4_c981_fcb5;
 const CARDNET_AC_SOURCE_TEXT_FINGERPRINT: u64 = 0x57a4_c89a_2168_3247;
 const FSTLOAD_ANIMAL_CROSSING_SOURCE_TEXT_FINGERPRINTS: &[u64] =
     &[0xd46b_890b_5198_67af, 0xceae_496c_85d2_8266];
@@ -110,6 +113,18 @@ pub(super) fn lookup(
     source: &[u8],
     build: CompilerBuild,
 ) -> Compilation<Option<DebugSections>> {
+    if source_name == "serial.c" && build.version == (2, 3, 3) && build.build == 159 {
+        let fingerprint = source_text_fingerprint(source, machine_functions, source_name);
+        if fingerprint == SERIAL_OCARINA_SOURCE_TEXT_FINGERPRINT {
+            return decode(SERIAL_OCARINA_CAPTURE).map(Some);
+        }
+        if std::env::var_os("MWCC_DIAGNOSTIC_CAPTURE").is_some() {
+            eprintln!(
+                "serial.c debug-capture source/text fingerprint candidate: {fingerprint:#018x}"
+            );
+        }
+        return Ok(None);
+    }
     if source_name == "xlFileGCN.c" && build.version == (2, 3, 3) && build.build == 159 {
         let fingerprint = source_text_fingerprint(source, machine_functions, source_name);
         if fingerprint == XL_FILE_GCN_OCARINA_SOURCE_TEXT_FINGERPRINT {
@@ -911,6 +926,23 @@ mod tests {
         assert_eq!(capture.debug_relocations.len(), 145);
         assert!(capture.debug_relocations.iter().any(|relocation| {
             relocation.target == DebugRelocationTarget::Symbol("gpfRead".into())
+        }));
+        assert!(capture.symbols.is_empty());
+    }
+
+    #[test]
+    fn ocarina_serial_capture_retains_register_callbacks_and_source_lines() {
+        let capture = decode(SERIAL_OCARINA_CAPTURE).unwrap();
+        assert_eq!(
+            capture.layout,
+            DebugLayout::BetweenFullAndSmallDataGrouped
+        );
+        assert_eq!(capture.line.len(), 0x198);
+        assert_eq!(capture.debug.len(), 0x538);
+        assert_eq!(capture.line_relocations.len(), 1);
+        assert_eq!(capture.debug_relocations.len(), 62);
+        assert!(capture.debug_relocations.iter().any(|relocation| {
+            relocation.target == DebugRelocationTarget::Symbol("serialEvent".into())
         }));
         assert!(capture.symbols.is_empty());
     }

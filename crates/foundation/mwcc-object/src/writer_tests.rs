@@ -224,8 +224,10 @@ fn owned_rtti_closures_schedule_base_tables_then_vtable_transactions() {
         weak_function("getAge__4BaseFv"),
     ];
     let objects = [vtable, base_table];
-    let order = data_relocation_order(&objects, &functions, &[0, 1], true);
-    let targets: Vec<&str> = order
+    let schedule = data_relocation_order(&objects, &functions, &[0, 1], true);
+    assert!(schedule.owned_rtti_closure);
+    let targets: Vec<&str> = schedule
+        .entries
         .iter()
         .map(|&(object, relocation)| objects[object].relocations[relocation].target.as_str())
         .collect();
@@ -241,6 +243,96 @@ fn owned_rtti_closures_schedule_base_tables_then_vtable_transactions() {
             "update__4BaseFv",
         ]
     );
+}
+
+#[test]
+fn data_relocations_follow_interleaved_creation_order() {
+    let descriptor = DataObject {
+        name: "descriptor",
+        size: 8,
+        alignment: 4,
+        comment_alignment: 4,
+        initial_bytes: Some(vec![0; 8]),
+        is_const: false,
+        force_full_data_section: true,
+        is_static: false,
+        force_active: false,
+        is_explicit_zero: false,
+        preassigned_anonymous_ordinal: None,
+        preassigned_ordinal_advances_counter: false,
+        relocations: vec![
+            crate::DataRelocation {
+                offset: 0,
+                target: "first".into(),
+                addend: 0,
+            },
+            crate::DataRelocation {
+                offset: 4,
+                target: "second".into(),
+                addend: 0,
+            },
+        ],
+        non_static_functions_before: 0,
+        functions_before: 0,
+        is_weak: false,
+        static_local_owner: None,
+        anonymous_adjust: 0,
+        section: None,
+    };
+    let mut function = weak_function("dispatch");
+    function.is_weak = false;
+    function.weak_inline = false;
+    function.jump_tables.push(crate::JumpTable {
+        entries: vec![4, 8],
+        anonymous_offset: 0,
+    });
+    let object = write_object(&ObjectInput {
+        source_name: "mixed.c",
+        object_format: ObjectFormat {
+            comment: CommentFormat {
+                marker: 8,
+                version: (2, 3, 3),
+                pooling_enabled: true,
+            },
+            emb_sda21_offset: 0,
+            code_alignment: 4,
+            sdata2_writable: false,
+            function_symbol_order: FunctionSymbolOrder::ReferencesFirst,
+            weak_vtable_function_symbol_tail: false,
+            owned_rtti_closure_relocation_order: false,
+            initialized_globals_before_deferred_functions: false,
+            local_data_symbols_in_declaration_order: false,
+            small_zero_statics_in_declaration_order: false,
+            rodata_anchor_before_data_symbols: false,
+            rodata_anchor_comment_flags: 0,
+            data_relocations_use_section_anchors: false,
+            data_anchor_comment_flags: 0,
+            initial_anonymous_counter: 1,
+            leading_source_anonymous_bump: 0,
+            post_leaf_function_anonymous_bump: 0,
+            post_framed_function_anonymous_bump: 0,
+        },
+        functions: vec![function],
+        data_objects: vec![descriptor],
+        small_data: false,
+        emit_mwcats: false,
+        inline_asm_symbols: &[],
+        early_static_function_symbols: &[],
+        early_undefined_externals: &[],
+        section_function_declarations: &[],
+        section_externals: &[],
+        local_symbol_order: &[],
+        debug: None,
+    });
+
+    let rela_data = section_index(&object, ".rela.data");
+    let header = section_header(&object, rela_data);
+    let offset = be_u32(&object, header + 16) as usize;
+    let size = be_u32(&object, header + 20) as usize;
+    let relocation_offsets: Vec<u32> = (0..size / 12)
+        .map(|index| be_u32(&object, offset + index * 12))
+        .collect();
+    assert_eq!(relocation_offsets, [4, 0, 8, 12]);
 }
 
 #[test]
@@ -366,12 +458,7 @@ fn data_section_displacements_patch_only_the_d_form_immediate() {
     let mut text = vec![0xa0, 0x63, 0, 0];
     let sections = HashMap::from([("table", ".data")]);
     let offsets = HashMap::from([("table", 0x1c)]);
-    apply_data_section_displacements(
-        &mut text,
-        &[(2, "table".to_owned())],
-        &sections,
-        &offsets,
-    );
+    apply_data_section_displacements(&mut text, &[(2, "table".to_owned())], &sections, &offsets);
     assert_eq!(text, [0xa0, 0x63, 0, 0x1c]);
 }
 
@@ -380,12 +467,7 @@ fn bss_section_displacements_add_to_selected_member_offsets() {
     let mut text = vec![0x90, 0x85, 0, 12];
     let sections = HashMap::from([("state", ".bss")]);
     let offsets = HashMap::from([("state", 0x10)]);
-    apply_data_section_displacements(
-        &mut text,
-        &[(2, "state".to_owned())],
-        &sections,
-        &offsets,
-    );
+    apply_data_section_displacements(&mut text, &[(2, "state".to_owned())], &sections, &offsets);
     assert_eq!(text, [0x90, 0x85, 0, 0x1c]);
 }
 
