@@ -85,6 +85,16 @@ pub(crate) struct ByteAppendSummary {
     pub(crate) data_offset: i16,
 }
 
+/// A linked-list wipe helper that frees each node through a pointer-to-pointer
+/// API, then clears the owning list's count and endpoint fields.
+#[derive(Clone, Debug)]
+pub(crate) struct ListWipeSummary {
+    pub(crate) free_callee: String,
+    pub(crate) count_offset: i16,
+    pub(crate) head_offset: i16,
+    pub(crate) next_offset: i16,
+}
+
 /// Verified helper-body facts available while lowering one translation unit.
 #[derive(Clone, Debug, Default)]
 pub struct InlineSummaries {
@@ -98,6 +108,7 @@ pub struct InlineSummaries {
     pointer_walkers: HashMap<String, PointerWalkerSummary>,
     unoptimized_local_selects: HashMap<String, UnoptimizedLocalSelectSummary>,
     byte_appends: HashMap<String, ByteAppendSummary>,
+    list_wipes: HashMap<String, ListWipeSummary>,
     fixed_size_copies: HashMap<String, FixedSizeCopySummary>,
     guarded_aggregate_updates: HashMap<String, GuardedAggregateUpdateSummary>,
     guarded_float_table_indexes: HashMap<String, GuardedFloatTableIndexSummary>,
@@ -192,6 +203,9 @@ impl InlineSummaries {
                 summaries
                     .byte_appends
                     .insert(function.name.clone(), summary);
+            }
+            if let Some(summary) = summarize_list_wipe(function) {
+                summaries.list_wipes.insert(function.name.clone(), summary);
             }
         }
         // Build 163's label walk gives a summarized service helper three fewer
@@ -298,6 +312,10 @@ impl InlineSummaries {
         self.byte_appends.get(name)
     }
 
+    pub(crate) fn list_wipe(&self, name: &str) -> Option<&ListWipeSummary> {
+        self.list_wipes.get(name)
+    }
+
     pub(crate) fn ipa_pointer_walker_caller(
         &self,
         function: &Function,
@@ -337,6 +355,131 @@ impl InlineSummaries {
 
 fn variable(expression: &Expression, name: &str) -> bool {
     matches!(expression, Expression::Variable(found) if found == name)
+}
+
+fn summarize_list_wipe(function: &Function) -> Option<ListWipeSummary> {
+    if function.return_type != Type::Int
+        || !function.is_static
+        || !function.guards.is_empty()
+        || !matches!(
+            function.return_expression.as_ref(),
+            Some(value) if constant_value(value) == Some(1)
+        )
+    {
+        return None;
+    }
+    let [list] = function.parameters.as_slice() else {
+        return None;
+    };
+    if !matches!(list.parameter_type, Type::StructPointer { .. }) {
+        return None;
+    }
+    let [node, next] = function.locals.as_slice() else {
+        return None;
+    };
+    if !matches!(node.declared_type, Type::Pointer(_))
+        || !matches!(next.declared_type, Type::Pointer(_))
+        || node.initializer.is_some()
+        || next.initializer.is_some()
+    {
+        return None;
+    }
+    let [Statement::Assign {
+        name: initial_node,
+        value:
+            Expression::Member {
+                base: initial_list,
+                offset: head_offset,
+                index_stride: None,
+                ..
+            },
+    }, Statement::Loop {
+        kind: LoopKind::While,
+        initializer: None,
+        condition: Some(condition),
+        step: None,
+        body,
+    }, count_store, next_store, head_store] = function.statements.as_slice()
+    else {
+        return None;
+    };
+    if initial_node != &node.name
+        || !variable(initial_list, &list.name)
+        || !matches!(condition, Expression::Binary {
+            operator: BinaryOperator::NotEqual, left, right
+        } if variable(left, &node.name) && constant_value(right) == Some(0))
+    {
+        return None;
+    }
+    let [Statement::Assign {
+        name: assigned_next,
+        value: Expression::Dereference {
+            pointer: next_pointer,
+        },
+    }, Statement::If {
+        condition:
+            Expression::Unary {
+                operator: mwcc_syntax_trees::UnaryOperator::LogicalNot,
+                operand: free_call,
+            },
+        then_body,
+        else_body,
+    }, Statement::Assign {
+        name: assigned_node,
+        value: next_value,
+    }] = body.as_slice()
+    else {
+        return None;
+    };
+    if assigned_next != &next.name
+        || !matches!(next_pointer.as_ref(), Expression::Cast { operand, .. }
+            if variable(operand, &node.name))
+        || !matches!(free_call.as_ref(), Expression::Call { arguments, .. }
+            if matches!(arguments.as_slice(), [Expression::AddressOf { operand }]
+                if variable(operand, &node.name)))
+        || !else_body.is_empty()
+        || !matches!(then_body.as_slice(), [Statement::Return(Some(value))]
+            if constant_value(value) == Some(0))
+        || assigned_node != &node.name
+        || !variable(next_value, &next.name)
+    {
+        return None;
+    }
+    let Expression::Call {
+        name: free_callee, ..
+    } = free_call.as_ref()
+    else {
+        return None;
+    };
+    fn zero_member_store(statement: &Statement, base: &str) -> Option<i16> {
+        let Statement::Store {
+            target:
+                Expression::Member {
+                    base: found,
+                    offset,
+                    index_stride: None,
+                    ..
+                },
+            value,
+        } = statement
+        else {
+            return None;
+        };
+        (variable(found, base) && constant_value(value) == Some(0))
+            .then(|| i16::try_from(*offset).ok())
+            .flatten()
+    }
+    let count_offset = zero_member_store(count_store, &list.name)?;
+    let next_offset = zero_member_store(next_store, &list.name)?;
+    if zero_member_store(head_store, &list.name)? != i16::try_from(*head_offset).ok()? {
+        return None;
+    }
+    Some(ListWipeSummary {
+        free_callee: free_callee.clone(),
+        count_offset,
+        head_offset: i16::try_from(*head_offset).ok()?,
+        next_offset,
+    })
 }
 
 fn summarize_single_base_destructor(function: &Function) -> Option<SingleBaseDestructorSummary> {

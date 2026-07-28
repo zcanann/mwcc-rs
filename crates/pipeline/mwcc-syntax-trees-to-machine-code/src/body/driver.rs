@@ -1547,6 +1547,9 @@ impl Generator {
         if self.try_inlined_byte_append_loop(function)? {
             return Ok(());
         }
+        if self.try_inlined_list_wipe(function)? {
+            return Ok(());
+        }
         if self.try_status_indexed_call_loop(function)? {
             return Ok(());
         }
