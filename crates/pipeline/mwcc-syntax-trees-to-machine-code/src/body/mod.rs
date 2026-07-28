@@ -65,6 +65,7 @@ mod chunked_callback_read;
 mod expression_statement;
 mod float_store_fill;
 mod formatter_character_schedule;
+mod formatter_position_schedule;
 mod float_friction_select;
 mod float_call_guard_return;
 mod float_octant_table_dispatch;

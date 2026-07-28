@@ -834,6 +834,7 @@ pub fn lower_function(
     generator.schedule_mixed_member_zero_reset();
     generator.schedule_variadic_report_member_arguments();
     generator.schedule_saved_character_formatter_arguments();
+    generator.schedule_position_formatter_arguments();
     generator.schedule_ground_knockback_projection();
     generator.schedule_guarded_member_alias_initialization();
     generator.schedule_entry_saved_zero_test();
