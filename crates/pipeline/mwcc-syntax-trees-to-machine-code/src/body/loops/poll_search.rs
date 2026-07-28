@@ -216,13 +216,13 @@ impl Generator {
             kind,
             initializer: None,
             condition: Some(condition),
-            step: None,
+            step,
             body,
         }] = function.statements.as_slice()
         else {
             return Ok(false);
         };
-        if !matches!(kind, LoopKind::While | LoopKind::DoWhile) {
+        if !matches!(kind, LoopKind::While | LoopKind::DoWhile | LoopKind::For) {
             return Ok(false);
         }
         // A constant default return after the loop (`return 0;`).
@@ -246,17 +246,49 @@ impl Generator {
         if loop_register != Eabi::general_result().number {
             return Ok(false);
         }
-        // Body = [ if (COND) return <p>; , <p> = <chase of p>; ] with an empty else.
-        let [Statement::If {
-            condition: if_condition,
-            then_body,
-            else_body,
-        }, Statement::Assign {
-            name: chase_name,
-            value: chase_value,
-        }] = body.as_slice()
-        else {
-            return Ok(false);
+        // A while-loop keeps the chase as its final body statement. The
+        // source-equivalent `for (; p; p = p->next)` keeps it in the loop step.
+        let (if_condition, then_body, else_body, chase_name, chase_value) =
+            match (kind, step.as_ref(), body.as_slice()) {
+                (
+                    LoopKind::While | LoopKind::DoWhile,
+                    None,
+                    [
+                        Statement::If {
+                            condition,
+                            then_body,
+                            else_body,
+                        },
+                        Statement::Assign { name, value },
+                    ],
+                ) => (
+                    condition,
+                    then_body,
+                    else_body,
+                    name.as_str(),
+                    value,
+                ),
+                (
+                    LoopKind::For,
+                    Some(Expression::Assign { target, value }),
+                    [Statement::If {
+                        condition,
+                        then_body,
+                        else_body,
+                    }],
+                ) => {
+                    let Expression::Variable(name) = target.as_ref() else {
+                        return Ok(false);
+                    };
+                    (
+                        condition,
+                        then_body,
+                        else_body,
+                        name.as_str(),
+                        value.as_ref(),
+                    )
+                }
+                _ => return Ok(false),
         };
         if !else_body.is_empty() {
             return Ok(false);
