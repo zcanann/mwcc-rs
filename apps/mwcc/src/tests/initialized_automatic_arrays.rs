@@ -137,6 +137,58 @@ fn copies_pooled_frame_parameters_in_incoming_register_order() {
 }
 
 #[test]
+fn reuses_an_expired_pool_lane_for_a_parsed_hour() {
+    let source = br#"
+        void consume(char*);
+        void consume_int(int);
+        int atoi(const char*);
+
+        int initialize(void) {
+            char date[32] = "";
+            char time[32] = "";
+            char ampm[32] = "";
+            char buffer[256] = "";
+            consume(date);
+            consume(time);
+            consume(ampm);
+            consume(buffer);
+
+            int hour = atoi(time);
+            if (hour >= 12) {
+                if (hour != 12)
+                    hour -= 12;
+            } else if (hour == 0) {
+                hour = 12;
+            }
+            consume_int(hour);
+            return hour;
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.cpp_exceptions = false;
+    flags.emit_mwcats = false;
+    let object = compile(
+        source,
+        "pooled-parsed-hour.c",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_2_0P1,
+            flags,
+        },
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("a parsed value should reuse an expired pooled-copy lane");
+
+    // mr r16,r3; cmpwi r16,12
+    let parsed_hour = [0x7c, 0x70, 0x1b, 0x78, 0x2c, 0x10, 0x00, 0x0c];
+    assert!(object
+        .windows(parsed_hour.len())
+        .any(|bytes| bytes == parsed_hour));
+}
+
+#[test]
 fn issues_compact_pooled_array_entry_packets_in_mwcc_order() {
     let source = br#"
         #pragma use_lmw_stmw on

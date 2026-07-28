@@ -3,6 +3,29 @@
 use crate::{Generator, remove_instruction_retargeting_to_next};
 use mwcc_machine_code::Instruction;
 
+/// Retarget a forward conditional through an unconditional branch at its
+/// destination. The forwarding branch remains because the conditional's
+/// fallthrough path may still need it; only the path that would branch to that
+/// instruction can safely jump directly to its landing.
+pub(crate) fn thread_conditional_branch_targets(instructions: &mut [Instruction]) {
+    for index in 0..instructions.len() {
+        let Instruction::BranchConditionalForward { target, .. } = instructions[index] else {
+            continue;
+        };
+        let Some(Instruction::Branch { target: landing }) = instructions.get(target) else {
+            continue;
+        };
+        let landing = *landing;
+        if landing <= index || landing == target {
+            continue;
+        }
+        let Instruction::BranchConditionalForward { target, .. } = &mut instructions[index] else {
+            unreachable!("the conditional branch was matched above");
+        };
+        *target = landing;
+    }
+}
+
 /// Thread conditional branches through an otherwise unreachable one-branch
 /// forwarding block, then remove that dead block.
 ///
@@ -70,7 +93,7 @@ fn forwarding_branch_block(instructions: &[Instruction]) -> Option<(usize, usize
 
 #[cfg(test)]
 mod tests {
-    use super::forwarding_branch_block;
+    use super::{forwarding_branch_block, thread_conditional_branch_targets};
     use mwcc_machine_code::Instruction;
 
     #[test]
@@ -105,5 +128,28 @@ mod tests {
         ];
 
         assert_eq!(forwarding_branch_block(&instructions), None);
+    }
+
+    #[test]
+    fn threads_a_conditional_around_a_reachable_forwarding_branch() {
+        let mut instructions = [
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 2,
+            },
+            Instruction::load_immediate(16, 1),
+            Instruction::Branch { target: 4 },
+            Instruction::load_immediate(16, 2),
+            Instruction::BranchToLinkRegister,
+        ];
+
+        thread_conditional_branch_targets(&mut instructions);
+
+        assert!(matches!(
+            instructions[0],
+            Instruction::BranchConditionalForward { target: 4, .. }
+        ));
+        assert_eq!(instructions[2], Instruction::Branch { target: 4 });
     }
 }

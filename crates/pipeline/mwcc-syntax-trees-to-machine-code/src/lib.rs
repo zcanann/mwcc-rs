@@ -699,6 +699,11 @@ fn lower_function_body(
         ));
     }
     if generator.behavior.schedule_latency_slots {
+        if generator.structured_array_pool_emitted {
+            branch_cleanup::thread_conditional_branch_targets(
+                &mut generator.output.instructions,
+            );
+        }
         branch_cleanup::collapse_forwarding_branch_blocks(&mut generator);
     }
     collapse_conditional_skip_to_backward_branch(&mut generator);
@@ -808,6 +813,7 @@ fn lower_function_body(
     generator.separate_structured_array_pool_initial_table_address();
     generator.schedule_structured_array_pool_following_format_call();
     generator.schedule_structured_array_pool_zero_terminated_format_call();
+    generator.prefer_structured_array_pool_parsed_hour();
     generator.schedule_leading_int_to_float_argument();
     schedule_instructions(&mut generator);
     let allocated_float_saves = allocate_registers(&mut generator).map_err(|mut diagnostic| {
@@ -1330,7 +1336,12 @@ fn schedule_allocated_structured_array_pool_control_flow(generator: &mut Generat
     }
     let permutation =
         mwcc_vreg::schedule_branch_bounded(&mut generator.output.instructions);
-    remap_instruction_indices(generator, &permutation);
+    for relocation in &mut generator.output.relocations {
+        relocation.instruction_index = permutation[relocation.instruction_index];
+    }
+    for displacement in &mut generator.output.data_section_displacements {
+        displacement.instruction_index = permutation[displacement.instruction_index];
+    }
 }
 
 /// Remap relocations, late data displacements, and internal branch destinations

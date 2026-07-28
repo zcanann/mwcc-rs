@@ -4,6 +4,36 @@
 use super::*;
 
 impl Generator {
+    /// The parsed hour outlives the AM/PM copy calls but begins after the pooled
+    /// image-copy lanes have expired. MWCC reuses r16 for that interval instead
+    /// of following the ordinary local-value preference toward occupied r30 and
+    /// falling back to r29.
+    pub(crate) fn prefer_structured_array_pool_parsed_hour(&mut self) {
+        if !self.structured_array_pool_emitted {
+            return;
+        }
+        let Some(hour) = self.output.instructions.windows(3).find_map(|window| {
+            match window {
+                [
+                    Instruction::BranchAndLink { target },
+                    Instruction::Or { a, s: 3, b: 3 },
+                    Instruction::CompareWordImmediate {
+                        a: compared,
+                        immediate: 12,
+                    },
+                ] if (target == "atoi" || target.starts_with("atoi__"))
+                    && a == compared =>
+                {
+                    Some(*a)
+                }
+                _ => None,
+            }
+        }) else {
+            return;
+        };
+        self.prefer_virtual_general(hour, 16);
+    }
+
     /// Keep the first table-address high half distinct from its indexed base.
     /// MWCC assigns the short-lived high half to r4 while the original address
     /// lifetime retains its saved-register home; destructive selection

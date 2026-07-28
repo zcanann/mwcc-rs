@@ -709,15 +709,30 @@ pub fn schedule(instructions: &mut Vec<Instruction>) -> Vec<usize> {
     schedule_branch_bounded(instructions)
 }
 
-/// Reorder branch-bounded runs in place. Branch instructions remain barriers;
-/// the caller must remap their instruction-index targets through the returned
-/// permutation.
+/// Reorder basic-block runs in place. Branch instructions remain barriers and
+/// every in-range branch destination starts a new run, so instructions cannot
+/// cross a control-entry boundary. The returned permutation maps instruction
+/// owners such as relocations; branch-target positions themselves remain stable
+/// because scheduling never changes a block's length or position.
 pub fn schedule_branch_bounded(instructions: &mut Vec<Instruction>) -> Vec<usize> {
     let count = instructions.len();
     let identity: Vec<usize> = (0..count).collect();
+    let control_entries: std::collections::HashSet<usize> = instructions
+        .iter()
+        .filter_map(|instruction| match instruction {
+            Instruction::BranchConditionalForward { target, .. }
+            | Instruction::Branch { target }
+                if *target < count =>
+            {
+                Some(*target)
+            }
+            _ => None,
+        })
+        .collect();
 
     // new position -> old index, by walking the stream and scheduling each
-    // maximal run of schedulable instructions, leaving barriers fixed.
+    // maximal basic-block run of schedulable instructions, leaving barriers
+    // fixed and never crossing a control-entry boundary.
     let mut order: Vec<usize> = Vec::with_capacity(count);
     let mut index = 0;
     while index < count {
@@ -726,7 +741,11 @@ pub fn schedule_branch_bounded(instructions: &mut Vec<Instruction>) -> Vec<usize
             index += 1;
         } else {
             let start = index;
-            while index < count && !is_barrier(&instructions[index]) {
+            index += 1;
+            while index < count
+                && !is_barrier(&instructions[index])
+                && !control_entries.contains(&index)
+            {
                 index += 1;
             }
             let run: Vec<usize> = (start..index).collect();
@@ -1234,6 +1253,65 @@ mod tests {
             ]
         ));
         assert_eq!(permutation, [0, 1, 3, 2, 4, 5, 7, 6, 8]);
+    }
+
+    #[test]
+    fn a_branch_destination_bounds_the_following_schedulable_block() {
+        let mut stream = vec![
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 2,
+            },
+            Instruction::load_immediate(29, 12),
+            Instruction::AddImmediate {
+                d: 3,
+                a: 1,
+                immediate: 40,
+            },
+            Instruction::AddImmediateShifted {
+                d: 4,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 4,
+                immediate: 0,
+            },
+        ];
+
+        let permutation = schedule_branch_bounded(&mut stream);
+
+        assert_eq!(permutation[1], 1);
+        assert!(matches!(
+            stream[1],
+            Instruction::AddImmediate {
+                d: 29,
+                a: 0,
+                immediate: 12,
+            }
+        ));
+        assert_eq!(
+            stream[2..],
+            [
+                Instruction::AddImmediateShifted {
+                    d: 4,
+                    a: 0,
+                    immediate: 0,
+                },
+                Instruction::AddImmediate {
+                    d: 3,
+                    a: 1,
+                    immediate: 40,
+                },
+                Instruction::AddImmediate {
+                    d: 4,
+                    a: 4,
+                    immediate: 0,
+                },
+            ]
+        );
     }
 
     #[test]
