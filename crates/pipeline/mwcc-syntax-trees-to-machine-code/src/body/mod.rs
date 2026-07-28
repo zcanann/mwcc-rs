@@ -58,6 +58,7 @@ mod endian_probe;
 mod endian_stack_pack;
 mod endian_stack_unpack;
 mod cached_member_guard;
+mod chunked_callback_read;
 mod expression_statement;
 mod float_store_fill;
 mod float_friction_select;

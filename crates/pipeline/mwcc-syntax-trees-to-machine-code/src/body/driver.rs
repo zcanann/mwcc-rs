@@ -3495,6 +3495,9 @@ impl Generator {
             if self.try_bounded_buffer_read(function)? {
                 return Ok(());
             }
+            if self.try_chunked_callback_read(function)? {
+                return Ok(());
+            }
             // General structured body with values spanning conditional calls:
             // assign virtual callee-saved homes once, then lower its forward
             // branches through the ordinary expression/store emitters. This is

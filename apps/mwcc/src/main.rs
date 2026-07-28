@@ -2650,6 +2650,9 @@ mod tests {
     #[path = "call_live_counter_loop.rs"]
     mod call_live_counter_loop;
 
+    #[path = "chunked_callback_read.rs"]
+    mod chunked_callback_read;
+
     #[path = "xnor_feedback_loop.rs"]
     mod xnor_feedback_loop;
 
