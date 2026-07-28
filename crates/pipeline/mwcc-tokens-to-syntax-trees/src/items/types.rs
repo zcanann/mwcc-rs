@@ -77,6 +77,48 @@ fn merged_attribute_alignment(before: Option<u16>, after: Option<u16>) -> u32 {
 }
 
 impl Parser {
+    /// Parse a standalone function-scope named struct definition and register
+    /// both of the identities needed by the rest of the pipeline:
+    ///
+    /// - the source tag is installed temporarily so elaborated uses in this
+    ///   function (`struct Local *`) resolve normally;
+    /// - a position-qualified key is retained permanently so bare C++ uses
+    ///   (`Local *`) and debug information cannot collide with an identically
+    ///   named local struct in another function.
+    ///
+    /// The caller owns restoring the returned source-tag mappings when the
+    /// function body closes.
+    pub(crate) fn parse_local_struct_definition(
+        &mut self,
+    ) -> Compilation<Option<(String, Option<String>, Option<StructLayout>)>> {
+        if *self.peek() != Token::KeywordStruct
+            || !matches!(self.peek_at(1), Token::Identifier(_))
+            || *self.peek_at(2) != Token::BraceOpen
+        {
+            return Ok(None);
+        }
+
+        let definition_position = self.position;
+        self.expect(Token::KeywordStruct)?;
+        let source_tag = self.parse_identifier()?;
+        let mut layout = self.parse_struct_body()?;
+        layout.source_tag = Some(source_tag.clone());
+        if let Some(align) = self.skip_attributes()? {
+            layout.align = layout.align.max(align as u8);
+            let align = u32::from(align);
+            layout.size = layout.size.div_ceil(align) * align;
+        }
+        self.expect(Token::Semicolon)?;
+
+        let internal_tag = format!("@local:{definition_position}:{source_tag}");
+        let previous_alias = self
+            .struct_typedefs
+            .insert(source_tag.clone(), internal_tag.clone());
+        let previous_layout = self.structs.insert(source_tag.clone(), layout.clone());
+        self.structs.insert(internal_tag, layout);
+        Ok(Some((source_tag, previous_alias, previous_layout)))
+    }
+
     /// Consume the `*` portion of an aggregate declarator while retaining the
     /// source pointer depth needed by C++ name mangling. Aggregate layout only
     /// distinguishes `T*` from the word-classed `T**`, so keeping this ABI fact

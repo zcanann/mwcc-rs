@@ -4828,6 +4828,56 @@ blr\n\
     }
 
     #[test]
+    fn scopes_function_local_struct_definitions_and_retains_their_layouts() {
+        let source = r#"
+            unsigned read_first(void* arg) {
+                struct something {
+                    unsigned stuff[5];
+                    short theValue;
+                };
+                return ((something*)arg)->theValue;
+            }
+            unsigned read_second(void* arg) {
+                struct something {
+                    short theValue;
+                };
+                return ((struct something*)arg)->theValue;
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member {
+                offset: 20,
+                member_type: mwcc_syntax_trees::Type::Short,
+                ..
+            })
+        ));
+        assert!(matches!(
+            unit.functions[1].return_expression,
+            Some(mwcc_syntax_trees::Expression::Member {
+                offset: 0,
+                member_type: mwcc_syntax_trees::Type::Short,
+                ..
+            })
+        ));
+        let local_definitions = unit
+            .aggregate_definitions
+            .iter()
+            .filter(|(_, definition)| definition.source_tag.as_deref() == Some("something"))
+            .count();
+        assert_eq!(local_definitions, 2);
+    }
+
+    #[test]
     fn resolves_an_unqualified_static_call_inside_a_static_member_definition() {
         let source = r#"
             struct Capture {

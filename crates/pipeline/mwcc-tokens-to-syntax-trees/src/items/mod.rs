@@ -4500,11 +4500,19 @@ impl Parser {
             Option<crate::cxx::CxxFunctionType>,
         )> = Vec::new();
         let mut local_struct_typedefs: Vec<(String, Option<String>)> = Vec::new();
+        let mut local_struct_layouts: Vec<(String, Option<StructLayout>)> = Vec::new();
         // A local declaration may open with a storage-class keyword: `static` gives the variable
         // static storage (codegen'd like a global, so recorded and deferred for now), while
         // `register`/`auto` are ordinary-automatic hints with no codegen effect. These are
         // `Identifier` tokens, so peek past them before the type test below.
         loop {
+            if let Some((tag, previous_alias, previous_layout)) =
+                self.parse_local_struct_definition()?
+            {
+                local_struct_typedefs.push((tag.clone(), previous_alias));
+                local_struct_layouts.push((tag, previous_layout));
+                continue;
+            }
             if matches!(self.peek(), Token::Identifier(word) if word == "typedef") {
                 if matches!(self.peek_at(1), Token::Identifier(word) if word == "__typeof__") {
                     let (alias, declared_type, struct_tag) =
@@ -5282,6 +5290,13 @@ impl Parser {
                 self.struct_typedefs.insert(alias, tag);
             } else {
                 self.struct_typedefs.remove(&alias);
+            }
+        }
+        for (tag, previous_layout) in local_struct_layouts.into_iter().rev() {
+            if let Some(layout) = previous_layout {
+                self.structs.insert(tag, layout);
+            } else {
+                self.structs.remove(&tag);
             }
         }
 
