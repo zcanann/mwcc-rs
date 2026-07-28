@@ -17,6 +17,7 @@ mod value_body;
 mod value_calls;
 
 use call_sites::collect_function_calls;
+use crate::inline_source_order::DefinitionOrder;
 use mwcc_syntax_trees::{
     ArmBody, AsmItem, Expression, Function, InlineAsmBlock, Statement, SwitchArm, Type,
 };
@@ -136,12 +137,21 @@ impl InlineBodySet {
             .map(|function| function.name.clone())
             .collect();
         let mut call_counts = HashMap::<String, usize>::new();
+        let definition_order = DefinitionOrder::new(definitions);
+        let mut source_visible_call_counts = HashMap::<String, usize>::new();
         // Ordinary same-TU definitions are selected for automatic inlining by
         // their calls from emitted definitions. An unreferenced retained inline
         // body is compiled for analysis but dropped; a call written only inside
         // it must not turn the one live call into a repeatable/multi-use case.
-        for function in definitions {
-            collect_function_calls(function, &mut call_counts);
+        for (caller_index, function) in definitions.iter().enumerate() {
+            let mut calls = HashMap::new();
+            collect_function_calls(function, &mut calls);
+            for (callee, count) in calls {
+                *call_counts.entry(callee.clone()).or_default() += count;
+                if definition_order.is_visible_to(&callee, caller_index) {
+                    *source_visible_call_counts.entry(callee).or_default() += count;
+                }
+            }
         }
         let mut bodies = HashMap::new();
         for function in skipped {
@@ -159,6 +169,10 @@ impl InlineBodySet {
         for function in definitions.iter().filter(|function| {
             automatic_composable_function(function)
                 && call_counts.get(&function.name).copied() == Some(1)
+                && source_visible_call_counts
+                    .get(&function.name)
+                    .copied()
+                    == Some(1)
         }) {
             bodies
                 .entry(function.name.clone())
@@ -169,6 +183,10 @@ impl InlineBodySet {
             .filter(|function| {
                 automatic_composable_function(function)
                     && call_counts.get(&function.name).copied().unwrap_or(0) > 1
+                    && source_visible_call_counts
+                        .get(&function.name)
+                        .copied()
+                        == call_counts.get(&function.name).copied()
             })
             .map(|function| (function.name.clone(), function.clone()))
             .collect();
@@ -183,6 +201,13 @@ impl InlineBodySet {
         for function in definitions
             .iter()
             .filter(|function| !callable_fallbacks.contains(function.name.as_str()))
+            .filter(|function| {
+                source_visible_call_counts
+                    .get(&function.name)
+                    .copied()
+                    .unwrap_or(0)
+                    == call_counts.get(&function.name).copied().unwrap_or(0)
+            })
         {
             if let Some(body) = value_body::summarize_automatic(function) {
                 values.entry(function.name.clone()).or_insert(body);
@@ -2378,6 +2403,14 @@ mod tests {
             Statement::If { then_body, .. },
             Statement::Label(boundary),
         ] if matches!(then_body.as_slice(), [Statement::Goto(target)] if target == boundary)));
+
+        let forward =
+            InlineBodySet::analyze_with_definitions(&[caller.clone(), helper.clone()], &[]);
+        assert!(!forward.calls_any(&caller));
+        assert!(
+            forward.expand_calls(&caller).is_none(),
+            "ordinary file IPA cannot use a definition it has not reached yet"
+        );
 
         let required = InlineBodySet::analyze(&[helper.clone()]);
         assert!(required.calls_required(&caller));

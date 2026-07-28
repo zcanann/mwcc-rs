@@ -7,6 +7,7 @@
 //! ad-hoc interprocedural analyzer as more inline families are added.
 
 use crate::analysis::constant_value;
+use crate::inline_source_order::DefinitionOrder;
 use mwcc_syntax_trees::{BinaryOperator, Expression, Function, LoopKind, Statement, Type};
 use std::collections::{HashMap, HashSet};
 
@@ -115,6 +116,7 @@ pub struct InlineSummaries {
     static_call_wrappers: HashMap<String, StaticCallWrapperSummary>,
     ipa_call_wrappers: HashMap<String, StaticCallWrapperSummary>,
     pointer_walkers: HashMap<String, PointerWalkerSummary>,
+    ipa_pointer_walker_callers: HashSet<String>,
     unoptimized_local_selects: HashMap<String, UnoptimizedLocalSelectSummary>,
     byte_appends: HashMap<String, ByteAppendSummary>,
     list_wipes: HashMap<String, ListWipeSummary>,
@@ -236,6 +238,24 @@ impl InlineSummaries {
                 summaries.queue_services_with_callers.insert(name.clone());
             }
         }
+        // MWCC's ordinary file-IPA pass is source ordered. A definition can
+        // feed a later caller, but a prototype followed by a caller and only
+        // then the definition remains an out-of-line call. This distinction
+        // matters in Runtime sources where `__init_user` precedes
+        // `__init_cpp`, while REL wrappers place their walker helper first.
+        let definition_order = DefinitionOrder::new(functions);
+        for (caller_index, function) in functions.iter().enumerate() {
+            let Some((walker_name, _, _)) =
+                summaries.unordered_ipa_pointer_walker_caller(function)
+            else {
+                continue;
+            };
+            if definition_order.is_visible_to(walker_name, caller_index) {
+                summaries
+                    .ipa_pointer_walker_callers
+                    .insert(function.name.clone());
+            }
+        }
         for walker in functions.iter().filter(|function| {
             function.is_static && summaries.pointer_walkers.contains_key(&function.name)
         }) {
@@ -339,6 +359,21 @@ impl InlineSummaries {
         &self,
         function: &Function,
     ) -> Option<(&PointerWalkerSummary, Option<&StaticCallWrapperSummary>)> {
+        if !self.ipa_pointer_walker_callers.contains(&function.name) {
+            return None;
+        }
+        let (_, walker, trailing) = self.unordered_ipa_pointer_walker_caller(function)?;
+        Some((walker, trailing))
+    }
+
+    fn unordered_ipa_pointer_walker_caller<'summaries, 'function>(
+        &'summaries self,
+        function: &'function Function,
+    ) -> Option<(
+        &'function str,
+        &'summaries PointerWalkerSummary,
+        Option<&'summaries StaticCallWrapperSummary>,
+    )> {
         if function.return_type != Type::Void
             || !function.locals.is_empty()
             || !function.guards.is_empty()
@@ -358,13 +393,14 @@ impl InlineSummaries {
                 _ => None,
             })
             .collect::<Option<_>>()?;
-        let walker = self.pointer_walker(calls.first()?)?;
+        let walker_name = *calls.first()?;
+        let walker = self.pointer_walker(walker_name)?;
         let trailing = match calls.as_slice() {
             [_] => None,
             [_, wrapper] => Some(self.ipa_call_wrappers.get(*wrapper)?),
             _ => return None,
         };
-        Some((walker, trailing))
+        Some((walker_name, walker, trailing))
     }
 
     pub fn should_elide_ipa_function(&self, name: &str) -> bool {
@@ -1418,9 +1454,18 @@ mod tests {
             })],
         );
 
+        let forward_summaries =
+            InlineSummaries::analyze(&[init_user.clone(), init_walker.clone()]);
+        assert!(
+            forward_summaries
+                .ipa_pointer_walker_caller(&init_user)
+                .is_none(),
+            "a later definition is not visible to MWCC's source-ordered IPA pass"
+        );
+
         let summaries = InlineSummaries::analyze(&[
-            init_user.clone(),
             init_walker,
+            init_user.clone(),
             fini_walker,
             exit.clone(),
             exit_process,

@@ -2662,6 +2662,9 @@ mod tests {
     #[path = "extern_unsized_array.rs"]
     mod extern_unsized_array;
 
+    #[path = "source_ordered_ipa.rs"]
+    mod source_ordered_ipa;
+
     #[path = "call_indexed_member.rs"]
     mod call_indexed_member;
 

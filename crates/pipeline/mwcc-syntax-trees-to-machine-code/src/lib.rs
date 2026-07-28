@@ -41,6 +41,7 @@ mod frame;
 mod frexp_family;
 mod generator;
 mod inline_expansion;
+mod inline_source_order;
 mod inline_summaries;
 mod legacy_comparisons;
 mod legacy_dual_float_condition;
