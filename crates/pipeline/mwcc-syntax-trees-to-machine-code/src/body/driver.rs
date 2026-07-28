@@ -2632,6 +2632,9 @@ impl Generator {
         if self.try_parameter_member_setup(function)? {
             return Ok(());
         }
+        if self.try_masked_word_store_switch(function)? {
+            return Ok(());
+        }
         if self.try_value_tracking(function)? {
             return Ok(());
         }

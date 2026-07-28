@@ -1384,12 +1384,6 @@ fn compile(
         bytes
     };
     let small_data = config.flags.global_addressing == mwcc_versions::GlobalAddressing::SmallData;
-    // A large (> 8 byte) writable global shares `.data`/`.bss` with any dense-switch
-    // jump table; the two layouts aren't reconciled yet, so a jump table forces such
-    // globals to keep deferring (be dropped).
-    let has_jump_table = machine_functions
-        .iter()
-        .any(|function| !function.jump_tables.is_empty());
     let analysis_counter_floor = cxx_analysis_residues
         .as_ref()
         .map_or(0, |capture| capture.next_anonymous_ordinal);
@@ -1798,13 +1792,9 @@ fn compile(
         // Writable global. Small (≤ 8 bytes) → `.sdata`/`.sbss`; large (> 8) →
         // `.data`/`.bss` (the writer routes by size). Absolute addressing changes
         // references, not whether the definition exists, so `-sdata 0` must retain
-        // large objects. A dense-switch jump table still shares `.data` with these
-        // objects without a reconciled layout; defer that combination honestly.
-        if size > 8 && has_jump_table {
-            return Err(Diagnostic::error(
-                "a large writable global alongside a jump table needs shared .data layout (roadmap)",
-            ));
-        }
+        // large objects. The object writer interleaves these file-scope objects
+        // with function-owned jump tables by source position in their shared
+        // `.data` section.
         // Materialize the initializer's bytes if there is one (a struct value/array uses the
         // parser's pre-serialized field bytes — exact for sub-word/nested/padded fields; a
         // scalar/array serializes its word-stride values). `None` means uninitialized.
@@ -2688,6 +2678,9 @@ mod tests {
 
     #[path = "resource_event_switch.rs"]
     mod resource_event_switch;
+
+    #[path = "masked_word_store_switch.rs"]
+    mod masked_word_store_switch;
 
     #[path = "pointer_fallback.rs"]
     mod pointer_fallback;
