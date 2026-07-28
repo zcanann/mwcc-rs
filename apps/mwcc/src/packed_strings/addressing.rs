@@ -76,6 +76,71 @@ pub(crate) fn materialize_function_offsets(function: &mut MachineFunction, base:
             },
         );
     }
+    schedule_offset_format_call(function);
+}
+
+/// Interior packed-string offsets do not exist until this late materialization
+/// pass. In the measured table/date formatting packet MWCC resolves the base
+/// low half, issues the independent table loads and output-frame address, then
+/// applies the string offset. Keep this schedule beside the transformation
+/// that creates the offset instruction.
+fn schedule_offset_format_call(function: &mut MachineFunction) {
+    let Some(start) = function.instructions.windows(14).position(|window| {
+        matches!(
+            window,
+            [
+                Instruction::AddImmediateShifted { d: 3, a: 0, .. },
+                Instruction::AddImmediate {
+                    d: 5,
+                    a: 0,
+                    immediate: 47,
+                },
+                Instruction::AddImmediate { d: 0, a: 3, .. },
+                Instruction::AddImmediateShifted { d: 4, a: 0, .. },
+                Instruction::Add {
+                    d: 3,
+                    a: 0,
+                    b: 14,
+                },
+                Instruction::StoreByte { s: 5, a: 1, .. },
+                Instruction::LoadByteZero {
+                    d: 6,
+                    a: 3,
+                    offset: first_load_offset,
+                },
+                Instruction::AddImmediate {
+                    d: 4,
+                    a: 4,
+                    immediate: 0,
+                },
+                Instruction::AddImmediate {
+                    d: 4,
+                    a: 4,
+                    immediate: string_offset,
+                },
+                Instruction::LoadByteZero {
+                    d: 7,
+                    a: 3,
+                    offset: second_load_offset,
+                },
+                Instruction::AddImmediate { d: 3, a: 1, .. },
+                Instruction::AddImmediate { d: 5, a: 1, .. },
+                Instruction::ConditionRegisterClear { d: 6 },
+                Instruction::BranchAndLink { target },
+            ] if (target == "sprintf" || target.starts_with("sprintf__"))
+                && *string_offset > 0
+                && *second_load_offset == *first_load_offset + 1
+        )
+    }) else {
+        return;
+    };
+    if (start + 6..=start + 10).any(|position| is_control_entry(function, position)) {
+        return;
+    }
+
+    swap_adjacent_instructions(function, start + 6);
+    swap_adjacent_instructions(function, start + 8);
+    swap_adjacent_instructions(function, start + 9);
 }
 
 /// A loop can retain the zero-offset packed-string base in a saved register and
@@ -282,11 +347,101 @@ fn insert_instruction(function: &mut MachineFunction, position: usize, instructi
 
 #[cfg(test)]
 mod tests {
-    use super::materialize_function_offsets;
+    use super::{materialize_function_offsets, schedule_offset_format_call};
     use mwcc_machine_code::{
         Instruction, JumpTable, MachineFunction, Relocation, RelocationKind,
         RelocationTarget,
     };
+
+    #[test]
+    fn schedules_a_materialized_offset_inside_the_table_format_packet() {
+        let mut function = MachineFunction::new("probe");
+        function.instructions = vec![
+            Instruction::AddImmediateShifted {
+                d: 3,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::load_immediate(5, 47),
+            Instruction::AddImmediate {
+                d: 0,
+                a: 3,
+                immediate: 0,
+            },
+            Instruction::AddImmediateShifted {
+                d: 4,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::Add { d: 3, a: 0, b: 14 },
+            Instruction::StoreByte {
+                s: 5,
+                a: 1,
+                offset: 74,
+            },
+            Instruction::LoadByteZero {
+                d: 6,
+                a: 3,
+                offset: 72,
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 4,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 4,
+                immediate: 19,
+            },
+            Instruction::LoadByteZero {
+                d: 7,
+                a: 3,
+                offset: 73,
+            },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 1,
+                immediate: 104,
+            },
+            Instruction::AddImmediate {
+                d: 5,
+                a: 1,
+                immediate: 72,
+            },
+            Instruction::ConditionRegisterClear { d: 6 },
+            Instruction::BranchAndLink {
+                target: "sprintf".to_owned(),
+            },
+        ];
+        function.relocations.push(Relocation {
+            instruction_index: 7,
+            kind: RelocationKind::Addr16Lo,
+            target: RelocationTarget::External("@stringBase0".to_owned()),
+        });
+
+        schedule_offset_format_call(&mut function);
+
+        assert!(matches!(
+            function.instructions[6..11],
+            [
+                Instruction::AddImmediate {
+                    d: 4,
+                    a: 4,
+                    immediate: 0,
+                },
+                Instruction::LoadByteZero { d: 6, .. },
+                Instruction::LoadByteZero { d: 7, .. },
+                Instruction::AddImmediate { d: 3, a: 1, .. },
+                Instruction::AddImmediate {
+                    d: 4,
+                    a: 4,
+                    immediate: 19,
+                },
+            ]
+        ));
+        assert_eq!(function.relocations[0].instruction_index, 6);
+    }
 
     #[test]
     fn materializes_an_interior_address_and_shifts_code_metadata() {
