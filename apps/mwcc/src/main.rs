@@ -2736,6 +2736,9 @@ mod tests {
     #[path = "static_local_string_table.rs"]
     mod static_local_string_table;
 
+    #[path = "dead_automatic_arrays.rs"]
+    mod dead_automatic_arrays;
+
     #[path = "spilled_pointer_cast.rs"]
     mod spilled_pointer_cast;
 

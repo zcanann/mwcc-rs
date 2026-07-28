@@ -1549,29 +1549,43 @@ impl Generator {
         if self.variadic_definition {
             return Err(Diagnostic::error("a variadic function definition is not supported yet (the variadic-register save prologue)"));
         }
-        // An INITIALIZED AUTOMATIC local array needs the frame copy-in
-        // sequence natively — only a capture claim emits it byte-exactly, so
-        // an unclaimed function with one defers here (after the templates).
-        if function.locals.iter().any(|local| {
-            !local.is_static && local.array_length.is_some() && local.data_bytes.is_some()
-        }) {
-            return Err(Diagnostic::error(
-                "an initialized automatic local array is not supported yet (roadmap)",
-            ));
-        }
-        // An EMPTY body — `T f(args) { }` (MSL's "UNUSED FUNCTION" stubs) —
-        // is a single `blr` regardless of return type (measured: pikmin
-        // string.c's ten stubs; a non-void return is simply garbage).
+        // An EMPTY optimized body may retain source-only local declarations for
+        // debug provenance. Constant automatic initializers have no observable
+        // effect once their objects are unused, so MWCC removes their storage
+        // and copy-in as dead code (`__deadstripped_zVar` is eight zero-filled
+        // arrays and compiles to one `blr`). Do not erase volatile objects,
+        // statics, or call/assignment initializers; each can be observable.
+        let locals_are_dead_declarations = self.behavior.optimization
+            != mwcc_versions::Optimization::O0
+            && function.locals.iter().all(|local| {
+                !local.is_static
+                    && !local.is_volatile
+                    && local
+                        .initializer
+                        .as_ref()
+                        .is_none_or(|initializer| !expression_has_side_effect(initializer))
+            });
         if function.statements.is_empty()
             && function.guards.is_empty()
             && function.return_expression.is_none()
-            && function.locals.is_empty()
+            && (function.locals.is_empty() || locals_are_dead_declarations)
             && self.frame_slots.is_empty()
         {
             self.output
                 .instructions
                 .push(Instruction::BranchToLinkRegister);
             return Ok(());
+        }
+        // An INITIALIZED AUTOMATIC local array needs the frame copy-in
+        // sequence natively — only a capture claim emits it byte-exactly, so
+        // an unclaimed function with one defers here (after the templates and
+        // the dead-declaration fold above).
+        if function.locals.iter().any(|local| {
+            !local.is_static && local.array_length.is_some() && local.data_bytes.is_some()
+        }) {
+            return Err(Diagnostic::error(
+                "an initialized automatic local array is not supported yet (roadmap)",
+            ));
         }
         // A body calling a SKIPPED INLINE defers here — after the exact-match
         // templates (a whole-function capture has the inline flattened into
