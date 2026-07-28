@@ -980,6 +980,11 @@ impl Generator {
                 if self.try_emit_select_constant_fold(*operator, left, right, destination)? {
                     return Ok(());
                 }
+                if *operator == BinaryOperator::Add
+                    && self.try_emit_frame_digit_pair(left, right, destination)?
+                {
+                    return Ok(());
+                }
                 // A 16-bit constant operand folds into an immediate instruction.
                 if self.try_emit_general_with_constant(*operator, left, right, destination)? {
                     return Ok(());

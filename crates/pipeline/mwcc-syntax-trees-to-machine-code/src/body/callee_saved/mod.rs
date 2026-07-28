@@ -82,6 +82,7 @@ mod structured_frame_initializers;
 mod structured_frame_bitfield_stores;
 mod structured_frame_call_schedule;
 mod structured_frame_clamp_schedule;
+mod structured_frame_digit_schedule;
 mod structured_frame_entry;
 mod structured_frame_packet_call_schedule;
 mod structured_frame_preloop_packet_schedule;

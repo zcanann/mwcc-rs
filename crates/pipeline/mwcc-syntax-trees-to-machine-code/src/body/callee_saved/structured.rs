@@ -1808,6 +1808,7 @@ impl Generator {
         self.schedule_entry_initialized_saved_float(function);
         self.schedule_structured_aggregate_constructor();
         self.schedule_structured_member_scales_and_compare();
+        self.schedule_structured_frame_digit_pair();
         self.schedule_structured_virtual_calls();
         self.schedule_leading_member_store_call();
         if dense_entry_prefix {

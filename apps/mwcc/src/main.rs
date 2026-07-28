@@ -2748,6 +2748,9 @@ mod tests {
     #[path = "nested_tail_call_arguments.rs"]
     mod nested_tail_call_arguments;
 
+    #[path = "frame_digit_pair.rs"]
+    mod frame_digit_pair;
+
     #[path = "initialized_automatic_arrays.rs"]
     mod initialized_automatic_arrays;
 

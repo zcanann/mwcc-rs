@@ -4,6 +4,124 @@
 use super::*;
 
 impl Generator {
+    /// Lower `(bytes[i] - bias) * radix + (bytes[j] - bias)` as the
+    /// left digit's scaled value plus the raw right byte, then apply the second
+    /// bias to the combined result.
+    ///
+    /// MWCC reassociates the right subtraction this way so both byte loads can
+    /// issue before the multiply:
+    /// `lbz left; addi -bias; lbz right; mulli radix; add; addi -bias`.
+    pub(crate) fn try_emit_frame_digit_pair(
+        &mut self,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+    ) -> Compilation<bool> {
+        let Expression::Binary {
+            operator: BinaryOperator::Multiply,
+            left: scaled,
+            right: radix,
+        } = left
+        else {
+            return Ok(false);
+        };
+        let Expression::Binary {
+            operator: BinaryOperator::Subtract,
+            left: first,
+            right: first_bias,
+        } = scaled.as_ref()
+        else {
+            return Ok(false);
+        };
+        let Expression::Binary {
+            operator: BinaryOperator::Subtract,
+            left: second,
+            right: second_bias,
+        } = right
+        else {
+            return Ok(false);
+        };
+        let (
+            Expression::Index {
+                base: first_base,
+                index: first_index,
+            },
+            Expression::Index {
+                base: second_base,
+                index: second_index,
+            },
+        ) = (first.as_ref(), second.as_ref())
+        else {
+            return Ok(false);
+        };
+        let (Expression::Variable(first_array), Expression::Variable(second_array)) =
+            (first_base.as_ref(), second_base.as_ref())
+        else {
+            return Ok(false);
+        };
+        let (Some(first_index), Some(second_index)) =
+            (constant_value(first_index), constant_value(second_index))
+        else {
+            return Ok(false);
+        };
+        let (Some(first_bias), Some(second_bias), Some(radix)) = (
+            constant_value(first_bias),
+            constant_value(second_bias),
+            constant_value(radix),
+        ) else {
+            return Ok(false);
+        };
+        let (Some(negative_bias), Ok(radix)) = (
+            first_bias
+                .checked_neg()
+                .and_then(|bias| i16::try_from(bias).ok()),
+            i16::try_from(radix),
+        ) else {
+            return Ok(false);
+        };
+        let byte_array = self
+            .frame_slots
+            .get(first_array.as_str())
+            .is_some_and(|slot| slot.is_array && slot.value_type == Type::UnsignedChar);
+        if destination == GENERAL_SCRATCH
+            || first_array != second_array
+            || first_index == second_index
+            || first_index < 0
+            || first_index.checked_add(1) != Some(second_index)
+            || first_bias != second_bias
+            || first_bias <= 0
+            || radix <= 1
+            || !byte_array
+        {
+            return Ok(false);
+        }
+
+        self.evaluate_general(first, destination)?;
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: destination,
+            a: destination,
+            immediate: negative_bias,
+        });
+        let second_value = self.fresh_virtual_general();
+        self.evaluate_general(second, second_value)?;
+        self.output.instructions.push(Instruction::MultiplyImmediate {
+            d: destination,
+            a: destination,
+            immediate: radix,
+        });
+        self.output.instructions.push(Instruction::Add {
+            d: destination,
+            a: second_value,
+            b: destination,
+        });
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: destination,
+            a: destination,
+            immediate: negative_bias,
+        });
+        Ok(true)
+    }
+
     /// Evaluate an integer expression into general register `destination`.
     /// mwcc collapses the bitwise distributive laws `(x&y)|(x&z) -> x&(y|z)`,
     /// `(x|y)&(x|z) -> x|(y&z)`, and `(x&y)^(x&z) -> x&(y^z)` to one inner op plus the
