@@ -145,6 +145,35 @@ fn weak_function(name: &'static str) -> FunctionObject<'static> {
 }
 
 #[test]
+fn text_relocations_are_written_in_offset_order() {
+    let relocations = vec![
+        crate::TextRelocation {
+            offset: 14,
+            elf_type: 4,
+            target: crate::RelocationTarget::External("low".to_owned()),
+        },
+        crate::TextRelocation {
+            offset: 6,
+            elf_type: 6,
+            target: crate::RelocationTarget::External("high".to_owned()),
+        },
+        crate::TextRelocation {
+            offset: 14,
+            elf_type: 5,
+            target: crate::RelocationTarget::External("same-offset".to_owned()),
+        },
+    ];
+
+    assert_eq!(
+        text_relocation_order(&relocations)
+            .iter()
+            .map(|relocation| relocation.offset)
+            .collect::<Vec<_>>(),
+        [6, 14, 14]
+    );
+}
+
+#[test]
 fn discarded_inline_images_use_aggregate_alignment() {
     assert_eq!(constant_alignment(&constant(8, true)), 4);
     assert_eq!(constant_alignment(&constant(8, false)), 8);

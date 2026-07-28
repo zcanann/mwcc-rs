@@ -11,7 +11,7 @@
 use crate::{
     layout_code_sections, CommentFormat, DataObject, DebugRelocationTarget, DebugSymbolBinding,
     DebugSymbolPlacement, FunctionObject, FunctionSymbolOrder, ObjectInput, RelocationTarget,
-    Sdata2Constant,
+    Sdata2Constant, TextRelocation,
 };
 
 use std::collections::HashMap;
@@ -99,6 +99,16 @@ fn is_trailing_analysis_constant(object: &DataObject<'_>) -> bool {
 struct DataRelocationSchedule {
     entries: Vec<(usize, usize)>,
     owned_rtti_closure: bool,
+}
+
+/// Code scheduling can interleave address-materialization pairs after their
+/// relocations were recorded. MWCC writes `.rela.text` in target-section
+/// offset order; symbol discovery deliberately continues to use the semantic
+/// reference order stored on `FunctionObject`.
+fn text_relocation_order(relocations: &[TextRelocation]) -> Vec<&TextRelocation> {
+    let mut order = relocations.iter().collect::<Vec<_>>();
+    order.sort_by_key(|relocation| relocation.offset);
+    order
 }
 
 fn data_relocation_order(
@@ -3353,7 +3363,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         .collect();
     for &index in &layout_order {
         let function = &functions[index];
-        for relocation in &function.relocations {
+        for relocation in text_relocation_order(&function.relocations) {
             let mut rela_addend: u32 = 0;
             let symbol = match &relocation.target {
                 // A `static` target is a local data or function symbol; everything
