@@ -59,6 +59,7 @@ mod queue_post;
 mod queue_service;
 mod queue_transactions;
 mod result_call_forward;
+mod retained_split_member_guard;
 mod saved_pointer_zero_test_schedule;
 mod scaled_two_call_add;
 mod shared_global_float_pair_schedule;

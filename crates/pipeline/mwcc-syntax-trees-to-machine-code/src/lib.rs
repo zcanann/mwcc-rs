@@ -805,6 +805,7 @@ pub fn lower_function(
     generator.schedule_saved_base_call_argument();
     generator.schedule_linkage_first_function_address();
     generator.schedule_retained_eager_entry_argument();
+    generator.schedule_retained_split_member_guard();
     generator.schedule_linkage_first_inline_zero();
     generator.schedule_call_condition_live_in_arguments();
     generator.schedule_guarded_report_store(function);
