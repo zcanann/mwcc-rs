@@ -2628,6 +2628,9 @@ mod tests {
     #[path = "terminal_switch.rs"]
     mod terminal_switch;
 
+    #[path = "shared_result_switch.rs"]
+    mod shared_result_switch;
+
     #[path = "long_long_wait.rs"]
     mod long_long_wait;
 

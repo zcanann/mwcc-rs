@@ -3002,6 +3002,11 @@ impl Generator {
         if self.try_leading_return_statement_switch(function)? {
             return Ok(());
         }
+        // Empty case arms that all leave the switch and reach one trailing
+        // return share a single result block; the default owns the other result.
+        if self.try_shared_result_switch(function)? {
+            return Ok(());
+        }
         // A function whose body is a single `switch` lowers to the dispatch tree:
         // the comparisons, then the case bodies, then the default (the `default:`
         // arm if present, else the function's trailing `return`). The cases and

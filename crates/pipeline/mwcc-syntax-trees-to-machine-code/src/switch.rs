@@ -17,6 +17,8 @@
 //! pre-order (node, left subtree, right subtree); the case bodies follow in sorted
 //! value order, with the default last.
 
+mod shared_result;
+
 use crate::generator::*;
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_machine_code::{Instruction, JumpTable, RelocationKind, RelocationTarget};
@@ -26,7 +28,7 @@ use mwcc_versions::{CallDispatcherStyle, JumpTableBaseStyle};
 /// A pending dispatch-branch destination, resolved to an instruction index once
 /// the case bodies have been laid out.
 #[derive(Clone, Copy)]
-enum Target {
+pub(super) enum Target {
     /// The body of the case at this index in the sorted-by-value arm list.
     Body(usize),
     /// The default / fall-through return.
@@ -312,15 +314,17 @@ impl Generator {
         // Dispatch decisions use value order, while mwcc emits case bodies in
         // source order. Keep those two orders independent and join them through
         // the sorted body index when patching branches.
-        // A switch whose case values span at most 6 (so a jump table would hold at
-        // most 6 entries) is *always* the comparison tree; mwcc never tables a span
-        // that small. A wider span is sometimes a jump table — a
-        // distribution-dependent decision (`{0,2,4,6}` tables but `{0,1,2,6}` does
-        // not). The one wide-span shape that is *always* a table is a CONTIGUOUS run
-        // of >= 7 cases (any base); handle that and defer the rest (never a
-        // non-matching tree). `sorted` is ascending, so span = last - first + 1.
+        // At most three cases always use the comparison tree, irrespective of
+        // their numeric span (measured: Ocarina rdb's `{0, 8, 12}`). A switch
+        // whose values span at most 6 also always uses the tree; mwcc never
+        // tables a payload that small. Wider four-plus-case shapes are
+        // distribution-dependent (`{0,2,4,6}` tables but `{0,1,2,6}` does not).
+        // The one such shape that is always a table is a contiguous run of >= 7
+        // cases (any base); handle that and defer the rest rather than select a
+        // potentially non-matching tree. `sorted` is ascending, so
+        // span = last - first + 1.
         let span = sorted[sorted.len() - 1].value - sorted[0].value + 1;
-        if span > 6 {
+        if span > 6 && sorted.len() > 3 {
             let contiguous = span == sorted.len() as i64;
             if contiguous && sorted.len() >= 7 && register == result {
                 return self.emit_jump_table(
@@ -868,7 +872,7 @@ impl Generator {
     /// that side). Returns the index of the first instruction emitted (the range's
     /// entry label). Only called for ranges that emit a test — a single value
     /// pinned on both sides has no code and is branched to directly by its parent.
-    fn lower_switch_range(
+    pub(super) fn lower_switch_range(
         &mut self,
         register: u8,
         values: &[i64],
