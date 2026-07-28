@@ -1452,6 +1452,9 @@ impl Generator {
         if self.try_guarded_payload_membership(function)? {
             return Ok(());
         }
+        if self.try_global_list_teardown(function)? {
+            return Ok(());
+        }
         if self.try_inlined_payload_event(function)? {
             return Ok(());
         }

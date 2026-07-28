@@ -2716,6 +2716,9 @@ mod tests {
     #[path = "guarded_global_address_call.rs"]
     mod guarded_global_address_call;
 
+    #[path = "global_list_teardown.rs"]
+    mod global_list_teardown;
+
     #[path = "inlined_payload_event.rs"]
     mod inlined_payload_event;
 
