@@ -424,6 +424,9 @@ impl Generator {
         if self.try_emit_constant_global_array_constant_arguments(arguments, name)? {
             return Ok(());
         }
+        if self.try_emit_global_array_constant_arguments(arguments, name)? {
+            return Ok(());
+        }
         if self.try_emit_global_array_string_constant_arguments(arguments, name)? {
             return Ok(());
         }

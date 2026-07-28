@@ -54,6 +54,54 @@ fn stable_call_binary(
 }
 
 impl Generator {
+    /// Marshal `(large_global_array, i16, i16)` by filling the array address
+    /// dependency slot with the first literal.
+    ///
+    /// A static buffer decays to an address rather than loading a scalar. MWCC
+    /// therefore emits `lis r3,array; li r4,a; addi r3,r3,array; li r5,b`.
+    /// The call-prologue scheduler may place the leading `lis`/`li` pair around
+    /// the LR save when this is the function's first call.
+    pub(crate) fn try_emit_global_array_constant_arguments(
+        &mut self,
+        arguments: &[Expression],
+        name: &str,
+    ) -> Compilation<bool> {
+        let [
+            Expression::Variable(array),
+            Expression::IntegerLiteral(second),
+            Expression::IntegerLiteral(third),
+        ] = arguments
+        else {
+            return Ok(false);
+        };
+        let direct_call = !self.globals.contains_key(name)
+            && !self.locations.contains_key(name)
+            && !self.known_locals.contains(name);
+        let Some(&array_size) = self.global_array_sizes.get(array.as_str()) else {
+            return Ok(false);
+        };
+        let (Ok(second), Ok(third)) = (i16::try_from(*second), i16::try_from(*third)) else {
+            return Ok(false);
+        };
+        if !direct_call
+            || !self.behavior.schedule_latency_slots
+            || (self.behavior.global_addressing == GlobalAddressing::SmallData && array_size <= 8)
+        {
+            return Ok(false);
+        }
+
+        let first = Eabi::FIRST_GENERAL_ARGUMENT;
+        self.emit_address_high(first, array);
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(first + 1, second));
+        self.emit_address_low(first, array);
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(first + 2, third));
+        Ok(true)
+    }
+
     /// Marshal `(large_global_array, packed_string, i16)` by overlapping both
     /// address chains across the linkage-frame LR store.
     ///
