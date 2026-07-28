@@ -190,6 +190,12 @@ impl Generator {
                 _ => unreachable!("switch patch points at a non-branch instruction"),
             }
         }
+        // Mainline MWCC retains two optimizer labels for every source arm and
+        // for an explicit default, plus the dispatch and shared continuation.
+        // They are invisible in the instruction stream but advance later
+        // static-local and anonymous symbol ordinals.
+        self.output.anonymous_label_bump +=
+            joined_call_hidden_labels(arms.len(), default_statements.is_some());
         Ok(())
     }
 
@@ -1244,4 +1250,19 @@ fn terminal_hidden_if_labels(statements: &[Statement]) -> u32 {
             _ => 0,
         })
         .sum()
+}
+
+fn joined_call_hidden_labels(arm_count: usize, has_default: bool) -> u32 {
+    2 * (arm_count as u32 + u32::from(has_default)) + 2
+}
+
+#[cfg(test)]
+mod tests {
+    use super::joined_call_hidden_labels;
+
+    #[test]
+    fn joined_call_switch_accounts_arms_default_and_join() {
+        assert_eq!(joined_call_hidden_labels(2, true), 8);
+        assert_eq!(joined_call_hidden_labels(2, false), 6);
+    }
 }
