@@ -70,10 +70,21 @@ pub(crate) fn materialize_function_offsets(function: &mut MachineFunction, base:
         else {
             continue;
         };
+        let mut insertion_position = low.instruction_index + 1;
+        if matches!(
+            function.instructions.get(insertion_position),
+            Some(Instruction::AddImmediate { d: next_d, a: next_a, .. })
+                if *next_d != *d && *next_a != *d
+        ) {
+            // Fill the packed-base dependency slot with an already-scheduled
+            // independent address calculation (notably a stack-buffer
+            // argument) before applying the interior offset.
+            insertion_position += 1;
+        }
         pairs.push((
             low_relocation_index,
             high_relocation_index,
-            low.instruction_index + 1,
+            insertion_position,
             *d,
             immediate,
         ));
@@ -214,5 +225,65 @@ mod tests {
         )));
         assert_eq!(function.entry_points[0].1, 4);
         assert_eq!(function.jump_tables[0].entries, vec![16]);
+    }
+
+    #[test]
+    fn preserves_an_independent_address_in_the_packed_base_slot() {
+        let mut function = MachineFunction::new("probe");
+        function.instructions = vec![
+            Instruction::AddImmediateShifted {
+                d: 4,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 4,
+                a: 4,
+                immediate: 0,
+            },
+            Instruction::AddImmediate {
+                d: 3,
+                a: 1,
+                immediate: 8,
+            },
+            Instruction::BranchToLinkRegister,
+        ];
+        function.relocations = vec![
+            Relocation {
+                instruction_index: 0,
+                kind: RelocationKind::Addr16Ha,
+                target: RelocationTarget::ExternalWithAddend(
+                    "@stringBase0".to_owned(),
+                    16,
+                ),
+            },
+            Relocation {
+                instruction_index: 1,
+                kind: RelocationKind::Addr16Lo,
+                target: RelocationTarget::ExternalWithAddend(
+                    "@stringBase0".to_owned(),
+                    16,
+                ),
+            },
+        ];
+
+        materialize_function_offsets(&mut function, "@stringBase0");
+
+        assert!(matches!(
+            function.instructions[2],
+            Instruction::AddImmediate {
+                d: 3,
+                a: 1,
+                immediate: 8
+            }
+        ));
+        assert!(matches!(
+            function.instructions[3],
+            Instruction::AddImmediate {
+                d: 4,
+                a: 4,
+                immediate: 16
+            }
+        ));
     }
 }
