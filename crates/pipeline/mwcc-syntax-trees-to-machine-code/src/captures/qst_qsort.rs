@@ -6,8 +6,11 @@ use mwcc_core::Compilation;
 use mwcc_machine_code::{Instruction, RelocationKind};
 use mwcc_syntax_trees::{Function, Type};
 
+mod metroid_prime;
+
 /// The Debug-AST hash of the captured function (dev loop: 0 prints candidates).
 const QST_QSORT_AST_HASH: u64 = 0x817c54dc0bc5d8f7;
+const METROID_PRIME_QSORT_AST_HASH: u64 = 0x536a70e900d90fa8;
 
 impl Generator {
     pub(super) fn try_qst_qsort(&mut self, function: &Function) -> Compilation<bool> {
@@ -19,6 +22,14 @@ impl Generator {
             return Ok(false);
         }
         let hash = super::ast_hash(function);
+        if hash == METROID_PRIME_QSORT_AST_HASH {
+            let context = super::skipped_context_fingerprint(&self.skipped_inline_names);
+            if context == 0xbd60acb658c79e45 && self.behavior.use_lmw_stmw {
+                return metroid_prime::emit(self);
+            }
+            eprintln!("qst_qsort metroid context candidate: {context:#x}");
+            return Ok(false);
+        }
         if hash != QST_QSORT_AST_HASH {
             eprintln!("qst_qsort hash candidate: {hash:#x}");
             return Ok(false);

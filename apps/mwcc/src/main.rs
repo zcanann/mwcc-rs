@@ -2716,6 +2716,9 @@ mod tests {
     #[path = "saved_float_parameter.rs"]
     mod saved_float_parameter;
 
+    #[path = "metroid_prime_qsort.rs"]
+    mod metroid_prime_qsort;
+
     #[path = "spilled_pointer_cast.rs"]
     mod spilled_pointer_cast;
 
