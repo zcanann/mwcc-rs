@@ -1151,6 +1151,13 @@ impl Generator {
         // local-pointer aliases are not later mistaken for entry parameters.
         self.known_locals
             .extend(function.locals.iter().map(|local| local.name.clone()));
+        // A range-guarded global-array element consumed by several calls owns
+        // the complete linkage and address schedule. It is already in canonical
+        // AST form, so give this exact semantic owner first refusal before any
+        // broad body handler can partially lower the surrounding conditional.
+        if self.try_guarded_indexed_call_sequence(function)? {
+            return Ok(());
+        }
         if let Some(lowered) = super::aggregate_local_return::lower_local_aggregate_return(function)
         {
             self.locations.insert(
@@ -3423,12 +3430,6 @@ impl Generator {
             // on the current node. The successor is a genuine loop-carried
             // callee-saved value; keep this beside the other allocator owners.
             if self.try_pointer_state_call_loop(function)? {
-                return Ok(());
-            }
-            // A range-guarded global-array element consumed by several calls
-            // has one cross-call address survivor and a source-ordered false
-            // edge for every guard term.
-            if self.try_guarded_indexed_call_sequence(function)? {
                 return Ok(());
             }
             // Counted resource searches keep a status, counter, acquired
