@@ -8964,6 +8964,46 @@ blr\n\
     }
 
     #[test]
+    fn serializes_nested_struct_string_tables_with_real_field_widths() {
+        let source = r#"
+            typedef unsigned int size_t;
+            struct substr {
+                const char* text;
+                size_t size;
+            };
+            struct var_type {
+                substr name;
+                char* (*get_text)();
+            };
+            char* get_text();
+            static var_type vars[1] = {
+                { "ActivePad", 9, &get_text }
+            };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let table = &unit.globals[0];
+
+        assert_eq!(
+            table.data_bytes.as_deref(),
+            Some(&[0, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0][..])
+        );
+        assert_eq!(table.data_relocations.len(), 2);
+        assert_eq!(
+            table.data_relocations[0],
+            (0, "\u{1}ActivePad".to_string(), 0)
+        );
+        assert_eq!(table.data_relocations[1].0, 8);
+        assert!(table.data_relocations[1].1.contains("get_text"));
+    }
+
+    #[test]
     fn namespace_const_has_internal_linkage_only_in_cxx() {
         let tokens = mwcc_source_to_tokens::tokenize("const int value = 3;").unwrap();
         let cxx = parse_translation_unit(tokens.clone(), true, true, 1, 3).unwrap();

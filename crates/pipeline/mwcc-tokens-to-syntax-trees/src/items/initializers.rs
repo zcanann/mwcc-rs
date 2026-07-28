@@ -65,7 +65,9 @@ impl Parser {
         let mut fields: Vec<&crate::parser::StructField> = layout.fields.values().collect();
         fields.sort_by_key(|field| field.offset);
         let types: Vec<Type> = fields.iter().map(|field| field.member_type).collect();
-        let all_word = types.iter().all(|field_type| field_type.width() == 32);
+        let all_word = types
+            .iter()
+            .all(|field_type| type_size(*field_type) == 4);
         let any_pointer = types
             .iter()
             .any(|field_type| matches!(field_type, Type::Pointer(_) | Type::StructPointer { .. }));
