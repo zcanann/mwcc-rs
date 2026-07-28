@@ -2713,6 +2713,9 @@ mod tests {
     #[path = "saved_float_initializer.rs"]
     mod saved_float_initializer;
 
+    #[path = "saved_float_parameter.rs"]
+    mod saved_float_parameter;
+
     #[path = "spilled_pointer_cast.rs"]
     mod spilled_pointer_cast;
 

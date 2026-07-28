@@ -419,12 +419,18 @@ impl Generator {
             }
         }
         if saved_parameters.iter().any(|parameter| {
-            self.locations
-                .get(&parameter.name)
-                .is_none_or(|location| location.class != ValueClass::General)
+            self.locations.get(&parameter.name).is_none_or(|location| {
+                !matches!(location.class, ValueClass::General | ValueClass::Float)
+            })
         }) {
-            decline!("a saved parameter is not a general-register value");
+            decline!("a saved parameter is neither a general nor floating value");
         }
+        let (saved_float_parameters, mut saved_parameters): (Vec<_>, Vec<_>) =
+            saved_parameters.into_iter().partition(|parameter| {
+                self.locations
+                    .get(&parameter.name)
+                    .is_some_and(|location| location.class == ValueClass::Float)
+            });
         let Some(ephemeral_locals) = plan_ephemeral_locals(function, &survivors, &address_taken)
         else {
             decline!("ephemeral-local planning rejected the body");
@@ -445,7 +451,11 @@ impl Generator {
         else {
             decline!("saved float-home planning rejected the body");
         };
-        if saved_float_plan.group_count > 18 {
+        let saved_float_count = saved_float_parameters
+            .len()
+            .checked_add(saved_float_plan.group_count)
+            .ok_or_else(|| Diagnostic::error("saved float-home count overflow"))?;
+        if saved_float_count > 18 {
             decline!("more than eighteen overlapping saved float values are live");
         }
         let (eager_saved_locals, deferred_saved_locals): (Vec<_>, Vec<_>) = saved_locals
@@ -453,6 +463,7 @@ impl Generator {
             .partition(|local| local.initializer.is_some());
         let saved_parameter_names = saved_parameters
             .iter()
+            .chain(saved_float_parameters.iter())
             .map(|parameter| parameter.name.as_str())
             .collect();
         let initializer_live_in = self.plan_initializer_live_in(
@@ -964,7 +975,7 @@ impl Generator {
                 // one scalar slot but only rounds this frame to a doubleword.
                 // Ordinary structured frames retain their 16-byte rounding.
                 let alignment = if folded_terminal_pointer_alias
-                    || saved_float_plan.group_count != 0
+                    || saved_float_count != 0
                     || (unused_frame_array && !aggregate_frame_locals.is_empty())
                     || !frame_scalar_parameters.is_empty()
                 {
@@ -1501,14 +1512,46 @@ impl Generator {
         }
         self.callee_saved_float = self
             .callee_saved_float
-            .max(u8::try_from(saved_float_plan.group_count).unwrap_or(18));
+            .max(u8::try_from(saved_float_count).unwrap_or(18));
+        for (parameter_index, parameter) in saved_float_parameters.iter().enumerate() {
+            let incoming = self
+                .locations
+                .get(&parameter.name)
+                .expect("eligibility checked")
+                .register;
+            let preferred =
+                31u8.saturating_sub(u8::try_from(parameter_index).unwrap_or(17).min(17));
+            let home = self.fresh_virtual_float_preferring(preferred);
+            self.output
+                .instructions
+                .push(Instruction::FloatMove { d: home, b: incoming });
+            self.locations.insert(
+                parameter.name.clone(),
+                Location {
+                    class: ValueClass::Float,
+                    register: home,
+                    signed: true,
+                    width: parameter.parameter_type.width(),
+                    pointee: None,
+                    stride: None,
+                },
+            );
+        }
         for local in saved_float_locals {
             let group = saved_float_plan.group(&local.name);
-            let preferred = saved_float_home_preference(
-                group,
-                saved_float_plan.group_count,
-                compact_aggregate_scratch_pair,
-            );
+            let preferred = if saved_float_parameters.is_empty() {
+                saved_float_home_preference(
+                    group,
+                    saved_float_plan.group_count,
+                    compact_aggregate_scratch_pair,
+                )
+            } else {
+                31u8.saturating_sub(
+                    u8::try_from(saved_float_parameters.len() + group)
+                        .unwrap_or(17)
+                        .min(17),
+                )
+            };
             let home = self.fresh_virtual_float_preferring(preferred);
             if let Some(initializer) = &local.initializer {
                 self.evaluate(initializer, local.declared_type, home)?;
