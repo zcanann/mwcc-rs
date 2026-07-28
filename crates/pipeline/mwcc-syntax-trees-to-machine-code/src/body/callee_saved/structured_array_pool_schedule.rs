@@ -4,6 +4,79 @@
 use super::*;
 
 impl Generator {
+    /// Keep the first table-address high half distinct from its indexed base.
+    /// MWCC assigns the short-lived high half to r4 while the original address
+    /// lifetime retains its saved-register home; destructive selection
+    /// otherwise coalesces both values into that saved register.
+    pub(crate) fn separate_structured_array_pool_initial_table_address(&mut self) {
+        if !self.structured_array_pool_emitted {
+            return;
+        }
+        let Some(start) = self.output.instructions.windows(8).position(|window| {
+            matches!(
+                window,
+                [
+                    Instruction::MultiplyImmediate { d: scaled, .. },
+                    Instruction::AddImmediate { d: 3, a: 1, .. },
+                    Instruction::AddImmediateShifted {
+                        d: table_high,
+                        a: 0,
+                        ..
+                    },
+                    Instruction::AddImmediate {
+                        d: 0,
+                        a: table_low,
+                        ..
+                    },
+                    Instruction::Add {
+                        d: table_add,
+                        a: 0,
+                        b: table_scaled,
+                    },
+                    Instruction::AddImmediate {
+                        d: 4,
+                        a: source_base,
+                        immediate: 64,
+                    },
+                    Instruction::AddImmediate {
+                        d: 5,
+                        a: 0,
+                        immediate: 5,
+                    },
+                    Instruction::BranchAndLink { target },
+                ] if (target == "strncpy" || target.starts_with("strncpy__"))
+                    && table_high == table_low
+                    && table_high == table_add
+                    && table_high == source_base
+                    && scaled == table_scaled
+            )
+        }) else {
+            return;
+        };
+
+        let high_half = self.fresh_virtual_general_preferring(4);
+        let Instruction::AddImmediateShifted { a, immediate, .. } =
+            self.output.instructions[start + 2]
+        else {
+            unreachable!("the pooled-array table high half was matched above");
+        };
+        self.output.instructions[start + 2] = Instruction::AddImmediateShifted {
+            d: high_half,
+            a,
+            immediate,
+        };
+        let Instruction::AddImmediate { d, immediate, .. } =
+            self.output.instructions[start + 3]
+        else {
+            unreachable!("the pooled-array table low half was matched above");
+        };
+        self.output.instructions[start + 3] = Instruction::AddImmediate {
+            d,
+            a: high_half,
+            immediate,
+        };
+    }
+
     /// MWCC overlaps the next formatted-call address transaction with the
     /// intervening byte store. Do this while the table base is still virtual:
     /// moving the frame arguments after its two byte loads lets allocation
