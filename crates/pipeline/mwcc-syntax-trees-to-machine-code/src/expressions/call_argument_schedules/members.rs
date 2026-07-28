@@ -34,7 +34,86 @@ fn global_byte_member_offset(
     Some((global, *offset, adjustment))
 }
 
+fn global_word_member(expression: &Expression) -> Option<(&str, u32)> {
+    let Expression::Member {
+        base,
+        offset,
+        member_type: Type::Int | Type::UnsignedInt,
+        index_stride: None,
+    } = expression
+    else {
+        return None;
+    };
+    let Expression::Variable(global) = base.as_ref() else {
+        return None;
+    };
+    Some((global, *offset))
+}
+
 impl Generator {
+    /// Marshal `(global_array, packed_string, global.word)` using r4 first as
+    /// the aggregate address and then as the final format-string argument.
+    ///
+    /// All three absolute addresses overlap: global and array highs fill the
+    /// linkage-save window, their lows publish r4/r3, and the string uses r6
+    /// while the word load consumes the temporary aggregate address.
+    pub(crate) fn try_emit_global_array_string_global_word_arguments(
+        &mut self,
+        arguments: &[Expression],
+        name: &str,
+    ) -> Compilation<bool> {
+        let [Expression::Variable(array), Expression::StringLiteral(string), value] = arguments
+        else {
+            return Ok(false);
+        };
+        let Some((global, member_offset)) = global_word_member(value) else {
+            return Ok(false);
+        };
+        let Ok(member_offset) = i16::try_from(member_offset) else {
+            return Ok(false);
+        };
+        let direct = !self.globals.contains_key(name)
+            && !self.locations.contains_key(name)
+            && !self.known_locals.contains(name);
+        let Some(&array_size) = self.global_array_sizes.get(array.as_str()) else {
+            return Ok(false);
+        };
+        if !direct
+            || !self.addressable_globals.contains_key(global)
+            || array_size <= 8
+            || !self.behavior.string_literals_packed
+            || !self.behavior.schedule_latency_slots
+        {
+            return Ok(false);
+        }
+
+        let first = Eabi::FIRST_GENERAL_ARGUMENT;
+        self.output.packed_string_literals = true;
+        let string = self.string_literal_placeholder(string);
+        self.emit_address_high(first, global);
+        self.emit_address_high(first + 2, array);
+        self.record_relocation(RelocationKind::Addr16Lo, global);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: first + 1,
+            a: first,
+            immediate: 0,
+        });
+        self.record_relocation(RelocationKind::Addr16Lo, array);
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: first,
+            a: first + 2,
+            immediate: 0,
+        });
+        self.emit_address_high(first + 3, &string);
+        self.output.instructions.push(Instruction::LoadWord {
+            d: first + 2,
+            a: first + 1,
+            offset: member_offset,
+        });
+        self.emit_string_address_low(&string, first + 3, first + 1);
+        Ok(true)
+    }
+
     /// Marshal `(global_array, packed_string, global.byte + i16)` with three
     /// independent address chains occupying MWCC's measured dependency slots.
     ///
@@ -116,7 +195,7 @@ impl Generator {
 
 #[cfg(test)]
 mod tests {
-    use super::global_byte_member_offset;
+    use super::{global_byte_member_offset, global_word_member};
     use mwcc_syntax_trees::{BinaryOperator, Expression, Type};
 
     #[test]
@@ -136,5 +215,17 @@ mod tests {
             global_byte_member_offset(&expression),
             Some(("globals", 1745, 1))
         );
+    }
+
+    #[test]
+    fn recognizes_a_global_word_member() {
+        let expression = Expression::Member {
+            base: Box::new(Expression::Variable("globals".into())),
+            offset: 7104,
+            member_type: Type::UnsignedInt,
+            index_stride: None,
+        };
+
+        assert_eq!(global_word_member(&expression), Some(("globals", 7104)));
     }
 }

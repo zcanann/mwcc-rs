@@ -427,6 +427,9 @@ impl Generator {
         if self.try_emit_global_array_string_nested_tail_arguments(arguments, name)? {
             return Ok(());
         }
+        if self.try_emit_global_array_string_global_word_arguments(arguments, name)? {
+            return Ok(());
+        }
         if self.try_emit_global_array_string_global_byte_arguments(arguments, name)? {
             return Ok(());
         }

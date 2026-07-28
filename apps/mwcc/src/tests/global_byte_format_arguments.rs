@@ -52,3 +52,55 @@ fn schedules_a_global_byte_formatter_argument_between_addresses() {
         .windows(schedule.len())
         .any(|bytes| bytes == schedule));
 }
+
+#[test]
+fn schedules_a_global_word_formatter_argument_across_three_addresses() {
+    let source = br#"
+        struct Globals {
+            unsigned char padding[7104];
+            unsigned collectable;
+        };
+
+        extern struct Globals globals;
+        int format(char*, const char*, ...);
+
+        char* render(void) {
+            static char buffer[12];
+            format(buffer, "%d", globals.collectable);
+            return buffer;
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.cpp_exceptions = false;
+    flags.emit_mwcats = false;
+    flags.string_literals_read_only = true;
+    flags.string_literals_packed = true;
+    let object = compile(
+        source,
+        "global-word-format-arguments.c",
+        mwcc_versions::CompilerConfig {
+            build: mwcc_versions::GC_2_0P1,
+            flags,
+        },
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("the global word formatter schedule should compile");
+
+    let schedule = [
+        0x3c, 0x60, 0x00, 0x00, // lis r3,globals@ha
+        0x3c, 0xa0, 0x00, 0x00, // lis r5,buffer@ha
+        0x90, 0x01, 0x00, 0x14, // stw r0,20(r1)
+        0x38, 0x83, 0x00, 0x00, // addi r4,r3,globals@l
+        0x38, 0x65, 0x00, 0x00, // addi r3,r5,buffer@l
+        0x3c, 0xc0, 0x00, 0x00, // lis r6,string@ha
+        0x80, 0xa4, 0x1b, 0xc0, // lwz r5,7104(r4)
+        0x38, 0x86, 0x00, 0x00, // addi r4,r6,string@l
+        0x4c, 0xc6, 0x31, 0x82, // crclr 6
+    ];
+    assert!(object
+        .windows(schedule.len())
+        .any(|bytes| bytes == schedule));
+}
