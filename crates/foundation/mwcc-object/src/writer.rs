@@ -2225,7 +2225,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         // followed by its own static locals (measured: ac uart) — unless
         // static_locals_lead flips the pair (mp4 alloc's get_malloc_pool:
         // protopool$129, init$130, then the FUNC).
-        if function.is_static && !function.implicit_local && !emitted_early_func.contains(&index) {
+        if function.is_static && !function.implicit_local {
+            let emit_function_here = !emitted_early_func.contains(&index);
             let emit_func = |symtab: &mut Vec<u8>,
                              strtab: &mut StringTable,
                              comment_values: &mut Vec<(u32, u32)>| {
@@ -2249,17 +2250,21 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 )); // a function is 4-aligned
                 symbol
             };
-            if !function.static_locals_lead {
+            if emit_function_here && !function.static_locals_lead {
                 let symbol = emit_func(&mut symtab, &mut strtab, &mut comment_values);
                 function_symbols[index] = symbol;
                 local_function_symbols.insert(function.name, symbol);
             }
             // Owned statics emit in REVERSE declaration order (measured:
             // init$130 then protopool$129 on alloc.c; init$110 then
-            // protopool$109 on _alloc.c's default FUNC-first path).
+            // protopool$109 on _alloc.c's default FUNC-first path). An early
+            // FUNC symbol does not make its body-owned data early: unnamed-
+            // namespace functions still emit their locals in this owner block.
             let owned: Vec<&DataObject> = input.data_objects.iter().rev().collect();
             for object in owned {
-                if object.static_local_owner == Some(index) {
+                if object.static_local_owner == Some(index)
+                    && !local_data_symbols.contains_key(object.name)
+                {
                     local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
                     let section = index_of(data_section[object.name]) as u16;
                     let symbol_name = data_symbol_name(object.name);
@@ -2291,7 +2296,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     }
                 }
             }
-            if function.static_locals_lead {
+            if emit_function_here && function.static_locals_lead {
                 let symbol = emit_func(&mut symtab, &mut strtab, &mut comment_values);
                 function_symbols[index] = symbol;
                 local_function_symbols.insert(function.name, symbol);

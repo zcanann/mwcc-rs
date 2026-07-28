@@ -4,18 +4,20 @@ use crate::{compile, SourceLanguage};
 #[test]
 fn keeps_equally_named_function_statics_in_distinct_storage() {
     let source = br#"
-        void touch(int*);
+        extern void touch(int*);
 
-        int first(void) {
-            static int buffer;
-            touch(&buffer);
-            return buffer;
-        }
+        namespace {
+            int first() {
+                static int buffer;
+                touch(&buffer);
+                return buffer;
+            }
 
-        int second(void) {
-            static int buffer;
-            touch(&buffer);
-            return buffer;
+            int second() {
+                static int buffer;
+                touch(&buffer);
+                return buffer;
+            }
         }
     "#;
     let mut flags = mwcc_versions::Flags::default();
@@ -24,12 +26,12 @@ fn keeps_equally_named_function_statics_in_distinct_storage() {
     flags.emit_mwcats = false;
     let object = compile(
         source,
-        "duplicate-static-local-names.c",
+        "duplicate-static-local-names.cpp",
         mwcc_versions::CompilerConfig {
             build: mwcc_versions::GC_2_0P1,
             flags,
         },
-        Some(SourceLanguage::C),
+        Some(SourceLanguage::Cxx),
         None,
         false,
     )
