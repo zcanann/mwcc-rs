@@ -42,6 +42,18 @@ struct SkippedStaticLocal {
     byte_size: u16,
 }
 
+fn local_data_relocation(offset: u32, target: String, addend: i32) -> LocalDataRelocation {
+    let target = match target.strip_prefix('\u{1}') {
+        Some(literal) => LocalDataRelocationTarget::StringLiteral(literal.as_bytes().to_vec()),
+        None => LocalDataRelocationTarget::Symbol(target),
+    };
+    LocalDataRelocation {
+        offset,
+        target,
+        addend,
+    }
+}
+
 fn store_or_assign(
     target: Expression,
     value: Expression,
@@ -4733,11 +4745,8 @@ impl Parser {
                                         [index * 4..index * 4 + 4]
                                         .copy_from_slice(&(value as u32).to_be_bytes()),
                                     PointerElement::Symbol(target) => {
-                                        data_relocations.push(LocalDataRelocation {
-                                            offset,
-                                            target: LocalDataRelocationTarget::Symbol(target),
-                                            addend: 0,
-                                        });
+                                        data_relocations
+                                            .push(local_data_relocation(offset, target, 0));
                                     }
                                     PointerElement::Str(bytes) => {
                                         data_relocations.push(LocalDataRelocation {
@@ -4762,10 +4771,8 @@ impl Parser {
                             let bytes =
                                 self.parse_struct_array_initializer(tag, &mut relocations)?;
                             data_relocations.extend(relocations.into_iter().map(
-                                |(offset, target, addend)| LocalDataRelocation {
-                                    offset,
-                                    target: LocalDataRelocationTarget::Symbol(target),
-                                    addend,
+                                |(offset, target, addend)| {
+                                    local_data_relocation(offset, target, addend)
                                 },
                             ));
                             let element_size = match declared_type {
@@ -4900,10 +4907,8 @@ impl Parser {
                             let image =
                                 self.parse_one_struct_relocated(tag, 0, &mut relocations)?;
                             data_relocations.extend(relocations.into_iter().map(
-                                |(offset, target, addend)| LocalDataRelocation {
-                                    offset,
-                                    target: LocalDataRelocationTarget::Symbol(target),
-                                    addend,
+                                |(offset, target, addend)| {
+                                    local_data_relocation(offset, target, addend)
                                 },
                             ));
                             data_bytes = Some(image);

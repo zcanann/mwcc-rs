@@ -7524,6 +7524,58 @@ blr\n\
     }
 
     #[test]
+    fn retains_qualified_static_local_aggregate_string_targets() {
+        let source = r#"
+            struct substr {
+                const char* text;
+                unsigned size;
+            };
+            struct xtextbox {
+                struct tag_type {
+                    substr name;
+                    void (*parse_tag)();
+                };
+            };
+            void parse_tag() {}
+            void initialize() {
+                static xtextbox::tag_type var_tag = { "var", 3, &parse_tag };
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let var_tag = &unit.functions[1].locals[0];
+
+        assert!(var_tag.is_static);
+        assert_eq!(
+            var_tag.data_bytes.as_deref(),
+            Some(&[0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0][..])
+        );
+        assert_eq!(var_tag.data_relocations.len(), 2);
+        assert_eq!(
+            var_tag.data_relocations[0],
+            LocalDataRelocation {
+                offset: 0,
+                target: LocalDataRelocationTarget::StringLiteral(b"var".to_vec()),
+                addend: 0,
+            }
+        );
+        assert!(matches!(
+            &var_tag.data_relocations[1],
+            LocalDataRelocation {
+                offset: 8,
+                target: LocalDataRelocationTarget::Symbol(target),
+                addend: 0,
+            } if target.contains("parse_tag")
+        ));
+    }
+
+    #[test]
     fn recovers_wchar_specialization_layout_and_abi_names() {
         let source = r#"
             typedef unsigned int uint;

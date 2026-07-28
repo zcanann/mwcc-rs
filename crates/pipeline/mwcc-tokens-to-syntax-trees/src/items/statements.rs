@@ -6,8 +6,7 @@ use crate::parser::{Parser, StructField, StructLayout};
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_syntax_trees::{
     Expression, Function, GlobalDeclaration, GuardedReturn, LocalDeclaration, LoopKind, Parameter,
-    LocalDataRelocation, LocalDataRelocationTarget, Pointee, PointerElement, Statement, SwitchArm,
-    TranslationUnit, Type,
+    LocalDataRelocation, Pointee, PointerElement, Statement, SwitchArm, TranslationUnit, Type,
 };
 use mwcc_tokens::Token;
 
@@ -910,10 +909,8 @@ impl Parser {
                             &mut relocations,
                         )?);
                         data_relocations.extend(relocations.into_iter().map(
-                            |(offset, target, addend)| LocalDataRelocation {
-                                offset,
-                                target: LocalDataRelocationTarget::Symbol(target),
-                                addend,
+                            |(offset, target, addend)| {
+                                local_data_relocation(offset, target, addend)
                             },
                         ));
                     } else if matches!(declared_type, Type::Pointer(_) | Type::StructPointer { .. })
@@ -921,10 +918,8 @@ impl Parser {
                         let (bytes, relocations) = self.parse_static_local_pointer_initializer()?;
                         data_bytes = Some(bytes);
                         data_relocations.extend(relocations.into_iter().map(
-                            |(offset, target, addend)| LocalDataRelocation {
-                                offset,
-                                target: LocalDataRelocationTarget::Symbol(target),
-                                addend,
+                            |(offset, target, addend)| {
+                                local_data_relocation(offset, target, addend)
                             },
                         ));
                     } else if matches!(

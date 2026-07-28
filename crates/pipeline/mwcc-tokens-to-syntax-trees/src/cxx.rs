@@ -1589,6 +1589,10 @@ impl Parser {
         let opaque_indirection =
             matches!(self.tokens.get(scan), Some(Token::Star | Token::Ampersand));
         let qualified = components.join("::");
+        let local_value_declaration = matches!(self.tokens.get(scan), Some(Token::Identifier(_)))
+            && components
+                .last()
+                .is_some_and(|local| self.structs.contains_key(local));
         self.resolve_scoped_cxx_class_name(&qualified).is_some()
             || self.enum_types.contains_key(&qualified)
             || self
@@ -1596,6 +1600,12 @@ impl Parser {
                 .values()
                 .any(|mapped| mapped == &qualified)
             || self.resolve_nested_template_alias_layout(&qualified).is_some()
+            // The generic aggregate layout pass currently retains named nested
+            // structs under their injected local name. A qualified VALUE local
+            // (`Owner::Nested value`) is still unambiguous when that concrete
+            // layout is followed by a declarator identifier. Do not apply this
+            // fallback to `Owner::member` expressions.
+            || local_value_declaration
             // Headers can hide a typedef's definition behind unsupported
             // template syntax while later code still declares a pointer or
             // reference to it. The indirection makes this a usable opaque
