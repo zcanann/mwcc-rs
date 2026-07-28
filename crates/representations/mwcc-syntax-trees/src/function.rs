@@ -321,6 +321,22 @@ pub struct CxxInlineOrdinalFacts {
     pub instantiated_template_control_flow_labels: usize,
 }
 
+/// Constant aggregate image created while analyzing an inline body which is
+/// later discarded. Early and mainline frontends retain the image as an
+/// anonymous object even though neither the automatic nor the function body
+/// survives code generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscardedInlineAggregateImage {
+    /// Anonymous identity assigned by the frontend analysis walk.
+    pub ordinal: u32,
+    pub bytes: Vec<u8>,
+    pub alignment: u32,
+    /// Class-body analysis facts accumulated before this source declaration.
+    /// Their weighted ordinals share the sparse object stream even though the
+    /// ordinary function-pool walk applies them later.
+    pub preceding_cxx_inline_facts: CxxInlineOrdinalFacts,
+}
+
 /// Source-to-AST inline substitutions whose syntax no longer exists in the
 /// lowered [`Function`]. Optimizer generations may still consume this
 /// provenance for allocation and scheduling decisions.
@@ -412,6 +428,8 @@ pub struct TranslationUnit {
     pub function_inline_prebumps: std::collections::HashMap<String, usize>,
     /// Structural facts for version-specific C++ inline ordinal accounting.
     pub cxx_inline_ordinal_facts: CxxInlineOrdinalFacts,
+    /// Aggregate initializer images retained by dropped-inline analysis.
+    pub discarded_inline_aggregate_images: Vec<DiscardedInlineAggregateImage>,
     /// Direct-call parameter positions which bind scalar rvalues to const
     /// references, keyed by the resolved ABI function name. The source scalar
     /// type is retained because discarded-inline analysis may materialize the

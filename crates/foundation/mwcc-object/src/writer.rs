@@ -366,6 +366,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 ".sdata" => ".sdata",
                 ".sbss" => ".sbss",
                 ".sdata2" => ".sdata2",
+                ".sbss2" => ".sbss2",
                 ".rodata" => ".rodata",
                 ".bss" => ".bss",
                 _ => ".data",
@@ -420,6 +421,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         .data_objects
         .iter()
         .any(|object| section_of(object) == ".sdata2");
+    let has_sbss2 = input
+        .data_objects
+        .iter()
+        .any(|object| section_of(object) == ".sbss2");
     let has_file_data = input
         .data_objects
         .iter()
@@ -484,6 +489,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         .filter(|object| section_of(object) == ".sdata2" && !is_trailing_analysis_constant(object))
     {
         place(object, ".sdata2", &mut sdata2_global_size);
+    }
+    let mut sbss2_size = 0u32;
+    for object in input
+        .data_objects
+        .iter()
+        .filter(|object| section_of(object) == ".sbss2")
+    {
+        place(object, ".sbss2", &mut sbss2_size);
     }
     let string_owner: std::collections::HashMap<&str, usize> = input
         .functions
@@ -1228,6 +1241,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     if has_small_constants || has_const_sdata2 {
         order.push(".sdata2");
     }
+    if has_sbss2 {
+        order.push(".sbss2");
+    }
     if debug.is_some_and(|debug| {
         !debug.layout.before_data() && !debug.layout.between_full_and_small_data()
     }) {
@@ -1377,7 +1393,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             return input.object_format.code_alignment;
         }
         let base = match name {
-            ".sdata2" | ".sdata" | ".sbss" | ".data" | ".bss" | ".rodata" => 8,
+            ".sdata2" | ".sbss2" | ".sdata" | ".sbss" | ".data" | ".bss" | ".rodata" => 8,
             ".line" => 1,
             ".debug" => 4,
             _ => 4,
@@ -1530,12 +1546,14 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // constants/unwind entries — so skip those objects in this grouped static run. (A FILE-SCOPE
     // string — `char *s = "…";` — is not in any function's `string_names`, so it stays here, numbered
     // ahead of the functions.)
-    let is_zero_section = |name: &str| matches!(data_section[name], ".sbss" | ".bss");
+    let is_zero_section =
+        |name: &str| matches!(data_section[name], ".sbss" | ".sbss2" | ".bss");
     // Initialized statics — plus EXPLICITLY zero-initialized small `.sbss` ones — first, in
     // FORWARD declaration order (same interleaving mwcc uses for exported globals).
     let static_forward = |object: &DataObject| {
         !is_zero_section(object.name)
-            || (data_section[object.name] == ".sbss" && object.is_explicit_zero)
+            || (matches!(data_section[object.name], ".sbss" | ".sbss2")
+                && object.is_explicit_zero)
     };
     let is_pending_zero_static = |object: &DataObject| {
         object.is_static
@@ -4004,6 +4022,19 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             0,
             sdata2,
             0,
+        );
+    }
+    if has_sbss2 {
+        push(
+            ".sbss2",
+            SHT_NOBITS,
+            SHF_ALLOC,
+            0,
+            0,
+            section_align(".sbss2"),
+            0,
+            Vec::new(),
+            sbss2_size,
         );
     }
     if debug.is_some_and(|debug| {

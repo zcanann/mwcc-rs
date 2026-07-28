@@ -236,6 +236,9 @@ pub(crate) struct Parser {
     pub(crate) dropped_inline_const_local_declaration_label_weight: u8,
     pub(crate) dropped_inline_class_automatic_label_base: u8,
     pub(crate) dropped_inline_class_automatic_label_weight: u8,
+    /// Whether an initialized aggregate automatic in a discarded inline keeps
+    /// its frontend-created source image and ordinal.
+    pub(crate) retain_discarded_inline_aggregate_images: bool,
     /// Anonymous-label cost of an anonymous struct/union definition.
     pub(crate) anonymous_aggregate_definition_label_weight: u8,
     pub(crate) nested_anonymous_aggregate_definition_label_weight: u8,
@@ -596,6 +599,10 @@ pub(crate) struct Parser {
     /// C++ class/inline syntax retained for version-specific anonymous-symbol
     /// accounting after parsing.
     pub(crate) cxx_inline_ordinal_facts: mwcc_syntax_trees::CxxInlineOrdinalFacts,
+    /// Constant aggregate images created by analysis of discarded inline
+    /// definitions, in compiler-creation order.
+    pub(crate) discarded_inline_aggregate_images:
+        Vec<mwcc_syntax_trees::DiscardedInlineAggregateImage>,
     /// Class identities with a user-declared nonvirtual destructor.
     pub(crate) cxx_nonvirtual_destructor_classes: std::collections::HashSet<String>,
     /// Constructor targets observed inside dropped in-class inline bodies.

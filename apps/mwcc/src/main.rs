@@ -707,6 +707,8 @@ fn compile(
             behavior.dropped_inline_const_local_declaration_label_weight,
             behavior.dropped_inline_class_automatic_label_base,
             behavior.dropped_inline_class_automatic_label_weight,
+            behavior.discarded_inline_aggregate_image_style
+                != mwcc_versions::DiscardedInlineAggregateImageStyle::None,
             behavior.anonymous_aggregate_definition_label_weight,
             behavior.nested_anonymous_aggregate_definition_label_weight,
             is_cxx.then(|| anonymous_namespace_scope(source_name)),
@@ -1118,44 +1120,19 @@ fn compile(
             .globals
             .iter()
             .any(|global| global.is_weak && global.name.starts_with("__vt__"));
-    let executable_control_flow_weight = behavior.cxx_inline_control_flow_label_weight
-        + u8::from(emits_weak_vtable_closure)
-            * behavior.emitted_vtable_inline_control_flow_replay_weight;
     let replay_control_flow_bump = (cxx_inline_facts.control_flow_labels
         + cxx_inline_facts.instantiated_template_control_flow_labels)
         * usize::from(
             u8::from(emits_weak_vtable_closure)
                 * behavior.emitted_vtable_inline_control_flow_replay_weight,
         );
-    let cxx_inline_bump = cxx_inline_facts.class_definitions
-        * usize::from(behavior.cxx_class_definition_label_bump)
-        + cxx_inline_facts.inline_definitions
-            * usize::from(behavior.cxx_inline_definition_label_bump)
-        + cxx_inline_facts.inline_definitions
-            * usize::from(behavior.deferred_cxx_inline_definition_label_bump)
-        + cxx_inline_facts.inline_definition_parameters
-            * usize::from(behavior.dropped_inline_parameter_label_weight)
-        + mutable_inline_local_declarators
-            * usize::from(behavior.dropped_inline_local_declaration_label_weight)
-        + cxx_inline_facts.inline_definition_const_local_declarators
-            * usize::from(behavior.dropped_inline_const_local_declaration_label_weight)
-        + cxx_inline_facts.control_flow_labels
-            * usize::from(executable_control_flow_weight)
-        + cxx_inline_facts.instantiated_template_control_flow_labels
-            * usize::from(executable_control_flow_weight)
-        + cxx_inline_facts.nonvirtual_destructors
-            * usize::from(behavior.cxx_nonvirtual_destructor_label_bump)
-        + cxx_inline_facts.nonvirtual_destructors
-            * usize::from(behavior.deferred_cxx_nonvirtual_destructor_label_bump)
-        + cxx_inline_facts.trivial_class_temporary_constructions
-            * usize::from(behavior.cxx_trivial_class_temporary_label_bump)
-        + cxx_inline_facts.nontrivial_class_temporary_constructions
-            * usize::from(behavior.cxx_nontrivial_class_temporary_label_bump)
+    let cxx_inline_bump = cxx_analysis_residues::inline_fact_ordinal_bump(
+        cxx_inline_facts,
+        behavior,
+        emits_weak_vtable_closure,
+    )
         + cxx_reference_bound_scalar_temporaries
-            * usize::from(behavior.cxx_reference_bound_scalar_temporary_label_bump)
-        + cxx_inline_facts.virtual_destructors
-            * usize::from(behavior.cxx_virtual_destructor_label_bump)
-        + cxx_inline_facts.direct_calls * usize::from(behavior.cxx_inline_ipa_call_label_bump);
+            * usize::from(behavior.cxx_reference_bound_scalar_temporary_label_bump);
     let cxx_analysis_residues = is_cxx
         .then(|| {
             cxx_analysis_residues::recognize(
@@ -1418,6 +1395,12 @@ fn compile(
         .map_or(&[][..], |capture| capture.force_upfront_globals);
     let mut defined_globals: Vec<mwcc_machine_code_to_object::DefinedGlobal> =
         cxx_analysis_residues.map_or_else(Vec::new, |capture| capture.objects);
+    defined_globals.extend(cxx_analysis_residues::discarded_inline_aggregate_images(
+        &unit,
+        behavior.discarded_inline_aggregate_image_style,
+        behavior,
+        emits_weak_vtable_closure,
+    ));
     if let Some(residue) = build163_vtable_const_residue {
         defined_globals.push(residue);
     }

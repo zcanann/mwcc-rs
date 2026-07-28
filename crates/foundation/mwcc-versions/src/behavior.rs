@@ -17,8 +17,8 @@ use crate::profile::{
     AsmBranchOptimizationStyle, AsmFunctionFinalizationStyle, BitFieldLoadPlacement,
     CallDispatcherStyle, CoefficientTableRelocationStyle, CommaValuePlacementStyle,
     ComputedStoreIssueStyle, ConstantStoreScheduleStyle, DataSectionRelocationStyle,
-    CxxConstructorInlineOrdinalWeights, DeferredFunctionEmissionStyle, FieldMergeStyle,
-    FixedAddressConstantStoreStyle,
+    CxxConstructorInlineOrdinalWeights, DeferredFunctionEmissionStyle,
+    DiscardedInlineAggregateImageStyle, FieldMergeStyle, FixedAddressConstantStoreStyle,
     FixedAddressParameterizedRmwStyle,
     FixedAddressPollAddressStyle, FixedAddressRmwStyle, FoldedFloatCompareLinkageStyle,
     ForwardedTraceStringStyle,
@@ -593,6 +593,8 @@ pub struct Behavior {
     pub folded_float_guard_label_bump: u8,
     /// Post-lowering anonymous-symbol accounting family.
     pub function_ordinal_accounting_style: FunctionOrdinalAccountingStyle,
+    /// Storage policy for aggregate images retained by dropped-inline analysis.
+    pub discarded_inline_aggregate_image_style: DiscardedInlineAggregateImageStyle,
     /// Whether this generation uses the measured GC 1.3--2.7 paired stopwatch
     /// schedule. Unmodeled generations defer instead of emitting known-wrong code.
     pub long_long_timer_style: LongLongTimerStyle,
@@ -987,6 +989,15 @@ impl Behavior {
                     FunctionOrdinalAccountingStyle::Gc41Ipa
                 }
                 (style, _) => style,
+            },
+            discarded_inline_aggregate_image_style: match config.build.version {
+                version if version < (1, 3, 0) => {
+                    DiscardedInlineAggregateImageStyle::Initialized
+                }
+                version if version < (3, 0, 0) => {
+                    DiscardedInlineAggregateImageStyle::ZeroFill
+                }
+                _ => DiscardedInlineAggregateImageStyle::None,
             },
             long_long_timer_style: config.build.profile.long_long_timer_style(),
             nested_global_dispatch_schedule: config.build.profile.nested_global_dispatch_schedule(),

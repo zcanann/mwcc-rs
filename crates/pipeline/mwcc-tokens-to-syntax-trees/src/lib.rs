@@ -101,6 +101,7 @@ pub fn parse_located_translation_unit_with_enum_min(
         0,
         0,
         0,
+        false,
         0,
         0,
         enum_min,
@@ -122,6 +123,7 @@ pub fn parse_located_translation_unit_with_behavior(
     dropped_inline_const_local_declaration_label_weight: u8,
     dropped_inline_class_automatic_label_base: u8,
     dropped_inline_class_automatic_label_weight: u8,
+    retain_discarded_inline_aggregate_images: bool,
     anonymous_aggregate_definition_label_weight: u8,
     nested_anonymous_aggregate_definition_label_weight: u8,
     enum_min: bool,
@@ -139,6 +141,7 @@ pub fn parse_located_translation_unit_with_behavior(
         dropped_inline_const_local_declaration_label_weight,
         dropped_inline_class_automatic_label_base,
         dropped_inline_class_automatic_label_weight,
+        retain_discarded_inline_aggregate_images,
         anonymous_aggregate_definition_label_weight,
         nested_anonymous_aggregate_definition_label_weight,
         None,
@@ -164,6 +167,7 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
     dropped_inline_const_local_declaration_label_weight: u8,
     dropped_inline_class_automatic_label_base: u8,
     dropped_inline_class_automatic_label_weight: u8,
+    retain_discarded_inline_aggregate_images: bool,
     anonymous_aggregate_definition_label_weight: u8,
     nested_anonymous_aggregate_definition_label_weight: u8,
     anonymous_namespace_scope: Option<String>,
@@ -233,6 +237,7 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         dropped_inline_const_local_declaration_label_weight,
         dropped_inline_class_automatic_label_base,
         dropped_inline_class_automatic_label_weight,
+        retain_discarded_inline_aggregate_images,
         anonymous_aggregate_definition_label_weight,
         nested_anonymous_aggregate_definition_label_weight,
         last_member_array_bytes: None,
@@ -245,6 +250,7 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         global_destructor_inline_bump: 0,
         function_inline_prebumps: std::collections::HashMap::new(),
         cxx_inline_ordinal_facts: mwcc_syntax_trees::CxxInlineOrdinalFacts::default(),
+        discarded_inline_aggregate_images: Vec::new(),
         cxx_nonvirtual_destructor_classes: std::collections::HashSet::new(),
         cxx_temporary_construction_targets: Vec::new(),
         dropped_inline_class_automatic_groups: std::collections::HashSet::new(),
@@ -436,6 +442,7 @@ mod tests {
             1,
             0,
             0,
+            false,
             1,
             2,
             false,
@@ -464,6 +471,7 @@ mod tests {
                 0,
                 0,
                 0,
+                false,
                 0,
                 0,
                 false,
@@ -493,6 +501,7 @@ mod tests {
                 0,
                 0,
                 0,
+                false,
                 0,
                 0,
                 false,
@@ -519,6 +528,7 @@ mod tests {
             0,
             0,
             0,
+            false,
             0,
             0,
             false,
@@ -545,6 +555,7 @@ mod tests {
             1,
             0,
             0,
+            false,
             1,
             2,
             false,
@@ -569,12 +580,13 @@ mod tests {
                 1,
                 3,
                 0,
+                1,
                 0,
                 0,
                 0,
                 0,
                 0,
-                0,
+                false,
                 0,
                 0,
                 false,
@@ -583,7 +595,7 @@ mod tests {
             .skipped_inline_functions
         };
 
-        assert_eq!(parse_cost("return value;"), 0);
+        assert_eq!(parse_cost("return value;"), 1);
         assert_eq!(
             parse_cost("if (value) { return 1; } return 0;"),
             1
@@ -599,6 +611,76 @@ mod tests {
                  } return value;"
             ),
             1
+        );
+    }
+
+    #[test]
+    fn charges_function_template_declarations_without_charging_class_templates() {
+        let unit = parse_located_translation_unit_with_behavior(
+            located(
+                "template <typename T> T convert(T value); \
+                 template <typename T> struct Holder; \
+                 int compiled(int value) { return value; }",
+            ),
+            true,
+            true,
+            1,
+            3,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            false,
+            0,
+            0,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(unit.skipped_inline_functions, 1);
+    }
+
+    #[test]
+    fn retains_brace_initialized_aggregate_image_from_discarded_inline() {
+        let unit = parse_located_translation_unit_with_behavior(
+            located(
+                "struct Pair { unsigned short first; unsigned short second; }; \
+                 inline Pair candidate(void*) { Pair pair = { 1, 2 }; return pair; } \
+                 int compiled(int value) { return value; }",
+            ),
+            true,
+            true,
+            1,
+            3,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            true,
+            0,
+            0,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(unit.skipped_inline_functions, 1);
+        assert_eq!(
+            unit.discarded_inline_aggregate_images,
+            [mwcc_syntax_trees::DiscardedInlineAggregateImage {
+                ordinal: 1,
+                bytes: vec![0, 1, 0, 2],
+                alignment: 2,
+                preceding_cxx_inline_facts: mwcc_syntax_trees::CxxInlineOrdinalFacts {
+                    class_definitions: 1,
+                    ..mwcc_syntax_trees::CxxInlineOrdinalFacts::default()
+                },
+            }]
         );
     }
 
@@ -3633,6 +3715,7 @@ blr\n\
             0,
             0,
             0,
+            false,
             0,
             0,
             Some("@unnamed@sample_cpp@".to_string()),

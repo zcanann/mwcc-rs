@@ -1,5 +1,14 @@
 use mwcc_tokens::Token;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum AggregateInitializerScalar {
+    Integer(i64),
+    Float(f64),
+    /// A non-constant field expression leaves a zero placeholder in the
+    /// frontend-created aggregate source image.
+    Runtime,
+}
+
 /// Count automatic declarators in a dropped inline body. The 4.3 frontend
 /// advances its analysis ordinal once per local even though no body survives
 /// code generation. This lexical pass deliberately recognizes declarations,
@@ -102,14 +111,140 @@ pub(crate) fn same_class_automatic(
     declaration_start: usize,
     body_open: usize,
 ) -> Option<String> {
-    let class = tokens
+    let class = returned_class(tokens, declaration_start, body_open)?;
+    body_declares_type(tokens, body_open, &class).then_some(class)
+}
+
+/// Recover a brace-initialized automatic of the function's aggregate return
+/// type. The early/mainline frontend creates a constant source image for this
+/// declaration before deciding to discard the inline body.
+pub(crate) fn same_class_automatic_initializer(
+    tokens: &[Token],
+    declaration_start: usize,
+    body_open: usize,
+) -> Option<(String, Vec<AggregateInitializerScalar>)> {
+    let class = returned_class(tokens, declaration_start, body_open)?;
+    let mut body_depth = 1usize;
+    let mut index = body_open + 1;
+    while index < tokens.len() && body_depth != 0 {
+        match tokens.get(index) {
+            Some(Token::BraceOpen) => body_depth += 1,
+            Some(Token::BraceClose) => body_depth = body_depth.saturating_sub(1),
+            Some(Token::Identifier(word)) if word == &class => {
+                let name_index = index + 1;
+                let equals_index = index + 2;
+                let initializer_open = index + 3;
+                if matches!(tokens.get(name_index), Some(Token::Identifier(_)))
+                    && tokens.get(equals_index) == Some(&Token::Equals)
+                    && tokens.get(initializer_open) == Some(&Token::BraceOpen)
+                {
+                    return aggregate_initializer_scalars(tokens, initializer_open)
+                        .map(|values| (class, values));
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    None
+}
+
+fn returned_class(tokens: &[Token], declaration_start: usize, body_open: usize) -> Option<String> {
+    tokens
         .get(declaration_start..body_open)?
         .iter()
         .find_map(|token| match token {
             Token::Identifier(word) if !is_declaration_word(word) => Some(word.clone()),
             _ => None,
-        })?;
-    body_declares_type(tokens, body_open, &class).then_some(class)
+        })
+}
+
+fn aggregate_initializer_scalars(
+    tokens: &[Token],
+    initializer_open: usize,
+) -> Option<Vec<AggregateInitializerScalar>> {
+    let mut values = Vec::new();
+    let mut start = initializer_open + 1;
+    let mut parens = 0usize;
+    let mut brackets = 0usize;
+    let mut braces = 1usize;
+    let mut angles = 0usize;
+    let mut index = start;
+    while let Some(token) = tokens.get(index) {
+        match token {
+            Token::ParenOpen => parens += 1,
+            Token::ParenClose => parens = parens.saturating_sub(1),
+            Token::BracketOpen => brackets += 1,
+            Token::BracketClose => brackets = brackets.saturating_sub(1),
+            Token::BraceOpen => braces += 1,
+            Token::BraceClose => {
+                braces = braces.saturating_sub(1);
+                if braces == 0 {
+                    if start < index {
+                        values.push(initializer_scalar(&tokens[start..index]));
+                    }
+                    return Some(values);
+                }
+            }
+            Token::Less if parens == 0 && brackets == 0 => angles += 1,
+            Token::Greater if angles > 0 => angles -= 1,
+            Token::Comma
+                if braces == 1 && parens == 0 && brackets == 0 && angles == 0 =>
+            {
+                values.push(initializer_scalar(&tokens[start..index]));
+                start = index + 1;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    None
+}
+
+fn initializer_scalar(tokens: &[Token]) -> AggregateInitializerScalar {
+    match trim_parentheses(tokens) {
+        [Token::IntegerLiteral(value)] => AggregateInitializerScalar::Integer(*value),
+        [Token::Minus, Token::IntegerLiteral(value)] => {
+            AggregateInitializerScalar::Integer(value.saturating_neg())
+        }
+        [Token::FloatLiteral(value)] | [Token::DoubleLiteral(value)] => {
+            AggregateInitializerScalar::Float(*value)
+        }
+        [Token::Minus, Token::FloatLiteral(value)]
+        | [Token::Minus, Token::DoubleLiteral(value)] => {
+            AggregateInitializerScalar::Float(-value)
+        }
+        _ => AggregateInitializerScalar::Runtime,
+    }
+}
+
+fn trim_parentheses(mut tokens: &[Token]) -> &[Token] {
+    loop {
+        if tokens.first() != Some(&Token::ParenOpen)
+            || tokens.last() != Some(&Token::ParenClose)
+        {
+            return tokens;
+        }
+        let mut depth = 0usize;
+        let mut encloses_all = true;
+        for (index, token) in tokens.iter().enumerate() {
+            match token {
+                Token::ParenOpen => depth += 1,
+                Token::ParenClose => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 && index + 1 != tokens.len() {
+                        encloses_all = false;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !encloses_all {
+            return tokens;
+        }
+        tokens = &tokens[1..tokens.len() - 1];
+    }
 }
 
 fn body_declares_type(tokens: &[Token], body_open: usize, class: &str) -> bool {

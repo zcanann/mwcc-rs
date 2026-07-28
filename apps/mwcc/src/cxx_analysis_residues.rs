@@ -11,7 +11,7 @@
 use mwcc_machine_code::MachineFunction;
 use mwcc_machine_code_to_object::DefinedGlobal;
 use mwcc_syntax_trees::TranslationUnit;
-use mwcc_versions::Optimization;
+use mwcc_versions::{DiscardedInlineAggregateImageStyle, Optimization};
 
 /// A recognized set of sparse, pre-numbered analysis objects.
 pub struct Capture {
@@ -35,6 +35,104 @@ pub struct LiteralTemporaries {
     /// constant-pool slot between each emitted function's string front and
     /// numeric pool. A run at the initial counter has no such gap.
     pub per_function_constant_bump: i32,
+}
+
+/// Materialize aggregate images created by dropped-inline analysis.
+///
+/// The parser records the typed source image and its creation ordinal. Storage
+/// changed independently of that frontend fact: GC 1.0--1.2.5 writes zero
+/// images to `.sdata2`, GC 1.3--2.7 uses `.sbss2`, and later frontends retain
+/// no object.
+pub fn discarded_inline_aggregate_images(
+    unit: &TranslationUnit,
+    style: DiscardedInlineAggregateImageStyle,
+    behavior: mwcc_versions::Behavior,
+    emitted_vtable_replay: bool,
+) -> Vec<DefinedGlobal> {
+    if style == DiscardedInlineAggregateImageStyle::None {
+        return Vec::new();
+    }
+    unit.discarded_inline_aggregate_images
+        .iter()
+        .map(|image| {
+            let ordinal_adjustment = inline_fact_ordinal_bump(
+                image.preceding_cxx_inline_facts,
+                behavior,
+                emitted_vtable_replay,
+            );
+            discarded_inline_aggregate_image(image, style, ordinal_adjustment)
+        })
+        .collect()
+}
+
+fn discarded_inline_aggregate_image(
+    image: &mwcc_syntax_trees::DiscardedInlineAggregateImage,
+    style: DiscardedInlineAggregateImageStyle,
+    ordinal_adjustment: usize,
+) -> DefinedGlobal {
+    let zero_fill = style == DiscardedInlineAggregateImageStyle::ZeroFill
+        && image.bytes.iter().all(|byte| *byte == 0);
+    DefinedGlobal {
+        name: format!(
+            "@{}",
+            image.ordinal.saturating_add(ordinal_adjustment as u32)
+        ),
+        size: image.bytes.len() as u32,
+        alignment: image.alignment,
+        comment_alignment: image.alignment,
+        initial_bytes: (!zero_fill).then(|| image.bytes.clone()),
+        is_const: true,
+        force_full_data_section: false,
+        is_static: true,
+        force_active: false,
+        is_explicit_zero: zero_fill,
+        preassigned_anonymous_ordinal: Some(
+            image.ordinal.saturating_add(ordinal_adjustment as u32),
+        ),
+        preassigned_ordinal_advances_counter: true,
+        relocations: Vec::new(),
+        non_static_functions_before: 0,
+        functions_before: 0,
+        is_weak: false,
+        static_local_owner: None,
+        anonymous_adjust: 0,
+        section: zero_fill.then(|| ".sbss2".to_string()),
+    }
+}
+
+pub fn inline_fact_ordinal_bump(
+    facts: mwcc_syntax_trees::CxxInlineOrdinalFacts,
+    behavior: mwcc_versions::Behavior,
+    emitted_vtable_replay: bool,
+) -> usize {
+    let mutable_locals = facts
+        .inline_definition_local_declarators
+        .saturating_sub(facts.inline_definition_const_local_declarators);
+    let control_flow_weight = behavior.cxx_inline_control_flow_label_weight
+        + u8::from(emitted_vtable_replay)
+            * behavior.emitted_vtable_inline_control_flow_replay_weight;
+    facts.class_definitions * usize::from(behavior.cxx_class_definition_label_bump)
+        + facts.inline_definitions * usize::from(behavior.cxx_inline_definition_label_bump)
+        + facts.inline_definitions
+            * usize::from(behavior.deferred_cxx_inline_definition_label_bump)
+        + facts.inline_definition_parameters
+            * usize::from(behavior.dropped_inline_parameter_label_weight)
+        + mutable_locals * usize::from(behavior.dropped_inline_local_declaration_label_weight)
+        + facts.inline_definition_const_local_declarators
+            * usize::from(behavior.dropped_inline_const_local_declaration_label_weight)
+        + (facts.control_flow_labels + facts.instantiated_template_control_flow_labels)
+            * usize::from(control_flow_weight)
+        + facts.nonvirtual_destructors
+            * usize::from(behavior.cxx_nonvirtual_destructor_label_bump)
+        + facts.nonvirtual_destructors
+            * usize::from(behavior.deferred_cxx_nonvirtual_destructor_label_bump)
+        + facts.trivial_class_temporary_constructions
+            * usize::from(behavior.cxx_trivial_class_temporary_label_bump)
+        + facts.nontrivial_class_temporary_constructions
+            * usize::from(behavior.cxx_nontrivial_class_temporary_label_bump)
+        + facts.virtual_destructors
+            * usize::from(behavior.cxx_virtual_destructor_label_bump)
+        + facts.direct_calls * usize::from(behavior.cxx_inline_ipa_call_label_bump)
 }
 
 pub fn literal_float_temporaries(
@@ -286,7 +384,12 @@ fn object(
 
 #[cfg(test)]
 mod tests {
-    use super::{literal_float_temporaries, word_object, zero_capture, zero_object};
+    use super::{
+        discarded_inline_aggregate_image, literal_float_temporaries, word_object, zero_capture,
+        zero_object,
+    };
+    use mwcc_syntax_trees::DiscardedInlineAggregateImage;
+    use mwcc_versions::DiscardedInlineAggregateImageStyle;
 
     #[test]
     fn residue_objects_preserve_sparse_ordinals_and_storage_class() {
@@ -340,5 +443,31 @@ mod tests {
             .objects
             .iter()
             .all(|object| !object.preassigned_ordinal_advances_counter));
+    }
+
+    #[test]
+    fn aggregate_analysis_images_follow_generation_storage_policy() {
+        let image = DiscardedInlineAggregateImage {
+            ordinal: 4,
+            bytes: vec![0, 0, 0, 0],
+            alignment: 2,
+            preceding_cxx_inline_facts: mwcc_syntax_trees::CxxInlineOrdinalFacts::default(),
+        };
+
+        let initialized = discarded_inline_aggregate_image(
+            &image,
+            DiscardedInlineAggregateImageStyle::Initialized,
+            0,
+        );
+        assert_eq!(initialized.initial_bytes, Some(vec![0; 4]));
+        assert!(initialized.section.is_none());
+
+        let zero_fill = discarded_inline_aggregate_image(
+            &image,
+            DiscardedInlineAggregateImageStyle::ZeroFill,
+            0,
+        );
+        assert_eq!(zero_fill.initial_bytes, None);
+        assert_eq!(zero_fill.section.as_deref(), Some(".sbss2"));
     }
 }

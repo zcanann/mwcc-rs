@@ -69,6 +69,18 @@ pub enum FunctionOrdinalAccountingStyle {
     Gc41Ipa,
 }
 
+/// Storage retained for aggregate initializer images created while compiling
+/// and then discarding an inline definition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiscardedInlineAggregateImageStyle {
+    /// The 3.x and later frontends discard the analysis image completely.
+    None,
+    /// GC 1.0--1.2.5 writes even an all-zero image into `.sdata2`.
+    Initialized,
+    /// GC 1.3--2.7 places an all-zero image in `.sbss2`.
+    ZeroFill,
+}
+
 /// Anonymous-label transaction left by composing retained inline bodies into a
 /// specialized C++ constructor lowerer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1316,7 +1328,7 @@ pub trait CodegenProfile: core::fmt::Debug {
     /// template body. This is distinct from compiling and dropping an ordinary
     /// inline definition.
     fn skipped_function_template_label_base(&self) -> u8 {
-        0
+        1
     }
 
     /// Per-parameter analysis cost on compiled-then-dropped inline definitions,

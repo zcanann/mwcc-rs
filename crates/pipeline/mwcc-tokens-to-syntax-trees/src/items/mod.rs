@@ -740,6 +740,10 @@ impl Parser {
             let explicit_data_specialization =
                 explicit_specialization && self.item_is_explicit_data_specialization();
             let start = self.position;
+            let function_template_declaration_bump =
+                self.function_template_declaration_label_bump();
+            self.skipped_inline_functions += function_template_declaration_bump;
+            self.global_destructor_inline_bump += function_template_declaration_bump;
             self.capture_anonymous_aggregate_ordinal();
             // Inline is declaration state, not layout state. Capture it before
             // either the C++ layout parser succeeds or recovery skips a class.
@@ -1308,6 +1312,9 @@ impl Parser {
             global_destructor_inline_bump: self.global_destructor_inline_bump,
             function_inline_prebumps: std::mem::take(&mut self.function_inline_prebumps),
             cxx_inline_ordinal_facts: self.cxx_inline_ordinal_facts,
+            discarded_inline_aggregate_images: std::mem::take(
+                &mut self.discarded_inline_aggregate_images,
+            ),
             cxx_const_reference_parameter_types,
             inline_expansion_facts: std::mem::take(&mut self.inline_expansion_facts),
             function_inline_string_symbols: std::mem::take(
@@ -3991,6 +3998,53 @@ impl Parser {
         None
     }
 
+    /// A primary function-template declaration consumes one frontend-analysis
+    /// ordinal even though it has no body. Class-template forward declarations
+    /// do not: require a top-level parameter list after the template header.
+    fn function_template_declaration_label_bump(&self) -> usize {
+        if !matches!(
+            self.tokens.get(self.position),
+            Some(Token::Identifier(word)) if word == "template"
+        ) {
+            return 0;
+        }
+        let mut index = self.position + 1;
+        let mut angles = 0usize;
+        let mut in_template_header = false;
+        let mut parens = 0usize;
+        let mut saw_function_parameters = false;
+        while let Some(token) = self.tokens.get(index) {
+            match token {
+                Token::Less if !in_template_header => {
+                    in_template_header = true;
+                    angles = 1;
+                }
+                Token::Less if in_template_header => angles += 1,
+                Token::Greater if in_template_header => {
+                    angles = angles.saturating_sub(1);
+                    if angles == 0 {
+                        in_template_header = false;
+                    }
+                }
+                Token::ParenOpen if !in_template_header => {
+                    parens += 1;
+                    saw_function_parameters = true;
+                }
+                Token::ParenClose if !in_template_header => parens = parens.saturating_sub(1),
+                Token::BraceOpen if !in_template_header && parens == 0 => return 0,
+                Token::Semicolon if !in_template_header && parens == 0 => {
+                    return saw_function_parameters
+                        .then_some(usize::from(self.skipped_function_template_label_base))
+                        .unwrap_or(0);
+                }
+                Token::EndOfFile => return 0,
+                _ => {}
+            }
+            index += 1;
+        }
+        0
+    }
+
     pub(crate) fn skipped_inline_label_bump(&mut self) -> Compilation<Option<usize>> {
         let parameter_count = self
             .skipped_function_name()
@@ -4072,14 +4126,63 @@ impl Parser {
                             bump += usize::from(self.dropped_inline_class_automatic_label_base);
                         }
                     }
+                    if self.retain_discarded_inline_aggregate_images {
+                        if let Some((class, values)) =
+                            crate::inline_body_analysis::same_class_automatic_initializer(
+                                &self.tokens,
+                                self.position,
+                                index,
+                            )
+                        {
+                            if let Some(tag) = self.struct_typedefs.get(&class) {
+                                if let Some(layout) = self.structs.get(tag) {
+                                    let mut bytes = vec![0; layout.size as usize];
+                                    for ((_, field), value) in
+                                        layout.fields_in_declaration_order().into_iter().zip(values)
+                                    {
+                                        let width = match field.member_type {
+                                            Type::Struct { size, .. } => size as usize,
+                                            other => usize::from(other.width()).div_ceil(8),
+                                        };
+                                        let start = field.offset as usize;
+                                        if width == 0 || width > 8 || start + width > bytes.len() {
+                                            continue;
+                                        }
+                                        let encoded = match value {
+                                            crate::inline_body_analysis::AggregateInitializerScalar::Integer(
+                                                value,
+                                            ) => (value as u64).to_be_bytes(),
+                                            crate::inline_body_analysis::AggregateInitializerScalar::Float(
+                                                value,
+                                            ) if width == 4 => {
+                                                u64::from((value as f32).to_bits()).to_be_bytes()
+                                            }
+                                            crate::inline_body_analysis::AggregateInitializerScalar::Float(
+                                                value,
+                                            ) if width == 8 => value.to_bits().to_be_bytes(),
+                                            _ => continue,
+                                        };
+                                        bytes[start..start + width]
+                                            .copy_from_slice(&encoded[8 - width..]);
+                                    }
+                                    let ordinal =
+                                        (self.skipped_inline_functions + bump + 1) as u32;
+                                    self.discarded_inline_aggregate_images.push(
+                                        mwcc_syntax_trees::DiscardedInlineAggregateImage {
+                                            ordinal,
+                                            bytes,
+                                            alignment: u32::from(layout.align),
+                                            preceding_cxx_inline_facts: self
+                                                .cxx_inline_ordinal_facts,
+                                        },
+                                    );
+                                    bump += 1;
+                                }
+                            }
+                        }
+                    }
                     let mut startup_bump = bump;
                     let mut brace_depth = 0i32;
-                    // An uninstantiated function template is analyzed as one
-                    // control-flow graph, but never compiled into an ordinary
-                    // discarded body. Mainline MWCC therefore charges exactly
-                    // one ordinal when that graph has any control flow,
-                    // independent of how many if/loop nodes it contains.
-                    let mut template_has_control_flow = false;
                     // `&&`/`||` count ONLY inside a CONDITION's parens (fire 493:
                     // value-position short-circuits add nothing).
                     let mut condition_pending = false;
@@ -4101,76 +4204,56 @@ impl Parser {
                             Token::BraceClose => {
                                 brace_depth -= 1;
                                 if brace_depth == 0 {
-                                    if saw_function_template && template_has_control_flow {
-                                        bump += 1;
-                                        startup_bump += 1;
-                                    }
                                     self.global_destructor_inline_bump += startup_bump;
                                     return Ok(Some(bump));
                                 }
                             }
                             Token::KeywordIf => {
-                                if saw_function_template {
-                                    template_has_control_flow = true;
-                                } else {
+                                if !saw_function_template {
                                     bump += 2;
                                     startup_bump += 2;
                                 }
                                 condition_pending = true;
                             }
                             Token::Identifier(word) if word == "else" => {
-                                if saw_function_template {
-                                    template_has_control_flow = true;
-                                } else {
+                                if !saw_function_template {
                                     bump += 1;
                                     startup_bump += 1;
                                 }
                             }
                             Token::Identifier(word) if word == "switch" => {
-                                if saw_function_template {
-                                    template_has_control_flow = true;
-                                } else {
+                                if !saw_function_template {
                                     bump += 1;
                                     startup_bump += 1;
                                 }
                             }
                             Token::Identifier(word) if word == "case" => {
-                                if saw_function_template {
-                                    template_has_control_flow = true;
-                                } else {
+                                if !saw_function_template {
                                     bump += 1;
                                     startup_bump += 1;
                                 }
                             }
                             Token::Identifier(word) if word == "default" => {
-                                if saw_function_template {
-                                    template_has_control_flow = true;
-                                } else {
+                                if !saw_function_template {
                                     bump += 1;
                                     startup_bump += 1;
                                 }
                             }
                             Token::PipePipe | Token::AmpersandAmpersand if condition_depth > 0 => {
-                                if saw_function_template {
-                                    template_has_control_flow = true;
-                                } else {
+                                if !saw_function_template {
                                     bump += 1;
                                     startup_bump += 1;
                                 }
                             }
                             Token::KeywordWhile => {
-                                if saw_function_template {
-                                    template_has_control_flow = true;
-                                } else {
+                                if !saw_function_template {
                                     bump += 4;
                                     startup_bump += 4;
                                 }
                                 condition_pending = true;
                             }
                             Token::KeywordFor => {
-                                if saw_function_template {
-                                    template_has_control_flow = true;
-                                } else {
+                                if !saw_function_template {
                                     bump += 5;
                                     startup_bump += 5;
                                 }
@@ -4181,9 +4264,7 @@ impl Parser {
                             // `do` itself is transparent.
                             Token::KeywordDo => {}
                             Token::Identifier(word) if word == "goto" => {
-                                if saw_function_template {
-                                    template_has_control_flow = true;
-                                } else {
+                                if !saw_function_template {
                                     bump += 1;
                                     startup_bump += 1;
                                 }
