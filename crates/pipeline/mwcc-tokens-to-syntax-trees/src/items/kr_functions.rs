@@ -98,7 +98,7 @@ impl Parser {
                     )));
                 }
 
-                parameter_type =
+                (parameter_type, _) =
                     self.parse_array_parameter_suffix(&name, parameter_type, array_typedef)?;
 
                 if let Some(tag) = &declaration_struct_tag {

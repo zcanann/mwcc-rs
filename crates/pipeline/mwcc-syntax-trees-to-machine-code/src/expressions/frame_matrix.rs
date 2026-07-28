@@ -4,6 +4,68 @@
 use super::*;
 
 impl Generator {
+    pub(crate) fn emit_frame_matrix_row_address(
+        &mut self,
+        name: &str,
+        row: &Expression,
+        destination: u8,
+    ) -> Compilation<()> {
+        let slot = self.frame_slots.get(name).copied().ok_or_else(|| {
+            Diagnostic::error(format!("flattened frame matrix '{name}' has no frame slot"))
+        })?;
+        let row_bytes = *self.frame_row_bytes.get(name).ok_or_else(|| {
+            Diagnostic::error(format!("flattened frame matrix '{name}' has no row stride"))
+        })?;
+        if let Some(row) = constant_value(row) {
+            let offset = row
+                .checked_mul(i64::from(row_bytes))
+                .and_then(|offset| offset.checked_add(i64::from(slot.offset)))
+                .and_then(|offset| i16::try_from(offset).ok())
+                .ok_or_else(|| Diagnostic::error("frame matrix row address is out of range"))?;
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: destination,
+                a: 1,
+                immediate: offset,
+            });
+            return Ok(());
+        }
+
+        let row_register = self.general_register_of_leaf(row)?;
+        if row_bytes.is_power_of_two() {
+            self.output
+                .instructions
+                .push(Instruction::ShiftLeftImmediate {
+                    a: destination,
+                    s: row_register,
+                    shift: row_bytes.trailing_zeros() as u8,
+                });
+        } else {
+            self.output.instructions.push(Instruction::MultiplyImmediate {
+                d: destination,
+                a: row_register,
+                immediate: i16::try_from(row_bytes).map_err(|_| {
+                    Diagnostic::error("frame matrix row stride is out of range")
+                })?,
+            });
+        }
+        let base = if destination == GENERAL_SCRATCH {
+            self.fresh_virtual_general()
+        } else {
+            GENERAL_SCRATCH
+        };
+        self.output.instructions.push(Instruction::AddImmediate {
+            d: base,
+            a: 1,
+            immediate: slot.offset,
+        });
+        self.output.instructions.push(Instruction::Add {
+            d: destination,
+            a: base,
+            b: destination,
+        });
+        Ok(())
+    }
+
     /// Resolve `matrix[row][column]` to its scalar element and r1-relative
     /// displacement. The parser flattens the allocation but retains the source
     /// row width, so neither load nor store needs to materialize the row pointer

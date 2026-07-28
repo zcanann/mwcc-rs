@@ -19,9 +19,9 @@ impl Parser {
         name: &str,
         element_type: Type,
         array_typedef: Option<(Type, u16, u16)>,
-    ) -> Compilation<Type> {
+    ) -> Compilation<(Type, Vec<Option<u64>>)> {
         if *self.peek() != Token::BracketOpen {
-            return Ok(element_type);
+            return Ok((element_type, Vec::new()));
         }
         if array_typedef.is_some() {
             return Err(Diagnostic::error(
@@ -66,9 +66,10 @@ impl Parser {
             ));
         }
 
-        match element_type {
+        let adjusted = match element_type {
             Type::Struct { size, .. } => Ok(Type::StructPointer { element_size: size }),
             scalar => Ok(Type::Pointer(pointee_of(scalar)?)),
-        }
+        }?;
+        Ok((adjusted, extents))
     }
 }

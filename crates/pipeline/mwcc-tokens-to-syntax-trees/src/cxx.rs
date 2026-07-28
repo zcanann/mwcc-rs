@@ -371,6 +371,7 @@ pub(crate) struct CxxParameterType {
     pointer_const: bool,
     pointer_depth: u8,
     pointer_base: Option<Type>,
+    array_parameter_extents: Vec<Option<u64>>,
     function_type: Option<Box<CxxFunctionType>>,
 }
 
@@ -471,6 +472,7 @@ impl CxxParameterType {
             && self.pointer_const == other.pointer_const
             && self.pointer_depth == other.pointer_depth
             && self.pointer_base == other.pointer_base
+            && self.array_parameter_extents == other.array_parameter_extents
             && self.function_type == other.function_type
     }
 
@@ -496,6 +498,7 @@ impl CxxParameterType {
                     && matches!(source_type, Type::Pointer(_) | Type::StructPointer { .. }),
             ),
             pointer_base: None,
+            array_parameter_extents: Vec::new(),
             function_type: None,
         }
     }
@@ -517,6 +520,14 @@ impl CxxParameterType {
         source_fundamental: Option<SourceFundamentalType>,
     ) -> Self {
         self.source_fundamental = source_fundamental;
+        self
+    }
+
+    pub(crate) fn with_array_parameter_extents(
+        mut self,
+        extents: Vec<Option<u64>>,
+    ) -> Self {
+        self.array_parameter_extents = extents;
         self
     }
 
@@ -6021,7 +6032,20 @@ fn encode_type(parameter: &CxxParameterType) -> Compilation<String> {
             code.push('C');
         }
     }
-    let is_pointer = parameter.pointer_depth != 0;
+    if !parameter.array_parameter_extents.is_empty() {
+        // C/C++ adjusts the outermost array dimension to a pointer while
+        // retaining every trailing dimension in the function type.
+        code.push('P');
+        for extent in parameter.array_parameter_extents.iter().skip(1) {
+            code.push('A');
+            if let Some(extent) = extent {
+                code.push_str(&extent.to_string());
+            }
+            code.push('_');
+        }
+    }
+    let is_pointer =
+        parameter.pointer_depth != 0 || !parameter.array_parameter_extents.is_empty();
     for _ in 0..parameter.pointer_depth {
         code.push('P');
     }
@@ -6270,6 +6294,17 @@ mod tests {
         .with_pointer_shape(1, Some(Type::Void));
         assert_eq!(encode_type(&char_pointer_pointer).unwrap(), "PPc");
         assert_eq!(encode_type(&void_pointer).unwrap(), "Pv");
+    }
+
+    #[test]
+    fn mangles_adjusted_array_parameters_with_trailing_extents() {
+        let row_pointer = CxxParameterType::plain(Type::Char)
+            .with_array_parameter_extents(vec![None, Some(64)]);
+        let flat_pointer = CxxParameterType::plain(Type::Char)
+            .with_array_parameter_extents(vec![Some(64)]);
+
+        assert_eq!(encode_type(&row_pointer).unwrap(), "PA64_c");
+        assert_eq!(encode_type(&flat_pointer).unwrap(), "Pc");
     }
 
     #[test]

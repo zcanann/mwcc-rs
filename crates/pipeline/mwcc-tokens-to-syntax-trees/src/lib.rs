@@ -9599,6 +9599,32 @@ blr\n\
     }
 
     #[test]
+    fn mangles_a_two_dimensional_array_parameter_after_adjustment() {
+        let source = r#"
+            unsigned consume(char names[][64]);
+            unsigned call() {
+                char names[3][64];
+                return consume(names);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(unit.prototypes[0].0, "consume__FPA64_c");
+        assert!(matches!(
+            &unit.functions[0].return_expression,
+            Some(mwcc_syntax_trees::Expression::Call { name, .. })
+                if name == "consume__FPA64_c"
+        ));
+    }
+
+    #[test]
     fn defers_access_to_an_unmodeled_row_pointer_typedef_member() {
         let source = r#"
             typedef float (*MatrixPointer)[4];

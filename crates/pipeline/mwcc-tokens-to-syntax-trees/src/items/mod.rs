@@ -3211,7 +3211,7 @@ impl Parser {
                         };
                         // C adjusts an array parameter to a pointer. A trailing
                         // dimension remains observable as its row stride.
-                        let parameter_type = self.parse_array_parameter_suffix(
+                        let (parameter_type, array_parameter_extents) = self.parse_array_parameter_suffix(
                             &name,
                             parameter_type,
                             array_typedef_marker,
@@ -3259,6 +3259,7 @@ impl Parser {
                             )
                             .with_source_fundamental(cxx_source_fundamental)
                             .with_pointer_shape(cxx_pointer_depth, cxx_pointer_base)
+                            .with_array_parameter_extents(array_parameter_extents)
                             .with_function_type(cxx_function_type),
                         );
                     }
