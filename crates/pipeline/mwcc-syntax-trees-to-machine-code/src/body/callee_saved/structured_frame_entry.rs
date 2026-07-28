@@ -218,41 +218,123 @@ impl Generator {
 
     /// Move the first guarded call's channel argument into the computed-entry
     /// latency gap. The two frame generations choose opposite sides of the
-    /// address-low instruction; relocation indices follow the move.
+    /// address-low instruction; every instruction-index owner follows the move.
     pub(super) fn schedule_structured_prefixed_frame_entry(&mut self) {
-        let Some(add) = self.output.instructions.iter().position(|instruction| {
-            matches!(instruction, Instruction::Add { d, .. } if *d >= mwcc_vreg::VIRTUAL_BASE)
-        }) else {
+        let Some((copy, insertion)) = prefixed_frame_entry_move(
+            &self.output.instructions,
+            self.behavior.frame_convention,
+        ) else {
             return;
         };
-        let Some(copy) = self.output.instructions[add + 1..]
-            .iter()
-            .position(|instruction| {
-                matches!(
-                    instruction,
-                    Instruction::AddImmediate { d: 3, immediate: 0, .. }
-                        | Instruction::Or { a: 3, .. }
-                )
-            })
-            .map(|offset| add + 1 + offset)
-        else {
-            return;
-        };
-        let insertion = match self.behavior.frame_convention {
-            FrameConvention::LinkageFirst => add,
-            FrameConvention::Predecrement => add.saturating_sub(1),
-        };
-        if insertion >= copy {
-            return;
-        }
+        let old_len = self.output.instructions.len();
         let instruction = self.output.instructions.remove(copy);
         self.output.instructions.insert(insertion, instruction);
-        for relocation in &mut self.output.relocations {
-            relocation.instruction_index = match relocation.instruction_index {
-                index if index == copy => insertion,
-                index if (insertion..copy).contains(&index) => index + 1,
-                index => index,
-            };
-        }
+        self.labels.moved_before(copy, insertion);
+        let permutation: Vec<usize> = (0..old_len)
+            .map(|old| {
+                if old == copy {
+                    insertion
+                } else if (insertion..copy).contains(&old) {
+                    old + 1
+                } else {
+                    old
+                }
+            })
+            .collect();
+        crate::remap_instruction_indices(self, &permutation);
+    }
+}
+
+fn prefixed_frame_entry_move(
+    instructions: &[Instruction],
+    convention: FrameConvention,
+) -> Option<(usize, usize)> {
+    let add = instructions.iter().position(|instruction| {
+        matches!(instruction, Instruction::Add { d, .. } if *d >= mwcc_vreg::VIRTUAL_BASE)
+    })?;
+    // This schedule belongs to the first call fed by the computed entry. An
+    // unbounded search can capture an unrelated r3 copy from a later call and
+    // hoist it across calls and control-flow joins.
+    let call = instructions[add + 1..]
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::BranchAndLink { .. }))
+        .map(|offset| add + 1 + offset)?;
+    let copy = instructions[add + 1..call]
+        .iter()
+        .position(|instruction| {
+            matches!(
+                instruction,
+                Instruction::AddImmediate {
+                    d: 3,
+                    immediate: 0,
+                    ..
+                } | Instruction::Or { a: 3, .. }
+            )
+        })
+        .map(|offset| add + 1 + offset)?;
+    let insertion = match convention {
+        FrameConvention::LinkageFirst => add,
+        FrameConvention::Predecrement => add.saturating_sub(1),
+    };
+    (insertion < copy).then_some((copy, insertion))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prefixed_frame_entry_move;
+    use mwcc_machine_code::Instruction;
+    use mwcc_versions::FrameConvention;
+
+    #[test]
+    fn prefixed_entry_copy_stays_with_the_first_call() {
+        let instructions = [
+            Instruction::Add {
+                d: mwcc_vreg::VIRTUAL_BASE,
+                a: 4,
+                b: 5,
+            },
+            Instruction::BranchAndLink {
+                target: "first".into(),
+            },
+            Instruction::move_register(3, mwcc_vreg::VIRTUAL_BASE),
+            Instruction::BranchAndLink {
+                target: "second".into(),
+            },
+        ];
+
+        assert_eq!(
+            prefixed_frame_entry_move(&instructions, FrameConvention::Predecrement),
+            None
+        );
+    }
+
+    #[test]
+    fn prefixed_entry_recognizes_a_copy_before_the_first_call() {
+        let instructions = [
+            Instruction::load_immediate(0, 0),
+            Instruction::Add {
+                d: mwcc_vreg::VIRTUAL_BASE,
+                a: 4,
+                b: 5,
+            },
+            Instruction::CompareWordImmediate {
+                a: 6,
+                immediate: 0,
+            },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 5,
+            },
+            Instruction::move_register(3, mwcc_vreg::VIRTUAL_BASE),
+            Instruction::BranchAndLink {
+                target: "first".into(),
+            },
+        ];
+
+        assert_eq!(
+            prefixed_frame_entry_move(&instructions, FrameConvention::Predecrement),
+            Some((4, 0))
+        );
     }
 }
