@@ -2713,6 +2713,9 @@ mod tests {
     #[path = "guarded_payload_membership.rs"]
     mod guarded_payload_membership;
 
+    #[path = "guarded_global_address_call.rs"]
+    mod guarded_global_address_call;
+
     #[path = "inlined_payload_event.rs"]
     mod inlined_payload_event;
 
