@@ -2685,6 +2685,9 @@ mod tests {
     #[path = "masked_transfer_command_switch.rs"]
     mod masked_transfer_command_switch;
 
+    #[path = "device_registration_event_switch.rs"]
+    mod device_registration_event_switch;
+
     #[path = "pointer_fallback.rs"]
     mod pointer_fallback;
 

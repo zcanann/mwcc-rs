@@ -563,7 +563,9 @@ impl Generator {
             .collect();
         self.output.jump_tables.push(JumpTable {
             entries,
-            anonymous_offset: 6,
+            // The two guarded transfers retain nine additional internal
+            // optimizer labels beyond the four cases, dispatch, and default.
+            anonymous_offset: 15,
         });
     }
 

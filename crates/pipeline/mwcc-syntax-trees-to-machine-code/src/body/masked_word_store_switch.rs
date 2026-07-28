@@ -280,7 +280,9 @@ impl Generator {
             .collect();
         self.output.jump_tables.push(JumpTable {
             entries,
-            anonymous_offset: shape.arms.len() as u32 + 2,
+            // Legacy statement arms retain fourteen optimizer labels beyond
+            // the visible case/default labels before numbering the table.
+            anonymous_offset: shape.arms.len() as u32 + 16,
         });
     }
 }
