@@ -20,6 +20,7 @@ pub(crate) fn apply(
         FunctionOrdinalAccountingStyle::Mainline => {
             mainline_initialized_array_labels(function)
                 + mainline_variadic_float_conversion_labels(function)
+                + mainline_call_ladder_labels(function)
         }
         FunctionOrdinalAccountingStyle::Gc41 => gc41_hidden_labels(function, false),
         FunctionOrdinalAccountingStyle::Gc41Ipa => gc41_hidden_labels(function, true),
@@ -92,6 +93,52 @@ fn is_float_to_integer_cast(expression: &Expression) -> bool {
             member_type: Type::Float | Type::Double,
             ..
         }
+    )
+}
+
+/// A complete call-based if/else ladder retains one label per condition plus
+/// the shared join. Specialized control-flow owners account their labels while
+/// emitting; this covers the ordinary structured-body path that otherwise has
+/// no visible label objects to number.
+fn mainline_call_ladder_labels(function: &Function) -> u32 {
+    // Automatic-local ladders are owned by specialized body lowerers which
+    // already account their control labels while assigning registers.
+    if function.locals.iter().any(|local| !local.is_static) {
+        return 0;
+    }
+    let [statement] = function.statements.as_slice() else {
+        return 0;
+    };
+    call_ladder_depth(statement).map_or(0, |depth| depth + 1)
+}
+
+fn call_ladder_depth(statement: &Statement) -> Option<u32> {
+    let Statement::If {
+        then_body,
+        else_body,
+        ..
+    } = statement
+    else {
+        return None;
+    };
+    if !is_single_call_body(then_body) {
+        return None;
+    }
+    if is_single_call_body(else_body) {
+        Some(1)
+    } else if let [nested] = else_body.as_slice() {
+        call_ladder_depth(nested).map(|depth| depth + 1)
+    } else {
+        None
+    }
+}
+
+fn is_single_call_body(statements: &[Statement]) -> bool {
+    matches!(
+        statements,
+        [Statement::Expression(
+            Expression::Call { .. } | Expression::CallThrough { .. }
+        )]
     )
 }
 
@@ -302,6 +349,41 @@ mod tests {
                 ],
             }));
         assert_eq!(mainline_variadic_float_conversion_labels(&function), 2);
+    }
+
+    #[test]
+    fn mainline_accounts_a_nested_call_ladder_and_join() {
+        let call = |name: &str| {
+            Statement::Expression(Expression::Call {
+                name: name.to_owned(),
+                arguments: Vec::new(),
+            })
+        };
+        let mut function = function();
+        function.statements.push(Statement::If {
+            condition: Expression::Variable("first".to_owned()),
+            then_body: vec![call("zero")],
+            else_body: vec![Statement::If {
+                condition: Expression::Variable("second".to_owned()),
+                then_body: vec![call("one")],
+                else_body: vec![call("many")],
+            }],
+        });
+        assert_eq!(mainline_call_ladder_labels(&function), 3);
+
+        function.locals.push(mwcc_syntax_trees::LocalDeclaration {
+            declared_type: Type::Int,
+            name: "saved_condition".to_owned(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        });
+        assert_eq!(mainline_call_ladder_labels(&function), 0);
     }
 
     #[test]
