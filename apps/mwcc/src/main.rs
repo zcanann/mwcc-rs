@@ -2286,6 +2286,7 @@ fn compile(
                 _ => {}
             }
         }
+        packed_strings::materialize_function_offsets(machine_function, "@stringBase0");
         for local in static_local_globals
             .iter_mut()
             .filter(|local| local.static_local_owner == Some(function_index))
