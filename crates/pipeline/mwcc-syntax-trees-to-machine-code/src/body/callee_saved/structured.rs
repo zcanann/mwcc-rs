@@ -21,6 +21,7 @@ use super::structured_condition_schedule::thread_forward_unconditional_branch_ch
 use super::structured_entry_alias::{
     fold_entry_alias_zero_test, plan_first_call_alias, EntryAliasBoundary, EntryParameterAlias,
 };
+use super::structured_exclusive_arm_home_layout::ExclusiveArmHomeLayout;
 use super::structured_frame_assignment::{
     adjacent_byte_pointer_round_up_name, fold_adjacent_byte_pointer_round_up,
     fold_terminal_pointer_load_alias, is_folded_terminal_pointer_load_alias,
@@ -720,10 +721,25 @@ impl Generator {
             .filter(|home_index| {
                 *home_index >= eager_saved_locals.len() + saved_parameters.len()
             });
-        let standalone_data_anchor_home = (self.data_section_anchor.is_some()
+        let has_standalone_data_anchor = self.data_section_anchor.is_some()
             && array_pool_plan.is_none()
-            && reused_data_anchor_home_index.is_none())
-        .then(|| self.fresh_virtual_general_preferring(31));
+            && reused_data_anchor_home_index.is_none();
+        let exclusive_arm_home_layout = ExclusiveArmHomeLayout::plan(
+            with_frame_array,
+            has_standalone_data_anchor,
+            eager_saved_locals.len(),
+            saved_parameters.len(),
+            count,
+            &deferred_home_plan,
+            &parameter_home_reuse,
+        );
+        let standalone_data_anchor_home = has_standalone_data_anchor.then(|| {
+            self.fresh_virtual_general_preferring(
+                exclusive_arm_home_layout
+                    .as_ref()
+                    .map_or(31, ExclusiveArmHomeLayout::data_anchor_preference),
+            )
+        });
         let saved_home_slot_base = usize::from(standalone_data_anchor_home.is_some());
         let total_home_count = count + saved_home_slot_base;
         let first_saved = 32usize.saturating_sub(total_home_count);
@@ -886,6 +902,11 @@ impl Generator {
                 } else if let Some(preferred) = complement_product_pair
                     .as_ref()
                     .and_then(|pair| pair.saved_general_home_preference(count, home_index))
+                {
+                    self.fresh_virtual_general_preferring(preferred)
+                } else if let Some(preferred) = exclusive_arm_home_layout
+                    .as_ref()
+                    .and_then(|layout| layout.preference(home_index))
                 {
                     self.fresh_virtual_general_preferring(preferred)
                 } else if let Some(preferred) = paired_eager_deferred_preference(

@@ -86,6 +86,7 @@ mod structured_entry_alias;
 mod structured_eager_home_reuse;
 mod entry_saved_zero_test_schedule;
 mod structured_entry_zero_store;
+mod structured_exclusive_arm_home_layout;
 mod structured_early_return_schedule;
 mod structured_float_compare;
 mod structured_frame_assignment;
