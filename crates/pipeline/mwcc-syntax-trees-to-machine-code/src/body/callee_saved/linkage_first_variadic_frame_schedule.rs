@@ -108,7 +108,20 @@ impl Generator {
         else {
             return;
         };
-        self.move_instruction_before(frame_argument, receiver_load);
+        let incoming_copy = self.output.instructions[frame_push + 1..frame_argument]
+            .iter()
+            .position(is_saved_incoming_r4_copy)
+            .map(|offset| frame_push + 1 + offset);
+        let insertion = if incoming_copy.is_some_and(|copy| copy > receiver_load) {
+            self.move_instruction_before(
+                incoming_copy.expect("the later incoming copy was checked"),
+                receiver_load,
+            );
+            receiver_load + 1
+        } else {
+            receiver_load
+        };
+        self.move_instruction_before(frame_argument, insertion);
     }
 
     fn use_linkage_first_variadic_receiver_copies(&mut self) {
@@ -168,6 +181,21 @@ impl Generator {
             }
         }
     }
+}
+
+fn is_saved_incoming_r4_copy(instruction: &Instruction) -> bool {
+    matches!(
+        instruction,
+        Instruction::Or {
+            a: 14..=31,
+            s: 4,
+            b: 4,
+        } | Instruction::AddImmediate {
+            d: 14..=31,
+            a: 4,
+            immediate: 0,
+        }
+    )
 }
 
 fn is_later_variadic_argument_packet(
@@ -316,5 +344,20 @@ mod tests {
             &instructions,
             &variadic_callees
         ));
+    }
+
+    #[test]
+    fn recognizes_a_saved_copy_of_incoming_r4() {
+        assert!(is_saved_incoming_r4_copy(&Instruction::move_register(29, 4)));
+        assert!(is_saved_incoming_r4_copy(&Instruction::AddImmediate {
+            d: 29,
+            a: 4,
+            immediate: 0,
+        }));
+        assert!(!is_saved_incoming_r4_copy(&Instruction::AddImmediate {
+            d: 4,
+            a: 1,
+            immediate: 40,
+        }));
     }
 }
