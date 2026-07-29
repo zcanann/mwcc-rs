@@ -2246,6 +2246,20 @@ impl Generator {
         if self.try_wide_call_result_mask_chain(function)? {
             return Ok(());
         }
+        if self.behavior.wide_call_result_mask_style
+            == mwcc_versions::WideCallResultMaskStyle::ScalarizeLowWord
+        {
+            if let Some(scalarized) =
+                crate::wide_local_scalarization::scalarize_zero_extended_mask_local(
+                    function,
+                    &self.globals,
+                    &self.volatile_globals,
+                    &self.call_return_types,
+                )
+            {
+                return self.evaluate_body(&scalarized);
+            }
+        }
         // A long long (64-bit) value lives in a general-register PAIR — r3:r4 is high:low. Route
         // every long-long-involved function to the dedicated handler so none falls through to the
         // 32-bit codegen (which would emit a single-register result for a 64-bit value — wrong

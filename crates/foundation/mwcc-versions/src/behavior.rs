@@ -39,7 +39,7 @@ use crate::profile::{
     SharedFloatDagStyle, SignedPowerOfTwoDivisionStyle, SmallZeroDataLayoutStyle,
     StoredGlobalReadStyle, SymbolTraversalStyle, TrigDispatcherStyle, TrigQuadrantDispatchStyle,
     TrigZeroConstantPlacement, VaArgScheduleStyle, ValueTrackedMutationStyle,
-    WideConstantAddSchedule,
+    WideCallResultMaskStyle, WideConstantAddSchedule,
 };
 
 /// Why a codegen decision diverges from the GameCube 2.4.x mainline.
@@ -598,6 +598,9 @@ pub struct Behavior {
     /// Whether this generation uses the measured GC 1.3--2.7 paired stopwatch
     /// schedule. Unmodeled generations defer instead of emitting known-wrong code.
     pub long_long_timer_style: LongLongTimerStyle,
+    /// Whether a zero-extended wide local observed only through low-word masks
+    /// remains a register pair or is scalarized by the optimizer.
+    pub wide_call_result_mask_style: WideCallResultMaskStyle,
     /// Issue order for the three loads that copy an aggregate into an indirect call's argument
     /// area while independent linkage and argument setup is available.
     pub nested_global_dispatch_schedule: NestedGlobalDispatchSchedule,
@@ -1001,6 +1004,7 @@ impl Behavior {
                 _ => DiscardedInlineAggregateImageStyle::None,
             },
             long_long_timer_style: config.build.profile.long_long_timer_style(),
+            wide_call_result_mask_style: config.build.profile.wide_call_result_mask_style(),
             nested_global_dispatch_schedule: config.build.profile.nested_global_dispatch_schedule(),
             leading_frame_guard_store_style: config.build.profile.leading_frame_guard_store_style(),
             guarded_member_initialization_style: config
@@ -2369,5 +2373,16 @@ mod tests {
         assert_eq!(style(build::GC_2_7), NullPointerCompareStyle::Logical);
         assert_eq!(style(build::GC_3_0A3P1), NullPointerCompareStyle::Signed);
         assert_eq!(style(build::WII_1_0), NullPointerCompareStyle::Signed);
+    }
+
+    #[test]
+    fn wide_call_result_masks_track_the_gc41_scalarization_boundary() {
+        let style =
+            |build| Behavior::resolve(&CompilerConfig::new(build)).wide_call_result_mask_style;
+        assert_eq!(style(build::GC_2_7), WideCallResultMaskStyle::RetainPair);
+        assert_eq!(
+            style(build::GC_3_0A3P1),
+            WideCallResultMaskStyle::ScalarizeLowWord
+        );
     }
 }

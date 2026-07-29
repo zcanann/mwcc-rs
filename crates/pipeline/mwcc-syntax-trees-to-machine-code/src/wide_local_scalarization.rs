@@ -30,11 +30,14 @@ pub(crate) fn scalarize_zero_extended_mask_local(
     let [wide_local] = wide_locals.as_slice() else {
         return None;
     };
-    if !function.guards.is_empty()
-        || function
-            .return_expression
-            .as_ref()
-            .is_some_and(|value| expression_reads_name(value, &wide_local.name))
+    if function.guards.iter().any(|guard| {
+        (!expression_reads_name(&guard.condition, &wide_local.name)
+            || !low_word_mask(&guard.condition, &wide_local.name))
+            || expression_reads_name(&guard.value, &wide_local.name)
+    }) || function
+        .return_expression
+        .as_ref()
+        .is_some_and(|value| expression_reads_name(value, &wide_local.name))
         || function.locals.iter().any(|local| {
             local
                 .initializer
@@ -174,21 +177,7 @@ fn rewrite_statements(
                 if call_return_types.get(call) != Some(&Type::UnsignedInt) {
                     return None;
                 }
-                let Expression::Member {
-                    base,
-                    offset,
-                    member_type: Type::UnsignedLongLong,
-                    index_stride: None,
-                } = target.as_ref()
-                else {
-                    return None;
-                };
-                let Expression::Variable(global) = base.as_ref() else {
-                    return None;
-                };
-                if !globals.contains_key(global) || volatile_globals.contains(global) {
-                    return None;
-                }
+                let (base, offset) = wide_global_target(target, globals, volatile_globals)?;
                 let low_offset = offset.checked_add(4)?;
                 *assignment_count += 1;
                 output.push(Statement::Assign {
@@ -207,7 +196,7 @@ fn rewrite_statements(
                 output.push(Statement::Store {
                     target: Expression::Member {
                         base: base.clone(),
-                        offset: *offset,
+                        offset,
                         member_type: Type::UnsignedInt,
                         index_stride: None,
                     },
@@ -309,15 +298,44 @@ fn rewrite_statements(
     Some(output)
 }
 
+fn wide_global_target(
+    target: &Expression,
+    globals: &HashMap<String, Type>,
+    volatile_globals: &HashSet<String>,
+) -> Option<(Box<Expression>, u32)> {
+    match target {
+        Expression::Variable(global)
+            if globals.get(global) == Some(&Type::UnsignedLongLong)
+                && !volatile_globals.contains(global) =>
+        {
+            Some((Box::new(target.clone()), 0))
+        }
+        Expression::Member {
+            base,
+            offset,
+            member_type: Type::UnsignedLongLong,
+            index_stride: None,
+        } if matches!(
+            base.as_ref(),
+            Expression::Variable(global)
+                if globals.contains_key(global) && !volatile_globals.contains(global)
+        ) =>
+        {
+            Some((base.clone(), *offset))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mwcc_syntax_trees::LocalDeclaration;
+    use mwcc_syntax_trees::{GuardedReturn, LocalDeclaration};
 
     #[test]
     fn scalarizes_a_zero_extended_call_used_only_for_low_masks() {
         let function = Function {
-            return_type: Type::Void,
+            return_type: Type::Int,
             name: "menu".into(),
             is_static: false,
             is_weak: false,
@@ -360,8 +378,15 @@ mod tests {
                     else_body: Vec::new(),
                 },
             ],
-            guards: Vec::new(),
-            return_expression: None,
+            guards: vec![GuardedReturn {
+                condition: Expression::Binary {
+                    operator: BinaryOperator::BitAnd,
+                    left: Box::new(Expression::Variable("events".into())),
+                    right: Box::new(Expression::IntegerLiteral(0x80)),
+                },
+                value: Expression::IntegerLiteral(2),
+            }],
+            return_expression: Some(Expression::IntegerLiteral(0)),
             section: None,
             preceded_by_asm: false,
             asm_body: None,
@@ -384,6 +409,7 @@ mod tests {
         )
         .expect("the low-word-only value should scalarize");
         assert_eq!(rewritten.locals[0].declared_type, Type::UnsignedInt);
+        assert_eq!(rewritten.guards.len(), 1);
         assert!(matches!(
             rewritten.statements.as_slice(),
             [

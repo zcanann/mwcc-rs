@@ -22,18 +22,30 @@ impl Generator {
         &mut self,
         function: &Function,
     ) -> Compilation<bool> {
-        if self.behavior.frame_convention != FrameConvention::LinkageFirst
-            || !self.frame_slots.is_empty()
-        {
+        if !self.frame_slots.is_empty() {
             return Ok(false);
         }
-        let Some(plan) = recognize(
-            function,
-            &self.globals,
-            &self.call_return_types,
-        ) else {
+        let Some(plan) = recognize(function, &self.globals, &self.call_return_types) else {
             return Ok(false);
         };
+        if self.behavior.wide_call_result_mask_style
+            == mwcc_versions::WideCallResultMaskStyle::ScalarizeLowWord
+        {
+            let Some(masks) = plan
+                .masks
+                .map(|mask| crate::analysis::rlwinm_mask(i64::from(mask)))
+                .into_iter()
+                .collect::<Option<Vec<_>>>()
+                .and_then(|masks| <[(u8, u8); 2]>::try_from(masks).ok())
+            else {
+                return Ok(false);
+            };
+            self.emit_scalarized_wide_mask_chain(&plan, masks);
+            return Ok(true);
+        }
+        if self.behavior.frame_convention != FrameConvention::LinkageFirst {
+            return Ok(false);
+        }
 
         self.non_leaf = true;
         self.frame_size = 8;
@@ -163,6 +175,96 @@ impl Generator {
             Instruction::BranchToLinkRegister,
         ]);
         Ok(true)
+    }
+
+    fn emit_scalarized_wide_mask_chain(&mut self, plan: &WideMaskChain, masks: [(u8, u8); 2]) {
+        self.non_leaf = true;
+        self.frame_size = 16;
+        self.output.pre_scheduled = true;
+        self.owns_link_register_schedule = true;
+        // The GC 4.1 scalar proof retains five optimizer nodes before the
+        // function's unwind-table symbols.
+        self.output.anonymous_label_bump += 5;
+        self.output.instructions.extend([
+            Instruction::StoreWordWithUpdate {
+                s: 1,
+                a: 1,
+                offset: -16,
+            },
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 20,
+            },
+        ]);
+        self.record_relocation(RelocationKind::Rel24, &plan.callee);
+        self.output.instructions.push(Instruction::BranchAndLink {
+            target: plan.callee.clone(),
+        });
+        self.output.instructions.push(Instruction::AndMaskRecord {
+            a: 0,
+            s: Eabi::general_result().number,
+            begin: masks[0].0,
+            end: masks[0].1,
+        });
+        self.record_relocation_with_addend(RelocationKind::EmbSda21, &plan.global, 4);
+        self.output.instructions.push(Instruction::StoreWord {
+            s: Eabi::general_result().number,
+            a: 0,
+            offset: 0,
+        });
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(0, 0));
+        self.record_relocation(RelocationKind::EmbSda21, &plan.global);
+        self.output.instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 0,
+            offset: 0,
+        });
+
+        let second_guard = self.fresh_label();
+        let default_result = self.fresh_label();
+        let epilogue = self.fresh_label();
+        self.emit_branch_conditional_to(12, 2, second_guard);
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, plan.guarded_values[0]));
+        self.emit_branch_to(epilogue);
+
+        self.bind_label(second_guard);
+        self.output.instructions.push(Instruction::AndMaskRecord {
+            a: 0,
+            s: Eabi::general_result().number,
+            begin: masks[1].0,
+            end: masks[1].1,
+        });
+        self.emit_branch_conditional_to(12, 2, default_result);
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, plan.guarded_values[1]));
+        self.emit_branch_to(epilogue);
+
+        self.bind_label(default_result);
+        self.output
+            .instructions
+            .push(Instruction::load_immediate(3, plan.default_value));
+        self.bind_label(epilogue);
+        self.output.instructions.extend([
+            Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: 20,
+            },
+            Instruction::MoveToLinkRegister { s: 0 },
+            Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: 16,
+            },
+            Instruction::BranchToLinkRegister,
+        ]);
     }
 }
 

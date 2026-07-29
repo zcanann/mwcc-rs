@@ -102,6 +102,16 @@ pub enum LongLongTimerStyle {
     Unmodeled,
 }
 
+/// Optimizer representation for a zero-extended call result assigned through
+/// a wide global and then observed only through low-word masks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WideCallResultMaskStyle {
+    /// GC 1.x through 2.7 retain the source-wide high:low value pair.
+    RetainPair,
+    /// GC 3.0's 4.1 optimizer proves the high word dead and keeps a scalar lane.
+    ScalarizeLowWord,
+}
+
 /// Issue order for a nested-global callback whose outgoing arguments include a copied aggregate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NestedGlobalDispatchSchedule {
@@ -960,6 +970,10 @@ pub trait CodegenProfile: core::fmt::Debug {
         LongLongTimerStyle::MainlinePair
     }
 
+    fn wide_call_result_mask_style(&self) -> WideCallResultMaskStyle {
+        WideCallResultMaskStyle::RetainPair
+    }
+
     fn nested_global_dispatch_schedule(&self) -> NestedGlobalDispatchSchedule {
         NestedGlobalDispatchSchedule::SequentialAggregateCopy
     }
@@ -1520,6 +1534,10 @@ impl CodegenProfile for MainlineEarlyAggregateLoads {
 #[derive(Debug)]
 pub struct Gc41Build51213;
 impl CodegenProfile for Gc41Build51213 {
+    fn wide_call_result_mask_style(&self) -> WideCallResultMaskStyle {
+        WideCallResultMaskStyle::ScalarizeLowWord
+    }
+
     fn punned_ladder_condition_style(&self) -> PunnedLadderConditionStyle {
         PunnedLadderConditionStyle::PreserveOuterInCr1
     }
