@@ -1708,6 +1708,14 @@ impl Generator {
         if self.is_float_leaf(operand) {
             return self.float_register_of_leaf(operand);
         }
+        // A direct call defines the ABI float-result register itself. It may
+        // overwrite an incoming f1 argument only after whole-body allocation
+        // has given every still-live argument a callee-saved home.
+        if self.is_float_call_value(operand) {
+            let result = mwcc_target::Eabi::float_result().number;
+            self.evaluate_float(operand, result)?;
+            return Ok(result);
+        }
         // A computed FP operand is not a member/global load. Give its result a
         // virtual home so the allocator can coalesce it with a dead input (the
         // leaf product can overwrite its factor) or preserve that input when it
@@ -1719,6 +1727,7 @@ impl Generator {
                 | Expression::Unary { .. }
                 | Expression::Cast { .. }
                 | Expression::Conditional { .. }
+                | Expression::Assign { .. }
         ) {
             if let Some(register) = self.try_place_cached_condition_arithmetic(operand) {
                 return Ok(register);
