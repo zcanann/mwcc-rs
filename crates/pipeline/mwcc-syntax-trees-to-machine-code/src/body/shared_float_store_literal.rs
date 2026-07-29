@@ -41,7 +41,7 @@ impl Generator {
                             };
                         }
                     }
-                    remove_instruction(&mut self.output, reload);
+                    crate::remove_instruction_retargeting_to_next(self, reload);
                 }
             }
         }
@@ -51,31 +51,38 @@ impl Generator {
             .windows(13)
             .position(is_reloaded_float_store_literal)
         else {
+            self.reuse_adjacent_float_store_literals();
             return;
         };
         let reload = start + 11;
-        if !schedule_relocations::same_relocated_value(
+        if schedule_relocations::same_relocated_value(
             &self.output.relocations,
             &self.output.constants,
             start,
             reload,
-        ) || has_branch_target_in(&self.output.instructions, start..start + 13) {
-            return;
+        ) && !has_branch_target_in(&self.output.instructions, start..start + 13)
+        {
+            match &mut self.output.instructions[start] {
+                Instruction::LoadFloatSingle { d, .. } => *d = 2,
+                _ => unreachable!(),
+            }
+            match &mut self.output.instructions[start + 1] {
+                Instruction::StoreFloatSingle { s, .. } => *s = 2,
+                _ => unreachable!(),
+            }
+            match &mut self.output.instructions[start + 12] {
+                Instruction::StoreFloatSingle { s, .. } => *s = 2,
+                _ => unreachable!(),
+            }
+            crate::remove_instruction_retargeting_to_next(self, reload);
         }
+        self.reuse_adjacent_float_store_literals();
+    }
 
-        match &mut self.output.instructions[start] {
-            Instruction::LoadFloatSingle { d, .. } => *d = 2,
-            _ => unreachable!(),
+    fn reuse_adjacent_float_store_literals(&mut self) {
+        while let Some(reload) = adjacent_reloaded_float_store_literal(&self.output) {
+            crate::remove_instruction_retargeting_to_next(self, reload);
         }
-        match &mut self.output.instructions[start + 1] {
-            Instruction::StoreFloatSingle { s, .. } => *s = 2,
-            _ => unreachable!(),
-        }
-        match &mut self.output.instructions[start + 12] {
-            Instruction::StoreFloatSingle { s, .. } => *s = 2,
-            _ => unreachable!(),
-        }
-        remove_instruction(&mut self.output, reload);
     }
 }
 
@@ -168,27 +175,24 @@ fn has_branch_target_in(
             if region.contains(target)))
 }
 
-fn remove_instruction(output: &mut mwcc_machine_code::MachineFunction, index: usize) {
-    output.instructions.remove(index);
+fn adjacent_reloaded_float_store_literal(
+    output: &mwcc_machine_code::MachineFunction,
+) -> Option<usize> {
     output
-        .relocations
-        .retain(|relocation| relocation.instruction_index != index);
-    for relocation in &mut output.relocations {
-        if relocation.instruction_index > index {
-            relocation.instruction_index -= 1;
-        }
-    }
-    for instruction in &mut output.instructions {
-        match instruction {
-            Instruction::BranchConditionalForward { target, .. }
-            | Instruction::Branch { target }
-                if *target > index =>
-            {
-                *target -= 1;
-            }
-            _ => {}
-        }
-    }
+        .instructions
+        .windows(4)
+        .enumerate()
+        .find(|(start, window)| {
+            is_adjacent_reloaded_float_store_literal(window)
+                && schedule_relocations::same_relocated_value(
+                    &output.relocations,
+                    &output.constants,
+                    *start,
+                    start + 2,
+                )
+                && !has_branch_target_in(&output.instructions, *start..start + 4)
+        })
+        .map(|(start, _)| start + 2)
 }
 
 fn is_reloaded_float_store_literal(window: &[Instruction]) -> bool {
@@ -218,6 +222,7 @@ fn is_reloaded_float_store_literal(window: &[Instruction]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mwcc_machine_code::{Relocation, RelocationTarget};
 
     #[test]
     fn recognizes_a_literal_reloaded_across_an_xy_product_pair() {
@@ -248,6 +253,35 @@ mod tests {
             Instruction::StoreFloatSingle { s: 0, a: 31, offset: 28 },
         ];
         assert!(is_adjacent_reloaded_float_store_literal(&instructions));
+    }
+
+    #[test]
+    fn reuses_only_identically_relocated_adjacent_store_literals() {
+        let mut output = mwcc_machine_code::MachineFunction {
+            instructions: vec![
+                Instruction::LoadFloatSingle { d: 0, a: 0, offset: 0 },
+                Instruction::StoreFloatSingle { s: 0, a: 31, offset: 36 },
+                Instruction::LoadFloatSingle { d: 0, a: 0, offset: 0 },
+                Instruction::StoreFloatSingle { s: 0, a: 31, offset: 40 },
+            ],
+            relocations: vec![
+                Relocation {
+                    instruction_index: 0,
+                    kind: RelocationKind::EmbSda21,
+                    target: RelocationTarget::External("zero".into()),
+                },
+                Relocation {
+                    instruction_index: 2,
+                    kind: RelocationKind::EmbSda21,
+                    target: RelocationTarget::External("zero".into()),
+                },
+            ],
+            ..Default::default()
+        };
+
+        assert_eq!(adjacent_reloaded_float_store_literal(&output), Some(2));
+        output.relocations[1].target = RelocationTarget::External("one".into());
+        assert_eq!(adjacent_reloaded_float_store_literal(&output), None);
     }
 
     #[test]
