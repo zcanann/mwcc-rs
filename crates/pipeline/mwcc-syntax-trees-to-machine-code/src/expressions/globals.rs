@@ -77,6 +77,24 @@ impl Generator {
             .globals
             .get(name)
             .ok_or_else(|| Diagnostic::error(format!("unknown variable '{name}'")))?;
+        if global_type == Type::Float {
+            if let Some((base, offset)) = self
+                .data_section_anchor
+                .as_ref()
+                .and_then(|anchor| {
+                    anchor
+                        .register
+                        .zip(anchor.offsets.get(name).copied())
+                })
+            {
+                self.output.instructions.push(Instruction::LoadFloatSingle {
+                    d: destination,
+                    a: base,
+                    offset,
+                });
+                return Ok(());
+            }
+        }
         match self.behavior.global_addressing {
             GlobalAddressing::SmallData => {
                 self.record_relocation(RelocationKind::EmbSda21, name);

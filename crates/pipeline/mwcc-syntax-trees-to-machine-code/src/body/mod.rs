@@ -164,7 +164,8 @@ mod variadic;
 mod zero_call_forward;
 
 pub(crate) use callee_saved::{
-    summarize_queue_pop, summarize_queue_service, QueuePopSummary, QueueServiceSummary,
+    plan_linkage_first_data_anchor, summarize_queue_pop, summarize_queue_service, QueuePopSummary,
+    QueueServiceSummary,
 };
 pub(crate) use guarded_aggregate_update::{
     summarize_guarded_aggregate_update, GuardedAggregateUpdateSummary,

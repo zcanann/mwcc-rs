@@ -1320,6 +1320,27 @@ impl Generator {
                     register,
                 });
         }
+        if self.data_section_anchor.is_some() {
+            let register = self.fresh_virtual_general_preferring(4);
+            self.record_relocation(RelocationKind::Addr16Ha, "...data.0");
+            self.output
+                .instructions
+                .push(Instruction::AddImmediateShifted {
+                    d: register,
+                    a: 0,
+                    immediate: 0,
+                });
+            self.record_relocation(RelocationKind::Addr16Lo, "...data.0");
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: register,
+                a: register,
+                immediate: 0,
+            });
+            self.data_section_anchor
+                .as_mut()
+                .expect("the data anchor was planned above")
+                .register = Some(register);
+        }
         if dense_save_helper {
             self.output.instructions.push(Instruction::AddImmediate {
                 d: 11,

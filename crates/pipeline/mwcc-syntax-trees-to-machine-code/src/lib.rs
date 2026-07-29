@@ -468,6 +468,7 @@ fn lower_function_body(
         &stripped
     };
     let variadic_definition = variadic_definitions.contains(&function.name);
+    let behavior = Behavior::resolve(&config);
     let mut generator = Generator {
         variadic_definition,
         variadic_callees: variadic_definitions.clone(),
@@ -555,6 +556,7 @@ fn lower_function_body(
             .collect(),
         structured_global_index_cache: None,
         structured_global_base_cache: None,
+        data_section_anchor: body::plan_linkage_first_data_anchor(function, globals, behavior),
         structured_array_pool_emitted: false,
         transient_global_index_base: None,
         full_bss_globals: globals
@@ -592,7 +594,7 @@ fn lower_function_body(
             })
             .map(|global| global.name.clone())
             .collect(),
-        behavior: Behavior::resolve(&config),
+        behavior,
         return_source_fundamental: call_return_fundamentals.get(&function.name).copied(),
         call_return_fundamentals: call_return_fundamentals.clone(),
         constraints: mwcc_vreg::RegisterConstraints::gekko(),

@@ -33,6 +33,7 @@ mod frame_call_then_branch;
 mod frame_convention;
 mod later_call_arguments;
 mod linkage_first_arguments;
+mod linkage_first_data_anchor;
 mod linkage_first_float_result_schedule;
 mod linkage_first_global_float_argument_schedule;
 mod linkage_first_narrow_conversion_reuse;
@@ -148,6 +149,7 @@ mod pointer_state_call_loop;
 pub(crate) use queue_service::{summarize_queue_service, QueueServiceSummary};
 pub(crate) use queue_transactions::{summarize_queue_pop, QueuePopSummary};
 pub(crate) use structured_liveness::read_after_possible_call_in_return;
+pub(crate) use linkage_first_data_anchor::plan as plan_linkage_first_data_anchor;
 
 #[allow(unused_imports)]
 use super::*;

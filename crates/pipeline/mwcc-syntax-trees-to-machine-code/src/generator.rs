@@ -243,6 +243,12 @@ pub(crate) struct StructuredGlobalBaseCache {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct DataSectionAnchorPlan {
+    pub(crate) offsets: HashMap<String, i16>,
+    pub(crate) register: Option<u8>,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct TransientGlobalIndexBase {
     pub(crate) global: String,
     pub(crate) index: String,
@@ -290,6 +296,7 @@ pub(crate) struct Generator {
     /// A call-free leading member cluster shares one global aggregate address.
     /// The virtual register's last member load ends the live range before calls.
     pub(crate) structured_global_base_cache: Option<StructuredGlobalBaseCache>,
+    pub(crate) data_section_anchor: Option<DataSectionAnchorPlan>,
     /// The structured frame emitted a pooled automatic-array copy transaction.
     /// Later physical scheduling uses this provenance instead of inferring the
     /// owner from common instructions such as `stmw`.

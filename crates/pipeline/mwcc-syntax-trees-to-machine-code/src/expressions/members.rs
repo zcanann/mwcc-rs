@@ -572,6 +572,42 @@ impl Generator {
                         )?);
                         return Ok(());
                     }
+                    if let Some((base, global_offset)) = self
+                        .data_section_anchor
+                        .as_ref()
+                        .and_then(|anchor| {
+                            anchor
+                                .register
+                                .zip(anchor.offsets.get(name.as_str()).copied())
+                        })
+                    {
+                        let member_offset = i32::try_from(offset).map_err(|_| {
+                            Diagnostic::error(
+                                "data-anchor global member displacement is out of range",
+                            )
+                        })?;
+                        let displacement = i16::try_from(
+                            i32::from(global_offset)
+                                .checked_add(member_offset)
+                                .ok_or_else(|| {
+                                    Diagnostic::error(
+                                        "data-anchor global member displacement is out of range",
+                                    )
+                                })?,
+                        )
+                        .map_err(|_| {
+                            Diagnostic::error(
+                                "data-anchor global member displacement is out of range",
+                            )
+                        })?;
+                        self.output.instructions.push(displacement_load(
+                            pointee,
+                            destination,
+                            base,
+                            displacement,
+                        )?);
+                        return Ok(());
+                    }
                     // An offset-0 member of a *small* (SDA-addressed, <= 8 byte) global
                     // struct folds to a single SDA21 load — `lwz d, g@sda21` — exactly
                     // like a scalar global of the member's type (`displacement_load`
