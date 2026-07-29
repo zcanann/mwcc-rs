@@ -335,6 +335,72 @@ fn owned_rtti_data_layout_interleaves_names_bases_and_vtables() {
 }
 
 #[test]
+fn pooled_root_rtti_layout_keeps_the_constructor_string_in_body_order() {
+    let object = |name: &'static str, relocations: Vec<crate::DataRelocation>| DataObject {
+        name,
+        size: 12,
+        alignment: 4,
+        comment_alignment: 4,
+        initial_bytes: Some(vec![0; 12]),
+        is_const: false,
+        force_full_data_section: true,
+        is_static: name.starts_with('@') || name.starts_with("__RTTI__"),
+        force_active: false,
+        is_explicit_zero: false,
+        preassigned_anonymous_ordinal: None,
+        preassigned_ordinal_advances_counter: false,
+        preassigned_pool_prefix_credit: 0,
+        relocations,
+        non_static_functions_before: 0,
+        functions_before: 0,
+        is_weak: false,
+        static_local_owner: None,
+        anonymous_adjust: 0,
+        section: None,
+    };
+    let relocation = |offset: u32, target: &str| crate::DataRelocation {
+        offset,
+        target: target.into(),
+        addend: 0,
+    };
+    let mut first_name = object("@390", Vec::new());
+    first_name.preassigned_anonymous_ordinal = Some(390);
+    let mut second_name = object("@391", Vec::new());
+    second_name.preassigned_anonymous_ordinal = Some(391);
+    let objects = vec![
+        object("@388", Vec::new()),
+        first_name,
+        second_name,
+        object("@392", vec![relocation(0, "__RTTI__4Leaf")]),
+        object("@unused", Vec::new()),
+        object(
+            "@389",
+            vec![
+                relocation(0, "__RTTI__5First"),
+                relocation(8, "__RTTI__6Second"),
+            ],
+        ),
+        object("__RTTI__5First", vec![relocation(0, "@390")]),
+        object(
+            "__RTTI__6Second",
+            vec![relocation(0, "@391"), relocation(4, "@392")],
+        ),
+        object(
+            "__RTTI__4Root",
+            vec![relocation(0, "@388"), relocation(4, "@389")],
+        ),
+        object("__vt__5First", vec![relocation(0, "__RTTI__5First")]),
+        object("__vt__6Second", vec![relocation(0, "__RTTI__6Second")]),
+        object("__vt__4Root", vec![relocation(0, "__RTTI__4Root")]),
+    ];
+
+    assert_eq!(
+        owned_rtti_data_layout_order(&objects),
+        [1, 2, 3, 5, 11, 10, 9],
+    );
+}
+
+#[test]
 fn data_relocations_follow_interleaved_creation_order() {
     let descriptor = DataObject {
         name: "descriptor",

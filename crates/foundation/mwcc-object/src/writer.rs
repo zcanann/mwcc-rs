@@ -283,6 +283,70 @@ fn owned_rtti_data_layout_order(objects: &[DataObject<'_>]) -> Vec<usize> {
         }
     };
 
+    // A replayed weak-vtable closure can pool the most-derived type name with
+    // a constructor string created immediately before the closure. That string
+    // stays in the ordinary function-data timeline. The replay then walks the
+    // root's base handles in table order, closes the root inheritance table and
+    // vtable, and emits owned base vtables in reverse table order.
+    let pooled_root = objects
+        .iter()
+        .enumerate()
+        .filter(|(_, object)| object.name.starts_with("__vt__"))
+        .find_map(|(vtable_index, vtable)| {
+            let handle_index = vtable
+                .relocations
+                .iter()
+                .find(|relocation| relocation.target.starts_with("__RTTI__"))
+                .and_then(|relocation| by_name.get(relocation.target.as_str()).copied())?;
+            let name_index = relocation_target(handle_index, 0)?;
+            objects[name_index]
+                .preassigned_anonymous_ordinal
+                .is_none()
+                .then_some((vtable_index, handle_index))
+        });
+    if let Some((root_vtable_index, root_handle_index)) = pooled_root {
+        let root_bases_index = relocation_target(root_handle_index, 4);
+        let base_handle_indices: Vec<usize> = root_bases_index
+            .into_iter()
+            .flat_map(|bases_index| objects[bases_index].relocations.iter())
+            .filter_map(|relocation| by_name.get(relocation.target.as_str()).copied())
+            .collect();
+        for &base_handle_index in &base_handle_indices {
+            if let Some(name_index) = relocation_target(base_handle_index, 0) {
+                append(name_index);
+            }
+            if let Some(bases_index) = relocation_target(base_handle_index, 4) {
+                append(bases_index);
+            }
+        }
+        if let Some(root_bases_index) = root_bases_index {
+            append(root_bases_index);
+        }
+        append(root_vtable_index);
+        for &base_handle_index in base_handle_indices.iter().rev() {
+            if let Some((vtable_index, _)) = objects.iter().enumerate().find(|(_, object)| {
+                object.name.starts_with("__vt__")
+                    && object.relocations.iter().any(|relocation| {
+                        by_name
+                            .get(relocation.target.as_str())
+                            .is_some_and(|index| *index == base_handle_index)
+                    })
+            }) {
+                append(vtable_index);
+            }
+        }
+        for (vtable_index, _) in objects.iter().enumerate().filter(|(_, object)| {
+            object.name.starts_with("__vt__")
+                && object
+                    .relocations
+                    .iter()
+                    .any(|relocation| relocation.target.starts_with("__RTTI__"))
+        }) {
+            append(vtable_index);
+        }
+        return order;
+    }
+
     for (vtable_index, vtable) in objects.iter().enumerate().filter(|(_, object)| {
         object.name.starts_with("__vt__")
             && object
