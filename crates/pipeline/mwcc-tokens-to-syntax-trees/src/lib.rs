@@ -9444,6 +9444,37 @@ blr\n\
     }
 
     #[test]
+    fn serializes_string_literals_in_character_array_struct_fields() {
+        let source = r#"
+            typedef struct {
+                signed char area;
+                char string[4];
+            } Entry;
+            static Entry entries[] = {
+                0, "JPN",
+                1, {"USA"},
+                -1
+            };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert_eq!(
+            unit.globals[0].data_bytes.as_deref(),
+            Some(
+                &[
+                    0, b'J', b'P', b'N', 0, 1, b'U', b'S', b'A', 0, 0xff, 0, 0, 0, 0,
+                ][..]
+            )
+        );
+    }
+
+    #[test]
     fn serializes_nested_block_static_scalar_and_struct_initializers() {
         let source = r#"
             typedef struct Color {

@@ -353,6 +353,29 @@ impl Parser {
         Ok(vec![0u8; layout.size as usize])
     }
 
+    /// Consume a narrow string literal used to initialize a fixed-size
+    /// character array field. The caller owns aggregate braces and separators;
+    /// this method only materializes the field image and advances past the
+    /// literal. C truncates the implicit NUL when the declared array is exactly
+    /// the string length, while the zero-filled tail supplies it otherwise.
+    fn parse_character_array_literal(
+        &mut self,
+        element_type: Type,
+        byte_len: usize,
+    ) -> Option<Vec<u8>> {
+        if !matches!(element_type, Type::Char | Type::UnsignedChar) {
+            return None;
+        }
+        let Token::StringLiteral(literal) = self.peek() else {
+            return None;
+        };
+        let mut image = vec![0; byte_len];
+        let copied = literal.len().min(byte_len);
+        image[..copied].copy_from_slice(&literal[..copied]);
+        self.advance();
+        Some(image)
+    }
+
     /// One BRACED struct value for layout `tag`, written into a fresh byte image.
     /// `base_offset` positions the value inside the enclosing data object so
     /// ADDRESS elements (`__read_console`, `(char*)&(&__files[0])->field`) record
@@ -525,6 +548,17 @@ impl Parser {
                 let element_type =
                     array_element.map_or(Type::UnsignedInt, |element| element.element());
                 let braced = self.eat_keyword(Token::BraceOpen);
+                if let Some(literal) =
+                    self.parse_character_array_literal(element_type, total as usize)
+                {
+                    image[field_base..field_base + total as usize].copy_from_slice(&literal);
+                    if braced {
+                        self.eat_keyword(Token::Comma);
+                        self.expect(Token::BraceClose)?;
+                    }
+                    self.eat_keyword(Token::Comma);
+                    continue;
+                }
                 for index in 0..count {
                     if *self.peek() == Token::BraceClose {
                         break;
