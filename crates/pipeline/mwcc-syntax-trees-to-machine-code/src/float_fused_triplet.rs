@@ -128,7 +128,12 @@ impl Generator {
         let Some((integer, multiplier, addend)) = promoted_integer_triplet(
             left,
             right,
-            |expression| self.general_register_of_leaf(expression).is_ok(),
+            |expression| {
+                self.general_register_of_leaf(expression).is_ok()
+                    || (self.non_leaf
+                        && self.is_word_load(expression)
+                        && !self.is_float_value(expression))
+            },
             |expression| self.is_float_located(expression),
         ) else {
             return Ok(false);
@@ -145,7 +150,23 @@ impl Generator {
         }
         let promoted = self.fresh_virtual_float_preferring(2);
         let multiplier_register = self.fresh_virtual_float_preferring(1);
-        self.emit_int_to_float(integer, promoted, false, 3)?;
+        if self.general_register_of_leaf(integer).is_ok() {
+            self.emit_int_to_float(integer, promoted, false, 3)?;
+        } else {
+            let integer_register = self.fresh_virtual_general_preferring(3);
+            self.evaluate_general(integer, integer_register)?;
+            let scratch = self.claim_int_to_float_scratch()?;
+            let signed = self.signedness_of(integer)?;
+            self.emit_int_to_float_body_at(
+                integer_register,
+                promoted,
+                false,
+                signed,
+                3,
+                crate::casts::IntToFloatSchedule::LeafValue,
+                scratch,
+            );
+        }
         self.emit_located_operand(multiplier, multiplier_register)?;
         self.emit_located_operand(addend, destination)?;
         self.output
