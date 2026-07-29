@@ -505,6 +505,8 @@ impl Generator {
         else {
             decline!("deferred saved-home planning rejected the body");
         };
+        let path_reuse_frame_bytes = i16::try_from(4 * deferred_home_plan.path_reuse_count)
+            .map_err(|_| Diagnostic::error("structured path-reuse frame is too large"))?;
         let int_to_float_conversion_count =
             self.count_integer_to_float_conversions(function);
         let variadic_output_frame = (self.behavior.frame_convention
@@ -1009,12 +1011,17 @@ impl Generator {
         let mut frame_homes = logical_saved_homes.clone();
         frame_homes.resize(frame_saved_count, frame_first_saved as u8);
         let mut plan = mwcc_vreg::FramePlan::with_local_region(frame_homes, local_region_bytes);
+        plan.frame_size = plan
+            .frame_size
+            .checked_add(path_reuse_frame_bytes)
+            .ok_or_else(|| Diagnostic::error("structured path-reuse frame is too large"))?;
         if aggregate_call_copy_plan.is_some()
             && self.behavior.frame_convention == FrameConvention::LinkageFirst
             && homes.is_empty()
         {
             plan.frame_size = 8i16
                 .checked_add(local_region_bytes)
+                .and_then(|size| size.checked_add(path_reuse_frame_bytes))
                 .ok_or_else(|| Diagnostic::error("structured aggregate frame is too large"))?;
         }
         if !aggregate_frame_locals.is_empty() {
@@ -1208,7 +1215,9 @@ impl Generator {
                     (occupied + alignment - 1) / alignment * alignment
                 };
                 plan.frame_size = i16::try_from(frame_size)
-                    .map_err(|_| Diagnostic::error("structured legacy frame is too large"))?;
+                    .map_err(|_| Diagnostic::error("structured legacy frame is too large"))?
+                    .checked_add(path_reuse_frame_bytes)
+                    .ok_or_else(|| Diagnostic::error("structured path-reuse frame is too large"))?;
             }
             let mut next_array_offset = array_offset;
             for array in structured_array_placement_order(frame_arrays) {

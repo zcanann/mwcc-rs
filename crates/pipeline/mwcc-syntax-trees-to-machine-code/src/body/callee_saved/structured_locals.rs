@@ -7,10 +7,12 @@
 
 #[allow(unused_imports)]
 use super::*;
+use super::structured_deferred_interference::DeferredInterference;
 
 pub(super) struct DeferredSavedHomePlan {
     group_by_name: std::collections::HashMap<String, usize>,
     group_first_assignments: Vec<usize>,
+    pub(super) path_reuse_count: usize,
     pub(super) group_count: usize,
 }
 
@@ -93,10 +95,13 @@ pub(super) fn plan_deferred_saved_homes(
         intervals.push((local.name.as_str(), first_assignment, last_read));
     }
     intervals.sort_by_key(|(_, first_assignment, _)| *first_assignment);
+    let names: Vec<_> = intervals.iter().map(|(name, _, _)| *name).collect();
+    let interference = DeferredInterference::analyze(function, &names);
 
     let mut group_last_reads = Vec::<usize>::new();
     let mut group_first_assignments = Vec::<usize>::new();
-    let mut group_by_name = std::collections::HashMap::new();
+    let mut group_by_name = std::collections::HashMap::<String, usize>::new();
+    let mut path_reused_groups = std::collections::HashSet::new();
     for (name, first_assignment, last_read) in intervals {
         // Ordinary assignments use MWCC's LIFO lifetime discipline: when
         // several homes are free, the next local takes the one whose previous
@@ -106,20 +111,29 @@ pub(super) fn plan_deferred_saved_homes(
         let load_batch_position = deferred_load_batch_position(function, name);
         let preserves_pre_frame_home = load_batch_position.is_some()
             && declared_before_automatic_array(function, name);
+        let existing_group_count = group_last_reads.len();
         let group = (!name.starts_with("__mwcc_value_")
             && load_batch_position != Some(0)
             && !preserves_pre_frame_home)
             .then(|| {
-                let expired = group_last_reads
+                let reusable = group_last_reads
                     .iter()
                     .enumerate()
-                    .filter(|(_, previous_last_read)| **previous_last_read < first_assignment);
+                    .filter(|(group, previous_last_read)| {
+                        let textually_expired = **previous_last_read < first_assignment;
+                        let path_disjoint = interference.as_ref().is_some_and(|interference| {
+                            group_by_name.iter().all(|(member, candidate)| {
+                                *candidate != *group || !interference.interferes(name, member)
+                            })
+                        });
+                        textually_expired || path_disjoint
+                    });
                 if load_batch_position.is_some() {
-                    expired
+                    reusable
                         .min_by_key(|(_, previous_last_read)| **previous_last_read)
                         .map(|(group, _)| group)
                 } else {
-                    expired
+                    reusable
                         .max_by_key(|(_, previous_last_read)| **previous_last_read)
                         .map(|(group, _)| group)
                 }
@@ -130,13 +144,17 @@ pub(super) fn plan_deferred_saved_homes(
                 group_first_assignments.push(first_assignment);
                 group_last_reads.len() - 1
             });
-        group_last_reads[group] = last_read;
+        if group < existing_group_count && group_last_reads[group] >= first_assignment {
+            path_reused_groups.insert(group);
+        }
+        group_last_reads[group] = group_last_reads[group].max(last_read);
         group_by_name.insert(name.to_owned(), group);
     }
     Some(DeferredSavedHomePlan {
         group_count: group_last_reads.len(),
         group_by_name,
         group_first_assignments,
+        path_reuse_count: path_reused_groups.len(),
     })
 }
 
@@ -287,7 +305,7 @@ fn collect_expression_interval(
     }
 }
 
-fn expression_assignment_count(expression: &Expression, name: &str) -> usize {
+pub(super) fn expression_assignment_count(expression: &Expression, name: &str) -> usize {
     match expression {
         Expression::Assign { target, value } => {
             usize::from(
@@ -1563,6 +1581,60 @@ mod tests {
         let plan = plan_deferred_saved_homes(&function, &locals).unwrap();
         assert_eq!(plan.group_count, 2);
         assert_ne!(plan.group("first"), plan.group("second"));
+    }
+
+    #[test]
+    fn coalesces_values_live_on_opposite_condition_edges() {
+        let mut first = local("first", Expression::IntegerLiteral(0));
+        first.initializer = None;
+        let mut second = local("second", Expression::IntegerLiteral(0));
+        second.initializer = None;
+        let function = Function {
+            return_type: Type::Void,
+            name: "compiled".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: vec![first, second],
+            statements: vec![
+                Statement::Assign {
+                    name: "first".into(),
+                    value: Expression::IntegerLiteral(1),
+                },
+                Statement::If {
+                    condition: Expression::Variable("condition".into()),
+                    then_body: vec![
+                        Statement::Assign {
+                            name: "second".into(),
+                            value: Expression::IntegerLiteral(2),
+                        },
+                        Statement::Expression(Expression::Call {
+                            name: "consume".into(),
+                            arguments: vec![Expression::Variable("second".into())],
+                        }),
+                    ],
+                    else_body: vec![Statement::Expression(Expression::Call {
+                        name: "consume".into(),
+                        arguments: vec![Expression::Variable("first".into())],
+                    })],
+                },
+            ],
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+        let locals: Vec<_> = function.locals.iter().collect();
+
+        let plan = plan_deferred_saved_homes(&function, &locals).unwrap();
+        assert_eq!(plan.group_count, 1);
+        assert_eq!(plan.path_reuse_count, 1);
+        assert_eq!(plan.group("first"), plan.group("second"));
     }
 
     #[test]
