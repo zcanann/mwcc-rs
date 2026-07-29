@@ -35,6 +35,7 @@ use super::structured_frame_arrays::{
 };
 use super::structured_array_pool::plan_structured_array_pool;
 use super::structured_frame_entry::structured_dense_frame_entry_index;
+use super::structured_frame_ordinals::pre_constant_label_count;
 use super::structured_global_index_cache::plan as plan_structured_global_index_cache;
 use super::structured_global_base_cache::plan as plan_structured_global_base_cache;
 use super::structured_frame_publication::{
@@ -2329,13 +2330,19 @@ impl Generator {
         // otherwise-hidden labels through the later unwind-symbol ordinal.
         let structured_labels =
             structured_hidden_label_count(&structured_function.statements);
+        let frame_prefix_labels = pre_constant_label_count(
+            frame_arrays.len(),
+            &frame_scalar_locals,
+            &function.statements,
+            self.inline_statement_body_substitutions,
+        );
         if aggregate_call_copy_plan.is_some() {
             // Declaration-time aggregate images are pooled before the body
             // creates its branch labels. Those labels still precede unwind and
             // later-function ordinals, but must not renumber these constants.
             self.output.post_constant_label_bump += structured_labels;
         } else {
-            self.output.anonymous_label_bump += structured_labels;
+            self.output.anonymous_label_bump += structured_labels + frame_prefix_labels;
         }
         if !call_accumulators.is_empty() {
             // Each normalized call result leaves one optimizer-only label. The

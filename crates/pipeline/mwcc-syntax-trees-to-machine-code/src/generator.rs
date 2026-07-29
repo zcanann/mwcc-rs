@@ -530,6 +530,10 @@ pub(crate) struct Generator {
     /// Allocator bookkeeping retained after value-returning inline calls have
     /// been expanded away. The linkage-first frame policy owns its placement.
     pub(crate) legacy_inline_expansion_frame_bytes: usize,
+    /// Statement-body substitutions composed into this function. General
+    /// inline residue is charged at expansion time; structured frames retain
+    /// an additional binding block for each substitution.
+    pub(crate) inline_statement_body_substitutions: usize,
     /// Frontend substitutions whose eliminated optimizer nodes still advance
     /// the anonymous ordinal stream when body expansion occurs.
     pub(crate) inline_expansion_facts: mwcc_syntax_trees::InlineExpansionFacts,

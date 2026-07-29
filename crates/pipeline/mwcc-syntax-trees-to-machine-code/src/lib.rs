@@ -647,6 +647,7 @@ fn lower_function_body(
             function,
             inline_expansion_facts,
         ),
+        inline_statement_body_substitutions: 0,
         inline_expansion_facts,
         epilogue_lr_first: false,
         epilogue_lr_before_gprs: false,

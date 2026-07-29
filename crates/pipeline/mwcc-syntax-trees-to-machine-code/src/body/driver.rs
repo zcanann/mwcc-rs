@@ -1649,6 +1649,8 @@ impl Generator {
                     &expanded.function,
                     expanded.statement_frame_residue_substitutions,
                 );
+            self.inline_statement_body_substitutions +=
+                expanded.statement_body_substitutions;
             self.output.anonymous_label_bump += crate::inline_expansion::ordinal_residue(
                 self.inline_expansion_facts,
                 expanded.statement_body_substitutions,
@@ -1664,6 +1666,8 @@ impl Generator {
                         &expanded.function,
                         expanded.statement_frame_residue_substitutions,
                     );
+                self.inline_statement_body_substitutions +=
+                    expanded.statement_body_substitutions;
                 self.output.anonymous_label_bump += crate::inline_expansion::ordinal_residue(
                     self.inline_expansion_facts,
                     expanded.statement_body_substitutions,
