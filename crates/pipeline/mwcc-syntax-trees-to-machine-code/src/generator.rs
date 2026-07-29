@@ -237,6 +237,12 @@ pub(crate) struct StructuredGlobalIndexCache {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct StructuredGlobalBaseCache {
+    pub(crate) global: String,
+    pub(crate) register: u8,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct TransientGlobalIndexBase {
     pub(crate) global: String,
     pub(crate) index: String,
@@ -281,6 +287,9 @@ pub(crate) struct Generator {
     /// A source-stable global struct-array subscript whose scaled index is
     /// retained across calls by the structured body owner.
     pub(crate) structured_global_index_cache: Option<StructuredGlobalIndexCache>,
+    /// A call-free leading member cluster shares one global aggregate address.
+    /// The virtual register's last member load ends the live range before calls.
+    pub(crate) structured_global_base_cache: Option<StructuredGlobalBaseCache>,
     /// The structured frame emitted a pooled automatic-array copy transaction.
     /// Later physical scheduling uses this provenance instead of inferring the
     /// owner from common instructions such as `stmw`.

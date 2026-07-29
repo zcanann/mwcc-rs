@@ -93,6 +93,8 @@ mod structured_frame_preloop_packet_schedule;
 mod structured_frame_publication;
 mod structured_frame_value_forwarding;
 mod structured_global_index_cache;
+mod structured_global_base_cache;
+mod structured_expression_visit;
 mod structured_guard_cache_schedule;
 mod structured_guarded_ucode_schedule;
 mod structured_home_layout;

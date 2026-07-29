@@ -553,6 +553,25 @@ impl Generator {
                             "unsupported global-value member load type {member_type:?} at +{offset}"
                         ))
                     })?;
+                    if let Some(base) = self
+                        .structured_global_base_cache
+                        .as_ref()
+                        .filter(|cache| cache.global == *name)
+                        .map(|cache| cache.register)
+                    {
+                        let displacement = i16::try_from(offset).map_err(|_| {
+                            Diagnostic::error(
+                                "cached global member displacement is out of range",
+                            )
+                        })?;
+                        self.output.instructions.push(displacement_load(
+                            pointee,
+                            destination,
+                            base,
+                            displacement,
+                        )?);
+                        return Ok(());
+                    }
                     // An offset-0 member of a *small* (SDA-addressed, <= 8 byte) global
                     // struct folds to a single SDA21 load — `lwz d, g@sda21` — exactly
                     // like a scalar global of the member's type (`displacement_load`
@@ -811,13 +830,27 @@ impl Generator {
             // A nonzero-sized aggregate needs a real GPR base; r0 reads as literal
             // zero in a D-form address. Constant-index scratch loads need their own
             // measured schedule rather than silently treating r0 as that base.
-            if destination == GENERAL_SCRATCH {
-                return Err(Diagnostic::error("a constant-index global struct-array member into the scratch register is not supported yet (roadmap)"));
-            }
             let total = constant * stride as i64 + offset as i64;
             let total = i16::try_from(total).map_err(|_| {
                 Diagnostic::error("struct-array member offset out of range (roadmap)")
             })?;
+            if let Some(base) = self
+                .structured_global_base_cache
+                .as_ref()
+                .filter(|cache| cache.global == name)
+                .map(|cache| cache.register)
+            {
+                self.output.instructions.push(displacement_load(
+                    pointee,
+                    destination,
+                    base,
+                    total,
+                )?);
+                return Ok(());
+            }
+            if destination == GENERAL_SCRATCH {
+                return Err(Diagnostic::error("a constant-index global struct-array member into the scratch register is not supported yet (roadmap)"));
+            }
             self.emit_global_array_base(name, total_size, destination)?;
             self.output.instructions.push(displacement_load(
                 pointee,

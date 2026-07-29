@@ -34,6 +34,7 @@ use super::structured_frame_arrays::{
 use super::structured_array_pool::plan_structured_array_pool;
 use super::structured_frame_entry::structured_dense_frame_entry_index;
 use super::structured_global_index_cache::plan as plan_structured_global_index_cache;
+use super::structured_global_base_cache::plan as plan_structured_global_base_cache;
 use super::structured_frame_publication::{
     StructuredFramePublication, CURSOR_OFFSET, LOCAL_REGION_BYTES, OWNER_OFFSET,
 };
@@ -297,6 +298,8 @@ impl Generator {
                 &self.global_array_sizes,
             )
         });
+        let global_base_cache_plan =
+            plan_structured_global_base_cache(function, &self.global_array_sizes);
         let aggregate_call_copy_plan =
             (frame_arrays.is_empty()
                 && frame_scalar_parameters.is_empty()
@@ -1275,6 +1278,15 @@ impl Generator {
                     offset: plan.frame_size + 4,
                 },
             ]);
+        }
+        if let Some(cache) = global_base_cache_plan {
+            let register = self.fresh_virtual_general_preferring(4);
+            self.emit_global_array_base(&cache.global, cache.total_size, register)?;
+            self.structured_global_base_cache =
+                Some(crate::generator::StructuredGlobalBaseCache {
+                    global: cache.global,
+                    register,
+                });
         }
         if dense_save_helper {
             self.output.instructions.push(Instruction::AddImmediate {

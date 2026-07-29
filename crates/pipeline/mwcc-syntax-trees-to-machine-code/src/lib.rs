@@ -550,6 +550,7 @@ fn lower_function_body(
             )
             .collect(),
         structured_global_index_cache: None,
+        structured_global_base_cache: None,
         structured_array_pool_emitted: false,
         transient_global_index_base: None,
         full_bss_globals: globals
