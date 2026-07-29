@@ -3125,6 +3125,11 @@ impl Parser {
             // Row-stride records are scoped to ONE function's parameters — a stale
             // entry from a previous function would mis-stride a same-named variable.
             self.decayed_row_pointers.clear();
+            // Aggregate identities are likewise function-scoped. Parameters
+            // parsed below repopulate the map, followed by local declarations
+            // in `function_body`; carrying an earlier `View* s1` into a later
+            // `char* s1` makes scalar overload arguments appear aggregate.
+            self.variable_structs.clear();
             // `(void)` is an empty parameter list — but only when the `void` is the
             // whole list; `void *p` / `void (*f)()` are real first parameters.
             if is_kr_definition {

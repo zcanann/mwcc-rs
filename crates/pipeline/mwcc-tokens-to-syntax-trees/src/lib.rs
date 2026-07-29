@@ -10365,6 +10365,33 @@ blr\n\
     }
 
     #[test]
+    fn known_scalar_overload_arguments_ignore_prior_aggregate_identity() {
+        let source = r#"
+            struct View {};
+            int inspect(View* text) { return 0; }
+            int lower(char value) { return value; }
+            int lower(int value) { return value; }
+            int use(void* raw) {
+                char* text = (char*)raw;
+                return lower(text[0]);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        assert!(matches!(
+            &unit.functions[3].return_expression,
+            Some(mwcc_syntax_trees::Expression::Call { name, .. })
+                if name == "lower__Fc"
+        ));
+    }
+
+    #[test]
     fn resolves_member_overloads_from_aggregate_argument_identity() {
         let source = r#"
             struct Creature {};
