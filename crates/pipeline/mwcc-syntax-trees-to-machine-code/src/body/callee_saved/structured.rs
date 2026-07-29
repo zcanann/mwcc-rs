@@ -494,6 +494,16 @@ impl Generator {
             decline!("deferred saved-home planning rejected the body");
         };
 
+        let linkage_first_scalar_local_table_bytes = if frame_arrays.is_empty()
+            && frame_scalar_parameters.is_empty()
+            && frame_publication.is_none()
+            && self.behavior.frame_convention == FrameConvention::LinkageFirst
+        {
+            i16::try_from(frame_scalar_locals.len() * 4)
+                .map_err(|_| Diagnostic::error("structured scalar frame is too large"))?
+        } else {
+            0
+        };
         let scalar_only_frame_bytes = if frame_arrays.is_empty() {
             frame_publication.as_ref().map_or_else(
                 || {
@@ -504,6 +514,8 @@ impl Generator {
                 |_| Ok(LOCAL_REGION_BYTES),
             )
                 .map_err(|_| Diagnostic::error("structured scalar frame is too large"))?
+                .checked_add(linkage_first_scalar_local_table_bytes)
+                .ok_or_else(|| Diagnostic::error("structured scalar frame is too large"))?
         } else {
             0
         };
@@ -995,7 +1007,14 @@ impl Generator {
                 }
             }
             if self.behavior.frame_convention == FrameConvention::LinkageFirst {
-                let occupied = i32::from(array_offset)
+                let occupied_base = if frame_arrays.is_empty()
+                    && linkage_first_scalar_local_table_bytes != 0
+                {
+                    8
+                } else {
+                    array_offset
+                };
+                let occupied = i32::from(occupied_base)
                     + i32::from(local_region_bytes)
                     + i32::try_from(4 * count).unwrap_or(i32::MAX);
                 // The legacy value graph retains the terminal pointer alias as
@@ -1075,7 +1094,10 @@ impl Generator {
                     } else {
                         frame_publication
                             .as_ref()
-                            .map_or(8, |_| CURSOR_OFFSET)
+                            .map_or(
+                                8 + linkage_first_scalar_local_table_bytes,
+                                |_| CURSOR_OFFSET,
+                            )
                     }
                 } else {
                     array_offset
@@ -1110,7 +1132,7 @@ impl Generator {
                     .checked_add(4)
                     .ok_or_else(|| Diagnostic::error("structured scalar frame is too large"))?;
             }
-            for local in &frame_scalar_locals {
+            for local in frame_scalar_locals.iter().rev() {
                 self.frame_slots.insert(
                     local.name.clone(),
                     FrameSlot {
@@ -1171,12 +1193,14 @@ impl Generator {
         };
         self.legacy_callee_saved_frame_layout = if unused_frame_array
             || !frame_scalar_parameters.is_empty()
+            || !frame_scalar_locals.is_empty()
         {
             // An unused source-level scratch array still occupies its declared
             // bytes, but creates no retained value-table lane. Addressable
             // parameters likewise already occupy the linkage-first incoming
-            // value table. Their logical frames account for the local region
-            // and every saved home, so neither case reserves another lane.
+            // value table. Address-taken locals own an explicit stack region
+            // too. Their logical frames account for the local region and every
+            // saved home, so none of these cases reserves another lane.
             LegacyCalleeSavedFrameLayout::PreserveLogicalSize
         } else if !with_frame_array
             && eager_saved_locals.len() == 1
