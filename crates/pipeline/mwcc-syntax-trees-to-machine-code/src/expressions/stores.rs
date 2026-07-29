@@ -1443,7 +1443,9 @@ impl Generator {
         // register when it already holds that constant (mwcc materializes a
         // repeated store value once: `li r0,0; stw; stw; stw`). The run guarantees
         // nothing clobbers the scratch between stores, so this is provably valid.
-        if self.reuse_scratch_constant {
+        if self.reuse_scratch_constant
+            && !matches!(pointee, Pointee::Float | Pointee::Double)
+        {
             if let Some(constant) = constant_value(value) {
                 let constant = constant as i32;
                 if self.scratch_constant != Some(constant) {
