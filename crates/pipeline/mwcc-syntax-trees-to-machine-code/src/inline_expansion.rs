@@ -110,9 +110,14 @@ pub(crate) fn legacy_frame_residue_bytes(
 
 pub(crate) fn legacy_statement_body_frame_residue_bytes(
     function: &Function,
-    substitutions: usize,
+    retained_substitutions: usize,
+    mutating_substitutions: usize,
 ) -> usize {
-    frame_residue::legacy_statement_body_frame_residue_bytes(function, substitutions)
+    frame_residue::legacy_statement_body_frame_residue_bytes(
+        function,
+        retained_substitutions,
+        mutating_substitutions,
+    )
 }
 
 pub(crate) fn legacy_value_body_frame_residue_bytes(
@@ -136,10 +141,21 @@ pub(crate) fn ordinal_residue(
     )
 }
 
+pub(crate) fn legacy_mutating_value_body_ordinal_residue(
+    function: &Function,
+    value_body_substitutions: usize,
+) -> u32 {
+    ordinal_residue::legacy_mutating_value_body_ordinal_residue(
+        function,
+        value_body_substitutions,
+    )
+}
+
 pub(crate) struct ExpandedCalls {
     pub(crate) function: Function,
     pub(crate) statement_body_substitutions: usize,
     pub(crate) statement_frame_residue_substitutions: usize,
+    pub(crate) statement_mutating_body_substitutions: usize,
     pub(crate) value_body_substitutions: usize,
 }
 
@@ -511,6 +527,7 @@ impl InlineBodySet {
         let mut changed = false;
         let mut statement_body_substitutions = 0;
         let mut statement_frame_residue_substitutions = 0;
+        let mut statement_mutating_body_substitutions = 0;
         let mut value_body_substitutions = 0;
         let mut active = HashSet::new();
         let stable_variables = stable_local_values(function);
@@ -532,6 +549,7 @@ impl InlineBodySet {
             &mut next_local_id,
             &mut statement_body_substitutions,
             &mut statement_frame_residue_substitutions,
+            &mut statement_mutating_body_substitutions,
             function.return_expression.is_none(),
             allow_changing_scalar_arguments,
         );
@@ -631,6 +649,7 @@ impl InlineBodySet {
             function: expanded,
             statement_body_substitutions,
             statement_frame_residue_substitutions,
+            statement_mutating_body_substitutions,
             value_body_substitutions,
         })
     }
@@ -646,6 +665,7 @@ impl InlineBodySet {
         next_local_id: &mut usize,
         statement_body_substitutions: &mut usize,
         statement_frame_residue_substitutions: &mut usize,
+        statement_mutating_body_substitutions: &mut usize,
         allow_terminal_local_reuse: bool,
         allow_changing_scalar_arguments: bool,
     ) -> Vec<Statement> {
@@ -779,11 +799,14 @@ impl InlineBodySet {
                     }
                     *changed = true;
                     *statement_body_substitutions += 1;
+                    let mutates_memory = statements_mutate_memory(&callee.statements);
+                    if mutates_memory {
+                        *statement_mutating_body_substitutions += 1;
+                    }
                     let mut callee_calls = HashMap::new();
                     collect_function_calls(callee, &mut callee_calls);
                     if self.required.contains(name)
-                        && (!callee_calls.is_empty()
-                            || statements_mutate_memory(&callee.statements))
+                        && (!callee_calls.is_empty() || mutates_memory)
                     {
                         *statement_frame_residue_substitutions += 1;
                     }
@@ -798,6 +821,7 @@ impl InlineBodySet {
                         next_local_id,
                         statement_body_substitutions,
                         statement_frame_residue_substitutions,
+                        statement_mutating_body_substitutions,
                         false,
                         allow_changing_scalar_arguments,
                     ));
@@ -819,6 +843,7 @@ impl InlineBodySet {
                         next_local_id,
                         statement_body_substitutions,
                         statement_frame_residue_substitutions,
+                        statement_mutating_body_substitutions,
                         false,
                         allow_changing_scalar_arguments,
                     ),
@@ -832,6 +857,7 @@ impl InlineBodySet {
                         next_local_id,
                         statement_body_substitutions,
                         statement_frame_residue_substitutions,
+                        statement_mutating_body_substitutions,
                         false,
                         allow_changing_scalar_arguments,
                     ),
@@ -857,6 +883,7 @@ impl InlineBodySet {
                         next_local_id,
                         statement_body_substitutions,
                         statement_frame_residue_substitutions,
+                        statement_mutating_body_substitutions,
                         false,
                         allow_changing_scalar_arguments,
                     ),
@@ -881,6 +908,7 @@ impl InlineBodySet {
                                     next_local_id,
                                     statement_body_substitutions,
                                     statement_frame_residue_substitutions,
+                                    statement_mutating_body_substitutions,
                                     false,
                                     allow_changing_scalar_arguments,
                                 ),
@@ -905,6 +933,7 @@ impl InlineBodySet {
                                 next_local_id,
                                 statement_body_substitutions,
                                 statement_frame_residue_substitutions,
+                                statement_mutating_body_substitutions,
                                 false,
                                 allow_changing_scalar_arguments,
                             ),
@@ -1480,6 +1509,7 @@ mod tests {
             .expect("both statement bodies should compose");
         assert_eq!(expanded.statement_body_substitutions, 2);
         assert_eq!(expanded.statement_frame_residue_substitutions, 2);
+        assert_eq!(expanded.statement_mutating_body_substitutions, 1);
     }
 
     #[test]
@@ -1513,6 +1543,35 @@ mod tests {
                 .expect("the ordinary statement body should compose");
         assert_eq!(expanded.statement_body_substitutions, 1);
         assert_eq!(expanded.statement_frame_residue_substitutions, 0);
+        assert_eq!(expanded.statement_mutating_body_substitutions, 0);
+    }
+
+    #[test]
+    fn records_an_ordinary_mutating_body_separately_from_retained_frame_residue() {
+        let helper = function(
+            "helper",
+            Vec::new(),
+            vec![Statement::Store {
+                target: Expression::Variable("memory".into()),
+                value: Expression::IntegerLiteral(0),
+            }],
+        );
+        let caller = function(
+            "caller",
+            Vec::new(),
+            vec![Statement::Expression(Expression::Call {
+                name: "helper".into(),
+                arguments: Vec::new(),
+            })],
+        );
+
+        let expanded =
+            InlineBodySet::analyze_with_definitions(&[helper, caller.clone()], &[])
+                .expand_calls_with_facts(&caller)
+                .expect("the ordinary mutating body should compose");
+        assert_eq!(expanded.statement_body_substitutions, 1);
+        assert_eq!(expanded.statement_frame_residue_substitutions, 0);
+        assert_eq!(expanded.statement_mutating_body_substitutions, 1);
     }
 
     #[test]

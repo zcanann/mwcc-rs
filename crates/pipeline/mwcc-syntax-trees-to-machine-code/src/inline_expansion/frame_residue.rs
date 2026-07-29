@@ -33,7 +33,8 @@ pub(super) fn legacy_frame_residue_bytes(
 
 pub(super) fn legacy_statement_body_frame_residue_bytes(
     function: &Function,
-    substitutions: usize,
+    retained_substitutions: usize,
+    mutating_substitutions: usize,
 ) -> usize {
     let framed_mutating_inline = function
         .locals
@@ -44,6 +45,11 @@ pub(super) fn legacy_statement_body_frame_residue_bytes(
             .statements
             .iter()
             .any(statement_contains_memory_mutation);
+    let substitutions = if framed_mutating_inline {
+        retained_substitutions.max(mutating_substitutions)
+    } else {
+        retained_substitutions
+    };
     if substitutions == 0
         || (!has_statement_body_frame_residue(&function.statements)
             && !framed_mutating_inline)
@@ -510,7 +516,10 @@ mod tests {
             },
             call("external"),
         ]);
-        assert_eq!(legacy_statement_body_frame_residue_bytes(&function, 1), 8);
+        assert_eq!(
+            legacy_statement_body_frame_residue_bytes(&function, 1, 0),
+            8
+        );
     }
 
     #[test]
@@ -561,7 +570,10 @@ mod tests {
                 value: Box::new(Expression::IntegerLiteral(0)),
             }),
         ]);
-        assert_eq!(legacy_statement_body_frame_residue_bytes(&function, 1), 8);
+        assert_eq!(
+            legacy_statement_body_frame_residue_bytes(&function, 1, 0),
+            8
+        );
     }
 
     #[test]
@@ -577,7 +589,10 @@ mod tests {
             ],
             else_body: Vec::new(),
         }]);
-        assert_eq!(legacy_statement_body_frame_residue_bytes(&function, 2), 16);
+        assert_eq!(
+            legacy_statement_body_frame_residue_bytes(&function, 2, 0),
+            16
+        );
     }
 
     #[test]
@@ -589,7 +604,10 @@ mod tests {
                 value: Expression::IntegerLiteral(0),
             },
         ]);
-        assert_eq!(legacy_statement_body_frame_residue_bytes(&function, 1), 0);
+        assert_eq!(
+            legacy_statement_body_frame_residue_bytes(&function, 1, 0),
+            0
+        );
     }
 
     #[test]
@@ -613,7 +631,10 @@ mod tests {
             is_const: false,
             row_bytes: None,
         });
-        assert_eq!(legacy_statement_body_frame_residue_bytes(&function, 1), 8);
+        assert_eq!(
+            legacy_statement_body_frame_residue_bytes(&function, 0, 1),
+            8
+        );
     }
 
 }

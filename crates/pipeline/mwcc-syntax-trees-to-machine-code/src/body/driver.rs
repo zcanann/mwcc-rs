@@ -1660,6 +1660,7 @@ impl Generator {
                 crate::inline_expansion::legacy_statement_body_frame_residue_bytes(
                     &expanded.function,
                     expanded.statement_frame_residue_substitutions,
+                    expanded.statement_mutating_body_substitutions,
                 );
             self.legacy_inline_expansion_frame_bytes +=
                 crate::inline_expansion::legacy_value_body_frame_residue_bytes(
@@ -1687,6 +1688,7 @@ impl Generator {
                     crate::inline_expansion::legacy_statement_body_frame_residue_bytes(
                         &expanded.function,
                         expanded.statement_frame_residue_substitutions,
+                        expanded.statement_mutating_body_substitutions,
                     );
                 self.legacy_inline_expansion_frame_bytes +=
                     crate::inline_expansion::legacy_value_body_frame_residue_bytes(
@@ -1705,6 +1707,12 @@ impl Generator {
                         expanded.value_body_substitutions,
                         self.behavior.inline_statement_substitution_label_weight,
                     );
+                } else {
+                    self.output.anonymous_label_bump +=
+                        crate::inline_expansion::legacy_mutating_value_body_ordinal_residue(
+                            &expanded.function,
+                            expanded.value_body_substitutions,
+                        );
                 }
                 let branch_reuse =
                     crate::branch_value_reuse::materialize_guarded_global_member_update(
