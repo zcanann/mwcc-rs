@@ -407,6 +407,39 @@ impl Generator {
                 )?);
                 return Ok(true);
             }
+            if integer_is_wide
+                && self.non_leaf
+                && self.general_register_of_leaf(integer_operand).is_ok()
+            {
+                let source = self.general_register_of_leaf(integer_operand)?;
+                let signed = self.signedness_of(integer_operand)?;
+                let scratch = self.claim_int_to_float_scratch()?;
+                let promoted = self.fresh_virtual_float_preferring(FLOAT_SCRATCH);
+                let bias = self.fresh_virtual_float_preferring(BIAS_REGISTER);
+                self.emit_int_to_float_body_at(
+                    source,
+                    promoted,
+                    double,
+                    signed,
+                    bias,
+                    IntToFloatSchedule::LeafValue,
+                    scratch,
+                );
+                let float_register = self.float_register_of_leaf(float_operand)?;
+                let (left_register, right_register) = if left_float_leaf {
+                    (float_register, promoted)
+                } else {
+                    (promoted, float_register)
+                };
+                let operands = Operands::ordered(left_register, right_register)?;
+                self.output.instructions.push(float_combine(
+                    operator,
+                    destination,
+                    operands,
+                    double,
+                )?);
+                return Ok(true);
+            }
         }
 
         // A structured non-leaf body already owns conversion scratch space. It
