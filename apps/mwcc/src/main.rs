@@ -2717,6 +2717,9 @@ mod tests {
     #[path = "asm_symbol_creation.rs"]
     mod asm_symbol_creation;
 
+    #[path = "linkage_epilogue.rs"]
+    mod linkage_epilogue;
+
     #[path = "address_taken_scalar.rs"]
     mod address_taken_scalar;
 

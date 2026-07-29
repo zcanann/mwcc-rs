@@ -1170,23 +1170,16 @@ fn hoist_link_register_reload(generator: &mut Generator) {
     // epilogue latency candidate (`li result; addi r1,...; lwz r0,4(r1)`). The generic hoist
     // only understands the reload-through-current-frame convention and would incorrectly move
     // this load ahead of both operations.
-    if generator.behavior.frame_convention == mwcc_versions::FrameConvention::LinkageFirst
-        && generator.behavior.plain_linkage_epilogue_style
-            == mwcc_versions::PlainLinkageEpilogueStyle::StackRestoreBeforeReload
+    if generator
+        .output
+        .instructions
+        .iter()
+        .position(|instruction| {
+            matches!(instruction, Instruction::LoadWord { d: 0, a: 1, offset: 4 })
+        })
+        .is_some_and(|reload| link_reload_uses_restored_stack(generator, reload))
     {
-        let stack_restore = generator.output.instructions.iter().position(|instruction| {
-            matches!(instruction, Instruction::AddImmediate { d: 1, a: 1, immediate }
-                if *immediate == generator.frame_size)
-        });
-        let restored_stack_link_load = generator.output.instructions.iter().position(
-            |instruction| {
-                matches!(instruction, Instruction::LoadWord { d: 0, a: 1, offset: 4 })
-            },
-        );
-        if matches!((stack_restore, restored_stack_link_load), (Some(restore), Some(load)) if restore < load)
-        {
-            return;
-        }
+        return;
     }
     let permutation = mwcc_vreg::hoist_link_register_reload(&mut generator.output.instructions);
     remap_instruction_indices(generator, &permutation);
@@ -1218,6 +1211,13 @@ fn schedule_shared_epilogue_link_reload(generator: &mut Generator) {
         generator.output.instructions[reload],
         Instruction::LoadWord { d: 0, a: 1, .. }
     ) {
+        return;
+    }
+    // GC/1.1p1's `lwz r0,4(r1)` reads through the caller stack pointer
+    // established by the immediately preceding addi. It looks superficially
+    // like an independent shared-epilogue result operation, but swapping the
+    // pair changes the address and contradicts the build's frame convention.
+    if link_reload_uses_restored_stack(generator, reload) {
         return;
     }
 
@@ -1337,6 +1337,29 @@ fn schedule_shared_epilogue_link_reload(generator: &mut Generator) {
             _ => unreachable!("recorded branch changed kind during adjacent swap"),
         }
     }
+}
+
+fn link_reload_uses_restored_stack(generator: &Generator, reload: usize) -> bool {
+    generator.behavior.frame_convention == mwcc_versions::FrameConvention::LinkageFirst
+        && generator.behavior.plain_linkage_epilogue_style
+            == mwcc_versions::PlainLinkageEpilogueStyle::StackRestoreBeforeReload
+        && reload > 0
+        && matches!(
+            generator.output.instructions[reload],
+            Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: 4,
+            }
+        )
+        && matches!(
+            generator.output.instructions[reload - 1],
+            Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate,
+            } if immediate == generator.frame_size
+        )
 }
 
 fn schedule_link_register_save(generator: &mut Generator) {
