@@ -438,7 +438,7 @@ impl Generator {
         if self.try_emit_global_array_string_call_offset_arguments(arguments, name)? {
             return Ok(());
         }
-        if self.try_emit_zero_arg_nested_general_argument(arguments, name)? {
+        if self.try_emit_nested_general_argument_with_reloadable_siblings(arguments, name)? {
             return Ok(());
         }
         if self.try_emit_frame_array_string_nested_tail_arguments(arguments, name)? {
@@ -476,12 +476,12 @@ impl Generator {
                     && matches!(types[0], Type::Float | Type::Double)
                     && matches!(types[1], Type::Float | Type::Double)
             });
-            let first_survives_call = self
-                .locations
-                .get(first_name.as_str())
-                .is_some_and(|location| {
-                    location.class == ValueClass::Float && location.register >= 14
-                });
+            let first_survives_call =
+                self.locations
+                    .get(first_name.as_str())
+                    .is_some_and(|location| {
+                        location.class == ValueClass::Float && location.register >= 14
+                    });
             if both_float
                 && first_survives_call
                 && self.is_float_value(second)
@@ -1008,9 +1008,7 @@ impl Generator {
                         !self.is_float_value(argument)
                             && !matches!(
                                 super::call_argument_types::source_parameter_type(
-                                    self.call_parameter_types
-                                        .get(name)
-                                        .map(Vec::as_slice),
+                                    self.call_parameter_types.get(name).map(Vec::as_slice),
                                     matches!(
                                         self.call_return_types.get(name),
                                         Some(Type::Struct { .. })
@@ -1045,10 +1043,7 @@ impl Generator {
         for (index, argument) in arguments.iter().enumerate() {
             let parameter_type = super::call_argument_types::source_parameter_type(
                 self.call_parameter_types.get(name).map(Vec::as_slice),
-                matches!(
-                    self.call_return_types.get(name),
-                    Some(Type::Struct { .. })
-                ),
+                matches!(self.call_return_types.get(name), Some(Type::Struct { .. })),
                 arguments.len(),
                 index,
             );
@@ -1135,10 +1130,9 @@ impl Generator {
                     // needs a GPR for its address; make those live ABI slots
                     // unavailable so address selection cannot silently
                     // overwrite an earlier receiver (for example r3).
-                    let newly_reserved: Vec<_> =
-                        (Eabi::FIRST_GENERAL_ARGUMENT..next_general)
-                            .filter(|register| self.reserved.insert(*register))
-                            .collect();
+                    let newly_reserved: Vec<_> = (Eabi::FIRST_GENERAL_ARGUMENT..next_general)
+                        .filter(|register| self.reserved.insert(*register))
+                        .collect();
                     let evaluated = self.evaluate(argument, parameter_type, next_float);
                     for register in newly_reserved {
                         self.reserved.remove(&register);
@@ -1152,10 +1146,8 @@ impl Generator {
                 }
                 next_float += 1;
             } else {
-                let aggregate_reference = aggregate_reference_source(
-                    argument,
-                    parameter_type,
-                    |pointer| {
+                let aggregate_reference =
+                    aggregate_reference_source(argument, parameter_type, |pointer| {
                         if let Expression::Cast {
                             target_type: Type::StructPointer { element_size },
                             ..
@@ -1169,8 +1161,7 @@ impl Generator {
                                     .and_then(|location| location.stride)
                             })
                         }
-                    },
-                );
+                    });
                 let general_argument = match aggregate_reference {
                     Some(AggregateReferenceSource::Address(address)) => address,
                     Some(AggregateReferenceSource::Lvalue(lvalue)) => lvalue,
@@ -1283,22 +1274,18 @@ impl Generator {
                             .enumerate()
                             .find(|(offset, later)| {
                                 let later_index = index + 1 + offset;
-                                !prematerialized_general.is_some_and(
-                                    |(prematerialized, _, _)| {
-                                        prematerialized == later_index
-                                    },
-                                ) && self.registers_used_by(later).contains(&next_general)
+                                !prematerialized_general.is_some_and(|(prematerialized, _, _)| {
+                                    prematerialized == later_index
+                                }) && self.registers_used_by(later).contains(&next_general)
                             })
                     })
                     .flatten();
                 if let Some((offset, _)) = endangered_later {
                     let later_index = index + 1 + offset;
-                    return Err(Diagnostic::error(
-                        format!(
-                            "argument {index} to '{name}' would clobber r{next_general}, \
+                    return Err(Diagnostic::error(format!(
+                        "argument {index} to '{name}' would clobber r{next_general}, \
                              which later argument {later_index} still needs (roadmap)"
-                        ),
-                    ));
+                    )));
                 }
                 // In a MULTI-argument remap, a dying incoming parameter shifted
                 // DOWN into an earlier ABI argument register is a value
@@ -1309,18 +1296,17 @@ impl Generator {
                     self.leaf_info(general_argument)
                         .ok()
                         .filter(|(source, width, _)| {
-                        arguments.len() > 1
-                            && *width == 32
-                            && *source > next_general
-                            && *source <= Eabi::LAST_GENERAL_ARGUMENT
+                            arguments.len() > 1
+                                && *width == 32
+                                && *source > next_general
+                                && *source <= Eabi::LAST_GENERAL_ARGUMENT
                         });
                 if let Some(stack_offset) = outgoing_general_stack_offset(next_general) {
                     let stack_start = i32::from(stack_offset);
                     let stack_end = stack_start + 4;
                     let overlaps_local = self.frame_slots.values().any(|slot| {
                         let slot_start = i32::from(slot.offset);
-                        let slot_end =
-                            slot_start + i32::try_from(slot.size).unwrap_or(i32::MAX);
+                        let slot_end = slot_start + i32::try_from(slot.size).unwrap_or(i32::MAX);
                         slot_start < stack_end && stack_start < slot_end
                     });
                     if self.frame_size == 0 || overlaps_local {
@@ -1334,15 +1320,14 @@ impl Generator {
                         }
                         _ => self.evaluate_general(general_argument, next_general),
                     };
-                    evaluated
-                        .map_err(|mut diagnostic| {
-                            diagnostic.message.push_str(&format!(
-                                " (while evaluating general argument {index} to '{name}', \
+                    evaluated.map_err(|mut diagnostic| {
+                        diagnostic.message.push_str(&format!(
+                            " (while evaluating general argument {index} to '{name}', \
                                  parameter {parameter_type:?}, aggregate-reference-address={})",
-                                aggregate_reference.is_some(),
-                            ));
-                            diagnostic
-                        })?;
+                            aggregate_reference.is_some(),
+                        ));
+                        diagnostic
+                    })?;
                     self.output.instructions.push(Instruction::StoreWord {
                         s: next_general,
                         a: 1,
@@ -1357,15 +1342,14 @@ impl Generator {
                         }
                         _ => self.evaluate_general(general_argument, next_general),
                     };
-                    evaluated
-                        .map_err(|mut diagnostic| {
-                            diagnostic.message.push_str(&format!(
-                                " (while evaluating general argument {index} to '{name}', \
+                    evaluated.map_err(|mut diagnostic| {
+                        diagnostic.message.push_str(&format!(
+                            " (while evaluating general argument {index} to '{name}', \
                                  parameter {parameter_type:?}, aggregate-reference-address={})",
-                                aggregate_reference.is_some(),
-                            ));
-                            diagnostic
-                        })?;
+                            aggregate_reference.is_some(),
+                        ));
+                        diagnostic
+                    })?;
                 }
                 next_general += 1;
             }
@@ -1405,11 +1389,7 @@ impl Generator {
         }
 
         for (index, argument) in arguments.iter().enumerate() {
-            if plan
-                .copies
-                .iter()
-                .any(|copy| copy.argument_index == index)
-            {
+            if plan.copies.iter().any(|copy| copy.argument_index == index) {
                 continue;
             }
             let destination = Eabi::FIRST_GENERAL_ARGUMENT
