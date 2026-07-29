@@ -2572,7 +2572,10 @@ impl Generator {
                                     condition,
                                     nested_condition,
                                 ),
-                                self.begin_composed_condition_float_cache(condition),
+                                self.begin_composed_condition_float_cache_with_followup(
+                                    condition,
+                                    nested_condition,
+                                ),
                             )
                         };
                     struct ConditionBranches {
@@ -2772,6 +2775,9 @@ impl Generator {
                     });
                     let nested_true_cache =
                         nested_condition.map(|_| self.condition_global_values.clone());
+                    let nested_true_float_cache = nested_condition.map(|condition| {
+                        self.condition_float_nested_true_edge_cache(condition)
+                    });
                     let then_wide_mask_cache = self.wide_pair_mask_false_edge_cache();
                     let then_literal_cache = self.condition_float_literal_edge_cache();
                     self.restore_condition_global_cache(previous_cache);
@@ -2801,6 +2807,9 @@ impl Generator {
                     let prefix_cache_restore = nested_true_cache.map(|cache| {
                         std::mem::replace(&mut self.condition_global_values, cache)
                     });
+                    if let Some(cache) = nested_true_float_cache {
+                        self.condition_float_cache = cache;
+                    }
                     self.wide_pair_mask_cache = then_wide_mask_cache;
                     let prefix_result = self.emit_structured_statements(
                         carried_prefix,

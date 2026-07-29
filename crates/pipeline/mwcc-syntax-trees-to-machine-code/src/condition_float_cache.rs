@@ -10,6 +10,8 @@ use crate::generator::{float_compare_literal_key, FloatCompareLiteralKey, Genera
 use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::Expression;
 
+mod edge;
+
 #[derive(Clone)]
 pub(crate) struct ConditionFloatValue {
     expression: Expression,
@@ -35,8 +37,15 @@ pub(crate) struct ConditionFloatCache {
     active: bool,
     recording_allowed: bool,
     condition: Option<Expression>,
+    nested_followup: Option<Expression>,
     reusable: Vec<ConditionFloatValue>,
     observed: Vec<ConditionFloatValue>,
+    /// Direct loads available on the selected edge of this condition.
+    ///
+    /// Unlike `observed`, this includes frame-local memory. It may only feed an
+    /// immediately nested condition: no source statement has run between the
+    /// load and that edge, so local-memory aliasing cannot intervene.
+    edge_observed: Vec<ConditionFloatValue>,
     intra_condition: Vec<ConditionFloatValue>,
     zero_register: Option<ConditionFloatRegisterValue>,
     literals: Vec<ConditionFloatLiteralValue>,
@@ -77,10 +86,19 @@ impl Generator {
         &mut self,
         condition: &Expression,
     ) -> ConditionFloatCache {
+        self.begin_composed_condition_float_cache_with_followup(condition, None)
+    }
+
+    pub(crate) fn begin_composed_condition_float_cache_with_followup(
+        &mut self,
+        condition: &Expression,
+        nested_followup: Option<&Expression>,
+    ) -> ConditionFloatCache {
         let previous = std::mem::take(&mut self.condition_float_cache);
         self.condition_float_cache.active = true;
         self.condition_float_cache.recording_allowed = !expression_has_value_barrier(condition);
         self.condition_float_cache.condition = Some(condition.clone());
+        self.condition_float_cache.nested_followup = nested_followup.cloned();
         if previous.active && self.condition_float_cache.recording_allowed {
             self.condition_float_cache.reusable = previous
                 .intra_condition
@@ -155,6 +173,19 @@ impl Generator {
                 });
         }
 
+        if self.condition_float_value_is_retained_by_nested_followup(operand) {
+            self.condition_float_cache
+                .edge_observed
+                .retain(|value| !same_direct_float_memory_load(&value.expression, operand));
+            self.condition_float_cache
+                .edge_observed
+                .push(ConditionFloatValue {
+                    expression: operand.clone(),
+                    register,
+                    instruction_index: self.output.instructions.len(),
+                });
+        }
+
         if
             // MWCC keeps an entry-parameter member live here, but reloads the
             // same shape through a local pointer alias (measured in Melee's
@@ -202,6 +233,9 @@ impl Generator {
             .retain(|value| value.register != register);
         self.condition_float_cache
             .observed
+            .retain(|value| value.register != register);
+        self.condition_float_cache
+            .edge_observed
             .retain(|value| value.register != register);
         self.condition_float_cache
             .literals
