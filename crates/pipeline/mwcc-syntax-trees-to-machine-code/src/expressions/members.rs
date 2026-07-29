@@ -3,6 +3,44 @@
 #[allow(unused_imports)]
 use super::*;
 
+/// Reduce casts and constant byte arithmetic around a pointer-valued member
+/// base to the underlying address expression plus a signed displacement.
+///
+/// Value tracking exposes source such as
+/// `((Cell *)((unsigned)pointer - 32))->size` after substituting a local.
+/// Keeping the subtraction symbolic lets the member load fold `-32 + 8` into
+/// its D-form displacement instead of materializing a temporary pointer.
+fn constant_adjusted_pointer_base(expression: &Expression) -> Option<(&Expression, i64)> {
+    match expression {
+        Expression::Cast { operand, .. } => constant_adjusted_pointer_base(operand),
+        Expression::Binary {
+            operator: BinaryOperator::Add,
+            left,
+            right,
+        } => {
+            if let Some(constant) = constant_value(right) {
+                let (base, displacement) = constant_adjusted_pointer_base(left)?;
+                displacement.checked_add(constant).map(|total| (base, total))
+            } else if let Some(constant) = constant_value(left) {
+                let (base, displacement) = constant_adjusted_pointer_base(right)?;
+                displacement.checked_add(constant).map(|total| (base, total))
+            } else {
+                None
+            }
+        }
+        Expression::Binary {
+            operator: BinaryOperator::Subtract,
+            left,
+            right,
+        } => {
+            let constant = constant_value(right)?;
+            let (base, displacement) = constant_adjusted_pointer_base(left)?;
+            displacement.checked_sub(constant).map(|total| (base, total))
+        }
+        _ => Some((expression, 0)),
+    }
+}
+
 /// Peel the pointer cast introduced by `((Base *)&object.member)->field` and
 /// return the embedded value's original base plus its byte offset. Keeping this
 /// symbolic lets the outer access fold both displacements into one D-form load
@@ -614,8 +652,20 @@ impl Generator {
         if matches!(base, Expression::Call { .. }) {
             return Err(Diagnostic::error("a member load through a call base needs the call-return epilogue schedule (roadmap)"));
         }
+        let (base, base_displacement) = constant_adjusted_pointer_base(base)
+            .ok_or_else(|| {
+                Diagnostic::error(format!(
+                    "struct member base needs an address plus constant displacement (roadmap): {base:?}"
+                ))
+            })?;
+        let combined_displacement = base_displacement
+            .checked_add(i64::from(offset))
+            .and_then(|displacement| i32::try_from(displacement).ok())
+            .ok_or_else(|| {
+                Diagnostic::error("constant-adjusted member load offset out of range (roadmap)")
+            })?;
         let address = self.member_base_register(base)?;
-        let displacement = self.emit_member_base_adjustment(address, offset);
+        let displacement = self.emit_member_base_adjustment(address, combined_displacement as u32);
         self.output.instructions.push(displacement_load(
             pointee,
             destination,

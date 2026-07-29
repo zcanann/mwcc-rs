@@ -515,6 +515,13 @@ impl Generator {
                     let value = substitute(value, &values);
                     values.insert(name.clone(), value);
                 }
+                // Disabled assertion macros commonly leave `(void)0;` between a
+                // local's assignment and use. These literal expression statements
+                // have no value-tracking or codegen effect, so preserve the tracked
+                // value across them just as the ordinary statement emitter does.
+                Statement::Expression(Expression::IntegerLiteral(_)) => {}
+                Statement::Expression(Expression::Cast { operand, .. })
+                    if matches!(**operand, Expression::IntegerLiteral(_)) => {}
                 _ => {
                     return Err(Diagnostic::error(
                         "value tracking with stores or calls is not supported yet (roadmap)",
