@@ -170,10 +170,8 @@ impl Generator {
         else {
             return;
         };
-        let (saved, entry) = match self.output.instructions[start] {
-            Instruction::AddImmediate { d, a, immediate: 0 } => (d, a),
-            _ => unreachable!(),
-        };
+        let (saved, entry) =
+            entry_register_copy(&self.output.instructions[start]).expect("recognized entry copy");
         self.output.instructions[start] = Instruction::Or {
             a: saved,
             s: entry,
@@ -528,8 +526,11 @@ fn is_guarded_member_receiver_reload(window: &[Instruction]) -> bool {
 }
 
 fn is_guarded_member_classifier_chain(window: &[Instruction]) -> bool {
+    let Some((saved, entry)) = window.first().and_then(entry_register_copy) else {
+        return false;
+    };
     matches!(window, [
-        Instruction::AddImmediate { d: saved, a: entry, immediate: 0 },
+        _,
         Instruction::LoadWord { d: tested, a: test_base, offset: test_offset },
         Instruction::CompareLogicalWordImmediate { a: compared, immediate: 0 },
         Instruction::BranchConditionalForward { .. },
@@ -546,13 +547,25 @@ fn is_guarded_member_classifier_chain(window: &[Instruction]) -> bool {
         Instruction::BranchAndLink { .. },
     ] if saved != entry
         && tested == compared
-        && test_base == entry
-        && classifier_base == saved
-        && kind_base == saved
-        && final_base == saved
+        && *test_base == entry
+        && *classifier_base == saved
+        && *kind_base == saved
+        && *final_base == saved
         && test_offset == classifier_offset
         && test_offset == kind_offset
         && test_offset == final_offset)
+}
+
+fn entry_register_copy(instruction: &Instruction) -> Option<(u8, u8)> {
+    match instruction {
+        Instruction::AddImmediate {
+            d,
+            a,
+            immediate: 0,
+        } => Some((*d, *a)),
+        Instruction::Or { a, s, b } if s == b => Some((*a, *s)),
+        _ => None,
+    }
 }
 
 fn reuses_preceding_member_load(instructions: &[Instruction], term_start: usize) -> bool {
@@ -836,7 +849,7 @@ mod tests {
 
     #[test]
     fn recognizes_a_guarded_member_classifier_call_chain() {
-        let instructions = [
+        let mut instructions = [
             Instruction::AddImmediate { d: 30, a: 3, immediate: 0 },
             Instruction::LoadWord { d: 0, a: 3, offset: 6516 },
             Instruction::CompareLogicalWordImmediate { a: 0, immediate: 0 },
@@ -853,6 +866,8 @@ mod tests {
             Instruction::Or { a: 4, s: 31, b: 31 },
             Instruction::BranchAndLink { target: "consume".into() },
         ];
+        assert!(is_guarded_member_classifier_chain(&instructions));
+        instructions[0] = Instruction::Or { a: 30, s: 3, b: 3 };
         assert!(is_guarded_member_classifier_chain(&instructions));
     }
 
