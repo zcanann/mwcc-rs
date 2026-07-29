@@ -2233,6 +2233,9 @@ impl Generator {
         self.schedule_structured_frame_digit_pair();
         self.schedule_structured_virtual_calls();
         self.schedule_leading_member_store_call();
+        if exclusive_arm_home_layout.is_some() {
+            self.schedule_exclusive_arm_entry();
+        }
         if dense_entry_prefix {
             self.schedule_structured_prefixed_frame_entry();
         }
