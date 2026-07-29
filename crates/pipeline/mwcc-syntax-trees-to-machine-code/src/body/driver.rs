@@ -1664,7 +1664,19 @@ impl Generator {
                         &self.volatile_globals,
                         &self.call_return_types,
                     );
-                return self.evaluate_body(scalarized.as_ref().unwrap_or(branch_function));
+                let scalarized_function =
+                    scalarized.as_ref().unwrap_or(branch_function);
+                let shared_store_base =
+                    crate::shared_global_store_base::materialize_consecutive_global_struct_store_base(
+                        scalarized_function,
+                        &self.globals,
+                        &self.volatile_globals,
+                    );
+                return self.evaluate_body(
+                    shared_store_base
+                        .as_ref()
+                        .unwrap_or(scalarized_function),
+                );
             }
             if calls_skipped_inline {
                 let mut unresolved: Vec<_> = self
