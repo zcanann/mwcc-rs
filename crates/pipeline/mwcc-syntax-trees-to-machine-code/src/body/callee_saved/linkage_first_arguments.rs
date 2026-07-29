@@ -10,7 +10,9 @@ impl Generator {
     pub(crate) fn schedule_linkage_first_entry_arguments(&mut self) {
         schedule_guarded_saved_entry_copies(&mut self.output);
         schedule_entry_arguments(&mut self.output);
-        schedule_entry_zero_store(&mut self.output);
+        if let Some((from, to)) = schedule_entry_zero_store(&mut self.output) {
+            self.labels.moved_before(from, to);
+        }
         schedule_entry_wide_mask(&mut self.output);
     }
 
@@ -257,23 +259,20 @@ fn schedule_entry_wide_mask(output: &mut mwcc_machine_code::MachineFunction) {
 /// A scratch zero feeding the first body store cannot fill the dependency slot
 /// immediately after `mflr`, but it is independent of the stack update. MWCC
 /// places it between the LR store and `stwu` in this retained-receiver shape.
-fn schedule_entry_zero_store(output: &mut mwcc_machine_code::MachineFunction) {
-    if output.instructions.iter().any(|instruction| {
-        matches!(instruction, Instruction::Branch { .. } | Instruction::BranchConditionalForward { .. })
-    }) {
-        return;
-    }
+fn schedule_entry_zero_store(
+    output: &mut mwcc_machine_code::MachineFunction,
+) -> Option<(usize, usize)> {
     let Some(stack_update) = output.instructions.iter().position(|instruction| {
         matches!(instruction, Instruction::StoreWordWithUpdate { s: 1, a: 1, .. })
     }) else {
-        return;
+        return None;
     };
     let Some(first_call) = output
         .instructions
         .iter()
         .position(|instruction| matches!(instruction, Instruction::BranchAndLink { .. }))
     else {
-        return;
+        return None;
     };
     let Some(zero) = (stack_update + 1..first_call).find(|&index| {
         matches!(output.instructions[index],
@@ -281,11 +280,24 @@ fn schedule_entry_zero_store(output: &mut mwcc_machine_code::MachineFunction) {
             && matches!(output.instructions.get(index + 1),
                 Some(Instruction::StoreWord { s: 0, a, .. }) if *a != 1)
     }) else {
-        return;
+        return None;
     };
+    if output.instructions[stack_update..zero]
+        .iter()
+        .any(|instruction| {
+            matches!(
+                instruction,
+                Instruction::Branch { .. } | Instruction::BranchConditionalForward { .. }
+            ) || touches_general_register(instruction, 0)
+        })
+    {
+        return None;
+    }
     let instruction = output.instructions.remove(zero);
     output.instructions.insert(stack_update, instruction);
     remap_relocations_for_move(&mut output.relocations, zero, stack_update);
+    remap_branch_targets_for_move(&mut output.instructions, zero, stack_update);
+    Some((zero, stack_update))
 }
 
 fn schedule_entry_arguments(output: &mut mwcc_machine_code::MachineFunction) {
@@ -468,6 +480,23 @@ fn remap_relocations_for_move(
             index if index == from => to,
             index if (to..from).contains(&index) => index + 1,
             index => index,
+        };
+    }
+}
+
+fn remap_branch_targets_for_move(instructions: &mut [Instruction], from: usize, to: usize) {
+    for instruction in instructions {
+        let target = match instruction {
+            Instruction::BranchConditionalForward { target, .. }
+            | Instruction::Branch { target } => target,
+            _ => continue,
+        };
+        *target = if *target == from {
+            to
+        } else if (to..from).contains(target) {
+            *target + 1
+        } else {
+            *target
         };
     }
 }
@@ -680,6 +709,73 @@ mod tests {
         ));
         assert_eq!(output.relocations[0].instruction_index, 1);
         assert_eq!(output.relocations[1].instruction_index, 3);
+    }
+
+    #[test]
+    fn schedules_an_entry_zero_despite_later_control_flow() {
+        let mut output = mwcc_machine_code::MachineFunction::new("test");
+        output.instructions = vec![
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord { s: 0, a: 1, offset: 4 },
+            Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -24 },
+            Instruction::StoreWord { s: 31, a: 1, offset: 20 },
+            Instruction::LoadWord { d: 31, a: 3, offset: 44 },
+            Instruction::load_immediate(0, 0),
+            Instruction::StoreWord { s: 0, a: 31, offset: 6528 },
+            Instruction::CompareWordImmediate { a: 31, immediate: 0 },
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 10,
+            },
+            Instruction::BranchAndLink { target: "first".into() },
+            Instruction::BranchAndLink { target: "second".into() },
+        ];
+
+        assert_eq!(schedule_entry_zero_store(&mut output), Some((5, 2)));
+        assert!(matches!(
+            output.instructions.as_slice(),
+            [
+                Instruction::MoveFromLinkRegister { d: 0 },
+                Instruction::StoreWord { s: 0, a: 1, offset: 4 },
+                Instruction::AddImmediate { d: 0, a: 0, immediate: 0 },
+                Instruction::StoreWordWithUpdate { s: 1, a: 1, .. },
+                Instruction::StoreWord { s: 31, .. },
+                Instruction::LoadWord { d: 31, .. },
+                Instruction::StoreWord { s: 0, a: 31, offset: 6528 },
+                ..
+            ]
+        ));
+        assert!(matches!(
+            output.instructions[8],
+            Instruction::BranchConditionalForward { target: 10, .. }
+        ));
+    }
+
+    #[test]
+    fn preserves_an_entry_branch_target_crossed_by_the_zero_move() {
+        let mut output = mwcc_machine_code::MachineFunction::new("test");
+        output.instructions = vec![
+            Instruction::MoveFromLinkRegister { d: 0 },
+            Instruction::StoreWord { s: 0, a: 1, offset: 4 },
+            Instruction::StoreWordWithUpdate { s: 1, a: 1, offset: -24 },
+            Instruction::StoreWord { s: 31, a: 1, offset: 20 },
+            Instruction::LoadWord { d: 31, a: 3, offset: 44 },
+            Instruction::load_immediate(0, 0),
+            Instruction::StoreWord { s: 0, a: 31, offset: 6528 },
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 4,
+            },
+            Instruction::BranchAndLink { target: "first".into() },
+        ];
+
+        assert_eq!(schedule_entry_zero_store(&mut output), Some((5, 2)));
+        assert!(matches!(
+            output.instructions[7],
+            Instruction::BranchConditionalForward { target: 5, .. }
+        ));
     }
 
     #[test]
