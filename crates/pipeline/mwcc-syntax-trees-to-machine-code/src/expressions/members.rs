@@ -867,6 +867,8 @@ impl Generator {
             let register = self.fresh_virtual_general_preferring(3);
             self.evaluate_general(array, register)?;
             Ok(register)
+        } else if matches!(array, Expression::AddressOf { .. }) {
+            self.member_base_register(array)
         } else {
             self.general_register_of_leaf(array)
         }
