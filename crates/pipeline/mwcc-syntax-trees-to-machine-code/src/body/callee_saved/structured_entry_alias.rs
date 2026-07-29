@@ -35,18 +35,21 @@ pub(super) fn plan_first_call_alias(
         })
     };
     if let Statement::Expression(Expression::Call { arguments, .. }) = statements.first()? {
-        let (Expression::Variable(name), later_arguments) = arguments.split_first()? else {
+        let (first_argument, later_arguments) = arguments.split_first()?;
+        if crate::analysis::expression_has_call(first_argument) {
             return None;
-        };
+        }
+        let (name, home, _) = saved_parameters
+            .iter()
+            .find(|(name, _, incoming)| {
+                *incoming == 3 && expression_reads_name(first_argument, name)
+            })?;
         if later_arguments
             .iter()
             .any(|argument| expression_reads_name(argument, name))
         {
             return None;
         }
-        let (_, home, _) = saved_parameters
-            .iter()
-            .find(|(saved_name, _, incoming)| saved_name == name && *incoming == 3)?;
         return Some(EntryParameterAlias {
             name: name.clone(),
             home: *home,
@@ -182,6 +185,32 @@ mod tests {
         assert!(
             plan_first_call_alias(&statements, &saved, &[pointer_parameter("pointer")]).is_none()
         );
+    }
+
+    #[test]
+    fn forwards_an_entry_pointer_used_by_a_computed_first_argument() {
+        let statements = call(vec![Expression::Dereference {
+            pointer: Box::new(Expression::Cast {
+                target_type: Type::Pointer(mwcc_syntax_trees::Pointee::Pointer),
+                operand: Box::new(Expression::Binary {
+                    operator: BinaryOperator::Add,
+                    left: Box::new(Expression::Cast {
+                        target_type: Type::Pointer(mwcc_syntax_trees::Pointee::UnsignedChar),
+                        operand: Box::new(Expression::Variable("pointer".to_string())),
+                    }),
+                    right: Box::new(Expression::IntegerLiteral(32)),
+                }),
+            }),
+        }]);
+        let saved = vec![("pointer".to_string(), 31, 3)];
+
+        let alias =
+            plan_first_call_alias(&statements, &saved, &[pointer_parameter("pointer")])
+                .expect("eligible alias");
+
+        assert_eq!(alias.name, "pointer");
+        assert_eq!(alias.home, 31);
+        assert_eq!(alias.boundary, EntryAliasBoundary::AfterFirstStatement);
     }
 
     #[test]

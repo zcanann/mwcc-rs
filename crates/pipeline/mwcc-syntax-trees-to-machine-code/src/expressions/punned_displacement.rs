@@ -37,9 +37,7 @@ impl Generator {
             BinaryOperator::Subtract => (left.as_ref(), constant_value(right)?.checked_neg()?),
             _ => return None,
         };
-        let Expression::Variable(name) = base else {
-            return None;
-        };
+        let name = casted_pointer_base_name(base)?;
         if let Some(slot) = self.frame_slots.get(name).filter(|slot| slot.is_array) {
             let offset = i64::from(slot.offset).checked_add(displacement)?;
             return Some((*pointee, 1, i16::try_from(offset).ok()?));
@@ -47,4 +45,18 @@ impl Generator {
         let address = self.lookup_general(name)?;
         Some((*pointee, address, i16::try_from(displacement).ok()?))
     }
+}
+
+fn casted_pointer_base_name(mut expression: &Expression) -> Option<&str> {
+    while let Expression::Cast {
+        target_type: Type::Pointer(_) | Type::StructPointer { .. },
+        operand,
+    } = expression
+    {
+        expression = operand;
+    }
+    let Expression::Variable(name) = expression else {
+        return None;
+    };
+    Some(name)
 }
