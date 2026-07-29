@@ -2061,7 +2061,7 @@ mod tests {
         );
         assert_eq!(
             build_163.saved_gpr_epilogue_style,
-            SavedGprEpilogueStyle::LinkRegisterBeforeFinalSaved
+            SavedGprEpilogueStyle::LinkRegisterAfterStackRestore
         );
         assert_eq!(
             build_163_nintendo.saved_gpr_epilogue_style,

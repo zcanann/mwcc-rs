@@ -5,8 +5,8 @@
 
 use crate::profile::{
     CodegenProfile, Gc132Build81, Gc13Build53, Gc20Patch1, Gc41Build51213, Mainline,
-    MainlineEarlyAggregateLoads, Wii43Build145, GC233_BUILD159_PATCH1, GC233_BUILD163,
-    GC233_BUILD163_NINTENDO,
+    MainlineEarlyAggregateLoads, Wii43Build145, GC233_BUILD159, GC233_BUILD159_PATCH1,
+    GC233_BUILD163, GC233_BUILD163_NINTENDO,
 };
 
 /// A specific mwcceppc build we aim to reproduce byte-for-byte.
@@ -51,7 +51,7 @@ pub const GC_1_1: CompilerBuild = CompilerBuild {
     label: "GC/1.1",
     product: "CodeWarrior for GameCube 1.1",
     build: 159,
-    profile: &GC233_BUILD163,
+    profile: &GC233_BUILD159,
     ..GC_1_2_5
 };
 

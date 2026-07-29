@@ -2023,9 +2023,14 @@ pub struct Gc233Build163 {
     saved_gpr_epilogue_style: SavedGprEpilogueStyle,
 }
 
-pub const GC233_BUILD163: Gc233Build163 = Gc233Build163 {
+pub const GC233_BUILD159: Gc233Build163 = Gc233Build163 {
     plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::ReloadBeforeStackRestore,
     saved_gpr_epilogue_style: SavedGprEpilogueStyle::LinkRegisterBeforeFinalSaved,
+};
+
+pub const GC233_BUILD163: Gc233Build163 = Gc233Build163 {
+    plain_linkage_epilogue_style: PlainLinkageEpilogueStyle::ReloadBeforeStackRestore,
+    saved_gpr_epilogue_style: SavedGprEpilogueStyle::LinkRegisterAfterStackRestore,
 };
 
 pub const GC233_BUILD163_NINTENDO: Gc233Build163 = Gc233Build163 {
