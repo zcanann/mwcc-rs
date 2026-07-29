@@ -39,6 +39,12 @@ impl DeferredSavedHomePlan {
             .iter()
             .any(|(name, candidate)| *candidate == group && name.starts_with("__mwcc_value_"))
     }
+
+    pub(super) fn members(&self, group: usize) -> impl Iterator<Item = &str> {
+        self.group_by_name
+            .iter()
+            .filter_map(move |(name, candidate)| (*candidate == group).then_some(name.as_str()))
+    }
 }
 
 pub(super) fn structured_name_last_read(function: &Function, name: &str) -> Option<usize> {

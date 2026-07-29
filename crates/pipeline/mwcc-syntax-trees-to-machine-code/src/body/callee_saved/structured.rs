@@ -65,6 +65,7 @@ use super::structured_locals::{
     is_frame_address_null_select, plan_deferred_saved_homes, plan_ephemeral_locals,
 };
 use super::structured_parameter_home_reuse::StructuredParameterHomeReuse;
+use super::structured_eager_home_reuse::StructuredEagerHomeReuse;
 use super::structured_prologue::{
     saved_home_stores_precede_initialization, uses_dense_saved_register_range,
 };
@@ -603,11 +604,14 @@ impl Generator {
             .enumerate()
             .any(|(index, _)| is_folded_terminal_pointer_load_alias(function, index));
 
+        let eager_home_reuse =
+            StructuredEagerHomeReuse::plan(function, &eager_saved_locals, &deferred_home_plan);
         let parameter_home_reuse = StructuredParameterHomeReuse::plan(
             function,
             eager_saved_locals.len(),
             &saved_parameters,
             &deferred_home_plan,
+            &eager_home_reuse,
         );
         let returned_deferred_home = function
             .return_expression

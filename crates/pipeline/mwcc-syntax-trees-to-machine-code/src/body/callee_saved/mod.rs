@@ -81,6 +81,7 @@ mod structured_copy_packet_schedule;
 mod structured_call_accumulator;
 mod structured_aggregate_slots;
 mod structured_entry_alias;
+mod structured_eager_home_reuse;
 mod entry_saved_zero_test_schedule;
 mod structured_entry_zero_store;
 mod structured_early_return_schedule;

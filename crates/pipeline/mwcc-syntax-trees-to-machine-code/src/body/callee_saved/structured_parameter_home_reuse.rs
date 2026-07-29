@@ -7,6 +7,7 @@
 //! interval sets without coupling statement emission to source names.
 
 use super::structured_locals::{structured_name_last_read, DeferredSavedHomePlan};
+use super::structured_eager_home_reuse::StructuredEagerHomeReuse;
 #[allow(unused_imports)]
 use super::*;
 use mwcc_syntax_trees::Parameter;
@@ -22,6 +23,7 @@ impl StructuredParameterHomeReuse {
         eager_count: usize,
         saved_parameters: &[&Parameter],
         deferred: &DeferredSavedHomePlan,
+        eager_reuse: &StructuredEagerHomeReuse,
     ) -> Self {
         let mut reused_parameter_by_group = vec![None; deferred.group_count];
         let mut parameters: Vec<_> = saved_parameters
@@ -45,6 +47,7 @@ impl StructuredParameterHomeReuse {
         for (parameter, last_read) in parameters {
             let reusable = (0..deferred.group_count)
                 .filter(|group| reused_parameter_by_group[*group].is_none())
+                .filter(|group| eager_reuse.home_index(*group).is_none())
                 // A local assignment defines its result only after the entire
                 // right-hand side has consumed the parameter. A final parameter
                 // read and the local definition in the same statement therefore
@@ -59,8 +62,11 @@ impl StructuredParameterHomeReuse {
         let mut fresh_group_count = 0;
         let home_index_by_group = reused_parameter_by_group
             .into_iter()
-            .map(|parameter| {
-                if let Some(parameter) = parameter {
+            .enumerate()
+            .map(|(group, parameter)| {
+                if let Some(home) = eager_reuse.home_index(group) {
+                    home
+                } else if let Some(parameter) = parameter {
                     eager_count + parameter
                 } else {
                     let home = eager_count + saved_parameters.len() + fresh_group_count;
@@ -89,6 +95,7 @@ impl StructuredParameterHomeReuse {
 
 #[cfg(test)]
 mod tests {
+    use super::super::structured_eager_home_reuse::StructuredEagerHomeReuse;
     use super::super::structured_locals::plan_deferred_saved_homes;
     use super::*;
 
@@ -150,6 +157,7 @@ mod tests {
             0,
             &[&function.parameters[0]],
             &deferred,
+            &StructuredEagerHomeReuse::plan(&function, &[], &deferred),
         );
 
         assert_eq!(reuse.fresh_group_count, 0);
@@ -165,6 +173,7 @@ mod tests {
             0,
             &[&function.parameters[0]],
             &deferred,
+            &StructuredEagerHomeReuse::plan(&function, &[], &deferred),
         );
 
         assert_eq!(reuse.fresh_group_count, 1);
@@ -193,6 +202,7 @@ mod tests {
             0,
             &[&function.parameters[0]],
             &deferred,
+            &StructuredEagerHomeReuse::plan(&function, &[], &deferred),
         );
 
         assert_eq!(reuse.fresh_group_count, 0);
