@@ -894,6 +894,7 @@ fn lower_function_body(
     generator.schedule_linkage_first_variadic_frame_entry();
     generator.schedule_linkage_first_float_result_latency();
     generator.schedule_linkage_first_global_float_arguments();
+    generator.reuse_linkage_first_narrow_conversion_value();
     generator.normalize_scratch_copy_convention();
     generator.schedule_saved_base_call_argument();
     generator.schedule_linkage_first_function_address();
