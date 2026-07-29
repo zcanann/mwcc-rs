@@ -22,6 +22,17 @@ pub(super) fn saved_home_stores_precede_initialization(
         && deferred_home_count != 0
 }
 
+/// Dense frames without entry-initialized locals may interleave incoming
+/// parameter copies with a computed source entry. Once an eager initializer
+/// owns the entry, that specialized emitter is bypassed and the ordinary
+/// prologue must establish every incoming home itself.
+pub(super) fn dense_entry_owns_parameter_copies(
+    dense_frame: bool,
+    eager_local_count: usize,
+) -> bool {
+    dense_frame && eager_local_count == 0
+}
+
 /// Select MWCC's contiguous GPR save form for structured frames. Eager locals
 /// are safe here only when lifetime coloring has merged a later local into an
 /// expired parameter home; that is the measured shape where the legacy
@@ -262,6 +273,13 @@ mod tests {
             1,
             1,
         ));
+    }
+
+    #[test]
+    fn only_an_initializer_free_dense_entry_owns_parameter_copies() {
+        assert!(dense_entry_owns_parameter_copies(true, 0));
+        assert!(!dense_entry_owns_parameter_copies(true, 1));
+        assert!(!dense_entry_owns_parameter_copies(false, 0));
     }
 
     #[test]

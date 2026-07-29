@@ -68,7 +68,8 @@ use super::structured_parameter_home_reuse::StructuredParameterHomeReuse;
 use super::structured_eager_home_reuse::StructuredEagerHomeReuse;
 use super::structured_complement_product_pair::StructuredComplementProductPair;
 use super::structured_prologue::{
-    saved_home_stores_precede_initialization, uses_dense_saved_register_range,
+    dense_entry_owns_parameter_copies, saved_home_stores_precede_initialization,
+    uses_dense_saved_register_range,
 };
 use super::structured_value_versions::{
     has_split_value_version, reassignment_live_source, split_reassigned_local_versions,
@@ -1587,6 +1588,8 @@ impl Generator {
             );
 
         let saved_parameter_base = eager_saved_locals.len();
+        let dense_entry_parameter_copies =
+            dense_entry_owns_parameter_copies(dense_frame, saved_parameter_base);
         let mut saved_parameter_homes = Vec::with_capacity(saved_parameters.len());
         for (parameter_index, parameter) in saved_parameters.iter().enumerate() {
             let home = homes[saved_parameter_base + parameter_index];
@@ -1791,7 +1794,7 @@ impl Generator {
                         plan.frame_size,
                     );
                 }
-                if !dense_frame {
+                if !dense_entry_parameter_copies {
                     self.output
                         .instructions
                         .push(Instruction::move_register(*home, *incoming));
