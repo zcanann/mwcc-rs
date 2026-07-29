@@ -439,7 +439,6 @@ impl Generator {
                 slot.offset = slot.offset.saturating_add(8);
             }
         }
-
         if let Instruction::StoreWordWithUpdate { offset, .. } = &mut self.output.instructions[0] {
             *offset = -new_size;
         }
@@ -452,6 +451,26 @@ impl Generator {
             old_size,
             new_size,
         );
+        if self.frame_slots.is_empty() && entry_lane_bytes != 0 {
+            let scratch_end = self
+                .float_to_int_scratch_end
+                .max(self.int_to_float_scratch_end);
+            relayout_planned_conversion_scratch(
+                &mut self.output.instructions,
+                scratch_end,
+                entry_lane_bytes,
+            );
+            for offset in [
+                &mut self.float_to_int_scratch_next,
+                &mut self.float_to_int_scratch_end,
+                &mut self.int_to_float_scratch_next,
+                &mut self.int_to_float_scratch_end,
+            ] {
+                if *offset != 0 {
+                    *offset = (*offset).saturating_add(entry_lane_bytes);
+                }
+            }
+        }
         for instruction in &mut self.output.instructions {
             match instruction {
                 Instruction::LoadWord { d: 0, a: 1, offset } if *offset == old_size + 4 => {
@@ -1256,6 +1275,20 @@ fn relayout_frame_slot_displacements(
     }
 }
 
+/// Move planned numeric-conversion images above a retained entry table. With
+/// no source frame slots, every displacement from the ABI-local base through
+/// the exclusive scratch end belongs to that conversion region.
+fn relayout_planned_conversion_scratch(
+    instructions: &mut [Instruction],
+    scratch_end: i16,
+    shift: i16,
+) {
+    let scratch_size = scratch_end.saturating_sub(8);
+    if scratch_size > 0 && shift != 0 {
+        relayout_frame_slot_displacements(instructions, &[(8, scratch_size)], shift);
+    }
+}
+
 fn has_address_materialization_relocation(
     relocations: &[mwcc_machine_code::Relocation],
     instruction_index: usize,
@@ -1587,5 +1620,78 @@ mod tests {
         assert!(matches!(instructions[1], Instruction::LoadWord { offset: 24, .. }));
         assert!(matches!(instructions[2], Instruction::StoreWord { offset: 28, .. }));
         assert!(matches!(instructions[3], Instruction::AddImmediate { immediate: 16, .. }));
+    }
+
+    #[test]
+    fn conversion_scratch_relayout_stops_before_saved_register_slots() {
+        let mut instructions = vec![
+            Instruction::StoreWord {
+                s: 0,
+                a: 1,
+                offset: 8,
+            },
+            Instruction::LoadWord {
+                d: 3,
+                a: 1,
+                offset: 12,
+            },
+            Instruction::StoreFloatDouble {
+                s: 0,
+                a: 1,
+                offset: 16,
+            },
+            Instruction::StoreWord {
+                s: 31,
+                a: 1,
+                offset: 24,
+            },
+        ];
+
+        relayout_planned_conversion_scratch(&mut instructions, 24, 8);
+
+        assert!(matches!(instructions[0], Instruction::StoreWord { offset: 16, .. }));
+        assert!(matches!(instructions[1], Instruction::LoadWord { offset: 20, .. }));
+        assert!(matches!(instructions[2], Instruction::StoreFloatDouble { offset: 24, .. }));
+        assert!(matches!(instructions[3], Instruction::StoreWord { offset: 24, .. }));
+    }
+
+    #[test]
+    fn saved_homes_move_before_scratch_enters_their_old_offsets() {
+        let mut instructions = vec![
+            Instruction::StoreWord {
+                s: 31,
+                a: 1,
+                offset: 28,
+            },
+            Instruction::StoreWord {
+                s: 30,
+                a: 1,
+                offset: 24,
+            },
+            Instruction::LoadWord {
+                d: 30,
+                a: 1,
+                offset: 20,
+            },
+            Instruction::LoadWord {
+                d: 31,
+                a: 1,
+                offset: 28,
+            },
+            Instruction::LoadWord {
+                d: 30,
+                a: 1,
+                offset: 24,
+            },
+        ];
+
+        relayout_callee_saved_slots(&mut instructions, &[31, 30], 32, 40);
+        relayout_planned_conversion_scratch(&mut instructions, 24, 8);
+
+        assert!(matches!(instructions[0], Instruction::StoreWord { s: 31, offset: 36, .. }));
+        assert!(matches!(instructions[1], Instruction::StoreWord { s: 30, offset: 32, .. }));
+        assert!(matches!(instructions[2], Instruction::LoadWord { d: 30, offset: 28, .. }));
+        assert!(matches!(instructions[3], Instruction::LoadWord { d: 31, offset: 36, .. }));
+        assert!(matches!(instructions[4], Instruction::LoadWord { d: 30, offset: 32, .. }));
     }
 }
