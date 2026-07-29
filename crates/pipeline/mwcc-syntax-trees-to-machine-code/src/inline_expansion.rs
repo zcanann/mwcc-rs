@@ -1536,6 +1536,79 @@ mod tests {
     }
 
     #[test]
+    fn alpha_renames_automatic_arrays_at_each_call_site() {
+        let mut format = function(
+            "format",
+            Vec::new(),
+            vec![Statement::Expression(Expression::Call {
+                name: "consume".into(),
+                arguments: vec![Expression::AddressOf {
+                    operand: Box::new(Expression::Variable("text".into())),
+                }],
+            })],
+        );
+        format.locals = vec![LocalDeclaration {
+            declared_type: Type::Char,
+            name: "text".into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: Some(3),
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        }];
+        let caller = function(
+            "caller",
+            Vec::new(),
+            vec![
+                Statement::Expression(Expression::Call {
+                    name: "format".into(),
+                    arguments: Vec::new(),
+                }),
+                Statement::Expression(Expression::Call {
+                    name: "format".into(),
+                    arguments: Vec::new(),
+                }),
+            ],
+        );
+
+        let expanded = InlineBodySet::analyze(&[format])
+            .expand_calls(&caller)
+            .expect("an automatic array should compose hygienically");
+        assert_eq!(expanded.locals.len(), 2);
+        let first = &expanded.locals[0].name;
+        let second = &expanded.locals[1].name;
+        assert_ne!(first, second);
+        assert!(expanded
+            .locals
+            .iter()
+            .all(|local| local.array_length == Some(3)));
+        assert!(matches!(
+            expanded.statements.as_slice(),
+            [
+                Statement::Expression(Expression::Call {
+                    arguments: first_arguments,
+                    ..
+                }),
+                Statement::Expression(Expression::Call {
+                    arguments: second_arguments,
+                    ..
+                }),
+            ] if matches!(
+                first_arguments.as_slice(),
+                [Expression::AddressOf { operand }]
+                    if matches!(operand.as_ref(), Expression::Variable(name) if name == first)
+            ) && matches!(
+                second_arguments.as_slice(),
+                [Expression::AddressOf { operand }]
+                    if matches!(operand.as_ref(), Expression::Variable(name) if name == second)
+            )
+        ));
+    }
+
+    #[test]
     fn composes_a_counter_loop_from_a_nested_switch_call_site() {
         let pointer = Type::StructPointer { element_size: 272 };
         let mut clear = function(

@@ -46,7 +46,7 @@ fn composable_function_with_assignable_parameters(
         && function.locals.iter().all(|local| {
             !local.is_static
                 && !local.is_volatile
-                && local.array_length.is_none()
+                && automatic_local_has_composable_storage(local)
                 && (local.initializer.is_some()
                     || !matches!(local.declared_type, Type::Void | Type::Struct { .. }))
         })
@@ -56,6 +56,39 @@ fn composable_function_with_assignable_parameters(
             || matches!(function.return_expression, Some(Expression::Variable(ref name)) if name == "this"))
         && function.asm_body.is_none()
         && composable_statements(&function.statements, &assignable_names)
+}
+
+/// An inline instance gets an independently alpha-renamed declaration in the
+/// caller. Fixed automatic arrays are therefore as hygienic as scalar locals,
+/// provided their declaration is one the structured frame planner can
+/// represent. Their contents are intentionally not treated as an
+/// uninitialized scalar value: taking the array address or filling its
+/// elements is the initialization.
+fn automatic_local_has_composable_storage(
+    local: &mwcc_syntax_trees::LocalDeclaration,
+) -> bool {
+    let Some(length) = local.array_length else {
+        return true;
+    };
+    if length == 0
+        || local.initializer.is_some()
+        || !local.data_relocations.is_empty()
+        || matches!(local.declared_type, Type::Void)
+    {
+        return false;
+    }
+    let element_bytes = match local.declared_type {
+        Type::Struct { size, .. } => size,
+        value_type => u32::from(value_type.width() / 8),
+    };
+    let Some(bytes) = element_bytes.checked_mul(u32::from(length)) else {
+        return false;
+    };
+    bytes != 0
+        && local
+            .data_bytes
+            .as_ref()
+            .is_none_or(|image| image.len() <= bytes as usize)
 }
 
 /// Apply MWCC's small-body gate to ordinary one-call definitions newly made
@@ -135,7 +168,7 @@ fn uninitialized_local_reads_are_dominated(function: &Function) -> bool {
     let tracked: HashSet<&str> = function
         .locals
         .iter()
-        .filter(|local| local.initializer.is_none())
+        .filter(|local| local.initializer.is_none() && local.array_length.is_none())
         .map(|local| local.name.as_str())
         .collect();
     reads_are_dominated(&function.statements, &tracked, &mut HashSet::new())
