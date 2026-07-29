@@ -1649,7 +1649,16 @@ impl Generator {
                     expanded.value_body_substitutions,
                     self.behavior.inline_statement_substitution_label_weight,
                 );
-                return self.evaluate_body(&expanded.function);
+                let branch_reuse =
+                    crate::branch_value_reuse::materialize_guarded_global_member_update(
+                        &expanded.function,
+                        &self.globals,
+                    );
+                return self.evaluate_body(
+                    branch_reuse
+                        .as_ref()
+                        .unwrap_or(&expanded.function),
+                );
             }
             if calls_skipped_inline {
                 let mut unresolved: Vec<_> = self

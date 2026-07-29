@@ -16,6 +16,7 @@ mod arithmetic;
 mod asm;
 mod automatic_rodata;
 mod body;
+mod branch_value_reuse;
 mod branch_cleanup;
 mod captures;
 mod casts;
