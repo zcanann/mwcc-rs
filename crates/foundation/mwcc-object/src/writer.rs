@@ -144,8 +144,7 @@ fn data_relocation_order(
                 .all(|relocation| relocation.target.starts_with("__RTTI__"))
     };
     let is_owned_vtable = |object: &DataObject<'_>| {
-        object.is_weak
-            && object.name.starts_with("__vt__")
+        object.name.starts_with("__vt__")
             && object
                 .relocations
                 .iter()
@@ -168,13 +167,33 @@ fn data_relocation_order(
     }
 
     let mut closure_order = Vec::new();
-    for &object_index in &closure_objects {
-        if is_base_table(&objects[object_index]) {
-            append_reverse(&mut closure_order, object_index);
+    let mut scheduled_closure_objects = std::collections::HashSet::new();
+    let physical_order = owned_rtti_data_layout_order(objects);
+    for object_index in physical_order
+        .into_iter()
+        .chain(
+            closure_objects
+                .iter()
+                .copied()
+                .filter(|&index| is_base_table(&objects[index])),
+        )
+        .chain(
+            closure_objects
+                .iter()
+                .copied()
+                .filter(|&index| is_owned_vtable(&objects[index])),
+        )
+    {
+        if !closure_objects.contains(&object_index)
+            || !scheduled_closure_objects.insert(object_index)
+        {
+            continue;
         }
-    }
-    for &object_index in &closure_objects {
         let object = &objects[object_index];
+        if is_base_table(object) {
+            append_reverse(&mut closure_order, object_index);
+            continue;
+        }
         if !is_owned_vtable(object) {
             continue;
         }
@@ -223,6 +242,69 @@ fn data_relocation_order(
         entries: order,
         owned_rtti_closure: true,
     }
+}
+
+/// Physical `.data` creation order for Build 163's owned RTTI closure.
+///
+/// Ordinary source/function data is already complete when the closure opens.
+/// Each owned class then creates its type name, any newly reached base names,
+/// its inheritance table, and finally its vtable. RTTI handles live in
+/// `.sdata`, but their relocations provide the edges needed to recover this
+/// transaction order without encoding class names in the object layer.
+fn owned_rtti_data_layout_order(objects: &[DataObject<'_>]) -> Vec<usize> {
+    let by_name: HashMap<&str, usize> = objects
+        .iter()
+        .enumerate()
+        .map(|(index, object)| (object.name, index))
+        .collect();
+    let relocation_target = |object_index: usize, offset: u32| {
+        objects[object_index]
+            .relocations
+            .iter()
+            .find(|relocation| relocation.offset == offset)
+            .and_then(|relocation| by_name.get(relocation.target.as_str()).copied())
+    };
+    let mut order = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut append = |index: usize| {
+        if seen.insert(index) {
+            order.push(index);
+        }
+    };
+
+    for (vtable_index, vtable) in objects.iter().enumerate().filter(|(_, object)| {
+        object.name.starts_with("__vt__")
+            && object
+                .relocations
+                .iter()
+                .any(|relocation| relocation.target.starts_with("__RTTI__"))
+    }) {
+        let Some(handle_index) = vtable
+            .relocations
+            .iter()
+            .find(|relocation| relocation.target.starts_with("__RTTI__"))
+            .and_then(|relocation| by_name.get(relocation.target.as_str()).copied())
+        else {
+            continue;
+        };
+        if let Some(name_index) = relocation_target(handle_index, 0) {
+            append(name_index);
+        }
+        if let Some(bases_index) = relocation_target(handle_index, 4) {
+            for base_handle_index in objects[bases_index]
+                .relocations
+                .iter()
+                .filter_map(|relocation| by_name.get(relocation.target.as_str()).copied())
+            {
+                if let Some(base_name_index) = relocation_target(base_handle_index, 0) {
+                    append(base_name_index);
+                }
+            }
+            append(bases_index);
+        }
+        append(vtable_index);
+    }
+    order
 }
 
 /// The Metrowerks `.comment` record for a plain function. Bytes 12..15 spell the
@@ -588,6 +670,16 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // `...data.0` anchor and use the target object's section displacement
     // (Pikmin nlibmath places two earlier function strings at 0 and 0x10, then
     // AtanTable at 0x1c).
+    let owned_rtti_data_order = if input.object_format.owned_rtti_closure_relocation_order {
+        owned_rtti_data_layout_order(&input.data_objects)
+    } else {
+        Vec::new()
+    };
+    let owned_rtti_data: std::collections::HashSet<&str> = owned_rtti_data_order
+        .iter()
+        .map(|&index| input.data_objects[index].name)
+        .collect();
+    let mut placed_data: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut file_data_size = 0u32;
     let mut jump_table_offset: Vec<Vec<Option<u32>>> = input
         .functions
@@ -603,8 +695,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 && section_of(object) == ".data"
                 && !string_owner.contains_key(object.name)
                 && object.static_local_owner.is_none()
+                && !owned_rtti_data.contains(object.name)
         }) {
-            place(object, ".data", &mut file_data_size);
+            if placed_data.insert(object.name) {
+                place(object, ".data", &mut file_data_size);
+            }
         }
         if source_position == input.functions.len() {
             continue;
@@ -617,7 +712,9 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         for object in input.data_objects.iter().filter(|object| {
             object.static_local_owner == Some(function_index) && section_of(object) == ".data"
         }) {
-            place(object, ".data", &mut file_data_size);
+            if placed_data.insert(object.name) {
+                place(object, ".data", &mut file_data_size);
+            }
         }
         for name in &function.string_names {
             if let Some(object) = input
@@ -625,13 +722,21 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 .iter()
                 .find(|object| object.name == name.as_str() && section_of(object) == ".data")
             {
-                place(object, ".data", &mut file_data_size);
+                if !owned_rtti_data.contains(object.name) && placed_data.insert(object.name) {
+                    place(object, ".data", &mut file_data_size);
+                }
             }
         }
         for (table_index, table) in function.jump_tables.iter().enumerate().rev() {
             file_data_size = file_data_size.div_ceil(4) * 4;
             jump_table_offset[function_index][table_index] = Some(file_data_size);
             file_data_size += table.entries.len() as u32 * 4;
+        }
+    }
+    for object_index in owned_rtti_data_order {
+        let object = &input.data_objects[object_index];
+        if section_of(object) == ".data" && placed_data.insert(object.name) {
+            place(object, ".data", &mut file_data_size);
         }
     }
     let has_jump_table = input

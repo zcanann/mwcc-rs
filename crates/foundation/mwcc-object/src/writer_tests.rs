@@ -277,6 +277,56 @@ fn owned_rtti_closures_schedule_base_tables_then_vtable_transactions() {
 }
 
 #[test]
+fn owned_rtti_data_layout_interleaves_names_bases_and_vtables() {
+    let object = |name: &'static str, relocations: Vec<crate::DataRelocation>| DataObject {
+        name,
+        size: 12,
+        alignment: 4,
+        comment_alignment: 4,
+        initial_bytes: Some(vec![0; 12]),
+        is_const: false,
+        force_full_data_section: true,
+        is_static: name.starts_with('@'),
+        force_active: false,
+        is_explicit_zero: false,
+        preassigned_anonymous_ordinal: None,
+        preassigned_ordinal_advances_counter: false,
+        relocations,
+        non_static_functions_before: 0,
+        functions_before: 0,
+        is_weak: false,
+        static_local_owner: None,
+        anonymous_adjust: 0,
+        section: None,
+    };
+    let relocation = |offset: u32, target: &str| crate::DataRelocation {
+        offset,
+        target: target.into(),
+        addend: 0,
+    };
+    let objects = vec![
+        object("@base-name", Vec::new()),
+        object("__vt__4Boss", vec![relocation(0, "__RTTI__4Boss")]),
+        object("@boss-bases", vec![relocation(0, "__RTTI__4Base")]),
+        object("@boss-name", Vec::new()),
+        object("__RTTI__4Base", vec![relocation(0, "@base-name")]),
+        object(
+            "__RTTI__4Boss",
+            vec![
+                relocation(0, "@boss-name"),
+                relocation(4, "@boss-bases"),
+            ],
+        ),
+    ];
+
+    assert_eq!(
+        owned_rtti_data_layout_order(&objects),
+        [3, 0, 2, 1],
+        "derived name, newly reached base name, bases, vtable"
+    );
+}
+
+#[test]
 fn data_relocations_follow_interleaved_creation_order() {
     let descriptor = DataObject {
         name: "descriptor",

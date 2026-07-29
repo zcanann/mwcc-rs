@@ -207,6 +207,7 @@ pub fn materialize(
             late_weak_owner,
             owner_position.is_some(),
             orphaned_handle_is_local,
+            owned_closure_schedule,
         );
         let mut handle = data_global(
             rtti,
@@ -441,8 +442,11 @@ fn rtti_handle_linkage(
     late_weak_owner: bool,
     has_vtable_owner: bool,
     orphaned_handle_is_local: bool,
+    owned_closure_schedule: bool,
 ) -> (bool, bool) {
-    let local = late_weak_owner || (!has_vtable_owner && orphaned_handle_is_local);
+    let local = owned_closure_schedule
+        || late_weak_owner
+        || (!has_vtable_owner && orphaned_handle_is_local);
     (local, !local)
 }
 
@@ -634,9 +638,22 @@ mod tests {
 
     #[test]
     fn legacy_orphaned_rtti_handles_remain_local() {
-        assert_eq!(rtti_handle_linkage(false, false, true), (true, false));
-        assert_eq!(rtti_handle_linkage(false, false, false), (false, true));
-        assert_eq!(rtti_handle_linkage(true, true, false), (true, false));
+        assert_eq!(
+            rtti_handle_linkage(false, false, true, false),
+            (true, false)
+        );
+        assert_eq!(
+            rtti_handle_linkage(false, false, false, false),
+            (false, true)
+        );
+        assert_eq!(
+            rtti_handle_linkage(true, true, false, false),
+            (true, false)
+        );
+        assert_eq!(
+            rtti_handle_linkage(false, true, false, true),
+            (true, false)
+        );
     }
 
     #[test]
