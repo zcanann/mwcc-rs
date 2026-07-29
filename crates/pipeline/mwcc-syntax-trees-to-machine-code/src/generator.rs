@@ -490,6 +490,10 @@ pub(crate) struct Generator {
     pub(crate) int_to_float_scratch_next: i16,
     /// Exclusive end of a structured body's pre-planned int-to-float range.
     pub(crate) int_to_float_scratch_end: i16,
+    /// A structured named local owns each guarded pointer load. Preserve the
+    /// local's scratch value and forward it to r3 instead of treating the pair
+    /// as two direct member expressions eligible for load elimination.
+    pub(crate) preserve_guarded_named_local_values: bool,
     /// When set, a constant store value reuses the scratch register if it already
     /// holds that constant (`scratch_constant`). Enabled only by a planned
     /// scratch-safe constant-store run, which guarantees nothing clobbers the

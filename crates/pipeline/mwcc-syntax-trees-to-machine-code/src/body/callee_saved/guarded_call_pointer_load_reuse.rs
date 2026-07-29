@@ -12,6 +12,14 @@ impl Generator {
         while let Some((load, reload)) =
             guarded_call_pointer_reload(&self.output.instructions)
         {
+            if self.preserve_guarded_named_local_values {
+                preserve_guarded_call_pointer_value(
+                    &mut self.output.instructions,
+                    load,
+                    reload,
+                );
+                continue;
+            }
             let Instruction::LoadWord { d, .. } = &mut self.output.instructions[load] else {
                 unreachable!("the guarded pointer load was matched")
             };
@@ -24,7 +32,47 @@ impl Generator {
             *a = Eabi::general_result().number;
             crate::remove_instruction_retargeting_to_next(self, reload);
         }
+        if self.preserve_guarded_named_local_values {
+            self.expand_guarded_named_local_calls();
+        }
     }
+
+    fn expand_guarded_named_local_calls(&mut self) {
+        let mut start = 0;
+        while start < self.output.instructions.len().saturating_sub(3) {
+            if !is_direct_guarded_pointer_call(&self.output.instructions, start) {
+                start += 1;
+                continue;
+            }
+            let Instruction::LoadWord { d, .. } = &mut self.output.instructions[start] else {
+                unreachable!("the direct guarded pointer load was matched")
+            };
+            *d = GENERAL_SCRATCH;
+            let Instruction::CompareLogicalWordImmediate { a, .. } =
+                &mut self.output.instructions[start + 1]
+            else {
+                unreachable!("the direct guarded pointer comparison was matched")
+            };
+            *a = GENERAL_SCRATCH;
+            crate::insert_instruction_retargeting(
+                self,
+                start + 2,
+                Instruction::move_register(Eabi::general_result().number, GENERAL_SCRATCH),
+            );
+            start += 5;
+        }
+    }
+}
+
+fn preserve_guarded_call_pointer_value(
+    instructions: &mut [Instruction],
+    load: usize,
+    reload: usize,
+) {
+    let Instruction::LoadWord { d: source, .. } = instructions[load] else {
+        unreachable!("the guarded pointer load was matched")
+    };
+    instructions[reload] = Instruction::move_register(Eabi::general_result().number, source);
 }
 
 fn guarded_call_pointer_reload(instructions: &[Instruction]) -> Option<(usize, usize)> {
@@ -64,6 +112,22 @@ fn guarded_call_pointer_reload(instructions: &[Instruction]) -> Option<(usize, u
     })
 }
 
+fn is_direct_guarded_pointer_call(instructions: &[Instruction], start: usize) -> bool {
+    matches!(
+        instructions.get(start..start + 4),
+        Some([
+            Instruction::LoadWord { d: 3, .. },
+            Instruction::CompareLogicalWordImmediate { a: 3, immediate: 0 },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target,
+            },
+            Instruction::BranchAndLink { .. },
+        ]) if *target >= start + 4
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,5 +164,36 @@ mod tests {
     #[test]
     fn preserves_a_reload_when_the_branch_has_another_join() {
         assert_eq!(guarded_call_pointer_reload(&guarded_reload(6)), None);
+    }
+
+    #[test]
+    fn forwards_a_named_guard_value_instead_of_reloading_it() {
+        let mut instructions = guarded_reload(5);
+        preserve_guarded_call_pointer_value(&mut instructions, 0, 3);
+
+        assert_eq!(instructions[3], Instruction::move_register(3, 0));
+        assert_eq!(guarded_call_pointer_reload(&instructions), None);
+    }
+
+    #[test]
+    fn recognizes_a_direct_guarded_pointer_call_for_named_local_expansion() {
+        let instructions = vec![
+            Instruction::LoadWord {
+                d: 3,
+                a: 31,
+                offset: 28,
+            },
+            Instruction::CompareLogicalWordImmediate { a: 3, immediate: 0 },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 4,
+            },
+            Instruction::BranchAndLink {
+                target: "consume".into(),
+            },
+        ];
+
+        assert!(is_direct_guarded_pointer_call(&instructions, 0));
     }
 }

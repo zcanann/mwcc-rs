@@ -837,6 +837,18 @@ impl Generator {
                     self.fresh_virtual_general_preferring(preferred)
                 } else if let Some(&preferred) = allocator_cursor_preferences.get(&home_index) {
                     self.fresh_virtual_general_preferring(preferred)
+                } else if let Some(preferred) = variadic_output_frame
+                    .as_ref()
+                    .and_then(|frame| {
+                        frame.saved_home_preference(
+                            eager_saved_locals.len(),
+                            saved_parameters.len(),
+                            count,
+                            home_index,
+                        )
+                    })
+                {
+                    self.fresh_virtual_general_preferring(preferred)
                 } else if let Some(preferred) = paired_eager_deferred_preference(
                     with_frame_array,
                     eager_saved_locals.len(),
@@ -2266,6 +2278,7 @@ impl Generator {
                 self.behavior.symbol_traversal_style,
             );
         }
+        self.preserve_guarded_named_local_values = variadic_output_frame.is_some();
         Ok(true)
     }
 

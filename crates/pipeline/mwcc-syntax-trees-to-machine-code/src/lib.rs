@@ -623,6 +623,7 @@ fn lower_function_body(
         float_to_int_scratch_end: 0,
         int_to_float_scratch_next: 0,
         int_to_float_scratch_end: 0,
+        preserve_guarded_named_local_values: false,
         reuse_scratch_constant: false,
         scratch_constant: None,
         prematerialized_constants: Vec::new(),
@@ -1410,6 +1411,39 @@ pub(crate) fn remove_instruction_retargeting_to_next(
     generator.labels.removed_retargeting_to_next(index, 1);
     let permutation = instruction_removal_permutation(old_len, index);
     remap_instruction_indices(generator, &permutation);
+}
+
+/// Insert one instruction after labels have been resolved, preserving every
+/// instruction-index owner and the identity of existing branch destinations.
+pub(crate) fn insert_instruction_retargeting(
+    generator: &mut Generator,
+    index: usize,
+    instruction: Instruction,
+) {
+    let old_len = generator.output.instructions.len();
+    debug_assert!(index <= old_len);
+    generator.output.instructions.insert(index, instruction);
+    generator.labels.inserted(index, 1);
+    for relocation in &mut generator.output.relocations {
+        if relocation.instruction_index >= index {
+            relocation.instruction_index += 1;
+        }
+    }
+    for displacement in &mut generator.output.data_section_displacements {
+        if displacement.instruction_index >= index {
+            displacement.instruction_index += 1;
+        }
+    }
+    for instruction in &mut generator.output.instructions {
+        let target = match instruction {
+            Instruction::BranchConditionalForward { target, .. }
+            | Instruction::Branch { target } => target,
+            _ => continue,
+        };
+        if *target >= index {
+            *target += 1;
+        }
+    }
 }
 
 fn instruction_removal_permutation(old_len: usize, index: usize) -> Vec<usize> {

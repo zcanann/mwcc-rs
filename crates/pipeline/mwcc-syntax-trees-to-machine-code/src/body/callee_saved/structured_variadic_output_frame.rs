@@ -80,6 +80,18 @@ impl StructuredVariadicOutputFrame {
             conversion_base,
         })
     }
+
+    pub(super) fn saved_home_preference(
+        &self,
+        eager_count: usize,
+        parameter_count: usize,
+        total_count: usize,
+        home_index: usize,
+    ) -> Option<u8> {
+        (eager_count == 2 && parameter_count == 2 && total_count == 4)
+            .then(|| [30, 31, 29, 28].get(home_index).copied())
+            .flatten()
+    }
 }
 
 #[cfg(test)]
@@ -151,6 +163,8 @@ mod tests {
         assert_eq!(plan.scalar_offset, 40);
         assert_eq!(plan.local_end, 44);
         assert_eq!(plan.conversion_base, 48);
+        assert_eq!(plan.saved_home_preference(2, 2, 4, 0), Some(30));
+        assert_eq!(plan.saved_home_preference(2, 2, 4, 1), Some(31));
     }
 
     #[test]

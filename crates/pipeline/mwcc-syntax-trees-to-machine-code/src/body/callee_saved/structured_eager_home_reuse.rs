@@ -5,7 +5,7 @@
 //! arm. MWCC colors those values into one callee-saved home. Keep the
 //! control-flow proof separate from physical-register layout and emission.
 
-use super::structured_locals::DeferredSavedHomePlan;
+use super::structured_locals::{structured_name_last_read, DeferredSavedHomePlan};
 #[allow(unused_imports)]
 use super::*;
 
@@ -23,11 +23,25 @@ impl StructuredEagerHomeReuse {
         let mut occupied_eager_homes = std::collections::HashSet::new();
         for group in 0..deferred.group_count {
             let members: Vec<_> = deferred.members(group).collect();
-            let reusable = eager_locals.iter().enumerate().find_map(|(home, eager)| {
-                (!occupied_eager_homes.contains(&home)
-                    && branch_exclusive(function, &eager.name, &members))
-                    .then_some(home)
-            });
+            let reusable = eager_locals
+                .iter()
+                .enumerate()
+                .find_map(|(home, eager)| {
+                    (!occupied_eager_homes.contains(&home)
+                        && branch_exclusive(function, &eager.name, &members))
+                        .then_some(home)
+                })
+                .or_else(|| {
+                    eager_locals.iter().enumerate().find_map(|(home, eager)| {
+                        (!occupied_eager_homes.contains(&home)
+                            && expires_before_group(
+                                function,
+                                &eager.name,
+                                deferred.first_assignment(group),
+                            ))
+                        .then_some(home)
+                    })
+                });
             if let Some(home) = reusable {
                 occupied_eager_homes.insert(home);
                 home_index_by_group[group] = Some(home);
@@ -41,6 +55,16 @@ impl StructuredEagerHomeReuse {
     pub(super) fn home_index(&self, group: usize) -> Option<usize> {
         self.home_index_by_group[group]
     }
+}
+
+fn expires_before_group(function: &Function, eager: &str, first_assignment: usize) -> bool {
+    !statement_assigns_name(&function.statements, eager)
+        && function
+            .return_expression
+            .as_ref()
+            .is_none_or(|expression| !expression_reads_name(expression, eager))
+        && structured_name_last_read(function, eager)
+            .is_some_and(|last_read| first_assignment >= last_read)
 }
 
 fn branch_exclusive(function: &Function, eager: &str, deferred: &[&str]) -> bool {
@@ -234,6 +258,19 @@ mod tests {
         }
     }
 
+    fn sequential_function() -> Function {
+        let mut function = function(false);
+        function.statements = vec![
+            consume("entry_value"),
+            Statement::Assign {
+                name: "branch_value".into(),
+                value: Expression::IntegerLiteral(2),
+            },
+            consume("branch_value"),
+        ];
+        function
+    }
+
     #[test]
     fn reuses_an_eager_home_across_mutually_exclusive_arms() {
         let function = function(false);
@@ -260,5 +297,19 @@ mod tests {
             StructuredEagerHomeReuse::plan(&function, &[&function.locals[0]], &deferred);
 
         assert_eq!(reuse.home_index(deferred.group("branch_value")), None);
+    }
+
+    #[test]
+    fn reuses_an_eager_home_after_its_final_read() {
+        let function = sequential_function();
+        let deferred = plan_deferred_saved_homes(
+            &function,
+            &[function.locals.iter().find(|local| local.name == "branch_value").unwrap()],
+        )
+        .unwrap();
+        let reuse =
+            StructuredEagerHomeReuse::plan(&function, &[&function.locals[0]], &deferred);
+
+        assert_eq!(reuse.home_index(deferred.group("branch_value")), Some(0));
     }
 }
