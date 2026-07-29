@@ -80,14 +80,17 @@ fn flow(
             } => {
                 let fresh_condition_call_result =
                     condition_defines_fresh_call_result(condition, name);
-                if !fresh_condition_call_result {
+                let fresh_condition_value = fresh_condition_call_result
+                    || condition_defines_fresh_call_free_value(condition, name);
+                if !fresh_condition_value {
                     read_after |=
                         expression_reads_name_across_call(condition, name, prior_call);
                 }
-                let branch_entry_call = if fresh_condition_call_result {
-                    // The assignment is defined only after its call returns.
-                    // Uses in either selected arm consume that fresh result;
-                    // the candidate's earlier lifetime does not cross the call.
+                let branch_entry_call = if fresh_condition_value {
+                    // The assignment defines a new value while evaluating the
+                    // condition. Uses in either selected arm consume that
+                    // fresh result; the candidate's earlier lifetime does not
+                    // cross a call that preceded the condition.
                     false
                 } else {
                     prior_call || expression_has_call(condition)
@@ -246,6 +249,36 @@ fn condition_defines_fresh_call_result(condition: &Expression, name: &str) -> bo
     condition_fresh_call_result_callee(condition, name).is_some()
 }
 
+/// Whether both operands of a comparison are call-free values and one operand
+/// freshly assigns `name`.
+///
+/// The assignment result feeds the comparison directly, so the old lifetime is
+/// killed even when an unrelated call occurred in an earlier statement. Both
+/// comparison operands are evaluated, unlike a short-circuit logical operator.
+fn condition_defines_fresh_call_free_value(condition: &Expression, name: &str) -> bool {
+    fn assignment_side(assigned: &Expression, sibling: &Expression, name: &str) -> bool {
+        let Expression::Assign { target, value } = assigned else {
+            return false;
+        };
+        matches!(target.as_ref(), Expression::Variable(assigned) if assigned == name)
+            && !expression_reads_name(value, name)
+            && !expression_has_call(value)
+            && !expression_reads_name(sibling, name)
+            && !expression_has_call(sibling)
+    }
+
+    let Expression::Binary {
+        operator,
+        left,
+        right,
+    } = condition
+    else {
+        return false;
+    };
+    crate::analysis::is_comparison(*operator)
+        && (assignment_side(left, right, name) || assignment_side(right, left, name))
+}
+
 fn condition_fresh_call_result_callee<'a>(
     condition: &'a Expression,
     name: &str,
@@ -377,7 +410,9 @@ mod tests {
                 name: "test".into(),
                 arguments: vec![],
             },
-            then_body: vec![Statement::Expression(Expression::Variable("value".into()))],
+            then_body: vec![Statement::Expression(Expression::Variable(
+                "value".into(),
+            ))],
             else_body: vec![],
         }];
         assert!(read_after_possible_call(&statements, "value", false).read_after_call);
@@ -397,9 +432,7 @@ mod tests {
                 }),
                 right: Box::new(Expression::FloatLiteral(1.0)),
             },
-            then_body: vec![Statement::Expression(Expression::Variable(
-                "value".into(),
-            ))],
+            then_body: vec![Statement::Expression(Expression::Variable("value".into()))],
             else_body: vec![],
         }];
 
@@ -449,6 +482,61 @@ mod tests {
             Statement::Expression(Expression::Variable("value".into())),
         ];
         assert!(!read_after_possible_call(&statements, "value", false).read_after_call);
+    }
+
+    #[test]
+    fn comparison_assignments_kill_earlier_call_lifetimes() {
+        let assignment = |name: &str, value| Expression::Assign {
+            target: Box::new(Expression::Variable(name.into())),
+            value: Box::new(value),
+        };
+        let statements = vec![
+            call("before"),
+            Statement::If {
+                condition: Expression::Binary {
+                    operator: mwcc_syntax_trees::BinaryOperator::Greater,
+                    left: Box::new(assignment("computed", Expression::FloatLiteral(1.0))),
+                    right: Box::new(assignment("limit", Expression::FloatLiteral(2.0))),
+                },
+                then_body: vec![],
+                else_body: vec![],
+            },
+            Statement::Expression(Expression::Call {
+                name: "consume".into(),
+                arguments: vec![
+                    Expression::Variable("computed".into()),
+                    Expression::Variable("limit".into()),
+                ],
+            }),
+        ];
+
+        assert!(!read_after_possible_call(&statements, "computed", false).read_after_call);
+        assert!(!read_after_possible_call(&statements, "limit", false).read_after_call);
+    }
+
+    #[test]
+    fn comparison_self_update_retains_the_earlier_lifetime() {
+        let statements = vec![
+            call("before"),
+            Statement::If {
+                condition: Expression::Binary {
+                    operator: mwcc_syntax_trees::BinaryOperator::Greater,
+                    left: Box::new(Expression::Assign {
+                        target: Box::new(Expression::Variable("value".into())),
+                        value: Box::new(Expression::Binary {
+                            operator: mwcc_syntax_trees::BinaryOperator::Add,
+                            left: Box::new(Expression::Variable("value".into())),
+                            right: Box::new(Expression::FloatLiteral(1.0)),
+                        }),
+                    }),
+                    right: Box::new(Expression::FloatLiteral(2.0)),
+                },
+                then_body: vec![],
+                else_body: vec![],
+            },
+        ];
+
+        assert!(read_after_possible_call(&statements, "value", false).read_after_call);
     }
 
     #[test]
