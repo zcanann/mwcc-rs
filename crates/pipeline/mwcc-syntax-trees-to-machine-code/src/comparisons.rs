@@ -1517,13 +1517,25 @@ impl Generator {
                 return Err(Diagnostic::error("a float == comparison with a float argument in f1 needs the FP register allocator (roadmap)"));
             }
             if right_literal && left_load {
-                self.load_float_literal_into(FLOAT_FIRST, right, double)?;
-                let value = self.place_condition_float_load(left, FLOAT_SCRATCH)?;
-                (value, FLOAT_FIRST)
+                if self.condition_repeats_float_value(left) {
+                    self.load_float_literal_into(FLOAT_SCRATCH, right, double)?;
+                    let value = self.place_condition_float_load(left, FLOAT_FIRST)?;
+                    (value, FLOAT_SCRATCH)
+                } else {
+                    self.load_float_literal_into(FLOAT_FIRST, right, double)?;
+                    let value = self.place_condition_float_load(left, FLOAT_SCRATCH)?;
+                    (value, FLOAT_FIRST)
+                }
             } else if left_literal && right_load {
-                self.load_float_literal_into(FLOAT_FIRST, left, double)?;
-                let value = self.place_condition_float_load(right, FLOAT_SCRATCH)?;
-                (FLOAT_FIRST, value)
+                if self.condition_repeats_float_value(right) {
+                    self.load_float_literal_into(FLOAT_SCRATCH, left, double)?;
+                    let value = self.place_condition_float_load(right, FLOAT_FIRST)?;
+                    (FLOAT_SCRATCH, value)
+                } else {
+                    self.load_float_literal_into(FLOAT_FIRST, left, double)?;
+                    let value = self.place_condition_float_load(right, FLOAT_SCRATCH)?;
+                    (FLOAT_FIRST, value)
+                }
             } else {
                 return Err(Diagnostic::error("this floating-point == comparison needs the value register allocator (roadmap)"));
             }

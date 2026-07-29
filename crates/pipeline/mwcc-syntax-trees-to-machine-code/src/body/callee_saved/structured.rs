@@ -2318,7 +2318,7 @@ impl Generator {
         // prefix. Run it after source-return branch indices have been consumed;
         // its general instruction-index helper owns the finalized branch
         // destinations from here onward.
-        self.schedule_entry_member_saved_home();
+        self.schedule_entry_member_saved_home(function);
         self.schedule_guarded_saved_receiver_float_call();
         self.schedule_inline_float_pair_final_call();
         self.schedule_inlined_member_address_receiver();
@@ -2548,12 +2548,50 @@ impl Generator {
                     self.preload_condition_literal_reused_in_body(condition, then_body);
                     let condition_result = (|| {
                         self.preload_condition_global_cache(condition)?;
-                        let groups = logical_or_groups(condition);
-                        if let Some(groups) = groups {
+                        let or_plan = logical_or_plan(condition);
+                        if let Some(or_plan) = or_plan {
                             let mut skip_body = Vec::new();
                             let mut enter_body = Vec::new();
-                            for (group_index, group) in groups.iter().enumerate() {
-                                let last_group = group_index + 1 == groups.len();
+                            for (term_index, term) in
+                                or_plan.prefix.iter().copied().enumerate()
+                            {
+                                let term_start = self.output.instructions.len();
+                                let (options, condition_bit) = self
+                                    .emit_condition_test(term)
+                                    .map_err(|mut diagnostic| {
+                                        diagnostic.message.push_str(&format!(
+                                            " (in structured if condition {statement_index})"
+                                        ));
+                                        diagnostic
+                                    })?;
+                                self.reuse_short_circuit_member_base(term_index, term_start);
+                                if statement_index == 0 && term_index == 0 {
+                                    if let Some(alias) = entry_alias.as_ref() {
+                                        fold_entry_alias_zero_test(
+                                            &mut self.output.instructions,
+                                            alias,
+                                        );
+                                    }
+                                }
+                                skip_body.push(self.output.instructions.len());
+                                self.output.instructions.push(
+                                    Instruction::BranchConditionalForward {
+                                        options,
+                                        condition_bit,
+                                        target: 0,
+                                    },
+                                );
+                                if statement_index == 0 && term_index == 0 {
+                                    if let Some(alias) = entry_alias.take() {
+                                        self.locations
+                                            .get_mut(&alias.name)
+                                            .expect("planned saved parameter")
+                                            .register = alias.home;
+                                    }
+                                }
+                            }
+                            for (group_index, group) in or_plan.groups.iter().enumerate() {
+                                let last_group = group_index + 1 == or_plan.groups.len();
                                 let mut advance_group = Vec::new();
                                 let mut next_group_float_cache = None;
                                 for (term_index, term) in group.iter().copied().enumerate() {
@@ -2567,7 +2605,10 @@ impl Generator {
                                             diagnostic
                                         })?;
                                     self.reuse_short_circuit_member_base(term_index, term_start);
-                                    if group_index == 0 && term_index == 0 {
+                                    if or_plan.prefix.is_empty()
+                                        && group_index == 0
+                                        && term_index == 0
+                                    {
                                         if let Some(alias) = entry_alias.as_ref() {
                                             fold_entry_alias_zero_test(
                                                 &mut self.output.instructions,
@@ -2607,7 +2648,10 @@ impl Generator {
                                             advance_group.push(branch);
                                         }
                                     }
-                                    if group_index == 0 && term_index == 0 {
+                                    if or_plan.prefix.is_empty()
+                                        && group_index == 0
+                                        && term_index == 0
+                                    {
                                         if let Some(alias) = entry_alias.take() {
                                             self.locations
                                                 .get_mut(&alias.name)
@@ -3503,6 +3547,31 @@ pub(super) fn logical_and_terms(expression: &Expression) -> Vec<&Expression> {
     terms
 }
 
+pub(super) struct LogicalOrPlan<'a> {
+    pub(super) prefix: Vec<&'a Expression>,
+    pub(super) groups: Vec<Vec<&'a Expression>>,
+}
+
+/// An ordered OR-of-AND plan, optionally guarded by a shared leading
+/// conjunction. Besides a direct `(a && b) || (c && d)`, this recognizes
+/// `prefix && ((a && b) || (c && d))` without distributing and re-emitting the
+/// prefix for every alternative.
+pub(super) fn logical_or_plan(expression: &Expression) -> Option<LogicalOrPlan<'_>> {
+    if let Some(groups) = logical_or_groups(expression) {
+        return Some(LogicalOrPlan {
+            prefix: Vec::new(),
+            groups,
+        });
+    }
+    let mut terms = logical_and_terms(expression);
+    let alternatives = terms.pop()?;
+    let groups = logical_or_groups(alternatives)?;
+    (!terms.is_empty()).then_some(LogicalOrPlan {
+        prefix: terms,
+        groups,
+    })
+}
+
 /// A top-level OR expressed as ordered AND groups. This is the source CFG for
 /// conditions such as `(a && b) || (c && d)`: each failed group advances to the
 /// next one, while a completed group enters the guarded body directly.
@@ -3563,6 +3632,43 @@ mod tests {
             Expression::Variable(c),
             Expression::Variable(d),
         ] if c == "c" && d == "d"));
+    }
+
+    #[test]
+    fn factors_a_shared_conjunction_before_disjunction_groups() {
+        let variable = |name: &str| Expression::Variable(name.into());
+        let condition = Expression::Binary {
+            operator: BinaryOperator::LogicalAnd,
+            left: Box::new(variable("prefix")),
+            right: Box::new(Expression::Binary {
+                operator: BinaryOperator::LogicalOr,
+                left: Box::new(Expression::Binary {
+                    operator: BinaryOperator::LogicalAnd,
+                    left: Box::new(variable("a")),
+                    right: Box::new(variable("b")),
+                }),
+                right: Box::new(Expression::Binary {
+                    operator: BinaryOperator::LogicalAnd,
+                    left: Box::new(variable("c")),
+                    right: Box::new(variable("d")),
+                }),
+            }),
+        };
+
+        let plan = logical_or_plan(&condition).expect("the guarded OR should decompose");
+        assert!(matches!(
+            plan.prefix.as_slice(),
+            [Expression::Variable(prefix)] if prefix == "prefix"
+        ));
+        assert_eq!(plan.groups.len(), 2);
+        assert!(matches!(
+            plan.groups[0].as_slice(),
+            [Expression::Variable(a), Expression::Variable(b)] if a == "a" && b == "b"
+        ));
+        assert!(matches!(
+            plan.groups[1].as_slice(),
+            [Expression::Variable(c), Expression::Variable(d)] if c == "c" && d == "d"
+        ));
     }
 
     #[test]

@@ -12,7 +12,7 @@ impl Generator {
     /// into the callee-saved home needed by later calls. Defining the home
     /// directly is semantically equivalent, but loses that latency-hiding copy
     /// and changes every following call relocation by one instruction.
-    pub(super) fn schedule_entry_member_saved_home(&mut self) {
+    pub(super) fn schedule_entry_member_saved_home(&mut self, function: &Function) {
         // A pure forwarding wrapper inherits the callee's value graph but not
         // its entry schedule, so MWCC keeps the direct saved-home load there.
         // A caller that continues into its own floating arithmetic after an
@@ -28,7 +28,16 @@ impl Generator {
                     | Instruction::FloatMultiplySubtractSingle { .. }
             )
         });
-        if self.inline_statement_body_substitutions != 0 && !caller_continues_after_inline {
+        let caller_has_prior_condition_transaction = function
+            .statements
+            .iter()
+            .filter(|statement| matches!(statement, Statement::If { .. }))
+            .count()
+            >= 2;
+        if self.inline_statement_body_substitutions != 0
+            && !caller_continues_after_inline
+            && !caller_has_prior_condition_transaction
+        {
             return;
         }
         if let Some((start, saved)) =

@@ -20,17 +20,13 @@ impl Generator {
         };
         let duplicate_load = start;
         let argument_copy = start + 7;
-        if self.output.instructions.iter().any(|instruction| {
-            matches!(
-                instruction,
-                Instruction::BranchConditionalForward { target, .. }
-                    | Instruction::Branch { target }
-                    if *target == duplicate_load
-            )
-        }) {
-            return;
-        }
 
+        for instruction in &mut self.output.instructions[start + 3..=start + 6] {
+            match instruction {
+                Instruction::StoreWord { a, .. } => *a = inlined,
+                _ => unreachable!("inlined store run changed after recognition"),
+            }
+        }
         match &mut self.output.instructions[argument_copy] {
             Instruction::Or { s, b, .. } => {
                 *s = inlined;
@@ -38,6 +34,8 @@ impl Generator {
             }
             _ => unreachable!("inlined store receiver was recognized"),
         }
+        // A guarded arm may enter directly at the duplicate load. Removal
+        // leaves that target index naming the retained equivalent load.
         self.remove_structured_condition_instruction(duplicate_load);
         // load helper receiver; li zero; first store; mr r3,receiver; remaining stores
         self.move_instruction_before(start + 6, start + 3);
@@ -118,7 +116,7 @@ fn inlined_store_receiver(instructions: &[Instruction]) -> Option<(usize, u8, u8
                 && *inlined == *first_store
                 && *inlined == *second_store
                 && *inlined == *third_store
-                && *inlined == *fourth_store
+                && (*inlined == *fourth_store || *outer == *fourth_store)
                 && *outer == *copied
                 && *outer == *copied_again
                 && *final_receiver == *final_receiver_again =>
@@ -154,12 +152,17 @@ mod tests {
             },
         ];
         instructions.extend(
-            [8712, 8708, 8704, 8720].map(|offset| Instruction::StoreWord {
+            [8712, 8708, 8704].map(|offset| Instruction::StoreWord {
                 s: 0,
                 a: 34,
                 offset,
             }),
         );
+        instructions.push(Instruction::StoreWord {
+            s: 0,
+            a: 33,
+            offset: 8720,
+        });
         instructions.extend([
             Instruction::Or { a: 3, s: 33, b: 33 },
             Instruction::BranchAndLink {

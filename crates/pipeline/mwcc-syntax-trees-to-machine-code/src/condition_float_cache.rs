@@ -34,6 +34,7 @@ struct ConditionFloatLiteralValue {
 pub(crate) struct ConditionFloatCache {
     active: bool,
     recording_allowed: bool,
+    condition: Option<Expression>,
     reusable: Vec<ConditionFloatValue>,
     observed: Vec<ConditionFloatValue>,
     intra_condition: Vec<ConditionFloatValue>,
@@ -49,6 +50,7 @@ impl Generator {
         let previous = std::mem::take(&mut self.condition_float_cache);
         self.condition_float_cache.active = true;
         self.condition_float_cache.recording_allowed = !expression_has_value_barrier(condition);
+        self.condition_float_cache.condition = Some(condition.clone());
         previous
     }
 
@@ -60,6 +62,7 @@ impl Generator {
         let previous = std::mem::take(&mut self.condition_float_cache);
         self.condition_float_cache.active = true;
         self.condition_float_cache.recording_allowed = !expression_has_value_barrier(condition);
+        self.condition_float_cache.condition = Some(condition.clone());
         self.condition_float_cache.reusable = previous
             .observed
             .into_iter()
@@ -77,6 +80,7 @@ impl Generator {
         let previous = std::mem::take(&mut self.condition_float_cache);
         self.condition_float_cache.active = true;
         self.condition_float_cache.recording_allowed = !expression_has_value_barrier(condition);
+        self.condition_float_cache.condition = Some(condition.clone());
         if previous.active && self.condition_float_cache.recording_allowed {
             self.condition_float_cache.reusable = previous
                 .intra_condition
@@ -110,7 +114,7 @@ impl Generator {
     }
 
     pub(crate) fn condition_float_register(&mut self, operand: &Expression) -> Option<u8> {
-        if self.non_leaf && self.has_virtual_float_location() {
+        if self.non_leaf {
             if let Some(value) = self
                 .condition_float_cache
                 .intra_condition
@@ -140,7 +144,7 @@ impl Generator {
         {
             return;
         }
-        if self.non_leaf && self.has_virtual_float_location() {
+        if self.non_leaf && self.condition_repeats_float_value(operand) {
             self.invalidate_condition_float_register(register);
             self.condition_float_cache
                 .intra_condition
@@ -249,6 +253,13 @@ impl Generator {
             .map(|value| value.register)
     }
 
+    pub(crate) fn condition_repeats_float_value(&self, operand: &Expression) -> bool {
+        self.condition_float_cache
+            .condition
+            .as_ref()
+            .is_some_and(|condition| direct_float_memory_load_count(condition, operand) > 1)
+    }
+
     pub(crate) fn record_condition_float_literal(
         &mut self,
         operand: &Expression,
@@ -316,6 +327,66 @@ fn direct_memory_base_name(expression: &Expression) -> Option<&str> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+fn direct_float_memory_load_count(expression: &Expression, target: &Expression) -> usize {
+    if same_direct_float_memory_load(expression, target) {
+        return 1;
+    }
+    match expression {
+        Expression::Binary { left, right, .. }
+        | Expression::Index {
+            base: left,
+            index: right,
+        }
+        | Expression::Comma { left, right } => {
+            direct_float_memory_load_count(left, target)
+                + direct_float_memory_load_count(right, target)
+        }
+        Expression::Assign {
+            target: left,
+            value: right,
+        } => {
+            direct_float_memory_load_count(left, target)
+                + direct_float_memory_load_count(right, target)
+        }
+        Expression::Conditional {
+            condition,
+            when_true,
+            when_false,
+            ..
+        } => {
+            direct_float_memory_load_count(condition, target)
+                + direct_float_memory_load_count(when_true, target)
+                + direct_float_memory_load_count(when_false, target)
+        }
+        Expression::Call { arguments, .. }
+        | Expression::CallThrough { arguments, .. }
+        | Expression::VirtualCall { arguments, .. }
+        | Expression::ConstructedNew { arguments, .. }
+        | Expression::AggregateLiteral(arguments) => arguments
+            .iter()
+            .map(|argument| direct_float_memory_load_count(argument, target))
+            .sum(),
+        Expression::Member { base, .. }
+        | Expression::MemberAddress { base, .. }
+        | Expression::Unary { operand: base, .. }
+        | Expression::Cast { operand: base, .. }
+        | Expression::Dereference { pointer: base }
+        | Expression::AddressOf { operand: base }
+        | Expression::IndexedUpdateValue { value: base }
+        | Expression::BitFieldRead {
+            extracted: base, ..
+        }
+        | Expression::PostStep { target: base, .. } => {
+            direct_float_memory_load_count(base, target)
+        }
+        Expression::IntegerLiteral(_)
+        | Expression::FloatLiteral(_)
+        | Expression::StringLiteral(_)
+        | Expression::Variable(_)
+        | Expression::CompoundLiteral { .. } => 0,
     }
 }
 
@@ -506,6 +577,26 @@ mod tests {
             }),
         };
         assert!(pure_prefix_contains(&condition, &target, &mut false));
+    }
+
+    #[test]
+    fn counts_a_float_load_repeated_across_short_circuit_groups() {
+        let target = member(0);
+        let condition = Expression::Binary {
+            operator: BinaryOperator::LogicalOr,
+            left: Box::new(Expression::Binary {
+                operator: BinaryOperator::Equal,
+                left: Box::new(target.clone()),
+                right: Box::new(Expression::IntegerLiteral(-1)),
+            }),
+            right: Box::new(Expression::Binary {
+                operator: BinaryOperator::Equal,
+                left: Box::new(target.clone()),
+                right: Box::new(Expression::IntegerLiteral(1)),
+            }),
+        };
+
+        assert_eq!(direct_float_memory_load_count(&condition, &target), 2);
     }
 
     #[test]
