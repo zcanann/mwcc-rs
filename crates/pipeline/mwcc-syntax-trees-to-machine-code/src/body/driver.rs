@@ -4528,6 +4528,14 @@ impl Generator {
                 return self.evaluate(expression, Type::Int, result);
             }
         }
+        if let Expression::VirtualCall { return_type, .. } = expression {
+            if is_narrow_int(value_type)
+                && self.return_source_fundamental.is_some()
+                && *return_type == value_type
+            {
+                return self.evaluate(expression, Type::Int, result);
+            }
+        }
         if self.behavior.narrow_computed_return_style == NarrowComputedReturnStyle::FullWidthResult
             && is_narrow_int(value_type)
         {

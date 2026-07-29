@@ -149,7 +149,9 @@ impl Generator {
         };
         if !matches!(
             guard.value,
-            Expression::Call { .. } | Expression::CallThrough { .. }
+            Expression::Call { .. }
+                | Expression::CallThrough { .. }
+                | Expression::VirtualCall { .. }
         ) {
             return Ok(false);
         }
@@ -173,31 +175,73 @@ impl Generator {
             return Ok(false);
         }
         let cond_register = cond_location.register;
-
-        // -- emit -- prologue: stwu; mflr; [cmpwi hoisted]; stw r0 (LR only).
-        self.non_leaf = true;
-        self.frame_size = 16;
-        self.output
-            .instructions
-            .push(Instruction::StoreWordWithUpdate {
-                s: 1,
-                a: 1,
-                offset: -16,
+        let condition_is_pointer = function
+            .parameters
+            .iter()
+            .find(|parameter| &parameter.name == cond_name)
+            .is_some_and(|parameter| {
+                matches!(
+                    parameter.parameter_type,
+                    Type::Pointer(_) | Type::StructPointer { .. }
+                )
             });
-        self.output
-            .instructions
-            .push(Instruction::MoveFromLinkRegister { d: 0 });
-        self.output
-            .instructions
-            .push(Instruction::CompareWordImmediate {
+        if condition_is_pointer && cmp_constant != 0 {
+            return Ok(false);
+        }
+
+        // -- emit -- the generation's LR-only prologue with the guard test
+        // hoisted between linkage operations.
+        self.non_leaf = true;
+        self.frame_size = if self.behavior.frame_convention == FrameConvention::LinkageFirst {
+            8
+        } else {
+            16
+        };
+        if self.behavior.frame_convention == FrameConvention::LinkageFirst {
+            self.output
+                .instructions
+                .push(Instruction::MoveFromLinkRegister { d: 0 });
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -self.frame_size,
+                });
+            self.output
+                .instructions
+                .push(Instruction::MoveFromLinkRegister { d: 0 });
+        }
+        self.output.instructions.push(if condition_is_pointer {
+            Instruction::CompareLogicalWordImmediate {
+                a: cond_register,
+                immediate: 0,
+            }
+        } else {
+            Instruction::CompareWordImmediate {
                 a: cond_register,
                 immediate: cmp_constant,
-            });
+            }
+        });
         self.output.instructions.push(Instruction::StoreWord {
             s: 0,
             a: 1,
-            offset: 20,
+            offset: if self.behavior.frame_convention == FrameConvention::LinkageFirst {
+                4
+            } else {
+                self.frame_size + 4
+            },
         });
+        if self.behavior.frame_convention == FrameConvention::LinkageFirst {
+            self.output
+                .instructions
+                .push(Instruction::StoreWordWithUpdate {
+                    s: 1,
+                    a: 1,
+                    offset: -self.frame_size,
+                });
+        }
         let else_label = self.fresh_label();
         let join_label = self.fresh_label();
         self.emit_branch_conditional_to(skip_bo, skip_bi, else_label);
@@ -212,16 +256,27 @@ impl Generator {
         self.output.instructions.push(Instruction::LoadWord {
             d: 0,
             a: 1,
-            offset: 20,
+            offset: self.frame_size + 4,
         });
-        self.output
-            .instructions
-            .push(Instruction::MoveToLinkRegister { s: 0 });
-        self.output.instructions.push(Instruction::AddImmediate {
-            d: 1,
-            a: 1,
-            immediate: 16,
-        });
+        if self.behavior.frame_convention == FrameConvention::LinkageFirst {
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: self.frame_size,
+            });
+            self.output
+                .instructions
+                .push(Instruction::MoveToLinkRegister { s: 0 });
+        } else {
+            self.output
+                .instructions
+                .push(Instruction::MoveToLinkRegister { s: 0 });
+            self.output.instructions.push(Instruction::AddImmediate {
+                d: 1,
+                a: 1,
+                immediate: self.frame_size,
+            });
+        }
         self.output
             .instructions
             .push(Instruction::BranchToLinkRegister);
@@ -874,5 +929,108 @@ impl Generator {
         // the reused-global load advance the counter by 3, one more than the bare guard-call.
         self.output.anonymous_label_bump += 3;
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use mwcc_syntax_trees::{
+        Expression, Function, GuardedReturn, InlineExpansionFacts, Parameter,
+        SourceFundamentalType, Type,
+    };
+    use mwcc_versions::{CompilerConfig, GC_1_2_5N};
+
+    use crate::{lower_function, InlineBodySet, InlineSummaries};
+
+    #[test]
+    fn linkage_first_pointer_guard_forwards_a_narrow_virtual_result() {
+        let function = Function {
+            return_type: Type::UnsignedChar,
+            name: "satisfy__10CndIsAliveFP8Creature".into(),
+            is_static: false,
+            is_weak: false,
+            parameters: vec![
+                Parameter {
+                    parameter_type: Type::StructPointer { element_size: 4 },
+                    name: "this".into(),
+                },
+                Parameter {
+                    parameter_type: Type::StructPointer { element_size: 4 },
+                    name: "target".into(),
+                },
+            ],
+            locals: Vec::new(),
+            statements: Vec::new(),
+            guards: vec![GuardedReturn {
+                condition: Expression::Variable("target".into()),
+                value: Expression::VirtualCall {
+                    object: Box::new(Expression::Variable("target".into())),
+                    vptr_offset: 0,
+                    slot_offset: 136,
+                    return_type: Type::UnsignedChar,
+                    variadic: false,
+                    arguments: Vec::new(),
+                },
+            }],
+            return_expression: Some(Expression::IntegerLiteral(0)),
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        };
+        let fundamentals =
+            HashMap::from([(function.name.clone(), SourceFundamentalType::Boolean)]);
+        let mut config = CompilerConfig::new(GC_1_2_5N);
+        config.flags.cpp_exceptions = false;
+
+        let output = lower_function(
+            &function,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &Default::default(),
+            &Default::default(),
+            &Default::default(),
+            &Default::default(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &InlineBodySet::default(),
+            &InlineSummaries::default(),
+            InlineExpansionFacts::default(),
+            &HashMap::new(),
+            &fundamentals,
+            config,
+        )
+        .expect("guarded virtual forwarding should lower");
+        let expected = [
+            0x7c08_02a6,
+            0x2804_0000,
+            0x9001_0004,
+            0x9421_fff8,
+            0x4182_001c,
+            0x7c83_2378,
+            0x8184_0000,
+            0x818c_0088,
+            0x7d88_03a6,
+            0x4e80_0021,
+            0x4800_0008,
+            0x3860_0000,
+            0x8001_000c,
+            0x3821_0008,
+            0x7c08_03a6,
+            0x4e80_0020,
+        ]
+        .into_iter()
+        .flat_map(u32::to_be_bytes)
+        .collect::<Vec<_>>();
+
+        assert_eq!(output.encode_text(), expected);
     }
 }
