@@ -4,6 +4,27 @@
 use super::*;
 
 impl Generator {
+    fn lower_wide_mask_local_for_version(&self, function: &Function) -> Option<Function> {
+        match self.behavior.wide_call_result_mask_style {
+            mwcc_versions::WideCallResultMaskStyle::ScalarizeLowWord => {
+                crate::wide_local_scalarization::scalarize_zero_extended_mask_local(
+                    function,
+                    &self.globals,
+                    &self.volatile_globals,
+                    &self.call_return_types,
+                )
+            }
+            mwcc_versions::WideCallResultMaskStyle::RetainPair => {
+                crate::wide_local_scalarization::retain_zero_extended_mask_local_pair(
+                    function,
+                    &self.globals,
+                    &self.volatile_globals,
+                    &self.call_return_types,
+                )
+            }
+        }
+    }
+
     pub(crate) fn assign_parameters(&mut self, function: &Function) -> Compilation<()> {
         self.known_locals = function
             .locals
@@ -1657,13 +1678,7 @@ impl Generator {
                 let branch_function = branch_reuse
                     .as_ref()
                     .unwrap_or(&expanded.function);
-                let scalarized =
-                    crate::wide_local_scalarization::scalarize_zero_extended_mask_local(
-                        branch_function,
-                        &self.globals,
-                        &self.volatile_globals,
-                        &self.call_return_types,
-                    );
+                let scalarized = self.lower_wide_mask_local_for_version(branch_function);
                 let scalarized_function =
                     scalarized.as_ref().unwrap_or(branch_function);
                 let shared_store_base =
@@ -2246,19 +2261,8 @@ impl Generator {
         if self.try_wide_call_result_mask_chain(function)? {
             return Ok(());
         }
-        if self.behavior.wide_call_result_mask_style
-            == mwcc_versions::WideCallResultMaskStyle::ScalarizeLowWord
-        {
-            if let Some(scalarized) =
-                crate::wide_local_scalarization::scalarize_zero_extended_mask_local(
-                    function,
-                    &self.globals,
-                    &self.volatile_globals,
-                    &self.call_return_types,
-                )
-            {
-                return self.evaluate_body(&scalarized);
-            }
+        if let Some(scalarized) = self.lower_wide_mask_local_for_version(function) {
+            return self.evaluate_body(&scalarized);
         }
         // A long long (64-bit) value lives in a general-register PAIR — r3:r4 is high:low. Route
         // every long-long-involved function to the dedicated handler so none falls through to the

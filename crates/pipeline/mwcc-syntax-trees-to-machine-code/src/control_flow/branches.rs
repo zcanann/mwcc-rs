@@ -1042,6 +1042,9 @@ impl Generator {
             self.emit_comma_side_effect(left)?;
             return self.emit_condition_test(right);
         }
+        if self.try_emit_wide_pair_mask_test(condition)? {
+            return Ok((12, 2)); // beq — skip when both masked words are zero
+        }
         // `!x` as a condition is `x == 0`: skip the guarded code when x != 0.
         if let Expression::Unary {
             operator: UnaryOperator::LogicalNot,

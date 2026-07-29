@@ -17,6 +17,7 @@ mod passes;
 mod record_condition;
 mod record_mask;
 mod select;
+mod wide_pair_mask;
 
 #[allow(unused_imports)]
 pub(crate) use passes::*;

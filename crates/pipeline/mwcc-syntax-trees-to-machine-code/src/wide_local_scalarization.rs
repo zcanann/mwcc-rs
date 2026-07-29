@@ -1,20 +1,59 @@
-//! Prove and scalarize wide locals whose high word is unobservable.
+//! Prove and lower wide mask locals whose high word is known zero.
 //!
 //! A common input-bitset idiom assigns a `u32` call result through a `u64`
 //! global and into a `u64` automatic, then tests only masks in the low word.
-//! Keep the global write semantically 64-bit, but represent the automatic as
-//! its proven `u32` lane so the ordinary structured allocator can own the
-//! surrounding function. Arbitrary wide values remain on the pair path.
+//! Modern optimizers scalarize the automatic to its proven `u32` lane. Legacy
+//! optimizers retain the two-word value graph, so that mode exposes explicit
+//! high and low locals while keeping the global write semantically 64-bit.
+//! Either form lets the ordinary structured allocator own the surrounding
+//! function; arbitrary wide values remain on the general pair path.
 
 use crate::analysis::expression_reads_name;
 use mwcc_syntax_trees::{ArmBody, BinaryOperator, Expression, Function, Statement, Type};
 use std::collections::{HashMap, HashSet};
+
+#[derive(Clone, Copy)]
+enum MaskLocalLowering {
+    ScalarLowWord,
+    RetainWordPair,
+}
 
 pub(crate) fn scalarize_zero_extended_mask_local(
     function: &Function,
     globals: &HashMap<String, Type>,
     volatile_globals: &HashSet<String>,
     call_return_types: &HashMap<String, Type>,
+) -> Option<Function> {
+    lower_zero_extended_mask_local(
+        function,
+        globals,
+        volatile_globals,
+        call_return_types,
+        MaskLocalLowering::ScalarLowWord,
+    )
+}
+
+pub(crate) fn retain_zero_extended_mask_local_pair(
+    function: &Function,
+    globals: &HashMap<String, Type>,
+    volatile_globals: &HashSet<String>,
+    call_return_types: &HashMap<String, Type>,
+) -> Option<Function> {
+    lower_zero_extended_mask_local(
+        function,
+        globals,
+        volatile_globals,
+        call_return_types,
+        MaskLocalLowering::RetainWordPair,
+    )
+}
+
+fn lower_zero_extended_mask_local(
+    function: &Function,
+    globals: &HashMap<String, Type>,
+    volatile_globals: &HashSet<String>,
+    call_return_types: &HashMap<String, Type>,
+    lowering: MaskLocalLowering,
 ) -> Option<Function> {
     let wide_locals: Vec<_> = function
         .locals
@@ -49,10 +88,13 @@ pub(crate) fn scalarize_zero_extended_mask_local(
         return None;
     }
 
+    let high_name = matches!(lowering, MaskLocalLowering::RetainWordPair)
+        .then(|| unique_high_word_name(function));
     let mut assignment_count = 0usize;
     let statements = rewrite_statements(
         &function.statements,
         &wide_local.name,
+        high_name.as_deref(),
         globals,
         volatile_globals,
         call_return_types,
@@ -63,14 +105,36 @@ pub(crate) fn scalarize_zero_extended_mask_local(
     }
 
     let mut rewritten = function.clone();
-    rewritten
+    let local_index = rewritten
         .locals
-        .iter_mut()
-        .find(|local| local.name == wide_local.name)
-        .expect("the selected local remains present")
-        .declared_type = Type::UnsignedInt;
+        .iter()
+        .position(|local| local.name == wide_local.name)
+        .expect("the selected local remains present");
+    rewritten.locals[local_index].declared_type = Type::UnsignedInt;
+    if let Some(high_name) = high_name {
+        let mut high_local = rewritten.locals[local_index].clone();
+        high_local.name = high_name.clone();
+        rewritten.locals.insert(local_index + 1, high_local);
+        for guard in &mut rewritten.guards {
+            guard.condition =
+                rewrite_mask_condition(&guard.condition, &wide_local.name, &high_name);
+        }
+    }
     rewritten.statements = statements;
     Some(rewritten)
+}
+
+fn unique_high_word_name(function: &Function) -> String {
+    let occupied: HashSet<_> = function
+        .parameters
+        .iter()
+        .map(|parameter| parameter.name.as_str())
+        .chain(function.locals.iter().map(|local| local.name.as_str()))
+        .collect();
+    (0usize..)
+        .map(|ordinal| format!("__mwcc_wide_mask_high_{ordinal}"))
+        .find(|candidate| !occupied.contains(candidate.as_str()))
+        .expect("the compiler-generated local namespace is unbounded")
 }
 
 fn uses_only_low_word_masks(statements: &[Statement], name: &str) -> bool {
@@ -152,9 +216,64 @@ fn low_word_mask(expression: &Expression, name: &str) -> bool {
     )
 }
 
+fn rewrite_mask_condition(expression: &Expression, low_name: &str, high_name: &str) -> Expression {
+    let Expression::Binary {
+        operator: BinaryOperator::BitAnd,
+        left,
+        right,
+    } = expression
+    else {
+        return expression.clone();
+    };
+    if !matches!(left.as_ref(), Expression::Variable(name) if name == low_name) {
+        return expression.clone();
+    }
+
+    let high = || Expression::Variable(high_name.to_owned());
+    Expression::Binary {
+        operator: BinaryOperator::BitOr,
+        left: Box::new(Expression::Binary {
+            operator: BinaryOperator::BitXor,
+            left: Box::new(Expression::Binary {
+                operator: BinaryOperator::BitAnd,
+                left: Box::new(Expression::Variable(low_name.to_owned())),
+                right: right.clone(),
+            }),
+            right: Box::new(high()),
+        }),
+        right: Box::new(Expression::Binary {
+            operator: BinaryOperator::BitXor,
+            left: Box::new(Expression::Binary {
+                operator: BinaryOperator::BitAnd,
+                left: Box::new(high()),
+                right: Box::new(high()),
+            }),
+            right: Box::new(high()),
+        }),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn legacy_word_pair_mask_condition_for_test(
+    low_name: &str,
+    high_name: &str,
+    mask: i64,
+) -> Expression {
+    rewrite_mask_condition(
+        &Expression::Binary {
+            operator: BinaryOperator::BitAnd,
+            left: Box::new(Expression::Variable(low_name.to_owned())),
+            right: Box::new(Expression::IntegerLiteral(mask)),
+        },
+        low_name,
+        high_name,
+    )
+}
+
 fn rewrite_statements(
     statements: &[Statement],
     name: &str,
+    high_name: Option<&str>,
     globals: &HashMap<String, Type>,
     volatile_globals: &HashSet<String>,
     call_return_types: &HashMap<String, Type>,
@@ -184,6 +303,12 @@ fn rewrite_statements(
                     name: name.to_owned(),
                     value: value.as_ref().clone(),
                 });
+                if let Some(high_name) = high_name {
+                    output.push(Statement::Assign {
+                        name: high_name.to_owned(),
+                        value: Expression::IntegerLiteral(0),
+                    });
+                }
                 output.push(Statement::Store {
                     target: Expression::Member {
                         base: base.clone(),
@@ -200,7 +325,9 @@ fn rewrite_statements(
                         member_type: Type::UnsignedInt,
                         index_stride: None,
                     },
-                    value: Expression::IntegerLiteral(0),
+                    value: high_name
+                        .map(|name| Expression::Variable(name.to_owned()))
+                        .unwrap_or(Expression::IntegerLiteral(0)),
                 });
             }
             Statement::If {
@@ -208,10 +335,13 @@ fn rewrite_statements(
                 then_body,
                 else_body,
             } => output.push(Statement::If {
-                condition: condition.clone(),
+                condition: high_name
+                    .map(|high_name| rewrite_mask_condition(condition, name, high_name))
+                    .unwrap_or_else(|| condition.clone()),
                 then_body: rewrite_statements(
                     then_body,
                     name,
+                    high_name,
                     globals,
                     volatile_globals,
                     call_return_types,
@@ -220,6 +350,7 @@ fn rewrite_statements(
                 else_body: rewrite_statements(
                     else_body,
                     name,
+                    high_name,
                     globals,
                     volatile_globals,
                     call_return_types,
@@ -240,6 +371,7 @@ fn rewrite_statements(
                 body: rewrite_statements(
                     body,
                     name,
+                    high_name,
                     globals,
                     volatile_globals,
                     call_return_types,
@@ -259,6 +391,7 @@ fn rewrite_statements(
                             rewrite_statements(
                                 statements,
                                 name,
+                                high_name,
                                 globals,
                                 volatile_globals,
                                 call_return_types,
@@ -278,6 +411,7 @@ fn rewrite_statements(
                         rewrite_statements(
                             statements,
                             name,
+                            high_name,
                             globals,
                             volatile_globals,
                             call_return_types,
@@ -435,6 +569,56 @@ mod tests {
                 },
                 Statement::If { .. },
             ] if low == "events"
+        ));
+
+        let retained = retain_zero_extended_mask_local_pair(
+            &function,
+            &globals,
+            &HashSet::new(),
+            &returns,
+        )
+        .expect("the legacy value graph should lower into explicit words");
+        assert_eq!(
+            retained
+                .locals
+                .iter()
+                .filter(|local| {
+                    local.name == "events" || local.name == "__mwcc_wide_mask_high_0"
+                })
+                .map(|local| (local.name.as_str(), local.declared_type))
+                .collect::<Vec<_>>(),
+            [
+                ("events", Type::UnsignedInt),
+                ("__mwcc_wide_mask_high_0", Type::UnsignedInt),
+            ]
+        );
+        assert!(matches!(
+            retained.statements.as_slice(),
+            [
+                Statement::Assign { name: low, .. },
+                Statement::Assign {
+                    name: high,
+                    value: Expression::IntegerLiteral(0),
+                },
+                Statement::Store {
+                    value: Expression::Variable(stored_low),
+                    ..
+                },
+                Statement::Store {
+                    value: Expression::Variable(stored_high),
+                    ..
+                },
+                Statement::If {
+                    condition: Expression::Binary {
+                        operator: BinaryOperator::BitOr,
+                        ..
+                    },
+                    ..
+                },
+            ] if low == "events"
+                && high == "__mwcc_wide_mask_high_0"
+                && stored_low == "events"
+                && stored_high == "__mwcc_wide_mask_high_0"
         ));
     }
 }
