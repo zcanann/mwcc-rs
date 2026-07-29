@@ -34,6 +34,7 @@ mod frame_convention;
 mod later_call_arguments;
 mod linkage_first_arguments;
 mod linkage_first_float_result_schedule;
+mod linkage_first_global_float_argument_schedule;
 mod linkage_first_variadic_frame_schedule;
 mod linkage_first_addressable_parameters;
 mod global_swap;
