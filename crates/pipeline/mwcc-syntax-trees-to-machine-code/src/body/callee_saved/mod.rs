@@ -113,6 +113,7 @@ mod structured_frame_publication;
 mod structured_frame_value_forwarding;
 mod structured_global_index_cache;
 mod structured_global_base_cache;
+mod structured_guarded_narrow_update;
 mod structured_expression_visit;
 mod structured_guard_cache_schedule;
 mod structured_guarded_ucode_schedule;

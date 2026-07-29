@@ -71,6 +71,7 @@ impl Generator {
             &mut None,
         )?;
         self.retain_guarded_nested_member_base();
+        self.reuse_guarded_narrow_member_update();
         self.schedule_volatile_bitset_hint_tail();
         debug_assert!(pending_gotos.is_empty());
         if let Some(return_expression) = &function.return_expression {
