@@ -4189,30 +4189,7 @@ impl Generator {
                     .push(Instruction::BranchToLinkRegister);
                 return;
             }
-            self.output.instructions.push(Instruction::LoadWord {
-                d: 0,
-                a: 1,
-                offset: self.frame_size + 4,
-            });
-            for (index, &register) in self.callee_saved.iter().enumerate() {
-                let offset = self.frame_size - 4 * (index as i16 + 1);
-                self.output.instructions.push(Instruction::LoadWord {
-                    d: register,
-                    a: 1,
-                    offset,
-                });
-            }
-            self.output.instructions.push(Instruction::AddImmediate {
-                d: 1,
-                a: 1,
-                immediate: self.frame_size,
-            });
-            self.output
-                .instructions
-                .push(Instruction::MoveToLinkRegister { s: 0 });
-            self.output
-                .instructions
-                .push(Instruction::BranchToLinkRegister);
+            self.emit_linkage_first_saved_register_epilogue();
             return;
         }
         let reload_saved_gprs = |generator: &mut Self| {

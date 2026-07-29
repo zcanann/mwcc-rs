@@ -4,6 +4,20 @@
 use super::*;
 
 impl Generator {
+    /// Emit the policy-owned linkage-first teardown after a generic body.
+    ///
+    /// Build 163 moves the saved return address back to LR before restoring the
+    /// stack pointer. Nintendo's derived build restores the stack first. Keep
+    /// this ordering in the frame-convention owner so generic body lowering
+    /// cannot accidentally collapse the two profiles into one sequence.
+    pub(crate) fn emit_linkage_first_saved_register_epilogue(&mut self) {
+        self.output.instructions.extend(linkage_first_saved_register_epilogue(
+            self.frame_size,
+            &self.callee_saved,
+            self.behavior.saved_gpr_epilogue_style,
+        ));
+    }
+
     /// Canonicalize adjacent linkage-first GPR saves and restores by physical
     /// register number. Virtual home order follows source lifetimes, but MWCC's
     /// frame slots remain r31 downward regardless of that semantic order.
@@ -1154,6 +1168,41 @@ impl Generator {
     }
 }
 
+fn linkage_first_saved_register_epilogue(
+    frame_size: i16,
+    saved_registers: &[u8],
+    style: mwcc_versions::SavedGprEpilogueStyle,
+) -> Vec<Instruction> {
+    let mut instructions = vec![Instruction::LoadWord {
+        d: 0,
+        a: 1,
+        offset: frame_size + 4,
+    }];
+    instructions.extend(saved_registers.iter().enumerate().map(|(index, &register)| {
+        Instruction::LoadWord {
+            d: register,
+            a: 1,
+            offset: frame_size - 4 * (index as i16 + 1),
+        }
+    }));
+    let stack_restore = Instruction::AddImmediate {
+        d: 1,
+        a: 1,
+        immediate: frame_size,
+    };
+    let restore_link = Instruction::MoveToLinkRegister { s: 0 };
+    match style {
+        mwcc_versions::SavedGprEpilogueStyle::LinkRegisterBeforeFinalSaved => {
+            instructions.extend([restore_link, stack_restore]);
+        }
+        mwcc_versions::SavedGprEpilogueStyle::LinkRegisterAfterStackRestore => {
+            instructions.extend([stack_restore, restore_link]);
+        }
+    }
+    instructions.push(Instruction::BranchToLinkRegister);
+    instructions
+}
+
 /// Move an entry-value copy out of a pair of GPR saves before canonicalizing
 /// their frame slots. The copy overwrites the lower-numbered saved register,
 /// so leaving it between the stores prevents the save-order pass from seeing
@@ -1397,6 +1446,75 @@ fn remap_prefix_rotate_left(
 mod tests {
     use super::*;
     use mwcc_machine_code::{Relocation, RelocationKind, RelocationTarget};
+
+    #[test]
+    fn build_163_restores_link_register_before_stack_pointer() {
+        let instructions = linkage_first_saved_register_epilogue(
+            24,
+            &[31, 30],
+            mwcc_versions::SavedGprEpilogueStyle::LinkRegisterBeforeFinalSaved,
+        );
+
+        assert!(matches!(
+            instructions.as_slice(),
+            [
+                Instruction::LoadWord {
+                    d: 0,
+                    a: 1,
+                    offset: 28
+                },
+                Instruction::LoadWord {
+                    d: 31,
+                    a: 1,
+                    offset: 20
+                },
+                Instruction::LoadWord {
+                    d: 30,
+                    a: 1,
+                    offset: 16
+                },
+                Instruction::MoveToLinkRegister { s: 0 },
+                Instruction::AddImmediate {
+                    d: 1,
+                    a: 1,
+                    immediate: 24
+                },
+                Instruction::BranchToLinkRegister,
+            ]
+        ));
+    }
+
+    #[test]
+    fn nintendo_build_restores_stack_pointer_before_link_register() {
+        let instructions = linkage_first_saved_register_epilogue(
+            16,
+            &[31],
+            mwcc_versions::SavedGprEpilogueStyle::LinkRegisterAfterStackRestore,
+        );
+
+        assert!(matches!(
+            instructions.as_slice(),
+            [
+                Instruction::LoadWord {
+                    d: 0,
+                    a: 1,
+                    offset: 20
+                },
+                Instruction::LoadWord {
+                    d: 31,
+                    a: 1,
+                    offset: 12
+                },
+                Instruction::AddImmediate {
+                    d: 1,
+                    a: 1,
+                    immediate: 16
+                },
+                Instruction::MoveToLinkRegister { s: 0 },
+                Instruction::BranchToLinkRegister,
+            ]
+        ));
+    }
 
     #[test]
     fn compact_linkage_first_frame_uses_doubleword_alignment() {

@@ -978,10 +978,12 @@ impl Generator {
         let mut next_float = Eabi::FIRST_FLOAT_ARGUMENT;
         let mut folded_float_arguments: Vec<(u64, bool, u8)> = Vec::new();
         // Preserve a later word argument whose current register is the target of
-        // an earlier argument remap. Build 163 copies that endangered value to
-        // its final ABI slot first, then fills the earlier slots. Restrict this
-        // to the all-general, one-word prefix where argument index maps directly
-        // to r3+rN; mixed floating/wide calls retain their dedicated schedulers.
+        // an earlier argument remap. This is an ABI shuffle, not an arithmetic
+        // value materialization: build 163 retains `mr` when moving an endangered
+        // incoming argument upward to its final slot (`memset(dst, 0, size)` uses
+        // `mr r5,r4` before zeroing r4). Restrict this to the all-general,
+        // one-word prefix where argument index maps directly to r3+rN; mixed
+        // floating/wide calls retain their dedicated schedulers.
         let prematerialized_general = (1..arguments.len()).find_map(|later| {
             let source = self.leaf_info(&arguments[later]).ok()?.0;
             let target = Eabi::FIRST_GENERAL_ARGUMENT.checked_add(later as u8)?;
@@ -1030,7 +1032,15 @@ impl Generator {
             Some((later, target, source))
         });
         if let Some((_, target, source)) = prematerialized_general {
-            self.emit_integer_materialization_copy(target, source);
+            if self.behavior.frame_convention == mwcc_versions::FrameConvention::LinkageFirst
+                && self.preceded_by_asm
+            {
+                self.output
+                    .instructions
+                    .push(Instruction::move_register(target, source));
+            } else {
+                self.emit_integer_materialization_copy(target, source);
+            }
         }
         for (index, argument) in arguments.iter().enumerate() {
             let parameter_type = super::call_argument_types::source_parameter_type(

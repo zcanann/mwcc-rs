@@ -605,6 +605,7 @@ fn lower_function_body(
         call_return_fundamentals: call_return_fundamentals.clone(),
         constraints: mwcc_vreg::RegisterConstraints::gekko(),
         non_leaf: false,
+        preceded_by_asm: function.preceded_by_asm,
         callee_saved_float: 0,
         virtual_cursors: generator::VirtualCursors::default(),
         register_avoid: HashMap::new(),

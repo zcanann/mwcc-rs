@@ -23,7 +23,16 @@ impl Generator {
             Some(Instruction::ConditionRegisterOr { .. })
         );
 
-        let store_position = if folded_float_compare
+        let store_position = if self.behavior.frame_convention == FrameConvention::LinkageFirst
+            && self.preceded_by_asm
+        {
+            // The linkage-first frame pass rotates `[stwu, mflr, stw LR]` into
+            // `[mflr, stw LR, stwu]`. Keep the condition outside that prefix:
+            // build 163 startup helpers begin their actual test only after all
+            // three linkage instructions (`mflr; stw; stwu; cmplwi`). Ordinary
+            // functions retain the usual compare-filled latency slot.
+            condition_start
+        } else if folded_float_compare
             && self.behavior.folded_float_compare_linkage_style
                 == FoldedFloatCompareLinkageStyle::CompareFirst
         {
