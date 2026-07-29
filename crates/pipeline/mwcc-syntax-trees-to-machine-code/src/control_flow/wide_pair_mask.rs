@@ -25,9 +25,16 @@ struct RetainedHighMask {
     register: u8,
 }
 
+#[derive(Clone)]
+struct RetainedZero {
+    name: String,
+    source: u8,
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct WidePairMaskCache {
     retained_high: Option<RetainedHighMask>,
+    retained_zero: Option<RetainedZero>,
 }
 
 impl Generator {
@@ -43,6 +50,8 @@ impl Generator {
         });
         if retain_previous {
             self.wide_pair_mask_cache = previous.clone();
+        } else if !crate::condition_float_cache::expression_has_value_barrier(condition) {
+            self.wide_pair_mask_cache.retained_zero = previous.retained_zero.clone();
         }
         previous
     }
@@ -53,6 +62,14 @@ impl Generator {
 
     pub(crate) fn wide_pair_mask_false_edge_cache(&self) -> WidePairMaskCache {
         self.wide_pair_mask_cache.clone()
+    }
+
+    pub(crate) fn retained_wide_pair_zero_register(&self) -> Option<u8> {
+        self.wide_pair_mask_cache
+            .retained_zero
+            .as_ref()
+            .filter(|retained| self.lookup_general(&retained.name) == Some(retained.source))
+            .map(|retained| retained.source)
     }
 
     pub(super) fn try_emit_wide_pair_mask_test(
@@ -140,6 +157,10 @@ impl Generator {
                 register: high_masked,
             });
         }
+        self.wide_pair_mask_cache.retained_zero = Some(RetainedZero {
+            name: test.zero.into(),
+            source: zero,
+        });
         self.output.instructions.push(Instruction::Xor {
             a: low_compared,
             s: low_masked,
@@ -275,6 +296,10 @@ mod tests {
                 high_source: 31,
                 zero_source: 6,
                 register: 5,
+            }),
+            retained_zero: Some(RetainedZero {
+                name: "high".into(),
+                source: 6,
             }),
         };
         assert_eq!(retained_high_register(&cache, &test, 31, 6), Some(5));

@@ -141,6 +141,7 @@ mod structured_preloop_alias;
 mod structured_parameter_home_reuse;
 mod structured_prologue;
 mod structured_release_schedule;
+mod structured_register_width;
 mod structured_rounded_pointer_schedule;
 mod structured_store_schedule;
 mod structured_tail_result_guard;

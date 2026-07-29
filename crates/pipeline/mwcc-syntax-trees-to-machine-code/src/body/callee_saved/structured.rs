@@ -71,6 +71,7 @@ use super::structured_prologue::{
     dense_entry_owns_parameter_copies, saved_home_stores_precede_initialization,
     uses_dense_saved_register_range,
 };
+use super::structured_register_width::assigned_register_width;
 use super::structured_value_versions::{
     has_split_value_version, reassignment_live_source, split_reassigned_local_versions,
 };
@@ -2471,6 +2472,8 @@ impl Generator {
                     )? {
                         continue;
                     }
+                    let previous_wide_mask_cache =
+                        self.begin_wide_pair_mask_condition(condition);
                     let nested_condition = match then_body.first() {
                         Some(Statement::If { condition, .. }) => Some(condition),
                         _ => None,
@@ -2645,12 +2648,14 @@ impl Generator {
                     });
                     let nested_true_cache =
                         nested_condition.map(|_| self.condition_global_values.clone());
+                    let then_wide_mask_cache = self.wide_pair_mask_false_edge_cache();
                     let then_literal_cache = self.condition_float_literal_edge_cache();
                     self.restore_condition_global_cache(previous_cache);
                     let branches = match condition_result {
                         Ok(branches) => branches,
                         Err(diagnostic) => {
                             self.restore_condition_float_cache(previous_float_cache);
+                            self.restore_wide_pair_mask_cache(previous_wide_mask_cache);
                             return Err(diagnostic);
                         }
                     };
@@ -2672,6 +2677,7 @@ impl Generator {
                     let prefix_cache_restore = nested_true_cache.map(|cache| {
                         std::mem::replace(&mut self.condition_global_values, cache)
                     });
+                    self.wide_pair_mask_cache = then_wide_mask_cache;
                     let prefix_result = self.emit_structured_statements(
                         carried_prefix,
                         function,
@@ -2703,13 +2709,14 @@ impl Generator {
                         )
                     });
                     self.restore_condition_float_cache(outer_float_cache);
-                    body_result
-                    .map_err(|mut diagnostic| {
+                    let body_result = body_result.map_err(|mut diagnostic| {
                         diagnostic.message.push_str(&format!(
                             " (inside structured if statement {statement_index})"
                         ));
                         diagnostic
-                    })?;
+                    });
+                    self.restore_wide_pair_mask_cache(previous_wide_mask_cache);
+                    body_result?;
                     let target = self.output.instructions.len();
                     for branch in branches.skip_body {
                         if let Instruction::BranchConditionalForward {
@@ -3133,6 +3140,10 @@ impl Generator {
                             ));
                             diagnostic
                         })?;
+                        self.locations
+                            .get_mut(name)
+                            .expect("structured assignment home")
+                            .width = assigned_register_width(declared_type, value);
                         if terminal_result || separates_live_alias || terminal_argument.is_some() {
                             self.locations
                                 .get_mut(name)

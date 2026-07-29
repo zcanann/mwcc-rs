@@ -379,7 +379,7 @@ fn same_address_expression(left: &Expression, right: &Expression) -> bool {
     }
 }
 
-fn expression_has_value_barrier(expression: &Expression) -> bool {
+pub(crate) fn expression_has_value_barrier(expression: &Expression) -> bool {
     match expression {
         Expression::Call { .. }
         | Expression::CallThrough { .. }

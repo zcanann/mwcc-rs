@@ -1343,6 +1343,13 @@ impl Generator {
             self.emit_comma_side_effect(left)?;
             return self.place_store_value(right, pointee);
         }
+        if matches!(value, Expression::IntegerLiteral(0))
+            && !matches!(pointee, Pointee::Float | Pointee::Double)
+        {
+            if let Some(register) = self.retained_wide_pair_zero_register() {
+                return Ok(register);
+            }
+        }
         if let Some(source) = self.try_place_converted_narrow_store_constant(value, pointee) {
             return Ok(source);
         }
