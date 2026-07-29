@@ -154,6 +154,7 @@ impl Generator {
             return None;
         }
         let mut constants = Vec::new();
+        let mut has_chained_assignment = false;
         for statement in statements {
             let Statement::Store { target, value } = statement else {
                 return None;
@@ -161,10 +162,19 @@ impl Generator {
             if !self.is_scratch_safe_store_target(target) {
                 return None;
             }
-            constants.push(constant_value(value)? as i32);
+            let (constant, chained) = self.scratch_safe_store_constant(value)?;
+            constants.push(constant);
+            has_chained_assignment |= chained;
         }
         if constants.iter().all(|constant| *constant == constants[0]) {
             return Some(ConstStoreRun::AllSame);
+        }
+        // A chained assignment must leave its value in the expression
+        // destination. The all-same plan uses r0 throughout and satisfies that
+        // contract; distinct pre-materialized registers need a separate value
+        // handoff schedule.
+        if has_chained_assignment {
+            return None;
         }
         if constants.len() == 2 {
             // Two distinct constants: the first into a free register, the second into the scratch.
@@ -944,7 +954,13 @@ impl Generator {
                 matches!(pointer.as_ref(), Expression::Variable(_))
             }
             Expression::Index { base, index } => {
-                matches!(base.as_ref(), Expression::Variable(_)) && constant_value(index).is_some()
+                let leaf_base = matches!(base.as_ref(), Expression::Variable(_));
+                let leaf_member_address = matches!(
+                    base.as_ref(),
+                    Expression::MemberAddress { base, .. }
+                        if matches!(base.as_ref(), Expression::Variable(_))
+                );
+                (leaf_base || leaf_member_address) && constant_value(index).is_some()
             }
             // A small-data (SDA21) integer global store folds the relocation into the
             // store itself (`stw r0, g@sda21`) — no base register, and it never writes the
@@ -957,6 +973,22 @@ impl Generator {
                     })
             }
             _ => false,
+        }
+    }
+
+    /// Recover the value of an all-constant assignment chain while proving
+    /// every nested target can preserve r0. This lets the constant-store
+    /// scheduler treat `a[0] = a[1] = 0` as one materialization followed by
+    /// two stores without weakening ordinary assignment-expression placement.
+    fn scratch_safe_store_constant(&self, value: &Expression) -> Option<(i32, bool)> {
+        match value {
+            Expression::Assign { target, value }
+                if self.is_scratch_safe_store_target(target) =>
+            {
+                let (constant, _) = self.scratch_safe_store_constant(value)?;
+                Some((constant, true))
+            }
+            _ => Some((constant_value(value)? as i32, false)),
         }
     }
 

@@ -74,9 +74,17 @@ impl Generator {
             return Ok(false);
         }
 
-        for statement in &function.statements {
-            let statement = substitute_statement(statement, &aliases);
-            self.emit_statement(&statement)?;
+        let statements = function
+            .statements
+            .iter()
+            .map(|statement| substitute_statement(statement, &aliases))
+            .collect::<Vec<_>>();
+        if let Some(plan) = self.constant_store_run_plan(&statements) {
+            self.emit_constant_store_run(&statements, plan)?;
+        } else {
+            for statement in &statements {
+                self.emit_statement(statement)?;
+            }
         }
         if let Some(returned) = &function.return_expression {
             let result = Eabi::general_result().number;
