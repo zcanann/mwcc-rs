@@ -2720,6 +2720,9 @@ mod tests {
     #[path = "linkage_epilogue.rs"]
     mod linkage_epilogue;
 
+    #[path = "float_return_narrowing.rs"]
+    mod float_return_narrowing;
+
     #[path = "address_taken_scalar.rs"]
     mod address_taken_scalar;
 

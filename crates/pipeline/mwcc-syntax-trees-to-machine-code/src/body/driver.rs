@@ -4160,14 +4160,6 @@ impl Generator {
         // A return value that is itself a call (`return h(p->a, p->b);`) emits its
         // argument setup here, after the body loop's hoist ran — so hoist again now.
         self.hoist_leading_arg_moves(lr_store_index);
-        // A `float` function returning a double-precision value rounds to single
-        // (`frsp`) before returning, as mwcc does.
-        if function.return_type == Type::Float && self.is_double_value(return_expression) {
-            self.output.instructions.push(Instruction::RoundToSingle {
-                d: result,
-                b: result,
-            });
-        }
         self.emit_epilogue_and_return();
         Ok(())
     }
@@ -4677,7 +4669,14 @@ impl Generator {
                     }
                 }
             }
-            return self.evaluate(initializer, local.declared_type, result);
+            self.evaluate(initializer, local.declared_type, result)?;
+            if return_type == Type::Float && local.declared_type == Type::Double {
+                self.output.instructions.push(Instruction::RoundToSingle {
+                    d: result,
+                    b: result,
+                });
+            }
+            return Ok(());
         }
 
         // An additively-defined local used as an operand of an addition
