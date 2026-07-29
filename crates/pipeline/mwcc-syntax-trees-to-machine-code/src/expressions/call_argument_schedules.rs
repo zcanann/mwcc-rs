@@ -115,8 +115,11 @@ impl Generator {
         arguments: &[Expression],
         name: &str,
     ) -> Compilation<bool> {
-        let [Expression::Variable(array), Expression::IntegerLiteral(second), Expression::IntegerLiteral(third)] =
-            arguments
+        let [
+            Expression::Variable(array),
+            Expression::IntegerLiteral(second),
+            Expression::IntegerLiteral(third),
+        ] = arguments
         else {
             return Ok(false);
         };
@@ -159,8 +162,11 @@ impl Generator {
         arguments: &[Expression],
         name: &str,
     ) -> Compilation<bool> {
-        let [Expression::Variable(array), Expression::StringLiteral(string), Expression::IntegerLiteral(value)] =
-            arguments
+        let [
+            Expression::Variable(array),
+            Expression::StringLiteral(string),
+            Expression::IntegerLiteral(value),
+        ] = arguments
         else {
             return Ok(false);
         };
@@ -210,8 +216,11 @@ impl Generator {
         arguments: &[Expression],
         name: &str,
     ) -> Compilation<bool> {
-        let [Expression::IntegerLiteral(first), Expression::Variable(array), Expression::IntegerLiteral(third)] =
-            arguments
+        let [
+            Expression::IntegerLiteral(first),
+            Expression::Variable(array),
+            Expression::IntegerLiteral(third),
+        ] = arguments
         else {
             return Ok(false);
         };
@@ -271,9 +280,14 @@ impl Generator {
         let direct_call = !self.globals.contains_key(name)
             && !self.locations.contains_key(name)
             && !self.known_locals.contains(name);
-        let hidden_result = matches!(self.call_return_types.get(name), Some(Type::Struct { .. }));
+        let hidden_result = matches!(
+            self.call_return_types.get(name),
+            Some(Type::Struct { .. })
+        );
         let expected_types = self.call_parameter_types.get(name).is_some_and(|types| {
-            let source_index = |abi_index: usize| abi_index.checked_sub(usize::from(hidden_result));
+            let source_index = |abi_index: usize| {
+                abi_index.checked_sub(usize::from(hidden_result))
+            };
             arguments.len() == types.len() + usize::from(hidden_result)
                 && prefix.iter().enumerate().all(|(index, _)| {
                     hidden_result && index == 0
@@ -309,13 +323,16 @@ impl Generator {
                 diagnostic
             })?;
         for (index, argument) in prefix.iter().enumerate() {
-            self.evaluate_general(argument, Eabi::FIRST_GENERAL_ARGUMENT + index as u8)
-                .map_err(|mut diagnostic| {
-                    diagnostic.message.push_str(&format!(
-                        " (while reconstructing general-prefix argument {index} to '{name}')"
-                    ));
-                    diagnostic
-                })?;
+            self.evaluate_general(
+                argument,
+                Eabi::FIRST_GENERAL_ARGUMENT + index as u8,
+            )
+            .map_err(|mut diagnostic| {
+                diagnostic.message.push_str(&format!(
+                    " (while reconstructing general-prefix argument {index} to '{name}')"
+                ));
+                diagnostic
+            })?;
         }
         Ok(true)
     }
@@ -338,11 +355,7 @@ impl Generator {
             && !self.locations.contains_key(name)
             && !self.known_locals.contains(name);
         let all_general = self.call_parameter_types.get(name).map_or_else(
-            || {
-                arguments
-                    .iter()
-                    .all(|argument| !self.is_float_value(argument))
-            },
+            || arguments.iter().all(|argument| !self.is_float_value(argument)),
             |types| {
                 types.len() >= arguments.len()
                     && types[..arguments.len()]
@@ -353,22 +366,20 @@ impl Generator {
         if !direct_outer || !all_general {
             return Ok(false);
         }
-        let mut nested = arguments
-            .iter()
-            .enumerate()
-            .filter_map(|(index, argument)| {
-                let Expression::Call {
-                    name: nested_name, ..
-                } = argument
-                else {
-                    return None;
-                };
-                (index > 0
-                    && !self.globals.contains_key(nested_name)
-                    && !self.locations.contains_key(nested_name)
-                    && !self.known_locals.contains(nested_name))
-                .then_some((index, argument))
-            });
+        let mut nested = arguments.iter().enumerate().filter_map(|(index, argument)| {
+            let Expression::Call {
+                name: nested_name,
+                ..
+            } = argument
+            else {
+                return None;
+            };
+            (index > 0
+                && !self.globals.contains_key(nested_name)
+                && !self.locations.contains_key(nested_name)
+                && !self.known_locals.contains(nested_name))
+            .then_some((index, argument))
+        });
         let Some((nested_index, nested_argument)) = nested.next() else {
             return Ok(false);
         };
@@ -395,7 +406,10 @@ impl Generator {
         );
         for (index, argument) in arguments.iter().enumerate() {
             if index != nested_index {
-                self.evaluate_general(argument, Eabi::FIRST_GENERAL_ARGUMENT + index as u8)?;
+                self.evaluate_general(
+                    argument,
+                    Eabi::FIRST_GENERAL_ARGUMENT + index as u8,
+                )?;
             }
         }
         Ok(true)
@@ -427,13 +441,16 @@ impl Generator {
                 .registers_used_by(first)
                 .into_iter()
                 .all(|register| !matches!(register, 0 | 3..=12));
-        if !direct_call || !both_general || !first_is_reloadable || !expression_has_call(second) {
+        if !direct_call
+            || !both_general
+            || !first_is_reloadable
+            || !expression_has_call(second)
+        {
             return Ok(false);
         }
 
         if let Some((operator, stable, nested_call, call_is_left)) = stable_call_binary(second) {
-            let Some(stable_register) =
-                leaf_name(stable).and_then(|name| self.lookup_general(name))
+            let Some(stable_register) = leaf_name(stable).and_then(|name| self.lookup_general(name))
             else {
                 return Ok(false);
             };
@@ -477,8 +494,11 @@ impl Generator {
         name: &str,
         direct_call: bool,
     ) -> Compilation<bool> {
-        let [Expression::Variable(first_name), second @ Expression::IntegerLiteral(value), third @ Expression::Variable(third_name)] =
-            arguments
+        let [
+            Expression::Variable(first_name),
+            second @ Expression::IntegerLiteral(value),
+            third @ Expression::Variable(third_name),
+        ] = arguments
         else {
             return Ok(false);
         };
@@ -524,18 +544,21 @@ impl Generator {
         name: &str,
         direct_call: bool,
     ) -> Compilation<bool> {
-        let [first @ Expression::Member {
-            base: first_base,
-            member_type,
-            ..
-        }, second, third] = arguments
+        let [
+            first @ Expression::Member {
+                base: first_base,
+                member_type,
+                ..
+            },
+            second,
+            third,
+        ] = arguments
         else {
             return Ok(false);
         };
-        let (Some(second_base), Some(third_base)) = (
-            constant_indexed_address_base(second),
-            constant_indexed_address_base(third),
-        ) else {
+        let (Some(second_base), Some(third_base)) =
+            (constant_indexed_address_base(second), constant_indexed_address_base(third))
+        else {
             return Ok(false);
         };
         let (Expression::Variable(first_name), Expression::Variable(_)) =
@@ -545,7 +568,10 @@ impl Generator {
         };
         let word_member = matches!(
             member_type,
-            Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. }
+            Type::Int
+                | Type::UnsignedInt
+                | Type::Pointer(_)
+                | Type::StructPointer { .. }
         );
         let all_general = self.call_parameter_types.get(name).is_some_and(|types| {
             types.len() >= 3
@@ -587,11 +613,14 @@ impl Generator {
         name: &str,
         direct_call: bool,
     ) -> Compilation<bool> {
-        let [general @ Expression::Member { member_type, .. }, Expression::Binary {
-            operator: BinaryOperator::Multiply,
-            left,
-            right,
-        }] = arguments
+        let [
+            general @ Expression::Member { member_type, .. },
+            Expression::Binary {
+                operator: BinaryOperator::Multiply,
+                left,
+                right,
+            },
+        ] = arguments
         else {
             return Ok(false);
         };
@@ -602,7 +631,10 @@ impl Generator {
         });
         let word_member = matches!(
             member_type,
-            Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. }
+            Type::Int
+                | Type::UnsignedInt
+                | Type::Pointer(_)
+                | Type::StructPointer { .. }
         );
         if !direct_call
             || !self.behavior.schedule_latency_slots
@@ -645,7 +677,9 @@ impl Generator {
     ) -> Compilation<bool> {
         let (first, bit_field, third) = match arguments {
             [first, bit_field] => (first, bit_field, None),
-            [first, bit_field, third @ Expression::Variable(_)] => (first, bit_field, Some(third)),
+            [first, bit_field, third @ Expression::Variable(_)] => {
+                (first, bit_field, Some(third))
+            }
             _ => return Ok(false),
         };
         let Expression::Member {
@@ -738,8 +772,11 @@ impl Generator {
         arguments: &[Expression],
         direct_call: bool,
     ) -> Compilation<bool> {
-        let [Expression::StringLiteral(first), Expression::IntegerLiteral(line), Expression::StringLiteral(third)] =
-            arguments
+        let [
+            Expression::StringLiteral(first),
+            Expression::IntegerLiteral(line),
+            Expression::StringLiteral(third),
+        ] = arguments
         else {
             return Ok(false);
         };
@@ -777,8 +814,11 @@ impl Generator {
         arguments: &[Expression],
         direct_call: bool,
     ) -> Compilation<bool> {
-        let [Expression::StringLiteral(first), Expression::IntegerLiteral(line), Expression::StringLiteral(third)] =
-            arguments
+        let [
+            Expression::StringLiteral(first),
+            Expression::IntegerLiteral(line),
+            Expression::StringLiteral(third),
+        ] = arguments
         else {
             return Ok(false);
         };
@@ -835,14 +875,12 @@ impl Generator {
         else {
             return Ok(false);
         };
-        let Some(
-            second_value @ Expression::Member {
-                base: second_base,
-                member_type: Type::Float,
-                index_stride: None,
-                ..
-            },
-        ) = crate::float_abs_select::abs_select_value(second)
+        let Some(second_value @ Expression::Member {
+            base: second_base,
+            member_type: Type::Float,
+            index_stride: None,
+            ..
+        }) = crate::float_abs_select::abs_select_value(second)
         else {
             return Ok(false);
         };
@@ -887,22 +925,30 @@ impl Generator {
         name: &str,
         direct_call: bool,
     ) -> Compilation<bool> {
-        let [first @ Expression::Variable(first_name), low @ Expression::Member {
-            base: low_base,
-            member_type: Type::Float,
-            index_stride: None,
-            ..
-        }, Expression::Variable(second_name), Expression::Variable(third_name), high @ Expression::Member {
-            base: high_base,
-            member_type: Type::Float,
-            index_stride: None,
-            ..
-        }] = arguments
+        let [
+            first @ Expression::Variable(first_name),
+            low @ Expression::Member {
+                base: low_base,
+                member_type: Type::Float,
+                index_stride: None,
+                ..
+            },
+            Expression::Variable(second_name),
+            Expression::Variable(third_name),
+            high @ Expression::Member {
+                base: high_base,
+                member_type: Type::Float,
+                index_stride: None,
+                ..
+            },
+        ] = arguments
         else {
             return Ok(false);
         };
-        let (Expression::Variable(low_base_name), Expression::Variable(high_base_name)) =
-            (low_base.as_ref(), high_base.as_ref())
+        let (
+            Expression::Variable(low_base_name),
+            Expression::Variable(high_base_name),
+        ) = (low_base.as_ref(), high_base.as_ref())
         else {
             return Ok(false);
         };
@@ -916,7 +962,8 @@ impl Generator {
             || !expected_types
             || first_name != low_base_name
             || first_name != high_base_name
-            || self.leaf_info(first).ok().map(|value| value.0) != Some(Eabi::FIRST_GENERAL_ARGUMENT)
+            || self.leaf_info(first).ok().map(|value| value.0)
+                != Some(Eabi::FIRST_GENERAL_ARGUMENT)
         {
             return Ok(false);
         }
@@ -951,13 +998,18 @@ impl Generator {
         name: &str,
         direct_call: bool,
     ) -> Compilation<bool> {
-        let [first @ Expression::Variable(first_name), member @ Expression::Member {
-            base,
-            member_type: Type::Float,
-            index_stride: None,
-            ..
-        }, Expression::Variable(second_name), Expression::Variable(third_name), Expression::Variable(fourth_name)] =
-            arguments
+        let [
+            first @ Expression::Variable(first_name),
+            member @ Expression::Member {
+                base,
+                member_type: Type::Float,
+                index_stride: None,
+                ..
+            },
+            Expression::Variable(second_name),
+            Expression::Variable(third_name),
+            Expression::Variable(fourth_name),
+        ] = arguments
         else {
             return Ok(false);
         };
@@ -968,13 +1020,16 @@ impl Generator {
         let expected_types = parameter_types.is_some_and(|types| {
             types.len() >= 5
                 && !matches!(types[0], Type::Float | Type::Double)
-                && types[1..5].iter().all(|ty| matches!(ty, Type::Float))
+                && types[1..5]
+                    .iter()
+                    .all(|ty| matches!(ty, Type::Float))
         });
         if !direct_call
             || !self.behavior.schedule_latency_slots
             || !expected_types
             || first_name != base_name
-            || self.leaf_info(first).ok().map(|value| value.0) != Some(Eabi::FIRST_GENERAL_ARGUMENT)
+            || self.leaf_info(first).ok().map(|value| value.0)
+                != Some(Eabi::FIRST_GENERAL_ARGUMENT)
             || self.float_register_of(second_name).ok() != Some(1)
             || self.float_register_of(third_name).ok() != Some(2)
             || self.float_register_of(fourth_name).ok() != Some(3)
@@ -1101,9 +1156,10 @@ impl Generator {
         self.emit_integer_materialization_copy(preserved, first_argument);
         self.evaluate_general(first, first_argument)?;
         if second_offset == 0 {
-            self.output
-                .instructions
-                .push(Instruction::move_register(first_argument + 1, preserved));
+            self.output.instructions.push(Instruction::move_register(
+                first_argument + 1,
+                preserved,
+            ));
         } else {
             self.output.instructions.push(Instruction::AddImmediate {
                 d: first_argument + 1,
@@ -1125,9 +1181,14 @@ impl Generator {
         name: &str,
         direct_call: bool,
     ) -> Compilation<bool> {
-        let [first @ Expression::Member {
-            base, member_type, ..
-        }, Expression::IntegerLiteral(value)] = arguments
+        let [
+            first @ Expression::Member {
+                base,
+                member_type,
+                ..
+            },
+            Expression::IntegerLiteral(value),
+        ] = arguments
         else {
             return Ok(false);
         };
@@ -1205,8 +1266,11 @@ impl Generator {
         name: &str,
         direct_call: bool,
     ) -> Compilation<bool> {
-        let [first @ Expression::Variable(saved), second @ Expression::Variable(global), third @ Expression::IntegerLiteral(value)] =
-            arguments
+        let [
+            first @ Expression::Variable(saved),
+            second @ Expression::Variable(global),
+            third @ Expression::IntegerLiteral(value),
+        ] = arguments
         else {
             return Ok(false);
         };
@@ -1247,12 +1311,15 @@ impl Generator {
         direct_call: bool,
     ) -> Compilation<bool> {
         let (global, middle, wide) = match arguments {
-            [Expression::Variable(global), Expression::IntegerLiteral(middle)] => {
-                (global, middle, None)
-            }
-            [Expression::Variable(global), Expression::IntegerLiteral(middle), Expression::IntegerLiteral(wide)] => {
-                (global, middle, Some(wide))
-            }
+            [
+                Expression::Variable(global),
+                Expression::IntegerLiteral(middle),
+            ] => (global, middle, None),
+            [
+                Expression::Variable(global),
+                Expression::IntegerLiteral(middle),
+                Expression::IntegerLiteral(wide),
+            ] => (global, middle, Some(wide)),
             _ => return Ok(false),
         };
         if !direct_call
@@ -1280,12 +1347,10 @@ impl Generator {
 
         self.emit_address_high(first, global);
         if let Some((_, high_adjusted, _)) = wide_parts {
-            self.output
-                .instructions
-                .push(Instruction::load_immediate_shifted(
-                    first + 2,
-                    high_adjusted,
-                ));
+            self.output.instructions.push(Instruction::load_immediate_shifted(
+                first + 2,
+                high_adjusted,
+            ));
         }
 
         self.emit_address_low(first, global);
@@ -1299,9 +1364,11 @@ impl Generator {
                 immediate: low,
             });
         }
-        self.output
-            .instructions
-            .push(self.global_load_instruction(Type::Short, first, first)?);
+        self.output.instructions.push(self.global_load_instruction(
+            Type::Short,
+            first,
+            first,
+        )?);
         Ok(true)
     }
 }
