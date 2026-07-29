@@ -72,7 +72,11 @@ pub fn owned_closure_analysis_floor(
     body_counter: u32,
     globals: &[DefinedGlobal],
     retained_const_declarators: usize,
+    emitted_weak_vtable_replay: bool,
 ) -> u32 {
+    if emitted_weak_vtable_replay {
+        return body_counter;
+    }
     body_counter
         .saturating_add(retained_const_declarators as u32)
         .saturating_add(
@@ -87,6 +91,35 @@ pub fn owned_closure_analysis_floor(
                 })
                 .count() as u32,
         )
+}
+
+/// Select the body frontier at which owned RTTI is materialized. A weak-vtable
+/// replay owns its closure immediately after the last ordinary body; weak
+/// helper bodies emitted by that replay advance the final object counter later.
+pub fn owned_closure_body_counter(
+    final_counter: u32,
+    last_ordinary_body_counter: u32,
+    emitted_weak_vtable_replay: bool,
+) -> u32 {
+    if emitted_weak_vtable_replay {
+        last_ordinary_body_counter
+    } else {
+        final_counter
+    }
+}
+
+/// A replayed weak-vtable closure uses its body-creation frontier directly.
+/// Ordinary owned closures retain the later of class analysis and body work.
+pub fn owned_closure_counter(
+    ordinary_analysis_counter: u32,
+    body_analysis_floor: u32,
+    emitted_weak_vtable_replay: bool,
+) -> u32 {
+    if emitted_weak_vtable_replay {
+        body_analysis_floor
+    } else {
+        ordinary_analysis_counter
+    }
 }
 
 /// Reuse a function-owned string object when it carries the exact bytes of an
@@ -120,12 +153,6 @@ pub fn coalesce_name_strings(
 }
 
 pub fn resolve(globals: &mut [DefinedGlobal], mut counter: u32, owned_closure_schedule: bool) {
-    if owned_closure_schedule {
-        // Build 163 reserves one closure-ownership label between class
-        // analysis and the first owned RTTI name.
-        counter += 1;
-    }
-    let analysis_base = counter;
     let mut renames = HashMap::new();
     let ordinal_order = if owned_closure_schedule {
         owned_closure_ordinal_order(globals)
@@ -136,9 +163,15 @@ pub fn resolve(globals: &mut [DefinedGlobal], mut counter: u32, owned_closure_sc
             .map(|global| Some(global.name.clone()))
             .collect()
     };
+    if owned_closure_schedule && !ordinal_order.iter().any(Option::is_none) {
+        // Build 163 reserves one closure-ownership label between class
+        // analysis and the first owned RTTI name. A pooled root name is already
+        // present on the body frontier and replaces this reservation.
+        counter += 1;
+    }
+    let analysis_base = counter;
     for name in ordinal_order {
         let Some(name) = name else {
-            counter += 1;
             continue;
         };
         if let Some(global) = globals.iter().find(|global| global.name == name) {
@@ -252,7 +285,8 @@ fn owned_closure_ordinal_order(globals: &[DefinedGlobal]) -> Vec<Option<String>>
 mod tests {
     use super::{
         analysis_counter, coalesce_name_strings, fragmented_debug_counter,
-        owned_closure_analysis_floor, owned_closure_ordinal_order, AnalysisWeights,
+        owned_closure_analysis_floor, owned_closure_body_counter, owned_closure_counter,
+        owned_closure_ordinal_order, resolve, AnalysisWeights,
     };
     use mwcc_machine_code_to_object::{DataRelocation, DefinedGlobal};
     use mwcc_syntax_trees::CxxInlineOrdinalFacts;
@@ -351,7 +385,7 @@ mod tests {
         });
         let mut boss_vtable = object("__vt__4Boss", &[0; 12], Some("__RTTI__4Boss"));
         boss_vtable.is_static = false;
-        let globals = vec![
+        let mut globals = vec![
             object(boss_bases, &[0; 4], None),
             boss_vtable,
             boss_handle,
@@ -361,10 +395,12 @@ mod tests {
             owned_closure_ordinal_order(&globals),
             [None, Some(boss_bases.into())]
         );
+        resolve(&mut globals, 389, true);
+        assert!(globals.iter().any(|global| global.name == "@389"));
     }
 
     #[test]
-    fn owned_closure_frontier_follows_bodies_and_vtable_ownership() {
+    fn ordinary_owned_closure_frontier_follows_bodies_and_vtable_ownership() {
         let mut first = object("__vt__4Boss", &[0; 12], Some("__RTTI__4Boss"));
         first.is_static = false;
         let mut second = object("__vt__4Base", &[0; 12], Some("__RTTI__4Base"));
@@ -372,9 +408,26 @@ mod tests {
         let unrelated = object("@10", &[0; 4], None);
 
         assert_eq!(
-            owned_closure_analysis_floor(452, &[first, unrelated, second], 2),
+            owned_closure_analysis_floor(
+                452,
+                &[first, unrelated, second],
+                2,
+                false,
+            ),
             456
         );
+        assert_eq!(
+            owned_closure_analysis_floor(389, &[], 2, true),
+            389
+        );
+    }
+
+    #[test]
+    fn weak_helper_bodies_follow_the_owned_closure_frontier() {
+        assert_eq!(owned_closure_body_counter(398, 383, true), 383);
+        assert_eq!(owned_closure_body_counter(452, 440, false), 452);
+        assert_eq!(owned_closure_counter(391, 389, true), 389);
+        assert_eq!(owned_closure_counter(456, 452, false), 456);
     }
 
     #[test]

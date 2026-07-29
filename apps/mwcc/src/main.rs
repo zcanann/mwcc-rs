@@ -1346,13 +1346,17 @@ fn compile(
         eprintln!("leading-source-ordinal-bump {leading_source_ordinal_bump}");
         for function in &machine_functions {
             eprintln!(
-                "machine-ordinal-facts {}: front={}, source_prefix={}, post_constant={}, post={:?}, framed={}",
+                "machine-ordinal-facts {}: front={}, source_prefix={}, post_constant={}, \
+                 post={:?}, framed={}, constants={}, constant_adjust={}, string_adjust={}",
                 function.name,
                 function.anonymous_label_bump,
                 function.deferred_source_prefix_bump,
                 function.post_constant_label_bump,
                 function.post_function_anonymous_bump,
-                function.frame.is_some()
+                function.frame.is_some(),
+                function.constants.len(),
+                function.constant_number_adjust,
+                function.string_number_adjust,
             );
         }
     }
@@ -2061,6 +2065,7 @@ fn compile(
     )
         + unit.global_destructor_records.len() as u32)
         .max(analysis_counter_floor);
+    let mut last_ordinary_body_counter = counter;
     let mut numbered_constant: std::collections::HashSet<(u64, u8)> =
         std::collections::HashSet::new();
     let mut function_string_objects: Vec<mwcc_machine_code_to_object::DefinedGlobal> = Vec::new();
@@ -2297,6 +2302,9 @@ fn compile(
         for table in &machine_function.jump_tables {
             number += table.anonymous_offset;
         }
+        if !machine_function.is_weak {
+            last_ordinary_body_counter = number;
+        }
         number += machine_function.post_constant_label_bump;
         if machine_function.frame.is_some() {
             number += 2;
@@ -2423,6 +2431,21 @@ fn compile(
         // RTTI helper names are reserved by the class/declaration analysis
         // walk, before executable function bodies advance the ordinary pool
         // counter. Keep this timeline independent from function lowering.
+        let owned_closure_analysis_floor = behavior
+            .cxx_rtti_owned_closure_schedule
+            .then(|| {
+                cxx_rtti_names::owned_closure_analysis_floor(
+                    cxx_rtti_names::owned_closure_body_counter(
+                        counter,
+                        last_ordinary_body_counter,
+                        emits_weak_vtable_closure,
+                    ),
+                    &defined_globals,
+                    cxx_inline_facts.inline_definition_const_local_declarators,
+                    emits_weak_vtable_closure,
+                )
+            })
+            .unwrap_or(0);
         let ordinary_rtti_analysis_counter = cxx_rtti_names::analysis_counter(
             config.build.initial_anonymous_counter,
             string_counter,
@@ -2435,19 +2458,21 @@ fn compile(
                     .cxx_rtti_inherited_virtual_destructor_label_bump,
                 initial_virtual_discount: behavior.cxx_rtti_initial_virtual_label_discount,
             },
-            analysis_counter_floor.max(
-                behavior
-                    .cxx_rtti_owned_closure_schedule
-                    .then(|| {
-                        cxx_rtti_names::owned_closure_analysis_floor(
-                            counter,
-                            &defined_globals,
-                            cxx_inline_facts.inline_definition_const_local_declarators,
-                        )
-                    })
-                    .unwrap_or(0),
-            ),
+            analysis_counter_floor.max(owned_closure_analysis_floor),
         );
+        let ordinary_rtti_analysis_counter = cxx_rtti_names::owned_closure_counter(
+            ordinary_rtti_analysis_counter,
+            owned_closure_analysis_floor,
+            emits_weak_vtable_closure,
+        );
+        if diagnose_syntax_tree {
+            eprintln!(
+                "rtti-ordinal-frontier final-body={counter} \
+                 last-ordinary={last_ordinary_body_counter} \
+                 owned-floor={owned_closure_analysis_floor} \
+                 selected={ordinary_rtti_analysis_counter}"
+            );
+        }
         let rtti_analysis_counter = if config.build.version.0 >= 4 && config.flags.debug_info {
             cxx_rtti_names::fragmented_debug_counter(
                 ordinary_rtti_analysis_counter,
