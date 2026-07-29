@@ -21,6 +21,8 @@ mod branch_cleanup;
 mod captures;
 mod casts;
 mod comparisons;
+#[cfg(test)]
+mod comparisons_tests;
 mod conversion_frame;
 mod condition_float_cache;
 mod condition_global_cache;

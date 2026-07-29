@@ -127,7 +127,7 @@ impl Generator {
     ) -> Compilation<()> {
         // A comparison whose operands are floating-point materializes a boolean
         // from cr0 rather than using the integer branchless idioms below.
-        if self.is_float_leaf(left) || self.is_float_leaf(right) {
+        if self.is_float_value(left) || self.is_float_value(right) {
             return self.emit_float_comparison(operator, left, right, destination);
         }
         // An INTEGER comparison of a value against itself (`x == x`, `a[0] < a[0]`)
@@ -1238,75 +1238,31 @@ impl Generator {
         right: &Expression,
         destination: u8,
     ) -> Compilation<()> {
-        const LT: u8 = 0;
-        const GT: u8 = 1;
-        const EQ: u8 = 2;
-        // The comparison's precision comes from the typed (non-literal) operand; a
-        // float literal (e.g. `x > 0.0`) is loaded from the constant pool.
-        let double = self.is_double_value(left) || self.is_double_value(right);
-        let a = self.place_float_compare_operand(left, double)?;
-        let b = self.place_float_compare_operand(right, double)?;
-        // mfcr writes the final destination directly. The following rotate is
-        // destructive and consumes no prior destination value, so routing it
-        // through r0 would add an unnecessary register edge and differs from
-        // mwcc's `mfcr r3; rlwinm r3,r3,...` return schedule.
-        let scratch = destination;
-        if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
-            // `==`/`!=` are commutative; mwcc canonicalizes a literal operand to
-            // the front (it loaded the constant first), so `x == 0.0` is `fcmpu 0,x`.
-            let (first, second) = if matches!(
-                right,
-                Expression::FloatLiteral(_) | Expression::IntegerLiteral(_)
-            ) {
-                (b, a)
-            } else {
-                (a, b)
-            };
-            self.output
-                .instructions
-                .push(Instruction::FloatCompareUnordered {
-                    a: first,
-                    b: second,
-                });
+        // Operand placement and CR production are identical whether the result
+        // feeds a branch or becomes a 0/1 value. Keep that schedule in one owner:
+        // it includes member/global loads, computed values, mixed integer
+        // conversion, literal load order, and live-FPR constraints.
+        let (_, bit) = self.emit_float_condition(operator, left, right)?;
+        // A leaf/literal comparison writes the destination directly
+        // (`mfcr r3; rlwinm r3,r3,...`). When either value required an
+        // expression evaluation, MWCC keeps CR extraction in r0 and only the
+        // rotate writes the result. This distinction is independent of the FPR
+        // schedule shared above.
+        let has_evaluated_operand = [left, right].into_iter().any(|operand| {
+            !self.is_float_leaf(operand)
+                && !matches!(
+                    operand,
+                    Expression::FloatLiteral(_) | Expression::IntegerLiteral(_)
+                )
+        });
+        let scratch = if has_evaluated_operand {
+            GENERAL_SCRATCH
         } else {
-            self.output
-                .instructions
-                .push(Instruction::FloatCompareOrdered { a, b });
-        }
-        // `<=`/`>=` fold equality into the eq bit so one extract covers both relations.
-        match operator {
-            BinaryOperator::LessEqual => {
-                self.output
-                    .instructions
-                    .push(Instruction::ConditionRegisterOr {
-                        d: EQ,
-                        a: LT,
-                        b: EQ,
-                    })
-            }
-            BinaryOperator::GreaterEqual => {
-                self.output
-                    .instructions
-                    .push(Instruction::ConditionRegisterOr {
-                        d: EQ,
-                        a: GT,
-                        b: EQ,
-                    })
-            }
-            _ => {}
-        }
+            destination
+        };
         self.output
             .instructions
             .push(Instruction::MoveFromConditionRegister { d: scratch });
-        let bit = match operator {
-            BinaryOperator::Less => LT,
-            BinaryOperator::Greater => GT,
-            BinaryOperator::Equal
-            | BinaryOperator::NotEqual
-            | BinaryOperator::LessEqual
-            | BinaryOperator::GreaterEqual => EQ,
-            _ => return Err(Diagnostic::error("unsupported floating-point comparison")),
-        };
         // Rotate the bit (at position `bit` from the MSB) into bit 31 and mask it.
         let shift = bit + 1;
         if matches!(operator, BinaryOperator::NotEqual) {
