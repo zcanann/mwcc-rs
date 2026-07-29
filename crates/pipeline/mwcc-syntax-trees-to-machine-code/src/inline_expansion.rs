@@ -115,6 +115,13 @@ pub(crate) fn legacy_statement_body_frame_residue_bytes(
     frame_residue::legacy_statement_body_frame_residue_bytes(function, substitutions)
 }
 
+pub(crate) fn legacy_value_body_frame_residue_bytes(
+    function: &Function,
+    substitutions: usize,
+) -> usize {
+    frame_residue::legacy_value_body_frame_residue_bytes(function, substitutions)
+}
+
 pub(crate) fn ordinal_residue(
     facts: mwcc_syntax_trees::InlineExpansionFacts,
     statement_body_substitutions: usize,

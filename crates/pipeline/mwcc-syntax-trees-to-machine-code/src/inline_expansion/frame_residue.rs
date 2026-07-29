@@ -12,14 +12,23 @@ pub(super) fn legacy_frame_residue_bytes(
     facts: InlineExpansionFacts,
 ) -> usize {
     let initializer_values = facts.leading_initializer_substitutions;
-    if initializer_values < 2 || !has_memory_mutation_before_surviving_call(&function.statements) {
-        return 0;
-    }
-
-    // GC/1.2.5n's value graph assigns one eight-byte allocator lane to every
-    // retained initializer result. The normal callee-saved frame lane remains
-    // independently owned by the ABI policy.
-    initializer_values * 8
+    let initializer_bytes = if initializer_values >= 2
+        && has_memory_mutation_before_surviving_call(&function.statements)
+    {
+        // GC/1.2.5n's value graph assigns one eight-byte allocator lane to
+        // every retained initializer result. The normal callee-saved frame
+        // lane remains independently owned by the ABI policy.
+        initializer_values * 8
+    } else {
+        0
+    };
+    let uninitialized_pointers = uninitialized_pointer_names(function);
+    let body_address_lanes = count_derived_address_assignments_before_call(
+        &function.statements,
+        &uninitialized_pointers,
+    )
+    .min(facts.body_value_substitutions);
+    initializer_bytes + body_address_lanes * 8
 }
 
 pub(super) fn legacy_statement_body_frame_residue_bytes(
@@ -30,6 +39,121 @@ pub(super) fn legacy_statement_body_frame_residue_bytes(
         return 0;
     }
     substitutions * 8
+}
+
+pub(super) fn legacy_value_body_frame_residue_bytes(
+    function: &Function,
+    substitutions: usize,
+) -> usize {
+    if substitutions == 0 {
+        return 0;
+    }
+    let uninitialized_pointers = uninitialized_pointer_names(function);
+    let retained_addresses = count_derived_address_assignments_before_call(
+        &function.statements,
+        &uninitialized_pointers,
+    );
+    retained_addresses.min(substitutions) * 8
+}
+
+fn uninitialized_pointer_names(function: &Function) -> std::collections::HashSet<&str> {
+    function
+        .locals
+        .iter()
+        .filter(|local| {
+            local.initializer.is_none()
+                && matches!(
+                    local.declared_type,
+                    mwcc_syntax_trees::Type::Pointer(_)
+                        | mwcc_syntax_trees::Type::StructPointer { .. }
+                )
+        })
+        .map(|local| local.name.as_str())
+        .collect()
+}
+
+fn count_derived_address_assignments_before_call(
+    statements: &[Statement],
+    uninitialized_pointers: &std::collections::HashSet<&str>,
+) -> usize {
+    let mut retained = 0;
+    for (index, statement) in statements.iter().enumerate() {
+        if let Statement::Assign { name, value } = statement {
+            if uninitialized_pointers.contains(name.as_str())
+                && is_derived_address(value)
+                && statements[index + 1..].iter().any(statement_contains_call)
+            {
+                retained += 1;
+            }
+        }
+        match statement {
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                retained += count_derived_address_assignments_before_call(
+                    then_body,
+                    uninitialized_pointers,
+                );
+                retained += count_derived_address_assignments_before_call(
+                    else_body,
+                    uninitialized_pointers,
+                );
+            }
+            Statement::Loop { body, .. } => {
+                retained +=
+                    count_derived_address_assignments_before_call(body, uninitialized_pointers);
+            }
+            Statement::Switch {
+                arms,
+                default,
+                ..
+            } => {
+                retained += arms
+                    .iter()
+                    .map(|arm| match &arm.body {
+                        mwcc_syntax_trees::ArmBody::Return(_) => 0,
+                        mwcc_syntax_trees::ArmBody::Statements(body) => {
+                            count_derived_address_assignments_before_call(
+                                body,
+                                uninitialized_pointers,
+                            )
+                        }
+                    })
+                    .sum::<usize>();
+                retained += default.as_ref().map_or(0, |arm| match arm {
+                    mwcc_syntax_trees::ArmBody::Return(_) => 0,
+                    mwcc_syntax_trees::ArmBody::Statements(body) => {
+                        count_derived_address_assignments_before_call(
+                            body,
+                            uninitialized_pointers,
+                        )
+                    }
+                });
+            }
+            _ => {}
+        }
+    }
+    retained
+}
+
+fn is_derived_address(expression: &Expression) -> bool {
+    match expression {
+        Expression::MemberAddress {
+            index_stride: None,
+            ..
+        } => true,
+        Expression::AddressOf { operand } => matches!(
+            operand.as_ref(),
+            Expression::Member {
+                member_type: mwcc_syntax_trees::Type::Struct { .. },
+                index_stride: None,
+                ..
+            }
+        ),
+        _ => false,
+    }
 }
 
 fn has_statement_body_frame_residue(statements: &[Statement]) -> bool {
@@ -278,6 +402,7 @@ mod tests {
     fn two_initializers() -> InlineExpansionFacts {
         InlineExpansionFacts {
             leading_initializer_substitutions: 2,
+            body_value_substitutions: 0,
         }
     }
 
@@ -312,6 +437,40 @@ mod tests {
             call("external"),
         ]);
         assert_eq!(legacy_statement_body_frame_residue_bytes(&function, 1), 8);
+    }
+
+    #[test]
+    fn retains_one_lane_for_an_inlined_address_accessor_before_a_call() {
+        let pointer = Type::StructPointer { element_size: 64 };
+        let mut function = function(vec![Statement::If {
+            condition: Expression::IntegerLiteral(1),
+            then_body: vec![
+                Statement::Assign {
+                    name: "alias".into(),
+                    value: Expression::MemberAddress {
+                        base: Box::new(Expression::Variable("object".into())),
+                        offset: 16,
+                        element: mwcc_syntax_trees::Pointee::UnsignedInt,
+                        index_stride: None,
+                    },
+                },
+                call("external"),
+            ],
+            else_body: Vec::new(),
+        }]);
+        function.locals.push(mwcc_syntax_trees::LocalDeclaration {
+            declared_type: pointer,
+            name: "alias".into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: None,
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        });
+        assert_eq!(legacy_value_body_frame_residue_bytes(&function, 1), 8);
     }
 
     #[test]

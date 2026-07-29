@@ -1285,6 +1285,11 @@ impl Generator {
         if let Some(inlined) = inline_immutable_pointer_aliases(function) {
             return self.evaluate_body(&inlined);
         }
+        if let Some(inlined) =
+            super::assigned_pointer_alias::fold_single_assignment_derived_pointer_alias(function)
+        {
+            return self.evaluate_body(&inlined);
+        }
         // A pointer local loaded solely for an if/else discriminator is
         // copy-propagated into the condition; the original object stays in r3
         // and feeds either call arm without a callee-saved live range.
@@ -1656,6 +1661,11 @@ impl Generator {
                     &expanded.function,
                     expanded.statement_frame_residue_substitutions,
                 );
+            self.legacy_inline_expansion_frame_bytes +=
+                crate::inline_expansion::legacy_value_body_frame_residue_bytes(
+                    &expanded.function,
+                    expanded.value_body_substitutions,
+                );
             self.inline_statement_body_substitutions +=
                 expanded.statement_body_substitutions;
             if self
@@ -1677,6 +1687,11 @@ impl Generator {
                     crate::inline_expansion::legacy_statement_body_frame_residue_bytes(
                         &expanded.function,
                         expanded.statement_frame_residue_substitutions,
+                    );
+                self.legacy_inline_expansion_frame_bytes +=
+                    crate::inline_expansion::legacy_value_body_frame_residue_bytes(
+                        &expanded.function,
+                        expanded.value_body_substitutions,
                     );
                 self.inline_statement_body_substitutions +=
                     expanded.statement_body_substitutions;

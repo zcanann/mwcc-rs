@@ -393,6 +393,7 @@ mod tests {
             &mut output,
             mwcc_syntax_trees::InlineExpansionFacts {
                 leading_initializer_substitutions: 2,
+                body_value_substitutions: 0,
             },
             true,
         );
@@ -411,6 +412,7 @@ mod tests {
             &mut output,
             mwcc_syntax_trees::InlineExpansionFacts {
                 leading_initializer_substitutions: 1,
+                body_value_substitutions: 0,
             },
             true,
         );

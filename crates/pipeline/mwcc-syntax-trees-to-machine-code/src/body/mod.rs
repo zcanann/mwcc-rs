@@ -34,6 +34,7 @@ mod aggregate_parameter_forwarder;
 mod aggregate_return_temporaries;
 mod ascii_pointer_compare;
 mod assertion_expression;
+mod assigned_pointer_alias;
 mod bounded_member_cursor;
 mod bounded_member_assignment;
 mod bounded_acceleration_schedule;

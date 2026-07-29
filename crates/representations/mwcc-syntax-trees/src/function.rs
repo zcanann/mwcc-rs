@@ -345,6 +345,9 @@ pub struct InlineExpansionFacts {
     /// Single-return inline calls substituted while parsing leading automatic
     /// local initializers.
     pub leading_initializer_substitutions: usize,
+    /// Single-return inline calls substituted while parsing the executable
+    /// body after the leading declaration sequence.
+    pub body_value_substitutions: usize,
 }
 
 /// A translation unit: file-scope globals (and skipped prototypes) interleaved

@@ -2313,6 +2313,7 @@ impl Generator {
                 _ => debug_assert!(false, "structured return branch changed form"),
             }
         }
+        self.fold_adjacent_structured_epilogue_branches();
         // This pass can insert a delayed saved-home copy into the entry
         // prefix. Run it after source-return branch indices have been consumed;
         // its general instruction-index helper owns the finalized branch
@@ -2320,6 +2321,7 @@ impl Generator {
         self.schedule_entry_member_saved_home();
         self.schedule_guarded_saved_receiver_float_call();
         self.schedule_inline_float_pair_final_call();
+        self.schedule_inlined_member_address_receiver();
         // Each source-level `if` creates a pair of optimizer labels even when
         // both collapse to direct instruction offsets. An explicit `else`
         // contributes its additional arm label. Build 163 exposes those

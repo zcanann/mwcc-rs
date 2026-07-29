@@ -2123,6 +2123,42 @@ blr\n\
             unit.inline_expansion_facts["compiled"].leading_initializer_substitutions,
             1
         );
+        assert_eq!(
+            unit.inline_expansion_facts["compiled"].body_value_substitutions,
+            0
+        );
+    }
+
+    #[test]
+    fn records_a_value_accessor_substituted_in_the_executable_body() {
+        let source = r#"
+            static inline int *member_address(int *value) {
+                return value + 1;
+            }
+            void sink(int *);
+            void compiled(int *value) {
+                int *selected;
+                selected = member_address(value);
+                sink(selected);
+            }
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            false,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            unit.inline_expansion_facts["compiled"].leading_initializer_substitutions,
+            0
+        );
+        assert_eq!(
+            unit.inline_expansion_facts["compiled"].body_value_substitutions,
+            1
+        );
     }
 
     #[test]

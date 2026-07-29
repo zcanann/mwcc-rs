@@ -5465,6 +5465,9 @@ impl Parser {
             name.clone(),
             mwcc_syntax_trees::InlineExpansionFacts {
                 leading_initializer_substitutions,
+                body_value_substitutions: self
+                    .inline_substitution_count
+                    .saturating_sub(leading_initializer_substitutions),
             },
         );
         if !self.current_inline_string_symbols.is_empty() {

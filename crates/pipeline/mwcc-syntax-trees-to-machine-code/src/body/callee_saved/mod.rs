@@ -122,6 +122,7 @@ mod structured_if_else;
 mod structured_initializer_live_in;
 mod structured_initializer_live_in_schedule;
 mod structured_inline_residue;
+mod structured_inlined_address_receiver_schedule;
 mod structured_inline_assertion;
 mod structured_locals;
 mod structured_unobserved_scalar_table;

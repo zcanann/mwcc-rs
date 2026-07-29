@@ -26,6 +26,7 @@ mod tests {
             ordinal_residue(
                 InlineExpansionFacts {
                     leading_initializer_substitutions: 1,
+                    body_value_substitutions: 0,
                 },
                 2,
                 1,

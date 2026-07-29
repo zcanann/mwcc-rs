@@ -96,4 +96,72 @@ impl Generator {
             conditional += 1;
         }
     }
+
+    /// Remove the unreachable second edge when a terminal `then { return; }`
+    /// arm and the enclosing if/else skip both resolve to the shared epilogue.
+    ///
+    /// The two branches cannot be coalesced before return placeholders are
+    /// resolved: one still targets zero while the other already targets the
+    /// lexical join. After resolution, equal adjacent edges expose the exact
+    /// redundant instruction without requiring source-shape knowledge here.
+    pub(super) fn fold_adjacent_structured_epilogue_branches(&mut self) {
+        let mut first = 0;
+        while first + 1 < self.output.instructions.len() {
+            let second = first + 1;
+            let (
+                Instruction::Branch {
+                    target: first_target,
+                },
+                Instruction::Branch {
+                    target: second_target,
+                },
+            ) = (
+                &self.output.instructions[first],
+                &self.output.instructions[second],
+            )
+            else {
+                first += 1;
+                continue;
+            };
+            if first_target != second_target
+                || self.output.instructions.iter().enumerate().any(
+                    |(index, instruction)| {
+                        index != first
+                            && index != second
+                            && matches!(
+                                instruction,
+                                Instruction::BranchConditionalForward { target, .. }
+                                    | Instruction::Branch { target }
+                                    if *target == second
+                            )
+                    },
+                )
+            {
+                first += 1;
+                continue;
+            }
+
+            self.output.instructions.remove(second);
+            self.labels.removed(second, 1);
+            self.output
+                .relocations
+                .retain(|relocation| relocation.instruction_index != second);
+            for relocation in &mut self.output.relocations {
+                if relocation.instruction_index > second {
+                    relocation.instruction_index -= 1;
+                }
+            }
+            for instruction in &mut self.output.instructions {
+                match instruction {
+                    Instruction::BranchConditionalForward { target, .. }
+                    | Instruction::Branch { target }
+                        if *target > second =>
+                    {
+                        *target -= 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
 }
