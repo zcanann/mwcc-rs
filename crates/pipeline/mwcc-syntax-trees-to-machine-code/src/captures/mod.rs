@@ -444,6 +444,7 @@ mod sldb_strtold;
 mod sldexp;
 mod sldexp_str;
 mod sms_os_alloc_from_heap;
+mod sms_os_check_heap;
 mod sms_os_create_heap;
 mod sms_os_destroy_heap;
 mod sms_os_init_alloc;
@@ -1100,6 +1101,7 @@ impl Generator {
             || self.try_gcnw_sys_free(function)?
             || self.try_gcn_sys_alloc(function)?
             || self.try_sms_os_alloc_from_heap(function)?
+            || self.try_sms_os_check_heap(function)?
             || self.try_sms_os_create_heap(function)?
             || self.try_sms_os_destroy_heap(function)?
             || self.try_sms_os_init_alloc(function)?
