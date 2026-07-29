@@ -7,28 +7,13 @@
 #[allow(unused_imports)]
 use super::*;
 
+mod guarded_indexed;
+
 impl Generator {
-    /// Emit a bare indirect-call statement such as `actor->proc(actor)`.
-    ///
-    /// The callee is staged in r12 before the call. Arguments are currently accepted only when
-    /// every one is a word-sized general-register leaf and the left-to-right moves are acyclic:
-    /// no destination may still hold a later argument. This covers both pure pass-through calls
-    /// and the common `saved_actor->proc(saved_actor)` tail while ensuring argument marshaling
-    /// cannot destroy either the callee or a later argument. Cyclic moves and computed arguments
-    /// keep deferring until their schedules can be modeled explicitly.
-    pub(crate) fn emit_bare_indirect_call_statement(
-        &mut self,
-        target: &Expression,
+    fn leaf_indirect_argument_moves(
+        &self,
         arguments: &[Expression],
-    ) -> Compilation<()> {
-        if !matches!(
-            target,
-            Expression::Dereference { .. } | Expression::Member { .. }
-        ) {
-            return Err(Diagnostic::error(
-                "this bare indirect-call target is not supported yet (roadmap)",
-            ));
-        }
+    ) -> Compilation<Vec<(u8, u8)>> {
         let argument_moves = arguments
             .iter()
             .enumerate()
@@ -54,13 +39,47 @@ impl Generator {
                 "arguments to a bare indirect call need dependency-aware marshaling (roadmap)",
             ));
         }
+        Ok(argument_moves)
+    }
 
-        self.evaluate(target, Type::UnsignedInt, 12)?;
-        for (argument, &(source, target)) in arguments.iter().zip(&argument_moves) {
+    fn emit_leaf_indirect_arguments(
+        &mut self,
+        arguments: &[Expression],
+        moves: &[(u8, u8)],
+    ) -> Compilation<()> {
+        for (argument, &(source, target)) in arguments.iter().zip(moves) {
             if source != target {
                 self.evaluate_general(argument, target)?;
             }
         }
+        Ok(())
+    }
+
+    /// Emit a bare indirect-call statement such as `actor->proc(actor)`.
+    ///
+    /// The callee is staged in r12 before the call. Arguments are currently accepted only when
+    /// every one is a word-sized general-register leaf and the left-to-right moves are acyclic:
+    /// no destination may still hold a later argument. This covers both pure pass-through calls
+    /// and the common `saved_actor->proc(saved_actor)` tail while ensuring argument marshaling
+    /// cannot destroy either the callee or a later argument. Cyclic moves and computed arguments
+    /// keep deferring until their schedules can be modeled explicitly.
+    pub(crate) fn emit_bare_indirect_call_statement(
+        &mut self,
+        target: &Expression,
+        arguments: &[Expression],
+    ) -> Compilation<()> {
+        if !matches!(
+            target,
+            Expression::Dereference { .. } | Expression::Member { .. }
+        ) {
+            return Err(Diagnostic::error(
+                "this bare indirect-call target is not supported yet (roadmap)",
+            ));
+        }
+        let argument_moves = self.leaf_indirect_argument_moves(arguments)?;
+
+        self.evaluate(target, Type::UnsignedInt, 12)?;
+        self.emit_leaf_indirect_arguments(arguments, &argument_moves)?;
         self.emit_indirect_branch_and_link(12);
         Ok(())
     }

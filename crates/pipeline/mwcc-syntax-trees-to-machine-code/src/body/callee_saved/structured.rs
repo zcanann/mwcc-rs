@@ -2531,6 +2531,12 @@ impl Generator {
                     then_body,
                     else_body,
                 } if else_body.is_empty() => {
+                    if self.try_emit_guarded_indexed_indirect_call(
+                        condition,
+                        then_body,
+                    )? {
+                        continue;
+                    }
                     if self.try_emit_structured_tail_result_guard(
                         condition,
                         then_body,

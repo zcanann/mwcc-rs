@@ -2258,6 +2258,9 @@ impl Generator {
                 ..
             } = statement
             {
+                if self.is_guarded_indexed_indirect_call(condition, then_body) {
+                    continue;
+                }
                 let condition_globals: Vec<&str> = self
                     .globals
                     .keys()
