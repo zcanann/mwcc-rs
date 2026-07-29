@@ -19,6 +19,36 @@ impl Generator {
         if self.inline_statement_body_substitutions != 0 {
             return;
         }
+        if let Some((start, saved)) =
+            find_staggered_entry_member_saved_home(&self.output.instructions)
+        {
+            // Save and establish the entry parameter before consuming r3 for
+            // the member initializer. The initialized pointer then stays in r3
+            // through its first dependent load before moving to its saved home.
+            self.move_instruction_before(start + 2, start + 1);
+            self.move_instruction_before(start + 3, start + 2);
+            let initializer = start + 3;
+            let retained =
+                self.fresh_virtual_general_preferring(Eabi::FIRST_GENERAL_ARGUMENT);
+            match &mut self.output.instructions[initializer] {
+                Instruction::LoadWord { d, .. } => *d = retained,
+                _ => unreachable!(),
+            }
+            match &mut self.output.instructions[initializer + 1] {
+                Instruction::LoadWord { a, .. } => *a = retained,
+                _ => unreachable!(),
+            }
+            crate::insert_instruction_retargeting(
+                self,
+                initializer + 2,
+                Instruction::AddImmediate {
+                    d: saved,
+                    a: retained,
+                    immediate: 0,
+                },
+            );
+            return;
+        }
         let Some((initializer, saved)) = find_entry_member_saved_home(&self.output.instructions)
         else {
             return;
@@ -348,6 +378,50 @@ fn find_entry_member_saved_home(instructions: &[Instruction]) -> Option<(usize, 
     None
 }
 
+fn find_staggered_entry_member_saved_home(
+    instructions: &[Instruction],
+) -> Option<(usize, u8)> {
+    instructions.windows(6).enumerate().find_map(|(start, window)| {
+        match window {
+            [
+                Instruction::StoreWord {
+                    s: saved,
+                    a: 1,
+                    ..
+                },
+                Instruction::LoadWord {
+                    d: initialized,
+                    a: 3,
+                    ..
+                },
+                Instruction::StoreWord {
+                    s: entry_home,
+                    a: 1,
+                    ..
+                },
+                Instruction::Or {
+                    a: copied_home,
+                    s: 3,
+                    b: 3,
+                },
+                Instruction::LoadWord {
+                    a: member_base, ..
+                },
+                Instruction::CompareWordImmediate { .. },
+            ] if saved == initialized
+                && saved == member_base
+                && entry_home == copied_home
+                && saved != entry_home
+                && mwcc_vreg::Reg::is_virtual_field(*saved)
+                && mwcc_vreg::Reg::is_virtual_field(*entry_home) =>
+            {
+                Some((start, *saved))
+            }
+            _ => None,
+        }
+    })
+}
+
 /// Redirect a forward branch through any forward-only unconditional branch at
 /// its destination. Nested diamonds initially target their own join; after the
 /// parent diamond is complete that join may itself be the parent's
@@ -581,6 +655,45 @@ mod tests {
         ];
 
         assert_eq!(find_entry_member_saved_home(&instructions), None);
+    }
+
+    #[test]
+    fn recognizes_a_member_initializer_staggered_between_two_saved_homes() {
+        let saved = mwcc_vreg::Reg::general(0).to_field();
+        let entry_home = mwcc_vreg::Reg::general(1).to_field();
+        let instructions = [
+            Instruction::StoreWord {
+                s: saved,
+                a: 1,
+                offset: 20,
+            },
+            Instruction::LoadWord {
+                d: saved,
+                a: 3,
+                offset: 44,
+            },
+            Instruction::StoreWord {
+                s: entry_home,
+                a: 1,
+                offset: 16,
+            },
+            Instruction::Or {
+                a: entry_home,
+                s: 3,
+                b: 3,
+            },
+            Instruction::LoadWord {
+                d: 0,
+                a: saved,
+                offset: 224,
+            },
+            Instruction::CompareWordImmediate { a: 0, immediate: 0 },
+        ];
+
+        assert_eq!(
+            find_staggered_entry_member_saved_home(&instructions),
+            Some((0, saved))
+        );
     }
 
     #[test]

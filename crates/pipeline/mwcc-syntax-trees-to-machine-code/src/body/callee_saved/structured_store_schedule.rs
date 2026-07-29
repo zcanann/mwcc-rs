@@ -10,6 +10,29 @@
 use super::*;
 
 impl Generator {
+    /// Lead a guarded mixed integer/float call with its independent float
+    /// literal load. The receiver's saved-home copy uses `addi` in this
+    /// schedule, and the enclosing nested early-return graph contributes six
+    /// optimizer labels before the literal pool.
+    pub(super) fn schedule_guarded_saved_receiver_float_call(&mut self) {
+        let Some(start) =
+            guarded_saved_receiver_float_call_start(&self.output.instructions)
+        else {
+            return;
+        };
+        self.move_instruction_before(start + 3, start + 1);
+        let saved = match self.output.instructions[start + 2] {
+            Instruction::Or { s, b, .. } if s == b => s,
+            _ => unreachable!("guarded saved receiver call shape was checked"),
+        };
+        self.output.instructions[start + 2] = Instruction::AddImmediate {
+            d: Eabi::FIRST_GENERAL_ARGUMENT,
+            a: saved,
+            immediate: 0,
+        };
+        self.output.anonymous_label_bump += 6;
+    }
+
     /// Hoist an independent three-register call setup across a run of three
     /// stores from one already-loaded float. MWCC fills the store issue window
     /// this way in constructor-like state initialization bodies.
@@ -137,6 +160,21 @@ impl Generator {
     }
 }
 
+fn guarded_saved_receiver_float_call_start(
+    instructions: &[Instruction],
+) -> Option<usize> {
+    instructions.windows(6).position(|window| {
+        matches!(window, [
+            Instruction::Branch { .. },
+            Instruction::Or { a: 3, s: saved, b },
+            Instruction::AddImmediate { d: 4, a: 0, immediate: 0 },
+            Instruction::LoadFloatSingle { d: 1, .. },
+            Instruction::BranchAndLink { .. },
+            Instruction::LoadWord { a: following_base, .. },
+        ] if saved == b && saved == following_base)
+    })
+}
+
 fn leading_register_truth_test(statement: &Statement) -> Option<&str> {
     let condition = match statement {
         Statement::Expression(Expression::Conditional { condition, .. }) => condition.as_ref(),
@@ -172,6 +210,33 @@ fn truth_test_variable(expression: &Expression) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognizes_a_guarded_saved_receiver_mixed_call() {
+        let instructions = [
+            Instruction::Branch { target: 8 },
+            Instruction::Or { a: 3, s: 31, b: 31 },
+            Instruction::load_immediate(4, 0),
+            Instruction::LoadFloatSingle {
+                d: 1,
+                a: 0,
+                offset: 0,
+            },
+            Instruction::BranchAndLink {
+                target: "consume".into(),
+            },
+            Instruction::LoadWord {
+                d: 0,
+                a: 31,
+                offset: 32,
+            },
+        ];
+
+        assert_eq!(
+            guarded_saved_receiver_float_call_start(&instructions),
+            Some(0)
+        );
+    }
 
     #[test]
     fn recognizes_conditional_expression_truth_test() {

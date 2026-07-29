@@ -2223,7 +2223,6 @@ impl Generator {
         }
         self.schedule_structured_entry_zero_store(function);
         self.schedule_structured_shared_member_arguments(function);
-        self.schedule_entry_member_saved_home();
         self.schedule_entry_member_call_argument_reuse();
         self.schedule_repeated_member_address_call_guards();
         self.schedule_guarded_member_receiver_reuse();
@@ -2314,6 +2313,12 @@ impl Generator {
                 _ => debug_assert!(false, "structured return branch changed form"),
             }
         }
+        // This pass can insert a delayed saved-home copy into the entry
+        // prefix. Run it after source-return branch indices have been consumed;
+        // its general instruction-index helper owns the finalized branch
+        // destinations from here onward.
+        self.schedule_entry_member_saved_home();
+        self.schedule_guarded_saved_receiver_float_call();
         // Each source-level `if` creates a pair of optimizer labels even when
         // both collapse to direct instruction offsets. An explicit `else`
         // contributes its additional arm label. Build 163 exposes those
