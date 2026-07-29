@@ -131,6 +131,7 @@ mod structured_locals;
 mod structured_unobserved_scalar_table;
 mod structured_unused_array_inline_schedule;
 mod structured_unused_array_entry_schedule;
+mod structured_unused_array_state_entry_schedule;
 mod structured_member_scale_schedule;
 mod structured_noncopy_conversion_schedule;
 mod structured_conversion_pair_schedule;

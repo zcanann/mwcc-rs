@@ -4,6 +4,28 @@
 use super::*;
 
 impl Generator {
+    /// Fold a floating literal through C's assignment conversion when the
+    /// integer destination can represent the truncated value.
+    ///
+    /// Keeping this query separate from emission lets framed functions omit
+    /// the `fctiwz` scratch image at planning time as well as the conversion
+    /// instructions at store time.
+    pub(crate) fn folded_float_store_constant(
+        &self,
+        value: &Expression,
+        pointee: Pointee,
+    ) -> Option<i64> {
+        let Expression::FloatLiteral(value) = value else {
+            return None;
+        };
+        let target = pointee.element();
+        let width = target.width();
+        if width > 32 || matches!(target, Type::Float | Type::Double) {
+            return None;
+        }
+        fold_representable_float_to_integer(*value, width, self.signed_of(target))
+    }
+
     /// Fold the C assignment conversion of an out-of-range integer constant before
     /// materializing it. Restrict this to values that actually change so ordinary
     /// in-range constant-store runs keep their existing reuse and scheduling paths.
@@ -12,6 +34,11 @@ impl Generator {
         value: &Expression,
         pointee: Pointee,
     ) -> Option<u8> {
+        if let Some(constant) = self.folded_float_store_constant(value, pointee) {
+            self.load_integer_constant(GENERAL_SCRATCH, constant);
+            return Some(GENERAL_SCRATCH);
+        }
+
         let target = pointee.element();
         let width = target.width();
         if width >= 32 {
@@ -98,6 +125,20 @@ impl Generator {
     }
 }
 
+fn fold_representable_float_to_integer(value: f64, width: u8, signed: bool) -> Option<i64> {
+    if !value.is_finite() || width == 0 || width > 32 {
+        return None;
+    }
+    let truncated = value.trunc();
+    let (minimum, maximum) = if signed {
+        let bound = 1i64 << (width - 1);
+        (-(bound as f64), (bound - 1) as f64)
+    } else {
+        (0.0, ((1u64 << width) - 1) as f64)
+    };
+    (truncated >= minimum && truncated <= maximum).then_some(truncated as i64)
+}
+
 /// Build 163's older redundant-conversion pass recognizes only binary operations
 /// whose low result bits are independent of the discarded high bits.
 pub(super) fn legacy_narrow_store_binary_alu(expression: &Expression) -> bool {
@@ -113,4 +154,32 @@ pub(super) fn legacy_narrow_store_binary_alu(expression: &Expression) -> bool {
             ..
         }
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fold_representable_float_to_integer;
+
+    #[test]
+    fn folds_representable_float_assignment_constants_toward_zero() {
+        assert_eq!(fold_representable_float_to_integer(0.0, 16, false), Some(0));
+        assert_eq!(
+            fold_representable_float_to_integer(-12.75, 16, true),
+            Some(-12)
+        );
+        assert_eq!(
+            fold_representable_float_to_integer(255.99, 8, false),
+            Some(255)
+        );
+    }
+
+    #[test]
+    fn rejects_undefined_or_runtime_float_assignment_conversions() {
+        assert_eq!(fold_representable_float_to_integer(-1.0, 16, false), None);
+        assert_eq!(fold_representable_float_to_integer(32768.0, 16, true), None);
+        assert_eq!(
+            fold_representable_float_to_integer(f64::NAN, 16, true),
+            None
+        );
+    }
 }

@@ -51,10 +51,8 @@ impl Generator {
         fn expression_count(generator: &Generator, expression: &Expression) -> usize {
             match expression {
                 Expression::Assign { target, value } => {
-                    usize::from(
-                        generator.integer_store_target(target)
-                            && generator.is_float_value(value),
-                    ) + expression_count(generator, target)
+                    usize::from(generator.float_to_integer_store_needs_conversion(target, value))
+                        + expression_count(generator, target)
                         + expression_count(generator, value)
                 }
                 Expression::Binary { left, right, .. }
@@ -168,8 +166,7 @@ impl Generator {
                 .map(|statement| match statement {
                     Statement::Store { target, value } => {
                         usize::from(
-                            generator.integer_store_target(target)
-                                && generator.is_float_value(value),
+                            generator.float_to_integer_store_needs_conversion(target, value),
                         ) + expression_count(generator, target)
                             + expression_count(generator, value)
                     }
@@ -232,8 +229,8 @@ impl Generator {
         statement_count(self, statements)
     }
 
-    fn integer_store_target(&self, target: &Expression) -> bool {
-        let pointee = match target {
+    fn store_target_pointee(&self, target: &Expression) -> Option<Pointee> {
+        match target {
             Expression::Member { member_type, .. } => {
                 crate::expressions::pointee_of_type(*member_type)
             }
@@ -249,8 +246,19 @@ impl Generator {
                         .and_then(|value_type| crate::expressions::pointee_of_type(*value_type))
                 }),
             _ => None,
-        };
-        pointee.is_some_and(|pointee| !matches!(pointee, Pointee::Float | Pointee::Double))
+        }
+    }
+
+    fn float_to_integer_store_needs_conversion(
+        &self,
+        target: &Expression,
+        value: &Expression,
+    ) -> bool {
+        self.store_target_pointee(target).is_some_and(|pointee| {
+            !matches!(pointee, Pointee::Float | Pointee::Double)
+                && self.is_float_value(value)
+                && self.folded_float_store_constant(value, pointee).is_none()
+        })
     }
 
     /// Configure the disjoint eight-byte images used by float-to-integer
