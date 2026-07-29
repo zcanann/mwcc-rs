@@ -74,6 +74,7 @@ use super::structured_value_versions::{
     has_split_value_version, reassignment_live_source, split_reassigned_local_versions,
 };
 use super::structured_variadic_output_frame::StructuredVariadicOutputFrame;
+use super::structured_unobserved_scalar_table::UnobservedScalarTable;
 #[allow(unused_imports)]
 use super::*;
 
@@ -737,6 +738,28 @@ impl Generator {
             parameter_home_reuse
                 .reuses_parameter_home(eager_saved_locals.len(), saved_parameters.len()),
         );
+        let dense_retained_local_table = (dense_frame
+            && self.behavior.frame_convention == FrameConvention::LinkageFirst
+            && !frame_arrays.is_empty()
+            && !frame_scalar_locals.is_empty()
+            && self.legacy_inline_expansion_frame_bytes != 0)
+            .then(|| UnobservedScalarTable::plan(function))
+            .flatten();
+        let dense_retained_local_table_bytes =
+            if let Some(table) = dense_retained_local_table {
+                table
+                    .bytes
+                    .checked_add(
+                        i16::try_from(self.legacy_inline_expansion_frame_bytes).map_err(|_| {
+                            Diagnostic::error("structured inline frame table is too large")
+                        })?,
+                    )
+                    .ok_or_else(|| {
+                        Diagnostic::error("structured retained local table is too large")
+                    })?
+            } else {
+                0
+            };
         // A source loop may retain assertion string high halves alongside its
         // values in one contiguous saved-GPR range without otherwise using
         // dense-frame entry or body scheduling.
@@ -1140,7 +1163,38 @@ impl Generator {
                 } else {
                     16
                 };
-                let frame_size = if dense_frame && !eager_saved_locals.is_empty() {
+                let frame_size = if dense_frame
+                    && !eager_saved_locals.is_empty()
+                    && dense_retained_local_table_bytes != 0
+                {
+                    // Inline-body optimizer lanes and unobserved source
+                    // scalars sit between the low automatic arrays and the
+                    // addressable scalar table. This is an explicit local
+                    // region, so unlike the fallback dense layout it does not
+                    // need a second synthetic caller-linkage lane.
+                    let arrays_end = align_offset(
+                        array_offset
+                            .checked_add(frame_array_bytes)
+                            .ok_or_else(|| {
+                                Diagnostic::error("structured local frame is too large")
+                            })?,
+                        4,
+                    )
+                    .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
+                    let scalar_bytes = i16::try_from(
+                        4 * (frame_scalar_parameters.len() + frame_scalar_locals.len()),
+                    )
+                    .map_err(|_| Diagnostic::error("structured scalar frame is too large"))?;
+                    let retained_end = arrays_end
+                        .checked_add(dense_retained_local_table_bytes)
+                        .and_then(|end| end.checked_add(scalar_bytes))
+                        .ok_or_else(|| {
+                            Diagnostic::error("structured retained local table is too large")
+                        })?;
+                    let occupied = i32::from(retained_end)
+                        + i32::try_from(4 * count).unwrap_or(i32::MAX);
+                    (occupied + 7) / 8 * 8
+                } else if dense_frame && !eager_saved_locals.is_empty() {
                     // A dense legacy frame retains the caller-linkage word
                     // between the local region and its contiguous saved-GPR
                     // range. Dense linkage-first frames use the ABI's
@@ -1212,6 +1266,19 @@ impl Generator {
                                 |_| CURSOR_OFFSET,
                             )
                     }
+                } else if dense_retained_local_table_bytes != 0 {
+                    let scalar_bytes = i16::try_from(
+                        4 * (frame_scalar_parameters.len() + frame_scalar_locals.len()),
+                    )
+                    .map_err(|_| Diagnostic::error("structured scalar frame is too large"))?;
+                    plan.frame_size
+                        .checked_sub(i16::try_from(4 * frame_saved_count).map_err(|_| {
+                            Diagnostic::error("structured saved frame is too large")
+                        })?)
+                        .and_then(|offset| offset.checked_sub(scalar_bytes))
+                        .ok_or_else(|| {
+                            Diagnostic::error("structured retained scalar frame is too large")
+                        })?
                 } else {
                     array_offset
                         .checked_sub(
@@ -1434,8 +1501,10 @@ impl Generator {
                 });
         }
         if let Some(register) = data_section_anchor_home {
-            let save_slot = reused_data_anchor_slot.unwrap_or(0);
-            self.emit_structured_saved_home_store(register, save_slot, plan.frame_size);
+            if !dense_saved_range {
+                let save_slot = reused_data_anchor_slot.unwrap_or(0);
+                self.emit_structured_saved_home_store(register, save_slot, plan.frame_size);
+            }
             let high = self.fresh_virtual_general_preferring(5);
             self.record_relocation(RelocationKind::Addr16Ha, "...data.0");
             self.output

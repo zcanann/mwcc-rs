@@ -968,6 +968,52 @@ pub(super) fn body_uses_local(statements: &[Statement], name: &str) -> bool {
     })
 }
 
+/// Whether the current value of `name` is observed anywhere in the body.
+///
+/// This differs from [`body_uses_local`]: a source declaration which is only
+/// assigned still participates in MWCC's optimized source-local frame table, even
+/// though its value has no machine-code consumer.
+pub(super) fn body_reads_local(statements: &[Statement], name: &str) -> bool {
+    statements.iter().any(|statement| match statement {
+        Statement::InlineAsm(_) => false,
+        Statement::Store { target, value } => {
+            expression_reads_name(target, name) || expression_reads_name(value, name)
+        }
+        Statement::Assign { value, .. }
+        | Statement::Expression(value)
+        | Statement::Return(Some(value)) => expression_reads_name(value, name),
+        Statement::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            expression_reads_name(condition, name)
+                || body_reads_local(then_body, name)
+                || body_reads_local(else_body, name)
+        }
+        Statement::Loop {
+            initializer,
+            condition,
+            step,
+            body,
+            ..
+        } => {
+            initializer
+                .iter()
+                .chain(condition)
+                .chain(step)
+                .any(|expression| expression_reads_name(expression, name))
+                || body_reads_local(body, name)
+        }
+        Statement::Switch { .. } => true,
+        Statement::Return(None)
+        | Statement::Break
+        | Statement::Continue
+        | Statement::Goto(_)
+        | Statement::Label(_) => false,
+    })
+}
+
 /// Recognize a pointer phi whose true arm selects a frame aggregate and whose
 /// false arm selects null. Build 163 keeps this short-lived condition value in
 /// r4, alongside frame-address call arguments, rather than the r3 result lane.

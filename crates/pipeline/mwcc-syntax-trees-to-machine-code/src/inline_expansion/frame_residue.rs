@@ -26,10 +26,43 @@ pub(super) fn legacy_statement_body_frame_residue_bytes(
     function: &Function,
     substitutions: usize,
 ) -> usize {
-    if substitutions == 0 || !has_top_level_memory_mutation_and_call(&function.statements) {
+    if substitutions == 0 || !has_statement_body_frame_residue(&function.statements) {
         return 0;
     }
     substitutions * 8
+}
+
+fn has_statement_body_frame_residue(statements: &[Statement]) -> bool {
+    has_top_level_memory_mutation_and_call(statements)
+        || statements.iter().any(|statement| match statement {
+            Statement::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                has_statement_body_frame_residue(then_body)
+                    || has_statement_body_frame_residue(else_body)
+            }
+            Statement::Loop { body, .. } => has_statement_body_frame_residue(body),
+            Statement::Switch {
+                arms,
+                default,
+                ..
+            } => {
+                arms.iter().any(|arm| match &arm.body {
+                    mwcc_syntax_trees::ArmBody::Return(_) => false,
+                    mwcc_syntax_trees::ArmBody::Statements(body) => {
+                        has_statement_body_frame_residue(body)
+                    }
+                }) || default.as_ref().is_some_and(|body| match body {
+                    mwcc_syntax_trees::ArmBody::Return(_) => false,
+                    mwcc_syntax_trees::ArmBody::Statements(body) => {
+                        has_statement_body_frame_residue(body)
+                    }
+                })
+            }
+            _ => false,
+        })
 }
 
 fn has_top_level_memory_mutation_and_call(statements: &[Statement]) -> bool {
@@ -296,6 +329,22 @@ mod tests {
             }),
         ]);
         assert_eq!(legacy_statement_body_frame_residue_bytes(&function, 1), 8);
+    }
+
+    #[test]
+    fn retains_statement_lanes_for_mutation_before_a_call_in_a_nested_arm() {
+        let function = function(vec![Statement::If {
+            condition: Expression::Variable("condition".into()),
+            then_body: vec![
+                Statement::Store {
+                    target: Expression::Variable("memory".into()),
+                    value: Expression::IntegerLiteral(0),
+                },
+                call("external"),
+            ],
+            else_body: Vec::new(),
+        }]);
+        assert_eq!(legacy_statement_body_frame_residue_bytes(&function, 2), 16);
     }
 
     #[test]

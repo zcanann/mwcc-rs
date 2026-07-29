@@ -113,6 +113,7 @@ mod structured_initializer_live_in_schedule;
 mod structured_inline_residue;
 mod structured_inline_assertion;
 mod structured_locals;
+mod structured_unobserved_scalar_table;
 mod structured_member_scale_schedule;
 mod structured_noncopy_conversion_schedule;
 mod structured_conversion_pair_schedule;
