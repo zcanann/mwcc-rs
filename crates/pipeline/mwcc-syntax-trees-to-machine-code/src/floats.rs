@@ -358,6 +358,15 @@ impl Generator {
         ) {
             return Ok(false);
         }
+        if self.try_emit_integer_call_float_arithmetic(
+            operator,
+            left,
+            right,
+            destination,
+            double,
+        )? {
+            return Ok(true);
+        }
         let left_float_leaf = self.is_float_leaf(left);
         let right_float_leaf = self.is_float_leaf(right);
         if left_float_leaf != right_float_leaf {

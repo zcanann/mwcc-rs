@@ -33,6 +33,7 @@ mod float;
 mod float_abs_pair_condition;
 mod float_abs_select;
 mod float_compare_schedules;
+mod float_call_result_promotion;
 mod float_computed_loaded_condition;
 mod float_fused_triplet;
 mod float_negated_add;
