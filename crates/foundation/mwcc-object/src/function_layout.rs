@@ -164,6 +164,7 @@ mod tests {
             phantom_externals: Vec::new(),
             post_constant_bump: 0,
             post_function_anonymous_bump: None,
+            post_function_counter_rollback: 0,
             string_count: 0,
             string_number_after_constants: None,
             string_number_after_rodata: None,

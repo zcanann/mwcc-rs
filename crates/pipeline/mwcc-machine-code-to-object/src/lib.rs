@@ -263,6 +263,7 @@ pub fn assemble_object(
                     0
                 },
             post_function_anonymous_bump: function.post_function_anonymous_bump,
+            post_function_counter_rollback: function.post_function_counter_rollback,
             constant_number_gaps: function.constant_number_gaps.clone(),
             constant_number_adjust: function.constant_number_adjust,
             phantom_externals: function.phantom_externals.clone(),

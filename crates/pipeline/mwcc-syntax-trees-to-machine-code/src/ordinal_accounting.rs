@@ -10,6 +10,7 @@ use mwcc_syntax_trees::{
     BinaryOperator, Expression, Function, Statement, Type, UnaryOperator,
 };
 use mwcc_versions::FunctionOrdinalAccountingStyle;
+use std::collections::HashSet;
 
 /// Build 163 assigns retained inline-initializer nodes after a function's
 /// strings. Move those ordinals out of the pool-front block and reinsert them
@@ -246,6 +247,7 @@ pub(crate) fn apply_unit(
     machine_functions: &mut [MachineFunction],
     style: FunctionOrdinalAccountingStyle,
 ) {
+    apply_deferred_constant_scopes(machine_functions);
     if style != FunctionOrdinalAccountingStyle::Gc41Ipa || machine_functions.is_empty() {
         return;
     }
@@ -283,6 +285,31 @@ pub(crate) fn apply_unit(
         }
     }
     machine_functions[0].anonymous_label_bump += unit_front_bump;
+}
+
+fn apply_deferred_constant_scopes(machine_functions: &mut [MachineFunction]) {
+    let mut numbered = HashSet::new();
+    let mut pending = 0u32;
+    for machine in machine_functions {
+        let introduces_constant = machine.constants.iter().any(|constant| {
+            constant.force_new || !numbered.contains(&(constant.bits, constant.byte_width))
+        });
+        if pending != 0 && introduces_constant {
+            machine.constant_number_adjust = machine
+                .constant_number_adjust
+                .saturating_add(i32::try_from(pending).unwrap_or(i32::MAX));
+            machine.post_function_counter_rollback = machine
+                .post_function_counter_rollback
+                .saturating_add(pending);
+            pending = 0;
+        }
+        for constant in &machine.constants {
+            if !constant.force_new {
+                numbered.insert((constant.bits, constant.byte_width));
+            }
+        }
+        pending = pending.saturating_add(machine.deferred_next_constant_scope_bump);
+    }
 }
 
 fn gc41_hidden_labels(function: &Function, ipa_file: bool) -> u32 {
@@ -700,5 +727,32 @@ mod tests {
         );
         assert_eq!(machines[0].anonymous_label_bump, 27);
         assert_eq!(machines[1].anonymous_label_bump, 1);
+    }
+
+    #[test]
+    fn transfers_a_scoped_bump_to_the_next_new_constant() {
+        let pool = |bits| mwcc_machine_code::PoolConstant {
+            bits,
+            byte_width: 4,
+            static_slot: false,
+            image: false,
+            force_new: false,
+        };
+        let mut machines = vec![
+            MachineFunction::new("owner"),
+            MachineFunction::new("reuse_only"),
+            MachineFunction::new("new_pool"),
+        ];
+        machines[0].constants.push(pool(1));
+        machines[0].deferred_next_constant_scope_bump = 24;
+        machines[1].constants.push(pool(1));
+        machines[2].constants.push(pool(2));
+
+        apply_deferred_constant_scopes(&mut machines);
+
+        assert_eq!(machines[1].constant_number_adjust, 0);
+        assert_eq!(machines[1].post_function_counter_rollback, 0);
+        assert_eq!(machines[2].constant_number_adjust, 24);
+        assert_eq!(machines[2].post_function_counter_rollback, 24);
     }
 }

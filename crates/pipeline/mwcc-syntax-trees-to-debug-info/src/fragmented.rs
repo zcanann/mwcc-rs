@@ -1237,6 +1237,8 @@ fn fragment_ordinals(
         });
         counter = number
             .checked_add(u32::from(post_function_bump))
+            .ok_or_else(|| Diagnostic::error("debug-info: invalid GC 4.1 fragment ordinal"))?
+            .checked_sub(machine.post_function_counter_rollback)
             .ok_or_else(|| Diagnostic::error("debug-info: invalid GC 4.1 fragment ordinal"))?;
     }
     Ok((

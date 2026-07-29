@@ -219,6 +219,10 @@ pub struct MachineFunction {
     /// reversed. When a later compiled body becomes the physical head, this
     /// amount is transferred to that head without changing this body's pool.
     pub deferred_source_prefix_bump: u32,
+    /// Scoped ordinal work transferred to the next function that introduces a
+    /// new pool constant. The receiving pool observes the bump, then restores
+    /// the translation-unit counter after its function block.
+    pub deferred_next_constant_scope_bump: u32,
     /// Measured override for anonymous ordinals consumed before the first emitted
     /// source object in this translation unit. Exact whole-TU captures use this
     /// when a dropped inline's compiler bookkeeping is only partially observable;
@@ -231,6 +235,11 @@ pub struct MachineFunction {
     /// Most functions use the ABI generation's default; semantically inlined
     /// helper families can retain additional compiler bookkeeping slots.
     pub post_function_anonymous_bump: Option<u8>,
+    /// Anonymous ordinals scoped to this function's pool/unwind block.
+    ///
+    /// These numbers affect objects owned by the function, but legacy MWCC
+    /// restores the enclosing translation-unit counter after the block.
+    pub post_function_counter_rollback: u32,
     /// Emitted by the DAG emitter: the order IS the schedule — the legacy
     /// post-allocation scheduling passes must not touch it.
     pub pre_scheduled: bool,
@@ -332,9 +341,11 @@ impl MachineFunction {
             anonymous_label_bump: 0,
             fragmented_debug_anonymous_bump: 0,
             deferred_source_prefix_bump: 0,
+            deferred_next_constant_scope_bump: 0,
             leading_source_anonymous_bump_override: None,
             post_constant_label_bump: 0,
             post_function_anonymous_bump: None,
+            post_function_counter_rollback: 0,
             pre_scheduled: false,
             frame: None,
             jump_tables: Vec::new(),

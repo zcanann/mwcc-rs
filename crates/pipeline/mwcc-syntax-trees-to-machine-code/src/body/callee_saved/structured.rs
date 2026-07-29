@@ -2328,6 +2328,7 @@ impl Generator {
         self.schedule_unused_array_call_entry(function);
         self.schedule_unused_array_state_entry(function);
         self.schedule_exclusive_inline_arms(function);
+        self.schedule_guarded_effect_spawn(function);
         // Each source-level `if` creates a pair of optimizer labels even when
         // both collapse to direct instruction offsets. An explicit `else`
         // contributes its additional arm label. Build 163 exposes those

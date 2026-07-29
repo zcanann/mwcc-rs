@@ -1154,7 +1154,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 input.object_format.post_leaf_function_anonymous_bump
             }
         });
-        counter = number + u32::from(post_function_bump);
+        counter = (number + u32::from(post_function_bump))
+            .saturating_sub(function.post_function_counter_rollback);
     }
 
     // 1. The ordered section-name list (index 0 is the implicit NULL section). The

@@ -297,6 +297,9 @@ pub struct FunctionObject<'a> {
     /// Function-specific override for the build-wide anonymous-counter gap
     /// after this function's complete block.
     pub post_function_anonymous_bump: Option<u8>,
+    /// Anonymous ordinals visible inside this function's block but restored
+    /// before numbering the following function.
+    pub post_function_counter_rollback: u32,
     /// The count of NEW (non-reused) strings this function contributes to the unit's
     /// `@N` string pool. They are numbered at the FRONT of this function's `@N` block
     /// (before its constants and unwind entries), so the writer advances by this first.

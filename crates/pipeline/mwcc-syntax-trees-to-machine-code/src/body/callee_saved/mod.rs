@@ -115,6 +115,7 @@ mod structured_frame_value_forwarding;
 mod structured_global_index_cache;
 mod structured_global_base_cache;
 mod structured_guarded_narrow_update;
+mod structured_guarded_effect_spawn_schedule;
 mod structured_guarded_mutating_inline_linkage;
 mod structured_guarded_mutating_inline_schedule;
 mod structured_expression_visit;
