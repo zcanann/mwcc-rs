@@ -8,6 +8,7 @@
 use super::*;
 
 mod guarded_indexed;
+mod indexed_mixed_arguments;
 
 impl Generator {
     fn leaf_indirect_argument_moves(
@@ -68,6 +69,12 @@ impl Generator {
         target: &Expression,
         arguments: &[Expression],
     ) -> Compilation<()> {
+        if self.try_emit_indexed_indirect_call_with_mixed_arguments(
+            target,
+            arguments,
+        )? {
+            return Ok(());
+        }
         if !matches!(
             target,
             Expression::Dereference { .. } | Expression::Member { .. }
