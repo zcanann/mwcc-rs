@@ -2454,6 +2454,11 @@ impl Generator {
         if self.try_fixed_head_list_membership(function)? {
             return Ok(());
         }
+        // Intrusive-list extraction retains each tested neighbor across its
+        // corresponding back-link repair.
+        if self.try_doubly_linked_list_extract(function)? {
+            return Ok(());
+        }
         // Dolphin heap cells are inserted by address and coalesced with either
         // adjacent neighbor in one scheduled link-repair region.
         if self.try_coalescing_free_list_insert(function)? {
