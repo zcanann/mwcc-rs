@@ -144,3 +144,55 @@ fn selects_a_computed_float_with_a_logical_range_condition() {
     let divide = [0xec, 0x04, 0x08, 0x24]; // fdivs f0,f4,f1
     assert!(object.windows(divide.len()).any(|bytes| bytes == divide));
 }
+
+#[test]
+fn preserves_a_member_base_while_loading_a_global_float_operand() {
+    let source = br#"
+        struct Limits {
+            char padding[356];
+            float bound;
+        };
+        struct Fighter {
+            char padding[240];
+            float velocity;
+        };
+        extern struct Limits* limits;
+        void compiled(struct Fighter* fighter) {
+            if (fighter->velocity > limits->bound) {
+                fighter->velocity = 0.0f;
+            }
+        }
+    "#;
+    let mut flags = mwcc_versions::Flags::default();
+    flags.debug_info = false;
+    flags.cpp_exceptions = false;
+    flags.emit_mwcats = false;
+    let config = mwcc_versions::CompilerConfig {
+        build: mwcc_versions::GC_1_2_5N,
+        flags,
+    };
+    let object = compile(
+        source,
+        "member-global-float-condition.c",
+        config,
+        Some(SourceLanguage::C),
+        None,
+        false,
+    )
+    .expect("a member/global float comparison should compile");
+
+    // The left member keeps `fighter` live in r3 while the right operand uses
+    // r4 for the absolute global pointer base.
+    let comparison = [
+        0xc0, 0x23, 0x00, 0xf0, // lfs f1,240(r3)
+        0x80, 0x80, 0x00, 0x00, // lwz r4,limits
+        0xc0, 0x04, 0x01, 0x64, // lfs f0,356(r4)
+        0xfc, 0x01, 0x00, 0x40, // fcmpo cr0,f1,f0
+    ];
+    assert!(
+        object
+            .windows(comparison.len())
+            .any(|bytes| bytes == comparison),
+        "the global load must not overwrite the live fighter base"
+    );
+}

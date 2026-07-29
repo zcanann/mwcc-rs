@@ -1460,7 +1460,21 @@ impl Generator {
                 (a, b)
             } else {
                 let a = self.place_condition_float_load(left, FLOAT_FIRST)?;
-                let b = self.place_condition_float_load(right, FLOAT_SCRATCH)?;
+                // The right load may need a temporary GPR for an absolute
+                // global/member base. Keep every register used to address the
+                // left value reserved: that base remains live in the guarded
+                // body even though its FP load has already issued.
+                let newly_reserved: Vec<u8> = self
+                    .registers_used_by(left)
+                    .into_iter()
+                    .filter(|register| self.reserved.insert(*register))
+                    .collect();
+                let right_result =
+                    self.place_condition_float_load(right, FLOAT_SCRATCH);
+                for register in newly_reserved {
+                    self.reserved.remove(&register);
+                }
+                let b = right_result?;
                 (a, b)
             }
         } else if eq && (left_load || right_load) {
