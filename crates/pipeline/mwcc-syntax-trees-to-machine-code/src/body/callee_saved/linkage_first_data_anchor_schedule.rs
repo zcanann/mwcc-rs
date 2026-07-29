@@ -12,11 +12,16 @@ impl Generator {
     pub(crate) fn schedule_linkage_first_data_anchor_frame(&mut self) {
         if self.behavior.frame_convention != FrameConvention::LinkageFirst
             || self.data_section_anchor.as_ref().and_then(|plan| plan.register).is_none()
-            || !is_four_home_anchor_prefix(&self.output.instructions, self.frame_size)
         {
             return;
         }
+        if is_four_home_anchor_prefix(&self.output.instructions, self.frame_size) {
+            self.schedule_four_home_data_anchor_frame();
+        }
+        normalize_data_anchor_array_lookup(&mut self.output.instructions);
+    }
 
+    fn schedule_four_home_data_anchor_frame(&mut self) {
         // mflr; lis anchor; stw LR; crclr; li -1; stwu; stfd; stw r31;
         // addi anchor; li 11; stw r30; stw r29; copy r29; frame address;
         // stw r28; copy r28; load retained object.
@@ -207,6 +212,81 @@ fn normalize_terminal_saved_parameter_forward(instructions: &mut [Instruction]) 
     };
 }
 
+fn normalize_data_anchor_array_lookup(instructions: &mut [Instruction]) {
+    let Some(start) = instructions.windows(6).position(|window| {
+        matches!(
+            window,
+            [
+                Instruction::LoadByteZero {
+                    d: index,
+                    a: root,
+                    ..
+                },
+                Instruction::Add {
+                    d: first_address,
+                    a: anchor,
+                    b: first_index,
+                },
+                Instruction::LoadByteZero {
+                    d: value,
+                    a: first_base,
+                    ..
+                },
+                Instruction::ShiftLeftImmediate {
+                    a: scaled,
+                    s: shifted,
+                    shift: 3,
+                },
+                Instruction::Add {
+                    d: second_address,
+                    a: second_anchor,
+                    b: second_index,
+                },
+                Instruction::LoadHalfwordZero {
+                    d: result,
+                    a: second_base,
+                    ..
+                },
+            ] if index == first_address
+                && index == first_index
+                && first_address == value
+                && first_address == first_base
+                && value == scaled
+                && value == shifted
+                && scaled == second_address
+                && scaled == second_index
+                && second_address == result
+                && second_address == second_base
+                && anchor == second_anchor
+                && *anchor == 31
+                && *root == 30
+        )
+    }) else {
+        return;
+    };
+    let Instruction::LoadByteZero { d, .. } = &mut instructions[start] else {
+        unreachable!("the data-anchor byte-table index was matched")
+    };
+    *d = GENERAL_SCRATCH;
+    let Instruction::Add { b, .. } = &mut instructions[start + 1] else {
+        unreachable!("the first data-anchor table address was matched")
+    };
+    *b = GENERAL_SCRATCH;
+    let Instruction::LoadByteZero { d, .. } = &mut instructions[start + 2] else {
+        unreachable!("the data-anchor byte-table load was matched")
+    };
+    *d = GENERAL_SCRATCH;
+    let Instruction::ShiftLeftImmediate { a, s, .. } = &mut instructions[start + 3] else {
+        unreachable!("the data-anchor table scale was matched")
+    };
+    *a = GENERAL_SCRATCH;
+    *s = GENERAL_SCRATCH;
+    let Instruction::Add { b, .. } = &mut instructions[start + 4] else {
+        unreachable!("the second data-anchor table address was matched")
+    };
+    *b = GENERAL_SCRATCH;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,6 +321,68 @@ mod tests {
                     immediate: 0,
                 },
                 Instruction::BranchAndLink { .. },
+            ]
+        ));
+    }
+
+    #[test]
+    fn uses_scratch_for_chained_data_anchor_array_indices() {
+        let mut instructions = vec![
+            Instruction::LoadByteZero {
+                d: 4,
+                a: 30,
+                offset: 1,
+            },
+            Instruction::Add {
+                d: 4,
+                a: 31,
+                b: 4,
+            },
+            Instruction::LoadByteZero {
+                d: 4,
+                a: 4,
+                offset: 104,
+            },
+            Instruction::ShiftLeftImmediate {
+                a: 4,
+                s: 4,
+                shift: 3,
+            },
+            Instruction::Add {
+                d: 4,
+                a: 31,
+                b: 4,
+            },
+            Instruction::LoadHalfwordZero {
+                d: 4,
+                a: 4,
+                offset: 184,
+            },
+        ];
+
+        normalize_data_anchor_array_lookup(&mut instructions);
+
+        assert!(matches!(
+            instructions.as_slice(),
+            [
+                Instruction::LoadByteZero { d: 0, a: 30, .. },
+                Instruction::Add {
+                    d: 4,
+                    a: 31,
+                    b: 0,
+                },
+                Instruction::LoadByteZero { d: 0, a: 4, .. },
+                Instruction::ShiftLeftImmediate {
+                    a: 0,
+                    s: 0,
+                    shift: 3,
+                },
+                Instruction::Add {
+                    d: 4,
+                    a: 31,
+                    b: 0,
+                },
+                Instruction::LoadHalfwordZero { d: 4, a: 4, .. },
             ]
         ));
     }

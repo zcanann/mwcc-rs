@@ -467,6 +467,38 @@ impl Generator {
         {
             return Ok(false);
         }
+        if let Some((base, displacement)) = self
+            .data_section_anchor
+            .as_ref()
+            .and_then(|anchor| anchor.register.zip(anchor.offsets.get(name).copied()))
+        {
+            if normalize_unsigned_byte {
+                self.output
+                    .instructions
+                    .push(Instruction::ClearLeftImmediate {
+                        a: index,
+                        s: index,
+                        clear: 24,
+                    });
+            }
+            let address = if destination == GENERAL_SCRATCH {
+                index
+            } else {
+                destination
+            };
+            self.output.instructions.push(Instruction::Add {
+                d: address,
+                a: base,
+                b: index,
+            });
+            self.output.instructions.push(displacement_load(
+                pointee,
+                destination,
+                address,
+                displacement,
+            )?);
+            return Ok(true);
+        }
         let high = self.fresh_virtual_general();
         self.emit_address_high(high, name);
         if normalize_unsigned_byte {
@@ -513,6 +545,36 @@ impl Generator {
             || (self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8)
         {
             return Ok(false);
+        }
+        if let Some((base, displacement)) = self
+            .data_section_anchor
+            .as_ref()
+            .and_then(|anchor| anchor.register.zip(anchor.offsets.get(name).copied()))
+        {
+            let address = if matches!(pointee, Pointee::Float | Pointee::Double) {
+                self.free_general_excluding(GENERAL_SCRATCH)?
+            } else {
+                destination
+            };
+            self.output
+                .instructions
+                .push(Instruction::ShiftLeftImmediate {
+                    a: address,
+                    s: index,
+                    shift: pointee.size().trailing_zeros() as u8,
+                });
+            self.output.instructions.push(Instruction::Add {
+                d: address,
+                a: base,
+                b: address,
+            });
+            self.output.instructions.push(displacement_load(
+                pointee,
+                destination,
+                address,
+                displacement,
+            )?);
+            return Ok(true);
         }
         let address = if matches!(pointee, Pointee::Float | Pointee::Double) {
             self.free_general_excluding(GENERAL_SCRATCH)?
