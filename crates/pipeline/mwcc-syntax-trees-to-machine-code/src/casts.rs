@@ -436,6 +436,38 @@ impl Generator {
             }
             return Ok(());
         }
+        // A direct integer call nested in a floating expression is already a
+        // value-producing node, not a register leaf.  Marshal the call first,
+        // then convert its r3 result through the same call-result schedule used
+        // by direct float assignments.  Structured non-leaf owners have
+        // reserved conversion scratch in their frame; the frame normalizer
+        // selects its final non-overlapping offset.
+        if let Expression::Call { name, arguments } = operand {
+            if !crate::analysis::is_intrinsic_call(name)
+                && !matches!(
+                    self.call_return_types.get(name),
+                    Some(Type::Float | Type::Double)
+                )
+            {
+                let signed = self.signedness_of(operand)?;
+                let source = mwcc_target::Eabi::general_result().number;
+                self.emit_call(name, arguments, None, false)?;
+                let bias_register = if destination != FLOAT_SCRATCH {
+                    destination
+                } else {
+                    mwcc_target::Eabi::float_result().number
+                };
+                self.emit_int_to_float_body(
+                    source,
+                    destination,
+                    double,
+                    signed,
+                    bias_register,
+                    IntToFloatSchedule::CallResult,
+                );
+                return Ok(());
+            }
+        }
         // A narrow integer (char/short) cast to float is first widened to int with
         // extsb/extsh, and mwcc reschedules the magic-constant idiom around that extra
         // instruction. That sequence is not modeled, so defer rather than emit the
