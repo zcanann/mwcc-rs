@@ -3329,7 +3329,7 @@ pub(super) fn logical_and_terms(expression: &Expression) -> Vec<&Expression> {
 /// A top-level OR expressed as ordered AND groups. This is the source CFG for
 /// conditions such as `(a && b) || (c && d)`: each failed group advances to the
 /// next one, while a completed group enters the guarded body directly.
-fn logical_or_groups(expression: &Expression) -> Option<Vec<Vec<&Expression>>> {
+pub(super) fn logical_or_groups(expression: &Expression) -> Option<Vec<Vec<&Expression>>> {
     let Expression::Binary {
         operator: BinaryOperator::LogicalOr,
         ..

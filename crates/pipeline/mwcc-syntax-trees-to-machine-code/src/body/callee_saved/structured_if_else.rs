@@ -4,7 +4,7 @@
 //! module owns only the diamond: condition exits target the else arm and a
 //! fallthrough then arm skips to the common continuation.
 
-use super::structured::logical_and_terms;
+use super::structured::{logical_and_terms, logical_or_groups};
 use super::structured_entry_alias::{fold_entry_alias_zero_test, EntryParameterAlias};
 #[allow(unused_imports)]
 use super::*;
@@ -27,25 +27,99 @@ impl Generator {
         debug_assert!(!else_body.is_empty());
         let previous_cache = self.begin_condition_global_cache(condition);
         let previous_float_cache = self.begin_composed_condition_float_cache(condition);
+        struct ConditionBranches {
+            enter_then: Vec<usize>,
+            enter_else: Vec<usize>,
+        }
         let branches = (|| {
             self.preload_condition_global_cache(condition)?;
+            if let Some(groups) = logical_or_groups(condition) {
+                let mut enter_then = Vec::new();
+                let mut enter_else = Vec::new();
+                for (group_index, group) in groups.iter().enumerate() {
+                    let last_group = group_index + 1 == groups.len();
+                    let mut advance_group = Vec::new();
+                    let mut next_group_float_cache = None;
+                    for (term_index, term) in group.iter().copied().enumerate() {
+                        let term_start = self.output.instructions.len();
+                        let (options, condition_bit) =
+                            self.emit_condition_test(term).map_err(|mut diagnostic| {
+                                diagnostic.message.push_str(&format!(
+                                    " (in structured if/else condition {statement_index})"
+                                ));
+                                diagnostic
+                            })?;
+                        self.reuse_short_circuit_member_base(term_index, term_start);
+                        if statement_index == 0 && group_index == 0 && term_index == 0 {
+                            if let Some(alias) = entry_alias.as_ref() {
+                                fold_entry_alias_zero_test(&mut self.output.instructions, alias);
+                            }
+                        }
+                        if !last_group && term_index == 0 {
+                            next_group_float_cache = Some(self.condition_float_cache.clone());
+                        }
+                        let branch = self.output.instructions.len();
+                        if !last_group && term_index + 1 == group.len() {
+                            self.output
+                                .instructions
+                                .push(Instruction::BranchConditionalForward {
+                                    options: options ^ 8,
+                                    condition_bit,
+                                    target: 0,
+                                });
+                            enter_then.push(branch);
+                        } else {
+                            self.output
+                                .instructions
+                                .push(Instruction::BranchConditionalForward {
+                                    options,
+                                    condition_bit,
+                                    target: 0,
+                                });
+                            if last_group {
+                                enter_else.push(branch);
+                            } else {
+                                advance_group.push(branch);
+                            }
+                        }
+                        if statement_index == 0 && group_index == 0 && term_index == 0 {
+                            if let Some(alias) = entry_alias.take() {
+                                self.locations
+                                    .get_mut(&alias.name)
+                                    .expect("planned saved parameter")
+                                    .register = alias.home;
+                            }
+                        }
+                    }
+                    let next_group = self.output.instructions.len();
+                    for branch in advance_group {
+                        self.patch_forward(branch, next_group);
+                    }
+                    if let Some(cache) = next_group_float_cache {
+                        self.condition_float_cache = cache;
+                    }
+                }
+                return Ok(ConditionBranches {
+                    enter_then,
+                    enter_else,
+                });
+            }
             let terms = logical_and_terms(condition);
-            let mut branches = Vec::with_capacity(terms.len());
+            let mut enter_else = Vec::with_capacity(terms.len());
             for (term_index, term) in terms.into_iter().enumerate() {
-                let (options, condition_bit) = self.emit_condition_test(term).map_err(
-                    |mut diagnostic| {
+                let (options, condition_bit) =
+                    self.emit_condition_test(term).map_err(|mut diagnostic| {
                         diagnostic.message.push_str(&format!(
                             " (in structured if/else condition {statement_index})"
                         ));
                         diagnostic
-                    },
-                )?;
+                    })?;
                 if statement_index == 0 && term_index == 0 {
                     if let Some(alias) = entry_alias.as_ref() {
                         fold_entry_alias_zero_test(&mut self.output.instructions, alias);
                     }
                 }
-                branches.push(self.output.instructions.len());
+                enter_else.push(self.output.instructions.len());
                 self.output
                     .instructions
                     .push(Instruction::BranchConditionalForward {
@@ -62,7 +136,10 @@ impl Generator {
                     }
                 }
             }
-            Ok(branches)
+            Ok(ConditionBranches {
+                enter_then: Vec::new(),
+                enter_else,
+            })
         })();
         let retained_multiply_plan = condition_abs_value(condition).and_then(|value| {
             let source = self.observed_condition_float_register(value)?;
@@ -81,11 +158,15 @@ impl Generator {
         self.restore_condition_global_cache(previous_cache);
         self.restore_condition_float_cache(previous_float_cache);
         let branches = branches?;
-        if let [branch] = branches.as_slice() {
+        if let [branch] = branches.enter_else.as_slice() {
             self.schedule_frame_store_before_if_branch(*branch);
         }
         self.commit_structured_float_handoff();
 
+        let then_start = self.output.instructions.len();
+        for branch in branches.enter_then {
+            self.patch_forward(branch, then_start);
+        }
         if let Some((source, value, assignments)) = retained_multiply_plan {
             let double = self.is_double_value(&value);
             for (destination_name, factor_name) in assignments {
@@ -117,9 +198,9 @@ impl Generator {
                 entry_alias,
             )
             .map_err(|mut diagnostic| {
-                diagnostic.message.push_str(&format!(
-                    " (inside structured then arm {statement_index})"
-                ));
+                diagnostic
+                    .message
+                    .push_str(&format!(" (inside structured then arm {statement_index})"));
                 diagnostic
             })?;
         }
@@ -129,12 +210,8 @@ impl Generator {
             .push(Instruction::Branch { target: 0 });
 
         let else_start = self.output.instructions.len();
-        for branch in branches {
-            if let Instruction::BranchConditionalForward { target, .. } =
-                &mut self.output.instructions[branch]
-            {
-                *target = else_start;
-            }
+        for branch in branches.enter_else {
+            self.patch_forward(branch, else_start);
         }
         if !self.try_emit_shared_float_zero_assignments(else_body)?
             && !self.try_emit_structured_frame_bitfield_stores(else_body)?
@@ -150,9 +227,9 @@ impl Generator {
                 entry_alias,
             )
             .map_err(|mut diagnostic| {
-                diagnostic.message.push_str(&format!(
-                    " (inside structured else arm {statement_index})"
-                ));
+                diagnostic
+                    .message
+                    .push_str(&format!(" (inside structured else arm {statement_index})"));
                 diagnostic
             })?;
         }
@@ -171,16 +248,13 @@ impl Generator {
         &mut self,
         statements: &[Statement],
     ) -> Compilation<bool> {
-        let [
-            Statement::Assign {
-                name: first,
-                value: first_value,
-            },
-            Statement::Assign {
-                name: second,
-                value: second_value,
-            },
-        ] = statements
+        let [Statement::Assign {
+            name: first,
+            value: first_value,
+        }, Statement::Assign {
+            name: second,
+            value: second_value,
+        }] = statements
         else {
             return Ok(false);
         };
@@ -189,17 +263,16 @@ impl Generator {
         {
             return Ok(false);
         }
-        let (Ok(first_register), Ok(second_register)) =
-            (self.float_register_of(first), self.float_register_of(second))
-        else {
+        let (Ok(first_register), Ok(second_register)) = (
+            self.float_register_of(first),
+            self.float_register_of(second),
+        ) else {
             return Ok(false);
         };
         let first_expression = Expression::Variable(first.clone());
         let second_expression = Expression::Variable(second.clone());
         let double = self.is_double_value(&first_expression);
-        if first_register == second_register
-            || double != self.is_double_value(&second_expression)
-        {
+        if first_register == second_register || double != self.is_double_value(&second_expression) {
             return Ok(false);
         }
 
