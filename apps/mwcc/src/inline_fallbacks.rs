@@ -6,16 +6,14 @@
 //! become callable object members and where they enter definition order.
 
 use mwcc_syntax_trees::TranslationUnit;
-use mwcc_syntax_trees_to_machine_code::InlineBodySet;
+use mwcc_syntax_trees_to_machine_code::{InlineBodySet, InlineNestingBudget};
 use std::collections::HashMap;
 
-const MAXIMUM_NESTED_INLINE_DEPTH: usize = 2;
-
-pub(crate) fn materialize_depth_limited(unit: &mut TranslationUnit) {
+pub(crate) fn materialize_depth_limited(unit: &mut TranslationUnit, budget: InlineNestingBudget) {
     let groups = InlineBodySet::depth_limited_fallbacks(
         &unit.functions,
         &unit.skipped_inline_definitions,
-        MAXIMUM_NESTED_INLINE_DEPTH,
+        budget,
     );
     if groups.iter().all(Vec::is_empty) {
         return;

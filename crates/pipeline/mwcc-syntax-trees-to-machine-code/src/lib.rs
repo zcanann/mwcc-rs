@@ -61,7 +61,7 @@ mod value_tracking;
 mod wide_local_scalarization;
 
 use generator::Generator;
-pub use inline_expansion::InlineBodySet;
+pub use inline_expansion::{InlineBodySet, InlineNestingBudget};
 pub use inline_summaries::InlineSummaries;
 
 /// Apply optimizer bookkeeping that is observable only after every function in

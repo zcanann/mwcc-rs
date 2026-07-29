@@ -31,6 +31,47 @@ use std::collections::{HashMap, HashSet};
 use substitution::substitute_statement;
 use value_body::ValueInlineBody;
 
+/// Independent recursion budgets used by MWCC's constructor and ordinary
+/// inline-composition passes.
+///
+/// A constructor chain can exhaust its own budget and still enter small
+/// ordinary helpers. Treating both categories as one stack incorrectly
+/// materializes helpers reached after two base constructors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InlineNestingBudget {
+    pub constructor: usize,
+    pub ordinary: usize,
+}
+
+impl Default for InlineNestingBudget {
+    fn default() -> Self {
+        Self {
+            constructor: 2,
+            ordinary: 2,
+        }
+    }
+}
+
+impl InlineNestingBudget {
+    fn permits(self, active: &HashSet<String>, callee: &str) -> bool {
+        let constructor = is_constructor(callee);
+        let active_depth = active
+            .iter()
+            .filter(|name| is_constructor(name) == constructor)
+            .count();
+        active_depth
+            < if constructor {
+                self.constructor
+            } else {
+                self.ordinary
+            }
+    }
+}
+
+fn is_constructor(name: &str) -> bool {
+    name.starts_with("__ct__")
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct InlineBodySet {
     /// Read-only ordinary definitions available to semantic transaction
@@ -57,6 +98,7 @@ pub struct InlineBodySet {
     /// derived constructor. Ordinary automatic inlining preserves each
     /// construction-phase installation because MWCC does.
     elide_overwritten_vptr_stores: bool,
+    nesting_budget: InlineNestingBudget,
 }
 
 pub(crate) fn legacy_frame_residue_bytes(
@@ -264,16 +306,18 @@ impl InlineBodySet {
             required,
             asm_fragments,
             elide_overwritten_vptr_stores: false,
+            nesting_budget: InlineNestingBudget::default(),
         }
     }
 
-    /// Find retained-inline bodies reached beyond MWCC's nested automatic
-    /// inlining budget. Each returned name is grouped after the emitted
-    /// definition whose expansion first needs its weak callable fallback.
+    /// Find retained-inline bodies reached beyond MWCC's independent
+    /// constructor and ordinary nesting budgets. Each returned name is grouped
+    /// after the emitted definition whose expansion first needs its weak
+    /// callable fallback.
     pub fn depth_limited_fallbacks(
         definitions: &[Function],
         skipped: &[Function],
-        maximum_depth: usize,
+        budget: InlineNestingBudget,
     ) -> Vec<Vec<String>> {
         let bodies: HashMap<&str, &Function> = skipped
             .iter()
@@ -289,8 +333,8 @@ impl InlineBodySet {
                 let mut group = Vec::new();
                 collect_depth_limited_fallbacks(
                     definition,
-                    0,
-                    maximum_depth,
+                    [0, 0],
+                    budget,
                     &bodies,
                     &mut emitted,
                     &mut HashSet::new(),
@@ -303,6 +347,11 @@ impl InlineBodySet {
 
     pub fn with_overwritten_vptr_elision(mut self, enabled: bool) -> Self {
         self.elide_overwritten_vptr_stores = enabled;
+        self
+    }
+
+    pub fn with_nesting_budget(mut self, budget: InlineNestingBudget) -> Self {
+        self.nesting_budget = budget;
         self
     }
 
@@ -599,7 +648,7 @@ impl InlineBodySet {
                 Statement::Expression(Expression::Call { name, arguments })
                     if self.bodies.contains_key(name)
                         && !active.contains(name)
-                        && active.len() < 2
+                        && self.nesting_budget.permits(active, name)
                         && (stable_arguments(
                             &self.bodies[name],
                             arguments,
@@ -1162,8 +1211,8 @@ fn remove_overwritten_vptr_stores(statements: Vec<Statement>) -> Vec<Statement> 
 
 fn collect_depth_limited_fallbacks(
     function: &Function,
-    depth: usize,
-    maximum_depth: usize,
+    depth: [usize; 2],
+    budget: InlineNestingBudget,
     bodies: &HashMap<&str, &Function>,
     emitted: &mut HashSet<String>,
     active: &mut HashSet<String>,
@@ -1177,15 +1226,21 @@ fn collect_depth_limited_fallbacks(
         let Some(body) = bodies.get(name.as_str()).copied() else {
             continue;
         };
-        if depth >= maximum_depth {
+        let lane = usize::from(!is_constructor(&name));
+        let maximum_depth = if lane == 0 {
+            budget.constructor
+        } else {
+            budget.ordinary
+        };
+        if depth[lane] >= maximum_depth {
             if emitted.insert(name.clone()) {
                 output.push(name.clone());
                 // A materialized fallback is a fresh compilation root. Its
                 // own automatic-inlining budget starts over.
                 collect_depth_limited_fallbacks(
                     body,
-                    0,
-                    maximum_depth,
+                    [0, 0],
+                    budget,
                     bodies,
                     emitted,
                     &mut HashSet::new(),
@@ -1195,10 +1250,12 @@ fn collect_depth_limited_fallbacks(
             continue;
         }
         if active.insert(name.clone()) {
+            let mut nested_depth = depth;
+            nested_depth[lane] += 1;
             collect_depth_limited_fallbacks(
                 body,
-                depth + 1,
-                maximum_depth,
+                nested_depth,
+                budget,
                 bodies,
                 emitted,
                 active,
@@ -2061,7 +2118,7 @@ mod tests {
             InlineBodySet::depth_limited_fallbacks(
                 std::slice::from_ref(&root),
                 &skipped,
-                2
+                InlineNestingBudget::default(),
             ),
             [vec!["third".to_string()]]
         );
@@ -2076,6 +2133,54 @@ mod tests {
             expanded.statements.as_slice(),
             [Statement::Expression(Expression::Call { name, arguments })]
                 if name == "third" && arguments.is_empty()
+        ));
+    }
+
+    #[test]
+    fn constructor_depth_does_not_consume_the_ordinary_inline_budget() {
+        fn caller(name: &str, callee: &str) -> Function {
+            function(
+                name,
+                Vec::new(),
+                vec![Statement::Expression(Expression::Call {
+                    name: callee.into(),
+                    arguments: Vec::new(),
+                })],
+            )
+        }
+
+        let root = caller("root", "__ct__first");
+        let first = caller("__ct__first", "__ct__second");
+        let second = caller("__ct__second", "initialize");
+        let initialize = caller("initialize", "set_name");
+        let set_name = function(
+            "set_name",
+            Vec::new(),
+            vec![Statement::Store {
+                target: Expression::Variable("sink".into()),
+                value: Expression::IntegerLiteral(1),
+            }],
+        );
+        let skipped = [first, second, initialize, set_name];
+
+        assert_eq!(
+            InlineBodySet::depth_limited_fallbacks(
+                std::slice::from_ref(&root),
+                &skipped,
+                InlineNestingBudget::default(),
+            ),
+            Vec::<Vec<String>>::from([Vec::new()])
+        );
+
+        let expanded = InlineBodySet::analyze(&skipped)
+            .expand_calls(&root)
+            .expect("constructor and ordinary nesting lanes should compose independently");
+        assert!(matches!(
+            expanded.statements.as_slice(),
+            [Statement::Store {
+                target: Expression::Variable(name),
+                value: Expression::IntegerLiteral(1),
+            }] if name == "sink"
         ));
     }
 

@@ -707,6 +707,7 @@ fn compile(
         write_token_artifacts(directory, config, &tokens);
     }
     let behavior = mwcc_versions::Behavior::resolve(&config);
+    let inline_nesting_budget = mwcc_syntax_trees_to_machine_code::InlineNestingBudget::default();
     let is_cxx = source_is_cxx(source_name, source_language);
     let mut unit =
         mwcc_tokens_to_syntax_trees::parse_located_translation_unit_with_behavior_and_anonymous_namespace(
@@ -740,7 +741,7 @@ fn compile(
         );
     }
     if config.flags.inline_enabled {
-        inline_fallbacks::materialize_depth_limited(&mut unit);
+        inline_fallbacks::materialize_depth_limited(&mut unit, inline_nesting_budget);
     }
     let mut disabled_inline_materializations = std::collections::HashSet::new();
     if !config.flags.inline_enabled {
@@ -878,6 +879,7 @@ fn compile(
             &unit.functions,
             &unit.skipped_inline_definitions,
         )
+        .with_nesting_budget(inline_nesting_budget)
         .with_overwritten_vptr_elision(config.flags.whole_file_optimization_enabled())
     } else {
         mwcc_syntax_trees_to_machine_code::InlineBodySet::default()
