@@ -2210,9 +2210,7 @@ impl Generator {
             }
         }
         self.fold_structured_conditional_gotos();
-        if aggregate_call_copy_plan.is_some() {
-            thread_forward_unconditional_branch_chains(&mut self.output.instructions);
-        }
+        thread_forward_unconditional_branch_chains(&mut self.output.instructions);
         let forwardable_frame_scalar_offsets = frame_scalar_locals
             .iter()
             .filter(|local| !local.is_volatile)

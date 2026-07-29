@@ -257,14 +257,17 @@ fn conditional_goto_diamond(
     ))
 }
 
-/// Redirect an unconditional branch through any forward-only unconditional
-/// branch at its destination. Nested diamonds initially target their own join;
-/// after the parent diamond is complete that join may itself be the parent's
-/// skip-to-continuation branch.
+/// Redirect a forward branch through any forward-only unconditional branch at
+/// its destination. Nested diamonds initially target their own join; after the
+/// parent diamond is complete that join may itself be the parent's
+/// skip-to-continuation branch. This applies equally to a conditional false
+/// edge and an unconditional arm exit.
 pub(super) fn thread_forward_unconditional_branch_chains(instructions: &mut [Instruction]) {
     for index in 0..instructions.len() {
-        let Instruction::Branch { target } = instructions[index] else {
-            continue;
+        let target = match instructions[index] {
+            Instruction::Branch { target }
+            | Instruction::BranchConditionalForward { target, .. } => target,
+            _ => continue,
         };
         let mut destination = target;
         let mut remaining = instructions.len();
@@ -279,9 +282,11 @@ pub(super) fn thread_forward_unconditional_branch_chains(instructions: &mut [Ins
             remaining -= 1;
         }
         if destination != target {
-            instructions[index] = Instruction::Branch {
-                target: destination,
-            };
+            match &mut instructions[index] {
+                Instruction::Branch { target }
+                | Instruction::BranchConditionalForward { target, .. } => *target = destination,
+                _ => unreachable!("the source branch was matched above"),
+            }
         }
     }
 }
@@ -433,6 +438,32 @@ mod tests {
 
         assert_eq!(instructions[0], Instruction::Branch { target: 4 });
         assert_eq!(instructions[2], Instruction::Branch { target: 4 });
+    }
+
+    #[test]
+    fn threads_a_conditional_false_edge_through_an_arm_exit() {
+        let mut instructions = vec![
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 2,
+            },
+            Instruction::load_immediate(3, 1),
+            Instruction::Branch { target: 4 },
+            Instruction::load_immediate(3, 2),
+            Instruction::BranchToLinkRegister,
+        ];
+
+        thread_forward_unconditional_branch_chains(&mut instructions);
+
+        assert_eq!(
+            instructions[0],
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 4,
+            }
+        );
     }
 
     #[test]
