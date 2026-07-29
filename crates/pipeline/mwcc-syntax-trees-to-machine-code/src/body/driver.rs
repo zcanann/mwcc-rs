@@ -2243,6 +2243,9 @@ impl Generator {
         if self.try_endian_stack_unpack(function)? {
             return Ok(());
         }
+        if self.try_wide_call_result_mask_chain(function)? {
+            return Ok(());
+        }
         // A long long (64-bit) value lives in a general-register PAIR — r3:r4 is high:low. Route
         // every long-long-involved function to the dedicated handler so none falls through to the
         // 32-bit codegen (which would emit a single-register result for a 64-bit value — wrong
