@@ -965,6 +965,7 @@ fn lower_function_body(
     generator.schedule_saved_pointer_zero_test();
     generator.schedule_reciprocal_frame_fill();
     generator.reuse_absolute_pooled_float_literals();
+    generator.reuse_repeated_integer_constants();
     generator.finalize_structured_noncopy_conversion_lanes();
     generator.finalize_structured_guarded_ucode_packet_registers();
     generator.finalize_structured_noncopy_packet_registers();

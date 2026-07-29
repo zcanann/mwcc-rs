@@ -142,6 +142,7 @@ mod punned_select;
 mod punned_writeback;
 mod paired_float_product_schedule;
 mod pooled_float_literal_reuse;
+mod repeated_integer_constant_reuse;
 mod queue_callback_fold;
 mod reciprocal_frame_fill_schedule;
 mod resource_event_switch;
