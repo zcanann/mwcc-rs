@@ -286,7 +286,7 @@ fn owned_rtti_data_layout_interleaves_names_bases_and_vtables() {
         initial_bytes: Some(vec![0; 12]),
         is_const: false,
         force_full_data_section: true,
-        is_static: name.starts_with('@'),
+        is_static: name.starts_with('@') || name.starts_with("__RTTI__"),
         force_active: false,
         is_explicit_zero: false,
         preassigned_anonymous_ordinal: None,
@@ -323,6 +323,11 @@ fn owned_rtti_data_layout_interleaves_names_bases_and_vtables() {
         owned_rtti_data_layout_order(&objects),
         [3, 0, 2, 1],
         "derived name, newly reached base name, bases, vtable"
+    );
+    assert_eq!(
+        owned_rtti_local_symbol_order(&objects),
+        [3, 0, 4, 2, 5],
+        "derived name, base name and handle, bases, derived handle"
     );
 }
 

@@ -307,6 +307,68 @@ fn owned_rtti_data_layout_order(objects: &[DataObject<'_>]) -> Vec<usize> {
     order
 }
 
+/// Local-symbol creation order for the same owned RTTI transactions.
+///
+/// Names and handles are created while walking type ownership; the inheritance
+/// table follows the newly reached base handle. Vtables themselves remain in
+/// the later global run.
+fn owned_rtti_local_symbol_order(objects: &[DataObject<'_>]) -> Vec<usize> {
+    let by_name: HashMap<&str, usize> = objects
+        .iter()
+        .enumerate()
+        .map(|(index, object)| (object.name, index))
+        .collect();
+    let relocation_target = |object_index: usize, offset: u32| {
+        objects[object_index]
+            .relocations
+            .iter()
+            .find(|relocation| relocation.offset == offset)
+            .and_then(|relocation| by_name.get(relocation.target.as_str()).copied())
+    };
+    let mut order = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut append_local = |index: usize| {
+        if objects[index].is_static && seen.insert(index) {
+            order.push(index);
+        }
+    };
+
+    for vtable in objects.iter().filter(|object| {
+        object.name.starts_with("__vt__")
+            && object
+                .relocations
+                .iter()
+                .any(|relocation| relocation.target.starts_with("__RTTI__"))
+    }) {
+        let Some(handle_index) = vtable
+            .relocations
+            .iter()
+            .find(|relocation| relocation.target.starts_with("__RTTI__"))
+            .and_then(|relocation| by_name.get(relocation.target.as_str()).copied())
+        else {
+            continue;
+        };
+        if let Some(name_index) = relocation_target(handle_index, 0) {
+            append_local(name_index);
+        }
+        if let Some(bases_index) = relocation_target(handle_index, 4) {
+            for base_handle_index in objects[bases_index]
+                .relocations
+                .iter()
+                .filter_map(|relocation| by_name.get(relocation.target.as_str()).copied())
+            {
+                if let Some(base_name_index) = relocation_target(base_handle_index, 0) {
+                    append_local(base_name_index);
+                }
+                append_local(base_handle_index);
+            }
+            append_local(bases_index);
+        }
+        append_local(handle_index);
+    }
+    order
+}
+
 /// The Metrowerks `.comment` record for a plain function. Bytes 12..15 spell the
 /// compiler version (`02 04 0X` = 2.4.X) and byte 11 is a format marker that
 /// tracks the version line; [`comment_record`] patches them per build. After the
@@ -1676,6 +1738,15 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     let mut local_data_symbols: std::collections::HashMap<&str, u32> =
         std::collections::HashMap::new();
     let mut emitted_zero_static: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let owned_rtti_local_order = if input.object_format.owned_rtti_closure_relocation_order {
+        owned_rtti_local_symbol_order(&input.data_objects)
+    } else {
+        Vec::new()
+    };
+    let deferred_owned_rtti_locals: std::collections::HashSet<&str> = owned_rtti_local_order
+        .iter()
+        .map(|&index| input.data_objects[index].name)
+        .collect();
     // A function-body string's `@N` data object carries its bytes here (for section layout) but its
     // SYMBOL is emitted per-function in the `@N` run below, interleaved with that function's
     // constants/unwind entries — so skip those objects in this grouped static run. (A FILE-SCOPE
@@ -1810,6 +1881,7 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             && (static_forward(object)
                 || input.object_format.local_data_symbols_in_declaration_order)
             && !function_string_names.contains(object.name)
+            && !deferred_owned_rtti_locals.contains(object.name)
             && object.static_local_owner.is_none()
             // Declared BETWEEN functions -> emitted at its source position in
             // the per-function run below (ansi_fp's `unused` + its string).
@@ -2573,6 +2645,23 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                 local_function_symbols.insert(function.name, symbol);
             }
         }
+    }
+    for object_index in owned_rtti_local_order {
+        let object = &input.data_objects[object_index];
+        if local_data_symbols.contains_key(object.name) {
+            continue;
+        }
+        local_data_symbols.insert(object.name, (symtab.len() / SYMBOL_SIZE) as u32);
+        write_symbol(
+            &mut symtab,
+            strtab.add(object.name),
+            data_offsets[object.name],
+            data_sizes[object.name],
+            STB_LOCAL_OBJECT,
+            0,
+            index_of(data_section[object.name]) as u16,
+        );
+        comment_values.push((data_aligns[object.name], data_comment_flags(object)));
     }
     // A data-only unit has no per-function local-symbol block in which to create
     // the writable section anchor. Emit it at the end of the LOCAL run, still
