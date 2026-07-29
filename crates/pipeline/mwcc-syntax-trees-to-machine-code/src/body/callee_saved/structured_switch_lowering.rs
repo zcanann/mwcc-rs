@@ -70,16 +70,22 @@ impl SwitchLowering {
                     scrutinee,
                     arms,
                     default,
-                } if arms.iter().all(|arm| !arm.falls_through) => {
+                } if arms.iter().all(|arm| !arm.falls_through) || default.is_none() => {
                     let mut seen = HashSet::new();
                     if !arms.iter().all(|arm| seen.insert(arm.value)) {
                         lowered.push(statement.clone());
                         continue;
                     }
-                    let mut cases = arms
-                        .iter()
-                        .map(|arm| (arm.value, self.lower_arm(&arm.body)))
-                        .collect::<Vec<_>>();
+                    let mut continuation = Vec::new();
+                    let mut cases = Vec::with_capacity(arms.len());
+                    for arm in arms.iter().rev() {
+                        let mut body = self.lower_arm(&arm.body);
+                        if arm.falls_through {
+                            body.extend(continuation.clone());
+                        }
+                        continuation = body.clone();
+                        cases.push((arm.value, body));
+                    }
                     let default = default
                         .as_ref()
                         .map_or_else(Vec::new, |body| self.lower_arm(body));
@@ -232,6 +238,67 @@ mod tests {
                 falls_through: true,
             }],
             default: None,
+        };
+        let lowered =
+            lower_structured_switches(&function(vec![switch])).expect("lowered fallthrough");
+        assert!(matches!(
+            lowered.statements.as_slice(),
+            [Statement::Assign { .. }, Statement::If { then_body, .. }]
+                if then_body.is_empty()
+        ));
+    }
+
+    #[test]
+    fn carries_a_fallthrough_case_into_the_next_case_body() {
+        let switch = Statement::Switch {
+            scrutinee: Expression::Variable("kind".into()),
+            arms: vec![
+                SwitchArm {
+                    value: 0,
+                    body: ArmBody::Statements(Vec::new()),
+                    falls_through: true,
+                },
+                SwitchArm {
+                    value: 2,
+                    body: ArmBody::Return(Expression::IntegerLiteral(6)),
+                    falls_through: false,
+                },
+            ],
+            default: None,
+        };
+        let lowered =
+            lower_structured_switches(&function(vec![switch])).expect("lowered fallthrough");
+        assert!(matches!(
+            lowered.statements.as_slice(),
+            [
+                Statement::Assign { .. },
+                Statement::If {
+                    then_body,
+                    else_body,
+                    ..
+                },
+            ] if matches!(then_body.as_slice(), [Statement::Return(Some(Expression::IntegerLiteral(6)))])
+                && matches!(
+                    else_body.as_slice(),
+                    [Statement::If { then_body, .. }]
+                        if matches!(
+                            then_body.as_slice(),
+                            [Statement::Return(Some(Expression::IntegerLiteral(6)))]
+                        )
+                )
+        ));
+    }
+
+    #[test]
+    fn leaves_default_fallthrough_order_for_a_dedicated_owner() {
+        let switch = Statement::Switch {
+            scrutinee: Expression::Variable("kind".into()),
+            arms: vec![SwitchArm {
+                value: 1,
+                body: ArmBody::Statements(Vec::new()),
+                falls_through: true,
+            }],
+            default: Some(ArmBody::Return(Expression::IntegerLiteral(2))),
         };
         assert!(lower_structured_switches(&function(vec![switch])).is_none());
     }
