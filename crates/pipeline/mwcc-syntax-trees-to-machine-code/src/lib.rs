@@ -910,6 +910,7 @@ fn lower_function_body(
     generator.reuse_guarded_call_pointer_loads();
     generator.normalize_scratch_copy_convention();
     generator.schedule_saved_base_call_argument();
+    generator.finalize_exclusive_arm_copy_encodings();
     generator.schedule_linkage_first_function_address();
     generator.schedule_retained_eager_entry_argument();
     generator.schedule_retained_split_member_guard();

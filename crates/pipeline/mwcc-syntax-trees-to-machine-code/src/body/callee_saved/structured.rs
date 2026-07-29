@@ -2239,6 +2239,7 @@ impl Generator {
             self.schedule_exclusive_arm_callback_setup();
             self.schedule_exclusive_arm_float_entry();
             self.schedule_exclusive_arm_mask_packet();
+            self.schedule_exclusive_arm_object_creation();
         }
         if dense_entry_prefix {
             self.schedule_structured_prefixed_frame_entry();
