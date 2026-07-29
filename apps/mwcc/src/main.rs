@@ -2449,6 +2449,24 @@ fn compile(
                 _ => None,
             })
             .collect();
+        // Hand-written asm resolves every operand against declarations already
+        // visible to the assembler. A prototyped static target therefore gets
+        // its LOCAL FUNC symbol at the declaration transaction even for a
+        // direct branch; ordinary generated REL24 calls keep their definition
+        // position. The EABI startup's __init_registers/__init_data prototypes
+        // are the canonical measured case.
+        let asm_referenced: std::collections::HashSet<&str> = machine_functions
+            .iter()
+            .filter(|function| function.is_asm)
+            .flat_map(|function| function.relocations.iter())
+            .filter_map(|relocation| match &relocation.target {
+                mwcc_machine_code::RelocationTarget::External(name)
+                | mwcc_machine_code::RelocationTarget::ExternalWithAddend(name, _) => {
+                    Some(name.as_str())
+                }
+                _ => None,
+            })
+            .collect();
         let mut seen = std::collections::HashSet::new();
         let mut symbols = Vec::new();
         for global in &defined_globals {
@@ -2482,7 +2500,8 @@ fn compile(
         }
         for (name, _, _) in &unit.prototypes {
             if static_definition_index.contains_key(name.as_str())
-                && text_address_taken.contains(name.as_str())
+                && (text_address_taken.contains(name.as_str())
+                    || asm_referenced.contains(name.as_str()))
                 && seen.insert(name.clone())
             {
                 symbols.push(name.clone());
@@ -2695,6 +2714,9 @@ fn compile(
 
 #[cfg(test)]
 mod tests {
+    #[path = "asm_symbol_creation.rs"]
+    mod asm_symbol_creation;
+
     #[path = "address_taken_scalar.rs"]
     mod address_taken_scalar;
 

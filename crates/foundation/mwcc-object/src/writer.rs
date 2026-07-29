@@ -3020,9 +3020,11 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         let (early_implicit_ordered, implicit_ordered): (Vec<&str>, Vec<&str>) = implicit_ordered
             .into_iter()
             .partition(|name| early_implicit.contains(name));
-        // Build 163 creates an absolute-address symbol while materializing its
-        // ADDR16 pair, before it registers the current function. SDA21 data
-        // references and calls retain the ordinary function-first ordering.
+        // Build 163 creates an absolute-address symbol while materializing a
+        // generated ADDR16 pair, before it registers the current function.
+        // Hand-written asm is already an ordered source event stream: its
+        // operands register after the asm entry symbol in operand order.
+        // SDA21 data references and calls retain ordinary function-first order.
         let absolute_targets: std::collections::HashSet<&str> = function
             .relocations
             .iter()
@@ -3043,7 +3045,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         let (absolute_ordered, explicit_ordered): (Vec<&str>, Vec<&str>) = if matches!(
             input.object_format.function_symbol_order,
             FunctionSymbolOrder::FunctionFirst | FunctionSymbolOrder::LegacyDeferred
-        ) {
+        ) && !function.is_asm
+        {
             explicit_ordered
                 .into_iter()
                 .partition(|name| absolute_targets.contains(name))
