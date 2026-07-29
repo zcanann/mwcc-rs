@@ -26,6 +26,15 @@ impl Generator {
         if !self.behavior.contract_floating_point {
             return Ok(false);
         }
+        if self.try_emit_promoted_integer_fused_triplet(
+            operator,
+            left,
+            right,
+            destination,
+            double,
+        )? {
+            return Ok(true);
+        }
         if self.try_emit_located_fused_triplet(operator, left, right, destination, double)? {
             return Ok(true);
         }
@@ -100,6 +109,54 @@ impl Generator {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    /// Emit `(int * float_load) + float_load` as the contracted mixed-type
+    /// triplet selected by MWCC. The integer is promoted through the magic-bias
+    /// frame image into f2, while the multiplier and addend occupy f1 and f0.
+    fn try_emit_promoted_integer_fused_triplet(
+        &mut self,
+        operator: BinaryOperator,
+        left: &Expression,
+        right: &Expression,
+        destination: u8,
+        double: bool,
+    ) -> Compilation<bool> {
+        if double || operator != BinaryOperator::Add {
+            return Ok(false);
+        }
+        let Some((integer, multiplier, addend)) = promoted_integer_triplet(
+            left,
+            right,
+            |expression| self.general_register_of_leaf(expression).is_ok(),
+            |expression| self.is_float_located(expression),
+        ) else {
+            return Ok(false);
+        };
+
+        if destination >= mwcc_vreg::VIRTUAL_BASE {
+            self.register_prefer.insert(
+                mwcc_vreg::VirtualRegister::new(
+                    u32::from(destination - mwcc_vreg::VIRTUAL_BASE),
+                    mwcc_vreg::Class::Float,
+                ),
+                0,
+            );
+        }
+        let promoted = self.fresh_virtual_float_preferring(2);
+        let multiplier_register = self.fresh_virtual_float_preferring(1);
+        self.emit_int_to_float(integer, promoted, false, 3)?;
+        self.emit_located_operand(multiplier, multiplier_register)?;
+        self.emit_located_operand(addend, destination)?;
+        self.output
+            .instructions
+            .push(Instruction::FloatMultiplyAddSingle {
+                d: destination,
+                a: promoted,
+                c: multiplier_register,
+                b: destination,
+            });
+        Ok(true)
     }
 
     /// Emit the measured `addend + x * y` memory triplet.
@@ -187,6 +244,35 @@ fn register_product(
     (is_register_leaf(left) && is_register_leaf(right)).then_some((left, right))
 }
 
+fn promoted_integer_triplet<'a>(
+    left: &'a Expression,
+    right: &'a Expression,
+    is_integer: impl Fn(&Expression) -> bool,
+    is_float_load: impl Fn(&Expression) -> bool,
+) -> Option<(&'a Expression, &'a Expression, &'a Expression)> {
+    let (product, addend) = if as_multiplication(left).is_some() {
+        (left, right)
+    } else if as_multiplication(right).is_some() {
+        (right, left)
+    } else {
+        return None;
+    };
+    if !is_float_load(addend) {
+        return None;
+    }
+    let (first, second) = as_multiplication(product)?;
+    match (
+        is_integer(first),
+        is_float_load(first),
+        is_integer(second),
+        is_float_load(second),
+    ) {
+        (true, false, false, true) => Some((first, second, addend)),
+        (false, true, true, false) => Some((second, first, addend)),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,5 +299,31 @@ mod tests {
 
         assert!(register_product(&product(variable("x"), variable("y")), is_variable,).is_some());
         assert!(register_product(&product(member(0), member(8)), is_variable).is_none());
+    }
+
+    #[test]
+    fn recognizes_an_integer_promoted_fused_triplet() {
+        let variable = |name: &str| Expression::Variable(name.into());
+        let member = |offset| Expression::Member {
+            base: Box::new(variable("data")),
+            offset,
+            member_type: Type::Float,
+            index_stride: None,
+        };
+        let expression = product(variable("count"), member(4));
+        let is_integer =
+            |expression: &Expression| matches!(expression, Expression::Variable(name) if name == "count");
+        let is_float_load = |expression: &Expression| matches!(expression, Expression::Member {
+            member_type: Type::Float,
+            ..
+        });
+
+        assert!(promoted_integer_triplet(
+            &expression,
+            &member(8),
+            is_integer,
+            is_float_load,
+        )
+        .is_some());
     }
 }

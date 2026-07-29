@@ -3,7 +3,7 @@
 use crate::generator::*;
 use mwcc_core::Compilation;
 use mwcc_machine_code::Instruction;
-use mwcc_syntax_trees::{ArmBody, Expression, Pointee, Statement, Type};
+use mwcc_syntax_trees::{ArmBody, Expression, Function, Pointee, Statement, Type};
 
 pub(crate) fn integer_cast_is_member_storage_identity(
     target_type: Type,
@@ -47,17 +47,48 @@ impl Generator {
     /// Count float-to-integer conversions in a structured body. MWCC assigns
     /// one eight-byte conversion image per syntactic conversion, so frame
     /// owners need this number before they emit their prologue.
-    pub(crate) fn count_float_to_integer_conversions(&self, statements: &[Statement]) -> usize {
-        fn expression_count(generator: &Generator, expression: &Expression) -> usize {
+    pub(crate) fn count_float_to_integer_conversions(&self, function: &Function) -> usize {
+        let declared_float_values = function
+            .parameters
+            .iter()
+            .filter(|parameter| matches!(parameter.parameter_type, Type::Float | Type::Double))
+            .map(|parameter| parameter.name.as_str())
+            .chain(
+                function
+                    .locals
+                    .iter()
+                    .filter(|local| matches!(local.declared_type, Type::Float | Type::Double))
+                    .map(|local| local.name.as_str()),
+            )
+            .collect::<std::collections::HashSet<_>>();
+
+        fn expression_is_float(
+            generator: &Generator,
+            declared_float_values: &std::collections::HashSet<&str>,
+            expression: &Expression,
+        ) -> bool {
+            matches!(expression, Expression::Variable(name) if declared_float_values.contains(name.as_str()))
+                || generator.is_float_value(expression)
+                || generator.is_float_operand(expression)
+                || matches!(expression, Expression::Call { name, .. }
+                    if matches!(generator.call_return_types.get(name), Some(Type::Float | Type::Double)))
+        }
+
+        fn expression_count(
+            generator: &Generator,
+            declared_float_values: &std::collections::HashSet<&str>,
+            expression: &Expression,
+        ) -> usize {
             match expression {
                 Expression::Assign { target, value } => {
                     usize::from(generator.float_to_integer_store_needs_conversion(target, value))
-                        + expression_count(generator, target)
-                        + expression_count(generator, value)
+                        + expression_count(generator, declared_float_values, target)
+                        + expression_count(generator, declared_float_values, value)
                 }
                 Expression::Binary { left, right, .. }
                 | Expression::Comma { left, right } => {
-                    expression_count(generator, left) + expression_count(generator, right)
+                    expression_count(generator, declared_float_values, left)
+                        + expression_count(generator, declared_float_values, right)
                 }
                 Expression::Cast {
                     target_type,
@@ -74,11 +105,8 @@ impl Generator {
                                 | Type::UnsignedShort
                                 | Type::LongLong
                                 | Type::UnsignedLongLong
-                        ) && (generator.is_float_value(operand)
-                            || generator.is_float_operand(operand)
-                            || matches!(operand.as_ref(), Expression::Call { name, .. }
-                                if matches!(generator.call_return_types.get(name), Some(Type::Float | Type::Double))))
-                    ) + expression_count(generator, operand)
+                        ) && expression_is_float(generator, declared_float_values, operand)
+                    ) + expression_count(generator, declared_float_values, operand)
                 }
                 Expression::Unary { operand, .. }
                 | Expression::IndexedUpdateValue { value: operand }
@@ -86,16 +114,16 @@ impl Generator {
                 | Expression::AddressOf { operand }
                 | Expression::PostStep {
                     target: operand, ..
-                } => expression_count(generator, operand),
+                } => expression_count(generator, declared_float_values, operand),
                 Expression::Conditional {
                     condition,
                     when_true,
                     when_false,
                     ..
                 } => {
-                    expression_count(generator, condition)
-                        + expression_count(generator, when_true)
-                        + expression_count(generator, when_false)
+                    expression_count(generator, declared_float_values, condition)
+                        + expression_count(generator, declared_float_values, when_true)
+                        + expression_count(generator, declared_float_values, when_false)
                 }
                 Expression::BitFieldRead {
                     extracted, storage, ..
@@ -104,30 +132,36 @@ impl Generator {
                     base: extracted,
                     index: storage,
                 } => {
-                    expression_count(generator, extracted)
-                        + expression_count(generator, storage)
+                    expression_count(generator, declared_float_values, extracted)
+                        + expression_count(generator, declared_float_values, storage)
                 }
                 Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
-                    expression_count(generator, base)
+                    expression_count(generator, declared_float_values, base)
                 }
                 Expression::Call { arguments, .. } => arguments
                     .iter()
-                    .map(|argument| expression_count(generator, argument))
+                    .map(|argument| {
+                        expression_count(generator, declared_float_values, argument)
+                    })
                     .sum(),
                 Expression::CallThrough { target, arguments } => {
-                    expression_count(generator, target)
+                    expression_count(generator, declared_float_values, target)
                         + arguments
                             .iter()
-                            .map(|argument| expression_count(generator, argument))
+                            .map(|argument| {
+                                expression_count(generator, declared_float_values, argument)
+                            })
                             .sum::<usize>()
                 }
                 Expression::VirtualCall {
                     object, arguments, ..
                 } => {
-                    expression_count(generator, object)
+                    expression_count(generator, declared_float_values, object)
                         + arguments
                             .iter()
-                            .map(|argument| expression_count(generator, argument))
+                            .map(|argument| {
+                                expression_count(generator, declared_float_values, argument)
+                            })
                             .sum::<usize>()
                 }
                 Expression::ConstructedNew {
@@ -135,15 +169,19 @@ impl Generator {
                     arguments,
                     ..
                 } => {
-                    expression_count(generator, allocation)
+                    expression_count(generator, declared_float_values, allocation)
                         + arguments
                             .iter()
-                            .map(|argument| expression_count(generator, argument))
+                            .map(|argument| {
+                                expression_count(generator, declared_float_values, argument)
+                            })
                             .sum::<usize>()
                 }
                 Expression::AggregateLiteral(elements) => elements
                     .iter()
-                    .map(|element| expression_count(generator, element))
+                    .map(|element| {
+                        expression_count(generator, declared_float_values, element)
+                    })
                     .sum(),
                 Expression::IntegerLiteral(_)
                 | Expression::FloatLiteral(_)
@@ -153,51 +191,69 @@ impl Generator {
             }
         }
 
-        fn arm_count(generator: &Generator, arm: &ArmBody) -> usize {
+        fn arm_count(
+            generator: &Generator,
+            declared_float_values: &std::collections::HashSet<&str>,
+            arm: &ArmBody,
+        ) -> usize {
             match arm {
-                ArmBody::Return(expression) => expression_count(generator, expression),
-                ArmBody::Statements(statements) => statement_count(generator, statements),
+                ArmBody::Return(expression) => {
+                    expression_count(generator, declared_float_values, expression)
+                }
+                ArmBody::Statements(statements) => {
+                    statement_count(generator, declared_float_values, statements)
+                }
             }
         }
 
-        fn statement_count(generator: &Generator, statements: &[Statement]) -> usize {
+        fn statement_count(
+            generator: &Generator,
+            declared_float_values: &std::collections::HashSet<&str>,
+            statements: &[Statement],
+        ) -> usize {
             statements
                 .iter()
                 .map(|statement| match statement {
                     Statement::Store { target, value } => {
                         usize::from(
                             generator.float_to_integer_store_needs_conversion(target, value),
-                        ) + expression_count(generator, target)
-                            + expression_count(generator, value)
+                        ) + expression_count(generator, declared_float_values, target)
+                            + expression_count(generator, declared_float_values, value)
                     }
                     Statement::Assign { value, .. } | Statement::Expression(value) => {
-                        expression_count(generator, value)
+                        expression_count(generator, declared_float_values, value)
                     }
                     Statement::If {
                         condition,
                         then_body,
                         else_body,
                     } => {
-                        expression_count(generator, condition)
-                            + statement_count(generator, then_body)
-                            + statement_count(generator, else_body)
+                        expression_count(generator, declared_float_values, condition)
+                            + statement_count(generator, declared_float_values, then_body)
+                            + statement_count(generator, declared_float_values, else_body)
                     }
                     Statement::Return(value) => value
                         .as_ref()
-                        .map_or(0, |value| expression_count(generator, value)),
+                        .map_or(0, |value| {
+                            expression_count(generator, declared_float_values, value)
+                        }),
                     Statement::Switch {
                         scrutinee,
                         arms,
                         default,
                     } => {
-                        expression_count(generator, scrutinee)
+                        expression_count(generator, declared_float_values, scrutinee)
                             + arms
                                 .iter()
-                                .map(|arm| arm_count(generator, &arm.body))
+                                .map(|arm| {
+                                    arm_count(generator, declared_float_values, &arm.body)
+                                })
                                 .sum::<usize>()
                             + default
                                 .as_ref()
-                                .map_or(0, |arm| arm_count(generator, arm))
+                                .map_or(0, |arm| {
+                                    arm_count(generator, declared_float_values, arm)
+                                })
                     }
                     Statement::Loop {
                         initializer,
@@ -208,14 +264,20 @@ impl Generator {
                     } => {
                         initializer
                             .as_ref()
-                            .map_or(0, |value| expression_count(generator, value))
+                            .map_or(0, |value| {
+                                expression_count(generator, declared_float_values, value)
+                            })
                             + condition
                                 .as_ref()
-                                .map_or(0, |value| expression_count(generator, value))
+                                .map_or(0, |value| {
+                                    expression_count(generator, declared_float_values, value)
+                                })
                             + step
                                 .as_ref()
-                                .map_or(0, |value| expression_count(generator, value))
-                            + statement_count(generator, body)
+                                .map_or(0, |value| {
+                                    expression_count(generator, declared_float_values, value)
+                                })
+                            + statement_count(generator, declared_float_values, body)
                     }
                     Statement::Break
                     | Statement::Continue
@@ -226,7 +288,46 @@ impl Generator {
                 .sum()
         }
 
-        statement_count(self, statements)
+        let local_initializer_count = function
+            .locals
+            .iter()
+            .filter_map(|local| {
+                let initializer = local.initializer.as_ref()?;
+                Some(
+                    usize::from(
+                        matches!(
+                            local.declared_type,
+                            Type::Int
+                                | Type::UnsignedInt
+                                | Type::Char
+                                | Type::UnsignedChar
+                                | Type::Short
+                                | Type::UnsignedShort
+                                | Type::LongLong
+                                | Type::UnsignedLongLong
+                        ) && expression_is_float(self, &declared_float_values, initializer),
+                    ) + expression_count(self, &declared_float_values, initializer),
+                )
+            })
+            .sum::<usize>();
+        let return_count = function.return_expression.as_ref().map_or(0, |expression| {
+            usize::from(
+                matches!(
+                    function.return_type,
+                    Type::Int
+                        | Type::UnsignedInt
+                        | Type::Char
+                        | Type::UnsignedChar
+                        | Type::Short
+                        | Type::UnsignedShort
+                        | Type::LongLong
+                        | Type::UnsignedLongLong
+                ) && expression_is_float(self, &declared_float_values, expression),
+            ) + expression_count(self, &declared_float_values, expression)
+        });
+        local_initializer_count
+            + statement_count(self, &declared_float_values, &function.statements)
+            + return_count
     }
 
     fn store_target_pointee(&self, target: &Expression) -> Option<Pointee> {

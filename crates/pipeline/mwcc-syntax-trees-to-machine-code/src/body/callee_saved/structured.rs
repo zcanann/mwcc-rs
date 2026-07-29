@@ -278,6 +278,10 @@ impl Generator {
         }) {
             decline!("an address-taken scalar cannot use the structured frame");
         }
+        let int_to_float_conversion_count =
+            self.count_integer_to_float_conversions(function);
+        let float_to_int_conversion_count =
+            self.count_float_to_integer_conversions(function);
         let frame_array_plan = if with_frame_array {
             let Some(plan) = plan_structured_frame_arrays(function) else {
                 decline!("automatic array shape is unsupported");
@@ -286,8 +290,12 @@ impl Generator {
                 && aggregate_frame_locals.is_empty()
                 && frame_scalar_parameters.is_empty()
                 && frame_scalar_locals.is_empty()
+                && int_to_float_conversion_count == 0
+                && float_to_int_conversion_count == 0
             {
-                decline!("frame mode requires an automatic array, aggregate, or scalar slot");
+                decline!(
+                    "frame mode requires an automatic array, aggregate, scalar, or conversion slot"
+                );
             }
             if !((function.return_type == Type::Void && function.return_expression.is_none())
                     || (matches!(
@@ -521,8 +529,6 @@ impl Generator {
         };
         let path_reuse_frame_bytes = i16::try_from(4 * deferred_home_plan.path_reuse_count)
             .map_err(|_| Diagnostic::error("structured path-reuse frame is too large"))?;
-        let int_to_float_conversion_count =
-            self.count_integer_to_float_conversions(function);
         let variadic_output_frame = (self.behavior.frame_convention
             == FrameConvention::LinkageFirst)
             .then(|| {
@@ -604,8 +610,6 @@ impl Generator {
                 .checked_sub(8)
                 .ok_or_else(|| Diagnostic::error("structured local frame is too large"))?;
         }
-        let float_to_int_conversion_count =
-            self.count_float_to_integer_conversions(&function.statements);
         if float_to_int_conversion_count != 0 {
             let occupied_end = 8i16
                 .checked_add(local_region_bytes)
