@@ -169,13 +169,11 @@ impl Generator {
     }
 
     /// Load a global under absolute (`-sdata 0`) addressing. mwcc's address-mode
-    /// selection follows from r0 never being a usable base: when the destination
-    /// is a non-r0 GPR, the address materializes into it (`lis dest; addi dest;
-    /// load 0(dest)`) — base and destination coincide, so nothing folds; a float
-    /// destination (an FPR) takes a separate free GPR base with `name@l` folded
-    /// into the load. An integer load whose destination is the scratch r0 would
-    /// need a separate base that avoids the (un-reserved) sibling operand — that
-    /// liveness is the register allocator's to track, so it defers for now.
+    /// selection follows from r0 never being a usable base. O0 materializes the
+    /// complete address (`lis`; `addi`; load), while optimized builds fold
+    /// `name@l` into the load. A float destination (an FPR) and an integer load
+    /// into scratch r0 take a separate free GPR base; ordinary integer results
+    /// can use their destination as that base.
     pub(crate) fn emit_global_load_absolute(
         &mut self,
         name: &str,
@@ -198,7 +196,13 @@ impl Generator {
         }
         if destination != GENERAL_SCRATCH {
             self.emit_address_high(destination, name);
-            self.emit_address_low(destination, name);
+            if self.behavior.absolute_access_style
+                == mwcc_versions::AbsoluteAccessStyle::MaterializedAddress
+            {
+                self.emit_address_low(destination, name);
+            } else {
+                self.record_relocation(RelocationKind::Addr16Lo, name);
+            }
             let load = self.global_load_instruction(global_type, destination, destination)?;
             self.output.instructions.push(load);
             return Ok(());

@@ -2723,6 +2723,9 @@ mod tests {
     #[path = "float_return_narrowing.rs"]
     mod float_return_narrowing;
 
+    #[path = "global_absolute_load.rs"]
+    mod global_absolute_load;
+
     #[path = "address_taken_scalar.rs"]
     mod address_taken_scalar;
 
