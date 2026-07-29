@@ -419,8 +419,15 @@ impl Generator {
             (promoted_values + self.legacy_discarded_call_locals).div_ceil(2)
         };
         let entry_lane_bytes = i16::try_from(extra_lane_count * 8).unwrap_or(i16::MAX);
-        let inline_lane_bytes =
-            i16::try_from(self.legacy_inline_expansion_frame_bytes).unwrap_or(i16::MAX);
+        // PreserveLogicalSize means the source-level local region already
+        // accounts for the allocator's retained value storage. That policy
+        // applies to both entry values and eliminated inline bindings: adding
+        // either provenance here would charge the same physical region twice.
+        let inline_lane_bytes = if preserve_logical_size {
+            0
+        } else {
+            i16::try_from(self.legacy_inline_expansion_frame_bytes).unwrap_or(i16::MAX)
+        };
         // A single inlined aggregate setter reuses the retained two-parameter
         // entry-table lane as the anonymous slot below its frame-resident
         // aggregate. The lane therefore moves the aggregate up by one word

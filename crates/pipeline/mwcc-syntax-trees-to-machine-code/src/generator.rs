@@ -210,6 +210,9 @@ pub(crate) enum LegacyCalleeSavedFrameLayout {
     RetainGuardedEntryParameterTable,
     RetainEagerLocalLane,
     ReserveForwardedParameterLane,
+    /// Source-owned stack storage already represents all retained optimizer
+    /// values, including eliminated inline bindings. Do not append inferred
+    /// entry or inline lanes during linkage-first normalization.
     PreserveLogicalSize,
 }
 
