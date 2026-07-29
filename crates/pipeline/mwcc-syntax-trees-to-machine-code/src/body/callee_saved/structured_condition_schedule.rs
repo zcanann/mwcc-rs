@@ -13,10 +13,22 @@ impl Generator {
     /// directly is semantically equivalent, but loses that latency-hiding copy
     /// and changes every following call relocation by one instruction.
     pub(super) fn schedule_entry_member_saved_home(&mut self) {
-        // An inlined statement body inherits the callee's value graph but not
-        // its entry schedule. MWCC keeps the direct saved-home load in that
-        // composition, so only the original function owns this delay.
-        if self.inline_statement_body_substitutions != 0 {
+        // A pure forwarding wrapper inherits the callee's value graph but not
+        // its entry schedule, so MWCC keeps the direct saved-home load there.
+        // A caller that continues into its own floating arithmetic after an
+        // inlined helper still owns the delayed entry schedule.
+        let caller_continues_after_inline = self.output.instructions.iter().any(|instruction| {
+            matches!(
+                instruction,
+                Instruction::FloatAddSingle { .. }
+                    | Instruction::FloatSubtractSingle { .. }
+                    | Instruction::FloatMultiplySingle { .. }
+                    | Instruction::FloatDivideSingle { .. }
+                    | Instruction::FloatMultiplyAddSingle { .. }
+                    | Instruction::FloatMultiplySubtractSingle { .. }
+            )
+        });
+        if self.inline_statement_body_substitutions != 0 && !caller_continues_after_inline {
             return;
         }
         if let Some((start, saved)) =

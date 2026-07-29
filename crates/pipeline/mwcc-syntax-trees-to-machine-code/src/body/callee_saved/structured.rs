@@ -2319,6 +2319,7 @@ impl Generator {
         // destinations from here onward.
         self.schedule_entry_member_saved_home();
         self.schedule_guarded_saved_receiver_float_call();
+        self.schedule_inline_float_pair_final_call();
         // Each source-level `if` creates a pair of optimizer labels even when
         // both collapse to direct instruction offsets. An explicit `else`
         // contributes its additional arm label. Build 163 exposes those

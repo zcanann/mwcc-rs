@@ -33,6 +33,39 @@ impl Generator {
         self.output.anonymous_label_bump += 6;
     }
 
+    /// Fill the load-to-use gap of an inlined two-component float scale with
+    /// the entry receiver needed by the immediately following call.
+    pub(super) fn schedule_inline_float_pair_final_call(&mut self) {
+        let Some(start) = self.output.instructions.windows(9).position(|window| {
+            matches!(window, [
+                Instruction::LoadFloatSingle { d: scale, a: owner, .. },
+                Instruction::LoadFloatSingle { d: first, a: first_base, .. },
+                Instruction::FloatMultiplySingle { d: first_product, a: first_value, c: first_scale },
+                Instruction::StoreFloatSingle { s: first_stored, a: first_store_base, .. },
+                Instruction::LoadFloatSingle { d: second, a: second_base, .. },
+                Instruction::FloatMultiplySingle { d: second_product, a: second_value, c: second_scale },
+                Instruction::StoreFloatSingle { s: second_stored, a: second_store_base, .. },
+                Instruction::Or { a: 3, s: receiver, b },
+                Instruction::BranchAndLink { .. },
+            ] if owner == first_base
+                && owner == first_store_base
+                && owner == second_base
+                && owner == second_store_base
+                && scale == first_scale
+                && scale == second_scale
+                && first == first_product
+                && first == first_value
+                && first == first_stored
+                && second == second_product
+                && second == second_value
+                && second == second_stored
+                && receiver == b)
+        }) else {
+            return;
+        };
+        self.move_instruction_before(start + 7, start + 1);
+    }
+
     /// Hoist an independent three-register call setup across a run of three
     /// stores from one already-loaded float. MWCC fills the store issue window
     /// this way in constructor-like state initialization bodies.
@@ -170,8 +203,8 @@ fn guarded_saved_receiver_float_call_start(
             Instruction::AddImmediate { d: 4, a: 0, immediate: 0 },
             Instruction::LoadFloatSingle { d: 1, .. },
             Instruction::BranchAndLink { .. },
-            Instruction::LoadWord { a: following_base, .. },
-        ] if saved == b && saved == following_base)
+            _,
+        ] if saved == b)
     })
 }
 
