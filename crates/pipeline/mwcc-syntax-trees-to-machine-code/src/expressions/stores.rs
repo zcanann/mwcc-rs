@@ -1369,6 +1369,15 @@ impl Generator {
             }
             _ => None,
         };
+        if matches!(pointee, Pointee::Float | Pointee::Double)
+            && prematerialized_float_bits.is_some()
+        {
+            if let Some(register) =
+                self.condition_float_literal_register(value, pointee == Pointee::Double)
+            {
+                return Ok(register);
+            }
+        }
         if let Some(bits) = prematerialized_float_bits {
             if let Some(&(_, register)) = self
                 .prematerialized_float_constants

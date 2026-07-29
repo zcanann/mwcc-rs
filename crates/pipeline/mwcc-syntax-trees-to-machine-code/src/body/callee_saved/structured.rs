@@ -2489,13 +2489,14 @@ impl Generator {
                                     condition,
                                     nested_condition,
                                 ),
-                                self.begin_condition_float_cache(condition),
+                                self.begin_composed_condition_float_cache(condition),
                             )
                         };
                     struct ConditionBranches {
                         skip_body: Vec<usize>,
                         enter_body: Vec<usize>,
                     }
+                    self.preload_condition_literal_reused_in_body(condition, then_body);
                     let condition_result = (|| {
                         self.preload_condition_global_cache(condition)?;
                         let groups = logical_or_groups(condition);
@@ -2644,6 +2645,7 @@ impl Generator {
                     });
                     let nested_true_cache =
                         nested_condition.map(|_| self.condition_global_values.clone());
+                    let then_literal_cache = self.condition_float_literal_edge_cache();
                     self.restore_condition_global_cache(previous_cache);
                     let branches = match condition_result {
                         Ok(branches) => branches,
@@ -2684,6 +2686,10 @@ impl Generator {
                         self.restore_condition_global_cache(previous);
                     }
                     self.restore_condition_float_cache(previous_float_cache);
+                    let outer_float_cache = std::mem::replace(
+                        &mut self.condition_float_cache,
+                        then_literal_cache,
+                    );
                     let body_result = prefix_result.and_then(|()| {
                         self.emit_structured_statements(
                             remainder,
@@ -2696,6 +2702,7 @@ impl Generator {
                             entry_alias,
                         )
                     });
+                    self.restore_condition_float_cache(outer_float_cache);
                     body_result
                     .map_err(|mut diagnostic| {
                         diagnostic.message.push_str(&format!(

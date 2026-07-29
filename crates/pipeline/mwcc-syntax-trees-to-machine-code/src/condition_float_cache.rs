@@ -6,7 +6,8 @@
 //! relevant edge. Calls or mutations make a condition ineligible to feed a
 //! later one.
 
-use crate::generator::Generator;
+use crate::generator::{float_compare_literal_key, FloatCompareLiteralKey, Generator};
+use mwcc_machine_code::Instruction;
 use mwcc_syntax_trees::Expression;
 
 #[derive(Clone)]
@@ -22,6 +23,13 @@ struct ConditionFloatRegisterValue {
     instruction_index: usize,
 }
 
+#[derive(Clone, Copy)]
+struct ConditionFloatLiteralValue {
+    key: FloatCompareLiteralKey,
+    register: u8,
+    instruction_index: usize,
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct ConditionFloatCache {
     active: bool,
@@ -30,6 +38,7 @@ pub(crate) struct ConditionFloatCache {
     observed: Vec<ConditionFloatValue>,
     intra_condition: Vec<ConditionFloatValue>,
     zero_register: Option<ConditionFloatRegisterValue>,
+    literals: Vec<ConditionFloatLiteralValue>,
 }
 
 impl Generator {
@@ -76,12 +85,28 @@ impl Generator {
                 .cloned()
                 .collect();
             self.condition_float_cache.zero_register = previous.zero_register;
+            self.condition_float_cache.literals = previous.literals.clone();
         }
         previous
     }
 
     pub(crate) fn restore_condition_float_cache(&mut self, previous: ConditionFloatCache) {
         self.condition_float_cache = previous;
+    }
+
+    /// Retain only immutable pool literals on a selected condition edge.
+    ///
+    /// Memory-derived values require alias proof before crossing body
+    /// statements. Pool literals do not: their register remains reusable until
+    /// an emitted instruction overwrites it or a call clobbers its volatile
+    /// FPR.
+    pub(crate) fn condition_float_literal_edge_cache(&self) -> ConditionFloatCache {
+        ConditionFloatCache {
+            active: self.condition_float_cache.active,
+            recording_allowed: self.condition_float_cache.recording_allowed,
+            literals: self.condition_float_cache.literals.clone(),
+            ..ConditionFloatCache::default()
+        }
     }
 
     pub(crate) fn condition_float_register(&mut self, operand: &Expression) -> Option<u8> {
@@ -152,9 +177,19 @@ impl Generator {
     }
 
     fn condition_float_value_is_live(&self, value: &ConditionFloatValue) -> bool {
-        !self.output.instructions[value.instruction_index..]
-            .iter()
-            .any(|instruction| instruction.float_destination() == Some(value.register))
+        self.condition_float_register_value_is_live(value.register, value.instruction_index)
+    }
+
+    fn condition_float_register_value_is_live(
+        &self,
+        register: u8,
+        instruction_index: usize,
+    ) -> bool {
+        float_register_value_is_live(
+            &self.output.instructions,
+            register,
+            instruction_index,
+        )
     }
 
     pub(crate) fn invalidate_condition_float_register(&mut self, register: u8) {
@@ -163,6 +198,9 @@ impl Generator {
             .retain(|value| value.register != register);
         self.condition_float_cache
             .observed
+            .retain(|value| value.register != register);
+        self.condition_float_cache
+            .literals
             .retain(|value| value.register != register);
         if self
             .condition_float_cache
@@ -181,10 +219,8 @@ impl Generator {
             return None;
         }
         let value = self.condition_float_cache.zero_register?;
-        (!self.output.instructions[value.instruction_index..]
-            .iter()
-            .any(|instruction| instruction.float_destination() == Some(value.register)))
-        .then_some(value.register)
+        self.condition_float_register_value_is_live(value.register, value.instruction_index)
+            .then_some(value.register)
     }
 
     pub(crate) fn record_condition_float_zero(&mut self, register: u8) {
@@ -212,6 +248,63 @@ impl Generator {
             .find(|value| same_direct_float_memory_load(&value.expression, operand))
             .map(|value| value.register)
     }
+
+    pub(crate) fn record_condition_float_literal(
+        &mut self,
+        operand: &Expression,
+        double: bool,
+        register: u8,
+    ) {
+        if !self.condition_float_cache.active
+            || !self.condition_float_cache.recording_allowed
+        {
+            return;
+        }
+        let Some(key) = float_compare_literal_key(operand, double) else {
+            return;
+        };
+        self.condition_float_cache
+            .literals
+            .retain(|value| value.key != key);
+        self.condition_float_cache
+            .literals
+            .push(ConditionFloatLiteralValue {
+                key,
+                register,
+                instruction_index: self.output.instructions.len(),
+            });
+    }
+
+    pub(crate) fn condition_float_literal_register(
+        &self,
+        operand: &Expression,
+        double: bool,
+    ) -> Option<u8> {
+        let key = float_compare_literal_key(operand, double)?;
+        let value = self
+            .condition_float_cache
+            .literals
+            .iter()
+            .find(|value| value.key == key)?;
+        self.condition_float_register_value_is_live(value.register, value.instruction_index)
+            .then_some(value.register)
+    }
+}
+
+fn float_register_value_is_live(
+    instructions: &[Instruction],
+    register: u8,
+    instruction_index: usize,
+) -> bool {
+    !instructions[instruction_index..].iter().any(|instruction| {
+        instruction.float_destination() == Some(register)
+            || (register <= 13
+                && matches!(
+                    instruction,
+                    Instruction::BranchAndLink { .. }
+                        | Instruction::BranchToCountRegisterAndLink
+                ))
+    })
 }
 
 fn direct_memory_base_name(expression: &Expression) -> Option<&str> {
@@ -427,5 +520,21 @@ mod tests {
             right: Box::new(target.clone()),
         };
         assert!(!pure_prefix_contains(&condition, &target, &mut false));
+    }
+
+    #[test]
+    fn calls_kill_volatile_but_not_nonvolatile_float_literals() {
+        let instructions = vec![Instruction::BranchAndLink {
+            target: "consume".into(),
+        }];
+        assert!(!float_register_value_is_live(&instructions, 2, 0));
+        assert!(float_register_value_is_live(&instructions, 31, 0));
+    }
+
+    #[test]
+    fn an_explicit_float_write_kills_a_retained_literal() {
+        let instructions = vec![Instruction::FloatMove { d: 2, b: 1 }];
+        assert!(!float_register_value_is_live(&instructions, 2, 0));
+        assert!(float_register_value_is_live(&instructions, 3, 0));
     }
 }

@@ -14,8 +14,77 @@ use crate::generator::{
     float_compare_literal_key, FloatCompareLiteralKey, PreloadedFloatCompareLiteral,
     RetainedFloatCompareValue, StructuredFloatHandoff, FLOAT_SCRATCH,
 };
+use mwcc_syntax_trees::ArmBody;
 
 impl Generator {
+    pub(super) fn preload_condition_literal_reused_in_body(
+        &mut self,
+        condition: &Expression,
+        body: &[Statement],
+    ) {
+        let Expression::Binary {
+            operator,
+            left,
+            right,
+        } = condition
+        else {
+            return;
+        };
+        if !matches!(
+            operator,
+            BinaryOperator::Less
+                | BinaryOperator::Greater
+                | BinaryOperator::LessEqual
+                | BinaryOperator::GreaterEqual
+                | BinaryOperator::Equal
+                | BinaryOperator::NotEqual
+        ) {
+            return;
+        }
+        let (literal, value) = if matches!(
+            right.as_ref(),
+            Expression::FloatLiteral(_) | Expression::IntegerLiteral(_)
+        ) {
+            (right.as_ref(), left.as_ref())
+        } else if matches!(
+            left.as_ref(),
+            Expression::FloatLiteral(_) | Expression::IntegerLiteral(_)
+        ) {
+            (left.as_ref(), right.as_ref())
+        } else {
+            return;
+        };
+        let double = self.is_double_value(value);
+        let Some(key) = float_compare_literal_key(literal, double) else {
+            return;
+        };
+        if !body_stores_float_literal(body, key)
+            || self
+                .preloaded_float_compare_literals
+                .iter()
+                .any(|preload| preload.key == key)
+        {
+            return;
+        }
+
+        let register = self.fresh_virtual_float_preferring(2);
+        match key {
+            FloatCompareLiteralKey::Single(bits) => {
+                self.load_float_constant(register, f32::from_bits(bits));
+            }
+            FloatCompareLiteralKey::Double(bits) => {
+                self.load_double_constant(register, bits);
+            }
+        }
+        self.preloaded_float_compare_literals
+            .push(PreloadedFloatCompareLiteral {
+                key,
+                register,
+                remaining_uses: 1,
+                reuse_for_following_value: false,
+            });
+    }
+
     /// Preferred home of the single ephemeral float lifetime. A later loaded
     /// comparison occupies build 163's f2 work register, so the initializer is
     /// born there and copied to f1 for its eventual call argument.
@@ -228,6 +297,44 @@ impl Generator {
     }
 }
 
+fn body_stores_float_literal(statements: &[Statement], key: FloatCompareLiteralKey) -> bool {
+    statements.iter().any(|statement| match statement {
+        Statement::Store { target, value } => {
+            let double = match target {
+                Expression::Member {
+                    member_type: Type::Float,
+                    ..
+                } => false,
+                Expression::Member {
+                    member_type: Type::Double,
+                    ..
+                } => true,
+                _ => return false,
+            };
+            float_compare_literal_key(value, double) == Some(key)
+        }
+        Statement::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            body_stores_float_literal(then_body, key)
+                || body_stores_float_literal(else_body, key)
+        }
+        Statement::Loop { body, .. } => body_stores_float_literal(body, key),
+        Statement::Switch { arms, default, .. } => {
+            arms.iter().any(|arm| match &arm.body {
+                ArmBody::Statements(body) => body_stores_float_literal(body, key),
+                ArmBody::Return(_) => false,
+            }) || default.as_ref().is_some_and(|body| match body {
+                ArmBody::Statements(body) => body_stores_float_literal(body, key),
+                ArmBody::Return(_) => false,
+            })
+        }
+        _ => false,
+    })
+}
+
 fn statement_has_loaded_float_literal_compare(statement: &Statement) -> bool {
     let Statement::If { condition, .. } = statement else {
         return false;
@@ -258,4 +365,42 @@ fn expression_has_loaded_float_literal_compare(expression: &Expression) -> bool 
                 left.as_ref(),
                 Expression::FloatLiteral(_) | Expression::IntegerLiteral(_)
             ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn member_store(member_type: Type) -> Statement {
+        Statement::Store {
+            target: Expression::Member {
+                base: Box::new(Expression::Variable("state".into())),
+                offset: 8,
+                member_type,
+                index_stride: None,
+            },
+            value: Expression::FloatLiteral(1.0),
+        }
+    }
+
+    #[test]
+    fn finds_a_float_literal_store_in_a_nested_arm() {
+        let body = vec![Statement::If {
+            condition: Expression::Variable("selected".into()),
+            then_body: vec![member_store(Type::Float)],
+            else_body: Vec::new(),
+        }];
+        assert!(body_stores_float_literal(
+            &body,
+            FloatCompareLiteralKey::Single(1.0f32.to_bits())
+        ));
+    }
+
+    #[test]
+    fn does_not_treat_an_integer_store_as_float_literal_reuse() {
+        assert!(!body_stores_float_literal(
+            &[member_store(Type::Int)],
+            FloatCompareLiteralKey::Single(1.0f32.to_bits())
+        ));
+    }
 }

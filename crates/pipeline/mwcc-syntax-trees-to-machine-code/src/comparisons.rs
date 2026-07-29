@@ -1637,6 +1637,7 @@ impl Generator {
             .take_preloaded_float_compare_literal(operand, double, Some(dest))
             .is_some()
         {
+            self.record_condition_float_literal(operand, double, dest);
             return Ok(());
         }
         if single_zero && self.condition_float_zero_register() == Some(dest) {
@@ -1662,6 +1663,7 @@ impl Generator {
             }
             _ => Err(Diagnostic::error("expected a float literal operand")),
         }?;
+        self.record_condition_float_literal(operand, double, dest);
         if single_zero {
             self.record_condition_float_zero(dest);
         }
@@ -1719,6 +1721,7 @@ impl Generator {
         ) {
             if let Some(register) = self.take_preloaded_float_compare_literal(operand, double, None)
             {
+                self.record_condition_float_literal(operand, double, register);
                 return Ok(register);
             }
             self.load_float_literal_into(FLOAT_SCRATCH, operand, double)?;

@@ -155,6 +155,7 @@ impl Generator {
                 ],
             ))
         });
+        let then_float_cache = self.condition_float_literal_edge_cache();
         self.restore_condition_global_cache(previous_cache);
         self.restore_condition_float_cache(previous_float_cache);
         let branches = branches?;
@@ -167,43 +168,50 @@ impl Generator {
         for branch in branches.enter_then {
             self.patch_forward(branch, then_start);
         }
-        if let Some((source, value, assignments)) = retained_multiply_plan {
-            let double = self.is_double_value(&value);
-            for (destination_name, factor_name) in assignments {
-                let destination = self.float_register_of(&destination_name)?;
-                let factor = self.float_register_of(&factor_name)?;
-                self.output.instructions.push(if double {
-                    Instruction::FloatMultiplyDouble {
-                        d: destination,
-                        a: source,
-                        c: factor,
-                    }
-                } else {
-                    Instruction::FloatMultiplySingle {
-                        d: destination,
-                        a: source,
-                        c: factor,
-                    }
-                });
+        let arm_previous_float_cache =
+            std::mem::replace(&mut self.condition_float_cache, then_float_cache);
+        let then_result = (|| {
+            if let Some((source, value, assignments)) = retained_multiply_plan {
+                let double = self.is_double_value(&value);
+                for (destination_name, factor_name) in assignments {
+                    let destination = self.float_register_of(&destination_name)?;
+                    let factor = self.float_register_of(&factor_name)?;
+                    self.output.instructions.push(if double {
+                        Instruction::FloatMultiplyDouble {
+                            d: destination,
+                            a: source,
+                            c: factor,
+                        }
+                    } else {
+                        Instruction::FloatMultiplySingle {
+                            d: destination,
+                            a: source,
+                            c: factor,
+                        }
+                    });
+                }
+            } else if !self.try_emit_structured_frame_bitfield_stores(then_body)? {
+                self.emit_structured_statements(
+                    then_body,
+                    function,
+                    ephemeral_locals,
+                    false,
+                    return_branches,
+                    label_positions,
+                    pending_gotos,
+                    entry_alias,
+                )
+                .map_err(|mut diagnostic| {
+                    diagnostic
+                        .message
+                        .push_str(&format!(" (inside structured then arm {statement_index})"));
+                    diagnostic
+                })?;
             }
-        } else if !self.try_emit_structured_frame_bitfield_stores(then_body)? {
-            self.emit_structured_statements(
-                then_body,
-                function,
-                ephemeral_locals,
-                false,
-                return_branches,
-                label_positions,
-                pending_gotos,
-                entry_alias,
-            )
-            .map_err(|mut diagnostic| {
-                diagnostic
-                    .message
-                    .push_str(&format!(" (inside structured then arm {statement_index})"));
-                diagnostic
-            })?;
-        }
+            Ok(())
+        })();
+        self.restore_condition_float_cache(arm_previous_float_cache);
+        then_result?;
         let skip_else = self.output.instructions.len();
         self.output
             .instructions
