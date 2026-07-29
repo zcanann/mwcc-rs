@@ -781,7 +781,10 @@ impl InlineBodySet {
                     *statement_body_substitutions += 1;
                     let mut callee_calls = HashMap::new();
                     collect_function_calls(callee, &mut callee_calls);
-                    if !callee_calls.is_empty() && self.required.contains(name) {
+                    if self.required.contains(name)
+                        && (!callee_calls.is_empty()
+                            || statements_mutate_memory(&callee.statements))
+                    {
                         *statement_frame_residue_substitutions += 1;
                     }
                     active.insert(name.clone());
@@ -1069,6 +1072,35 @@ impl InlineBodySet {
             | Expression::CompoundLiteral { .. } => false,
         }
     }
+}
+
+fn statements_mutate_memory(statements: &[Statement]) -> bool {
+    statements.iter().any(|statement| match statement {
+        Statement::Store { .. } => true,
+        Statement::Expression(Expression::Assign { target, .. }) => {
+            !matches!(target.as_ref(), Expression::Variable(_))
+        }
+        Statement::If {
+            then_body,
+            else_body,
+            ..
+        } => statements_mutate_memory(then_body) || statements_mutate_memory(else_body),
+        Statement::Loop { body, .. } => statements_mutate_memory(body),
+        Statement::Switch {
+            arms,
+            default,
+            ..
+        } => {
+            arms.iter().any(|arm| match &arm.body {
+                mwcc_syntax_trees::ArmBody::Return(_) => false,
+                mwcc_syntax_trees::ArmBody::Statements(body) => statements_mutate_memory(body),
+            }) || default.as_ref().is_some_and(|arm| match arm {
+                mwcc_syntax_trees::ArmBody::Return(_) => false,
+                mwcc_syntax_trees::ArmBody::Statements(body) => statements_mutate_memory(body),
+            })
+        }
+        _ => false,
+    })
 }
 
 /// Move top-level embedded assembly blocks into the ordered statement tree used
@@ -1411,7 +1443,7 @@ mod tests {
     }
 
     #[test]
-    fn frame_residue_counts_only_call_bearing_statement_bodies() {
+    fn frame_residue_counts_retained_calling_and_mutating_statement_bodies() {
         let leaf = function(
             "leaf",
             Vec::new(),
@@ -1447,7 +1479,7 @@ mod tests {
             .expand_calls_with_facts(&caller)
             .expect("both statement bodies should compose");
         assert_eq!(expanded.statement_body_substitutions, 2);
-        assert_eq!(expanded.statement_frame_residue_substitutions, 1);
+        assert_eq!(expanded.statement_frame_residue_substitutions, 2);
     }
 
     #[test]
