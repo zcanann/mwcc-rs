@@ -66,6 +66,7 @@ use super::structured_switch_lowering::lower_structured_switches;
 use super::structured_loop_register_pressure::{
     plan_dense_loop_carried_locals, plan_dense_loop_register_window,
 };
+use super::structured_loop_member_receiver_layout::StructuredLoopMemberReceiverLayout;
 use super::structured_preloop_alias::fold_preloop_comma_pointer_alias;
 use super::structured_locals::{
     body_uses_local, dead_ephemeral_float_locals, is_frame_address_null_select,
@@ -691,6 +692,15 @@ impl Generator {
         let count = dense_loop_window
             .filter(|window| value_home_count <= *window)
             .unwrap_or(base_home_count);
+        let loop_member_receiver_layout = StructuredLoopMemberReceiverLayout::plan(
+            function,
+            &eager_saved_locals,
+            &saved_parameters,
+            &deferred_saved_locals,
+            &deferred_home_plan,
+            &parameter_home_reuse,
+            count,
+        );
         let returned_deferred_pair = returned_deferred_pair_preference(
             with_frame_array,
             eager_saved_locals.len(),
@@ -888,6 +898,11 @@ impl Generator {
                         _ => unreachable!("loop assertion plan has six saved homes"),
                     };
                     self.fresh_virtual_general_preferring(preferred)
+                } else if let Some(preferred) = loop_member_receiver_layout
+                    .as_ref()
+                    .and_then(|layout| layout.preference(home_index))
+                {
+                    self.fresh_virtual_general_preferring(preferred)
                 } else if let Some(preferred) = frame_publication
                     .as_ref()
                     .and_then(|publication| {
@@ -1022,10 +1037,16 @@ impl Generator {
                 .expect("the data anchor was planned above")
                 .register = Some(register);
         }
-        let frame_slot_for_home = |home_index: usize| match reused_data_anchor_home_index {
-            Some(reused) if home_index == reused => 0,
-            Some(reused) if home_index < reused => home_index + 1,
-            _ => saved_home_slot_base + home_index,
+        let frame_slot_for_home = |home_index: usize| {
+            if let Some(layout) = &loop_member_receiver_layout {
+                layout.frame_slot(home_index)
+            } else {
+                match reused_data_anchor_home_index {
+                    Some(reused) if home_index == reused => 0,
+                    Some(reused) if home_index < reused => home_index + 1,
+                    _ => saved_home_slot_base + home_index,
+                }
+            }
         };
         let reused_data_anchor_slot = reused_data_anchor_home_index.map(frame_slot_for_home);
         if let Some(strings) = &loop_assertion_strings {
@@ -1043,6 +1064,13 @@ impl Generator {
                     .iter()
                     .enumerate()
                     .filter_map(|(index, home)| (index != reused).then_some(*home)),
+            );
+        } else if let Some(layout) = &loop_member_receiver_layout {
+            logical_saved_homes.extend(
+                layout
+                    .save_order()
+                    .into_iter()
+                    .map(|home_index| homes[home_index]),
             );
         } else {
             logical_saved_homes.extend(homes.iter().copied());
@@ -1639,6 +1667,7 @@ impl Generator {
             || compact_aggregate_scratch_pair
             || paired_eager_deferred_homes
             || unused_array_eager_homes
+            || loop_member_receiver_layout.is_some()
             || saved_home_stores_precede_initialization(
                 self.behavior.frame_convention,
                 eager_saved_locals.len(),
@@ -1702,7 +1731,33 @@ impl Generator {
         };
         let stagger_dense_parameter_copies =
             dense_saved_range && saved_parameter_base != 0 && saved_parameter_homes.len() >= 2;
-        if batched_saved_home_stores {
+        let loop_member_entry_emitted =
+            if let Some(layout) = &loop_member_receiver_layout {
+                for home_index in layout.save_order() {
+                    let home = homes[home_index];
+                    self.emit_structured_saved_home_store(
+                        home,
+                        frame_slot_for_home(home_index),
+                        plan.frame_size,
+                    );
+                    if (saved_parameter_base..deferred_home_base)
+                        .contains(&home_index)
+                    {
+                        let (_, parameter_home, incoming) =
+                            &saved_parameter_homes[home_index - saved_parameter_base];
+                        debug_assert_eq!(*parameter_home, home);
+                        self.output.instructions.push(Instruction::AddImmediate {
+                            d: home,
+                            a: *incoming,
+                            immediate: 0,
+                        });
+                    }
+                }
+                true
+            } else {
+                false
+            };
+        if batched_saved_home_stores && !loop_member_entry_emitted {
             if !dense_saved_range {
                 for (home_index, &home) in homes[..saved_parameter_base].iter().enumerate() {
                     self.emit_structured_saved_home_store(
@@ -1808,10 +1863,22 @@ impl Generator {
                 .as_ref()
                 .is_none_or(|pair| !pair.interleaves_general_initializer(&local.name))
             {
+                let handled_loop_cursor =
+                    if let Some(layout) = &loop_member_receiver_layout {
+                        layout.try_emit_cursor_initializer(
+                            self,
+                            &local.name,
+                            initializer,
+                            home,
+                        )?
+                    } else {
+                        false
+                    };
                 let handled_dense_global = stagger_dense_parameter_copies
                     && home_index == 1
                     && self.try_emit_dense_eager_global_array_initializer(initializer, home)?;
-                if !handled_dense_global
+                if !handled_loop_cursor
+                    && !handled_dense_global
                     && !self.try_emit_structured_wide_saved_initializer(initializer, home)
                 {
                     self.evaluate(initializer, local.declared_type, home)?;
@@ -2254,6 +2321,9 @@ impl Generator {
         }
         self.fold_structured_conditional_gotos();
         thread_forward_unconditional_branch_chains(&mut self.output.instructions);
+        if let Some(layout) = &loop_member_receiver_layout {
+            layout.coalesce_receiver_load(self, homes[0], homes[3]);
+        }
         let forwardable_frame_scalar_offsets = frame_scalar_locals
             .iter()
             .filter(|local| !local.is_volatile)
