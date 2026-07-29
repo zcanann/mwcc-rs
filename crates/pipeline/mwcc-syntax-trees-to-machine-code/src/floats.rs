@@ -130,6 +130,18 @@ impl Generator {
                 self.emit_call(name, arguments, Some(destination), true)
             }
             Expression::Binary { operator, left, right } => {
+                if let (
+                    Expression::FloatLiteral(left),
+                    Expression::FloatLiteral(right),
+                ) = (left.as_ref(), right.as_ref())
+                {
+                    if let Some(value) = fold_float_binary_literals(*operator, *left, *right) {
+                        return self.evaluate_float(
+                            &Expression::FloatLiteral(value),
+                            destination,
+                        );
+                    }
+                }
                 // The usual arithmetic conversions fold an integer constant
                 // beside a floating operand into a floating constant before
                 // instruction selection (`x * 4` pools `4.0f`). Keeping that
@@ -795,6 +807,16 @@ impl Generator {
                 Operands::ordered(temp, FLOAT_SCRATCH)
             }
         }
+    }
+}
+
+fn fold_float_binary_literals(operator: BinaryOperator, left: f64, right: f64) -> Option<f64> {
+    match operator {
+        BinaryOperator::Add => Some(left + right),
+        BinaryOperator::Subtract => Some(left - right),
+        BinaryOperator::Multiply => Some(left * right),
+        BinaryOperator::Divide => Some(left / right),
+        _ => None,
     }
 }
 
