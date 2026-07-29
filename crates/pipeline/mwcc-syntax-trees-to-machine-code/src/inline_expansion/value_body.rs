@@ -89,6 +89,12 @@ pub(super) fn summarize(function: &Function) -> Option<ValueInlineBody> {
             expression,
         });
     }
+    if let Some(expression) = summarize_conditional_return(function) {
+        return Some(ValueInlineBody {
+            source: function.clone(),
+            expression,
+        });
+    }
     // A direct scalar/member return is the smallest value-inline body. Keep it
     // before the result-local pattern below: ordinary (non-inline) definitions
     // use this shape too, and mwcc's automatic inliner substitutes sufficiently
@@ -152,6 +158,53 @@ fn summarize_guard_chain(function: &Function) -> Option<Expression> {
             origin: ConditionalOrigin::IfReturns,
         }
     }))
+}
+
+/// Preserve a retained inline whose value is selected by one source-level
+/// `if`, including effects local to either return arm.
+///
+/// A helper such as
+///
+/// `if (flag) { flag = 0; return 1; } else { return 0; }`
+///
+/// cannot be represented by the guard-only summary: the clear must remain
+/// conditional. A conditional containing comma-sequenced arm effects keeps
+/// that ownership explicit until call-site composition can either splice it
+/// into an enclosing branch or lower it as an ordinary value diamond.
+fn summarize_conditional_return(function: &Function) -> Option<Expression> {
+    if !function.locals.is_empty()
+        || !function.guards.is_empty()
+        || function.return_expression.is_some()
+    {
+        return None;
+    }
+    let [Statement::If {
+        condition,
+        then_body,
+        else_body,
+    }] = function.statements.as_slice()
+    else {
+        return None;
+    };
+    Some(Expression::Conditional {
+        condition: Box::new(condition.clone()),
+        when_true: Box::new(summarize_return_arm(then_body, function.return_type)?),
+        when_false: Box::new(summarize_return_arm(else_body, function.return_type)?),
+        origin: ConditionalOrigin::IfReturns,
+    })
+}
+
+fn summarize_return_arm(statements: &[Statement], return_type: Type) -> Option<Expression> {
+    let (last, effects) = statements.split_last()?;
+    let Statement::Return(Some(result)) = last else {
+        return None;
+    };
+    let mut expressions = effects
+        .iter()
+        .map(statement_expression)
+        .collect::<Option<Vec<_>>>()?;
+    expressions.push(normalize_reference_result(return_type, result.clone()));
+    Some(sequence(expressions))
 }
 
 /// Preserve the address-valued result of a C++ reference accessor.
@@ -712,6 +765,45 @@ mod tests {
                 ..
             })
                 && matches!(when_true.as_ref(), Expression::Variable(name) if name == "address")
+                && matches!(when_false.as_ref(), Expression::IntegerLiteral(0))
+        ));
+    }
+
+    #[test]
+    fn summarizes_a_guarded_store_before_a_value_return() {
+        let mut function = empty_function("take_flag", Type::Int);
+        function.parameters.push(Parameter {
+            parameter_type: Type::Pointer(Pointee::Int),
+            name: "flag".into(),
+        });
+        let flag = Expression::Dereference {
+            pointer: Box::new(Expression::Variable("flag".into())),
+        };
+        function.statements = vec![Statement::If {
+            condition: flag.clone(),
+            then_body: vec![
+                Statement::Store {
+                    target: flag,
+                    value: Expression::IntegerLiteral(0),
+                },
+                Statement::Return(Some(Expression::IntegerLiteral(1))),
+            ],
+            else_body: vec![Statement::Return(Some(Expression::IntegerLiteral(0)))],
+        }];
+
+        let summary = summarize(&function).expect("guarded store return should summarize");
+        assert!(matches!(
+            summary.expression,
+            Expression::Conditional {
+                when_true,
+                when_false,
+                origin: ConditionalOrigin::IfReturns,
+                ..
+            } if matches!(when_true.as_ref(), Expression::Comma {
+                left,
+                right,
+            } if matches!(left.as_ref(), Expression::Assign { .. })
+                && matches!(right.as_ref(), Expression::IntegerLiteral(1)))
                 && matches!(when_false.as_ref(), Expression::IntegerLiteral(0))
         ));
     }

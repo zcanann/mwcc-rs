@@ -3,7 +3,7 @@
 use super::safety::{stable_argument, stable_local_values};
 use super::substitution::substitute_expression;
 use super::value_body::ValueInlineBody;
-use mwcc_syntax_trees::{ArmBody, Expression, LocalDeclaration, Statement};
+use mwcc_syntax_trees::{ArmBody, BinaryOperator, Expression, LocalDeclaration, Statement};
 use std::collections::{HashMap, HashSet};
 
 pub(super) struct LocalAllocator<'a> {
@@ -52,9 +52,9 @@ pub(super) fn expand_statement(
             condition,
             then_body,
             else_body,
-        } => Statement::If {
-            condition: expression(condition, active, changed, value_body_substitutions),
-            then_body: then_body
+        } => {
+            let condition = expression(condition, active, changed, value_body_substitutions);
+            let then_body = then_body
                 .iter()
                 .map(|statement| {
                     expand_statement(
@@ -67,8 +67,8 @@ pub(super) fn expand_statement(
                         allocator,
                     )
                 })
-                .collect(),
-            else_body: else_body
+                .collect();
+            let else_body = else_body
                 .iter()
                 .map(|statement| {
                     expand_statement(
@@ -81,8 +81,9 @@ pub(super) fn expand_statement(
                         allocator,
                     )
                 })
-                .collect(),
-        },
+                .collect();
+            compose_guarded_truth_value(condition, then_body, else_body)
+        }
         Statement::Return(value) => Statement::Return(
             value
                 .as_ref()
@@ -157,6 +158,103 @@ pub(super) fn expand_statement(
         Statement::Break | Statement::Continue | Statement::Goto(_) | Statement::Label(_) => {
             statement.clone()
         }
+    }
+}
+
+/// Turn an expression-valued flag consumer back into the source-level branch
+/// shape when its selected true value owns side effects.
+///
+/// Retained inline calls are summarized as expressions because they can occur
+/// anywhere. At an enclosing `if`, however, `flag ? (clear, 1) : 0` has a more
+/// faithful statement representation: test `flag`, then clear it before the
+/// caller's true body. Keeping this rewrite at the statement-composition
+/// boundary avoids teaching low-level select emission that an arm effect owns
+/// the caller's control-flow edge.
+fn compose_guarded_truth_value(
+    condition: Expression,
+    mut then_body: Vec<Statement>,
+    else_body: Vec<Statement>,
+) -> Statement {
+    let Some((guard, effects)) = guarded_true_effects(&condition) else {
+        return Statement::If {
+            condition,
+            then_body,
+            else_body,
+        };
+    };
+    let mut composed = effects
+        .into_iter()
+        .filter_map(effect_statement)
+        .collect::<Vec<_>>();
+    composed.append(&mut then_body);
+    Statement::If {
+        condition: guard.clone(),
+        then_body: composed,
+        else_body,
+    }
+}
+
+fn guarded_true_effects(condition: &Expression) -> Option<(&Expression, Vec<Expression>)> {
+    let selection = match condition {
+        Expression::Binary {
+            operator: BinaryOperator::NotEqual,
+            left,
+            right,
+        } if matches!(right.as_ref(), Expression::IntegerLiteral(0)) => left.as_ref(),
+        Expression::Binary {
+            operator: BinaryOperator::NotEqual,
+            left,
+            right,
+        } if matches!(left.as_ref(), Expression::IntegerLiteral(0)) => right.as_ref(),
+        expression => expression,
+    };
+    let Expression::Conditional {
+        condition: guard,
+        when_true,
+        when_false,
+        ..
+    } = selection
+    else {
+        return None;
+    };
+    if !matches!(when_false.as_ref(), Expression::IntegerLiteral(0)) {
+        return None;
+    }
+    let mut sequence = Vec::new();
+    flatten_sequence(when_true, &mut sequence);
+    if !matches!(sequence.pop(), Some(Expression::IntegerLiteral(1))) || sequence.is_empty() {
+        return None;
+    }
+    Some((guard, sequence))
+}
+
+fn flatten_sequence(expression: &Expression, output: &mut Vec<Expression>) {
+    match expression {
+        Expression::Comma { left, right } => {
+            flatten_sequence(left, output);
+            flatten_sequence(right, output);
+        }
+        expression => output.push(expression.clone()),
+    }
+}
+
+fn effect_statement(expression: Expression) -> Option<Statement> {
+    match expression {
+        Expression::Assign { target, value } => match *target {
+            Expression::Variable(name) => Some(Statement::Assign {
+                name,
+                value: *value,
+            }),
+            target => Some(Statement::Store {
+                target,
+                value: *value,
+            }),
+        },
+        Expression::Variable(_)
+        | Expression::IntegerLiteral(_)
+        | Expression::FloatLiteral(_)
+        | Expression::StringLiteral(_) => None,
+        expression => Some(Statement::Expression(expression)),
     }
 }
 
@@ -496,5 +594,49 @@ fn fresh_name(name: &str, local: &str, allocator: &mut LocalAllocator<'_>) -> St
         if allocator.occupied_names.insert(candidate.clone()) {
             return candidate;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn composes_a_true_arm_effect_into_the_enclosing_if() {
+        let flag = Expression::Variable("flag".into());
+        let expanded = Expression::Binary {
+            operator: BinaryOperator::NotEqual,
+            left: Box::new(Expression::Conditional {
+                condition: Box::new(flag.clone()),
+                when_true: Box::new(Expression::Comma {
+                    left: Box::new(Expression::Assign {
+                        target: Box::new(flag.clone()),
+                        value: Box::new(Expression::IntegerLiteral(0)),
+                    }),
+                    right: Box::new(Expression::IntegerLiteral(1)),
+                }),
+                when_false: Box::new(Expression::IntegerLiteral(0)),
+                origin: mwcc_syntax_trees::ConditionalOrigin::IfReturns,
+            }),
+            right: Box::new(Expression::IntegerLiteral(0)),
+        };
+
+        let composed = compose_guarded_truth_value(
+            expanded,
+            vec![Statement::Expression(Expression::Variable("body".into()))],
+            Vec::new(),
+        );
+        assert!(matches!(
+            composed,
+            Statement::If {
+                condition: Expression::Variable(ref name),
+                ref then_body,
+                ..
+            } if name == "flag"
+                && matches!(then_body.as_slice(), [
+                    Statement::Assign { name, value: Expression::IntegerLiteral(0) },
+                    Statement::Expression(Expression::Variable(body)),
+                ] if name == "flag" && body == "body")
+        ));
     }
 }
