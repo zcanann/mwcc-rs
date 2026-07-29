@@ -57,6 +57,7 @@ mod runtime_conversions;
 mod switch;
 mod symbol_order;
 mod value_tracking;
+mod wide_local_scalarization;
 
 use generator::Generator;
 pub use inline_expansion::InlineBodySet;

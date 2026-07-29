@@ -1654,11 +1654,17 @@ impl Generator {
                         &expanded.function,
                         &self.globals,
                     );
-                return self.evaluate_body(
-                    branch_reuse
-                        .as_ref()
-                        .unwrap_or(&expanded.function),
-                );
+                let branch_function = branch_reuse
+                    .as_ref()
+                    .unwrap_or(&expanded.function);
+                let scalarized =
+                    crate::wide_local_scalarization::scalarize_zero_extended_mask_local(
+                        branch_function,
+                        &self.globals,
+                        &self.volatile_globals,
+                        &self.call_return_types,
+                    );
+                return self.evaluate_body(scalarized.as_ref().unwrap_or(branch_function));
             }
             if calls_skipped_inline {
                 let mut unresolved: Vec<_> = self
