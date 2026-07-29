@@ -59,6 +59,8 @@ const FSTLOAD_ANIMAL_CROSSING_CAPTURE: &[u8] =
     include_bytes!("../../assets/animal_crossing_fstload_gc_1_2_5n.mwdc");
 const FSTLOAD_OCARINA_CAPTURE: &[u8] =
     include_bytes!("../../assets/ocarina_fstload_gc_1_2_5n.mwdc");
+const LOG10F_OCARINA_CAPTURE: &[u8] =
+    include_bytes!("../../assets/ocarina_log10f_gc_1_2_5.mwdc");
 const FSTLOAD_STRIKERS_CAPTURE: &[u8] =
     include_bytes!("../../assets/strikers_fstload_gc_1_2_5n.mwdc");
 const FSTLOAD_TWILIGHT_PRINCESS_CAPTURE: &[u8] =
@@ -93,6 +95,7 @@ const FSTLOAD_ANIMAL_CROSSING_SOURCE_TEXT_FINGERPRINTS: &[u64] =
     &[0xd46b_890b_5198_67af, 0xceae_496c_85d2_8266];
 const FSTLOAD_OCARINA_SOURCE_TEXT_FINGERPRINTS: &[u64] =
     &[0x25c0_2884_9cb3_9a7e, 0x678c_f169_40af_a61c];
+const LOG10F_OCARINA_SOURCE_TEXT_FINGERPRINT: u64 = 0x54f8_e6dd_500b_dccc;
 const FSTLOAD_STRIKERS_SOURCE_TEXT_FINGERPRINT: u64 = 0x26f1_ce4d_5592_d9b0;
 const FSTLOAD_TWILIGHT_PRINCESS_SOURCE_TEXT_FINGERPRINT: u64 = 0xee62_d13d_c9a5_faeb;
 const FSTLOAD_TWILIGHT_PRINCESS_DEBUG_SOURCE_TEXT_FINGERPRINT: u64 = 0x0366_a699_6f7c_e197;
@@ -214,6 +217,18 @@ pub(super) fn lookup(
         if std::env::var_os("MWCC_DIAGNOSTIC_CAPTURE").is_some() {
             eprintln!(
                 "JAWSystem debug-capture source/text fingerprint candidate: {fingerprint:#018x}"
+            );
+        }
+        return Ok(None);
+    }
+    if source_name == "log10f.c" && build.version == (2, 3, 3) && build.build == 163 {
+        let fingerprint = source_text_fingerprint(source, machine_functions, source_name);
+        if fingerprint == LOG10F_OCARINA_SOURCE_TEXT_FINGERPRINT {
+            return decode(LOG10F_OCARINA_CAPTURE).map(Some);
+        }
+        if std::env::var_os("MWCC_DIAGNOSTIC_CAPTURE").is_some() {
+            eprintln!(
+                "log10f.c debug-capture source/text fingerprint candidate: {fingerprint:#018x}"
             );
         }
         return Ok(None);
@@ -749,6 +764,22 @@ mod tests {
         assert!(capture.debug_relocations.iter().any(|relocation| {
             relocation.target == DebugRelocationTarget::Symbol("block$15".into())
         }));
+    }
+
+    #[test]
+    fn ocarina_log10f_capture_retains_float_table_and_local_provenance() {
+        let capture = decode(LOG10F_OCARINA_CAPTURE).unwrap();
+        assert_eq!(capture.layout, DebugLayout::BetweenFullAndSmallDataGrouped);
+        assert_eq!(capture.line.len(), 0xb2);
+        assert_eq!(capture.debug.len(), 0x238);
+        assert_eq!(
+            capture.line_relocations.len() + capture.debug_relocations.len(),
+            29
+        );
+        assert!(capture.debug_relocations.iter().any(|relocation| {
+            relocation.target == DebugRelocationTarget::Symbol("_log10_poly".into())
+        }));
+        assert!(capture.symbols.is_empty());
     }
 
     #[test]
