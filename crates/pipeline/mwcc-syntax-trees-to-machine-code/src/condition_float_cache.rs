@@ -35,9 +35,11 @@ struct ConditionFloatLiteralValue {
 #[derive(Clone, Default)]
 pub(crate) struct ConditionFloatCache {
     active: bool,
+    guarded_edge: bool,
+    comparison_followup: bool,
     recording_allowed: bool,
     condition: Option<Expression>,
-    nested_followup: Option<Expression>,
+    guarded_followup: Option<Expression>,
     reusable: Vec<ConditionFloatValue>,
     observed: Vec<ConditionFloatValue>,
     /// Direct loads available on the selected edge of this condition.
@@ -92,13 +94,13 @@ impl Generator {
     pub(crate) fn begin_composed_condition_float_cache_with_followup(
         &mut self,
         condition: &Expression,
-        nested_followup: Option<&Expression>,
+        guarded_followup: Option<&Expression>,
     ) -> ConditionFloatCache {
         let previous = std::mem::take(&mut self.condition_float_cache);
         self.condition_float_cache.active = true;
         self.condition_float_cache.recording_allowed = !expression_has_value_barrier(condition);
         self.condition_float_cache.condition = Some(condition.clone());
-        self.condition_float_cache.nested_followup = nested_followup.cloned();
+        self.condition_float_cache.guarded_followup = guarded_followup.cloned();
         if previous.active && self.condition_float_cache.recording_allowed {
             self.condition_float_cache.reusable = previous
                 .intra_condition
@@ -109,6 +111,23 @@ impl Generator {
             self.condition_float_cache.zero_register = previous.zero_register;
             self.condition_float_cache.literals = previous.literals.clone();
         }
+        previous
+    }
+
+    /// A directly guarded store may consume a comparison operand itself. This
+    /// is intentionally distinct from nested-condition retention: legacy MWCC
+    /// does not generally carry arbitrary comparison operands into a nested
+    /// guard even when the source expressions happen to match.
+    pub(crate) fn begin_composed_condition_float_cache_with_value_followup(
+        &mut self,
+        condition: &Expression,
+        guarded_followup: &Expression,
+    ) -> ConditionFloatCache {
+        let previous = self.begin_composed_condition_float_cache_with_followup(
+            condition,
+            Some(guarded_followup),
+        );
+        self.condition_float_cache.comparison_followup = true;
         previous
     }
 
@@ -137,7 +156,7 @@ impl Generator {
                 .condition_float_cache
                 .intra_condition
                 .iter()
-                .find(|value| same_direct_float_memory_load(&value.expression, operand))
+                .find(|value| same_retained_float_expression(&value.expression, operand))
                 .cloned()
             {
                 if self.condition_float_value_is_live(&value) {
@@ -149,8 +168,31 @@ impl Generator {
             .condition_float_cache
             .reusable
             .iter()
-            .position(|value| same_direct_float_memory_load(&value.expression, operand))?;
+            .position(|value| same_retained_float_expression(&value.expression, operand))?;
         let value = self.condition_float_cache.reusable.remove(index);
+        self.condition_float_value_is_live(&value)
+            .then_some(value.register)
+    }
+
+    /// Consume a value proven live into the first statement on a condition's
+    /// true edge. Keeping this separate from intra-condition reuse prevents a
+    /// nested arithmetic evaluator from changing the established comparison
+    /// schedule merely because it happens to see the same memory load.
+    pub(crate) fn condition_float_guarded_edge_register(
+        &mut self,
+        operand: &Expression,
+    ) -> Option<u8> {
+        if !self.condition_float_cache.guarded_edge {
+            return None;
+        }
+        let index = self
+            .condition_float_cache
+            .intra_condition
+            .iter()
+            .position(|value| {
+                same_retained_float_expression(&value.expression, operand)
+            })?;
+        let value = self.condition_float_cache.intra_condition.remove(index);
         self.condition_float_value_is_live(&value)
             .then_some(value.register)
     }
@@ -173,10 +215,10 @@ impl Generator {
                 });
         }
 
-        if self.condition_float_value_is_retained_by_nested_followup(operand) {
+        if self.condition_float_value_is_retained_by_guarded_followup(operand) {
             self.condition_float_cache
                 .edge_observed
-                .retain(|value| !same_direct_float_memory_load(&value.expression, operand));
+                .retain(|value| !same_retained_float_expression(&value.expression, operand));
             self.condition_float_cache
                 .edge_observed
                 .push(ConditionFloatValue {
@@ -204,6 +246,32 @@ impl Generator {
         }
         self.condition_float_cache
             .observed
+            .push(ConditionFloatValue {
+                expression: operand.clone(),
+                register,
+                instruction_index: self.output.instructions.len(),
+            });
+    }
+
+    /// Record a side-effect-free computed compare operand that is consumed
+    /// unchanged by the first statement on the condition's true edge.
+    pub(crate) fn record_condition_float_computed_value(
+        &mut self,
+        operand: &Expression,
+        register: u8,
+    ) {
+        if !self.condition_float_cache.active
+            || !self.condition_float_cache.recording_allowed
+            || !is_retained_float_expression(operand)
+            || !self.condition_float_value_is_retained_by_guarded_followup(operand)
+        {
+            return;
+        }
+        self.condition_float_cache
+            .edge_observed
+            .retain(|value| !same_retained_float_expression(&value.expression, operand));
+        self.condition_float_cache
+            .edge_observed
             .push(ConditionFloatValue {
                 expression: operand.clone(),
                 register,
@@ -476,6 +544,39 @@ pub(crate) fn same_direct_float_memory_load(left: &Expression, right: &Expressio
     }
 }
 
+pub(crate) fn is_retained_float_expression(expression: &Expression) -> bool {
+    is_direct_float_memory_load(expression)
+        || matches!(
+            expression,
+            Expression::Unary {
+                operator: mwcc_syntax_trees::UnaryOperator::Negate,
+                operand,
+            } if is_retained_float_expression(operand)
+        )
+}
+
+pub(crate) fn same_retained_float_expression(
+    left: &Expression,
+    right: &Expression,
+) -> bool {
+    if same_direct_float_memory_load(left, right) {
+        return true;
+    }
+    matches!(
+        (left, right),
+        (
+            Expression::Unary {
+                operator: mwcc_syntax_trees::UnaryOperator::Negate,
+                operand: left,
+            },
+            Expression::Unary {
+                operator: mwcc_syntax_trees::UnaryOperator::Negate,
+                operand: right,
+            },
+        ) if same_retained_float_expression(left, right)
+    )
+}
+
 fn same_address_expression(left: &Expression, right: &Expression) -> bool {
     match (left, right) {
         (Expression::Variable(left), Expression::Variable(right)) => left == right,
@@ -533,7 +634,7 @@ fn pure_prefix_contains(expression: &Expression, target: &Expression, barrier: &
     if *barrier {
         return false;
     }
-    if same_direct_float_memory_load(expression, target) {
+    if same_retained_float_expression(expression, target) {
         return true;
     }
     match expression {
@@ -584,7 +685,7 @@ fn pure_prefix_contains(expression: &Expression, target: &Expression, barrier: &
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mwcc_syntax_trees::{BinaryOperator, Type};
+    use mwcc_syntax_trees::{BinaryOperator, Type, UnaryOperator};
 
     fn member(offset: u32) -> Expression {
         Expression::Member {
@@ -631,6 +732,22 @@ mod tests {
         };
 
         assert_eq!(direct_float_memory_load_count(&condition, &target), 2);
+    }
+
+    #[test]
+    fn matches_a_negated_memory_value_as_a_retained_expression() {
+        let value = Expression::Unary {
+            operator: UnaryOperator::Negate,
+            operand: Box::new(member(12)),
+        };
+        let same = Expression::Unary {
+            operator: UnaryOperator::Negate,
+            operand: Box::new(member(12)),
+        };
+
+        assert!(is_retained_float_expression(&value));
+        assert!(same_retained_float_expression(&value, &same));
+        assert!(pure_prefix_contains(&same, &value, &mut false));
     }
 
     #[test]

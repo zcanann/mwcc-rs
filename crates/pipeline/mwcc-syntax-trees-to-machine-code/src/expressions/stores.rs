@@ -1467,6 +1467,11 @@ impl Generator {
             }
         }
         if matches!(pointee, Pointee::Float | Pointee::Double) {
+            if let Some(source) =
+                self.condition_float_guarded_edge_register(value)
+            {
+                return Ok(source);
+            }
             // A `(double)` cast of an already-double value is a no-op; when the target
             // is itself double, see through it so a double leaf/call stores from its own
             // register (mwcc emits no `frsp`/`fmr`). A single (`float*`) target is a real

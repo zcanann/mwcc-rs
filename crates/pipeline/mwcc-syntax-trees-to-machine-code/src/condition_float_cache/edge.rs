@@ -1,4 +1,4 @@
-//! Dominance rules for a float load handed to an immediately nested guard.
+//! Dominance rules for a float value handed to an immediately guarded use.
 //!
 //! The cache mechanics live in the parent module. This module decides whether
 //! a direct truthiness load is present on every path into the guarded body, so
@@ -8,29 +8,30 @@ use super::*;
 use mwcc_syntax_trees::{BinaryOperator, UnaryOperator};
 
 impl Generator {
-    pub(super) fn condition_float_value_is_retained_by_nested_followup(
+    pub(crate) fn condition_float_value_is_retained_by_guarded_followup(
         &self,
         operand: &Expression,
     ) -> bool {
         self.condition_float_cache
-            .nested_followup
+            .guarded_followup
             .as_ref()
             .zip(self.condition_float_cache.condition.as_ref())
             .is_some_and(|(followup, condition)| {
-                condition_tests_float_truth(condition, operand)
-                    && true_edge_guarantees_load(condition, operand)
+                (self.condition_float_cache.comparison_followup
+                    || condition_tests_float_truth(condition, operand))
+                    && true_edge_guarantees_value(condition, operand)
                     && pure_prefix_contains(followup, operand, &mut false)
             })
     }
 
-    /// Build the cache for a first, immediately nested guarded statement.
+    /// Build the cache for a first, immediately guarded statement.
     ///
     /// The structured statement owner proves that no source statement lies
-    /// between these conditions. Retain only loads that dominate the outer
-    /// true edge and occur in the pure prefix of the nested condition.
-    pub(crate) fn condition_float_nested_true_edge_cache(
+    /// before this statement. Retain only values that dominate the condition's
+    /// true edge and occur in the pure prefix of the guarded expression.
+    pub(crate) fn condition_float_true_edge_cache(
         &self,
-        condition: &Expression,
+        followup: &Expression,
     ) -> ConditionFloatCache {
         let intra_condition = self
             .condition_float_cache
@@ -41,9 +42,9 @@ impl Generator {
                     .edge_observed
                     .iter()
                     .filter(|value| {
-                        true_edge_guarantees_load(previous_condition, &value.expression)
+                        true_edge_guarantees_value(previous_condition, &value.expression)
                             && pure_prefix_contains(
-                                condition,
+                                followup,
                                 &value.expression,
                                 &mut false,
                             )
@@ -54,6 +55,7 @@ impl Generator {
             .unwrap_or_default();
         ConditionFloatCache {
             active: self.condition_float_cache.active,
+            guarded_edge: true,
             recording_allowed: self.condition_float_cache.recording_allowed,
             intra_condition,
             zero_register: self.condition_float_cache.zero_register,
@@ -69,8 +71,8 @@ impl Generator {
 /// `&&` run when the result is true, while the right operand of `||` may be
 /// skipped. A value merely seen while emitting a condition is therefore not
 /// automatically available to its guarded body.
-fn true_edge_guarantees_load(expression: &Expression, target: &Expression) -> bool {
-    if same_direct_float_memory_load(expression, target) {
+fn true_edge_guarantees_value(expression: &Expression, target: &Expression) -> bool {
+    if same_retained_float_expression(expression, target) {
         return true;
     }
     match expression {
@@ -79,8 +81,8 @@ fn true_edge_guarantees_load(expression: &Expression, target: &Expression) -> bo
             left,
             right,
         } => {
-            true_edge_guarantees_load(left, target)
-                || true_edge_guarantees_load(right, target)
+            true_edge_guarantees_value(left, target)
+                || true_edge_guarantees_value(right, target)
         }
         Expression::Binary {
             operator: BinaryOperator::LogicalOr,
@@ -135,12 +137,8 @@ fn true_edge_guarantees_load(expression: &Expression, target: &Expression) -> bo
 }
 
 /// Whether `target` is itself a boolean term of the condition.
-///
-/// A load nested under a comparison or arithmetic expression may already have
-/// a distinct retained-value schedule. The selected-edge cache owns only the
-/// direct C truthiness test (`if (value)`, including `!`, `&&`, and `||`).
 fn condition_tests_float_truth(expression: &Expression, target: &Expression) -> bool {
-    if same_direct_float_memory_load(expression, target) {
+    if same_retained_float_expression(expression, target) {
         return true;
     }
     match expression {
@@ -162,7 +160,7 @@ fn condition_tests_float_truth(expression: &Expression, target: &Expression) -> 
 
 /// Whether evaluating an expression at all necessarily evaluates `target`.
 fn evaluation_guarantees_load(expression: &Expression, target: &Expression) -> bool {
-    if same_direct_float_memory_load(expression, target) {
+    if same_retained_float_expression(expression, target) {
         return true;
     }
     match expression {
@@ -238,7 +236,7 @@ mod tests {
             right: Box::new(target.clone()),
         };
 
-        assert!(true_edge_guarantees_load(&condition, &target));
+        assert!(true_edge_guarantees_value(&condition, &target));
     }
 
     #[test]
@@ -250,7 +248,7 @@ mod tests {
             right: Box::new(target.clone()),
         };
 
-        assert!(!true_edge_guarantees_load(&condition, &target));
+        assert!(!true_edge_guarantees_value(&condition, &target));
     }
 
     #[test]

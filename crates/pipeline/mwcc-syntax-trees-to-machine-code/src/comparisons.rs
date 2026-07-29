@@ -1459,7 +1459,25 @@ impl Generator {
                 let a = self.place_float_compare_value(left)?;
                 (a, b)
             } else {
-                let a = self.place_condition_float_load(left, FLOAT_FIRST)?;
+                // A right operand consumed by the guarded store owns f1: MWCC
+                // keeps that value across the branch and places the comparison-
+                // only left operand in f0.
+                let right_is_retained =
+                    crate::condition_float_cache::is_direct_float_memory_load(right)
+                        && self
+                            .condition_float_value_is_retained_by_guarded_followup(right);
+                let left_destination = if right_is_retained {
+                    FLOAT_SCRATCH
+                } else {
+                    FLOAT_FIRST
+                };
+                let right_destination = if right_is_retained {
+                    FLOAT_FIRST
+                } else {
+                    FLOAT_SCRATCH
+                };
+                let a =
+                    self.place_condition_float_load(left, left_destination)?;
                 // The right load may need a temporary GPR for an absolute
                 // global/member base. Keep every register used to address the
                 // left value reserved: that base remains live in the guarded
@@ -1470,7 +1488,7 @@ impl Generator {
                     .filter(|register| self.reserved.insert(*register))
                     .collect();
                 let right_result =
-                    self.place_condition_float_load(right, FLOAT_SCRATCH);
+                    self.place_condition_float_load(right, right_destination);
                 for register in newly_reserved {
                     self.reserved.remove(&register);
                 }
@@ -1748,6 +1766,7 @@ impl Generator {
             }
             let destination = self.fresh_virtual_float_preferring(FLOAT_FIRST);
             self.evaluate_float(operand, destination)?;
+            self.record_condition_float_computed_value(operand, destination);
             return Ok(destination);
         }
         if crate::condition_float_cache::is_direct_float_memory_load(operand) {
@@ -1792,6 +1811,7 @@ impl Generator {
         self.invalidate_condition_float_register(destination);
         self.evaluate_float(operand, destination)?;
         self.record_condition_float_value(operand, destination);
+        self.record_condition_float_computed_value(operand, destination);
         Ok(destination)
     }
 

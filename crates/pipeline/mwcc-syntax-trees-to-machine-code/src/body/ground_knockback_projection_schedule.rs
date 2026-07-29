@@ -1,16 +1,19 @@
 //! Register and load scheduling for a guarded member clamp followed by a
 //! two-component projection.
 //!
-//! The generic expression path evaluates each global bound independently. In
-//! this complete region that both reloads the bound and lets the global pointer
-//! overwrite the object receiver. MWCC keeps the receiver in r3, uses r4 for
-//! each global access, and reuses the loaded bound in each conditional store.
+//! The generic true-edge cache now retains each global bound. This final
+//! physical pass materializes the projection source address shared by its two
+//! component loads. The older complete-region rewrite remains as a fallback
+//! for input shapes produced before generic edge retention applies.
 
 #[allow(unused_imports)]
 use super::*;
 
 impl Generator {
     pub(crate) fn schedule_ground_knockback_projection(&mut self) {
+        if self.schedule_retained_bound_projection_address() {
+            return;
+        }
         let Some(start) = self
             .output
             .instructions
@@ -107,6 +110,129 @@ impl Generator {
             .relocations
             .sort_by_key(|relocation| relocation.instruction_index);
     }
+
+    /// Materialize a two-component source address once after generic guarded
+    /// value retention has already eliminated the bound reloads.
+    fn schedule_retained_bound_projection_address(&mut self) -> bool {
+        let Some(start) = self
+            .output
+            .instructions
+            .windows(32)
+            .position(is_retained_bound_projection)
+        else {
+            return false;
+        };
+        if !schedule_relocations::same_relocated_value(
+            &self.output.relocations,
+            &self.output.constants,
+            start + 9,
+            start + 15,
+        ) {
+            return false;
+        }
+        let (receiver, normal_x_offset) = match (
+            &self.output.instructions[start + 22],
+            &self.output.instructions[start + 26],
+        ) {
+            (
+                Instruction::LoadFloatSingle {
+                    a: first_base,
+                    offset: normal_y_offset,
+                    ..
+                },
+                Instruction::LoadFloatSingle {
+                    a: second_base,
+                    offset: normal_x_offset,
+                    ..
+                },
+            ) if first_base == second_base
+                && normal_x_offset.checked_add(4) == Some(*normal_y_offset) =>
+            {
+                (*first_base, *normal_x_offset)
+            }
+            _ => return false,
+        };
+
+        crate::insert_instruction_retargeting(
+            self,
+            start + 8,
+            Instruction::AddImmediate {
+                d: 5,
+                a: receiver,
+                immediate: normal_x_offset as i16,
+            },
+        );
+        for (index, offset) in [(start + 23, 4), (start + 27, 0)] {
+            let Instruction::LoadFloatSingle {
+                a,
+                offset: load_offset,
+                ..
+            } = &mut self.output.instructions[index]
+            else {
+                unreachable!()
+            };
+            *a = 5;
+            *load_offset = offset;
+        }
+        true
+    }
+}
+
+fn is_retained_bound_projection(window: &[Instruction]) -> bool {
+    matches!(window, [
+        Instruction::LoadWord { d: 0, .. },
+        Instruction::CompareWordImmediate { a: 0, immediate: 0 },
+        Instruction::BranchConditionalToLinkRegister { .. },
+        Instruction::LoadFloatSingle { d: 1, .. },
+        Instruction::LoadFloatSingle { d: 0, a: receiver, .. },
+        Instruction::FloatCompareUnordered { a: 1, b: 0 },
+        Instruction::BranchConditionalToLinkRegister { .. },
+        Instruction::LoadFloatSingle { d: 0, a: source_base, offset: source_offset },
+        Instruction::StoreFloatSingle { s: 0, a: first_store_base, offset: stored_offset },
+        Instruction::LoadWord { d: 4, .. },
+        Instruction::LoadFloatSingle { d: 0, a: first_reload_base, offset: first_reload_offset },
+        Instruction::LoadFloatSingle { d: 1, a: 4, offset: upper_offset },
+        Instruction::FloatCompareOrdered { a: 0, b: 1 },
+        Instruction::BranchConditionalForward { .. },
+        Instruction::StoreFloatSingle { s: 1, a: upper_store_base, offset: upper_store_offset },
+        Instruction::LoadWord { d: 4, .. },
+        Instruction::LoadFloatSingle { d: 1, a: second_reload_base, offset: second_reload_offset },
+        Instruction::LoadFloatSingle { d: 0, a: 4, offset: lower_offset },
+        Instruction::FloatNegate { d: 0, b: 0 },
+        Instruction::FloatCompareOrdered { a: 1, b: 0 },
+        Instruction::BranchConditionalForward { .. },
+        Instruction::StoreFloatSingle { s: 0, a: lower_store_base, offset: lower_store_offset },
+        Instruction::LoadFloatSingle { d: 1, a: normal_y_base, offset: normal_y_offset },
+        Instruction::LoadFloatSingle { d: 0, a: first_product_base, offset: first_product_offset },
+        Instruction::FloatMultiplySingle { d: 0, a: 1, c: 0 },
+        Instruction::StoreFloatSingle { s: 0, a: first_result_base, offset: first_result_offset },
+        Instruction::LoadFloatSingle { d: 1, a: normal_x_base, offset: normal_x_offset },
+        Instruction::LoadFloatSingle { d: 0, a: second_product_base, offset: second_product_offset },
+        Instruction::FloatNegate { d: 1, b: 1 },
+        Instruction::FloatMultiplySingle { d: 0, a: 1, c: 0 },
+        Instruction::StoreFloatSingle { s: 0, a: second_result_base, .. },
+        Instruction::BranchToLinkRegister,
+    ] if receiver == source_base
+        && source_base == first_store_base
+        && first_store_base == first_reload_base
+        && first_reload_base == upper_store_base
+        && upper_store_base == second_reload_base
+        && second_reload_base == lower_store_base
+        && lower_store_base == normal_y_base
+        && normal_y_base == first_product_base
+        && first_product_base == first_result_base
+        && first_result_base == normal_x_base
+        && normal_x_base == second_product_base
+        && second_product_base == second_result_base
+        && stored_offset == first_reload_offset
+        && first_reload_offset == upper_store_offset
+        && upper_store_offset == second_reload_offset
+        && second_reload_offset == lower_store_offset
+        && lower_store_offset == first_product_offset
+        && first_product_offset == second_product_offset
+        && source_offset == first_result_offset
+        && upper_offset == lower_offset
+        && normal_x_offset.checked_add(4) == Some(*normal_y_offset))
 }
 
 fn is_unscheduled_projection(window: &[Instruction]) -> bool {

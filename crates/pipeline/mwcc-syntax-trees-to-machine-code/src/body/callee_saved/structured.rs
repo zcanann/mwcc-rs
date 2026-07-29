@@ -2575,6 +2575,16 @@ impl Generator {
                         Some(Statement::If { condition, .. }) => Some(condition),
                         _ => None,
                     };
+                    let guarded_store_value = match then_body.first() {
+                        Some(Statement::Store { value, .. })
+                            if crate::condition_float_cache::is_retained_float_expression(value) =>
+                        {
+                            Some(value)
+                        }
+                        _ => None,
+                    };
+                    let guarded_followup =
+                        guarded_store_value.or(nested_condition);
                     let terms = logical_and_terms(condition);
                     let (previous_cache, previous_float_cache) =
                         if let Some((previous, previous_float)) =
@@ -2587,12 +2597,19 @@ impl Generator {
                             (
                                 self.begin_condition_global_cache_with_followup(
                                     condition,
-                                    nested_condition,
+                                    guarded_followup,
                                 ),
-                                self.begin_composed_condition_float_cache_with_followup(
-                                    condition,
-                                    nested_condition,
-                                ),
+                                if let Some(value) = guarded_store_value {
+                                    self.begin_composed_condition_float_cache_with_value_followup(
+                                        condition,
+                                        value,
+                                    )
+                                } else {
+                                    self.begin_composed_condition_float_cache_with_followup(
+                                        condition,
+                                        nested_condition,
+                                    )
+                                },
                             )
                         };
                     let previous_member_cache =
@@ -2793,10 +2810,10 @@ impl Generator {
                             self.condition_float_cache.clone(),
                         )
                     });
-                    let nested_true_cache =
-                        nested_condition.map(|_| self.condition_global_values.clone());
-                    let nested_true_float_cache = nested_condition.map(|condition| {
-                        self.condition_float_nested_true_edge_cache(condition)
+                    let guarded_true_cache =
+                        guarded_followup.map(|_| self.condition_global_values.clone());
+                    let guarded_true_float_cache = guarded_followup.map(|followup| {
+                        self.condition_float_true_edge_cache(followup)
                     });
                     let then_wide_mask_cache = self.wide_pair_mask_false_edge_cache();
                     let then_literal_cache = self.condition_float_literal_edge_cache();
@@ -2814,20 +2831,16 @@ impl Generator {
                     for branch in branches.enter_body {
                         self.patch_forward(branch, body_start);
                     }
-                    // A nested conditional is the only first-body statement
-                    // allowed to consume true-edge FP values. Restore before
-                    // emitting any subsequent statement that could mutate the
-                    // referenced memory.
-                    let carried_prefix_len =
-                        then_body.first().is_some_and(|statement| {
-                            matches!(statement, Statement::If { .. })
-                        }) as usize;
+                    // Only the proven first guarded statement may consume
+                    // true-edge values. Restore before any subsequent source
+                    // statement can mutate the referenced memory.
+                    let carried_prefix_len = guarded_followup.is_some() as usize;
                     let (carried_prefix, remainder) =
                         then_body.split_at(carried_prefix_len);
-                    let prefix_cache_restore = nested_true_cache.map(|cache| {
+                    let prefix_cache_restore = guarded_true_cache.map(|cache| {
                         std::mem::replace(&mut self.condition_global_values, cache)
                     });
-                    if let Some(cache) = nested_true_float_cache {
+                    if let Some(cache) = guarded_true_float_cache {
                         self.condition_float_cache = cache;
                     }
                     self.wide_pair_mask_cache = then_wide_mask_cache;
