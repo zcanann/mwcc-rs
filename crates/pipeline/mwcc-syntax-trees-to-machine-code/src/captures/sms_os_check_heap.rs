@@ -37,6 +37,14 @@ impl Generator {
         // -- emit (the capture, verbatim) --
         self.frame_size = 8;
         self.non_leaf = true;
+        // This configured SDK translation unit compiles and discards the
+        // Dolphin header's inline bodies before reaching its first emitted
+        // function. Their complete legacy frontend ordinal cost is 162; the
+        // syntax-level recovery currently sees only the five control-flow
+        // labels it can prove structurally. Keep the measured unit prefix on
+        // the context-gated capture until discarded-inline lowering retains
+        // those bodies as ordinary machine functions.
+        self.output.leading_source_anonymous_bump_override = Some(162);
         // Assertion reports address these pooled writable strings through the
         // translation unit's `...data.0` anchor rather than individual @N
         // relocations. Captured code must retain the source strings explicitly.
@@ -794,6 +802,11 @@ impl Generator {
             .instructions
             .push(Instruction::BranchToLinkRegister);
         self.output.anonymous_label_bump += bump;
+        // Sixteen internal labels are created after this function's writable
+        // assertion strings have been numbered. Charge them at the tail so
+        // OSDumpHeap's following string block starts at @210 without moving
+        // OSCheckHeap's own @179..@191 block.
+        self.output.post_constant_label_bump += 16;
         Ok(true)
     }
 }
