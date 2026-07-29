@@ -1444,10 +1444,12 @@ impl Generator {
             && self.legacy_inline_expansion_frame_bytes != 0
         {
             LegacyCalleeSavedFrameLayout::RetainEagerLocalLane
-        } else if is_plain_short_circuit_call_if(function) {
-            // A single call-bearing conjunction has no retained local table.
-            // Its saved entry values therefore use the ordinary value-origin
-            // lane instead of reserving the full incoming parameter table.
+        } else if is_plain_short_circuit_call_if(function)
+            && self.entry_parameter_words <= 2
+        {
+            // A single call-bearing conjunction whose incoming values fit one
+            // word pair has no distinct retained local table. Three or more
+            // words span multiple pairs and retain the full entry table.
             LegacyCalleeSavedFrameLayout::InferFromValueOrigin
         } else if guarded_structured_constant_return {
             LegacyCalleeSavedFrameLayout::RetainGuardedEntryParameterTable
