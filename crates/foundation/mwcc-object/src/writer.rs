@@ -1651,9 +1651,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
     // `.data` symbol.
     let data_marker_needed_by_data = input.object_format.data_relocations_use_section_anchors
         && data_relocation_targets_section(".data");
-    let mut data_marker_pending = functions.iter().any(|function| {
+    let data_marker_needed_by_code = functions.iter().any(|function| {
         function.relocations.iter().any(|relocation| matches!(&relocation.target, RelocationTarget::External(name) if name == "...data.0"))
-    }) || data_marker_needed_by_data;
+    });
+    let mut data_marker_pending = data_marker_needed_by_code || data_marker_needed_by_data;
     if rodata_anchor_needed_by_code && input.object_format.rodata_anchor_before_data_symbols {
         local_data_symbols.insert("...rodata.0", (symtab.len() / SYMBOL_SIZE) as u32);
         write_symbol(
@@ -1669,7 +1670,10 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
         rodata_anchor_emitted = true;
     }
     for object in &input.data_objects {
-        if data_marker_pending && data_marker_needed_by_data && data_section[object.name] == ".data"
+        if data_marker_pending
+            && data_section[object.name] == ".data"
+            && (data_marker_needed_by_data
+                || (data_marker_needed_by_code && object.functions_before == 0))
         {
             local_data_symbols.insert("...data.0", (symtab.len() / SYMBOL_SIZE) as u32);
             write_symbol(

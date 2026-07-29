@@ -882,6 +882,94 @@ fn data_anchor_precedes_the_first_upfront_local_data_object() {
 }
 
 #[test]
+fn code_data_anchor_precedes_pools_when_full_data_is_declared_upfront() {
+    let mut function = weak_function("probe");
+    function.is_weak = false;
+    function.weak_inline = false;
+    function.relocations = vec![crate::TextRelocation {
+        offset: 2,
+        elf_type: 6,
+        target: crate::RelocationTarget::External("...data.0".into()),
+    }];
+    function.constants = vec![Sdata2Constant {
+        bits: 0x3f80_0000,
+        byte_width: 4,
+        static_slot: false,
+        image: false,
+        force_new: false,
+        force_full_data_section: false,
+    }];
+
+    let data = [DataObject {
+        name: "table",
+        size: 12,
+        alignment: 4,
+        comment_alignment: 4,
+        initial_bytes: Some(vec![1; 12]),
+        is_const: false,
+        force_full_data_section: true,
+        is_static: false,
+        force_active: false,
+        is_explicit_zero: false,
+        preassigned_anonymous_ordinal: None,
+        preassigned_ordinal_advances_counter: false,
+        relocations: Vec::new(),
+        non_static_functions_before: 0,
+        functions_before: 0,
+        is_weak: false,
+        static_local_owner: None,
+        anonymous_adjust: 0,
+        section: None,
+    }];
+    let object = write_object(&ObjectInput {
+        source_name: "anchor.c",
+        object_format: crate::ObjectFormat {
+            comment: CommentFormat {
+                marker: 8,
+                version: (1, 2, 5),
+                pooling_enabled: true,
+            },
+            emb_sda21_offset: 0,
+            code_alignment: 4,
+            sdata2_writable: false,
+            function_symbol_order: FunctionSymbolOrder::ReferencesFirst,
+            weak_vtable_function_symbol_tail: false,
+            owned_rtti_closure_relocation_order: false,
+            initialized_globals_before_deferred_functions: false,
+            local_data_symbols_in_declaration_order: false,
+            small_zero_statics_in_declaration_order: false,
+            small_zero_data_in_declaration_order: false,
+            rodata_anchor_before_data_symbols: false,
+            rodata_anchor_comment_flags: 0,
+            data_relocations_use_section_anchors: false,
+            data_anchor_comment_flags: 0,
+            initial_anonymous_counter: 1,
+            leading_source_anonymous_bump: 0,
+            post_leaf_function_anonymous_bump: 0,
+            post_framed_function_anonymous_bump: 0,
+        },
+        functions: vec![function],
+        data_objects: data.into(),
+        small_data: true,
+        emit_mwcats: false,
+        inline_asm_symbols: &[],
+        early_static_function_symbols: &[],
+        early_undefined_externals: &[],
+        section_function_declarations: &[],
+        section_externals: &[],
+        local_symbol_order: &[],
+        debug: None,
+    });
+
+    let names = symbol_names(&object);
+    let anchor = names.iter().position(|name| name == "...data.0").unwrap();
+    let pool = names.iter().position(|name| name.starts_with('@')).unwrap();
+    let table = names.iter().position(|name| name == "table").unwrap();
+    assert!(anchor < pool);
+    assert!(pool < table);
+}
+
+#[test]
 fn const_pointer_arrays_emit_reverse_rodata_relocations() {
     let data = [
         DataObject {
