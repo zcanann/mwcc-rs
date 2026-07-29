@@ -7,6 +7,7 @@
 
 #[allow(unused_imports)]
 use super::*;
+use super::structured_early_return_schedule::resolve_structured_epilogue_branches;
 use super::structured::structured_hidden_label_count;
 
 impl Generator {
@@ -82,11 +83,7 @@ impl Generator {
             self.evaluate(return_expression, function.return_type, result)?;
         }
         let epilogue = self.output.instructions.len();
-        for branch in return_branches {
-            if let Instruction::Branch { target } = &mut self.output.instructions[branch] {
-                *target = epilogue;
-            }
-        }
+        resolve_structured_epilogue_branches(&mut self.output.instructions, epilogue);
         self.output.anonymous_label_bump += structured_hidden_label_count(&function.statements);
         self.emit_epilogue_and_return();
         Ok(true)

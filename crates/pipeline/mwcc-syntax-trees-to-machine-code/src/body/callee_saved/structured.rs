@@ -21,6 +21,9 @@ use super::structured_condition_schedule::thread_forward_unconditional_branch_ch
 use super::structured_entry_alias::{
     fold_entry_alias_zero_test, plan_first_call_alias, EntryAliasBoundary, EntryParameterAlias,
 };
+use super::structured_early_return_schedule::{
+    resolve_structured_epilogue_branches, STRUCTURED_EPILOGUE_PLACEHOLDER,
+};
 use super::structured_exclusive_arm_home_layout::ExclusiveArmHomeLayout;
 use super::structured_frame_assignment::{
     adjacent_byte_pointer_round_up_name, fold_adjacent_byte_pointer_round_up,
@@ -2294,7 +2297,7 @@ impl Generator {
             );
         }
         self.schedule_structured_signed_conversion_pair();
-        self.fold_structured_void_early_return_branches(&mut return_branches);
+        self.fold_structured_void_early_return_branches();
         self.schedule_loop_assertion_entry_alias();
         self.schedule_loop_assertion_string_highs();
         self.schedule_loop_assertion_body();
@@ -2323,17 +2326,11 @@ impl Generator {
         let lowered_accumulator_return =
             !call_accumulators.is_empty() && self.lower_structured_call_accumulator_return();
         let epilogue = self.output.instructions.len();
-        for branch in return_branches {
-            match &mut self.output.instructions[branch] {
-                Instruction::Branch { target }
-                | Instruction::BranchConditionalForward { target, .. } => *target = epilogue,
-                _ => debug_assert!(false, "structured return branch changed form"),
-            }
-        }
+        resolve_structured_epilogue_branches(&mut self.output.instructions, epilogue);
         self.fold_adjacent_structured_epilogue_branches();
         // This pass can insert a delayed saved-home copy into the entry
-        // prefix. Run it after source-return branch indices have been consumed;
-        // its general instruction-index helper owns the finalized branch
+        // prefix. Run it after the durable epilogue placeholders have been
+        // resolved; its general instruction-index helper owns finalized branch
         // destinations from here onward.
         self.schedule_entry_member_saved_home(function);
         self.schedule_guarded_saved_receiver_float_call();
@@ -2856,13 +2853,17 @@ impl Generator {
                     return_branches.push(self.output.instructions.len());
                     self.output
                         .instructions
-                        .push(Instruction::Branch { target: 0 });
+                        .push(Instruction::Branch {
+                            target: STRUCTURED_EPILOGUE_PLACEHOLDER,
+                        });
                 }
                 Statement::Return(None) => {
                     return_branches.push(self.output.instructions.len());
                     self.output
                         .instructions
-                        .push(Instruction::Branch { target: 0 });
+                        .push(Instruction::Branch {
+                            target: STRUCTURED_EPILOGUE_PLACEHOLDER,
+                        });
                 }
                 Statement::Goto(label) => {
                     let branch = self.output.instructions.len();
