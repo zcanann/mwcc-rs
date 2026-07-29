@@ -294,6 +294,11 @@ impl Generator {
             .any(|instruction| {
                 matches!(instruction, Instruction::LoadWord { d, .. } if physical_saved.contains(d))
             });
+        let parameter_derived_home_before_call = saved_home_loaded_from_entry_parameter(
+            &self.output.instructions[..first_call],
+            &physical_saved,
+            self.entry_parameter_words,
+        );
         let promoted_parameter_count = self.output.instructions[..first_call]
             .iter()
             .filter(|instruction| {
@@ -327,7 +332,7 @@ impl Generator {
             0
         } else if self.legacy_discarded_call_locals == 0 {
             if self.entry_parameter_words != 0
-                && materialized_home_before_call
+                && (materialized_home_before_call || parameter_derived_home_before_call)
                 && self.legacy_callee_saved_frame_layout
                     == LegacyCalleeSavedFrameLayout::RetainEntryParameterTable
             {
@@ -349,7 +354,7 @@ impl Generator {
             }
         } else {
             let retained_parameter_lanes = if self.entry_parameter_words != 0
-                && materialized_home_before_call
+                && (materialized_home_before_call || parameter_derived_home_before_call)
                 && self.legacy_callee_saved_frame_layout
                     == LegacyCalleeSavedFrameLayout::RetainEntryParameterTable
             {
@@ -1273,6 +1278,49 @@ fn compact_linkage_first_saved_frame_size(saved_registers: usize) -> i16 {
         & !7
 }
 
+/// Identify a saved local loaded through an entry pointer before that incoming
+/// register is overwritten. Build 163 retains the entry-parameter table for
+/// this value origin just as it does for a parameter copied directly into a
+/// saved home.
+fn saved_home_loaded_from_entry_parameter(
+    instructions: &[Instruction],
+    saved_registers: &[u8],
+    entry_parameter_words: usize,
+) -> bool {
+    let mut live_entry_register = [false; 32];
+    for register in 3..3 + entry_parameter_words.min(8) {
+        live_entry_register[register] = true;
+    }
+
+    for instruction in instructions {
+        let loaded = match instruction {
+            Instruction::LoadWord { d, a, .. }
+            | Instruction::LoadByteZero { d, a, .. }
+            | Instruction::LoadHalfwordZero { d, a, .. }
+            | Instruction::LoadHalfwordAlgebraic { d, a, .. } => Some((*d, *a)),
+            _ => None,
+        };
+        if loaded.is_some_and(|(destination, base)| {
+            saved_registers.contains(&destination)
+                && live_entry_register
+                    .get(usize::from(base))
+                    .copied()
+                    .unwrap_or(false)
+        }) {
+            return true;
+        }
+
+        for operand in mwcc_vreg::register_operands(instruction) {
+            if operand.role == mwcc_vreg::RegisterRole::Define
+                && operand.class == mwcc_vreg::Class::General
+            {
+                live_entry_register[usize::from(operand.register)] = false;
+            }
+        }
+    }
+    false
+}
+
 /// Remap instruction-index relocations after `[0..=end]` rotates left once.
 fn remap_prefix_rotate_left(
     relocations: &mut [mwcc_machine_code::Relocation],
@@ -1297,6 +1345,48 @@ mod tests {
         assert_eq!(compact_linkage_first_saved_frame_size(3), 24);
         assert_eq!(compact_linkage_first_saved_frame_size(4), 24);
         assert_eq!(compact_linkage_first_saved_frame_size(5), 32);
+    }
+
+    #[test]
+    fn entry_pointer_load_identifies_a_parameter_derived_saved_home() {
+        let instructions = [Instruction::LoadWord {
+            d: 31,
+            a: 3,
+            offset: 44,
+        }];
+
+        assert!(saved_home_loaded_from_entry_parameter(
+            &instructions,
+            &[31],
+            1
+        ));
+        assert!(!saved_home_loaded_from_entry_parameter(
+            &instructions,
+            &[30],
+            1
+        ));
+    }
+
+    #[test]
+    fn overwritten_entry_pointer_does_not_supply_saved_home_provenance() {
+        let instructions = [
+            Instruction::AddImmediate {
+                d: 3,
+                a: 0,
+                immediate: 0,
+            },
+            Instruction::LoadWord {
+                d: 31,
+                a: 3,
+                offset: 44,
+            },
+        ];
+
+        assert!(!saved_home_loaded_from_entry_parameter(
+            &instructions,
+            &[31],
+            1
+        ));
     }
 
     #[test]
