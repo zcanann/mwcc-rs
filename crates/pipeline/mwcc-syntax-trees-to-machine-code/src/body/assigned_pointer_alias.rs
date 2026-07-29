@@ -29,6 +29,17 @@ pub(super) fn fold_single_assignment_derived_pointer_alias(
         else {
             continue;
         };
+        if super::callee_saved::read_after_possible_call_in_return(
+            &function.statements,
+            function.return_expression.as_ref(),
+            &local.name,
+        ) {
+            // A derived subobject address that crosses a call owns a real
+            // callee-saved live range. Folding it into its later member reads
+            // would recompute the address after the call and hide that range
+            // from structured home planning.
+            continue;
+        }
         if function_assigns_name(function, base_name) {
             continue;
         }
@@ -456,6 +467,32 @@ mod tests {
                 name: "consume".into(),
                 arguments: vec![Expression::Variable("alias".into())],
             }));
+        assert!(fold_single_assignment_derived_pointer_alias(&function).is_none());
+    }
+
+    #[test]
+    fn preserves_a_derived_address_live_across_a_call() {
+        let mut function = test_function_with_arm_alias();
+        function.statements = vec![
+            Statement::Assign {
+                name: "alias".into(),
+                value: Expression::MemberAddress {
+                    base: Box::new(Expression::Variable("object".into())),
+                    offset: 16,
+                    element: mwcc_syntax_trees::Pointee::UnsignedInt,
+                    index_stride: None,
+                },
+            },
+            Statement::Expression(Expression::Call {
+                name: "mutate".into(),
+                arguments: Vec::new(),
+            }),
+            Statement::Expression(Expression::Call {
+                name: "consume".into(),
+                arguments: vec![Expression::Variable("alias".into())],
+            }),
+        ];
+
         assert!(fold_single_assignment_derived_pointer_alias(&function).is_none());
     }
 
