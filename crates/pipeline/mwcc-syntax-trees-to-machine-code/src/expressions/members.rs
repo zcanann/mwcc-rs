@@ -913,6 +913,22 @@ impl Generator {
             }
             return Err(Diagnostic::error("a global struct-array member into the scratch register is not supported yet (roadmap)"));
         }
+        if let Some(displacement) = self.emit_data_anchor_global_struct_array_address(
+            name,
+            total_size,
+            index_register,
+            stride,
+            offset,
+            destination,
+        )? {
+            self.output.instructions.push(displacement_load(
+                pointee,
+                destination,
+                destination,
+                displacement,
+            )?);
+            return Ok(());
+        }
         let shift = stride.trailing_zeros() as u8;
         if self.emit_legacy_global_struct_array_address(
             name,
@@ -1047,6 +1063,28 @@ impl Generator {
         }
         let index_register = self.general_register_of_leaf(index)?;
         let shift = stride.trailing_zeros() as u8;
+        if let Some(displacement) = self.emit_data_anchor_global_struct_array_address(
+            name,
+            total_size,
+            index_register,
+            stride,
+            offset,
+            index_register,
+        )? {
+            let source = if let Some(constant) = constant_value(value) {
+                self.load_integer_constant(GENERAL_SCRATCH, constant);
+                GENERAL_SCRATCH
+            } else {
+                self.general_register_of_leaf(value)?
+            };
+            self.output.instructions.push(displacement_store(
+                pointee,
+                source,
+                index_register,
+                displacement,
+            )?);
+            return Ok(());
+        }
         if self.emit_legacy_global_struct_array_address(
             name,
             total_size,

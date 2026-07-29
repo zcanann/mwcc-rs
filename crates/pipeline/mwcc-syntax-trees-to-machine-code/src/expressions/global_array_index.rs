@@ -592,6 +592,49 @@ impl Generator {
     /// build 163's offset-sensitive schedule. A zero-offset member scales into
     /// the eventual address register between `lis` and `addi`; a nonzero member
     /// first materializes the base, then scales through r0.
+    pub(crate) fn emit_data_anchor_global_struct_array_address(
+        &mut self,
+        name: &str,
+        total_size: u32,
+        index: u8,
+        stride: u32,
+        member_offset: u32,
+        address: u8,
+    ) -> Compilation<Option<i16>> {
+        if self.behavior.global_array_index_style
+            != mwcc_versions::GlobalArrayIndexStyle::ExplicitAddress
+            || (self.behavior.global_addressing == GlobalAddressing::SmallData && total_size <= 8)
+            || !stride.is_power_of_two()
+        {
+            return Ok(None);
+        }
+        let Some((base, anchor_offset)) = self
+            .data_section_anchor
+            .as_ref()
+            .and_then(|anchor| anchor.register.zip(anchor.offsets.get(name).copied()))
+        else {
+            return Ok(None);
+        };
+        let Some(displacement) =
+            combined_data_anchor_member_displacement(anchor_offset, member_offset)
+        else {
+            return Ok(None);
+        };
+        self.output
+            .instructions
+            .push(Instruction::ShiftLeftImmediate {
+                a: address,
+                s: index,
+                shift: stride.trailing_zeros() as u8,
+            });
+        self.output.instructions.push(Instruction::Add {
+            d: address,
+            a: base,
+            b: address,
+        });
+        Ok(Some(displacement))
+    }
+
     pub(crate) fn emit_legacy_global_struct_array_address(
         &mut self,
         name: &str,
@@ -787,5 +830,26 @@ impl Generator {
             b: index,
         });
         Ok(())
+    }
+}
+
+fn combined_data_anchor_member_displacement(anchor: i16, member: u32) -> Option<i16> {
+    i16::try_from(i64::from(anchor) + i64::from(member)).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn combines_anchor_and_struct_member_displacements() {
+        assert_eq!(
+            combined_data_anchor_member_displacement(184, 4),
+            Some(188)
+        );
+        assert_eq!(
+            combined_data_anchor_member_displacement(i16::MAX, 1),
+            None
+        );
     }
 }
