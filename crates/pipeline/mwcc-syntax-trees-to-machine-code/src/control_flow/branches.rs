@@ -1476,17 +1476,20 @@ impl Generator {
                         return self.emit_condition_test(&rewritten);
                     }
                 }
-                // Although narrow unsigned bit-fields undergo C integer promotion
-                // to `int`, mwcc retains their unsigned storage provenance when
-                // selecting a compare (`field == 1` uses `cmplwi`, not `cmpwi`).
-                // Keep that instruction-selection quirk local to comparisons so
-                // arithmetic on the promoted value still has ordinary `int`
-                // semantics.
+                // Although narrow unsigned storage undergoes C integer promotion
+                // to `int`, mwcc retains its unsigned provenance when selecting a
+                // compare (`field == 1` and `uchar_member <= 1` use `cmplwi`, not
+                // `cmpwi`). Keep that instruction-selection quirk local to
+                // comparisons so arithmetic still has ordinary `int` semantics.
                 let bit_field_operand = |expression: &Expression| {
                     matches!(expression, Expression::BitFieldRead { .. })
                 };
-                let signed = !bit_field_operand(left)
-                    && !bit_field_operand(right)
+                let unsigned_storage_compare =
+                    bit_field_operand(left)
+                        || bit_field_operand(right)
+                        || self.is_narrow_unsigned_load(left)?
+                        || self.is_narrow_unsigned_load(right)?;
+                let signed = !unsigned_storage_compare
                     && if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
                         self.signedness_of(left)? && self.signedness_of(right)?
                     } else {
