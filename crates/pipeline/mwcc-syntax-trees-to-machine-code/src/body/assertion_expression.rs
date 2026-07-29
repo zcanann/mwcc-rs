@@ -489,18 +489,11 @@ struct SimpleDiscardedAssertion<'a> {
 
 impl<'a> SimpleDiscardedAssertion<'a> {
     fn recognize(expression: &'a Expression) -> Option<Self> {
-        let Expression::Cast {
-            target_type: Type::Void,
-            operand,
-        } = expression
-        else {
-            return None;
-        };
         let Expression::Binary {
             operator: BinaryOperator::LogicalOr,
             left: condition,
             right: failure,
-        } = operand.as_ref()
+        } = discarded_assertion_value(expression)
         else {
             return None;
         };
@@ -543,18 +536,11 @@ pub(crate) fn simple_discarded_assertion_call(
 
 impl<'a> DiscardedAssertion<'a> {
     fn recognize(expression: &'a Expression) -> Option<Self> {
-        let Expression::Cast {
-            target_type: Type::Void,
-            operand,
-        } = expression
-        else {
-            return None;
-        };
         let Expression::Binary {
             operator: BinaryOperator::LogicalOr,
             left: condition,
             right: failure,
-        } = operand.as_ref()
+        } = discarded_assertion_value(expression)
         else {
             return None;
         };
@@ -589,6 +575,20 @@ impl<'a> DiscardedAssertion<'a> {
     }
 }
 
+/// Assertion macros occur both as `(void)(condition || (report(), 0))` and as
+/// a directly discarded logical expression, depending on the SDK header
+/// generation. Their value is irrelevant in statement position; normalize the
+/// optional void cast before the one-term and multi-term recognizers diverge.
+fn discarded_assertion_value(expression: &Expression) -> &Expression {
+    match expression {
+        Expression::Cast {
+            target_type: Type::Void,
+            operand,
+        } => operand,
+        expression => expression,
+    }
+}
+
 fn comparison_with_constant_on_right(expression: &Expression) -> Expression {
     let Expression::Binary {
         operator,
@@ -613,5 +613,45 @@ fn comparison_with_constant_on_right(expression: &Expression) -> Expression {
         operator: swapped,
         left: right.clone(),
         right: left.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assertion() -> Expression {
+        Expression::Binary {
+            operator: BinaryOperator::LogicalOr,
+            left: Box::new(Expression::Variable("pointer".into())),
+            right: Box::new(Expression::Comma {
+                left: Box::new(Expression::Call {
+                    name: "OSPanic".into(),
+                    arguments: vec![
+                        Expression::StringLiteral(b"GXLight.c".to_vec()),
+                        Expression::IntegerLiteral(129),
+                    ],
+                }),
+                right: Box::new(Expression::IntegerLiteral(0)),
+            }),
+        }
+    }
+
+    #[test]
+    fn recognizes_cast_and_bare_sdk_assertion_statements() {
+        let bare = assertion();
+        let cast = Expression::Cast {
+            target_type: Type::Void,
+            operand: Box::new(assertion()),
+        };
+
+        assert_eq!(
+            simple_discarded_assertion_call(&bare).map(|(name, _)| name),
+            Some("OSPanic")
+        );
+        assert_eq!(
+            simple_discarded_assertion_call(&cast).map(|(name, _)| name),
+            Some("OSPanic")
+        );
     }
 }

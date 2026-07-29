@@ -32,7 +32,9 @@ impl Generator {
         &mut self,
         expression: &Expression,
     ) -> Compilation<bool> {
-        if self.try_emit_discarded_assertion(expression)? {
+        if self.try_emit_discarded_assertion(expression)?
+            || self.try_emit_simple_discarded_assertion(expression)?
+        {
             return Ok(true);
         }
         let Expression::Conditional {
