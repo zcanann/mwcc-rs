@@ -76,6 +76,7 @@ mod structured_allocator_result_schedule;
 mod structured_leaf;
 mod structured_call_schedule;
 mod structured_condition_schedule;
+mod structured_complement_product_pair;
 mod structured_constructor_schedule;
 mod structured_copy_packet_schedule;
 mod structured_call_accumulator;

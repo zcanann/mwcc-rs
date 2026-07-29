@@ -217,10 +217,13 @@ impl Generator {
         // Build 163 retains one optimizer node between the structured-body
         // label block and this early-created literal.
         self.output.constant_number_gaps.push((constant_index, 1));
-        self.preloaded_float_compare_literal = Some(PreloadedFloatCompareLiteral {
-            key,
-            register: FLOAT_SCRATCH,
-        });
+        self.preloaded_float_compare_literals
+            .push(PreloadedFloatCompareLiteral {
+                key,
+                register: FLOAT_SCRATCH,
+                remaining_uses: 1,
+                reuse_for_following_value: false,
+            });
         Ok(())
     }
 }

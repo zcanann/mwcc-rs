@@ -1633,20 +1633,13 @@ impl Generator {
         let single_zero = !double
             && (matches!(operand, Expression::FloatLiteral(value) if *value as f32 == 0.0)
                 || matches!(operand, Expression::IntegerLiteral(value) if *value == 0));
-        let consumes_preload = self
-            .preloaded_float_compare_literal
-            .is_some_and(|preload| {
-                preload.register == dest
-                    && float_compare_literal_key(operand, double) == Some(preload.key)
-            });
-        if single_zero && self.condition_float_zero_register() == Some(dest) {
-            if consumes_preload {
-                self.preloaded_float_compare_literal = None;
-            }
+        if self
+            .take_preloaded_float_compare_literal(operand, double, Some(dest))
+            .is_some()
+        {
             return Ok(());
         }
-        if consumes_preload {
-            self.preloaded_float_compare_literal = None;
+        if single_zero && self.condition_float_zero_register() == Some(dest) {
             return Ok(());
         }
         self.invalidate_condition_float_register(dest);
@@ -1675,6 +1668,35 @@ impl Generator {
         Ok(())
     }
 
+    fn take_preloaded_float_compare_literal(
+        &mut self,
+        operand: &Expression,
+        double: bool,
+        required_register: Option<u8>,
+    ) -> Option<u8> {
+        let key = float_compare_literal_key(operand, double)?;
+        let index = self
+            .preloaded_float_compare_literals
+            .iter()
+            .position(|preload| {
+                preload.key == key
+                    && required_register.is_none_or(|register| preload.register == register)
+                    && preload.remaining_uses != 0
+            })?;
+        let register = self.preloaded_float_compare_literals[index].register;
+        let reuse_for_following_value =
+            self.preloaded_float_compare_literals[index].reuse_for_following_value;
+        if self.preloaded_float_compare_literals[index].remaining_uses == 1 {
+            self.preloaded_float_compare_literals.remove(index);
+        } else {
+            self.preloaded_float_compare_literals[index].remaining_uses -= 1;
+        }
+        if reuse_for_following_value {
+            self.released_float_compare_literal_register = Some(register);
+        }
+        Some(register)
+    }
+
     /// Whether f1 currently holds a float argument (a float parameter lives there),
     /// so it can't double as the compare scratch without the FP register allocator.
     pub(crate) fn f1_holds_float_argument(&self) -> bool {
@@ -1695,6 +1717,10 @@ impl Generator {
             operand,
             Expression::FloatLiteral(_) | Expression::IntegerLiteral(_)
         ) {
+            if let Some(register) = self.take_preloaded_float_compare_literal(operand, double, None)
+            {
+                return Ok(register);
+            }
             self.load_float_literal_into(FLOAT_SCRATCH, operand, double)?;
             return Ok(FLOAT_SCRATCH);
         }
@@ -1738,6 +1764,11 @@ impl Generator {
         }
         if let Some(register) = self.retained_float_compare_register(operand) {
             return Ok(register);
+        }
+        if crate::condition_float_cache::is_direct_float_memory_load(operand) {
+            if let Some(register) = self.released_float_compare_literal_register.take() {
+                return self.place_condition_float_load(operand, register);
+            }
         }
         if self.f1_holds_float_argument() {
             return Err(Diagnostic::error("a float member/global compare with a float argument in f1 needs the FP register allocator (roadmap)"));

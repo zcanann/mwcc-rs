@@ -66,6 +66,7 @@ use super::structured_locals::{
 };
 use super::structured_parameter_home_reuse::StructuredParameterHomeReuse;
 use super::structured_eager_home_reuse::StructuredEagerHomeReuse;
+use super::structured_complement_product_pair::StructuredComplementProductPair;
 use super::structured_prologue::{
     saved_home_stores_precede_initialization, uses_dense_saved_register_range,
 };
@@ -481,6 +482,12 @@ impl Generator {
         let (eager_saved_locals, deferred_saved_locals): (Vec<_>, Vec<_>) = saved_locals
             .into_iter()
             .partition(|local| local.initializer.is_some());
+        let complement_product_pair = StructuredComplementProductPair::plan(
+            function,
+            &saved_float_locals,
+            &eager_saved_locals,
+            self.behavior.frame_convention,
+        );
         let saved_parameter_names = saved_parameters
             .iter()
             .chain(saved_float_parameters.iter())
@@ -847,6 +854,11 @@ impl Generator {
                             home_index,
                         )
                     })
+                {
+                    self.fresh_virtual_general_preferring(preferred)
+                } else if let Some(preferred) = complement_product_pair
+                    .as_ref()
+                    .and_then(|pair| pair.saved_general_home_preference(count, home_index))
                 {
                     self.fresh_virtual_general_preferring(preferred)
                 } else if let Some(preferred) = paired_eager_deferred_preference(
@@ -1661,7 +1673,10 @@ impl Generator {
                     .expect("rounded pointer base was initialized")
                     .register = *base_home;
                 dense_eager_consumed_statements = round_up.statement_index + 1;
-            } else {
+            } else if complement_product_pair
+                .as_ref()
+                .is_none_or(|pair| !pair.interleaves_general_initializer(&local.name))
+            {
                 let handled_dense_global = stagger_dense_parameter_copies
                     && home_index == 1
                     && self.try_emit_dense_eager_global_array_initializer(initializer, home)?;
@@ -1778,25 +1793,46 @@ impl Generator {
                 },
             );
         }
-        for local in saved_float_locals {
-            let group = saved_float_plan.group(&local.name);
-            let preferred = if saved_float_parameters.is_empty() {
-                saved_float_home_preference(
-                    group,
-                    saved_float_plan.group_count,
-                    compact_aggregate_scratch_pair,
-                )
-            } else {
-                31u8.saturating_sub(
-                    u8::try_from(saved_float_parameters.len() + group)
-                        .unwrap_or(17)
-                        .min(17),
-                )
-            };
-            let home = self.fresh_virtual_float_preferring(preferred);
-            if let Some(initializer) = &local.initializer {
-                self.evaluate(initializer, local.declared_type, home)?;
+        let saved_float_homes: Vec<_> = saved_float_locals
+            .iter()
+            .map(|local| {
+                let group = saved_float_plan.group(&local.name);
+                let preferred = if saved_float_parameters.is_empty() {
+                    saved_float_home_preference(
+                        group,
+                        saved_float_plan.group_count,
+                        compact_aggregate_scratch_pair,
+                    )
+                } else {
+                    31u8.saturating_sub(
+                        u8::try_from(saved_float_parameters.len() + group)
+                            .unwrap_or(17)
+                            .min(17),
+                    )
+                };
+                self.fresh_virtual_float_preferring(preferred)
+            })
+            .collect();
+        if let Some(pair) = &complement_product_pair {
+            let destinations = pair.product_names().map(|name| {
+                saved_float_locals
+                    .iter()
+                    .zip(&saved_float_homes)
+                    .find_map(|(local, home)| (local.name == name).then_some(*home))
+                    .expect("the paired-product plan names two saved float locals")
+            });
+            self.emit_structured_complement_product_pair(pair, destinations)?;
+        } else {
+            for (local, &home) in saved_float_locals.iter().zip(&saved_float_homes) {
+                if let Some(initializer) = &local.initializer {
+                    self.evaluate(initializer, local.declared_type, home)?;
+                }
             }
+        }
+        for (local, home) in saved_float_locals
+            .into_iter()
+            .zip(saved_float_homes)
+        {
             self.locations.insert(
                 local.name.clone(),
                 Location {
@@ -2035,6 +2071,11 @@ impl Generator {
         } else {
             0
         };
+        let statement_start = statement_start.max(
+            complement_product_pair
+                .as_ref()
+                .map_or(0, StructuredComplementProductPair::consumed_statement_prefix),
+        );
         let mut condition_alias = entry_parameter_alias
             .filter(|alias| alias.boundary == EntryAliasBoundary::AfterFirstConditionTerm);
         self.emit_structured_statements(

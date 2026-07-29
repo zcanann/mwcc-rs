@@ -80,6 +80,8 @@ pub(crate) fn float_compare_literal_key(
 pub(crate) struct PreloadedFloatCompareLiteral {
     pub(crate) key: FloatCompareLiteralKey,
     pub(crate) register: u8,
+    pub(crate) remaining_uses: usize,
+    pub(crate) reuse_for_following_value: bool,
 }
 
 pub(crate) struct StructuredFloatHandoff {
@@ -450,9 +452,10 @@ pub(crate) struct Generator {
     /// reuses the pre-loaded FPR by the literal's f64 bits instead of re-pooling/re-loading.
     /// `(FloatLiteral f64 bits, FPR)`; empty outside a run (runs are homogeneous float/double).
     pub(crate) prematerialized_float_constants: Vec<(u64, u8)>,
-    /// One pool literal deliberately issued before an ephemeral local's memory
-    /// initializer. The first matching comparison consumes this reservation.
-    pub(crate) preloaded_float_compare_literal: Option<PreloadedFloatCompareLiteral>,
+    /// Pool literals deliberately issued before their comparisons. A
+    /// reservation records how many source comparisons reuse the live value.
+    pub(crate) preloaded_float_compare_literals: Vec<PreloadedFloatCompareLiteral>,
+    pub(crate) released_float_compare_literal_register: Option<u8>,
     /// Build-163 alias split for a local whose first compare uses its f2
     /// initializer while later mutation/call uses consume a preserved f1 copy.
     pub(crate) structured_float_handoff: Option<StructuredFloatHandoff>,
