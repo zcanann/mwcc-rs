@@ -1333,9 +1333,12 @@ fn compile(
         .iter()
         .find_map(|function| function.leading_source_anonymous_bump_override)
         .unwrap_or(inferred_leading_source_ordinal_bump);
-    if let Some(residues) = &cxx_literal_temporaries {
+    let per_function_constant_bump = cxx_literal_temporaries
+        .as_ref()
+        .map_or(0, |residues| residues.per_function_constant_bump);
+    if per_function_constant_bump != 0 {
         for function in &mut machine_functions {
-            function.constant_number_adjust += residues.per_function_constant_bump;
+            function.constant_number_adjust += per_function_constant_bump;
         }
     }
     if diagnose_syntax_tree {
@@ -1397,6 +1400,16 @@ fn compile(
         deferred.reverse();
         machine_functions = kept;
         machine_functions.extend(deferred);
+    }
+    if behavior.immediate_weak_caller_scope_label_bump != 0 {
+        function_order::apply_caller_owned_immediate_weak_constant_scopes(
+            &mut machine_functions,
+            &unit.immediate_weak_materializations,
+            per_function_constant_bump,
+            behavior.immediate_weak_caller_scope_label_bump,
+            config.build.post_leaf_function_anonymous_bump,
+            config.build.post_framed_function_anonymous_bump,
+        );
     }
     if let Some(first) = machine_functions.first_mut() {
         // File-scope declarations advance the unit-wide ordinal stream before

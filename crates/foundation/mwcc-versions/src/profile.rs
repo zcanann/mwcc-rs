@@ -1493,6 +1493,13 @@ pub trait CodegenProfile: core::fmt::Debug {
         false
     }
 
+    /// Anonymous labels opened by direct weak-inline materialization while its
+    /// constants still belong to the caller's ordinal transaction. Zero means
+    /// that the build uses an independent weak-body scope.
+    fn immediate_weak_caller_scope_label_bump(&self) -> u8 {
+        0
+    }
+
     /// Whether an initialized array whose written length was inferred from `[]`
     /// bypasses the small-data size threshold. Build 163 places writable forms
     /// in `.data` and const forms in `.rodata`; the 2.4.x mainline uses the same
@@ -2149,6 +2156,10 @@ impl CodegenProfile for Gc233Build163 {
 
     fn weak_vtable_function_symbol_tail(&self) -> bool {
         true
+    }
+
+    fn immediate_weak_caller_scope_label_bump(&self) -> u8 {
+        3
     }
 
     fn retain_unused_c_inline_asm_symbols(&self) -> bool {

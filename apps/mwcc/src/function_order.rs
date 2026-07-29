@@ -175,6 +175,60 @@ pub(crate) fn apply_weak_vtable_emission_tail<'a>(
     *functions = source_functions;
 }
 
+/// Rebase constants owned by a directly requested weak inline into the
+/// caller's ordinal transaction.
+///
+/// Build 163 creates those constants before closing the caller boundary and
+/// before opening the weak body's internal-label transaction. The body's other
+/// symbols retain their ordinary positions, so the same amount is restored
+/// immediately after its constant pool.
+pub(crate) fn apply_caller_owned_immediate_weak_constant_scopes(
+    functions: &mut [MachineFunction],
+    immediate_weak_edges: &[(String, String)],
+    per_function_constant_bump: i32,
+    materialization_label_bump: u8,
+    post_leaf_function_bump: u8,
+    post_framed_function_bump: u8,
+) {
+    let caller_boundaries: HashMap<String, u32> = functions
+        .iter()
+        .map(|function| {
+            let boundary = function
+                .post_function_anonymous_bump
+                .unwrap_or(if function.frame.is_some() {
+                    post_framed_function_bump
+                } else {
+                    post_leaf_function_bump
+                });
+            (function.name.clone(), u32::from(boundary))
+        })
+        .collect();
+    let mut rebased = HashSet::new();
+    for (caller, body) in immediate_weak_edges {
+        if !rebased.insert(body.as_str()) {
+            continue;
+        }
+        let Some(&caller_boundary) = caller_boundaries.get(caller.as_str()) else {
+            continue;
+        };
+        let Some(function) = functions
+            .iter_mut()
+            .find(|function| function.name == *body && function.weak_inline)
+        else {
+            continue;
+        };
+        let shift = caller_boundary
+            + function.object_anonymous_bump()
+            + u32::from(materialization_label_bump)
+            + per_function_constant_bump.max(0) as u32;
+        function.constant_number_adjust = function
+            .constant_number_adjust
+            .saturating_sub(shift as i32);
+        function.post_constant_label_bump =
+            function.post_constant_label_bump.saturating_add(shift);
+    }
+}
+
 fn mangled_member_identity(name: &str) -> Option<(&str, &str)> {
     for (delimiter, _) in name.match_indices("__") {
         let suffix = &name[delimiter + 2..];
@@ -432,6 +486,31 @@ mod tests {
                 "vtable_owned__4NodeFv",
             ]
         );
+    }
+
+    #[test]
+    fn caller_owned_weak_constants_rebase_without_moving_the_following_frontier() {
+        let mut caller = function("caller", false);
+        caller.post_function_anonymous_bump = Some(1);
+        let mut body = function("requested__4NodeFv", false);
+        body.weak_inline = true;
+        body.constant_number_adjust = 1;
+        let mut later = function("later", false);
+        later.constant_number_adjust = 7;
+        let mut functions = vec![caller, body, later];
+
+        apply_caller_owned_immediate_weak_constant_scopes(
+            &mut functions,
+            &[("caller".to_string(), "requested__4NodeFv".to_string())],
+            1,
+            3,
+            4,
+            6,
+        );
+
+        assert_eq!(functions[1].constant_number_adjust, -4);
+        assert_eq!(functions[1].post_constant_label_bump, 5);
+        assert_eq!(functions[2].constant_number_adjust, 7);
     }
 
     #[test]

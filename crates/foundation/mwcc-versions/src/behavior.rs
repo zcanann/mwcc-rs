@@ -818,6 +818,7 @@ pub struct Behavior {
     pub cxx_rtti_initial_virtual_label_discount: u8,
     pub cxx_rtti_inline_definition_label_bump: u8,
     pub weak_vtable_function_symbol_tail: bool,
+    pub immediate_weak_caller_scope_label_bump: u8,
     /// Whether initialized `T a[] = ...` objects bypass small-data routing.
     pub inferred_array_uses_full_data_section: bool,
     /// Post-resolution optimization of branches written in `asm` functions.
@@ -1334,6 +1335,10 @@ impl Behavior {
                 .build
                 .profile
                 .weak_vtable_function_symbol_tail(),
+            immediate_weak_caller_scope_label_bump: config
+                .build
+                .profile
+                .immediate_weak_caller_scope_label_bump(),
             inferred_array_uses_full_data_section: config
                 .build
                 .profile
@@ -1859,6 +1864,7 @@ mod tests {
             20
         );
         assert_eq!(behavior.frame_convention, FrameConvention::LinkageFirst);
+        assert_eq!(behavior.immediate_weak_caller_scope_label_bump, 3);
         assert_eq!(behavior.cxx_inline_control_flow_label_weight, 1);
         assert_eq!(
             behavior.emitted_vtable_inline_control_flow_replay_weight,
