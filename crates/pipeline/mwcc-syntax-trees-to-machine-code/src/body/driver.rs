@@ -1655,7 +1655,14 @@ impl Generator {
         if self.try_call_result_product_return(function)? {
             return Ok(());
         }
-        if let Some(expanded) = self.inline_bodies.expand_repeatable_loop_calls(function) {
+        if let Some(expanded) = self
+            .inline_bodies
+            .expand_repeatable_loop_calls(function)
+            .or_else(|| {
+                self.inline_bodies
+                    .expand_repeatable_terminal_wrapper_call(function)
+            })
+        {
             self.legacy_inline_expansion_frame_bytes +=
                 crate::inline_expansion::legacy_statement_body_frame_residue_bytes(
                     &expanded.function,

@@ -113,6 +113,36 @@ pub(super) fn automatic_composable_function(function: &Function) -> bool {
     ordinary || parameter_select
 }
 
+/// A multi-use guarded transaction may still be inlined into terminal wrappers
+/// even when it exceeds the ordinary tiny-body gate. Keep this classification
+/// separate from general repeatable inlining: the caller must provide the
+/// terminal-wrapper context before the body becomes available.
+pub(super) fn repeatable_terminal_wrapper_callee(function: &Function) -> bool {
+    let [Statement::If {
+        then_body,
+        else_body,
+        ..
+    }] = function.statements.as_slice()
+    else {
+        return false;
+    };
+    if !function.is_static
+        || !else_body.is_empty()
+        || then_body.is_empty()
+        || statement_weight(&function.statements) > 8
+        || !composable_function_with_assignable_parameters(function, true)
+        || function.locals.iter().any(|local| {
+            local.array_length.is_some()
+                && crate::analysis::function_uses_name(function, &local.name)
+        })
+    {
+        return false;
+    }
+    let mut calls = std::collections::HashMap::new();
+    super::collect_function_calls(function, &mut calls);
+    calls.values().sum::<usize>() >= 3
+}
+
 /// A one-use helper may treat scalar parameters as mutable local value lanes,
 /// select among them through nested branches, and commit one final store. MWCC
 /// expands this shape even when its branch weight exceeds the ordinary tiny-
@@ -323,6 +353,13 @@ fn composable_statements(statements: &[Statement], local_names: &HashSet<&str>) 
                 && loop_step_updates(step, counter)
                 && composable_statements(body, local_names)
         }
+        Statement::Loop {
+            kind: mwcc_syntax_trees::LoopKind::DoWhile,
+            initializer: None,
+            condition: Some(Expression::IntegerLiteral(0)),
+            step: None,
+            body,
+        } => body.is_empty(),
         // A void return is local control flow, not an escape from the caller.
         // Expansion rewrites it to a forward jump to the end of this particular
         // inline instance before the body enters instruction selection.
@@ -874,7 +911,7 @@ fn expression_mentions(expression: &Expression, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mwcc_syntax_trees::Parameter;
+    use mwcc_syntax_trees::{LocalDeclaration, Parameter};
 
     fn scalar_parameter_function() -> Function {
         Function {
@@ -935,5 +972,50 @@ mod tests {
             &HashSet::new(),
             false,
         ));
+    }
+
+    #[test]
+    fn admits_a_guarded_multi_call_transaction_for_terminal_wrappers() {
+        let mut function = scalar_parameter_function();
+        function.name = "transaction".into();
+        function.is_static = true;
+        function.locals.push(LocalDeclaration {
+            declared_type: Type::UnsignedChar,
+            name: "scratch".into(),
+            initializer: None,
+            is_volatile: false,
+            array_length: Some(16),
+            is_static: false,
+            data_bytes: None,
+            data_relocations: Vec::new(),
+            is_const: false,
+            row_bytes: None,
+        });
+        function.statements = vec![Statement::If {
+            condition: Expression::Call {
+                name: "guard".into(),
+                arguments: Vec::new(),
+            },
+            then_body: vec![
+                Statement::Loop {
+                    kind: mwcc_syntax_trees::LoopKind::DoWhile,
+                    initializer: None,
+                    condition: Some(Expression::IntegerLiteral(0)),
+                    step: None,
+                    body: Vec::new(),
+                },
+                Statement::Expression(Expression::Call {
+                    name: "first".into(),
+                    arguments: Vec::new(),
+                }),
+                Statement::Expression(Expression::Call {
+                    name: "second".into(),
+                    arguments: Vec::new(),
+                }),
+            ],
+            else_body: Vec::new(),
+        }];
+
+        assert!(repeatable_terminal_wrapper_callee(&function));
     }
 }

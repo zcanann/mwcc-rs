@@ -24,8 +24,8 @@ use mwcc_syntax_trees::{
 use returns::rewrite_inline_returns;
 use safety::{
     automatic_composable_function, composable_function, materializable_arguments,
-    parameter_requires_materialization, stable_argument, stable_arguments, stable_local_values,
-    terminal_scalar_arguments,
+    parameter_requires_materialization, repeatable_terminal_wrapper_callee, stable_argument,
+    stable_arguments, stable_local_values, terminal_scalar_arguments,
 };
 use std::collections::{HashMap, HashSet};
 use substitution::substitute_statement;
@@ -87,6 +87,8 @@ pub struct InlineBodySet {
     /// Ordinary small definitions that MWCC may expand selectively at hot
     /// structured call sites even when the TU calls them more than once.
     repeatable_bodies: HashMap<String, Function>,
+    /// Larger guarded transactions available only to terminal scratch wrappers.
+    terminal_wrapper_bodies: HashMap<String, Function>,
     values: HashMap<String, ValueInlineBody>,
     required: HashSet<String>,
     /// Retained pure inline-assembly helpers are already in their final
@@ -255,6 +257,18 @@ impl InlineBodySet {
             })
             .map(|function| (function.name.clone(), function.clone()))
             .collect();
+        let terminal_wrapper_bodies = definitions
+            .iter()
+            .filter(|function| {
+                repeatable_terminal_wrapper_callee(function)
+                    && call_counts.get(&function.name).copied().unwrap_or(0) > 1
+                    && source_visible_call_counts
+                        .get(&function.name)
+                        .copied()
+                        == call_counts.get(&function.name).copied()
+            })
+            .map(|function| (function.name.clone(), function.clone()))
+            .collect();
         let mut values: HashMap<_, _> = skipped
             .iter()
             .filter(|function| !asm_fragments.contains_key(&function.name))
@@ -289,9 +303,10 @@ impl InlineBodySet {
                 .filter(|function| function.name.contains(needle.as_ref()))
             {
                 eprintln!(
-                    "automatic inline summary {}: eligible={} calls={:?} parameters={} locals={} statements={}",
+                    "automatic inline summary {}: eligible={} terminal_wrapper={} calls={:?} parameters={} locals={} statements={}",
                     function.name,
                     automatic_composable_function(function),
+                    repeatable_terminal_wrapper_callee(function),
                     call_counts.get(&function.name),
                     function.parameters.len(),
                     function.locals.len(),
@@ -325,6 +340,7 @@ impl InlineBodySet {
                 .collect(),
             bodies,
             repeatable_bodies,
+            terminal_wrapper_bodies,
             values,
             required,
             asm_fragments,
@@ -513,6 +529,47 @@ impl InlineBodySet {
         let mut expanded = self.clone();
         expanded.bodies.extend(self.repeatable_bodies.clone());
         expanded.expand_calls_with_facts_policy(function, true)
+    }
+
+    /// Expand a repeatable definition at a terminal wrapper call. Source-level
+    /// scratch padding may precede the call, but no executable wrapper work can
+    /// surround it. This is the non-loop counterpart to repeated loop-site
+    /// inlining and keeps multi-use helpers unavailable to ordinary callers.
+    pub(crate) fn expand_repeatable_terminal_wrapper_call(
+        &self,
+        function: &Function,
+    ) -> Option<ExpandedCalls> {
+        let (terminal, prefix) = function.statements.split_last()?;
+        let Statement::Expression(Expression::Call { name, .. }) = terminal else {
+            return None;
+        };
+        if !(self.repeatable_bodies.contains_key(name)
+            || self.terminal_wrapper_bodies.contains_key(name))
+            || !prefix.iter().all(is_empty_padding_loop)
+            || !function.guards.is_empty()
+            || function.return_expression.is_some()
+        {
+            return None;
+        }
+        let mut expanded = self.clone();
+        expanded.bodies.extend(self.repeatable_bodies.clone());
+        expanded.bodies.extend(self.terminal_wrapper_bodies.clone());
+        let caller_locals = function
+            .locals
+            .iter()
+            .map(|local| local.name.as_str())
+            .collect::<HashSet<_>>();
+        let mut result = expanded.expand_calls_with_facts_policy(function, false)?;
+        // Build 163 keeps the wrapper's source scratch reservation but discards
+        // the repeated callee's unused padding declaration. Its nested mutating
+        // helper is absorbed into the enclosing repeated transaction and does
+        // not leave an independent frame-residue lane.
+        result.function.locals.retain(|local| {
+            local.array_length.is_none() || caller_locals.contains(local.name.as_str())
+        });
+        result.statement_frame_residue_substitutions = 0;
+        result.statement_mutating_body_substitutions = 0;
+        Some(result)
     }
 
     pub(crate) fn expand_calls_with_facts(&self, function: &Function) -> Option<ExpandedCalls> {
@@ -1130,6 +1187,19 @@ fn statements_mutate_memory(statements: &[Statement]) -> bool {
         }
         _ => false,
     })
+}
+
+fn is_empty_padding_loop(statement: &Statement) -> bool {
+    matches!(
+        statement,
+        Statement::Loop {
+            kind: mwcc_syntax_trees::LoopKind::DoWhile,
+            initializer: None,
+            condition: Some(Expression::IntegerLiteral(0)),
+            step: None,
+            body,
+        } if body.is_empty()
+    )
 }
 
 /// Move top-level embedded assembly blocks into the ordered statement tree used
@@ -2807,6 +2877,73 @@ mod tests {
             && name == "consume"
             && matches!(arguments.as_slice(), [Expression::Variable(argument)] if argument == captured)
             && reassigned == "value")));
+    }
+
+    #[test]
+    fn composes_a_repeated_definition_in_a_terminal_scratch_wrapper() {
+        let helper = function(
+            "helper",
+            vec![Parameter {
+                parameter_type: Type::Int,
+                name: "value".into(),
+            }],
+            vec![Statement::Expression(Expression::Call {
+                name: "consume".into(),
+                arguments: vec![Expression::Variable("value".into())],
+            })],
+        );
+        let wrapper = function(
+            "wrapper",
+            vec![Parameter {
+                parameter_type: Type::Int,
+                name: "value".into(),
+            }],
+            vec![
+                Statement::Loop {
+                    kind: LoopKind::DoWhile,
+                    initializer: None,
+                    condition: Some(Expression::IntegerLiteral(0)),
+                    step: None,
+                    body: Vec::new(),
+                },
+                Statement::Expression(Expression::Call {
+                    name: "helper".into(),
+                    arguments: vec![Expression::Variable("value".into())],
+                }),
+            ],
+        );
+        let sibling = function(
+            "sibling",
+            vec![Parameter {
+                parameter_type: Type::Int,
+                name: "value".into(),
+            }],
+            vec![Statement::Expression(Expression::Call {
+                name: "helper".into(),
+                arguments: vec![Expression::Variable("value".into())],
+            })],
+        );
+
+        let bodies = InlineBodySet::analyze_with_definitions(
+            &[helper, wrapper.clone(), sibling],
+            &[],
+        );
+        assert!(bodies.expand_calls(&wrapper).is_none());
+        let expanded = bodies
+            .expand_repeatable_terminal_wrapper_call(&wrapper)
+            .expect("the terminal wrapper call should be eligible");
+        assert!(matches!(
+            expanded.function.statements.as_slice(),
+            [
+                Statement::Loop { body, .. },
+                Statement::Expression(Expression::Call { name, arguments }),
+            ] if body.is_empty()
+                && name == "consume"
+                && matches!(
+                    arguments.as_slice(),
+                    [Expression::Variable(value)] if value == "value"
+                )
+        ));
     }
 
     #[test]

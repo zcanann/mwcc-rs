@@ -919,6 +919,7 @@ fn lower_function_body(
     generator.schedule_linkage_first_inline_zero();
     generator.schedule_unused_array_call_linkage(function);
     generator.schedule_guarded_mutating_inline_linkage(function);
+    generator.schedule_terminal_wrapper_mutating_inline(function);
     generator.schedule_call_condition_live_in_arguments();
     generator.schedule_guarded_report_store(function);
     // Whole-body owners, generic scheduling, and physical allocation converge
