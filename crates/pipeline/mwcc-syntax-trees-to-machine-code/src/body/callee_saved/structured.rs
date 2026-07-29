@@ -2223,6 +2223,7 @@ impl Generator {
         }
         self.schedule_structured_entry_zero_store(function);
         self.schedule_structured_shared_member_arguments(function);
+        self.schedule_entry_member_saved_home();
         self.schedule_entry_member_call_argument_reuse();
         self.schedule_repeated_member_address_call_guards();
         self.schedule_guarded_member_receiver_reuse();

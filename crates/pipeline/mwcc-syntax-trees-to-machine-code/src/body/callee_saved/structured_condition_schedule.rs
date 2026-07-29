@@ -4,6 +4,45 @@
 use super::*;
 
 impl Generator {
+    /// Delay a call-live pointer's saved-home definition until its leading
+    /// member load has consumed the entry value.
+    ///
+    /// For `saved = entry->member; if (saved->field ...)`, MWCC keeps the
+    /// initializer result in r4 for the first dependent load, then copies it
+    /// into the callee-saved home needed by later calls. Defining the home
+    /// directly is semantically equivalent, but loses that latency-hiding copy
+    /// and changes every following call relocation by one instruction.
+    pub(super) fn schedule_entry_member_saved_home(&mut self) {
+        // An inlined statement body inherits the callee's value graph but not
+        // its entry schedule. MWCC keeps the direct saved-home load in that
+        // composition, so only the original function owns this delay.
+        if self.inline_statement_body_substitutions != 0 {
+            return;
+        }
+        let Some((initializer, saved)) = find_entry_member_saved_home(&self.output.instructions)
+        else {
+            return;
+        };
+        let retained = self.fresh_virtual_general_preferring(4);
+        match &mut self.output.instructions[initializer] {
+            Instruction::LoadWord { d, .. } => *d = retained,
+            _ => unreachable!(),
+        }
+        match &mut self.output.instructions[initializer + 1] {
+            Instruction::LoadWord { a, .. } => *a = retained,
+            _ => unreachable!(),
+        }
+        crate::insert_instruction_retargeting(
+            self,
+            initializer + 2,
+            Instruction::AddImmediate {
+                d: saved,
+                a: retained,
+                immediate: 0,
+            },
+        );
+    }
+
     /// Fold `if (condition) goto target;` when the semantic emitter represented
     /// it as a false-edge skip over an unconditional branch. Inverting the
     /// conditional leaves one direct edge, which is MWCC's rotated-loop
@@ -257,6 +296,58 @@ fn conditional_goto_diamond(
     ))
 }
 
+fn find_entry_member_saved_home(instructions: &[Instruction]) -> Option<(usize, u8)> {
+    for initializer in 0..instructions.len().saturating_sub(3) {
+        let [
+            Instruction::LoadWord {
+                d: saved,
+                a: 3,
+                ..
+            },
+            Instruction::LoadWord {
+                d: tested,
+                a: member_base,
+                ..
+            },
+            Instruction::CompareWordImmediate { a: compared, .. },
+            Instruction::BranchConditionalForward { .. },
+            ..
+        ] = &instructions[initializer..]
+        else {
+            continue;
+        };
+        if saved != member_base
+            || tested != compared
+            || !mwcc_vreg::Reg::is_virtual_field(*saved)
+            || instructions[..initializer]
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::BranchAndLink { .. }))
+        {
+            continue;
+        }
+        let Some(first_call) = instructions[initializer + 4..]
+            .iter()
+            .position(|instruction| matches!(instruction, Instruction::BranchAndLink { .. }))
+            .map(|offset| initializer + 4 + offset)
+        else {
+            continue;
+        };
+        let used_after_call = instructions[first_call + 1..].iter().any(|instruction| {
+            mwcc_vreg::register_operands(instruction)
+                .into_iter()
+                .any(|operand| {
+                    operand.class == mwcc_vreg::Class::General
+                        && operand.role == mwcc_vreg::RegisterRole::Use
+                        && operand.register == *saved
+                })
+        });
+        if used_after_call {
+            return Some((initializer, *saved));
+        }
+    }
+    None
+}
+
 /// Redirect a forward branch through any forward-only unconditional branch at
 /// its destination. Nested diamonds initially target their own join; after the
 /// parent diamond is complete that join may itself be the parent's
@@ -423,6 +514,74 @@ fn reuses_preceding_bitfield_storage(instructions: &[Instruction], term_start: u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognizes_an_entry_member_home_live_past_a_call() {
+        let saved = mwcc_vreg::Reg::general(0).to_field();
+        let instructions = [
+            Instruction::LoadWord {
+                d: saved,
+                a: 3,
+                offset: 44,
+            },
+            Instruction::LoadWord {
+                d: 0,
+                a: saved,
+                offset: 224,
+            },
+            Instruction::CompareWordImmediate { a: 0, immediate: 0 },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 6,
+            },
+            Instruction::BranchAndLink {
+                target: "predicate".into(),
+            },
+            Instruction::Or {
+                a: 3,
+                s: saved,
+                b: saved,
+            },
+            Instruction::BranchAndLink {
+                target: "consume".into(),
+            },
+        ];
+
+        assert_eq!(
+            find_entry_member_saved_home(&instructions),
+            Some((0, saved))
+        );
+    }
+
+    #[test]
+    fn rejects_an_entry_member_value_dead_after_the_first_call() {
+        let saved = mwcc_vreg::Reg::general(0).to_field();
+        let instructions = [
+            Instruction::LoadWord {
+                d: saved,
+                a: 3,
+                offset: 44,
+            },
+            Instruction::LoadWord {
+                d: 0,
+                a: saved,
+                offset: 224,
+            },
+            Instruction::CompareWordImmediate { a: 0, immediate: 0 },
+            Instruction::BranchConditionalForward {
+                options: 12,
+                condition_bit: 2,
+                target: 6,
+            },
+            Instruction::BranchAndLink {
+                target: "predicate".into(),
+            },
+            Instruction::BranchToLinkRegister,
+        ];
+
+        assert_eq!(find_entry_member_saved_home(&instructions), None);
+    }
 
     #[test]
     fn threads_a_nested_diamond_skip_through_its_parent_skip() {
