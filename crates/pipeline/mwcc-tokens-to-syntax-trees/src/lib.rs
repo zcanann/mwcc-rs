@@ -5915,6 +5915,39 @@ blr\n\
     }
 
     #[test]
+    fn retains_typedef_functional_casts_inside_inline_member_calls() {
+        let source = r#"
+            typedef float f32;
+            int rand();
+            struct StdSystem {
+                f32 getRand(f32 max) {
+                    return max * (f32(rand()) / 32767.0f);
+                }
+            };
+        "#;
+        let unit = parse_translation_unit(
+            mwcc_source_to_tokens::tokenize(source).unwrap(),
+            true,
+            true,
+            1,
+            3,
+        )
+        .unwrap();
+        let retained = unit
+            .skipped_inline_definitions
+            .iter()
+            .find(|function| function.name == "getRand__9StdSystemFf")
+            .expect("the functional cast must not prevent inline retention");
+        assert!(matches!(
+            retained.return_expression,
+            Some(Expression::Binary {
+                operator: mwcc_syntax_trees::BinaryOperator::Multiply,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn inline_member_resolves_a_sibling_namespace_function() {
         let source = r#"
             namespace root {

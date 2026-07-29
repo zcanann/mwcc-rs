@@ -623,6 +623,28 @@ impl Parser {
         })
     }
 
+    /// Disambiguate a parenthesized C-style cast from a grouped C++ functional
+    /// conversion. After consuming the opening `(`, both `(f32)value` and
+    /// `(f32(value) / scale)` begin with a typedef name. Only the former has a
+    /// complete type declarator immediately followed by `)`. Probe on a clone
+    /// so type side channels and the real token cursor remain untouched.
+    fn starts_parenthesized_cast(&self) -> bool {
+        if !self.peek_is_type() {
+            return false;
+        }
+        let mut probe = self.clone();
+        if probe.parse_type().is_err() {
+            return false;
+        }
+        if *probe.peek() == Token::ParenOpen
+            && probe.tokens.get(probe.position + 1) == Some(&Token::Star)
+        {
+            return true;
+        }
+        while probe.eat_keyword(Token::Star) {}
+        *probe.peek() == Token::ParenClose
+    }
+
     pub(crate) fn factor(&mut self) -> Compilation<Expression> {
         // prefix dereference: `*pointer`
         if *self.peek() == Token::Star {
@@ -1147,7 +1169,7 @@ impl Parser {
                 }
                 Token::ParenOpen => {
                     // `(type) expr` is a cast; otherwise a parenthesised expression.
-                    if self.peek_is_type() {
+                    if self.starts_parenthesized_cast() {
                         let mut target_type = self.parse_type()?;
                         // `parse_type` retains the aggregate base even when it
                         // collapses `Struct**` to the executable word-pointer

@@ -405,8 +405,8 @@ impl Generator {
         // second frame: load both values, run the shared magic-bias body, then
         // combine in source order. The enclosing comparison scheduler can later
         // interleave two such conversions without duplicating their semantics.
-        let left_float = self.is_float_operand(left);
-        let right_float = self.is_float_operand(right);
+        let left_float = self.is_float_value(left);
+        let right_float = self.is_float_value(right);
         if left_float == right_float || !self.non_leaf || destination != FLOAT_SCRATCH {
             return Ok(false);
         }
@@ -421,7 +421,7 @@ impl Generator {
             || !(self.is_word_load(integer_operand)
                 || self.general_register_of_leaf(integer_operand).is_ok()
                 || (is_complex(integer_operand) && fits_single_scratch(integer_operand, false)))
-            || !(self.is_float_operand(float_operand) || self.is_float_leaf(float_operand))
+            || !self.is_float_value(float_operand)
         {
             return Ok(false);
         }
