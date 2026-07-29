@@ -154,7 +154,7 @@ impl Generator {
             if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
                 self.signedness_of(left)?
             } else {
-                self.signedness_of(left)? && self.signedness_of(right)?
+                self.usual_integer_binary_signedness(left, right)?
             };
         if self.try_emit_unsigned_narrow_less_constant(operator, left, right, d)? {
             return Ok(());

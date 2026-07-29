@@ -1025,6 +1025,39 @@ impl Generator {
                 .is_some_and(|width| width < 32))
     }
 
+    /// Signedness after integral promotions and the usual arithmetic
+    /// conversions for two integer operands.
+    ///
+    /// Narrow unsigned values promote to `int` on this 32-bit target, so
+    /// `unsigned short` compared with `int` is a signed operation. When the
+    /// promoted signs differ, a wider signed type can still represent every
+    /// value of the narrower unsigned type; otherwise the common type is
+    /// unsigned.
+    pub(crate) fn usual_integer_binary_signedness(
+        &self,
+        left: &Expression,
+        right: &Expression,
+    ) -> Compilation<bool> {
+        let promoted = |operand: &Expression| -> Compilation<(u8, bool)> {
+            let width = self.unpromoted_integer_width(operand).unwrap_or(32).max(32);
+            Ok((width, self.promoted_integer_signedness_of(operand)?))
+        };
+        let (left_width, left_signed) = promoted(left)?;
+        let (right_width, right_signed) = promoted(right)?;
+        if left_signed == right_signed {
+            return Ok(left_signed);
+        }
+        if left_width == right_width {
+            return Ok(false);
+        }
+        let (signed_width, unsigned_width) = if left_signed {
+            (left_width, right_width)
+        } else {
+            (right_width, left_width)
+        };
+        Ok(signed_width > unsigned_width)
+    }
+
     /// Whether the value of `expression` is signed (for selecting `>>`). The
     /// usual arithmetic conversions make a binary expression unsigned if either
     /// operand is unsigned.

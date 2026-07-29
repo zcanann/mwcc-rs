@@ -1473,8 +1473,11 @@ impl Generator {
                 };
                 let signed = !bit_field_operand(left)
                     && !bit_field_operand(right)
-                    && self.signedness_of(left)?
-                    && self.signedness_of(right)?;
+                    && if matches!(operator, BinaryOperator::Equal | BinaryOperator::NotEqual) {
+                        self.signedness_of(left)? && self.signedness_of(right)?
+                    } else {
+                        self.usual_integer_binary_signedness(left, right)?
+                    };
                 let scalarized_one_word_member =
                     is_scalarized_one_word_member(left, &self.one_word_aggregate_locals);
                 // A memory-valued left operand may need a temporary address GPR.
