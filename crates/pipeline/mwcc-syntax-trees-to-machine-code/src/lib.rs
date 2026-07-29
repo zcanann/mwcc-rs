@@ -961,6 +961,7 @@ fn lower_function_body(
     generator.schedule_allocated_structured_array_pool_parameter_copies();
     generator.schedule_allocated_compact_structured_array_pool_entry();
     generator.schedule_allocated_structured_array_pool_first_image();
+    generator.schedule_structured_variadic_output_frame();
 
     ordinal_accounting::apply(
         ordinal_source_function,
