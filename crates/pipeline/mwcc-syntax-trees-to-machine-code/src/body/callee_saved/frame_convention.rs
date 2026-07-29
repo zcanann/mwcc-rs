@@ -841,7 +841,8 @@ impl Generator {
                     a: 1,
                     offset: 12
                 }
-            ) {
+            ) && !constant_result_starts_shared_epilogue(&self.output.instructions, index)
+            {
                 self.output.instructions.swap(index, index + 1);
                 break;
             }
@@ -1437,6 +1438,20 @@ fn compact_linkage_first_saved_frame_size(saved_registers: usize) -> i16 {
         & !7
 }
 
+fn constant_result_starts_shared_epilogue(
+    instructions: &[Instruction],
+    result: usize,
+) -> bool {
+    instructions.iter().any(|instruction| {
+        matches!(
+            instruction,
+            Instruction::BranchConditionalForward { target, .. }
+                | Instruction::Branch { target }
+                if *target == result || *target == result + 1
+        )
+    })
+}
+
 fn shared_inline_conversion_entry_lane(
     frame_slots_empty: bool,
     conversion_bytes: i16,
@@ -1606,6 +1621,43 @@ mod tests {
         assert_eq!(compact_linkage_first_saved_frame_size(3), 24);
         assert_eq!(compact_linkage_first_saved_frame_size(4), 24);
         assert_eq!(compact_linkage_first_saved_frame_size(5), 32);
+    }
+
+    #[test]
+    fn shared_constant_result_stays_before_the_link_reload() {
+        let instructions = [
+            Instruction::BranchConditionalForward {
+                options: 4,
+                condition_bit: 2,
+                target: 2,
+            },
+            Instruction::Branch { target: 3 },
+            Instruction::load_immediate(3, 0),
+            Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: 12,
+            },
+        ];
+
+        assert!(constant_result_starts_shared_epilogue(&instructions, 2));
+    }
+
+    #[test]
+    fn discarded_call_result_can_overlap_the_link_reload() {
+        let instructions = [
+            Instruction::BranchAndLink {
+                target: "discarded".into(),
+            },
+            Instruction::load_immediate(3, 0),
+            Instruction::LoadWord {
+                d: 0,
+                a: 1,
+                offset: 12,
+            },
+        ];
+
+        assert!(!constant_result_starts_shared_epilogue(&instructions, 1));
     }
 
     #[test]
