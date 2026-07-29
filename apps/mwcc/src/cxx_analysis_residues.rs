@@ -199,6 +199,24 @@ pub fn reference_binding_executable_discount(
         })
 }
 
+/// Select the frontend work that does not reach executable-body numbering.
+///
+/// An owned weak-vtable pass replays inline control flow into its analysis
+/// closure, replacing the ordinary reference-binding discount at this
+/// frontier. Units without that replay retain the reference discount.
+pub fn executable_frontier_discount(
+    reference_binding_discount: usize,
+    control_flow_labels: usize,
+    replay_weight: u8,
+    emitted_vtable_replay: bool,
+) -> usize {
+    if emitted_vtable_replay {
+        control_flow_labels.saturating_mul(usize::from(replay_weight))
+    } else {
+        reference_binding_discount
+    }
+}
+
 /// Recover Build 163's retained zero halfword from the second analysis pass
 /// which materializes a weak vtable closure.
 ///
@@ -407,7 +425,8 @@ fn object(
 mod tests {
     use super::{
         discarded_inline_aggregate_image, inline_fact_ordinal_bump, literal_float_temporaries,
-        reference_binding_executable_discount, word_object, zero_capture, zero_object,
+        executable_frontier_discount, reference_binding_executable_discount, word_object,
+        zero_capture, zero_object,
     };
     use mwcc_syntax_trees::{CxxInlineOrdinalFacts, DiscardedInlineAggregateImage};
     use mwcc_versions::{
@@ -437,6 +456,12 @@ mod tests {
             ),
             24
         );
+    }
+
+    #[test]
+    fn weak_vtable_replay_replaces_the_reference_binding_discount() {
+        assert_eq!(executable_frontier_discount(21, 136, 1, true), 136);
+        assert_eq!(executable_frontier_discount(24, 158, 1, false), 24);
     }
 
     #[test]

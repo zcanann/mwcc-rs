@@ -1189,6 +1189,14 @@ fn compile(
             behavior.cxx_reference_binding_executable_label_discount,
             behavior.cxx_initial_reference_binding_executable_label_discount,
         );
+    let executable_frontier_discount =
+        cxx_analysis_residues::executable_frontier_discount(
+            reference_binding_executable_discount,
+            cxx_inline_facts.control_flow_labels
+                + cxx_inline_facts.instantiated_template_control_flow_labels,
+            behavior.emitted_vtable_inline_control_flow_replay_weight,
+            emits_weak_vtable_closure,
+        );
     let prototype_name_bump = if config
         .build
         .profile
@@ -1206,7 +1214,7 @@ fn compile(
     } else {
         cxx_inline_bump
             .saturating_sub(
-                literal_temporary_bump_discount + reference_binding_executable_discount,
+                literal_temporary_bump_discount + executable_frontier_discount,
             )
             + prototype_name_bump
     };
@@ -1215,7 +1223,7 @@ fn compile(
             "cxx-unit-ordinal-accounting inline={cxx_inline_bump} \
              declaration={unit_declaration_bump} prototype={prototype_name_bump} \
              literal-discount={literal_temporary_bump_discount} \
-             reference-executable-discount={reference_binding_executable_discount} \
+             executable-discount={executable_frontier_discount} \
              emitted-vtable-replay={emits_weak_vtable_closure}"
         );
     }
