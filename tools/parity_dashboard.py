@@ -1778,7 +1778,7 @@ def print_snapshot(report: Dict[str, Any], delta_report: Optional[Dict[str, Any]
                     f"{estimate['partial_projection_failed']}"
                 )
             for component, label in (
-                ("text_bytes", "raw .text bytes"),
+                ("text_bytes", "raw executable-section bytes"),
                 ("text_reloc_shape", "text relocation offsets/types"),
                 ("text_reloc_targets", "text relocation targets"),
             ):

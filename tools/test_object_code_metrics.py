@@ -13,6 +13,7 @@ from object_code_metrics import (
     describe_function_parity,
     function_mismatch_ranking,
     function_parity,
+    parse_executable_sections,
     parse_section_bytes,
     parse_text_functions,
     parse_text_relocations,
@@ -40,6 +41,38 @@ Contents of section .text:
 """
         self.assertEqual(parse_section_bytes(output), bytes.fromhex("386000004e800020"))
 
+    def test_discovers_all_executable_sections_in_object_order(self):
+        output = """
+  0 .text         00000008  00000000  00000000  00000034  2**2
+                  CONTENTS, ALLOC, LOAD, RELOC, READONLY, CODE
+  1 .init         00000004  00000000  00000000  0000003c  2**2
+                  CONTENTS, ALLOC, LOAD, READONLY, CODE
+  2 .data         00000004  00000000  00000000  00000040  2**2
+                  CONTENTS, ALLOC, LOAD, DATA
+"""
+        self.assertEqual(parse_executable_sections(output), [".text", ".init"])
+
+    def test_parses_custom_executable_section_bytes_and_functions(self):
+        section = """
+Contents of section .init:
+ 0000 38600000 4e800020                    8`..N..
+"""
+        symbols = """
+00000000 g     F .init  00000008 startup
+00000000 g     F .text  00000004 ordinary
+"""
+        self.assertEqual(
+            parse_section_bytes(section, ".init"),
+            bytes.fromhex("386000004e800020"),
+        )
+        self.assertEqual(
+            parse_text_functions(symbols, {".text": 0, ".init": 4}),
+            [
+                TextFunction(4, 8, "startup"),
+                TextFunction(0, 4, "ordinary"),
+            ],
+        )
+
     def test_classifies_anonymous_ordinal_separately(self):
         reference = [
             TextRelocation(0x24, "R_PPC_EMB_SDA21", "@79"),
@@ -50,7 +83,10 @@ Contents of section .text:
             TextRelocation(0x64, "R_PPC_REL24", "callee__Ff"),
         ]
         result = statuses(b"same", b"same", reference, candidate)
-        self.assertIn("TEXT_BYTES BYTE — raw .text bytes match", result)
+        self.assertIn(
+            "TEXT_BYTES BYTE — raw executable-section bytes match",
+            result,
+        )
         self.assertIn("TEXT_RELOC_SHAPE BYTE — relocation offsets and types match", result)
         self.assertIn(
             "TEXT_RELOC_TARGETS DIFF — first difference at relocation 0: reference @79, candidate @22",
@@ -62,7 +98,7 @@ Contents of section .text:
         )
         self.assertEqual(
             result[0],
-            "CODE BYTE — .text bytes and normalized text relocations match; "
+            "CODE BYTE — executable bytes and normalized relocations match; "
             "anonymous symbol ordinals differ",
         )
 

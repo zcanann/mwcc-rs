@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Compare executable bytes and text relocations without conflating them.
+"""Compare executable-section bytes and relocations without conflating them.
 
 Whole-object equality is the parity finish line.  This diagnostic decomposes a
 non-equal object into backend-facing facts so debug/metadata gaps do not hide an
 otherwise exact instruction stream, and symbol-numbering gaps do not masquerade
-as instruction-selection failures.
+as instruction-selection failures. Every ELF section marked CODE participates;
+the common `.text` section and startup `.init` sections are measured uniformly.
 """
 
 from __future__ import annotations
@@ -82,10 +83,10 @@ def run_objdump(objdump: Path, *arguments: str) -> str:
         text=True,
     )
     if result.returncode != 0:
-        # Data-only translation units legitimately have no .text section.
-        # Binutils reports that absence as an error for both `-s -j .text` and
-        # `-r -j .text`; semantically the requested bytes/relocations are empty.
-        if ".text" in arguments and "not found" in result.stderr:
+        # A requested executable section can be absent from one side of a
+        # comparison. Binutils reports that as an error for both `-s -j` and
+        # `-r -j`; semantically its bytes and relocations are empty.
+        if "-j" in arguments and "not found" in result.stderr:
             return result.stdout
         raise subprocess.CalledProcessError(
             result.returncode,
@@ -96,13 +97,41 @@ def run_objdump(objdump: Path, *arguments: str) -> str:
     return result.stdout
 
 
-def parse_section_bytes(output: str) -> bytes:
-    """Read only hex columns from ``objdump -s -j .text`` output."""
+def parse_executable_section_layout(output: str) -> list[tuple[str, int]]:
+    """Read CODE-section names and sizes from ``objdump -h`` output."""
+
+    sections: list[tuple[str, int]] = []
+    pending: tuple[str, int] | None = None
+    header = re.compile(
+        r"^\s*\d+\s+(\S+)\s+([0-9A-Fa-f]+)\s+[0-9A-Fa-f]+\s+"
+        r"[0-9A-Fa-f]+\s+[0-9A-Fa-f]+"
+    )
+    for line in output.splitlines():
+        if match := header.match(line):
+            pending = (match.group(1), int(match.group(2), 16))
+            if re.search(r"\bCODE\b", line):
+                sections.append(pending)
+                pending = None
+            continue
+        if pending is not None and re.search(r"\bCODE\b", line):
+            sections.append(pending)
+        pending = None
+    return sections
+
+
+def parse_executable_sections(output: str) -> list[str]:
+    """Read CODE-section names, in object order, from ``objdump -h`` output."""
+
+    return [name for name, _ in parse_executable_section_layout(output)]
+
+
+def parse_section_bytes(output: str, section_name: str = ".text") -> bytes:
+    """Read only hex columns from one ``objdump -s -j`` section dump."""
 
     result = bytearray()
     in_contents = False
     for line in output.splitlines():
-        if line.startswith("Contents of section .text:"):
+        if line.startswith(f"Contents of section {section_name}:"):
             in_contents = True
             continue
         if not in_contents:
@@ -128,20 +157,30 @@ def parse_text_relocations(output: str) -> list[TextRelocation]:
     return relocations
 
 
-def parse_text_functions(output: str) -> list[TextFunction]:
-    """Read defined, non-empty ``.text`` function symbols from ``objdump -t``."""
+def parse_text_functions(
+    output: str,
+    section_bases: dict[str, int] | None = None,
+) -> list[TextFunction]:
+    """Read defined, non-empty function symbols from executable sections."""
 
     functions: list[TextFunction] = []
+    if section_bases is None:
+        section_bases = {".text": 0}
     pattern = re.compile(
-        r"^\s*([0-9A-Fa-f]+)\s+.*?\bF\s+\.text\s+"
+        r"^\s*([0-9A-Fa-f]+)\s+.*?\bF\s+(\S+)\s+"
         r"([0-9A-Fa-f]+)\s+(\S.*?)\s*$"
     )
     for line in output.splitlines():
         if match := pattern.match(line):
-            size = int(match.group(2), 16)
-            if size:
+            section = match.group(2)
+            size = int(match.group(3), 16)
+            if size and section in section_bases:
                 functions.append(
-                    TextFunction(int(match.group(1), 16), size, match.group(3))
+                    TextFunction(
+                        section_bases[section] + int(match.group(1), 16),
+                        size,
+                        match.group(4),
+                    )
                 )
     return functions
 
@@ -380,7 +419,7 @@ def describe_function_parity(parity: FunctionParity, relocation_aware: bool) -> 
         else parity.text_exact_reference_bytes
     )
     if not parity.reference_functions and not parity.candidate_functions:
-        return "EMPTY — neither object has named .text functions"
+        return "EMPTY — neither object has named executable functions"
     exact = (
         exact_functions == parity.reference_functions
         and parity.missing_functions == 0
@@ -414,7 +453,10 @@ def describe_byte_difference(reference: bytes, candidate: bytes) -> str:
     index = first_sequence_difference(reference, candidate)
     reference_value = f"0x{reference[index]:02x}" if index < len(reference) else "<end>"
     candidate_value = f"0x{candidate[index]:02x}" if index < len(candidate) else "<end>"
-    return f"first difference at .text+0x{index:x}: reference {reference_value}, candidate {candidate_value}"
+    return (
+        f"first difference at executable byte 0x{index:x}: "
+        f"reference {reference_value}, candidate {candidate_value}"
+    )
 
 
 def statuses(
@@ -436,9 +478,9 @@ def statuses(
 
     lines = []
     if no_code:
-        lines.append("TEXT_BYTES EMPTY — neither object has emitted .text bytes")
+        lines.append("TEXT_BYTES EMPTY — neither object has emitted executable bytes")
     elif bytes_equal:
-        lines.append("TEXT_BYTES BYTE — raw .text bytes match")
+        lines.append("TEXT_BYTES BYTE — raw executable-section bytes match")
     else:
         lines.append(
             "TEXT_BYTES DIFF — "
@@ -446,8 +488,12 @@ def statuses(
         )
 
     if no_relocations:
-        lines.append("TEXT_RELOC_SHAPE EMPTY — neither .text section has relocations")
-        lines.append("TEXT_RELOC_TARGETS EMPTY — neither .text section has relocation targets")
+        lines.append(
+            "TEXT_RELOC_SHAPE EMPTY — neither object has executable relocations"
+        )
+        lines.append(
+            "TEXT_RELOC_TARGETS EMPTY — neither object has executable relocation targets"
+        )
     else:
         lines.append(
             "TEXT_RELOC_SHAPE BYTE — relocation offsets and types match"
@@ -482,10 +528,10 @@ def statuses(
         aggregate = "CODE EMPTY — neither object has emitted code"
     elif bytes_equal and normalized_equal:
         if targets_equal:
-            aggregate = "CODE BYTE — .text bytes and text relocations match"
+            aggregate = "CODE BYTE — executable bytes and relocations match"
         else:
             aggregate = (
-                "CODE BYTE — .text bytes and normalized text relocations match; "
+                "CODE BYTE — executable bytes and normalized relocations match; "
                 "anonymous symbol ordinals differ"
             )
     else:
@@ -493,16 +539,51 @@ def statuses(
     return [aggregate, *lines]
 
 
-def measure(objdump: Path, object_path: Path) -> tuple[bytes, list[TextRelocation]]:
-    section = parse_section_bytes(run_objdump(objdump, "-s", "-j", ".text", str(object_path)))
-    relocations = parse_text_relocations(
-        run_objdump(objdump, "-r", "-j", ".text", str(object_path))
+def executable_section_layout(
+    objdump: Path,
+    object_path: Path,
+) -> tuple[list[str], dict[str, int]]:
+    layout = parse_executable_section_layout(
+        run_objdump(objdump, "-h", str(object_path))
     )
-    return section, relocations
+    sections = [name for name, _ in layout]
+    bases: dict[str, int] = {}
+    byte_offset = 0
+    for section_name, byte_size in layout:
+        bases[section_name] = byte_offset
+        byte_offset += byte_size
+    return sections, bases
+
+
+def measure(objdump: Path, object_path: Path) -> tuple[bytes, list[TextRelocation]]:
+    sections, bases = executable_section_layout(objdump, object_path)
+    code = bytearray()
+    relocations: list[TextRelocation] = []
+    for section_name in sections:
+        section = parse_section_bytes(
+            run_objdump(objdump, "-s", "-j", section_name, str(object_path)),
+            section_name,
+        )
+        code.extend(section)
+        relocations.extend(
+            TextRelocation(
+                bases[section_name] + relocation.offset,
+                relocation.kind,
+                relocation.target,
+            )
+            for relocation in parse_text_relocations(
+                run_objdump(objdump, "-r", "-j", section_name, str(object_path))
+            )
+        )
+    return bytes(code), relocations
 
 
 def measure_functions(objdump: Path, object_path: Path) -> list[TextFunction]:
-    return parse_text_functions(run_objdump(objdump, "-t", str(object_path)))
+    _, bases = executable_section_layout(objdump, object_path)
+    return parse_text_functions(
+        run_objdump(objdump, "-t", str(object_path)),
+        bases,
+    )
 
 
 def main() -> int:
