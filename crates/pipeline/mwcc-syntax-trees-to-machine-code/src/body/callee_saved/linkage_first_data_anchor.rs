@@ -11,6 +11,7 @@ use mwcc_syntax_trees::{
 use mwcc_versions::{Behavior, FrameConvention, GlobalAddressing};
 
 use crate::generator::DataSectionAnchorPlan;
+use crate::InlineBodySet;
 
 use super::structured_expression_visit::{visit_expression, visit_statement};
 use super::structured_locals::DeferredSavedHomePlan;
@@ -19,10 +20,22 @@ pub(crate) fn plan(
     function: &Function,
     globals: &[GlobalDeclaration],
     behavior: Behavior,
+    inline_bodies: &InlineBodySet,
 ) -> Option<DataSectionAnchorPlan> {
     if behavior.frame_convention != FrameConvention::LinkageFirst {
         return None;
     }
+    // Section-base selection happens before body lowering, while automatic
+    // inline composition happens during it. Analyze the same effective body
+    // here so globals referenced only by a retained helper still participate
+    // in the caller's shared `.data` anchor.
+    let expanded;
+    let function = if let Some(body) = inline_bodies.expand_calls(function) {
+        expanded = body;
+        &expanded
+    } else {
+        function
+    };
     let offsets = source_ordered_data_offsets(
         globals,
         behavior.global_addressing == GlobalAddressing::SmallData,
@@ -276,6 +289,35 @@ fn collect_expression_variables(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mwcc_versions::{CompilerConfig, GC_1_2_5N};
+
+    fn function(name: &str, statements: Vec<Statement>) -> Function {
+        Function {
+            return_type: Type::Void,
+            name: name.into(),
+            is_static: false,
+            is_weak: false,
+            parameters: Vec::new(),
+            locals: Vec::new(),
+            statements,
+            guards: Vec::new(),
+            return_expression: None,
+            section: None,
+            preceded_by_asm: false,
+            asm_body: None,
+            inline_asm_blocks: Vec::new(),
+            force_active: false,
+            text_deferred: false,
+            peephole_disabled: false,
+        }
+    }
+
+    fn call(name: &str, arguments: Vec<Expression>) -> Statement {
+        Statement::Expression(Expression::Call {
+            name: name.into(),
+            arguments,
+        })
+    }
 
     fn global(name: &str, bytes: Vec<u8>) -> GlobalDeclaration {
         GlobalDeclaration {
@@ -338,5 +380,44 @@ mod tests {
                 .unwrap();
         assert!(!without_full_data.contains_key("inferred"));
         assert_eq!(without_full_data["large"], 0);
+    }
+
+    #[test]
+    fn includes_globals_reached_through_automatic_inline_expansion() {
+        let helper = function(
+            "helper",
+            vec![call(
+                "consume",
+                vec![Expression::Variable("inline_global".into())],
+            )],
+        );
+        let inline_bodies = InlineBodySet::analyze(&[helper]);
+        let caller = function(
+            "caller",
+            vec![
+                call(
+                    "consume",
+                    vec![
+                        Expression::Variable("direct_a".into()),
+                        Expression::Variable("direct_b".into()),
+                    ],
+                ),
+                call("helper", Vec::new()),
+            ],
+        );
+        let globals = vec![
+            global("direct_a", vec![1; 12]),
+            global("direct_b", vec![2; 12]),
+            global("inline_global", vec![3; 12]),
+        ];
+        let behavior = Behavior::resolve(&CompilerConfig::new(GC_1_2_5N));
+
+        let anchor = plan(&caller, &globals, behavior, &inline_bodies)
+            .expect("the expanded body references three writable data globals");
+
+        assert_eq!(anchor.offsets.len(), 3);
+        assert_eq!(anchor.offsets["direct_a"], 0);
+        assert_eq!(anchor.offsets["direct_b"], 12);
+        assert_eq!(anchor.offsets["inline_global"], 24);
     }
 }
