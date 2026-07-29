@@ -51,6 +51,34 @@ pub(super) fn uses_dense_saved_register_range(
 }
 
 impl Generator {
+    /// Complete the independent saved-home stores and entry copies before
+    /// loading a member-derived saved local. This fills the member load's
+    /// latency slots without consuming the incoming receiver before its own
+    /// home is established.
+    pub(crate) fn schedule_structured_saved_member_entry(&mut self) {
+        let Some(start) = self
+            .output
+            .instructions
+            .windows(6)
+            .position(is_saved_member_entry)
+        else {
+            return;
+        };
+        for from in [start + 2, start + 3, start + 4, start + 5] {
+            self.move_instruction_before(from, from - 1);
+        }
+        let (saved, incoming) = match self.output.instructions[start + 2] {
+            Instruction::AddImmediate {
+                d,
+                a,
+                immediate: 0,
+            } => (d, a),
+            _ => unreachable!("saved member entry was recognized"),
+        };
+        self.output.instructions[start + 2] =
+            Instruction::move_register(saved, incoming);
+    }
+
     /// An incoming float that survives a condition call is copied before the
     /// general saved-parameter pair. The call result itself stays volatile, so
     /// this is the complete mixed-class entry schedule.
@@ -331,6 +359,51 @@ fn is_transient_condition_float_entry(window: &[Instruction]) -> bool {
         && *incoming_float == Eabi::FIRST_FLOAT_ARGUMENT
 }
 
+fn is_saved_member_entry(window: &[Instruction]) -> bool {
+    let [
+        Instruction::StoreWord {
+            s: member_home,
+            a: 1,
+            ..
+        },
+        Instruction::LoadWord {
+            d: loaded_member,
+            a: 3,
+            ..
+        },
+        Instruction::StoreWord {
+            s: parameter_home,
+            a: 1,
+            ..
+        },
+        Instruction::AddImmediate {
+            d: copied_parameter,
+            a: incoming_parameter,
+            immediate: 0,
+        },
+        Instruction::StoreWord {
+            s: receiver_home,
+            a: 1,
+            ..
+        },
+        Instruction::Or {
+            a: copied_receiver,
+            s: 3,
+            b: 3,
+        },
+    ] = window
+    else {
+        return false;
+    };
+    member_home == loaded_member
+        && parameter_home == copied_parameter
+        && receiver_home == copied_receiver
+        && member_home > parameter_home
+        && parameter_home > receiver_home
+        && (14..=31).contains(member_home)
+        && (3..=10).contains(incoming_parameter)
+}
+
 fn is_saved_parameter_derived_initializer(window: &[Instruction]) -> bool {
     let [
         Instruction::StoreWord {
@@ -453,5 +526,39 @@ mod tests {
         ];
 
         assert!(is_transient_condition_float_entry(&instructions));
+    }
+
+    #[test]
+    fn recognizes_a_member_home_staggered_between_entry_saves() {
+        let instructions = [
+            Instruction::StoreWord {
+                s: 31,
+                a: 1,
+                offset: 36,
+            },
+            Instruction::LoadWord {
+                d: 31,
+                a: 3,
+                offset: 44,
+            },
+            Instruction::StoreWord {
+                s: 30,
+                a: 1,
+                offset: 32,
+            },
+            Instruction::AddImmediate {
+                d: 30,
+                a: 5,
+                immediate: 0,
+            },
+            Instruction::StoreWord {
+                s: 29,
+                a: 1,
+                offset: 28,
+            },
+            Instruction::move_register(29, 3),
+        ];
+
+        assert!(is_saved_member_entry(&instructions));
     }
 }

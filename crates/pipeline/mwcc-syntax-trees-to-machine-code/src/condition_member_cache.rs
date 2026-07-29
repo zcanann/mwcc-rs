@@ -1,0 +1,222 @@
+//! Scoped reuse of integer member loads inside logical-AND conditions.
+//!
+//! Each later term is reached only through the previous term's fallthrough, so
+//! a repeated direct member load remains available when no store, call, or
+//! register definition intervenes. OR conditions need selected-edge dominance
+//! and deliberately remain outside this cache.
+
+use crate::generator::Generator;
+use mwcc_machine_code::Instruction;
+use mwcc_syntax_trees::{BinaryOperator, Expression, Type};
+
+#[derive(Clone)]
+struct ConditionMemberValue {
+    expression: Expression,
+    register: u8,
+    instruction_index: usize,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct ConditionMemberCache {
+    active: bool,
+    values: Vec<ConditionMemberValue>,
+}
+
+impl Generator {
+    pub(crate) fn begin_condition_member_cache(
+        &mut self,
+        condition: &Expression,
+    ) -> ConditionMemberCache {
+        let previous = std::mem::take(&mut self.condition_member_cache);
+        self.condition_member_cache.active = is_logical_and(condition);
+        previous
+    }
+
+    pub(crate) fn restore_condition_member_cache(
+        &mut self,
+        previous: ConditionMemberCache,
+    ) {
+        self.condition_member_cache = previous;
+    }
+
+    pub(crate) fn condition_member_register(
+        &self,
+        operand: &Expression,
+    ) -> Option<u8> {
+        if !self.condition_member_cache.active || !cacheable_member(operand, self) {
+            return None;
+        }
+        self.condition_member_cache
+            .values
+            .iter()
+            .rev()
+            .find(|value| {
+                same_member(&value.expression, operand)
+                    && self.condition_member_value_is_live(value)
+            })
+            .map(|value| value.register)
+    }
+
+    pub(crate) fn record_condition_member_value(
+        &mut self,
+        operand: &Expression,
+        register: u8,
+    ) {
+        if !self.condition_member_cache.active || !cacheable_member(operand, self) {
+            return;
+        }
+        self.condition_member_cache
+            .values
+            .retain(|value| !same_member(&value.expression, operand));
+        self.condition_member_cache
+            .values
+            .push(ConditionMemberValue {
+                expression: operand.clone(),
+                register,
+                instruction_index: self.output.instructions.len(),
+            });
+    }
+
+    fn condition_member_value_is_live(&self, value: &ConditionMemberValue) -> bool {
+        self.output.instructions[value.instruction_index..]
+            .iter()
+            .all(|instruction| {
+                !is_memory_or_call_barrier(instruction)
+                    && !mwcc_vreg::register_operands(instruction)
+                        .iter()
+                        .any(|operand| {
+                            operand.role == mwcc_vreg::RegisterRole::Define
+                                && operand.class == mwcc_vreg::Class::General
+                                && operand.register == value.register
+                        })
+            })
+    }
+}
+
+fn is_logical_and(expression: &Expression) -> bool {
+    matches!(
+        expression,
+        Expression::Binary {
+            operator: BinaryOperator::LogicalAnd,
+            ..
+        }
+    )
+}
+
+fn cacheable_member(expression: &Expression, generator: &Generator) -> bool {
+    let Expression::Member {
+        base,
+        member_type,
+        index_stride: None,
+        ..
+    } = expression
+    else {
+        return false;
+    };
+    let Expression::Variable(base) = base.as_ref() else {
+        return false;
+    };
+    !generator.volatile_globals.contains(base)
+        && matches!(
+            member_type,
+            Type::Int
+                | Type::UnsignedInt
+                | Type::Char
+                | Type::UnsignedChar
+                | Type::Short
+                | Type::UnsignedShort
+                | Type::Pointer(_)
+                | Type::StructPointer { .. }
+        )
+}
+
+fn same_member(left: &Expression, right: &Expression) -> bool {
+    let (
+        Expression::Member {
+            base: left_base,
+            offset: left_offset,
+            member_type: left_type,
+            index_stride: left_stride,
+        },
+        Expression::Member {
+            base: right_base,
+            offset: right_offset,
+            member_type: right_type,
+            index_stride: right_stride,
+        },
+    ) = (left, right)
+    else {
+        return false;
+    };
+    left_offset == right_offset
+        && left_type == right_type
+        && left_stride == right_stride
+        && matches!(
+            (left_base.as_ref(), right_base.as_ref()),
+            (Expression::Variable(left), Expression::Variable(right)) if left == right
+        )
+}
+
+fn is_memory_or_call_barrier(instruction: &Instruction) -> bool {
+    matches!(
+        instruction,
+        Instruction::StoreWord { .. }
+            | Instruction::StoreByte { .. }
+            | Instruction::StoreHalfword { .. }
+            | Instruction::StoreWordWithUpdate { .. }
+            | Instruction::StoreByteWithUpdate { .. }
+            | Instruction::StoreWordIndexed { .. }
+            | Instruction::StoreByteIndexed { .. }
+            | Instruction::StoreHalfwordIndexed { .. }
+            | Instruction::StoreFloatSingle { .. }
+            | Instruction::StoreFloatDouble { .. }
+            | Instruction::StoreFloatSingleWithUpdate { .. }
+            | Instruction::StoreFloatDoubleWithUpdate { .. }
+            | Instruction::StoreFloatSingleIndexed { .. }
+            | Instruction::StoreFloatDoubleIndexed { .. }
+            | Instruction::PairedSingleQuantizedStore { .. }
+            | Instruction::StoreMultipleWord { .. }
+            | Instruction::BranchAndLink { .. }
+            | Instruction::BranchExternal { .. }
+            | Instruction::BranchToCountRegisterAndLink
+            | Instruction::BranchToLinkRegisterAndLink
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn member(name: &str, offset: u32) -> Expression {
+        Expression::Member {
+            base: Box::new(Expression::Variable(name.into())),
+            offset,
+            member_type: Type::UnsignedInt,
+            index_stride: None,
+        }
+    }
+
+    #[test]
+    fn member_identity_includes_base_and_offset() {
+        assert!(same_member(&member("fp", 12), &member("fp", 12)));
+        assert!(!same_member(&member("fp", 12), &member("fp", 16)));
+        assert!(!same_member(&member("fp", 12), &member("other", 12)));
+    }
+
+    #[test]
+    fn only_logical_and_opens_the_fallthrough_cache() {
+        let value = member("fp", 12);
+        let and = Expression::Binary {
+            operator: BinaryOperator::LogicalAnd,
+            left: Box::new(value.clone()),
+            right: Box::new(value.clone()),
+        };
+        let or = Expression::Binary {
+            operator: BinaryOperator::LogicalOr,
+            left: Box::new(value.clone()),
+            right: Box::new(value),
+        };
+        assert!(is_logical_and(&and));
+        assert!(!is_logical_and(&or));
+    }
+}

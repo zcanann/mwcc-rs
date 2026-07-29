@@ -4,6 +4,7 @@
 use crate::analysis::*;
 use crate::condition_float_cache::ConditionFloatCache;
 use crate::condition_global_cache::ConditionGlobalValue;
+use crate::condition_member_cache::ConditionMemberCache;
 use crate::control_flow::WidePairMaskCache;
 use crate::{InlineBodySet, InlineSummaries};
 use mwcc_core::{Compilation, Diagnostic};
@@ -437,6 +438,9 @@ pub(crate) struct Generator {
     /// Float memory loads retained only along a side-effect-free condition's
     /// fallthrough edge into the next guard.
     pub(crate) condition_float_cache: ConditionFloatCache,
+    /// Integer member loads retained only across the fallthrough terms of one
+    /// side-effect-free logical-AND condition.
+    pub(crate) condition_member_cache: ConditionMemberCache,
     /// Known-zero high mask value carried only down a nested mask test's false
     /// edge. True arms may contain calls, so their structured owner never sees
     /// this cache.

@@ -2595,6 +2595,8 @@ impl Generator {
                                 ),
                             )
                         };
+                    let previous_member_cache =
+                        self.begin_condition_member_cache(condition);
                     struct ConditionBranches {
                         skip_body: Vec<usize>,
                         enter_body: Vec<usize>,
@@ -2777,6 +2779,7 @@ impl Generator {
                             enter_body: Vec::new(),
                         })
                     })();
+                    self.restore_condition_member_cache(previous_member_cache);
                     let carry_fallthrough_cache = matches!(
                         then_body.last(),
                         Some(Statement::Return(None) | Statement::Goto(_))

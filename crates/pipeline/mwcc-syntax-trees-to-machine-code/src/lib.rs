@@ -27,6 +27,7 @@ mod comparisons_tests;
 mod conversion_frame;
 mod condition_float_cache;
 mod condition_global_cache;
+mod condition_member_cache;
 mod control_flow;
 mod copy_convention;
 mod cxx_abi;
@@ -617,6 +618,7 @@ fn lower_function_body(
         stored_globals: HashMap::new(),
         condition_global_values: HashMap::new(),
         condition_float_cache: Default::default(),
+        condition_member_cache: Default::default(),
         wide_pair_mask_cache: Default::default(),
         const_address_bases: HashMap::new(),
         emitted_variable_index_store: false,
@@ -936,6 +938,8 @@ fn lower_function_body(
     generator.schedule_mixed_scalar_initialization();
     generator.schedule_pod_constructor_initialization();
     generator.schedule_saved_receiver_array_release_frame();
+    generator.schedule_structured_saved_member_entry();
+    generator.schedule_structured_indexed_callback_lookup();
     generator.schedule_assertion_float_member_return();
     generator.schedule_guarded_member_classifier_chain();
     generator.schedule_shared_right_float_product_pair();

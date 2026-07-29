@@ -1927,7 +1927,11 @@ impl Generator {
             }
         }
         if let Some((base, offset, member_type)) = as_member(operand) {
+            if let Some(register) = self.condition_member_register(operand) {
+                return Ok(register);
+            }
             self.emit_member_load(base, offset, member_type, None, GENERAL_SCRATCH)?;
+            self.record_condition_member_value(operand, GENERAL_SCRATCH);
             return Ok(GENERAL_SCRATCH);
         }
         // A full-word memory load (`*p`, `a[i]`) goes into the scratch; the caller

@@ -28,6 +28,7 @@ impl Generator {
         let previous_wide_mask_cache = self.begin_wide_pair_mask_condition(condition);
         let previous_cache = self.begin_condition_global_cache(condition);
         let previous_float_cache = self.begin_composed_condition_float_cache(condition);
+        let previous_member_cache = self.begin_condition_member_cache(condition);
         struct ConditionBranches {
             enter_then: Vec<usize>,
             enter_else: Vec<usize>,
@@ -142,6 +143,7 @@ impl Generator {
                 enter_else,
             })
         })();
+        self.restore_condition_member_cache(previous_member_cache);
         let retained_multiply_plan = condition_abs_value(condition).and_then(|value| {
             let source = self.observed_condition_float_register(value)?;
             let [first, second] = then_body else {
