@@ -55,6 +55,7 @@ mod guarded_computed_survivor;
 mod guarded_bitmask_call_sequence;
 mod guarded_computed_survivor_frame;
 mod guarded_pointer_call;
+mod guarded_call_pointer_load_reuse;
 mod guarded_report_store_schedule;
 mod indirect_call_schedule;
 mod indexed_call_store_return;
