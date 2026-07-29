@@ -359,11 +359,19 @@ impl Generator {
                                         .contains(s)
                         )
                     });
+        let guarded_entry_table_end =
+            8i16.saturating_add(i16::try_from(self.entry_parameter_words * 4).unwrap_or(i16::MAX))
+                .saturating_add(8);
+        let guarded_entry_table_is_frame_resident = recorded_saved_entry_home_before_call
+            && self
+                .frame_slots
+                .values()
+                .any(|slot| slot.offset >= guarded_entry_table_end);
         // Build 163 keeps dead call-initializer results in its frame-pressure
         // accounting even after eliminating the values. Only that erased-local
         // case exposes the pairwise lane count; ordinary promoted values retain
         // the established single inferred lane regardless of their count.
-        let extra_lane_count = if preserve_logical_size {
+        let extra_lane_count = if preserve_logical_size || guarded_entry_table_is_frame_resident {
             0
         } else if self.legacy_discarded_call_locals == 0 {
             if self.entry_parameter_words != 0

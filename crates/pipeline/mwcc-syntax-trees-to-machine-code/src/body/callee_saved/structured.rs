@@ -118,7 +118,12 @@ impl Generator {
                 LegacyCalleeSavedFrameLayout::RetainGuardedEntryParameterTable;
             return Ok(true);
         }
-        self.try_callee_saved_structured_frame_body(&normalized)
+        if self.try_callee_saved_structured_frame_body(&normalized)? {
+            self.legacy_callee_saved_frame_layout =
+                LegacyCalleeSavedFrameLayout::RetainGuardedEntryParameterTable;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// The same virtual-register path with uninitialized automatic byte arrays
@@ -1081,9 +1086,12 @@ impl Generator {
             }
         }
         self.structured_aggregate_call_copy_plan = aggregate_call_copy_plan.clone();
+        let guarded_structured_constant_return =
+            saved_parameters.len() >= 2 && is_guarded_structured_constant_return(function);
         if !frame_arrays.is_empty()
             || !frame_scalar_parameters.is_empty()
             || !frame_scalar_locals.is_empty()
+            || !aggregate_frame_locals.is_empty()
         {
             let mut extra_scalar_words = function
                 .locals
@@ -1143,7 +1151,9 @@ impl Generator {
                         let words = if global_member_search_entry {
                             extra_scalar_words
                         } else {
-                            self.entry_parameter_words + extra_scalar_words
+                            self.entry_parameter_words
+                                + extra_scalar_words
+                                + 2 * usize::from(guarded_structured_constant_return)
                         };
                         8 + i16::try_from(words * 4).map_err(|_| {
                             Diagnostic::error("structured legacy local table is too large")
@@ -1432,6 +1442,8 @@ impl Generator {
             // Its saved entry values therefore use the ordinary value-origin
             // lane instead of reserving the full incoming parameter table.
             LegacyCalleeSavedFrameLayout::InferFromValueOrigin
+        } else if guarded_structured_constant_return {
+            LegacyCalleeSavedFrameLayout::RetainGuardedEntryParameterTable
         } else {
             LegacyCalleeSavedFrameLayout::RetainEntryParameterTable
         };
@@ -2334,6 +2346,9 @@ impl Generator {
         self.schedule_unused_array_state_entry(function);
         self.schedule_exclusive_inline_arms(function);
         self.schedule_guarded_effect_spawn(function);
+        if guarded_structured_constant_return {
+            self.schedule_guarded_aggregate_result_compare();
+        }
         // Each source-level `if` creates a pair of optimizer labels even when
         // both collapse to direct instruction offsets. An explicit `else`
         // contributes its additional arm label. Build 163 exposes those
@@ -3532,6 +3547,24 @@ fn is_plain_short_circuit_call_if(function: &Function) -> bool {
                 else_body,
             }] if else_body.is_empty()
                 && matches!(then_body.as_slice(), [Statement::Expression(Expression::Call { .. })])
+        )
+}
+
+fn is_guarded_structured_constant_return(function: &Function) -> bool {
+    function
+        .return_expression
+        .as_ref()
+        .and_then(constant_value)
+        .is_some()
+        && matches!(
+            function.statements.first(),
+            Some(Statement::If {
+                condition: Expression::Binary {
+                    operator: BinaryOperator::LogicalAnd,
+                    ..
+                },
+                ..
+            })
         )
 }
 
